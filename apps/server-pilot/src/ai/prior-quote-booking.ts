@@ -338,8 +338,8 @@ export function priorStaffQuoteRequotePayload(
       ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),
     })),
     salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
-    organization: storedHeader.organization ?? storedHeader.company ?? '',
-    bookingAgency: storedHeader.bookingAgency ?? storedHeader.agency ?? '',
+    organization: Object.hasOwn(storedHeader, 'organization') ? storedHeader.organization ?? '' : storedHeader.company ?? '',
+    bookingAgency: Object.hasOwn(storedHeader, 'bookingAgency') ? storedHeader.bookingAgency ?? '' : storedHeader.agency ?? '',
     ...extrasHeaderFromFacts(
       proposalFactsForRevision(run, revisionRef),
       stay ? occupiedDates(stay.arrivalDate, stay.departureDate).length : 0,

@@ -314,7 +314,7 @@ function normalizeStayTotal(value: number | null | undefined): number | null | u
 }
 
 function hotelDefaultedQuestion(field: string): boolean {
-  return /^(roomType|roomPreference|room_type|board)$/i.test(field);
+  return /^(roomType|roomPreference|room_type|mealPlan)$/i.test(field);
 }
 
 function defaultBoard(

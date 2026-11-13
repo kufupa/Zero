@@ -291,7 +291,7 @@ const CMS_FALLBACK = [
 ];
 type BookingOptions = BookingDraftReady['options'] & {
   cmsMessageIds?: Array<{ code: string; label: string }>;
-  cmsDefaults?: { agency: string; guest: string };
+  cmsDefaults?: { bookingAgency: string; guest: string };
   ratePlans?: string[];
 };
 const WRITES_OFF_LABEL = 'Booking writes are off — create in HMS';
@@ -1345,7 +1345,7 @@ export function BookingCards({
   const sendHmsConfirmation = labtestOnly ? false : sendConfirmation;
   const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(typeof savedCmsMessage === 'string' ? savedCmsMessage : null);
   const hasBoundParty = Boolean(pickedName(parties?.bookingAgency) || pickedName(parties?.organization));
-  const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
+  const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.bookingAgency ?? '03') : (options.cmsDefaults?.guest ?? '01');
   const cmsMessage = chosenCmsMessage ?? defaultCmsMessage;
   const contextConfirmation = useConfirmationSources();
   const sources = confirmation === undefined ? contextConfirmation : confirmation;
@@ -2786,7 +2786,7 @@ export function BookingCards({
             <CopyHmsNotesButton
               block={hmsNotesBlock({
                 booker: choice.bookerName ?? (contact ? textValue(contact.name) : textValue(request.bookerName)),
-                company: choice.organization || contact?.bookingAgency,
+                organization: choice.organization || contact?.bookingAgency,
                 confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
                 rooms: [
                   {

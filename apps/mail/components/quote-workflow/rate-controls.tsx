@@ -221,7 +221,7 @@ export type HmsNotesRoom = {
 
 export type HmsNotesInput = {
   booker?: string | null;
-  company?: string | null;
+  organization?: string | null;
   confirmations?: string[];
   rooms: HmsNotesRoom[];
 };
@@ -276,7 +276,7 @@ function hmsRateLine(rate: HmsNotesRoom['rate']): string {
 export function hmsNotesBlock(input: HmsNotesInput): string {
   const lines: string[] = [];
   const booker = noteText(input.booker);
-  const company = noteText(input.company);
+  const company = noteText(input.organization);
   if (booker) lines.push(`Booker: ${booker}`);
   if (company) lines.push(`Company: ${company}`);
   const several = input.rooms.length > 1;

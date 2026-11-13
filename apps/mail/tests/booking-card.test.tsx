@@ -89,7 +89,7 @@ function render(ui: ReactElement) {
 const STAFF_HASH = 'ab'.repeat(32);
 
 const CARD_CONTACT: StoredContact = {
-  name: 'Booker Example', company: null, endClient: null,
+  name: 'Booker Example', bookingAgency: null, organization: null,
   email: 'booker@example.invalid', phone: null,
 };
 const CARD_CONFIRMATION = { userEmail: 'staff@example.invalid', setting: { mode: 'client' as const } };
@@ -101,7 +101,7 @@ const g1: StayGroupRequirement = {
   quantity: 2,
   adults: 1,
   childrenAges: [],
-  board: 'bb',
+  mealPlan: 'bb',
   specialRequests: [],
   fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
 };
@@ -110,7 +110,7 @@ const luna: LunaAnalysisWire = {
   workflow: 'create_booking',
   flags: [],
   groups: [],
-  party: { kind: 'agency', name: 'XYZ TRAVEL', reference: null },
+  party: { kind: 'bookingAgency', name: 'XYZ TRAVEL', reference: null },
   rateClaims: [],
   missing: [],
   evidence: [],
@@ -130,7 +130,7 @@ const offer: QuoteOffer = {
   kind: 'allocation',
   roomCode: '',
   roomLabel: 'Selected allocation',
-  board: 'bb',
+  mealPlan: 'bb',
   rateCode: '',
   currency: 'ZAR',
   nightly: [],
@@ -152,14 +152,14 @@ const OPTIONS = {
 };
 
 const PICKED: StaffQuoteParties = {
-  company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
-  agency: { kind: 'agency', nativeId: '571', name: 'Woolworths Travel' },
+  organization: { kind: 'organization', nativeId: '49', name: 'Woolworths Holdings' },
+  bookingAgency: { kind: 'bookingAgency', nativeId: '571', name: 'Woolworths Travel' },
 };
 
 // The draft as the server builds it when the quote carries no agency or organization.
 function bareDraft(): BookingDraftReady {
   const draft = draftReady();
-  for (const room of draft.draft.rooms) delete room.request.agency;
+  for (const room of draft.draft.rooms) delete room.request.bookingAgency;
   return draft;
 }
 
@@ -256,8 +256,8 @@ function quotedSession(
       quoteRequestKey: '2026-11-12:2026-11-14',
       approvedHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: 'XYZ TRAVEL',
+        organization: '',
+        bookingAgency: 'XYZ TRAVEL',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -283,7 +283,7 @@ function sessionWithGeneratedNote(booking: BookingDraftReady): QuoteSession {
   if (!quote) throw new Error('expected staff quote');
   return {
     ...session,
-    groups: [{ ...session.groups[0]!, roomCodes: ['STWN'], rateCode: 'NCOR1B', board: 'bb' }],
+    groups: [{ ...session.groups[0]!, roomCodes: ['STWN'], rateCode: 'NCOR1B', mealPlan: 'bb' }],
     staffQuotes: {
       ...session.staffQuotes,
       [GENERATED_NOTE_STAY_KEY]: {
@@ -295,8 +295,8 @@ function sessionWithGeneratedNote(booking: BookingDraftReady): QuoteSession {
             roomLabel: 'Standard Twin',
             rateCode: 'NCOR1B',
             rateLabel: 'Corporate negotiated',
-            board: 'bb',
-            boardLabel: 'Bed & breakfast',
+            mealPlan: 'bb',
+            mealPlanLabel: 'Bed & breakfast',
             nightlyPriceMinor: 220000,
             roomsLeft: 2,
             rateScope: 'public',
@@ -732,7 +732,7 @@ describe('booking cards', () => {
   it('keeps a staff-edited Organization when party picks change', () => {
     const { rerender } = render(<BookingCards draft={draftReady()} parties={PICKED} />);
     fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: 'Bidvest Bank' } });
-    const other = { company: { kind: 'company' as const, nativeId: '77', name: 'Other Co' } };
+    const other = { organization: { kind: 'organization' as const, nativeId: '77', name: 'Other Co' } };
     rerender(<BookingCards draft={draftReady()} parties={other} />);
     expect(fieldValues('Organization')[0]).toBe('Bidvest Bank');
   });
@@ -740,7 +740,7 @@ describe('booking cards', () => {
   it('requires staff to resolve an unbound draft agency before preview', () => {
     const { client, preview } = paneClient();
     const draft = previewableDraft();
-    draft.draft.rooms[0]!.request.agency = 'Unbound Example';
+    draft.draft.rooms[0]!.request.bookingAgency = 'Unbound Example';
     render(<BookingCards draft={draft} paneSave={client} />);
     expect(screen.getAllByText(/Unbound Example/i).length).toBeGreaterThan(0);
     expect(previewButton(0).disabled).toBe(true);
@@ -756,8 +756,8 @@ describe('booking cards', () => {
 
   it('does not offer a typed agency or company without an HMS id', () => {
     const typed = {
-      company: { kind: 'company' as const, nativeId: '', name: 'Typed Co' },
-      agency: { kind: 'agency' as const, nativeId: '', name: 'Typed Agency' },
+      organization: { kind: 'organization' as const, nativeId: '', name: 'Typed Co' },
+      bookingAgency: { kind: 'bookingAgency' as const, nativeId: '', name: 'Typed Agency' },
     };
     render(<BookingCards draft={bareDraft()} parties={typed} />);
     expect(fieldValues('Organization')).toEqual(['', '']);
@@ -783,8 +783,8 @@ describe('booking card staying-guest prefill', () => {
   it('prefills editable first and last names from the selected Guest, not Contact', () => {
     const contact: StoredContact = {
       name: 'Agent Booker',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: 'agent@example.invalid',
       phone: null,
     };
@@ -798,7 +798,7 @@ describe('booking card staying-guest prefill', () => {
       groups: [],
       analysis: {
         luna: {
-          party: { kind: 'agency' },
+          party: { kind: 'bookingAgency' },
           groups: [{ guestNames: [] }],
         },
       },
@@ -923,7 +923,7 @@ describe('booking card copy buttons', () => {
     render(
       <BookingCards
         draft={draftReady()}
-        groups={[{ ...g1, board: 'room_only', rateCode: 'BARRO', quotedAmountMinor: 185000 }]}
+        groups={[{ ...g1, mealPlan: 'room_only', rateCode: 'BARRO', quotedAmountMinor: 185000 }]}
       />,
     );
     expect(screen.queryByText('Room only')).toBeNull();
@@ -1645,12 +1645,12 @@ describe('HRDAV booking fields and CMS', () => {
         { code: '03', label: 'Agency/company booking – payment link + proforma' },
         { code: '08', label: 'Agency booking – no rate' },
       ],
-      cmsDefaults: { agency: '03', guest: '01' },
+      cmsDefaults: { bookingAgency: '03', guest: '01' },
     } as BookingDraftReady['options'];
     return draft;
   }
 
-  const agency = { agency: { kind: 'agency' as const, nativeId: '571', name: 'Woolworths Travel' } };
+  const agency = { bookingAgency: { kind: 'bookingAgency' as const, nativeId: '571', name: 'Woolworths Travel' } };
 
   it('renders editable fields in HMS order and only this hotel’s room options', () => {
     const draft = hrdavDraft();
@@ -1690,7 +1690,7 @@ describe('HRDAV booking fields and CMS', () => {
   it('defaults CMS by bound party, sends selected message and the exact bound HMS id', async () => {
     const { client, preview, commit } = paneClient();
     const draft = hrdavDraft();
-    delete draft.draft.rooms[0]!.request.agency;
+    delete draft.draft.rooms[0]!.request.bookingAgency;
     render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE} parties={agency}
       paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', true);
@@ -1717,7 +1717,7 @@ describe('HRDAV booking fields and CMS', () => {
   it('defaults to guest CMS type without a bound party and blocks a blank type', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
-    delete draft.draft.rooms[0]!.request.agency;
+    delete draft.draft.rooms[0]!.request.bookingAgency;
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     const message = screen.getByLabelText('Message Id') as unknown as HTMLSelectElement;
@@ -1738,7 +1738,7 @@ describe('HRDAV booking fields and CMS', () => {
   it('uses the fallback CMS choices and guest or company default when profile CMS is absent', () => {
     const draft = hrdavDraft();
     draft.options = { ...OPTIONS, roomType: ['DLXTWN'] };
-    delete draft.draft.rooms[0]!.request.agency;
+    delete draft.draft.rooms[0]!.request.bookingAgency;
     const { unmount } = render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     const guest = screen.getByLabelText('Message Id') as unknown as HTMLSelectElement;
@@ -1746,7 +1746,7 @@ describe('HRDAV booking fields and CMS', () => {
     expect(Array.from(guest.options, (option) => option.value)).toEqual(expect.arrayContaining(['01', '03', '08']));
     unmount();
     render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE}
-      parties={{ company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' } }}
+      parties={{ organization: { kind: 'organization', nativeId: '49', name: 'Woolworths Holdings' } }}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     expect((screen.getByLabelText('Message Id') as unknown as HTMLSelectElement).value).toBe('03');
   });
@@ -1756,7 +1756,7 @@ describe('HRDAV booking fields and CMS', () => {
     draft.options = {
       ...draft.options,
       cmsMessageIds: [{ code: '21', label: 'Guest custom' }, { code: '23', label: 'Agency custom' }],
-      cmsDefaults: { guest: '21', agency: '23' },
+      cmsDefaults: { guest: '21', bookingAgency: '23' },
     } as BookingDraftReady['options'];
     render(<BookingCards draft={draft} parties={agency} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
@@ -1845,7 +1845,7 @@ describe('HRDAV booking fields and CMS', () => {
     };
     const session = quotedSession(draft);
     const rateOption = {
-      id: 'old-rate', groupId: 'g1', board: 'bb' as const, boardLabel: 'Bed & breakfast',
+      id: 'old-rate', groupId: 'g1', mealPlan: 'bb' as const, mealPlanLabel: 'Bed & breakfast',
       rateCode: 'TAXYZ', rateLabel: 'Old rate', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin',
       contract: false, onlyContract: false, matchesRequest: true, perNightMinor: 100000,
       totalMinor: 200000, currency: 'ZAR', priced: 'full' as const, selected: true,
@@ -2678,8 +2678,8 @@ describe('booking card pane save', () => {
     const draft = draftReady();
     let contact: StoredContact = {
       name: 'Original Booker',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: 'original@example.invalid',
       phone: null,
     };
@@ -2813,8 +2813,8 @@ describe('booking card save modes and the note fields', () => {
     draft.draft.rooms[0]!.request.bookerEmail = 'old-draft@example.invalid';
     const contact = {
       name: 'Old top contact',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: 'old-top@example.invalid',
       phone: null,
     };
@@ -2836,8 +2836,8 @@ describe('booking card save modes and the note fields', () => {
     const { client, preview } = paneClient();
     let contact: StoredContact = {
       name: 'Original Booker',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: 'original@example.invalid',
       phone: null,
     };
@@ -2871,8 +2871,8 @@ describe('booking card save modes and the note fields', () => {
     const { client, preview } = paneClient();
     const contact = {
       name: 'Ann Booker',
-      company: null,
-      endClient: null,
+      bookingAgency: null,
+      organization: null,
       email: 'ann@example.invalid',
       phone: null,
     };
@@ -3299,7 +3299,7 @@ describe('bindUsePriorQuoteForBooking', () => {
           rooms: 2,
           adultsPerRoom: 1,
           childAges: [],
-          board: 'room_only',
+          mealPlan: 'room_only',
           roomPreference: null,
           guestNames: ['John Smith', 'Jane Doe'],
         },
@@ -3314,7 +3314,7 @@ describe('bindUsePriorQuoteForBooking', () => {
           quantity: 2,
           adults: 1,
           childrenAges: [],
-          board: 'room_only',
+          mealPlan: 'room_only',
           specialRequests: [],
           fields: {},
         },
@@ -3338,7 +3338,7 @@ describe('bindUsePriorQuoteForBooking', () => {
       departureDate: '2026-11-14',
       roomCode: 'STQN',
       rateCode: 'BAR',
-      board: 'bb' as const,
+      mealPlan: 'bb' as const,
       ...(onceExtras === undefined ? {} : { onceExtras }),
     });
     const args = {
@@ -3373,13 +3373,13 @@ describe('expired prior re-quote', () => {
         quantity: 2,
         adults: 1,
         childrenAges: [7],
-        board: 'bb' as const,
+        mealPlan: 'bb' as const,
         roomCodes: ['STQN'],
       },
     ],
     salesStrategy: 'BAR' as const,
-    company: 'Acme Corp',
-    agency: 'XYZ TRAVEL',
+    organization: 'Acme Corp',
+    bookingAgency: 'XYZ TRAVEL',
   };
 
   it('exposes the re-quote label and expired toast copy', () => {
@@ -3411,7 +3411,7 @@ describe('expired prior re-quote', () => {
         quantity: 2,
         adults: 1,
         childrenAges: [7],
-        board: 'bb',
+        mealPlan: 'bb',
         roomCodes: ['STQN'],
       },
     ]);
@@ -3420,8 +3420,8 @@ describe('expired prior re-quote', () => {
       sessionGroups: [g1],
       sessionHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: 'Front desk',
         clientEmail: '',
         clientTelephone: '',
@@ -3429,8 +3429,8 @@ describe('expired prior re-quote', () => {
       staffEdited: false,
     });
     expect(header).toMatchObject({
-      company: 'Acme Corp',
-      agency: 'XYZ TRAVEL',
+      organization: 'Acme Corp',
+      bookingAgency: 'XYZ TRAVEL',
       attention: 'Front desk',
     });
   });
@@ -3446,8 +3446,8 @@ describe('expired prior re-quote', () => {
       sessionGroups: [g1],
       sessionHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -3479,8 +3479,8 @@ describe('expired prior re-quote', () => {
       sessionGroups: [g1],
       sessionHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -3510,8 +3510,8 @@ describe('expired prior re-quote', () => {
       sessionGroups: [g1],
       sessionHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -3570,8 +3570,8 @@ describe('expired prior re-quote', () => {
       sessionGroups: [g1],
       sessionHeader: {
         salesStrategy: 'BAR',
-        company: '',
-        agency: '',
+        organization: '',
+        bookingAgency: '',
         attention: '',
         clientEmail: '',
         clientTelephone: '',
@@ -3590,8 +3590,8 @@ describe('expired prior re-quote', () => {
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({
         groups: [expect.objectContaining({ id: 'g1', quantity: 2, roomCodes: ['STQN'] })],
-        company: 'Acme Corp',
-        agency: 'XYZ TRAVEL',
+        organization: 'Acme Corp',
+        bookingAgency: 'XYZ TRAVEL',
         salesStrategy: 'BAR',
       }),
     );
@@ -3608,7 +3608,7 @@ describe('expired prior re-quote', () => {
 });
 
 describe('booking card HMS notes copy', () => {
-  const CONTACT = { name: 'Jane Smith', company: 'Acme Travel', endClient: null, email: null, phone: null };
+  const CONTACT = { name: 'Jane Smith', bookingAgency: 'Acme Travel', organization: null, email: null, phone: null };
 
   function stubClipboard() {
     const writeText = vi.fn((_text: string) => Promise.resolve());
@@ -3650,12 +3650,12 @@ describe('booking card HMS notes copy', () => {
     const writeText = stubClipboard();
     const { client } = paneClient();
     const draft = draftReady();
-    draft.draft.rooms[0]!.board = 'bb';
+    draft.draft.rooms[0]!.mealPlan = 'bb';
     const rowPrice = { source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185000, note: 'Thandi approved' };
     render(
       <BookingCards
         draft={draft}
-        groups={[{ ...g1, board: 'dinner_bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
+        groups={[{ ...g1, mealPlan: 'dinner_bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
         paneSave={client}
         contact={{ ...CONTACT, email: 'booker@example.invalid' }}
       />,

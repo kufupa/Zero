@@ -16,7 +16,7 @@ export function nativePartyLabelMatches(query:string,label:string):boolean{
  return (suffix?.[1]??suffix?.[2])===query.trim();
 }
 /** Bind original customer facts to independently authorized selected scope; this grants no authority. */
-export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[], revision: QuoteRevision, rooms?: readonly BookingRoomInput[], originalGuestFacts: BookingEvidence['guestFacts'] = [], quotationAddressee?:{company:string;agency:string}): void {
+export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[], revision: QuoteRevision, rooms?: readonly BookingRoomInput[], originalGuestFacts: BookingEvidence['guestFacts'] = [], quotationAddressee?:{organization:string;bookingAgency:string}): void {
   for (const fact of facts) {
     if (fact.verification !== 'text_verified') fail('missing', 'verification');
     if (fact.kind === 'dates') {
@@ -37,7 +37,7 @@ export function assertRevisionSourceFacts(facts: readonly ValidatedDocumentFact[
       const groups=target===undefined?revision.groups:revision.groups.filter(group=>group.id===target||group.roomCode===target);
       if (!groups.length || groups.some(group => group.mealPlan !== board)) fail('mismatch', 'board');
     } else if (fact.kind === 'party') {
-      if (!revision.groups.some(group => Object.values(group.context).some(context => (context as {name?:string}).name === fact.value || rooms===undefined&&typeof (context as {name?:string}).name==='string'&&nativePartyLabelMatches(fact.value,(context as {name:string}).name))) && !(rooms===undefined&&revision.groups.every(group=>Object.keys(group.context).length===0)&&quotationAddressee&&[quotationAddressee.company,quotationAddressee.agency].includes(fact.value))) fail('mismatch', 'party');
+      if (!revision.groups.some(group => Object.values(group.context).some(context => (context as {name?:string}).name === fact.value || rooms===undefined&&typeof (context as {name?:string}).name==='string'&&nativePartyLabelMatches(fact.value,(context as {name:string}).name))) && !(rooms===undefined&&revision.groups.every(group=>Object.keys(group.context).length===0)&&quotationAddressee&&[quotationAddressee.organization,quotationAddressee.bookingAgency].includes(fact.value))) fail('mismatch', 'party');
     } else if (fact.kind === 'guest' && rooms !== undefined) {
       if (fact.value.roomRef === undefined || fact.value.roomIndex === undefined) fail('missing', 'guest_assignment');
       const groups = revision.groups.filter(group => group.id === fact.value.roomRef || group.roomCode === fact.value.roomRef);

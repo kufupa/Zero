@@ -486,10 +486,10 @@ export function cloudAmendApprovalHasPrices(form: Record<string, unknown>): bool
 /** The saved-record form also carries these unchanged values; show them before Go. */
 function preservedAmendRows(form: Record<string, unknown>): WriteRow[] {
   const value = record(record(form.cloudAmend)?.preserved);
-  if (!value || !(value.agency === null || typeof value.agency === 'string') ||
+  if (!value || !(value.bookingAgency === null || typeof value.bookingAgency === 'string') ||
       !(value.organization === null || typeof value.organization === 'string')) return [];
   return [
-    ['agency', 'Travel agency', value.agency || NONE],
+    ['bookingAgency', 'Travel agency', value.bookingAgency || NONE],
     ['organization', 'Company', value.organization || NONE],
   ].map(([key, label, text]) => ({ key: `cloudAmend.preserved.${key}`, label, before: text, after: text, displayOnly: true }));
 }

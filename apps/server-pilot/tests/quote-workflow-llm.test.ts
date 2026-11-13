@@ -30,7 +30,7 @@ const group = {
   rooms: 2,
   adultsPerRoom: 1,
   childAges: [] as number[],
-  board: 'dbb' as const,
+  mealPlan: 'dbb' as const,
   roomPreference: 'twin',
   guestNames: ['Ann Example', 'Bob Example'],
 };
@@ -268,7 +268,7 @@ describe('buildQuoteWorkflowPrompt', () => {
     const prompt = buildQuoteWorkflowPrompt(selection).system;
 
     expect(prompt).toContain(
-      'Keep the requested dinner board in groups[].board: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
+      'Keep the requested dinner board in groups[].mealPlan: use "dbb" for DBB/dinner with breakfast and "half_board" for half-board; the server converts either to B&B and adds dinner separately.',
     );
     expect(prompt).not.toContain(
       'Half-board, half board, DBB or dinner with breakfast means quote Bed & Breakfast and show dinner as a separate staff-priced add-on.',
@@ -626,7 +626,7 @@ describe('mapLlmDecision', () => {
         quantity: 2,
         adults: 1,
         childrenAges: [],
-        board: 'dinner_bb',
+        mealPlan: 'dinner_bb',
         roomPreference: 'twin',
         organisation: 'Acme Mining',
         specialRequests: [],
@@ -635,7 +635,7 @@ describe('mapLlmDecision', () => {
           departureDate: 'extracted',
           quantity: 'extracted',
           adults: 'extracted',
-          board: 'extracted',
+          mealPlan: 'extracted',
         },
       },
     ]);
@@ -1047,7 +1047,7 @@ describe('mapLlmDecision', () => {
             departure: '2026-11-14',
             rooms: null,
             adultsPerRoom: null,
-            board: 'half_board',
+            mealPlan: 'half_board',
           }],
           missing: [],
         }),
@@ -1057,7 +1057,7 @@ describe('mapLlmDecision', () => {
     expect(mapped.groups[0]).toMatchObject({
       departureDate: '2026-11-14',
       adults: 2,
-      board: 'dinner_bb',
+      mealPlan: 'dinner_bb',
       fields: { arrivalDate: 'missing', departureDate: 'extracted', adults: 'defaulted' },
     });
     expect(mapped.missingQuoteReplyFields).toEqual([
@@ -1118,12 +1118,12 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           party: { kind: 'private', name: null, reference: null },
-          groups: [{ ...group, board: null }],
+          groups: [{ ...group, mealPlan: null }],
         }),
       ),
     );
-    expect(mapped.groups[0]?.board).toBe('bb');
-    expect(mapped.groups[0]?.fields.board).toBe('defaulted');
+    expect(mapped.groups[0]?.mealPlan).toBe('bb');
+    expect(mapped.groups[0]?.fields.mealPlan).toBe('defaulted');
   });
 
   it('defaults unstated board to dinner_bb for a government party', () => {
@@ -1131,12 +1131,12 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           party: { kind: 'government', name: 'Department of Forestry', reference: null },
-          groups: [{ ...group, board: null }],
+          groups: [{ ...group, mealPlan: null }],
         }),
       ),
     );
-    expect(mapped.groups[0]?.board).toBe('dinner_bb');
-    expect(mapped.groups[0]?.fields.board).toBe('defaulted');
+    expect(mapped.groups[0]?.mealPlan).toBe('dinner_bb');
+    expect(mapped.groups[0]?.fields.mealPlan).toBe('defaulted');
   });
 
   it('keeps a stated board over the party default', () => {
@@ -1144,12 +1144,12 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           party: { kind: 'government', name: 'Department of Forestry', reference: null },
-          groups: [{ ...group, board: 'bb' }],
+          groups: [{ ...group, mealPlan: 'bb' }],
         }),
       ),
     );
-    expect(mapped.groups[0]?.board).toBe('bb');
-    expect(mapped.groups[0]?.fields.board).toBe('extracted');
+    expect(mapped.groups[0]?.mealPlan).toBe('bb');
+    expect(mapped.groups[0]?.fields.mealPlan).toBe('extracted');
   });
 
   it('drops room-type and board questions from missing because the hotel defaults those', () => {
@@ -1160,7 +1160,7 @@ describe('mapLlmDecision', () => {
             { field: 'roomType', question: 'Which room type?' },
             { field: 'roomPreference', question: 'Queen or twin?' },
             { field: 'guestNames', question: 'Guest names?' },
-            { field: 'board', question: 'Bed and breakfast or dinner?' },
+            { field: 'mealPlan', question: 'Bed and breakfast or dinner?' },
           ],
         }),
       ),
@@ -1173,14 +1173,14 @@ describe('mapLlmDecision', () => {
       lunaAnalysisSchema.parse(
         analysis({
           workflow: 'quote',
-          groups: [{ ...group, arrival: '2026-02-30', departure: null, board: null }],
+          groups: [{ ...group, arrival: '2026-02-30', departure: null, mealPlan: null }],
         }),
       ),
     );
     expect(mapped.groups[0]?.arrivalDate).toBeUndefined();
     expect(mapped.groups[0]?.fields.arrivalDate).toBe('missing');
-    expect(mapped.groups[0]?.board).toBe('bb');
-    expect(mapped.groups[0]?.fields.board).toBe('defaulted');
+    expect(mapped.groups[0]?.mealPlan).toBe('bb');
+    expect(mapped.groups[0]?.fields.mealPlan).toBe('defaulted');
     expect(mapped.missing.some((item) => item.field === 'arrivalDate')).toBe(true);
   });
 
@@ -1193,14 +1193,14 @@ describe('mapLlmDecision', () => {
       {
         id: 'g1',
         childrenAges: [],
-        board: 'bb',
+        mealPlan: 'bb',
         specialRequests: [],
         fields: {
           arrivalDate: 'missing',
           departureDate: 'missing',
           quantity: 'missing',
           adults: 'missing',
-          board: 'defaulted',
+          mealPlan: 'defaulted',
         },
       },
     ]);
@@ -1280,7 +1280,7 @@ describe('mapLlmDecision', () => {
         analysis({
           workflow: 'quote',
           flags: ['rooms_only_group'],
-          groups: [{ ...group, rooms: 15, board: null }],
+          groups: [{ ...group, rooms: 15, mealPlan: null }],
         }),
       ),
     );

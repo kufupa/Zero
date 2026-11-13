@@ -275,7 +275,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
   ratePlans: string[];
   requiredCreateFields: string[];
   cmsMessageIds?: Array<{ code: string; label: string }>;
-  cmsDefaults?: { agency: string; guest: string };
+  cmsDefaults?: { bookingAgency: string; guest: string };
 } {
   const property = getPropertyRegistration(propertyCode);
   if (!property) throw new Error('hms_property_unknown');
@@ -346,7 +346,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     requiredCreateFields: [...new Set([...(profile.requiredCreateFields ?? []), ...requiredBookNativeFields({ createForm: profile.createForm })])],
     ...(validCms ? {
       cmsMessageIds: cmsRows,
-      cmsDefaults: { agency: cms.defaultAgency!, guest: cms.defaultGuest! },
+      cmsDefaults: { bookingAgency: cms.defaultAgency!, guest: cms.defaultGuest! },
     } : {}),
   };
 }

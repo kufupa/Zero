@@ -64,8 +64,10 @@ async function validateCreate(request: Record<string, unknown>) {
       schema: unknown,
     ): { ok: boolean; errors: unknown[] };
   };
+  const { bookingAgency, ...fields } = request;
+  const nativeRequest = bookingAgency === undefined ? fields : { ...fields, agency: bookingAgency };
   return mod.validateCreateRequest(
-    mod.normalizeCreateLabels(request),
+    mod.normalizeCreateLabels(nativeRequest),
     await mod.loadCreateToolSchema(),
   );
 }
@@ -116,12 +118,12 @@ function analysis(over: Partial<LunaAnalysis> = {}): LunaAnalysis {
         rooms: 2,
         adultsPerRoom: 1,
         childAges: [],
-        board: 'room_only',
+        mealPlan: 'room_only',
         roomPreference: null,
         guestNames: ['Mr John Smith', 'Jane Doe'],
       },
     ],
-    party: { kind: 'agency', name: 'XYZ TRAVEL', reference: null },
+    party: { kind: 'bookingAgency', name: 'XYZ TRAVEL', reference: null },
     rateClaims: [],
     missing: [],
     evidence: [],
@@ -142,7 +144,7 @@ async function agencyRevision(over?: {
   const group = revision.groups[0]!;
   group.rateCode = over?.rateCode ?? 'TAXYZ';
   group.context = over?.context ?? {
-    agency: { id: '17', code: 'TAXYZ', name: 'XYZ TRAVEL' },
+    bookingAgency: { id: '17', code: 'TAXYZ', name: 'XYZ TRAVEL' },
   };
   return revision;
 }
@@ -201,7 +203,7 @@ describe('requestFromQuotedRoom', () => {
       childAges: [],
       roomCode: 'STQN',
       rateCode: 'TAXYZ',
-      party: { kind: 'agency', name: 'XYZ TRAVEL' },
+      party: { kind: 'bookingAgency', name: 'XYZ TRAVEL' },
       guestName: 'Mr John Smith',
       defaults: NULL_DEFAULTS,
     });
@@ -214,7 +216,7 @@ describe('requestFromQuotedRoom', () => {
       adults: 1,
       roomType: 'STQN',
       ratePlan: 'TAXYZ',
-      agency: 'XYZ TRAVEL',
+      bookingAgency: 'XYZ TRAVEL',
       firstName: 'John',
       lastName: 'Smith',
     });
@@ -246,7 +248,7 @@ describe('createRequestFieldOptions', () => {
 
   it.each(['HRCEN', 'HRDAV'])('exposes the merged %s CMS choices and defaults', (propertyCode) => {
     const options = createRequestFieldOptions(propertyCode);
-    expect(options.cmsDefaults).toEqual({ agency: '03', guest: '01' });
+    expect(options.cmsDefaults).toEqual({ bookingAgency: '03', guest: '01' });
     expect(options.cmsMessageIds).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: '01' }),
       expect.objectContaining({ code: '03' }),
@@ -266,7 +268,7 @@ describe('createRequestFieldOptions', () => {
     };
     expect(createRequestFieldOptions('HRDAV')).toMatchObject({
       cmsMessageIds: [{ code: '01', label: 'Guest' }, { code: '03', label: 'Agency' }],
-      cmsDefaults: { agency: '03', guest: '01' },
+      cmsDefaults: { bookingAgency: '03', guest: '01' },
     });
     expect(createRequestFieldOptions('HRCEN')).toEqual(centurion);
     profileOverride.cms = {
@@ -390,7 +392,7 @@ describe('buildBookingDrafts', () => {
     expect(draft.rooms).toHaveLength(2);
     expect(draft.rooms.map((room) => room.roomIndex)).toEqual([1, 2]);
     expect(draft.rooms[0]!.request).toMatchObject({
-      agency: 'XYZ TRAVEL',
+      bookingAgency: 'XYZ TRAVEL',
       ratePlan: 'TAXYZ',
       roomType: 'STQN',
       firstName: 'John',
@@ -400,7 +402,7 @@ describe('buildBookingDrafts', () => {
       guaranteeType: 'Guaranteed By Agent',
     });
     expect(draft.rooms[1]!.request).toMatchObject({
-      agency: 'XYZ TRAVEL',
+      bookingAgency: 'XYZ TRAVEL',
       ratePlan: 'TAXYZ',
       firstName: 'Jane',
       lastName: 'Doe',
@@ -445,7 +447,7 @@ describe('buildBookingDrafts', () => {
     'gives each draft room the quoted %s board as %s, not the analysis board',
     async (quoted, expected) => {
       const revision = await agencyRevision();
-      revision.groups[0]!.board = quoted;
+      revision.groups[0]!.mealPlan = quoted;
       const draft = await buildBookingDrafts({
         analysis: analysis(),
         revision,
@@ -454,7 +456,7 @@ describe('buildBookingDrafts', () => {
         validate: validateCreate,
       });
       expect(draft.rooms.length).toBeGreaterThan(0);
-      expect(draft.rooms.map((room) => room.board)).toEqual(draft.rooms.map(() => expected));
+      expect(draft.rooms.map((room) => room.mealPlan)).toEqual(draft.rooms.map(() => expected));
     },
   );
 
@@ -662,7 +664,7 @@ describe('buildBookingDrafts', () => {
             rooms: 2,
             adultsPerRoom: 1,
             childAges: [],
-            board: 'room_only',
+            mealPlan: 'room_only',
             roomPreference: null,
             guestNames: ['Mr John Smith'],
           },
@@ -679,7 +681,7 @@ describe('buildBookingDrafts', () => {
     expect(draft.rooms[1]!.request).toMatchObject({
       roomType: 'STQN',
       ratePlan: 'TAXYZ',
-      agency: 'XYZ TRAVEL',
+      bookingAgency: 'XYZ TRAVEL',
     });
     expect(draft.missing.some((item) => item.question.includes('room 2'))).toBe(true);
   });
@@ -806,7 +808,7 @@ describe('prepareBookingDraft route', () => {
             rooms: 2,
             adultsPerRoom: 1,
             childAges: [],
-            board: 'room_only',
+            mealPlan: 'room_only',
             roomPreference: null,
             guestNames: ['Mr John Smith', 'Jane Doe'],
           },
@@ -869,7 +871,7 @@ describe('unquoted single-stay booking draft', () => {
       ],
       missing: [{ field: 'ratePlan', question: 'Rate plan code for this booking?' }],
       schemaErrors: [['ratePlan']],
-      board: 'bb',
+      mealPlan: 'bb',
     });
     expect(draft.rateCheck).toEqual([]);
     expect(draft.missing).toEqual([]);
@@ -877,7 +879,7 @@ describe('unquoted single-stay booking draft', () => {
       {
         groupId: '2027-09-14:2027-09-16',
         roomIndex: 1,
-        board: 'bb',
+        mealPlan: 'bb',
         request: expect.objectContaining({ firstName: 'Ada', lastName: 'Lovelace', roomType: 'STQN' }),
         schemaErrors: [],
       },

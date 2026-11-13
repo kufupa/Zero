@@ -318,8 +318,8 @@ describe('voucher find card: the existing search', () => {
         organization: null,
       },
       commercial: {
-        company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-        agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+        organization: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+        bookingAgency: { name: 'Harbor Travel', nativeId: 'AG-9' },
       },
       screenshots: [],
       runId: null,
