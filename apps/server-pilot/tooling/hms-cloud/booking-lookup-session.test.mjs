@@ -437,11 +437,17 @@ test('session and legacy alias require the current clear Labtest preimage', asyn
 
 
 test('booking session forwards scoped Cloud options', () => {
-  const signal = new AbortController().signal, credentialLease = {};
-  const options = bookingSessionPageOptions({ propertyCode: 'HRDAVS', transportId: 'transport-davinci',
-    signal, credentialLease, headless: false, cloudTargetKey: 'target' });
-  assert.deepEqual(options, { propertyCode: 'HRDAVS', transportId: 'transport-davinci', signal,
-    credentialLease, headless: false, cloudTargetKey: 'target' });
+  const signal = new AbortController().signal, credentialLease = {}, cloudTargetKeys = ['target', 'alias'];
+  for (const [propertyCode, transportId] of [['HRCEN', 'transport-centurion'], ['HRDAV', 'transport-davinci'],
+    ['HRDAVS', 'transport-davinci']]) {
+    const scoped = { propertyCode, transportId, signal, credentialLease, headless: false,
+      cloudTargetKey: 'target', cloudTargetKeys };
+    assert.deepEqual(bookingSessionPageOptions(scoped), scoped);
+    assert.deepEqual(bookingSessionPageOptions({ ...scoped, labtestDates: undefined }), scoped);
+    for (const labtestDates of [{ arrival: '2027-12-29', departure: '2027-12-31' }, null]) {
+      assert.deepEqual(bookingSessionPageOptions({ ...scoped, labtestDates }), { ...scoped, startScreen: 'OSRESS' });
+    }
+  }
   for (const invalid of [null, 'block', 1]) assert.throws(
     () => bookingSessionPageOptions({ blockServiceWorkers: invalid }), /SERVICE_WORKER_OPTION_INVALID/);
 });
