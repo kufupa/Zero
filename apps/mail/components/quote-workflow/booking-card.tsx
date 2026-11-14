@@ -1059,7 +1059,7 @@ function paneStayInputForConfiguredRoom(
   for (const field of requiredFields) {
     if (field === 'reservationnote' && !textValue(choice.reservationNote).trim()) missing.push('reservation note');
     else if (field === 'marketsegment' && !textValue(choice.marketSegment).trim()) missing.push('Market segment');
-    else if (field === 'guestoptin4' && choice.guestoptin4 !== true) missing.push('Terms');
+    else if (field === 'guestoptin4' && typeof choice.guestoptin4 !== 'boolean') missing.push('Terms');
     else if (!['reservationnote', 'marketsegment', 'guestoptin4'].includes(field)) missing.push('required hotel field');
   }
   return { stay: missing.length ? null : built.stay, missing };

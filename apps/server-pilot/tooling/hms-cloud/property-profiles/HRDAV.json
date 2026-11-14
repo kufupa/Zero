@@ -81,6 +81,7 @@
   "stoMapping": {"salesStrategy": "WS", "trackCode": "STO", "trackLabel": "STO Rate", "marketSegment": "Wholesale", "screenshot": "lov-track.png", "note": "STO is a Track / Sub Segment option, not a separate Sales Strategy."},
   "createForm": {
     "observedOn": "2026-10-25",
+    "guestOptInPolicy": "required_boolean",
     "requiredMarkers": {
       "arrivaldate": {"label": "Arrival Date", "required": true, "marker": "red asterisk", "screenshot": "create-blank.png"},
       "departuredate": {"label": "Departure Date", "required": true, "marker": "red asterisk", "screenshot": "create-blank.png"},

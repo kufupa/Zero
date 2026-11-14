@@ -114,7 +114,9 @@ function harness(options = {}) {
         : { ...values, ...partyFields,
           ...(options.trackRequired !== undefined ? { track: partyFields.track ?? options.trackInitial ?? '' } : {}) })
         .map(field => field.name === 'track' && options.trackRequired !== undefined
-          ? { ...field, required: options.trackRequired } : field), ...(options.extraFormFields || [])] };
+          ? { ...field, required: options.trackRequired }
+          : field.name === 'sourceofbusinessdesc' && options.sourceRequired !== undefined
+            ? { ...field, required: options.sourceRequired } : field), ...(options.extraFormFields || [])] };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
         return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501',
@@ -1256,4 +1258,18 @@ test('staff create holds confirmation when fresh native no-party readback disagr
   assert.equal(checked.agency, null);
   assert.equal(checked.organization, null);
   assert.equal(checked.arAccount, null);
+});
+
+test('required sourceofbusinessdesc rejects omitted sourceOfBusiness in prepare and commit', async () => {
+  const { sourceOfBusiness: _sourceOfBusiness, ...withoutSource } = input;
+  const prep = harness({ sourceRequired: true });
+  const prepared = await createReservation({ ...withoutSource, mode: 'prepare' }, prep.options);
+  assert.equal(prepared.outcome, 'needs_input');
+  assert.ok(prepared.missing.includes('sourceOfBusiness'));
+  assert.equal(prepared.requestBinding, undefined);
+  const save = harness({ sourceRequired: true });
+  const committed = await createReservation(withoutSource, save.options);
+  assert.equal(committed.outcome, 'needs_input');
+  assert.equal(committed.issue, 'source_of_business_required');
+  assert.equal(save.calls.some((call) => call.tool === 'saveNewLabtestStay'), false);
 });

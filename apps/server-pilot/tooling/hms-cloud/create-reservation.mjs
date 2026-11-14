@@ -693,6 +693,12 @@ export async function createReservation(input, options = {}) {
         if (commit) stop('needs_input', 'market_segment_required', { field: 'marketSegment' });
         missing.push('marketSegment');
       }
+      const sourceFields = form.fields.filter(field => field.name === 'sourceofbusinessdesc');
+      if (sourceFields.length > 1) stop('uncertain', 'draft_field_not_unique', { field: 'sourceOfBusiness' });
+      if (!text(input.sourceOfBusiness) && sourceFields.length === 1 && sourceFields[0].required === true) {
+        if (commit) stop('needs_input', 'source_of_business_required', { field: 'sourceOfBusiness' });
+        if (!missing.includes('sourceOfBusiness')) missing.push('sourceOfBusiness');
+      }
       for (const [key, name] of [['arrival', 'arrivaldate'], ['departure', 'departuredate'], ['adults', 'adults'],
         ['roomType', 'roomtype'], ['roomTypeForCharge', 'roomtypecharge'], ['ratePlan', 'rateplan'], ['sourceOfBusiness', 'sourceofbusinessdesc'], ['note', 'reservationnote']]) {
         if (Object.hasOwn(output.applied, key)) {
