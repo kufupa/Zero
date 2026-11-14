@@ -199,6 +199,29 @@ function hostIdentity() {
 
 function writerKey(identity) { return JSON.stringify(identity); }
 
+async function waitForOwnedWriterGroupGone(identity) {
+  const deadline = performance.now() + 5000;
+  for (;;) {
+    const host = hostIdentity(), node = processIdentity(process.pid);
+    if (identity.host !== host.host || identity.bootId !== host.bootId || identity.pidNamespace !== host.pidNamespace ||
+        identity.node.pid !== node.pid || identity.node.started !== node.started) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+    try {
+      const browser = processIdentity(identity.browser.pid, true);
+      if (browser.started !== identity.browser.started) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+    } catch (error) {
+      if (!['ENOENT', 'ESRCH'].includes(error?.code)) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+    }
+    try { process.kill(-identity.browser.pid, 0); }
+    catch (error) {
+      if (error?.code === 'ESRCH') return true;
+      throw new Error('HMS_SESSION_CLEANUP_FAILED');
+    }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return false;
+    await delay(Math.min(50, remaining));
+  }
+}
+
 export function cloudWriterIdentity(page) {
   const identity = ownedWriterPages.get(page);
   return identity && cloudWriterCurrent(identity) ? structuredClone(identity) : null;
@@ -685,6 +708,7 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
   let secret;
   let abortClose;
   let cleanupError;
+  let resourceCloseError;
   let result;
   let failure;
   let failed = false;
@@ -696,23 +720,16 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
     const currentContext = context; context = undefined;
     const currentBrowser = browser; browser = undefined;
     for (const resource of [currentContext, currentBrowser]) {
-      if (resource) try { await closeResource(resource); } catch { cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED'); }
+      if (resource) try { await closeResource(resource); } catch { resourceCloseError ??= new Error('HMS_SESSION_CLEANUP_FAILED'); }
     }
     if (browserServer) {
       const server = browserServer; browserServer = undefined;
       try { await closeResource(server); }
       catch {
-        cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
+        resourceCloseError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
         if (writerIdentity && cloudWriterCurrent(writerIdentity)) {
           try { process.kill(-writerIdentity.browser.pid, 'SIGKILL'); await delay(250); }
           catch { /* Unconfirmed termination preserves the target hold and lease. */ }
-        }
-      }
-      if (writerIdentity) {
-        try { process.kill(-writerIdentity.browser.pid, 0); cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED'); }
-        catch (error) {
-          if (error?.code === 'ESRCH') writerGroupGone = true;
-          else if (error?.code !== 'ESRCH') cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
         }
       }
     }
@@ -821,6 +838,13 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
         })]);
       } catch (error) { callbacksDrained = false; cleanupError ??= error; }
     }
+    if (writerIdentity) {
+      try {
+        writerGroupGone = await waitForOwnedWriterGroupGone(writerIdentity);
+        if (!writerGroupGone) cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
+      } catch (error) { cleanupError ??= error; }
+    }
+    if (resourceCloseError && !(writerIdentity && writerGroupGone && callbacksDrained)) cleanupError ??= resourceCloseError;
     if (writerIdentity && writerGroupGone && callbacksDrained) {
       closedWriters.add(writerKey(writerIdentity));
       if (closedWriters.size > 4096) closedWriters.delete(closedWriters.values().next().value);

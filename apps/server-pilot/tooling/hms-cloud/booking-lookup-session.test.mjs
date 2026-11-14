@@ -87,6 +87,148 @@ test('target browser quarantine clears under the credential lease only after its
   assert.equal(stdout, 'quarantine recovery verified');
 });
 
+test('owned writer cleanup separates close API errors from physical exit and lease safety', async () => {
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    import * as os from 'node:os';
+    import * as fs from 'node:fs';
+    import * as timers from 'node:timers/promises';
+    import { join } from 'node:path';
+    import { spawn } from 'node:child_process';
+    import { once } from 'node:events';
+    const mode = process.argv[1], home = fs.mkdtempSync(join(os.tmpdir(), 'zero-writer-cleanup-'));
+    const children = []; let held = false, round = 0, tamperIdentity = false, releaseCallback;
+    mock.module('node:os', { namedExports: { ...os, homedir: () => home } });
+    mock.module('node:timers/promises', { namedExports: { ...timers,
+      setTimeout: (ms, ...args) => timers.setTimeout(ms === 30000 ? 100 : ms, ...args),
+    } });
+    mock.module('node:fs', { namedExports: { ...fs,
+      readFileSync: (path, ...args) => {
+        const value = fs.readFileSync(path, ...args), child = children.at(-1)?.child;
+        if (mode === 'unknown-owner' && tamperIdentity && path === '/proc/' + child?.pid + '/stat') {
+          const split = value.lastIndexOf(')'), fields = value.slice(split + 1).trim().split(/\s+/);
+          fields[19] = String(BigInt(fields[19]) + 1n);
+          return value.slice(0, split + 1) + ' ' + fields.join(' ');
+        }
+        return value;
+      },
+      unlinkSync: path => {
+        if (mode === 'hold-release' && path.includes('credential-browser-hold-')) throw new Error('TEST_HOLD_RELEASE_FAILED');
+        return fs.unlinkSync(path);
+      },
+    } });
+    mock.module('postgres', { defaultExport: () => ({
+      reserve: async () => ({ unsafe: async sql => {
+        if (sql.includes('pg_try_advisory_lock')) { held = true; return [{ acquired: true }]; }
+        if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
+        return [{ pid: 42 }];
+      } }), end: async () => { held = false; },
+    }) });
+    const key = Buffer.alloc(32, 83);
+    mock.module('@aws-sdk/client-secrets-manager', { namedExports: {
+      GetSecretValueCommand: class {},
+      SecretsManagerClient: class {
+        async send() { return { SecretString: key.toString('base64'), VersionId: 'key-v1', VersionStages: ['AWSCURRENT'] }; }
+        destroy() {}
+      },
+    } });
+    const fixture = () => {
+      const context = { route: async () => {}, routeWebSocket: async (pattern, handler) => {
+        assert.equal(pattern,'**/*'); let closed = false;
+        handler({ close: () => { closed = true; } }); assert.equal(closed,true);
+      }, close: async () => { throw new Error('TEST_CONTEXT_CLOSE_FAILED'); } };
+      const page = { context: () => context, on: () => {}, goto: async () => {}, evaluate: async () => true,
+        waitForFunction: async (_fn, input) => ({ jsonValue: async () => ({ propertyCode: input.expectedProperty,
+          tenantId: input.expectedTenant, origin: input.expectedOrigin }), dispose: async () => {} }) };
+      context.newPage = async () => page;
+      return { newContext: async () => context, close: async () => { throw new Error('TEST_BROWSER_CLOSE_FAILED'); } };
+    };
+    const childSource = "process.on('message',m=>{if(m==='close')setTimeout(()=>process.exit(0),150)});process.send('ready');setInterval(()=>{},1000)";
+    mock.module('playwright', { namedExports: { chromium: {
+      launch: async () => fixture(), connect: async () => fixture(),
+      launchServer: async () => {
+        round += 1;
+        const child = spawn(process.execPath, ['-e', childSource], { detached: true, stdio: ['ignore','ignore','ignore','ipc'] });
+        const ready = once(child,'message'), exited = once(child,'exit');
+        children.push({ child, exited }); await ready;
+        return { process: () => child, wsEndpoint: () => 'fixture', close: async () => {
+          if (mode !== 'live-group') child.send('close');
+        } };
+      },
+    } } });
+    const cloud = await import('./tooling/hms-cloud/cloud-session.mjs');
+    const { getPropertyRegistration } = await import('./tooling/hms-cloud/property-registry.mjs');
+    const { credentialVersionHmacSha256 } = await import('./tooling/hms-cloud/credential-version.mjs');
+    const property = getPropertyRegistration('HRCEN');
+    process.env.DATABASE_URL = 'postgres://mock.invalid/never-connect';
+    process.env.HMS_EVIDENCE_HMAC_SECRET_ARN = 'evidence-fixture'; process.env.HMS_EVIDENCE_HMAC_KEY_VERSION = 'key-v1';
+    process.env.HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRCEN = credentialVersionHmacSha256({
+      evidenceKey: key, evidenceKeyVersion: 'key-v1', hmsSecretArn: property.credentialSecretRef, hmsSecretVersionId: 'credential-v1',
+    });
+    const secret = { loginUrl: property.origin + '/web/base/logindisp?tenant=' + property.expectedTenant,
+      username: property.username, password: 'synthetic-only', expectedTenant: property.expectedTenant,
+      expectedPropertyCode: 'HRCEN', expectedPropertyName: property.expectedPropertyName,
+      credentialMode: 'view_only', mailboxTransportId: 'transport-centurion' };
+    const alias = JSON.stringify(['HRCEN','create','cleanup','test','2027-12-01']);
+    const lease = await cloud.acquireCloudCredentialLease('HRCEN');
+    const options = { propertyCode:'HRCEN', transportId:'transport-centurion', credentialLease:lease, cloudTargetKey:alias,
+      loadSecret:async () => ({ secret, versionId:'credential-v1', versionStages:['AWSCURRENT'] }) };
+    const credentialHold = join(home,'.nava-hms-runtime','credential-browser-hold-' + cloud.cloudCredentialLeaseKey('HRCEN'));
+    let identity;
+    const operation = async page => {
+      identity = cloud.cloudWriterIdentity(page);
+      if (mode !== 'reader-close') assert.equal(cloud.cloudWriterCurrent(identity),true);
+      if (mode === 'operation-refusal' && round === 1) throw new Error('TEST_OPERATION_REFUSED');
+      if (mode === 'unknown-owner') tamperIdentity = true;
+      if (mode === 'undrained') {
+        setTimeout(() => controller.abort(new Error('TEST_ABORT')),10);
+        await new Promise(resolve => { releaseCallback = resolve; });
+      }
+      return { prepared:true };
+    };
+    const controller = new AbortController();
+    try {
+      const run = mode === 'reader-close' ? cloud.withCloudReadSession : cloud.withCloudWriterSession;
+      const pending = run(operation,{ ...options,...(mode === 'undrained' ? { signal:controller.signal } : {}) });
+      if (mode === 'delayed-exit' || mode === 'operation-refusal') {
+        if (mode === 'operation-refusal') await assert.rejects(pending,/TEST_OPERATION_REFUSED/);
+        else assert.deepEqual(await pending,{ prepared:true });
+        assert.equal(cloud.cloudWriterQuiesced(identity),true);
+        assert.equal(fs.existsSync(credentialHold),false);
+        assert.equal(fs.existsSync(cloud.cloudHoldPath('HRCEN',alias)),false);
+        assert.equal(held,true);
+        assert.deepEqual(await cloud.withCloudWriterSession(async () => ({ borrowedAgain:true }),options),{ borrowedAgain:true });
+        await lease.release(); assert.equal(held,false);
+      } else {
+        const expected = mode === 'undrained' ? /SAVE_CALLBACK_DRAIN_UNCONFIRMED/ : mode === 'hold-release' ? /TEST_HOLD_RELEASE_FAILED/ :
+          mode === 'unknown-owner' ? /HMS_WRITER_IDENTITY_UNAVAILABLE/ : /HMS_SESSION_CLEANUP_FAILED/;
+        await assert.rejects(pending,expected);
+        if (mode !== 'reader-close') {
+          assert.equal(fs.existsSync(credentialHold),true);
+          assert.equal(fs.existsSync(cloud.cloudHoldPath('HRCEN',alias)),true);
+        }
+        await assert.rejects(lease.release(),/HMS_CREDENTIAL_LEASE_IN_USE/); assert.equal(held,true);
+        if (mode === 'live-group') assert.equal(cloud.cloudWriterCurrent(identity),true);
+      }
+      process.stdout.write(mode);
+    } finally {
+      releaseCallback?.();
+      for (const { child,exited } of children) {
+        if (child.exitCode === null && child.signalCode === null) process.kill(-child.pid,'SIGKILL');
+        await exited;
+      }
+      fs.rmSync(home,{ recursive:true,force:true });
+    }
+  `;
+  for (const mode of ['delayed-exit','operation-refusal','live-group','undrained','hold-release','unknown-owner','reader-close']) {
+    const { stdout } = await promisify(execFile)(process.execPath,
+      ['--experimental-test-module-mocks','--input-type=module','-e',script,mode],
+      { cwd:new URL('../../',import.meta.url), timeout:15000, maxBuffer:1024*1024 });
+    assert.equal(stdout,mode);
+  }
+});
+
 test('fresh credential versions and evidence key metadata are checked under the lease before browser launch', async () => {
   const script = String.raw`
     import assert from 'node:assert/strict';
