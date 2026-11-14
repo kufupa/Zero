@@ -996,7 +996,7 @@ export function createLiveHmsCandidateSessionFactory(
     const origin = registration.origin;
     const authIdentity = { propertyCode: registration.propertyCode, tenantId: registration.expectedTenant,
       landingPropertyCode: registration.landingPropertyCode, origin };
-    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim();
+    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || '/etc/nava/hms-read-role-proofs/v2';
     const { statSync } = await import('node:fs');
     const { join } = await import('node:path');
     const proofExists = (path: string) => {
@@ -1006,7 +1006,6 @@ export function createLiveHmsCandidateSessionFactory(
       }
     };
     const roleProofPathFor = (toolId: string) => {
-      if (!proofRoot) return config.roleProofPath;
       const partitioned = join(proofRoot, registration.propertyCode, `${toolId}.v2.json`);
       if (proofExists(partitioned) || registration.propertyCode !== 'HRCEN') return partitioned;
       const legacy = join(proofRoot, 'role-proofs', `${toolId}.v2.json`);

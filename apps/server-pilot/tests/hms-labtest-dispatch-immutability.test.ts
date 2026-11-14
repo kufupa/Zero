@@ -6,6 +6,8 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch as claimWithEpo
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { installLabtestSaveRouteChain } from '../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 import { canonicalJson } from '../src/ai/draft-approval.js';
+import { cloudAmendDispatchCallbacks } from '../src/ai/pane-cloud-amend-dispatch.js';
+import { formDigest, hmsStateDigest } from '../src/ai/hms-approval.js';
 
 const binding = digestCloudCreateRequest({ propertyCode: 'HRCEN',
   guest: { nativeId: '12345', firstName: 'Proof', lastName: 'Labtest' },
@@ -429,4 +431,35 @@ describe('shared Labtest dispatch intent', () => {
     await expect(claimWithEpoch(fake.db, { ...full, recovery: { ...full.recovery, nativeStayId: '43' } }, async () => {},
       await captureHmsLabtestDispatchEpoch(fake.db, full.target))).rejects.toMatchObject({ reason: 'invalid' });
   });
+
+  it('resolves the same tenant-bound amendment intent that was authorized', async () => {
+    const fake = historyDb();
+    const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', firstName: 'Proof', lastName: 'Labtest',
+      status: 'Reserved', confirmation: '123456-1', guestId: '12345', reservationStayId: '42',
+      reservationId: '43', recordId: '44', roomType: 'STQN', ratePlan: 'BAR', arrival: '2027-03-01',
+      departure: '2027-03-03', adults: 1, children: 0, childAges: [] };
+    const fields = { adults: 2, ratePlan: 'BAR', retainRates: 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' };
+    const source = { selected: { threadId: 'thread', messageId: 'mail', sourceHash: 'a'.repeat(64), extractionId: randomUUID() },
+      digest: 'b'.repeat(64), revision: 0, revisionHead: 0, revisionSeq: 0 };
+    const cloudAmend = { binding: source, preimage: { native }, nativeDigest: 'c'.repeat(64),
+      approvedPrices: { version: 2, currency: 'ZAR', totalCents: '10000', averageCents: '5000', options: [] },
+      preserved: { cmsRecipient: '', bookingAgency: null, organization: null } };
+    const form = { action: 'amend', confirmation: native.confirmation, arrival: native.arrival, fields, cloudAmend,
+      previewDigest: hmsStateDigest({ ...cloudAmend, changes: fields }) };
+    const callbacks = cloudAmendDispatchCallbacks({ db: fake.db, fence: { runId: randomUUID() } as never,
+      transportId: 'transport-centurion', workItemId: randomUUID(),
+      consumed: { form, grantId: randomUUID(), hmsBeforeDigest: 'd'.repeat(64),
+        authority: { actorUserId: 'staff' } } as never,
+      expectedEpoch: await captureHmsLabtestDispatchEpoch(fake.db, { propertyCode: 'HRCEN', kind: 'saved',
+        confirmation: native.confirmation, nativeStayId: native.reservationStayId }) }, {
+      lockSource: async () => ({} as never), lockApproval: async () => {}, checkEvidence: async () => {},
+    });
+    await callbacks.authorizeFirst({ operationDigest: formDigest(form), phase: 'amend.save',
+      requestDigest: 'e'.repeat(64), beforeEvidence: { eventId: randomUUID(), sha256: 'f'.repeat(64) } });
+    const intent = fake.rows[0].value;
+    expect(intent.tenantId).toBe('THECENTURION_PRD');
+    expect(() => callbacks.assertResolutionIntent(intent)).not.toThrow();
+    expect(() => callbacks.assertResolutionIntent({ ...intent, tenantId: 'DAVINCI_PRD' })).toThrow('CLOUD_AMEND_INTENT_CHANGED');
+  });
+
 });

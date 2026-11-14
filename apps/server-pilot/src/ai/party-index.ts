@@ -92,18 +92,19 @@ export async function writePrivateFile(path: string, text: string): Promise<void
   await rename(temp, path);
 }
 
-const cache = new Map<string, PartyIndexFile>();
+const cache = new Map<string, { mtimeMs: number; size: number; index: PartyIndexFile }>();
 
 /** Legacy unlabelled files are accepted only for explicitly scoped HRCEN reads. */
 export async function loadPartyIndex(path: string, propertyCode: PartyIndexProperty = 'HRCEN'): Promise<PartyIndexFile | null> {
   const property = getPropertyRegistration(propertyCode);
   if (!property) return null;
   const absolutePath = resolve(path);
+  const key = JSON.stringify([property.expectedTenant, propertyCode, absolutePath]);
   let info: { mtimeMs: number; size: number };
-  try { info = await stat(absolutePath); } catch { return null; }
-  const key = JSON.stringify([property.expectedTenant, propertyCode, absolutePath, info.mtimeMs, info.size]);
+  try { info = await stat(absolutePath); } catch { cache.delete(key); return null; }
   const cached = cache.get(key);
-  if (cached) return cached;
+  if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.index;
+  cache.delete(key);
   let raw: unknown;
   try { raw = JSON.parse(await readFile(absolutePath, 'utf8')); } catch { return null; }
   const legacy = legacyPartyIndexFileSchema.safeParse(raw);
@@ -114,7 +115,7 @@ export async function loadPartyIndex(path: string, propertyCode: PartyIndexPrope
   if (!parsed.success || (parsed.data.propertyCode ?? 'HRCEN') !== propertyCode ||
       (propertyCode !== 'HRCEN' && (!parsed.data.propertyCode || !parsed.data.tenantId)) ||
       (parsed.data.tenantId !== undefined && parsed.data.tenantId !== property.expectedTenant)) return null;
-  cache.set(key, parsed.data);
+  cache.set(key, { mtimeMs: info.mtimeMs, size: info.size, index: parsed.data });
   return parsed.data;
 }
 

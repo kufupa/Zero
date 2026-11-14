@@ -5782,7 +5782,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         HMS_DAVINCI_AMEND: 'off', HMS_DAVINCI_CANCEL: 'off', HMS_DAVINCI_ATTACH: 'off',
         HMS_DAVINCI_ADDONS: 'off', HMS_DAVINCI_GUEST_PROFILE_CREATE: 'off',
         HMS_NATIVE_CATALOG_PATH_HRDAVS: '/opt/nava/catalog.json', PARTY_INDEX_PATH_HRDAVS: '/opt/nava/party.json',
-        HMS_READ_ROLE_PROOF_V2_PATH: '/opt/nava/proof.json', HMS_RELEASE_ROOT: '/opt/nava/releases',
+        HMS_READ_ROLE_PROOF_V2_PATH: '/opt/nava/proof.json',
+        HMS_READ_ROLE_PROOF_V2_ROOT: '/etc/nava/hms-read-role-proofs/v2', HMS_RELEASE_ROOT: '/opt/nava/releases',
       };
       const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
       const run = (values: Record<string, string>) => {
@@ -5800,6 +5801,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           PANE_CLOUD_CREATE_DISPATCH: 'enabled', HMS_EXPECTED_TRANSPORT_ID: 'other',
           HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV,HRDAV', HMS_DAVINCI_CREATE: 'always',
           HMS_DAVINCI_ATTACH: 'true', HMS_NATIVE_CATALOG_PATH_HRDAVS: '/opt/nava/../secret',
+          HMS_READ_ROLE_PROOF_V2_ROOT: '/etc/nava/../proofs',
         })) {
           writeFileSync(result, 'unchanged\n');
           expect(run({ ...controls, [key]: value }).status, key).toBe(2);
@@ -5814,6 +5816,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const { fileURLToPath } = await import('node:url');
       const { dirname, join } = await import('node:path');
       const validator = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'validate-hms-canary.mjs');
+      const { effectiveWorkflowPolicy } = await import('../tooling/hms-cloud/hms-workflow-policy.mjs');
       const temp = mkdtempSync(join(tmpdir(), 'nava-release-canary-'));
       const next = join(temp, 'next');
       const prev = join(temp, 'prev');
@@ -5836,6 +5839,31 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         ['PANE_WRITE_AMEND_UNPAID', 'on', 'amend'], ['PANE_WRITE_CANCEL_UNPAID', 'on', 'cancel'],
       ] as const;
       try {
+        for (const workflow of ['create', 'amend', 'cancel', 'attach', 'addons', 'guest_profile_create'] as const) {
+          expect(effectiveWorkflowPolicy({}, 'HRCEN', workflow).capability, workflow).toBe('prepare-only');
+          expect(effectiveWorkflowPolicy({ HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV', HMS_DAVINCI_READS: 'on',
+            HMS_DAVINCI_CREATE: 'on' }, 'HRDAV', workflow).capability, workflow).toBe('unavailable');
+        }
+        const createOn = { PANE_WRITE_CREATE: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on' };
+        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'on', capability: 'staff-enabled' });
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'lab', PANE_CLOUD_CREATE_DISPATCH: 'on' },
+          'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'lab', capability: 'lab' });
+        expect(effectiveWorkflowPolicy({ RESERVATIONIST_PANE_SAVE: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on' },
+          'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'lab', capability: 'lab' });
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'on' }, 'HRCEN', 'guest_profile_create'))
+          .toMatchObject({ mode: 'off', capability: 'prepare-only' });
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'on' }, 'HRCEN', 'create').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on' }, 'HRCEN', 'amend').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on', PANE_HMS_LAB_AMEND_WORKER: 'on' },
+          'HRCEN', 'amend').capability).toBe('staff-enabled');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on', PANE_HMS_LAB_AMEND_WORKER: 'on', PANE_STAY_LOOKUP: 'off' },
+          'HRCEN', 'amend').capability).toBe('unavailable');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_ATTACH: 'on' }, 'HRCEN', 'attach').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_ATTACH: 'on', PANE_HMS_LAB_ATTACH_WORKER: 'on' },
+          'HRCEN', 'attach').capability).toBe('staff-enabled');
+        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'addons').capability).toBe('staff-enabled');
+        expect(effectiveWorkflowPolicy({ ...createOn, HMS_WRITER_CREDENTIAL_IDENTITY_HRCEN: 'wrong' },
+          'HRCEN', 'guest_profile_create').capability).toBe('prepare-only');
         for (const [key, value, workflow] of flags) {
           expect(run(key, value, '').status, key).toBe(2);
           expect(run(key, value, `CANARY PASS ${workflow} HRCEN ${sha}\n`).status, key).toBe(0);

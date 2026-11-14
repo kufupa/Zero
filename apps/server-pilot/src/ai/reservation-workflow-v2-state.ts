@@ -44,6 +44,52 @@ function withoutPropertyPreparation(state: State): State {
   for (const key of PROPERTY_SWITCH_PREPARATION_KEYS) delete next[key];
   return next;
 }
+
+const PROPERTY_NATIVE_ARRAY_FIELDS = new Set(['candidateRefs', 'priceObservationRefs', 'previewObservationRefs',
+  'currentObservationRefs', 'observationRefs', 'lookupResultRefs', 'roomCodes']);
+const PROPERTY_NATIVE_VALUE_FIELDS = new Set(['nativeSelectionRef', 'suggestedRef', 'itemCandidateRef',
+  'previewObservationRef', 'savedRowCandidateRef', 'roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType',
+  'sourceOfBusiness', 'track', 'code', 'titleCode', 'phoneTypeCode', 'emailTypeCode', 'frequency', 'pricingControl', 'folio']);
+const PROPERTY_NATIVE_CHANGE_FIELDS = new Set(['roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'track']);
+
+/** Keep source and staff facts while requiring fresh property-specific choices and evidence. */
+function withoutPropertyNativeSelections(value: unknown, observations: Set<string>): unknown {
+  if (Array.isArray(value)) return value.map((entry) => withoutPropertyNativeSelections(entry, observations));
+  if (!value || typeof value !== 'object') return value;
+  const row = Object.fromEntries(Object.entries(value));
+  return Object.fromEntries(Object.entries(row).map(([key, child]) => {
+    if (PROPERTY_NATIVE_ARRAY_FIELDS.has(key)) return [key, []];
+    if (PROPERTY_NATIVE_VALUE_FIELDS.has(key)) return [key, null];
+    if (key === 'value' && row.op === 'set' && typeof row.field === 'string' && PROPERTY_NATIVE_CHANGE_FIELDS.has(row.field)) return [key, ''];
+    if (key === 'evidenceRefs' && Array.isArray(child)) return [key, child.filter((ref) => typeof ref !== 'string' || !observations.has(ref))];
+    if (key === 'annotations' && Array.isArray(child)) return [key, withoutPropertyNativeSelections(child.filter((entry) =>
+      !entry || typeof entry !== 'object' || !('basis' in entry) || !['native_read', 'policy'].includes(String(entry.basis))), observations)];
+    return [key, withoutPropertyNativeSelections(child, observations)];
+  }));
+}
+
+function invalidatePropertyDraft(prior: ReservationWorkflowV2Draft, input: {
+  generationId: string; revision: number; at: string; propertyCode?: string; source?: ReservationWorkflowV2Source;
+}): ReservationWorkflowV2Draft {
+  const observations = new Set(prior.observations.map((row) => row.ref));
+  const fieldOverrides = Object.fromEntries(Object.entries(prior.fieldOverrides).map(([path, override]) => {
+    const parts = pathParts(path);
+    const change = path.match(/^(.*\/(?:sharedChanges|changes)\/[^/]+)\/value(?:\/|$)/);
+    const field = change ? effectiveDraftPath(prior, `${change[1]}/field`) : null;
+    const native = parts?.slice(4).some((part) => PROPERTY_NATIVE_ARRAY_FIELDS.has(part) || PROPERTY_NATIVE_VALUE_FIELDS.has(part)) ||
+      typeof field === 'string' && PROPERTY_NATIVE_CHANGE_FIELDS.has(field);
+    return [path, native ? { state: 'unknown', updatedAt: input.at } :
+      { ...override, ...(Object.hasOwn(override, 'value') ? { value: withoutPropertyNativeSelections(override.value, observations) } : {}) }];
+  }));
+  return reservationWorkflowV2DraftSchema.parse({ ...prior, ...(input.propertyCode ? { propertyCode: input.propertyCode } : {}),
+    ...(input.source ? { source: input.source } : {}), generationId: input.generationId, revision: input.revision,
+    status: 'partial', proposal: withoutPropertyNativeSelections(prior.proposal, observations), observations: [],
+    fieldReviewRequirements: {}, staffReviews: {}, fieldOverrides,
+    operationResults: prior.operationResults.filter((result) => result.status !== 'prepared'),
+    prefill: { status: 'superseded', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: input.at,
+      ...(prior.prefill?.evidenceHash ? { evidenceHash: prior.prefill.evidenceHash } : {}) },
+  });
+}
 /** Only the internal arrival worker creates this buffer; nothing reaches the draft until its lease fence commits. */
 export type ReservationNativeCheckBatch = {
   jobFence: ReservationPrefillJobFence; expectedRevision: number; expectedSeq: number; generationId: string;
@@ -306,29 +352,18 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       }
       const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
       const revision = Math.max(itemRow.revision, itemRow.revisionHead) + 1;
-      const draft = reservationWorkflowV2DraftSchema.parse({
-        contractVersion: RESERVATION_WORKFLOW_V2_VERSION, schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
-        workItemId: itemRow.id, transportId: ctx.transportId, propertyCode: ctx.propertyCode, source: input.source,
-        generationId: randomUUID(), revision, status: input.seed.status, proposal: input.seed.proposal,
-        observations: [], fieldReviewRequirements: {}, staffReviews: {}, operationResults: [], fieldOverrides: {}, errors: [],
-        prefill: { status: 'idle', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: null, evidenceHash },
-      });
       const switchedAt = new Date();
+      const draft = invalidatePropertyDraft(existing, { propertyCode: ctx.propertyCode,
+        source: { ...existing.source, propertyId: input.source.propertyId }, generationId: randomUUID(), revision,
+        at: switchedAt.toISOString() });
+      const sourceChanged = draft.source.sourceHash !== input.source.sourceHash || draft.prefill?.evidenceHash !== evidenceHash;
       const selectedUpdatedAt = new Date(Math.max(switchedAt.getTime(), ...sourceItems.map((row) => row.updatedAt.getTime())) + 1);
       for (const row of sourceItems) {
         if (row.id === itemRow.id) continue;
         const prior = reservationWorkflowV2DraftOf(row.state as State);
         const nextRevision = Math.max(row.revision, row.revisionHead) + 1;
         const generationId = randomUUID();
-        const fieldOverrides = prior && Object.fromEntries(Object.entries(prior.fieldOverrides).map(([path, override]) => [
-          path, /\/(?:nativeSelectionRef|suggestedRef|itemCandidateRef|previewObservationRefs|priceObservationRefs|currentObservationRefs|observationRefs|lookupResultRefs)(?:\/|$)/.test(path)
-            ? { state: 'unknown', updatedAt: switchedAt.toISOString() } : override,
-        ]));
-        const invalidated = prior && reservationWorkflowV2DraftSchema.parse({ ...prior, generationId, revision: nextRevision,
-          status: 'partial', observations: [], fieldReviewRequirements: {}, staffReviews: {}, fieldOverrides,
-          operationResults: prior.operationResults.filter((result) => result.status !== 'prepared'),
-          prefill: { status: 'superseded', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: switchedAt.toISOString() },
-        });
+        const invalidated = prior && invalidatePropertyDraft(prior, { generationId, revision: nextRevision, at: switchedAt.toISOString() });
         const otherState = { ...withoutPropertyPreparation(row.state as State), propertyCode: ctx.propertyCode, generationId,
           [RESERVATION_V2_PROPERTY_HISTORY_FLOOR_KEY]: nextRevision,
           ...(invalidated ? { [RESERVATION_WORKFLOW_V2_STATE_KEY]: invalidated } : {}) };
@@ -352,7 +387,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
         revisionSeq: itemRow.revisionSeq + 1, updatedAt: selectedUpdatedAt }).where(eq(workItem.id, itemRow.id));
       return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead,
-        seq: itemRow.revisionSeq + 1 };
+        seq: itemRow.revisionSeq + 1, ...(sourceChanged ? { sourceChanged: true } : {}) };
     }
     if (existing) {
       const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);

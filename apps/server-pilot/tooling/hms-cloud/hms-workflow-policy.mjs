@@ -17,7 +17,8 @@ export const RUNTIME_PATH_KEYS = Object.freeze([
   'HMS_MEMORY_PMS_PATH', 'HMS_MEMORY_OUTBOUND_PATH', 'HMS_MEMORY_DATA_DIR', 'HMS_MEMORY_OBSERVATIONS_PATH',
   'HMS_NATIVE_CATALOG_PATH', 'HMS_NATIVE_CATALOG_PATH_HRCEN', 'HMS_NATIVE_CATALOG_PATH_HRDAV', 'HMS_NATIVE_CATALOG_PATH_HRDAVS',
   'PARTY_INDEX_PATH', 'PARTY_INDEX_PATH_HRCEN', 'PARTY_INDEX_PATH_HRDAV', 'PARTY_INDEX_PATH_HRDAVS',
-  'HMS_READ_ROLE_PROOF_PATH', 'HMS_READ_ROLE_PROOF_V2_PATH', 'HMS_ACTIVE_REGISTRY_PATH', 'HMS_RELEASE_ROOT',
+  'HMS_READ_ROLE_PROOF_PATH', 'HMS_READ_ROLE_PROOF_V2_PATH', 'HMS_READ_ROLE_PROOF_V2_ROOT',
+  'HMS_ACTIVE_REGISTRY_PATH', 'HMS_RELEASE_ROOT',
   'HMS_BROWSER_ARTIFACT_ROOT', 'HMS_HEALTH_STATUS_PATH', 'HMS_CANARY_PROOF_PATH', 'HMS_SHADOW_PROOF_PATH',
   'NAVA_WORKFLOW_REPRO_DIR', 'NAVA_CANARY_PASS_FILE',
 ]);
@@ -74,8 +75,27 @@ function centurionMode(env, workflow) {
     case 'cancel': return maxMode(mode(env.PANE_WRITE_CANCEL_UNPAID), mode(env.PANE_WRITE_CANCEL_PAID), legacy);
     case 'attach': return env.PANE_WRITE_ATTACH !== undefined ? mode(env.PANE_WRITE_ATTACH) : env.RESERVATIONIST_PANE_SAVE === 'lab' ? 'lab' : 'off';
     case 'addons': return mode(env.PANE_WRITE_ADDONS);
+    case 'guest_profile_create': return centurionCreateDispatchMode(env);
     default: return 'off';
   }
+}
+
+function centurionCreateDispatchMode(env) {
+  if (env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return 'off';
+  const createMode = centurionMode(env, 'create');
+  if (createMode === 'on' && env.PANE_WRITE_CREATE !== 'on') return 'lab';
+  return createMode;
+}
+
+// These workflows have an existing read-only lookup or unsaved check in HRCEN.
+function centurionWriteCapability(env, workflow, configuredMode) {
+  if (workflow === 'amend' && env.PANE_STAY_LOOKUP === 'off') return 'unavailable';
+  let admittedMode = configuredMode;
+  if (workflow === 'create' || workflow === 'guest_profile_create') admittedMode = centurionCreateDispatchMode(env);
+  else if (workflow === 'amend') admittedMode = env.PANE_HMS_LAB_AMEND_WORKER === 'on' ? mode(env.PANE_WRITE_AMEND) : 'off';
+  else if (workflow === 'attach') admittedMode = env.PANE_HMS_LAB_ATTACH_WORKER === 'on' ? mode(env.PANE_WRITE_ATTACH) : 'off';
+  else if (workflow === 'addons') admittedMode = maxMode(configuredMode, centurionCreateDispatchMode(env));
+  return admittedMode === 'on' ? 'staff-enabled' : admittedMode === 'lab' ? 'lab' : 'prepare-only';
 }
 
 /** Modes describe configured scope; capabilities never make an unproven DaVinci writer available. */
@@ -91,11 +111,12 @@ export function effectiveWorkflowPolicy(env, property, workflow) {
   }
   let capability = 'unavailable';
   if (workflow === 'reads' || workflow === 'quote') capability = configuredMode === 'on' ? 'staff-enabled' : 'unavailable';
-  else if (property === 'HRCEN' && configuredMode === 'on') capability = 'staff-enabled';
-  else if (property === 'HRCEN' && configuredMode === 'lab') capability = 'lab';
+  else if (property === 'HRCEN') capability = centurionWriteCapability(env, workflow, configuredMode);
   const registration = getPropertyRegistration(property);
   const credentialIdentity = (HMS_WRITE_WORKFLOWS.includes(workflow) && env[WRITER_CREDENTIAL_IDENTITY_KEYS[property]]) || registration.credentialSecretRef;
-  if (credentialIdentity !== registration.credentialSecretRef) capability = 'unavailable';
+  if (credentialIdentity !== registration.credentialSecretRef && capability !== 'unavailable') {
+    capability = property === 'HRCEN' ? 'prepare-only' : 'unavailable';
+  }
   return {
     property, workflow, mode: configuredMode, readEnabled, capability,
     credentialIdentity,

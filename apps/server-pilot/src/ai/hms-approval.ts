@@ -587,7 +587,14 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
       sql`${workEvent.value}->'scope'->>'propertyCode' = ${scope.propertyCode}`,
       sql`${workEvent.value}->>'revision' = ${String(item.revisionSeq)}`,
     )).orderBy(desc(workEvent.at), desc(workEvent.id)).limit(1).for('share');
-    if (prior) return lockedPreparation(db, { ...input, preparedRef: prior.id });
+    if (prior) {
+      const [issued] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
+        eq(workEvent.workItemId, item.id), eq(workEvent.type, 'approval.granted'),
+        sql`${workEvent.value}->>'preparedRef' = ${prior.id}`)).limit(1);
+      // A safe stopped run may be approved again, but never with its previously granted preparation.
+      // The caller has already checked open/uncertain writes under this same work-item lock.
+      if (!issued) return lockedPreparation(db, { ...input, preparedRef: prior.id });
+    }
   }
   if (input.preparedRef) {
     const prepared = await loadHmsPreparation(db, input.preparedRef, item.id);

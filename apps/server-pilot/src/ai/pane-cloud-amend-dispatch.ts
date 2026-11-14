@@ -8,6 +8,7 @@ import { formDigest, hmsStateDigest, hmsWriteEvidenceKey, lockConsumedCloudAmend
 import { claimHmsLabtestDispatch, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { cloudAmendChangesSchema, cloudAmendFirstPilotScopeSupported, cloudAmendSourceBindingSchema, lockBoundCloudAmendSource } from './pane-cloud-amend.js';
 import type { AiRunFence } from './run-ledger.js';
+import { resolvePropertyScope } from '../hms/property-registry.js';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const native = z.object({
@@ -77,8 +78,9 @@ export function cloudAmendDispatchCallbacks(input: {
   lockApproval?: typeof lockConsumedCloudAmendApproval;
   checkEvidence?: typeof requireBeforeEvidence;
 } = {}) {
+  const scope = resolvePropertyScope({ transportId: input.transportId });
   const parsed = cloudAmendDispatchFormSchema.safeParse(input.consumed.form), authority = input.consumed.authority;
-  if (!parsed.success || !authority || !digest.safeParse(input.expectedEpoch).success ||
+  if (scope.propertyCode !== 'HRCEN' || !parsed.success || !authority || !digest.safeParse(input.expectedEpoch).success ||
       !z.string().uuid().safeParse(input.workItemId).success ||
       !z.string().uuid().safeParse(input.consumed.grantId).success ||
       parsed.data.confirmation !== parsed.data.cloudAmend.preimage.native.confirmation ||
@@ -111,7 +113,7 @@ export function cloudAmendDispatchCallbacks(input: {
       const current = preimage.native;
       const claimInput: Parameters<typeof claimHmsLabtestDispatch>[1] = {
         workItemId: input.workItemId, transportId: input.transportId, actorUserId: authority.actorUserId,
-        grantId: input.consumed.grantId, propertyCode: 'HRCEN', firstName: current.firstName, lastName: current.lastName,
+        grantId: input.consumed.grantId, propertyCode: 'HRCEN', tenantId: scope.tenantId, firstName: current.firstName, lastName: current.lastName,
         target: { propertyCode: 'HRCEN', kind: 'saved', confirmation: current.confirmation, nativeStayId: current.reservationStayId },
         nativeGuestId: preimage.native.guestId, operation: 'amend', sourceDigest: binding.digest,
         approvedDigest, requestDigest: requested.requestDigest,
