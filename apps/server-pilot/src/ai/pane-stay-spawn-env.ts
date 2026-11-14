@@ -1,8 +1,4 @@
 import {
-  readInstalledStaffQuoteConfiguration,
-  type StaffQuoteInstallationConfiguration,
-} from './staff-quote-installation.js';
-import {
   hmsReadTargetForProperty,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
@@ -44,96 +40,26 @@ const PANE_WRITE_ENV_NAMES = [
   'PANE_WRITE_ATTACH',
 ] as const;
 
-/**
- * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, the
- * slot storageState path used to skip a repeat login, the shared save gate, and the per-workflow write
- * switches including attach. Everything else is dropped, so one-off lab flags or database URLs do not reach a live HMS run.
- */
+/** Cloud subprocesses inherit only runtime credentials, lease configuration and workflow controls. */
 export const PANE_CLI_ENV_ALLOWLIST = [
-  'PATH',
-  'HOME',
-  'LANG',
-  'LC_ALL',
-  'TZ',
-  'TMPDIR',
-  'PLAYWRIGHT_BROWSERS_PATH',
-  'RESERVATIONIST_PANE_SAVE',
-  ...PANE_WRITE_ENV_NAMES,
-  'AWS_REGION',
-  'HMS_READ_SECRET_ARN',
-  'HMS_QUOTE_SECRET_PATH',
-  'HMS_STAGEHAND_CDP_URL',
-  'HMS_STAGEHAND_BROWSER_OWNERSHIP',
-  'HMS_SLOT_PROFILE_DIR',
-  'HMS_SLOT_STORAGE_STATE',
-  'HMS_DAVINCI_CREATE',
+  'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'PLAYWRIGHT_BROWSERS_PATH',
+  'HMS_CHROMIUM_EXECUTABLE_PATH', 'DATABASE_URL', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_PROFILE',
+  'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+  'HMS_EVIDENCE_HMAC_SECRET_ARN', 'HMS_EVIDENCE_HMAC_KEY_VERSION',
+  'HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRCEN',
+  'HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAV',
+  'HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAVS',
+  'HMS_DAVINCI_ENABLED_PROPERTIES', 'HMS_DAVINCI_READS', 'HMS_DAVINCI_CREATE', 'HMS_DAVINCI_AMEND',
+  'HMS_DAVINCI_CANCEL', 'HMS_DAVINCI_ATTACH', 'HMS_DAVINCI_ADDONS', 'HMS_DAVINCI_GUEST_PROFILE_CREATE',
+  'RESERVATIONIST_PANE_SAVE', ...PANE_WRITE_ENV_NAMES,
 ] as const;
 
-export const HMS_SLOT_CDP_ENV = {
-  centurion: 'HMS_STAGEHAND_CDP_URL',
-  davinci: 'HMS_STAGEHAND_CDP_URL_DAVINCI',
-} as const;
-
-function isolatedSlotPaneStaySpawnEnv(
-  env: NodeJS.ProcessEnv,
-  target: HmsReadTarget,
-): NodeJS.ProcessEnv {
-  const cdpEnvName = HMS_SLOT_CDP_ENV[target.browserSlot];
-  const out: NodeJS.ProcessEnv = {};
-  for (const name of PANE_CLI_ENV_ALLOWLIST) {
-    if (
-      name === 'HMS_STAGEHAND_CDP_URL' ||
-      name === 'HMS_QUOTE_SECRET_PATH' ||
-      name === 'HMS_READ_SECRET_ARN' ||
-      name === 'HMS_SLOT_PROFILE_DIR' ||
-      name === 'HMS_SLOT_STORAGE_STATE' ||
-      (name === 'HMS_DAVINCI_CREATE' && target.browserSlot !== 'davinci')
-    ) {
-      continue;
-    }
-    if (env[name] !== undefined) out[name] = env[name];
+export function paneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget): NodeJS.ProcessEnv {
+  const native = hmsReadTargetForProperty(propertyCodeSchema.parse(target.propertyCode));
+  if (native.secretId !== target.secretId || native.origin !== target.origin || native.browserSlot !== target.browserSlot) {
+    throw new Error('hms_cloud_target_mismatch');
   }
-  out.HMS_READ_SECRET_ARN = target.secretId;
-  const cdp = env[cdpEnvName];
-  if (cdp) {
-    out.HMS_STAGEHAND_CDP_URL = cdp;
-    out.HMS_STAGEHAND_BROWSER_OWNERSHIP = 'borrowed';
-  }
-  return out;
-}
-
-/**
- * The environment for a pane HMS CLI (stay-lookup, cancel-stay, create-lab-stay). The http process has no
- * HMS_STAGEHAND_* variables, so the CLIs refuse with CDP_URL_REQUIRED. The installed staff quote configuration names
- * the borrowed browser and the credential file, the same way the staff quote spawner passes them to its CLIs.
- * Variables already set in the environment win, so a local run keeps its own browser.
- * A Da Vinci read target never inherits the Centurion CDP, quote secret file, or slot paths.
- * Write flags (RESERVATIONIST_PANE_SAVE, PANE_WRITE_*, HMS_DAVINCI_CREATE) come from this process env.
- */
-export function paneStaySpawnEnv(
-  env: NodeJS.ProcessEnv = process.env,
-  readConfiguration: () => StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration,
-  target: HmsReadTarget,
-): NodeJS.ProcessEnv {
-  if (HMS_SLOT_CDP_ENV[target.browserSlot] !== 'HMS_STAGEHAND_CDP_URL') {
-    return isolatedSlotPaneStaySpawnEnv(env, target);
-  }
-  const out: NodeJS.ProcessEnv = {};
-  for (const name of PANE_CLI_ENV_ALLOWLIST) {
-    if (env[name] !== undefined) out[name] = env[name];
-  }
-  if (out.HMS_STAGEHAND_CDP_URL) return out;
-  let configuration: StaffQuoteInstallationConfiguration;
-  try {
-    configuration = readConfiguration();
-  } catch {
-    // No installation: the CLI reports CDP_URL_REQUIRED as before.
-    return out;
-  }
-  out.HMS_STAGEHAND_CDP_URL = configuration.owner.cdpUrl;
-  out.HMS_STAGEHAND_BROWSER_OWNERSHIP = 'borrowed';
-  out.HMS_QUOTE_SECRET_PATH ??= configuration.owner.secretPath;
-  return out;
+  return Object.fromEntries(PANE_CLI_ENV_ALLOWLIST.flatMap(name => env[name] === undefined ? [] : [[name, env[name]]]));
 }
 
 /** Logs a pane CLI failure the route otherwise reports only as execution_failure. No input or PII. */

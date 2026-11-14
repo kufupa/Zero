@@ -673,6 +673,12 @@ export async function createReservation(input, options = {}) {
       if (state.guestNameDraft && (!Array.isArray(form.fields) || !form.fields.every((field) => field && typeof field === 'object'))) {
         stop('uncertain', 'guest_name_stage_unverified', { field: 'guest' });
       }
+      const trackFields = form.fields.filter(field => field.name === 'track');
+      if (trackFields.length > 1) stop('uncertain', 'draft_field_not_unique', { field: 'track' });
+      if (input.track == null && trackFields.length === 1 && trackFields[0].required === true) {
+        if (commit) stop('needs_input', 'track_required', { field: 'track' });
+        missing.push('track');
+      }
       const optInFields = form.fields.filter(field => field.name === 'guestoptin4');
       if (optInFields.length > 1) stop('uncertain', 'draft_field_not_unique', { field: 'guestoptin4' });
       if (input.guestoptin4 === undefined && optInFields.length === 1 && optInFields[0].required === true) {

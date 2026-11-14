@@ -164,7 +164,7 @@ async function executeLockedClaim(input: { db: DB; fence: AiRunFence; workItemId
   const work = await mkdtemp(join(tmpdir(), 'pane-cloud-amend-'));
   const screenshots = ['before.png', 'after.png'] as const;
   let retainPrivateFiles = false, result: NativeResult;
-  let dispatch: HmsLabtestWriteHandle | null = null;
+  const attempt: { dispatch: HmsLabtestWriteHandle | null } = { dispatch: null };
   let beforeSealStarted = false;
   let beforeEvidence: { eventId: string; sha256: string } | null = null;
   let afterEvidence: { eventId: string; sha256: string } | null = null;
@@ -194,7 +194,7 @@ async function executeLockedClaim(input: { db: DB; fence: AiRunFence; workItemId
         readHmsState: async () => currentStay }),
       async () => { if (!modeCurrent()) throw new Error('AMEND_MODE_CHANGED');
         const handle = await callbacks.authorizeFirst({ ...step, beforeEvidence: beforeEvidence! });
-        dispatch = handle;
+        attempt.dispatch = handle;
         if (!modeCurrent()) throw new Error('AMEND_MODE_CHANGED');
         return handle; }, fence.deadlineAt, input.signal);
   };
@@ -235,11 +235,12 @@ async function executeLockedClaim(input: { db: DB; fence: AiRunFence; workItemId
     // Preserve an unsealed screenshot in the private directory for recovery.
     if (!retainPrivateFiles) await rm(work, { recursive: true, force: true }).catch(() => {});
   }
-  if (result.outcome === 'not_dispatched' && !dispatch) return finish('NEEDS_CHECK', result.issue ?? 'not_dispatched');
+  if (result.outcome === 'not_dispatched' && !attempt.dispatch) return finish('NEEDS_CHECK', result.issue ?? 'not_dispatched');
   const readback = verifiedCloudAmendReadback(form, result);
-  if (!readback || !dispatch || !beforeEvidence || !afterEvidence) {
+  if (!readback || !attempt.dispatch || !beforeEvidence || !afterEvidence) {
     return finish('UNKNOWN', result.issue ?? 'amend_unverified');
   }
+  const dispatch = attempt.dispatch;
   const before = beforeEvidence, after = afterEvidence;
   const nativeReadbackDigest = hmsStateDigest(readback);
   let observationRef: string | undefined;

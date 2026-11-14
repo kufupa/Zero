@@ -228,69 +228,18 @@ describe('parseHmsReadTarget', () => {
 });
 
 describe('worker secret resolution by target', () => {
-  it('Da Vinci slot uses the HRDAV secret and its own CDP while preserving the allowlisted shared save gate', () => {
-    const env = paneStaySpawnEnv(
-      {
-        PATH: '/usr/bin',
-        AWS_REGION: 'af-south-1',
-        HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read',
-        HMS_QUOTE_SECRET_PATH: '/repo/.private/owner/secret.json',
-        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
-        HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',
-        RESERVATIONIST_PANE_SAVE: 'on',
-      },
-      () => {
-        throw new Error('centurion installation must not be read for HRDAV');
-      },
-      DAVINCI_HMS_READ_TARGET,
-    );
-    expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
-    expect(env.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19225');
-    expect(env.HMS_STAGEHAND_BROWSER_OWNERSHIP).toBe('borrowed');
-    expect(env.HMS_QUOTE_SECRET_PATH).toBeUndefined();
-    expect(env.RESERVATIONIST_PANE_SAVE).toBe('on');
-    expect(env.HMS_STAGEHAND_CDP_URL).not.toBe('http://127.0.0.1:19223');
+  it('uses Cloud metadata without inheriting a borrowed browser or secret-file override', () => {
+    const env = paneStaySpawnEnv({ PATH: '/usr/bin', AWS_REGION: 'af-south-1',
+      HMS_READ_SECRET_ARN: 'obsolete-centurion-override', HMS_QUOTE_SECRET_PATH: '/private/obsolete.json',
+      HMS_STAGEHAND_CDP_URL: 'http://localhost:9222', RESERVATIONIST_PANE_SAVE: 'on',
+      HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAV: 'a'.repeat(64),
+    }, DAVINCI_HMS_READ_TARGET);
+    expect(env).toEqual({ PATH: '/usr/bin', AWS_REGION: 'af-south-1', RESERVATIONIST_PANE_SAVE: 'on',
+      HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAV: 'a'.repeat(64) });
   });
-
-  it('Da Vinci with no HMS_STAGEHAND_CDP_URL_DAVINCI returns no CDP URL', () => {
-    const env = paneStaySpawnEnv(
-      {
-        PATH: '/usr/bin',
-        HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read',
-        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
-        HMS_QUOTE_SECRET_PATH: '/repo/.private/owner/secret.json',
-      },
-      () => {
-        throw new Error('centurion installation must not be read for HRDAV');
-      },
-      DAVINCI_HMS_READ_TARGET,
-    );
-    expect(env.HMS_STAGEHAND_CDP_URL).toBeUndefined();
-    expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
-    expect(env.HMS_QUOTE_SECRET_PATH).toBeUndefined();
-  });
-
-  it('Centurion spawn env is unchanged when no Da Vinci target is passed', () => {
-    const env = paneStaySpawnEnv(
-      { PATH: '/usr/bin', HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read' },
-      () => ({
-        tenantId: 'tenant-1',
-        owner: {
-          cdpUrl: 'http://127.0.0.1:19223',
-          browserOwnership: 'borrowed',
-          propertyCode: 'HRCEN',
-          secretPath: '/repo/.private/owner/secret.json',
-        },
-        outputDir: '/repo/.private/hms-cloud/out',
-        ratePolicyConfigurationPath: '/repo/.private/rate-policy.json',
-      }),
-      CENTURION_HMS_READ_TARGET,
-    );
-    expect(env).toMatchObject({
-      HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read',
-      HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
-      HMS_QUOTE_SECRET_PATH: '/repo/.private/owner/secret.json',
-    });
+  it('keeps Centurion on the same explicit Cloud environment contract', () => {
+    expect(paneStaySpawnEnv({ PATH: '/usr/bin', HMS_STAGEHAND_CDP_URL: 'http://localhost:9222' },
+      CENTURION_HMS_READ_TARGET)).toEqual({ PATH: '/usr/bin' });
   });
 });
 

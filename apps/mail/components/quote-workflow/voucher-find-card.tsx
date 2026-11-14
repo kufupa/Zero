@@ -131,7 +131,7 @@ function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, 
   const routes = trpc as TrpcAttachRoutes;
   const cloud = propertyCode === 'HRCEN' || propertyCode === 'HRDAV' || propertyCode === 'HRDAVS';
   const propertySwitch = propertyCode === 'HRDAV' || propertyCode === 'HRDAVS' ? propertyCode : undefined;
-  const selectedProperty = propertySwitch ? { propertySwitch } : {};
+  const selectedProperty: { propertySwitch?: 'HRDAV' | 'HRDAVS' } = propertySwitch ? { propertySwitch } : {};
   const canPrepare = propertyCode === 'HRCEN' && filingCapability === undefined ||
     Boolean(filingCapability && ['prepare-only', 'lab', 'staff-enabled'].includes(filingCapability.status));
   const bindCloud = cloud && canPrepare ? routes.hmsApproval?.bindAttach?.mutate : undefined;

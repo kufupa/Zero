@@ -98,11 +98,14 @@ function harness(options = {}) {
         if (request.field === 'bookerContact') partyFields.udfchar06 = request.value;
         if (request.field === 'cmsRecipient') partyFields.udfchar13 = request.value;
         return { outcome: 'updated_unsaved', actual: request.value };
-      case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft
+      case 'readGuestStayForm': return { outcome: 'ok', fields: [...fields(options.draft
         ? { ...options.draft, ...(partyFields.track !== undefined ? { track: partyFields.track } : {}),
           ...(partyFields.guestoptin4 !== undefined ? { guestoptin4: partyFields.guestoptin4 } : {}),
           ...(partyFields.marketsegment !== undefined ? { marketsegment: partyFields.marketsegment } : {}) }
-        : { ...values, ...partyFields }) };
+        : { ...values, ...partyFields,
+          ...(options.trackRequired !== undefined ? { track: partyFields.track ?? options.trackInitial ?? '' } : {}) })
+        .map(field => field.name === 'track' && options.trackRequired !== undefined
+          ? { ...field, required: options.trackRequired } : field), ...(options.extraFormFields || [])] };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
         return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501',
@@ -272,6 +275,34 @@ test('staff preview stores its approved screenshot privately', async (t) => {
   t.after(() => rm(dirname(result.screenshots.filled), { recursive: true, force: true }));
   assert.equal((await stat(result.screenshots.filled)).mode & 0o777, 0o600);
   assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+});
+
+test('native required track needs a staff choice before prepare or save', async () => {
+  for (const propertyCode of ['HRCEN', 'HRDAV', 'HRDAVS']) {
+    const run = harness({ trackRequired: true });
+    const result = await createReservation({ ...input, propertyCode, mode: 'prepare', room: { roomType: 'DLXKNG' } }, run.options);
+    assert.equal(result.outcome, 'needs_input');
+    assert.deepEqual(result.missing, ['room.ratePlan', 'track']);
+    assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  }
+
+  const baseline = await createReservation({ ...input, mode: 'prepare' }, harness().options);
+  const commit = harness({ trackRequired: true, trackInitial: 'Native default' });
+  const refused = await createReservation(input, { ...commit.options, expectedRequestDigest: baseline.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  assert.equal(refused.outcome, 'needs_input');
+  assert.equal(refused.issue, 'track_required');
+  assert.equal(commit.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const optional = await createReservation({ ...input, mode: 'prepare' }, harness({ trackRequired: false }).options);
+  assert.equal(optional.outcome, 'prepared');
+  const chosen = await createReservation({ ...input, mode: 'prepare', track: 'BAR' }, harness({ trackRequired: true }).options);
+  assert.equal(chosen.outcome, 'prepared');
+  assert.equal(chosen.applied.track, 'Best Available');
+  const ambiguous = await createReservation({ ...input, mode: 'prepare' }, harness({ trackRequired: true,
+    extraFormFields: [{ name: 'track', value: '', required: true }] }).options);
+  assert.equal(ambiguous.outcome, 'uncertain');
+  assert.equal(ambiguous.issue, 'draft_field_not_unique');
 });
 
 test('track and false guest opt-in match preview, native Save and fresh readback', async (t) => {

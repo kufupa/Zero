@@ -983,6 +983,7 @@ describe('paneStayLookup router', () => {
 
     expect(jobMocks.readHmsJobView).toHaveBeenCalledWith({
       transportId: 'transport-centurion',
+      propertyCode: 'HRCEN',
       runId,
       staffQuoteOwnerId: 'user-ropperman',
     });

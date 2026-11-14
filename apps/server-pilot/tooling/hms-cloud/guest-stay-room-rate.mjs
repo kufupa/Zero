@@ -170,16 +170,31 @@ function coverage(metadata, loaded) {
   return { loaded, total, reportedTotal: metadata.RECORDS ?? null, serverMoreRecords,
     complete, possiblyTruncated: complete !== true };
 }
-function propertyAlias(body, propertyCode) {
-  const aliases = [...body].filter(([key, value]) => /^LOV_ALIAS_NAME_\d+$/i.test(key) && value.toLowerCase() === 'param.propertycode');
+function propertyAlias(body, propertyCode, names = ['param.propertycode'], requireText = false) {
+  const aliases = [...body].filter(([key, value]) => /^LOV_ALIAS_NAME_\d+$/i.test(key) && names.includes(value.toLowerCase()));
   if (aliases.length !== 1) return false;
-  const name = aliases[0][0], valueName = name.replace(/NAME/i, 'VALUE');
+  const name = aliases[0][0], valueName = name.replace(/NAME/i, 'VALUE'), typeName = name.replace(/NAME/i, 'TYPE');
   return [...body.keys()].filter(key => key.toLowerCase() === name.toLowerCase()).length === 1 &&
     [...body.keys()].filter(key => key.toLowerCase() === valueName.toLowerCase()).length === 1 &&
-    body.get(valueName) === propertyCode;
+    body.get(valueName) === propertyCode && (!requireText ||
+      ([...body.keys()].filter(key => key.toLowerCase() === typeName.toLowerCase()).length === 1 && body.get(typeName) === 'text'));
 }
 
-function allowedSearch(request, kind, origin, propertyCode) {
+export function matchesRatePlanPickerRequest(request, origin, propertyCode, rateShop) {
+  try {
+    if (rateShop?.kind !== 'ratePlan' || rateShop.propertyCode !== propertyCode ||
+        typeof rateShop.bookingSessionId !== 'string' || !rateShop.bookingSessionId.trim()) return false;
+    const url = new URL(request.url());
+    if (request.method() !== 'POST' || url.origin !== origin || url.pathname !== '/web/base/BSMSLV' || url.search || url.hash) return false;
+    const body = new URLSearchParams(request.postData() || '');
+    if ([...body.keys()].some(key => /^(?:action|pageaction|autosave)$/i.test(key))) return false;
+    return [...body.keys()].filter(key => key.toLowerCase() === 'grid_name').length === 1 &&
+      body.get('GRID_NAME') === SPECS.ratePlan.grid &&
+      propertyAlias(body, propertyCode, ['param.propertycode', 'control.property'], true);
+  } catch { return false; }
+}
+
+function allowedSearch(request, kind, origin, propertyCode, rateShop = null) {
   const url = new URL(request.url());
   if (url.origin !== origin || request.method() !== 'POST') return false;
   if (url.search && (url.pathname !== '/api/internalBooking/rateshop/inquiryForGrid' || url.search !== '?houseAvailabilityOnly=true')) return false;
@@ -188,7 +203,8 @@ function allowedSearch(request, kind, origin, propertyCode) {
   if (url.pathname === '/web/base/GETCACHE') return body.get('GRID_NAME') === spec.grid;
   if (roomKind(kind)) return url.pathname === '/web/base/LOVPOP' &&
     body.get('GRID_NAME') === spec.grid && body.get('LOV_TAGNAME') === roomField(kind) && propertyAlias(body, propertyCode);
-  if (url.pathname === '/web/base/BSMSLV') return body.get('GRID_NAME') === spec.grid && propertyAlias(body, propertyCode);
+  if (url.pathname === '/web/base/BSMSLV') return kind === 'ratePlan' &&
+    matchesRatePlanPickerRequest(request, origin, propertyCode, rateShop);
   if (url.pathname === '/web/base/OSRASD' || url.pathname === '/web/base/OSRASD.RatePlanChange') {
     return body.getAll('property').length === 1 && body.getAll('confirmationnumber').length === 1 &&
       body.get('property') === propertyCode && !clean(body.get('confirmationnumber'));
@@ -317,7 +333,8 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
     }
     initial = page.waitForResponse((response) => {
       const req = response.request();
-      return new URL(req.url()).pathname === '/web/base/BSMSLV' && allowedSearch(req, kind, new URL(page.url()).origin, propertyCode);
+      return new URL(req.url()).pathname === '/web/base/BSMSLV' &&
+        allowedSearch(req, kind, new URL(page.url()).origin, propertyCode, searches.get(page));
     }, { timeout: 20000 }).catch(() => null);
     const ratePlans = shop.locator('input[name="rateplans"]:visible').first();
     try { await ratePlans.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click({ timeout: 20000 }); }
@@ -495,7 +512,7 @@ async function search(page, kind, input = {}) {
       let resetMetadata = null;
       const nativeFence = await installPageRequestFence(page, ['/web/base/OSRASD.RatePlanChange']);
       const nativeScope = nativeFence.open();
-      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin, propertyCode) ||
+      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin, propertyCode, searches.get(page)) ||
         (roomKind(kind) && roomFilterResetRequest(req, origin, resetMetadata, kind, propertyCode)),
       () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }), nativeScope, () => nativeFence.quarantine());
       if (capture.result?.criteriaUnavailable) return {

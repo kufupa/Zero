@@ -66,7 +66,6 @@ type RunnerSeams = {
   filterNotApplied: () => { outcome: string; candidates: unknown[]; truncated: boolean };
   lookupBusyTimeout: () => { outcome: string; candidates: unknown[]; truncated: boolean };
   partyLookupPropertyCode: (request: unknown) => string | null;
-  assertPartyLookupAccount: (secret: { expectedPropertyCode?: string }, propertyCode: string) => void;
 };
 const runner = (await import(
   new URL('../tooling/hms-cloud/party-lookup.mjs', import.meta.url).href
@@ -1161,10 +1160,14 @@ describe('party-lookup CLI property', () => {
     expect(runner.partyLookupPropertyCode({ propertyCode: 'HROTH' })).toBeNull();
   });
 
-  it('refuses a Centurion secret for an HRDAV lookup', () => {
-    expect(() => runner.assertPartyLookupAccount({ expectedPropertyCode: 'HRDAV' }, 'HRDAV')).not.toThrow();
-    expect(() => runner.assertPartyLookupAccount({ expectedPropertyCode: 'HRCEN' }, 'HRDAV')).toThrow(
-      /ACCOUNT_PROPERTY_MISMATCH/,
-    );
+  it('refuses a Centurion secret for an HRDAV lookup', async () => {
+    const { getPropertyRegistration, validateHmsPropertySecret } = await import('../tooling/hms-cloud/property-registry.mjs');
+    const property = getPropertyRegistration('HRDAV')!;
+    const secret = { expectedPropertyCode: property.landingPropertyCode, expectedTenant: property.expectedTenant,
+      expectedPropertyName: property.expectedPropertyName, username: property.username,
+      credentialMode: 'view_only', mailboxTransportIds: property.transportIds };
+    expect(() => validateHmsPropertySecret(property, secret)).not.toThrow();
+    expect(() => validateHmsPropertySecret(property, { ...secret, expectedPropertyCode: 'HRCEN' }))
+      .toThrow('hms_property_credential_mismatch');
   });
 });

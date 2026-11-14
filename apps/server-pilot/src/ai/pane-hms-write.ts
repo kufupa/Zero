@@ -424,7 +424,9 @@ export async function bindAttachDocumentForm(input: {
   ] as const;
   const target = paneStayHmsTargetForTransport(input.transportId, input.propertyCode);
   if (target.ok) {
-    const policy = effectiveWorkflowPolicy(input.env ?? process.env, target.target.propertyCode, 'attach');
+    const property = getPropertyRegistration(target.target.propertyCode);
+    if (!property?.active) return { status: 'refused', reason: 'filing_unavailable' };
+    const policy = effectiveWorkflowPolicy(input.env ?? process.env, property.propertyCode, 'attach');
     const { nativeReadCapabilityAvailable } = await import('../hms/hms-service.js');
     if (!policy.readEnabled || policy.capability === 'unavailable' ||
         !await nativeReadCapabilityAvailable({ propertyCode: target.target.propertyCode, transportId: input.transportId }) ||

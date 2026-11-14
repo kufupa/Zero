@@ -335,7 +335,7 @@ export function paneStayCreateSpawnEnv(
   target: HmsReadTarget,
   env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  return paneStaySpawnEnv(env, undefined, target);
+  return paneStaySpawnEnv(env, target);
 }
 
 export function assertLabStayGuard(input: {
@@ -649,7 +649,9 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: resolved.reason };
   }
   const target = resolved.target;
-  const policy = effectiveWorkflowPolicy(process.env, target.propertyCode, 'create');
+  const property = getPropertyRegistration(target.propertyCode);
+  if (!property?.active) return { status: 'refused', reason: 'pane_save_property_mismatch' };
+  const policy = effectiveWorkflowPolicy(process.env, property.propertyCode, 'create');
   const configuredMode = paneStaySaveLoaders.mode?.() ?? (target.propertyCode === 'HRCEN' ? paneStaySaveMode() : policy.mode);
   const mode = input.mode === 'commit'
     ? policy.admittedMode === 'off' || configuredMode === 'off' ? 'off'

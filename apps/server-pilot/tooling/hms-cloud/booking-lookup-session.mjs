@@ -535,6 +535,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       delete input.id;
       delete input.tool;
       delete input.options;
+      delete input.propertyCode;
       result = await action(page, input, request.options);
     } else if (tool === 'readQuote') {
       if (!request.view || typeof request.view !== 'object' || Array.isArray(request.view)) {

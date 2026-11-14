@@ -801,13 +801,18 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
 function getPrepared(draft: ReservationWorkflowV2Draft, requestId: string, documentId: string) {
   const prepared = latestPrepared(draft, requestId, documentId);
   if (!prepared) return null;
-  const result = record(prepared.observation.result), target = record(result?.target);
-  if (!result || !target || typeof result.semanticDigest !== 'string' || typeof result.documentCode !== 'string' ||
-      typeof result.sha256 !== 'string' || typeof result.sourceSnapshotDigest !== 'string' || typeof result.filingStateDigest !== 'string' ||
+  const parsed = z.object({ semanticDigest: z.string().regex(/^[a-f0-9]{64}$/), documentCode: z.string().min(1),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/), sourceSnapshotDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    filingStateDigest: z.string().regex(/^[a-f0-9]{64}$/), documentName: z.string().refine(exactPdfName),
+    sourceDocumentName: z.string().refine(exactPdfName),
+    documentDescription: z.string().min(1).max(200).refine(value => value === value.trim() && !/[\p{Cc}]/u.test(value)).optional(),
+    hmsReadAt: z.string().datetime({ offset: true }) }).passthrough().safeParse(prepared.observation.result);
+  if (!parsed.success) return null;
+  const result = parsed.data, target = record(result.target);
+  if (!target ||
       typeof target.nativeGuestId !== 'string' || typeof target.nativeStayId !== 'string' ||
       typeof target.confirmation !== 'string' || typeof target.arrival !== 'string' || typeof target.departure !== 'string') return null;
-  return { ...prepared, result: { ...result, semanticDigest: result.semanticDigest, documentCode: result.documentCode,
-    sha256: result.sha256, sourceSnapshotDigest: result.sourceSnapshotDigest, filingStateDigest: result.filingStateDigest }, target };
+  return { ...prepared, result, target };
 }
 
 function filingFormMatchesPrepared(form: V2BoundAttachForm, selection: FilingSelection,

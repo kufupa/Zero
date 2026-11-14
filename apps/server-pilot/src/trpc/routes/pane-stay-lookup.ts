@@ -211,7 +211,7 @@ export const paneStayLookupRouter = router({
     .mutation(async ({ input, ctx }) => {
       await assertSelectedMessage(input, ctx.activeTransportId);
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      if (input.threadId) await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+      if (input.threadId) await assertHmsReadOriginAllowed(originGuardInput({ ...input, threadId: input.threadId }, ctx.activeTransportId));
       const target = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
       const result = await findStay(
         input.arrival
@@ -245,7 +245,7 @@ export const paneStayLookupRouter = router({
     .mutation(async ({ input, ctx }) => {
       await assertSelectedMessage(input, ctx.activeTransportId);
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      if (input.threadId) await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+      if (input.threadId) await assertHmsReadOriginAllowed(originGuardInput({ ...input, threadId: input.threadId }, ctx.activeTransportId));
       const target = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
       const result = await searchGuest(
         input.departure

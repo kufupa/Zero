@@ -1387,7 +1387,14 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
   }
 }
 
-function callbackReviewState(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend): Outcome | null {
+type CallbackReviewState = (Outcome & { status: 'needs_reconcile' }) | (Outcome & {
+  status: 'needs_review';
+  financialReview: { required: true; accepted: boolean; observationRef: string; approvalDigest: string;
+    reviewFieldPath: string; reviewNote: string };
+  observation: ReservationWorkflowV2Observation;
+});
+
+function callbackReviewState(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend): CallbackReviewState | null {
   const reviewOperations = draft.operationResults.filter(operation => operation.workflow === 'amend' && operation.status === 'prepared' &&
     operation.generationId === draft.generationId && operation.requestId === compiled.requestId && operation.allocationId === compiled.hintId &&
     operation.summary === 'Native details may have changed; review the refreshed price before Save');
@@ -2187,9 +2194,7 @@ export async function reservationWorkflowV2AmendPreparation(ctx: ReservationWork
   const pending = callbackReviewState(loaded.draft, compiled);
   let observation = original;
   if (pending) {
-    if (pending.status !== 'needs_review' || !('financialReview' in pending) || !('observation' in pending) || !pending.observation) return null;
-    const financial = record(pending.financialReview);
-    if (financial?.accepted !== true) return null;
+    if (pending.status !== 'needs_review' || !pending.financialReview.accepted) return null;
     observation = pending.observation;
   }
   const price = nativePrice(observation.result.price ?? observation.result.approvedPrices);

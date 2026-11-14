@@ -385,12 +385,12 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
       ({ stdout } = await execFileAsync(
         process.execPath,
         [PARTY_LOOKUP, '--request', requestPath],
-        // The same borrowed browser and credential file the stay lookups use.
+        // A fresh scoped Cloud session uses the process credential lease.
         // SIGKILL: a runner stuck on HMS is stopped outright, not asked politely. Its temp request goes in the finally.
         {
           timeout: spawnTimeoutMs(plannedSearchesOf(input).length),
           killSignal: 'SIGKILL',
-          env: paneStaySpawnEnv(process.env, undefined, target),
+          env: paneStaySpawnEnv(process.env, target),
           maxBuffer: 1024 * 1024,
           signal: input.signal,
         },

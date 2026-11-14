@@ -162,7 +162,7 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
         ? { preparedRef: value.preparedRef, expectedRevision: revision, generationId: value.generationId } : undefined;
       const rawDispatch = isRecord(value.dispatch) ? value.dispatch : null;
       const status = rawDispatch?.status;
-      const dispatch = rawDispatch && (status === 'queued' || status === 'claimed' || status === 'running' || status === 'retry_wait' || status === 'needs_reconcile') &&
+      const dispatch: ReservationPreparationView['dispatch'] = rawDispatch && (status === 'queued' || status === 'claimed' || status === 'running' || status === 'retry_wait' || status === 'needs_reconcile') &&
         rawDispatch.requestId === value.requestId && rawDispatch.allocationId === value.allocationId &&
         (isUuid(rawDispatch.runId) || status === 'needs_reconcile' && rawDispatch.runId === null) &&
         isUuid(rawDispatch.grantId) && isUuid(rawDispatch.operationId)
@@ -1131,7 +1131,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async executeServices(command) {
-      const endpoint = command.targetRef ? 'executeSavedServices' : 'executeServices';
+      const endpoint: 'executeSavedServices' | 'executeServices' = command.targetRef ? 'executeSavedServices' : 'executeServices';
       const findPreparation = (snapshot: ReservationPaneSnapshot) => snapshot.session.workflowPreparations?.find(preparation =>
         preparation.endpoint === endpoint && preparation.requestId === command.requestId && preparation.serviceId === command.serviceId &&
         preparation.allocationId === command.allocationId && preparation.reviewedPrepareRef === command.reviewedPrepareRef &&
@@ -1169,7 +1169,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       }
       if (queued && !snapshot.operationResults.some(row => row.id === queued.operationId) &&
           !snapshot.session.workflowDispatches?.some(row => row.grantId === queued.grantId)) {
-        const dispatch = { ...queued, endpoint, requestId: command.requestId, serviceId: command.serviceId,
+        const dispatch: ReservationWorkflowDispatch = { ...queued, endpoint, requestId: command.requestId, serviceId: command.serviceId,
           ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
         snapshot = { ...snapshot, session: { ...snapshot.session, workflowDispatches: [...snapshot.session.workflowDispatches ?? [], dispatch] } };
       }

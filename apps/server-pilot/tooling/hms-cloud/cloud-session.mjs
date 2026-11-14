@@ -150,9 +150,30 @@ export function assertNoCloudHold(propertyCode, alias) {
   throw new Error('HMS_BROWSER_HOLD');
 }
 
+function reconcileCloudBrowserHold(propertyCode, alias, lease) {
+  const state = credentialLeases.get(lease);
+  if (!state || state.released || state.ref !== registeredProperty(propertyCode).credentialSecretRef || lease.signal.aborted) {
+    throw new Error('HMS_CREDENTIAL_LEASE_INVALID');
+  }
+  const path = cloudHoldPath(propertyCode, alias);
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > 4096) {
+    throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  }
+  let hold;
+  try { hold = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+  if (hold.version !== 2 || hold.propertyCode !== propertyCode || hold.alias !== alias || !cloudWriterQuiesced(hold.identity)) {
+    throw new Error('HMS_BROWSER_HOLD');
+  }
+  unlinkSync(path);
+}
+
 function holdCloudWriter(propertyCode, alias, identity) {
   const path = cloudHoldPath(propertyCode, alias);
-  try { writeFileSync(path, JSON.stringify({ propertyCode, identity }) + '\n', { flag: 'wx', mode: 0o600 }); }
+  try { writeFileSync(path, JSON.stringify({ version: 2, propertyCode, alias, identity }) + '\n', { flag: 'wx', mode: 0o600 }); }
   catch (error) { if (error?.code !== 'EEXIST') throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
 }
 
@@ -701,7 +722,6 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
   try {
     signal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
-    for (const alias of aliases) assertNoCloudHold(propertyCode, alias);
     if (!lease) {
       lease = await acquireCloudCredentialLease(propertyCode, { signal });
       ownedLease = true;
@@ -715,6 +735,10 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       leaseState.borrowers += 1;
       borrowed = true;
       sessionSignal = signal ? AbortSignal.any([signal, lease.signal]) : lease.signal;
+    }
+    for (const alias of aliases) {
+      reconcileCloudBrowserHold(propertyCode, alias, lease);
+      assertNoCloudHold(propertyCode, alias);
     }
     sessionSignal?.addEventListener('abort', onAbort, { once: true });
     sessionSignal?.throwIfAborted();
