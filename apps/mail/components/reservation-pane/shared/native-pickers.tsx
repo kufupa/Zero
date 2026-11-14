@@ -139,8 +139,12 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     try { if (entity) await editor.commands.selectNative(selectionPath, ref);
       else {
         await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
-        const board = editor.snapshot.session.draft.propertyCode === 'HRCEN' && choiceKind === 'rate_plan' &&
-          path.endsWith('/ratePlan') ? CENTURION_RATE_CATALOGUE[value as keyof typeof CENTURION_RATE_CATALOGUE]?.mealPlan : undefined;
+        // Quote groups alone auto-fill mealPlan from known Centurion boards. Create
+        // keeps mealPlan as a staff override — writing it here leaves a stale board
+        // after switching to an unknown-board rate (e.g. BARRO → NCOR1B).
+        const board = editor.request.kind === 'quote' && editor.snapshot.session.draft.propertyCode === 'HRCEN' &&
+          choiceKind === 'rate_plan' && path.endsWith('/ratePlan')
+          ? CENTURION_RATE_CATALOGUE[value as keyof typeof CENTURION_RATE_CATALOGUE]?.mealPlan : undefined;
         const mealPlan = board === 'bed_breakfast' ? 'bb' : board === 'dinner_bed_breakfast' ? 'dinner_bb' : board;
         if (mealPlan && mealPlan !== 'unknown')
           await editor.commands.edit(path.replace(/\/ratePlan$/u, '/mealPlan'), mealPlan);

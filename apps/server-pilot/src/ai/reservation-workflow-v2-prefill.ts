@@ -485,19 +485,41 @@ function normalizeSynthesisOutput(value: unknown, evidence: ReservationWorkflowV
             evidenceRefs: Array.isArray(entry.sourceRefs) ? entry.sourceRefs : [] });
         }
       }
-      if (entry.kind === 'amend' && Array.isArray(body.perTarget) && body.perTarget.length === 1 && isRecord(body.perTarget[0])) {
-        const perTarget = { ...body.perTarget[0] };
-        let moved = false;
-        for (const key of ['rateHandling', 'currentObservationRefs']) {
-          if (Object.hasOwn(body, key) && !Object.hasOwn(perTarget, key)) {
-            perTarget[key] = body[key];
-            delete body[key];
-            moved = true;
-          }
+      if (entry.kind === 'amend') {
+        let changed = false;
+        const withholdOversizedBilling = (changes: unknown): unknown => {
+          if (!Array.isArray(changes)) return changes;
+          const next = changes.filter((change) => !(isRecord(change) && change.op === 'set' &&
+            change.field === 'billingReference' && typeof change.value === 'string' && change.value.length > 50));
+          if (next.length !== changes.length) changed = true;
+          return next;
+        };
+        if (Array.isArray(body.sharedChanges)) body.sharedChanges = withholdOversizedBilling(body.sharedChanges);
+        if (Array.isArray(body.perTarget)) {
+          body.perTarget = body.perTarget.map((row) => {
+            if (!isRecord(row) || !Array.isArray(row.changes)) return row;
+            return { ...row, changes: withholdOversizedBilling(row.changes) };
+          });
         }
-        if (moved) {
+        if (Array.isArray(body.perTarget) && body.perTarget.length === 1 && isRecord(body.perTarget[0])) {
+          const perTarget = { ...body.perTarget[0] };
+          for (const key of ['rateHandling', 'currentObservationRefs']) {
+            if (Object.hasOwn(body, key) && !Object.hasOwn(perTarget, key)) {
+              perTarget[key] = body[key];
+              delete body[key];
+              changed = true;
+            }
+          }
           body.perTarget = [perTarget];
+        }
+        if (changed) {
           normalizedEntry = { ...entry, body };
+          if (Array.isArray(proposal.issues)) requestShapeIssues.push({
+            path: `/requests/${String(entry.id ?? 'unknown')}/body/billingReference`,
+            kind: 'billing_reference_exceeds_native_limit',
+            explanation: 'Amend billingReference longer than 50 characters was withheld so the request could load; enter a native-length reference with staff.',
+            evidenceRefs: Array.isArray(entry.sourceRefs) ? entry.sourceRefs : [],
+          });
         }
       }
       if (entry.kind !== 'filing' && Array.isArray(proposal.issues) &&
@@ -3626,12 +3648,21 @@ function projectCurrentExtraction(input: {
         boardsByValue.set('dinner_bb', { raw: `${dinner.raw}; ${breakfast.raw}`, value: 'dinner_bb',
           sourceRefs: [...new Set([...dinner.sourceRefs, ...breakfast.sourceRefs])] });
       }
+      let restoredGroupBoards = false;
       if (!sourceRooms.length && boardsByValue.size > 1) {
+        let restored = 0;
         for (const group of request.body.groups) {
           const original = originalDateGroups.find((candidate) => candidate.id === group.id);
           const board = boardsByValue.get(boardMeaning(original?.requestedMealPlan ?? original?.mealPlan));
-          if (board) group.requestedMealPlan = boardValue(board.value);
+          if (board) {
+            group.requestedMealPlan = boardValue(board.value);
+            restored += 1;
+          }
         }
+        // Every linked group matched a distinct current board — keep them; do not
+        // treat the multi-board request as ambiguous later in this pass.
+        restoredGroupBoards = restored === request.body.groups.length && request.body.groups.length > 0 &&
+          new Set(request.body.groups.map((group) => boardMeaning(group.requestedMealPlan))).size === boardsByValue.size;
       }
       const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
@@ -3735,7 +3766,7 @@ function projectCurrentExtraction(input: {
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'Counted room clauses could not be bound to one current stay range and matching room groups. Their board claims remain available; no board was copied by group position.',
           currentBoards.flatMap((claim) => claim.sourceRefs));
-      } else if (currentBoards.length && linkedQuoteGroups.length) {
+      } else if (currentBoards.length && linkedQuoteGroups.length && !restoredGroupBoards) {
         if (boardsByValue.size === 1) {
           const board = [...boardsByValue.values()][0]!;
           for (const groupIndex of linkedQuoteGroups) projectLimitedText({ proposal,
@@ -3743,12 +3774,12 @@ function projectCurrentExtraction(input: {
             claim: { ...board, value: boardValue(board.value) },
             currentRefs, max: 120, path: `/requests/${request.id}/body/groups/${groupIndex}/requestedMealPlan` });
         } else {
-          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.mealPlan = null;
+          for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.requestedMealPlan = null;
           addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
             'The current source contains conflicting board choices without a reliable group mapping. Group boards were cleared for staff selection; the source claims remain available.',
             [...new Set(currentBoards.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
-      } else if (currentBoards.length) {
+      } else if (currentBoards.length && !restoredGroupBoards) {
         for (const group of request.body.groups) group.requestedMealPlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_board_scope_ambiguous',
           'A current board choice could not be mapped to a source-linked date group. Group boards were cleared; the source claim remains available for staff review.',
@@ -4321,6 +4352,13 @@ function projectCurrentExtraction(input: {
         const change = changes[index]!;
         if (change.op !== 'set' || change.field !== 'billingReference' || typeof change.value !== 'string') continue;
         const reference = change.value;
+        if (reference.length > 50) {
+          changes.splice(index, 1);
+          addProjectionIssue(proposal, `/requests/${request.id}/body/billingReference`, 'native_billing_reference_max_50',
+            'The Amend billing reference exceeds the native 50-character limit. Enter a shorter reference before continuing.',
+            change.sourceRefs.filter((ref) => currentRefs.has(ref)));
+          continue;
+        }
         if (input.evidence.some((row) => currentRefs.has(row.ref) && change.sourceRefs.includes(row.ref) && row.text.includes(reference))) continue;
         changes.splice(index, 1);
         addProjectionIssue(proposal, `/requests/${request.id}/body/billingReference`, 'billing_reference_unverified',

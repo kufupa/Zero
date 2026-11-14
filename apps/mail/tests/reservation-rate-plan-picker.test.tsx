@@ -125,4 +125,56 @@ describe('reservation Rate Plan picker', () => {
       'room_only',
     );
   });
+
+  it('does not auto-write Create mealPlan when switching rates', async () => {
+    const createPath = '/proposal/content/requests/create-1/body/shared/ratePlan';
+    const edit = vi.fn().mockResolvedValue(undefined);
+    const createRequest = {
+      id: 'create-1',
+      kind: 'create',
+      text: 'Create one room',
+      body: { shared: { ratePlan: '', mealPlan: 'room_only' } },
+    };
+    const value = {
+      snapshot: {
+        ...snapshot([]),
+        session: {
+          ...snapshot([]).session,
+          draft: {
+            ...snapshot([]).session.draft,
+            proposal: {
+              content: { requests: [createRequest] },
+              annotations: [],
+              sourceClaims: [],
+            },
+          },
+        },
+        requests: [
+          {
+            id: createRequest.id,
+            kind: createRequest.kind,
+            text: createRequest.text,
+            fieldPaths: [createPath],
+            supported: true,
+          },
+        ],
+      },
+      request: { id: 'create-1', kind: 'create' },
+      view: { busy: false, error: null, preview: false, saving: false },
+      commands: {
+        lookupChoices: vi.fn().mockResolvedValue(undefined),
+        lookup: vi.fn(),
+        edit,
+        stageEdit: vi.fn(),
+        setUncommitted: vi.fn(),
+      },
+    } as any;
+
+    render(<NativePicker label="Rate Plan" path={createPath} editor={value} kind="rate_plan" />);
+    fireEvent.focus(screen.getByLabelText('Rate Plan'));
+    fireEvent.click(screen.getByRole('option', { name: /NCOR1B/ }));
+
+    await waitFor(() => expect(edit).toHaveBeenCalledWith(createPath, 'NCOR1B'));
+    expect(edit.mock.calls.some((call: unknown[]) => String(call[0]).endsWith('/mealPlan'))).toBe(false);
+  });
 });
