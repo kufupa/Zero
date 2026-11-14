@@ -275,15 +275,22 @@ async function draft(page, expected) {
         cmp('udfchkbox04').getValue() !== expected.cmsSend) return 'DRAFT_PROFILE_PRIVACY_FIELDS';
     if ((expected.booker?.name !== undefined && value('caller') !== expected.booker.name) ||
         (expected.booker?.contact !== undefined && value('udfchar06') !== expected.booker.contact)) return 'DRAFT_REVIEWED_CONTACT_FIELDS';
-    let guestOptInSubmitValue;
+    let guestOptInSubmitValue, guestOptInSubmitOmitted = false;
     if (expected.guestOptIn !== undefined) {
       const normalize = (value) => [true, 1, -1, '1', '-1', 'true'].includes(value) ? true :
         [false, 0, '0', 'false'].includes(value) ? false : null;
       const control = cmp('guestoptin4');
-      const submitted = control?.getSubmitData?.()?.guestoptin4;
-      if (typeof control?.getValue !== 'function' || control.getValue() !== expected.guestOptIn ||
-          normalize(data.guestoptin4) !== expected.guestOptIn || normalize(submitted) !== expected.guestOptIn) return 'DRAFT_GUEST_OPT_IN';
-      guestOptInSubmitValue = String(submitted);
+      if (typeof control?.getValue !== 'function' || typeof control.getSubmitData !== 'function' || control.up?.('form') !== form ||
+          !(control.getXType?.() === 'checkboxfield' || fields.guestoptin4[0].type === 'checkbox') ||
+          control.getValue() !== expected.guestOptIn || !Object.hasOwn(data, 'guestoptin4') ||
+          keys.filter(key => key.toLowerCase() === 'guestoptin4').length !== 1 || normalize(data.guestoptin4) !== expected.guestOptIn) return 'DRAFT_GUEST_OPT_IN';
+      const submittedData = control.getSubmitData();
+      if (submittedData != null && (typeof submittedData !== 'object' || Array.isArray(submittedData))) return 'DRAFT_GUEST_OPT_IN';
+      const submittedKeys = Object.keys(submittedData ?? {}).filter(key => key.toLowerCase() === 'guestoptin4');
+      guestOptInSubmitOmitted = submittedKeys.length === 0;
+      if (guestOptInSubmitOmitted ? expected.guestOptIn !== false :
+          submittedKeys.length !== 1 || submittedKeys[0] !== 'guestoptin4' || normalize(submittedData.guestoptin4) !== expected.guestOptIn) return 'DRAFT_GUEST_OPT_IN';
+      if (!guestOptInSubmitOmitted) guestOptInSubmitValue = String(submittedData.guestoptin4);
     }
     let activeChildCategories, modelData, formData;
     if (expected.strictCreateProof) {
@@ -430,7 +437,7 @@ async function draft(page, expected) {
     const verifiedPartyValues = { ...partyValues };
     if (expected.organizationSelection) verifiedPartyValues.companyname = String(data.companyname ?? '').trim();
     return { session: String(data.bookingsessionid).trim(), track: value('track'), guestEmail: value('emailaddress'),
-      ...(expected.guestOptIn !== undefined ? { guestOptInSubmitValue } : {}),
+      ...(expected.guestOptIn !== undefined ? { guestOptInSubmitOmitted, ...(guestOptInSubmitOmitted ? {} : { guestOptInSubmitValue }) } : {}),
       cmsRecipient: value('udfchar13'), arProfileId: String(data.arprofileid ?? '').trim(),
       arAccountId: String(data.araccountid ?? '').trim(), arAccountName: String(data.araccountname ?? '').trim(),
       ...(expected.strictCreateProof ? { ...(expected.createFieldProof?.childAges != null ? { activeChildCategories } : {}),
@@ -450,6 +457,18 @@ export function guestStaySaveOutcome({
     return 'saved_same_form';
   }
   return possiblyDispatched ? 'uncertain' : 'not_dispatched';
+}
+
+function matchesGuestOptInSaveField(body, query, expected) {
+  if (expected.guestOptIn === undefined) return true;
+  const entries = params => [...params].filter(([key]) => key.toLowerCase() === 'guestoptin4');
+  const bodyFields = entries(body), queryFields = entries(query);
+  const matches = fields => fields.length === 1 && fields[0][0] === 'guestoptin4' &&
+    (expected.guestOptIn === false ? ['0', 'false'].includes(fields[0][1]) :
+      fields[0][1] === expected.guestOptInSubmitValue && ['1', '-1', 'true'].includes(fields[0][1]));
+  if (bodyFields.length === 0 ? !(expected.guestOptIn === false && expected.guestOptInSubmitOmitted === true) : !matches(bodyFields)) return false;
+  return (!queryFields.length || matches(queryFields)) &&
+    (!bodyFields.length || !queryFields.length || bodyFields[0][1] === queryFields[0][1]);
 }
 
 function matchesSave(page, request, expected) {
@@ -475,7 +494,6 @@ function matchesSave(page, request, expected) {
       udfchkbox04: expected.cmsSend ? '1' : '0', udfchar13: expected.cmsRecipient ?? '', emailaddress: expected.guestEmail,
       ...(expected.booker?.name !== undefined ? { caller: expected.booker.name } : {}),
       ...(expected.booker?.contact !== undefined ? { udfchar06: expected.booker.contact } : {}),
-      ...(expected.guestOptIn !== undefined ? { guestoptin4: expected.guestOptInSubmitValue } : {}),
       ...(expected.billingReference !== undefined ? { billingreference: expected.billingReference } : {}),
       arprofileid: expected.arProfileId ?? '', araccountid: expected.arAccountId ?? '', araccountname: expected.arAccountName ?? '',
       guaranteetype: expected.guaranteeType, pagemode: 'display', savecctoprofile: '0', savesettlementcctoprofile: '0',
@@ -503,6 +521,7 @@ function matchesSave(page, request, expected) {
           body.has(key) && (body.getAll(key).length !== 1 || body.get(key) !== value);
       }) &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
+      matchesGuestOptInSaveField(body, url.searchParams, expected) &&
       isVerifiedLabtestProfileCurrent(page, { nativeId: expected.guestId, session: expected.session, token: expected.profileToken }) &&
       (!expected.arSelection || isVerifiedArSelectionCurrent(page, { session: expected.session, accountId: expected.arSelection.nativeId,
         profileId: expected.arProfileId, token: expected.arToken })) &&
