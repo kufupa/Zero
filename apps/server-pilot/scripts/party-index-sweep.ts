@@ -23,7 +23,7 @@ import {
   type PartyIndexFile,
   type PartyIndexProperty,
 } from '../src/ai/party-index.js';
-import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import {
   runPartyIndexSweep,
   SweepStopped,
@@ -36,7 +36,7 @@ import {
   PANE_PROPERTY_LOCK_WAIT_MS,
 } from '../src/hms/property-read-lock.js';
 
-const USAGE = `usage: party-index-sweep.ts [--property HRCEN|HRDAV] [--kinds organization,bookingAgency] [--delay-ms 15000]
+const USAGE = `usage: party-index-sweep.ts --property HRCEN|HRDAV|HRDAVS [--kinds organization,bookingAgency] [--delay-ms 15000]
                           [--max-runs 150] [--lock-retries 5] [--lock-retry-ms 60000] [--fresh]`;
 
 // Only this persisted progress reader accepts the prior kind names.
@@ -50,7 +50,7 @@ const storedProgress = z.object({
 });
 
 type Args = {
-  property: PartyIndexProperty;
+  property: PartyIndexProperty | null;
   kinds: PanePartyKind[];
   delayMs: number;
   maxRuns: number;
@@ -62,7 +62,7 @@ type Args = {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
-    property: 'HRCEN',
+    property: null,
     kinds: ['organization', 'bookingAgency'],
     delayMs: 15_000,
     maxRuns: 150,
@@ -83,7 +83,7 @@ function parseArgs(argv: string[]): Args {
     else if (flag === '--fresh') args.fresh = true;
     else if (flag === '--property') {
       const property = parsePartyIndexProperty(value);
-      if (!property) throw new Error('--property takes HRCEN or HRDAV');
+      if (!property) throw new Error('--property takes HRCEN, HRDAV or HRDAVS');
       args.property = property;
       i += 1;
     } else if (flag === '--kinds') {
@@ -124,7 +124,9 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
-  const target = args.property === 'HRDAV' ? DAVINCI_HMS_READ_TARGET : CENTURION_HMS_READ_TARGET;
+  if (!args.property) { console.error('--property is required'); return 2; }
+  if (args.property === 'HRDAVS') { console.error('HRDAVS native property switching is not available yet.'); return 2; }
+  const target = hmsReadTargetForProperty(args.property);
   const lock = paneStayPropertyLock(target);
   if (!lock) {
     console.error('DATABASE_URL is required: every sweep run takes the property lock.');
@@ -157,7 +159,8 @@ async function main(): Promise<number> {
     },
     saveProgress: (progress: SweepProgress) => writePrivateFile(progressPath, JSON.stringify(progress)),
     clearProgress: () => rm(progressPath, { force: true }),
-    writeIndex: (index: PartyIndexFile) => writePrivateFile(indexPath, `${JSON.stringify(index, null, 2)}\n`),
+    writeIndex: (index: PartyIndexFile) => writePrivateFile(indexPath, `${JSON.stringify({ ...index, propertyCode: args.property,
+      tenantId: args.property === 'HRCEN' ? 'THECENTURION_PRD' : 'DAVINCI_PRD' }, null, 2)}\n`),
     sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     now: () => new Date(),
   };

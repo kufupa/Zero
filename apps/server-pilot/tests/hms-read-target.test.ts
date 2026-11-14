@@ -58,7 +58,7 @@ describe('hmsReadTargetForTransport', () => {
       propertyCode: 'HRDAV',
       secretId: 'nava-zero/server-pilot/infor-hms-read-davinci',
       browserSlot: 'davinci',
-      origin: 'https://appsrv-1.legacyhotels.co.za',
+      origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com',
       installationEnvName: 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV',
     });
     expect(DAVINCI_HMS_READ_TARGET.browserSlot).not.toBe(CENTURION_HMS_READ_TARGET.browserSlot);
@@ -228,7 +228,7 @@ describe('parseHmsReadTarget', () => {
 });
 
 describe('worker secret resolution by target', () => {
-  it('Da Vinci slot uses the HRDAV secret name and its own CDP, never Centurion CDP or the save gate', () => {
+  it('Da Vinci slot uses the HRDAV secret and its own CDP while preserving the allowlisted shared save gate', () => {
     const env = paneStaySpawnEnv(
       {
         PATH: '/usr/bin',
@@ -248,7 +248,7 @@ describe('worker secret resolution by target', () => {
     expect(env.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19225');
     expect(env.HMS_STAGEHAND_BROWSER_OWNERSHIP).toBe('borrowed');
     expect(env.HMS_QUOTE_SECRET_PATH).toBeUndefined();
-    expect(env.RESERVATIONIST_PANE_SAVE).toBeUndefined();
+    expect(env.RESERVATIONIST_PANE_SAVE).toBe('on');
     expect(env.HMS_STAGEHAND_CDP_URL).not.toBe('http://127.0.0.1:19223');
   });
 

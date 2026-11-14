@@ -1,18 +1,21 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import { aiWorkflowRun, attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
-import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { propertySwitchSchema, resolvePropertyScope } from '../hms/property-registry.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
+import { assertNoCreateDispatchFence } from './pane-create-dispatch-fence.js';
+import { assertNoUnresolvedHmsDispatchForWorkItem } from './hms-labtest-dispatch.js';
 import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow-v2-source-recovery.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
-  rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe } from './work-item-revision.js';
+  rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe,
+  RESERVATION_V2_PROPERTY_HISTORY_FLOOR_KEY } from './work-item-revision.js';
 import {
   separatedQuoteMoneyLinked,
   RESERVATION_PREFILL_SCHEMA_VERSION,
@@ -30,6 +33,63 @@ import {
 
 export const RESERVATION_WORKFLOW_V2_STATE_KEY = 'reservationWorkflowV2';
 type State = Record<string, unknown>;
+const PROPERTY_SWITCH_PREPARATION_KEYS = [
+  'hmsSnapshot', 'cloudCancelPreview', 'cloudCancel', 'cloudAmend', 'filingStateDigest',
+  'nativePrices', 'nativePrice', 'approvedPrices', 'previewDigest', 'cloudCreatePreviews', 'stayPreviews',
+  'preparedRef', 'prepareRef', 'preparation', 'approval', 'approvalId', 'policyIdentity', 'catalogueIdentity',
+] as const;
+
+function withoutPropertyPreparation(state: State): State {
+  const next = { ...state };
+  for (const key of PROPERTY_SWITCH_PREPARATION_KEYS) delete next[key];
+  return next;
+}
+
+const PROPERTY_NATIVE_ARRAY_FIELDS = new Set(['candidateRefs', 'priceObservationRefs', 'previewObservationRefs',
+  'currentObservationRefs', 'observationRefs', 'lookupResultRefs', 'roomCodes']);
+const PROPERTY_NATIVE_VALUE_FIELDS = new Set(['nativeSelectionRef', 'suggestedRef', 'itemCandidateRef',
+  'previewObservationRef', 'savedRowCandidateRef', 'roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType',
+  'sourceOfBusiness', 'track', 'code', 'titleCode', 'phoneTypeCode', 'emailTypeCode', 'frequency', 'pricingControl', 'folio']);
+const PROPERTY_NATIVE_CHANGE_FIELDS = new Set(['roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'track']);
+
+/** Keep source and staff facts while requiring fresh property-specific choices and evidence. */
+function withoutPropertyNativeSelections(value: unknown, observations: Set<string>): unknown {
+  if (Array.isArray(value)) return value.map((entry) => withoutPropertyNativeSelections(entry, observations));
+  if (!value || typeof value !== 'object') return value;
+  const row = Object.fromEntries(Object.entries(value));
+  return Object.fromEntries(Object.entries(row).map(([key, child]) => {
+    if (PROPERTY_NATIVE_ARRAY_FIELDS.has(key)) return [key, []];
+    if (PROPERTY_NATIVE_VALUE_FIELDS.has(key)) return [key, null];
+    if (key === 'value' && row.op === 'set' && typeof row.field === 'string' && PROPERTY_NATIVE_CHANGE_FIELDS.has(row.field)) return [key, ''];
+    if (key === 'evidenceRefs' && Array.isArray(child)) return [key, child.filter((ref) => typeof ref !== 'string' || !observations.has(ref))];
+    if (key === 'annotations' && Array.isArray(child)) return [key, withoutPropertyNativeSelections(child.filter((entry) =>
+      !entry || typeof entry !== 'object' || !('basis' in entry) || !['native_read', 'policy'].includes(String(entry.basis))), observations)];
+    return [key, withoutPropertyNativeSelections(child, observations)];
+  }));
+}
+
+function invalidatePropertyDraft(prior: ReservationWorkflowV2Draft, input: {
+  generationId: string; revision: number; at: string; propertyCode?: string; source?: ReservationWorkflowV2Source;
+}): ReservationWorkflowV2Draft {
+  const observations = new Set(prior.observations.map((row) => row.ref));
+  const fieldOverrides = Object.fromEntries(Object.entries(prior.fieldOverrides).map(([path, override]) => {
+    const parts = pathParts(path);
+    const change = path.match(/^(.*\/(?:sharedChanges|changes)\/[^/]+)\/value(?:\/|$)/);
+    const field = change ? effectiveDraftPath(prior, `${change[1]}/field`) : null;
+    const native = parts?.slice(4).some((part) => PROPERTY_NATIVE_ARRAY_FIELDS.has(part) || PROPERTY_NATIVE_VALUE_FIELDS.has(part)) ||
+      typeof field === 'string' && PROPERTY_NATIVE_CHANGE_FIELDS.has(field);
+    return [path, native ? { state: 'unknown', updatedAt: input.at } :
+      { ...override, ...(Object.hasOwn(override, 'value') ? { value: withoutPropertyNativeSelections(override.value, observations) } : {}) }];
+  }));
+  return reservationWorkflowV2DraftSchema.parse({ ...prior, ...(input.propertyCode ? { propertyCode: input.propertyCode } : {}),
+    ...(input.source ? { source: input.source } : {}), generationId: input.generationId, revision: input.revision,
+    status: 'partial', proposal: withoutPropertyNativeSelections(prior.proposal, observations), observations: [],
+    fieldReviewRequirements: {}, staffReviews: {}, fieldOverrides,
+    operationResults: prior.operationResults.filter((result) => result.status !== 'prepared'),
+    prefill: { status: 'superseded', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: input.at,
+      ...(prior.prefill?.evidenceHash ? { evidenceHash: prior.prefill.evidenceHash } : {}) },
+  });
+}
 /** Only the internal arrival worker creates this buffer; nothing reaches the draft until its lease fence commits. */
 export type ReservationNativeCheckBatch = {
   jobFence: ReservationPrefillJobFence; expectedRevision: number; expectedSeq: number; generationId: string;
@@ -80,14 +140,16 @@ export function hasReservationWorkflowV2Draft(state: State): boolean {
 export async function validateReservationWorkflowV2Source(ctx: Context, source: ReservationWorkflowV2SourceInput): Promise<
   { status: 'ok' } | { status: 'invalid_source' | 'wrong_property' | 'not_found' }
 > {
-  if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  if (!propertyMatches(ctx) || (source.propertyId ?? 'HRCEN') !== ctx.propertyCode) return { status: 'wrong_property' };
   if (!(await hasMailboxAccess(ctx.db, ctx))) return { status: 'not_found' };
   return await sourceMail(ctx.db, ctx, source) ? { status: 'ok' } : { status: 'invalid_source' };
 }
 
 function propertyMatches(ctx: Context): boolean {
-  const resolved = resolvePropertyTransport(ctx.transportId);
-  return resolved.kind === 'property' && resolved.property.propertyCode === ctx.propertyCode;
+  const parsedSwitch = propertySwitchSchema.safeParse(ctx.propertyCode);
+  try {
+    return resolvePropertyScope({ transportId: ctx.transportId, propertySwitch: parsedSwitch.success ? parsedSwitch.data : undefined }).propertyCode === ctx.propertyCode;
+  } catch { return false; }
 }
 
 async function sourceMail(db: WorkTx, ctx: Context, source: ReservationWorkflowV2Source) {
@@ -130,13 +192,14 @@ async function loadItem(db: WorkTx, ctx: Context, workItemId: string, lock = fal
 
 async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: ReservationWorkflowV2Source,
   allowSourceChanged = false): Promise<ReservationWorkflowV2StateResult> {
-  if (!propertyMatches(ctx) || !item.threadId || item.threadId !== source.threadId || item.sourceMessageId !== source.messageId) {
+  if (!propertyMatches(ctx) || (source.propertyId ?? 'HRCEN') !== ctx.propertyCode || !item.threadId || item.threadId !== source.threadId || item.sourceMessageId !== source.messageId) {
     return { status: 'invalid_source' };
   }
   if (!(await hasMailboxAccess(db, ctx))) return { status: 'not_found' };
   const draft = reservationWorkflowV2DraftOf(item.state);
   if (!draft) return { status: hasReservationWorkflowV2Draft(item.state) ? 'invalid_state' : 'not_found' };
   if (draft.workItemId !== item.id || draft.transportId !== ctx.transportId || draft.propertyCode !== ctx.propertyCode ||
+      (draft.source.propertyId ?? 'HRCEN') !== ctx.propertyCode ||
       draft.source.messageId !== source.messageId ||
       draft.source.threadId !== source.threadId || draft.source.arrivedAt !== source.arrivedAt) return { status: 'invalid_source' };
   const recovery = ctx.recovery;
@@ -223,7 +286,7 @@ function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[numbe
 export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   source: ReservationWorkflowV2SourceInput; extractionId?: string | null; seed: ReservationWorkflowV2Seed; allowSourceChanged?: boolean;
 }): Promise<ReservationWorkflowV2StateResult> {
-  if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  if (!propertyMatches(ctx) || (input.source.propertyId ?? 'HRCEN') !== ctx.propertyCode) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
     // Attachment repair takes this same lock. Capture a coherent source and
     // attachment baseline before any staff edit can supersede prefill.
@@ -233,14 +296,17 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     const [mail] = await sourceMail(tx, ctx, input.source).then((row) => row ? [row] : []);
     if (!mail || !(await hasMailboxAccess(tx, ctx))) return { status: 'invalid_source' as const };
-    let [item] = await tx.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
+    const sourceItems = await tx.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
       sourceMessageId: workItem.sourceMessageId, kind: workItem.kind, extractionId: workItem.extractionId,
       state: workItem.state, revision: workItem.revision, revisionHead: workItem.revisionHead,
-      revisionSeq: workItem.revisionSeq }).from(workItem)
+      revisionSeq: workItem.revisionSeq, updatedAt: workItem.updatedAt }).from(workItem)
       .where(and(eq(workItem.transportId, ctx.transportId), eq(workItem.threadId, input.source.threadId),
         eq(workItem.sourceMessageId, input.source.messageId)))
-      .orderBy(desc(sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`),
-        desc(workItem.updatedAt), desc(workItem.id)).limit(1).for('update');
+      .orderBy(workItem.id).for('update');
+    const orderedItems = [...sourceItems].sort((a, b) =>
+      Number(hasReservationWorkflowV2Draft(b.state as State)) - Number(hasReservationWorkflowV2Draft(a.state as State)) ||
+      b.updatedAt.getTime() - a.updatedAt.getTime() || b.id.localeCompare(a.id));
+    let item = orderedItems[0];
     if (!item) {
       const kind = initialKind(input.seed);
       const [inserted] = await tx.insert(workItem).values({ transportId: ctx.transportId, threadId: input.source.threadId,
@@ -248,13 +314,13 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
         .onConflictDoNothing().returning({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
           sourceMessageId: workItem.sourceMessageId, kind: workItem.kind, extractionId: workItem.extractionId,
           state: workItem.state, revision: workItem.revision, revisionHead: workItem.revisionHead,
-          revisionSeq: workItem.revisionSeq });
+          revisionSeq: workItem.revisionSeq, updatedAt: workItem.updatedAt });
       item = inserted;
       if (!item) {
         const [raced] = await tx.select({ id: workItem.id, transportId: workItem.transportId, threadId: workItem.threadId,
           sourceMessageId: workItem.sourceMessageId, kind: workItem.kind, extractionId: workItem.extractionId,
           state: workItem.state, revision: workItem.revision, revisionHead: workItem.revisionHead,
-          revisionSeq: workItem.revisionSeq }).from(workItem)
+          revisionSeq: workItem.revisionSeq, updatedAt: workItem.updatedAt }).from(workItem)
           .where(and(eq(workItem.transportId, ctx.transportId), eq(workItem.threadId, input.source.threadId),
             eq(workItem.sourceMessageId, input.source.messageId)))
           .orderBy(desc(workItem.updatedAt), desc(workItem.id)).limit(1).for('update');
@@ -264,6 +330,65 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     if (!item) return { status: 'not_found' as const };
     const itemRow = { ...item, state: item.state as State };
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
+    if (existing && existing.propertyCode !== ctx.propertyCode) {
+      // Every source item is locked in ID order. Existing dispatch holds and
+      // queued/claimed runs must finish or reconcile before the scope changes.
+      const ids = sourceItems.map((row) => row.id);
+      const [runningWrite] = ids.length ? await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun)
+        .where(and(inArray(aiWorkflowRun.workItemId, ids), eq(aiWorkflowRun.runKind, 'hms_write'),
+          inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']))).limit(1) : [];
+      if (runningWrite || sourceItems.some((row) => {
+        const prior = reservationWorkflowV2DraftOf(row.state as State);
+        return (hasReservationWorkflowV2Draft(row.state as State) && !prior) ||
+          prior?.operationResults.some((result) => result.status === 'unknown');
+      })) return { status: 'invalid_state' as const, issue: 'A prior write must be reconciled before changing property.' };
+      try {
+        for (const row of sourceItems) {
+          await assertNoCreateDispatchFence(tx, { transportId: ctx.transportId, workItemId: row.id });
+          await assertNoUnresolvedHmsDispatchForWorkItem(tx, row.id);
+        }
+      } catch {
+        return { status: 'invalid_state' as const, issue: 'A prior write must be reconciled before changing property.' };
+      }
+      const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
+      const revision = Math.max(itemRow.revision, itemRow.revisionHead) + 1;
+      const switchedAt = new Date();
+      const draft = invalidatePropertyDraft(existing, { propertyCode: ctx.propertyCode,
+        source: { ...existing.source, propertyId: input.source.propertyId }, generationId: randomUUID(), revision,
+        at: switchedAt.toISOString() });
+      const sourceChanged = draft.source.sourceHash !== input.source.sourceHash || draft.prefill?.evidenceHash !== evidenceHash;
+      const selectedUpdatedAt = new Date(Math.max(switchedAt.getTime(), ...sourceItems.map((row) => row.updatedAt.getTime())) + 1);
+      for (const row of sourceItems) {
+        if (row.id === itemRow.id) continue;
+        const prior = reservationWorkflowV2DraftOf(row.state as State);
+        const nextRevision = Math.max(row.revision, row.revisionHead) + 1;
+        const generationId = randomUUID();
+        const invalidated = prior && invalidatePropertyDraft(prior, { generationId, revision: nextRevision, at: switchedAt.toISOString() });
+        const otherState = { ...withoutPropertyPreparation(row.state as State), propertyCode: ctx.propertyCode, generationId,
+          [RESERVATION_V2_PROPERTY_HISTORY_FLOOR_KEY]: nextRevision,
+          ...(invalidated ? { [RESERVATION_WORKFLOW_V2_STATE_KEY]: invalidated } : {}) };
+        const otherAdvanced = advancePaneRevision({ revision: nextRevision - 1, revisionHead: row.revisionHead,
+          seq: row.revisionSeq, previousState: otherState, nextState: otherState, extractionId: row.extractionId });
+        await tx.insert(workEvent).values({ workItemId: row.id, actorKind: 'user', actorUserId: ctx.userId ?? null,
+          type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:property`,
+          value: { propertyCode: ctx.propertyCode, generationId, invalidated: true }, evidence: otherAdvanced.evidence });
+        await tx.update(workItem).set({ state: otherState, revision: otherAdvanced.revision,
+          revisionHead: otherAdvanced.revisionHead, revisionSeq: row.revisionSeq + 1, updatedAt: switchedAt }).where(eq(workItem.id, row.id));
+      }
+      const state = { ...withoutPropertyPreparation(itemRow.state), propertyCode: ctx.propertyCode,
+        generationId: draft.generationId, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft,
+        [RESERVATION_V2_PROPERTY_HISTORY_FLOOR_KEY]: revision };
+      // Undo must not restore choices from the prior property into this generation.
+      const advanced = advancePaneRevision({ revision: revision - 1, revisionHead: itemRow.revisionHead,
+        seq: itemRow.revisionSeq, previousState: state, nextState: state, extractionId: itemRow.extractionId });
+      await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'user', actorUserId: ctx.userId ?? null,
+        type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:property`,
+        value: { propertyCode: ctx.propertyCode, generationId: draft.generationId }, evidence: advanced.evidence });
+      await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
+        revisionSeq: itemRow.revisionSeq + 1, updatedAt: selectedUpdatedAt }).where(eq(workItem.id, itemRow.id));
+      return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead,
+        seq: itemRow.revisionSeq + 1, ...(sourceChanged ? { sourceChanged: true } : {}) };
+    }
     if (existing) {
       const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
       return recoverSourceFields(tx, itemRow, current);

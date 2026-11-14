@@ -8,8 +8,9 @@ import {
   loadReadMailboxGrant,
 } from '../../hms/read-admission-issuer.js';
 import {
-  getCachedActiveReadRuntime,
+  getActiveReadRuntime,
   loadWorkerActiveReadSet,
+  resolveWorkerActiveReadPaths,
 } from '../../hms/active-read-runtime.js';
 import { folioReadSectionIdSchema, readRefSchema } from '../../hms/read-service-contracts.js';
 import { router as tRouter, privateProcedure, mailboxProcedure } from '../trpc.js';
@@ -27,6 +28,7 @@ import { getDb } from '../../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { propertySwitchSchema, resolvePropertyScope, type PropertyCode } from '../../hms/property-registry.js';
 
 const EXISTING_DOCUMENT_RELEASE_ID = 'mail-existing-documents-v1';
 const EXISTING_DOCUMENT_BRANCH_ID = 'mail_attachment_authorized';
@@ -56,25 +58,26 @@ function existingDocumentAdmissionRelease() {
   };
 }
 
-function requesterScopedReadKey(baseKey: string, accessId: string): string {
-  return `${baseKey}:access:${accessId}`;
+function requesterScopedReadKey(baseKey: string, accessId: string, propertyCode: PropertyCode = 'HRCEN'): string {
+  return `${baseKey}:access:${accessId}${propertyCode === 'HRCEN' ? '' : `:property:${propertyCode}`}`;
 }
 
-async function activeFindAdmission() {
-  let active = getCachedActiveReadRuntime();
-  if (!active) {
-    active = await loadWorkerActiveReadSet({
-      registryPath:
-        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
-        '/opt/nava/shared/hms-active-registry/active.json',
-      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
-      runtimeFingerprintSha256: runtimeFingerprintSha256({
-        sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.63.0',
-        chromiumRevision: '1243',
-      }),
-    });
-  }
+async function activeReadSet(propertyCode: PropertyCode) {
+  const existing = getActiveReadRuntime(propertyCode);
+  if (existing) return existing;
+  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim();
+  if (!root && propertyCode !== 'HRCEN') throw new TRPCError({ code: 'FORBIDDEN', message: 'HMS_READ_RELEASE_UNAVAILABLE' });
+  const paths = await resolveWorkerActiveReadPaths({ propertyCode, root,
+    legacyRegistryPath: process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() || '/opt/nava/shared/hms-active-registry/active.json',
+    legacyReleaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases' });
+  return loadWorkerActiveReadSet({ propertyCode, ...paths,
+    runtimeFingerprintSha256: runtimeFingerprintSha256({ sourceRevision: resolveHmsSourceRevision(),
+      playwrightRevision: '1.63.0', chromiumRevision: '1243' }),
+  });
+}
+
+async function activeFindAdmission(propertyCode: PropertyCode) {
+  const active = await activeReadSet(propertyCode);
   const release = active.releases.get('hms_find_reservation');
   const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
   const branch = hmsRelease?.requestBranches.find(
@@ -90,25 +93,12 @@ async function activeFindAdmission() {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
-    propertyCode: 'HRCEN',
+    propertyCode: propertyCode,
   };
 }
 
-async function activeQuoteAdmission() {
-  let active = getCachedActiveReadRuntime();
-  if (!active) {
-    active = await loadWorkerActiveReadSet({
-      registryPath:
-        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
-        '/opt/nava/shared/hms-active-registry/active.json',
-      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
-      runtimeFingerprintSha256: runtimeFingerprintSha256({
-        sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.63.0',
-        chromiumRevision: '1243',
-      }),
-    });
-  }
+async function activeQuoteAdmission(propertyCode: PropertyCode) {
+  const active = await activeReadSet(propertyCode);
   const release = active.releases.get('hms_quote_stay');
   const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
   const branch = hmsRelease?.requestBranches.find(
@@ -124,26 +114,13 @@ async function activeQuoteAdmission() {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
-    propertyCode: 'HRCEN',
+    propertyCode: propertyCode,
     sourceRevision: hmsRelease.sourceRevision,
   };
 }
 
-async function activeFolioAdmission(sections: readonly string[]) {
-  let active = getCachedActiveReadRuntime();
-  if (!active) {
-    active = await loadWorkerActiveReadSet({
-      registryPath:
-        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
-        '/opt/nava/shared/hms-active-registry/active.json',
-      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
-      runtimeFingerprintSha256: runtimeFingerprintSha256({
-        sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.63.0',
-        chromiumRevision: '1243',
-      }),
-    });
-  }
+async function activeFolioAdmission(sections: readonly string[], propertyCode: PropertyCode) {
+  const active = await activeReadSet(propertyCode);
   const release = active.releases.get('hms_read_folio');
   const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
   const branchId = sections.some((section) => ['deposits', 'transactions'].includes(section))
@@ -160,11 +137,12 @@ async function activeFolioAdmission(sections: readonly string[]) {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
-    propertyCode: 'HRCEN',
+    propertyCode: propertyCode,
   };
 }
 
 async function activeLinkedContextAdmission(input: {
+  propertyCode: PropertyCode;
   toolId:
     | 'hms_company_account_read'
     | 'hms_group_block_read'
@@ -177,20 +155,7 @@ async function activeLinkedContextAdmission(input: {
     | 'notes_traces_list';
   unavailableMessage: string;
 }) {
-  let active = getCachedActiveReadRuntime();
-  if (!active) {
-    active = await loadWorkerActiveReadSet({
-      registryPath:
-        process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() ||
-        '/opt/nava/shared/hms-active-registry/active.json',
-      releaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
-      runtimeFingerprintSha256: runtimeFingerprintSha256({
-        sourceRevision: resolveHmsSourceRevision(),
-        playwrightRevision: '1.63.0',
-        chromiumRevision: '1243',
-      }),
-    });
-  }
+  const active = await activeReadSet(input.propertyCode);
   const release = active.releases.get(input.toolId as never);
   const hmsRelease = release?.evidenceKind === 'hms' ? release : null;
   const branch = hmsRelease?.requestBranches.find((candidate) => candidate.id === input.branchId);
@@ -201,7 +166,7 @@ async function activeLinkedContextAdmission(input: {
     releaseId: hmsRelease.releaseId,
     requestBranchId: branch.id,
     manifestSha256: branch.manifestSha256,
-    propertyCode: 'HRCEN',
+    propertyCode: input.propertyCode,
     // The parent Guest Stay receipt is the source authority for a linked
     // context. Bind to its active revision, not the child tool's revision.
     sourceRevision:
@@ -320,6 +285,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         toolId: z.enum(['hms_find_reservation', 'hms_quote_stay']).default('hms_find_reservation'),
         quoteRequestRef: readRefSchema.optional(),
         detail: z.enum(['summary', 'detail']).default('summary'),
@@ -328,7 +294,8 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const isQuote = input.toolId === 'hms_quote_stay';
-      const release = isQuote ? await activeQuoteAdmission() : await activeFindAdmission();
+      const release = isQuote ? await activeQuoteAdmission(resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode) :
+        await activeFindAdmission(resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode);
       const readResultRef = `hms-read-${randomUUID()}`;
       const issued = await issueReadAdmissionFromMailbox({
         db,
@@ -350,7 +317,7 @@ export const aiRouter = tRouter({
             isQuote
               ? `hms-read-quote:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.quoteRequestRef}`
               : `hms-read-find:${ctx.activeTransportId}:${input.threadId}:${issued.triggerMessageId}:${issued.candidateId}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
@@ -379,6 +346,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         findResultRef: readRefSchema,
         sections: z
           .array(z.enum(['core', 'stay', 'rates', 'policies', 'operations']))
@@ -390,7 +358,7 @@ export const aiRouter = tRouter({
     )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
-      const release = await activeFindAdmission();
+      const release = await activeFindAdmission(resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode);
       const readResultRef = `hms-read-${randomUUID()}`;
       const issued = await issueReadAdmissionFromMailbox({
         db,
@@ -412,7 +380,7 @@ export const aiRouter = tRouter({
           runKind: 'read_tool',
           idempotencyKey: requesterScopedReadKey(
             `hms-read-context:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}:${input.detail}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
@@ -439,6 +407,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         findResultRef: readRefSchema,
         sections: z
           .array(folioReadSectionIdSchema)
@@ -449,7 +418,7 @@ export const aiRouter = tRouter({
     )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
-      const release = await activeFolioAdmission(input.sections);
+      const release = await activeFolioAdmission(input.sections, resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode);
       const readResultRef = `hms-read-${randomUUID()}`;
       const issued = await issueReadAdmissionFromMailbox({
         db,
@@ -470,7 +439,7 @@ export const aiRouter = tRouter({
           runKind: 'read_tool',
           idempotencyKey: requesterScopedReadKey(
             `hms-read-folio:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.sections.join(',')}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
@@ -497,6 +466,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         findResultRef: readRefSchema,
         reservationRef: readRefSchema,
       }),
@@ -504,6 +474,7 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const release = await activeLinkedContextAdmission({
+        propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode,
         toolId: 'hms_company_account_read',
         branchId: 'reservation_linked_company_billing',
         unavailableMessage: 'HMS_COMPANY_CONTEXT_RELEASE_UNAVAILABLE',
@@ -528,7 +499,7 @@ export const aiRouter = tRouter({
           runKind: 'read_tool',
           idempotencyKey: requesterScopedReadKey(
             `hms-read-company:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.reservationRef}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
@@ -552,6 +523,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         findResultRef: readRefSchema,
         groupRef: readRefSchema,
         sections: z
@@ -564,6 +536,7 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const release = await activeLinkedContextAdmission({
+        propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode,
         toolId: 'hms_group_block_read',
         branchId: 'group_block_list',
         unavailableMessage: 'HMS_GROUP_CONTEXT_RELEASE_UNAVAILABLE',
@@ -589,7 +562,7 @@ export const aiRouter = tRouter({
           runKind: 'read_tool',
           idempotencyKey: requesterScopedReadKey(
             `hms-read-group:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.groupRef}:${input.sections.join(',')}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
@@ -613,6 +586,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         findResultRef: readRefSchema,
         eventRef: readRefSchema,
       }),
@@ -620,6 +594,7 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const release = await activeLinkedContextAdmission({
+        propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode,
         toolId: 'hms_event_read',
         branchId: 'event_list',
         unavailableMessage: 'HMS_EVENT_CONTEXT_RELEASE_UNAVAILABLE',
@@ -644,7 +619,7 @@ export const aiRouter = tRouter({
           runKind: 'read_tool',
           idempotencyKey: requesterScopedReadKey(
             `hms-read-event:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.eventRef}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,
@@ -668,6 +643,7 @@ export const aiRouter = tRouter({
     .input(
       z.object({
         threadId: z.string().min(1),
+        propertySwitch: propertySwitchSchema.optional(),
         findResultRef: readRefSchema,
         resourceRef: readRefSchema,
         states: z
@@ -683,6 +659,7 @@ export const aiRouter = tRouter({
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       const release = await activeLinkedContextAdmission({
+        propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode,
         toolId: 'hms_read_notes_traces',
         branchId: 'notes_traces_list',
         unavailableMessage: 'HMS_NOTES_CONTEXT_RELEASE_UNAVAILABLE',
@@ -711,7 +688,7 @@ export const aiRouter = tRouter({
           runKind: 'read_tool',
           idempotencyKey: requesterScopedReadKey(
             `hms-read-notes:${ctx.activeTransportId}:${input.threadId}:${input.findResultRef}:${input.resourceRef}:${input.states.join(',')}:${input.limit}:${input.cursor ?? ''}:${input.audience}`,
-            issued.accessId,
+            issued.accessId, release.propertyCode,
           ),
           modelId: NOT_APPLICABLE_MODEL_ID,
           promptVersion: READ_TOOL_PROMPT_VERSION,

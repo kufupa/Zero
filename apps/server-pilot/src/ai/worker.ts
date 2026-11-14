@@ -73,6 +73,7 @@ import {
   type EnvInput,
 } from '../env.js';
 import { readToolExpectedPropertyCode } from '../hms/hms-read-target.js';
+import { bindHmsMailboxProperty, hmsPropertyReadEnabled } from '../hms/mailbox-hms-origin-bind.js';
 import {
   companyAccountContextDataSchema,
   eventContextDataSchema,
@@ -712,13 +713,10 @@ export type LiveHmsCandidateSessionFactoryOptions = {
   activeReadState?: import('../hms/active-read-runtime.js').ActiveReadRuntimeState;
 };
 
-/** Singleton production HMS runtime — one Chromium process per HMS worker. */
-let productionHmsRuntime: import('../hms/runtime.js').HmsRuntime | null | undefined;
+/** Runtime and activation authority are isolated by property. */
+const productionHmsRuntimes = new Map<import('../hms/property-registry.js').PropertyCode, import('../hms/runtime.js').HmsRuntime>();
+const productionActiveReadStates = new Map<import('../hms/property-registry.js').PropertyCode, import('../hms/active-read-runtime.js').ActiveReadRuntimeState>();
 
-let productionActiveReadState:
-  | import('../hms/active-read-runtime.js').ActiveReadRuntimeState
-  | null
-  | undefined;
 
 function synchronousReadError(code: 'READ_ABORTED' | 'READ_SYNC_DEADLINE', message: string) {
   return Object.assign(new Error(message), {
@@ -819,27 +817,42 @@ async function productionReadRuntimeFacts(
 ) {
   const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
   const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
-  const { loadWorkerActiveReadSet } = await import('../hms/active-read-runtime.js');
+  const { loadWorkerActiveReadSet, resolveWorkerActiveReadPaths } = await import('../hms/active-read-runtime.js');
   const sourceRevision = resolveHmsSourceRevision();
   const runtimeFp = runtimeFingerprintSha256({
     sourceRevision,
     playwrightRevision: '1.63.0',
     chromiumRevision: '1243',
   });
-  if (!productionActiveReadState) {
-    const load = () =>
-      loadWorkerActiveReadSet({
-        registryPath: config.activeRegistryPath,
-        releaseRoot: config.releaseRoot,
+  const { propertyCodeSchema } = await import('../hms/property-registry.js');
+  const propertyCode = propertyCodeSchema.parse(config.expectedPropertyCode);
+  let active = productionActiveReadStates.get(propertyCode);
+  if (!active) {
+    const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim();
+    const load = async () => {
+      const paths = await resolveWorkerActiveReadPaths({ propertyCode, root,
+        legacyRegistryPath: config.activeRegistryPath, legacyReleaseRoot: config.releaseRoot });
+      return loadWorkerActiveReadSet({
+        ...paths,
+        propertyCode,
         runtimeFingerprintSha256: runtimeFp,
       });
-    productionActiveReadState =
+    };
+    active =
       signal && deadlineAt
         ? await awaitSynchronousReadSetup({ operation: load, signal, deadlineAt })
         : await load();
     if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
+    productionActiveReadStates.set(propertyCode, active);
   }
-  return { sourceRevision, runtimeFp, active: productionActiveReadState };
+  return { sourceRevision, runtimeFp, active };
+}
+
+function assertHmsPropertyReadEnabled(propertyCode: string, toolId?: string, transportId?: string): void {
+  if (!hmsPropertyReadEnabled({ propertyCode, toolId }) || transportId &&
+      !bindHmsMailboxProperty({ transportId, propertyCode, toolId, origin: {} }).ok) {
+    throw Object.assign(new Error('HMS_PROPERTY_READ_DISABLED'), { failureClass: 'POLICY_BLOCK' as const });
+  }
 }
 
 async function getOrCreateProductionHmsRuntime(
@@ -847,11 +860,15 @@ async function getOrCreateProductionHmsRuntime(
   deadlineAt?: Date,
 ): Promise<import('../hms/runtime.js').HmsRuntime> {
   if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
-  if (productionHmsRuntime) return productionHmsRuntime;
   const { createProductionHmsRuntime } = await import('../hms/production-runtime.js');
   // The read lane is independent from draft mode: `off` still permits a
   // model-free browser runtime when the read service is enabled.
   const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  assertHmsPropertyReadEnabled(config.expectedPropertyCode);
+  const { propertyCodeSchema } = await import('../hms/property-registry.js');
+  const propertyCode = propertyCodeSchema.parse(config.expectedPropertyCode);
+  const cachedRuntime = productionHmsRuntimes.get(propertyCode);
+  if (cachedRuntime) return cachedRuntime;
   const evidenceKey = requireHmsEvidenceHmacChildKey(
     process.env as Record<string, string | undefined>,
   );
@@ -878,7 +895,7 @@ async function getOrCreateProductionHmsRuntime(
   let closeSequence = Promise.resolve();
   const closeOnFailure = async () => {
     // Never tear down a runtime that has become the shared worker singleton.
-    if (productionHmsRuntime === runtime) return;
+    if (productionHmsRuntimes.get(propertyCode) === runtime) return;
     const close = closeSequence.then(
       () => runtime.close(),
       () => runtime.close(),
@@ -900,7 +917,7 @@ async function getOrCreateProductionHmsRuntime(
     } else {
       await runtime.start(runtimeSignal);
     }
-    productionHmsRuntime = runtime;
+    productionHmsRuntimes.set(propertyCode, runtime);
     return runtime;
   } catch (error) {
     await closeOnFailure();
@@ -918,12 +935,12 @@ export async function __getOrCreateProductionHmsRuntimeForTests(
 
 /** Test / shutdown hook — closes singleton and clears handle. */
 export async function closeProductionHmsRuntimeForTests(): Promise<void> {
-  const rt = productionHmsRuntime;
-  productionHmsRuntime = null;
-  productionActiveReadState = null;
+  const runtimes = [...productionHmsRuntimes.values()];
+  productionHmsRuntimes.clear();
+  productionActiveReadStates.clear();
   const { clearCachedActiveReadRuntimeForTests } = await import('../hms/active-read-runtime.js');
   clearCachedActiveReadRuntimeForTests();
-  if (rt) await rt.close();
+  for (const runtime of runtimes) await runtime.close();
 }
 
 export function createLiveHmsCandidateSessionFactory(
@@ -938,11 +955,12 @@ export function createLiveHmsCandidateSessionFactory(
         { failureClass: 'AUTH' as const },
       );
     }
+    assertHmsPropertyReadEnabled(propertyCode, input.readToolId);
     const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime());
     const active =
       options.activeReadState ??
-      productionActiveReadState ??
-      (await import('../hms/active-read-runtime.js')).getCachedActiveReadRuntime() ??
+      productionActiveReadStates.get((await import('../hms/property-registry.js')).propertyCodeSchema.parse(propertyCode)) ??
+      (await import('../hms/active-read-runtime.js')).getActiveReadRuntime((await import('../hms/property-registry.js')).propertyCodeSchema.parse(propertyCode)) ??
       null;
     const { createLiveGuestStayDriver } = await import('../hms/live-guest-stay-driver.js');
     const { createReservationCandidateSession } = await import(
@@ -980,9 +998,28 @@ export function createLiveHmsCandidateSessionFactory(
       '../hms/live-read-manifest.js'
     );
     const { createReadToolHandler } = await import('../hms/read-handler-index.js');
-    const { CENTURION_HMS_PRODUCTION_ORIGIN, resolveHmsSourceRevision } = await import(
-      '../hms/production-runtime.js'
-    );
+    const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
+    const { getPropertyRegistration } = await import('../../tooling/hms-cloud/property-registry.mjs');
+    const registration = getPropertyRegistration(propertyCode);
+    if (!registration) throw new Error('unknown HMS property origin');
+    const origin = registration.origin;
+    const authIdentity = { propertyCode: registration.propertyCode, tenantId: registration.expectedTenant,
+      landingPropertyCode: registration.landingPropertyCode, origin };
+    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || '/etc/nava/hms-read-role-proofs/v2';
+    const { statSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const proofExists = (path: string) => {
+      try { statSync(path); return true; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    };
+    const roleProofPathFor = (toolId: string) => {
+      const partitioned = join(proofRoot, registration.propertyCode, `${toolId}.v2.json`);
+      if (proofExists(partitioned) || registration.propertyCode !== 'HRCEN') return partitioned;
+      const legacy = join(proofRoot, 'role-proofs', `${toolId}.v2.json`);
+      return proofExists(legacy) ? legacy : config.roleProofPath;
+    };
     const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
     const { createPostgresPropertyReadLock } = await import('../hms/property-read-lock.js');
     const workerEnv = parseEnv(process.env as Record<string, string | undefined>);
@@ -1113,7 +1150,6 @@ export function createLiveHmsCandidateSessionFactory(
           })
         : undefined,
       sessionAuthorizationFor: ({ candidate }) => {
-        const origin = CENTURION_HMS_PRODUCTION_ORIGIN;
         const manifest = candidate
           ? buildExactOsressSearchManifest(origin, candidate)
           : buildLiveGuestStayReadManifest(origin);
@@ -1121,11 +1157,12 @@ export function createLiveHmsCandidateSessionFactory(
         void liveNotFoundCanaryCandidate;
         const auth = buildHmsFindSessionAuthorization({
           operationId,
+          propertyCode: (propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') ? propertyCode : 'HRCEN',
           requestBranchId: input.readOnly
             ? input.readAdmission!.requestBranchId
             : 'guest_stay_search',
           manifest,
-          roleProofPath: config.roleProofPath,
+          roleProofPath: findRelease ? roleProofPathFor('hms_find_reservation') : config.roleProofPath,
           roleProofSha256: findRelease?.roleProofSha256 ?? placeholderDigest('role-proof'),
           credentialVersionHmacSha256:
             findRelease?.credentialVersionHmacSha256 ?? placeholderDigest('credential'),
@@ -1232,13 +1269,13 @@ export function createLiveHmsCandidateSessionFactory(
               })[0]!;
               const manifest =
                 branchId === 'folio_summary'
-                  ? buildLiveFolioReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
-                  : buildLiveDepositLedgerManifest(CENTURION_HMS_PRODUCTION_ORIGIN, propertyCode);
+                  ? buildLiveFolioReadManifest(origin)
+                  : buildLiveDepositLedgerManifest(origin, propertyCode);
               const authorization = buildHmsFolioSessionAuthorization({
-                operationId,
+                operationId, propertyCode: (propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') ? propertyCode : 'HRCEN',
                 requestBranchId: branchId,
                 manifest,
-                roleProofPath: config.roleProofPath,
+                roleProofPath: roleProofPathFor('hms_read_folio'),
                 roleProofSha256: folioRelease.roleProofSha256 ?? placeholderDigest('folio-role'),
                 credentialVersionHmacSha256:
                   folioRelease.credentialVersionHmacSha256 ?? placeholderDigest('folio-credential'),
@@ -1334,16 +1371,17 @@ export function createLiveHmsCandidateSessionFactory(
       }
       return {
         operationId,
+        ...authIdentity,
         toolId: inputData.toolId,
         discoveryOperationId: inputData.discoveryOperationId,
         releaseId: inputData.release.releaseId,
         requestBranchId: branch.id,
         manifest:
           inputData.toolId === 'hms_group_block_read'
-            ? buildLiveGroupBlockListManifest(CENTURION_HMS_PRODUCTION_ORIGIN)
-            : buildLiveGuestStayReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN),
+            ? buildLiveGroupBlockListManifest(origin)
+            : buildLiveGuestStayReadManifest(origin),
         manifestSha256: branch.manifestSha256,
-        roleProofPath: config.roleProofPath,
+        roleProofPath: roleProofPathFor(inputData.toolId),
         roleProofSha256: inputData.release.roleProofSha256 ?? placeholderDigest('u15-role'),
         credentialVersionHmacSha256:
           inputData.release.credentialVersionHmacSha256 ?? placeholderDigest('u15-credential'),
@@ -1535,13 +1573,14 @@ export function createLiveHmsCandidateSessionFactory(
             return observeNotesTraces(
               {
                 operationId,
+                ...authIdentity,
                 toolId: 'hms_read_notes_traces',
                 discoveryOperationId: 'notes_traces_list',
                 releaseId: notesRelease.releaseId,
                 requestBranchId: branch.id,
-                manifest: buildLiveGuestStayReadManifest(CENTURION_HMS_PRODUCTION_ORIGIN),
+                manifest: buildLiveGuestStayReadManifest(origin),
                 manifestSha256: branch.manifestSha256,
-                roleProofPath: config.roleProofPath,
+                roleProofPath: roleProofPathFor('hms_read_notes_traces'),
                 roleProofSha256: notesRelease.roleProofSha256 ?? placeholderDigest('notes-role'),
                 credentialVersionHmacSha256:
                   notesRelease.credentialVersionHmacSha256 ?? placeholderDigest('notes-credential'),
@@ -1594,9 +1633,9 @@ export function createLiveHmsCandidateSessionFactory(
       buildQuoteAuthorization: quoteRelease
         ? (quoteCand) => {
             const auth = buildHmsQuoteSessionAuthorization({
-              operationId,
-              manifest: buildExactOsrravSearchManifest(CENTURION_HMS_PRODUCTION_ORIGIN, quoteCand),
-              roleProofPath: config.roleProofPath,
+              operationId, propertyCode: (propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') ? propertyCode : 'HRCEN',
+              manifest: buildExactOsrravSearchManifest(origin, quoteCand),
+              roleProofPath: roleProofPathFor('hms_quote_stay'),
               roleProofSha256: quoteRelease.roleProofSha256 ?? placeholderDigest('quote-role'),
               credentialVersionHmacSha256:
                 quoteRelease.credentialVersionHmacSha256 ?? placeholderDigest('quote-credential'),
@@ -2896,6 +2935,9 @@ async function executeProductionReadTool(input: {
           ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
               .expectedPropertyCode
           : readToolExpectedPropertyCode(process.env);
+  if (request.toolId !== 'documents_list_existing' && request.toolId !== 'documents_read_existing') {
+    assertHmsPropertyReadEnabled(expectedPropertyCode, request.toolId, input.run.transportId);
+  }
   const admission = 'admission' in request ? request.admission : undefined;
   if (!admission) {
     throw Object.assign(new Error('read_tool requires trusted release/input/capture admission'), {

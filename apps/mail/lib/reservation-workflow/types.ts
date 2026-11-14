@@ -1,4 +1,8 @@
 import type { RowChange } from './views';
+import type { PropertyConfiguration } from '../../../server-pilot/src/hms/property-configuration.js';
+
+export type { PropertyConfiguration };
+export type PropertySwitch = 'HRDAV' | 'HRDAVS';
 import type {
   ReservationWorkflowV2Draft,
   ReservationWorkflowV2Source,
@@ -10,6 +14,8 @@ export type ReservationFieldOverride = ReservationWorkflowV2Draft['fieldOverride
 export type ReservationSourceContext = {
   mailboxId: string;
   propertyId: string;
+  propertySwitch?: PropertySwitch;
+  propertySelectionEpoch?: number;
   internetMessageId: string | null;
   messageId: string;
   threadId: string | null;

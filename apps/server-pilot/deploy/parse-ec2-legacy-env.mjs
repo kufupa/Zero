@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { validateRuntimeControl } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
 
 const QUOTED_ASSIGNMENT = /^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$/;
 const SAFE_UNQUOTED_ASSIGNMENT = /^([A-Z][A-Z0-9_]*)=([A-Za-z0-9_./:=?@%+,-]+)$/;
@@ -33,6 +34,7 @@ function quote(value) {
 
 function validateReleaseControl(key, value) {
   if (value === undefined || value === '') return;
+  validateRuntimeControl(key, value);
   const groups = [
     [['PANE_WRITE_CREATE', 'PANE_WRITE_AMEND', 'PANE_WRITE_AMEND_UNPAID', 'PANE_WRITE_AMEND_PAID',
       'PANE_WRITE_CANCEL_UNPAID', 'PANE_WRITE_CANCEL_PAID', 'PANE_WRITE_ATTACH'], ['off', 'lab', 'on']],
@@ -74,6 +76,7 @@ try {
   }
 
   const values = parseAssignments(readFileSync(legacyEnvPath, 'utf8'));
+  for (const [key, value] of values) validateRuntimeControl(key, value);
   if (values.get('NODE_ENV') !== 'production') throw new Error('invalid');
   for (const key of ['DATABASE_URL', 'AWS_REGION', 'S3_BUCKET']) {
     if (values.get(key)?.trim().length === 0 || !values.has(key)) {

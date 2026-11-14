@@ -7,10 +7,12 @@ import { useQuoteOutput } from './use-quote-output';
 import type { SaveQuoteOutput } from './quote-output-panel';
 import { snapshotMatchesSource } from '@/lib/reservation-workflow/views';
 import { ReservationPane } from './reservation-pane';
-import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient } from '@/lib/reservation-workflow/types';
+import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, PropertyConfiguration } from '@/lib/reservation-workflow/types';
 
 export type ReservationWorkspaceProps = {
   source: ReservationSourceContext;
+  configuration: PropertyConfiguration | null;
+  activeProperty: PropertyConfiguration['propertyCode'] | undefined;
   client: ReservationWorkflowClient;
   bridge?: PaneBridge; hostType?: 'webmail' | 'outlook';
   onOpenEvidence?: (ref: string) => void;
@@ -18,7 +20,7 @@ export type ReservationWorkspaceProps = {
 };
 
 /** New shared Outlook/webmail mount. Host auth, bridge, mailbox and source resolution remain outside. */
-export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAttachment, bridge, hostType = 'webmail' }: ReservationWorkspaceProps) {
+export function ReservationWorkspace({ source, activeProperty, configuration, client, onOpenEvidence, onOpenAttachment, bridge, hostType = 'webmail' }: ReservationWorkspaceProps) {
   const [boundSnapshot, setBoundSnapshot] = useState<{ key: string; value: ReservationPaneSnapshot } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const activeSource = useRef('');
@@ -135,7 +137,7 @@ export function ReservationWorkspace({ source, client, onOpenEvidence, onOpenAtt
     return () => { live = false; clearTimeout(timer); };
   }, [client, key, snapshot, source]);
 
-  return <><ReservationPane source={source} client={client} snapshot={snapshotMatchesSource(snapshot, source) ? snapshot : null} loadError={loadError} onSnapshot={acceptSnapshot}
+  return <><ReservationPane source={source} activeProperty={activeProperty} configuration={configuration} client={client} snapshot={snapshotMatchesSource(snapshot, source) ? snapshot : null} loadError={loadError} onSnapshot={acceptSnapshot}
     onOpenEvidence={onOpenEvidence} onOpenAttachment={onOpenAttachment} onSaveQuoteOutput={saveQuoteOutput} />
     <Dialog open={Boolean(confirmation)} onOpenChange={open => { if (!open) finishConfirmation(false); }}>
       <DialogContent showOverlay><DialogTitle>Save quotation reply</DialogTitle><DialogDescription>{confirmation?.message}</DialogDescription>

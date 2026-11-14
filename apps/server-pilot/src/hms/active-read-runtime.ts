@@ -7,6 +7,7 @@ import {
   isRegistryCutoverComplete,
   loadValidatedActiveReadSet,
   sha256Hex,
+  assertHmsPropertyIdentity,
   type HmsActiveRegistryV2,
   type HmsPortfolioToolReleaseV2,
   type HmsSessionAuthorization,
@@ -21,8 +22,11 @@ import {
 } from './read-handler-index.js';
 import type { RequestPolicyManifest } from './contracts.js';
 import type { ActiveReadToolId, ReadToolId } from './read-tools.js';
-import { access } from 'node:fs/promises';
+import { access, lstat, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import type { PropertyCode } from './property-registry.js';
 
 /** Well-known Phase A find lease id — not a promoted release. */
 export const PHASE_A_FIND_LEASE_RELEASE_ID = '00000000-0000-4000-8000-0000000000a1';
@@ -77,19 +81,43 @@ export function availableImplementationDigestsFromHandlerIndex(): Map<
   return map;
 }
 
-let cached: ActiveReadRuntimeState | null = null;
+const cached = new Map<PropertyCode, ActiveReadRuntimeState>();
 
+export function getActiveReadRuntime(propertyCode: PropertyCode): ActiveReadRuntimeState | null {
+  return cached.get(propertyCode) ?? null;
+}
+/** Legacy route callers use the HRCEN partition explicitly. */
 export function getCachedActiveReadRuntime(): ActiveReadRuntimeState | null {
-  return cached;
+  return getActiveReadRuntime('HRCEN');
 }
-
-export function clearCachedActiveReadRuntimeForTests(): void {
-  cached = null;
-}
-
-/** Test-only registry injection for route/worker contract tests; production never calls this. */
+export function clearCachedActiveReadRuntimeForTests(): void { cached.clear(); }
 export function __setCachedActiveReadRuntimeForTests(state: ActiveReadRuntimeState | null): void {
-  cached = state;
+  if (state) cached.set('HRCEN', state); else cached.delete('HRCEN');
+}
+
+export async function resolveWorkerActiveReadPaths(input: {
+  propertyCode: PropertyCode; root?: string; legacyRegistryPath: string; legacyReleaseRoot: string;
+}): Promise<{ registryPath: string; releaseRoot: string }> {
+  const legacy = { registryPath: input.legacyRegistryPath, releaseRoot: input.legacyReleaseRoot };
+  const root = input.root;
+  if (!root) return input.propertyCode === 'HRCEN' ? legacy : { registryPath: '', releaseRoot: '' };
+  const partition = { registryPath: join(root, input.propertyCode, 'active-registry.v2.json'),
+    releaseRoot: join(root, input.propertyCode, 'releases') };
+  if (input.propertyCode === 'HRCEN') {
+    try { await lstat(partition.registryPath); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      for (const directory of [root, join(root, input.propertyCode)]) {
+        let entry;
+        try { entry = await lstat(directory); } catch (directoryError) {
+          if ((directoryError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw directoryError;
+        }
+        if (entry.isSymbolicLink()) await stat(directory);
+      }
+      return legacy;
+    }
+  }
+  return partition;
 }
 
 /**
@@ -101,16 +129,21 @@ export async function loadWorkerActiveReadSet(input: {
   registryPath: string;
   releaseRoot: string;
   runtimeFingerprintSha256: string;
+  propertyCode?: PropertyCode;
 }): Promise<ActiveReadRuntimeState> {
+  const propertyCode = input.propertyCode ?? 'HRCEN';
   try {
     await access(input.registryPath);
-  } catch {
-    cached = emptyState();
-    return cached;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    const empty = emptyState();
+    cached.set(propertyCode, empty);
+    return empty;
   }
 
   const loaded = await loadValidatedActiveReadSet({
     registryPath: input.registryPath,
+    propertyCode,
     releaseRoot: input.releaseRoot,
     runtimeAbiVersion: HMS_RUNTIME_ABI_VERSION,
     runtimeFingerprintSha256: input.runtimeFingerprintSha256,
@@ -137,7 +170,7 @@ export async function loadWorkerActiveReadSet(input: {
     handlerPathActive,
   });
 
-  cached = {
+  const state = {
     releases: loaded.releases,
     predecessors: loaded.predecessors,
     toolIds: loaded.toolIds,
@@ -145,11 +178,34 @@ export async function loadWorkerActiveReadSet(input: {
     handlerPathActive,
     cutoverComplete,
   };
-  return cached;
+  cached.set(propertyCode, state);
+  return state;
+}
+
+function authorizationIdentity(input: {
+  propertyCode?: PropertyCode; roleProofSha256: string; credentialVersionHmacSha256: string;
+  runtimeFingerprintSha256: string; privateDigestKeyVersion: string; sourceRevision: string;
+}, release: Extract<HmsPortfolioToolReleaseV2, { evidenceKind: 'hms' }> | null) {
+  const propertyCode = input.propertyCode ?? 'HRCEN';
+  const property = getPropertyRegistration(propertyCode);
+  if (!property) throw new Error('unknown authorization property');
+  if (release) {
+    assertHmsPropertyIdentity(release, propertyCode);
+    if (release.roleProofSha256 !== input.roleProofSha256 ||
+        release.credentialVersionHmacSha256 !== input.credentialVersionHmacSha256 ||
+        release.runtimeFingerprintSha256 !== input.runtimeFingerprintSha256 ||
+        release.privateDigestKeyVersion !== input.privateDigestKeyVersion || release.sourceRevision !== input.sourceRevision) {
+      throw new Error('release and authorization evidence mismatch');
+    }
+  } else if (propertyCode !== 'HRCEN') {
+    throw new Error('property requires an active HMS release');
+  }
+  return { propertyCode, tenantId: property.expectedTenant, landingPropertyCode: property.landingPropertyCode, origin: property.origin };
 }
 
 export function buildHmsFindSessionAuthorization(input: {
   operationId: string;
+  propertyCode?: PropertyCode;
   requestBranchId: string;
   manifest: RequestPolicyManifest;
   roleProofPath: string;
@@ -162,6 +218,7 @@ export function buildHmsFindSessionAuthorization(input: {
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
   const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
+  const identity = authorizationIdentity(input, release);
   const branch = release?.requestBranches.find((b) => b.id === input.requestBranchId) ?? null;
   if (release && !branch) {
     throw new Error(`request branch is not enabled on release: ${input.requestBranchId}`);
@@ -172,6 +229,7 @@ export function buildHmsFindSessionAuthorization(input: {
   }
   return {
     operationId: input.operationId,
+    ...identity,
     toolId: 'hms_find_reservation',
     discoveryOperationId: branch?.discoveryOperationId ?? 'guest_stay_search',
     releaseId: release?.releaseId ?? PHASE_A_FIND_LEASE_RELEASE_ID,
@@ -199,6 +257,7 @@ export function assertFindHandlerBound(
 
 export function buildHmsQuoteSessionAuthorization(input: {
   operationId: string;
+  propertyCode?: PropertyCode;
   manifest: RequestPolicyManifest;
   roleProofPath: string;
   roleProofSha256: string;
@@ -210,6 +269,7 @@ export function buildHmsQuoteSessionAuthorization(input: {
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
   const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
+  const identity = authorizationIdentity(input, release);
   const branch =
     release?.requestBranches.find((b) => b.id === 'quote_availability_search') ??
     release?.requestBranches[0] ??
@@ -221,6 +281,7 @@ export function buildHmsQuoteSessionAuthorization(input: {
 
   return {
     operationId: input.operationId,
+    ...identity,
     toolId: 'hms_quote_stay',
     discoveryOperationId: branch?.discoveryOperationId ?? 'quote_availability_search',
     releaseId: release?.releaseId ?? randomUUID(),
@@ -240,6 +301,7 @@ export function buildHmsQuoteSessionAuthorization(input: {
 
 export function buildHmsFolioSessionAuthorization(input: {
   operationId: string;
+  propertyCode?: PropertyCode;
   requestBranchId: 'folio_summary' | 'deposit_ledger_summary';
   manifest: RequestPolicyManifest;
   roleProofPath: string;
@@ -252,6 +314,7 @@ export function buildHmsFolioSessionAuthorization(input: {
   release?: HmsPortfolioToolReleaseV2 | null;
 }): HmsSessionAuthorization {
   const release = input.release && input.release.evidenceKind === 'hms' ? input.release : null;
+  const identity = authorizationIdentity(input, release);
   if (release && release.toolId !== 'hms_read_folio') {
     throw new Error('folio authorization requires hms_read_folio release');
   }
@@ -266,6 +329,7 @@ export function buildHmsFolioSessionAuthorization(input: {
 
   return {
     operationId: input.operationId,
+    ...identity,
     toolId: 'hms_read_folio',
     discoveryOperationId: branch?.discoveryOperationId ?? input.requestBranchId,
     releaseId: release?.releaseId ?? randomUUID(),

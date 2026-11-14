@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto';
+import { propertyConfigurationSchema, type PropertyConfiguration } from './property-configuration.js';
+import { resolvePropertyScope, type ResolvedPropertyScope } from './property-registry.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
 import { readShuttleProviderConfig, type ShuttleProviderConfig } from '../ai/shuttle-draft.js';
 import {
@@ -10,7 +14,7 @@ import { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE
 export { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE_CODES, CENTURION_EVENT_RATE_CODES };
 export type { CenturionRateBoard, CenturionRatePlan, CenturionRateCode, CenturionRateCatalogueEntry } from './centurion-rate-catalogue.js';
 
-type HmsPropertyCode = 'HRCEN' | 'HRDAV';
+type HmsPropertyCode = 'HRCEN' | 'HRDAV' | 'HRDAVS';
 type QuotePaneBoard = 'room_only' | 'bb' | 'dinner_bb';
 type PropertyRatePlan = CenturionRatePlan & { code: string };
 type NativeRatePlan = { code: string; name: string };
@@ -101,7 +105,9 @@ export async function loadNativeRatePlans(
   propertyCode: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<NativeRatePlan[] | null> {
-  const path = env.HMS_NATIVE_CATALOG_PATH;
+  const path = propertyCode === 'HRCEN' ? env.HMS_NATIVE_CATALOG_PATH :
+    propertyCode === 'HRDAV' ? env.HMS_NATIVE_CATALOG_PATH_HRDAV :
+    propertyCode === 'HRDAVS' ? env.HMS_NATIVE_CATALOG_PATH_HRDAVS : undefined;
   if (!path) return null;
   const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href) as {
     loadHmsNativeCatalog: (input: { path: string; propertyCode: string }) => Promise<
@@ -124,7 +130,7 @@ export async function loadNativeRatePlans(
 }
 
 /** Build safe pane choices for a property already resolved from the active mailbox registry entry. */
-export async function quotePaneConfigForProperty(
+async function legacyQuotePaneConfigForProperty(
   propertyCode: string,
   transportId: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -169,4 +175,95 @@ export async function quotePaneConfigForProperty(
     eventRateCodes: ratePlans.filter(({ event }) => event).map(({ code }) => code),
     shuttle: readShuttleProviderConfig((profile as PropertyProfile & { shuttle?: unknown }).shuttle),
   };
+}
+
+/** Property-scoped pane configuration; missing native evidence stays explicitly unknown. */
+export async function propertyConfigurationForScope(
+  scope: ResolvedPropertyScope,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<PropertyConfiguration> {
+  const legacy = await legacyQuotePaneConfigForProperty(scope.propertyCode, scope.transportId, env);
+  let ratePlans = legacy?.ratePlans ?? [];
+  let roomTypes = legacy?.roomTypes ?? [];
+  const catalogPath = scope.propertyCode === 'HRCEN' ? env.HMS_NATIVE_CATALOG_PATH :
+    scope.propertyCode === 'HRDAV' ? env.HMS_NATIVE_CATALOG_PATH_HRDAV : env.HMS_NATIVE_CATALOG_PATH_HRDAVS;
+  let catalogue: PropertyConfiguration['catalogue'] = { identity: null, capturedAt: null, expiresAt: null,
+    coverage: { rates: 'unknown', roomTypes: 'unknown', mealPlans: 'unknown' } };
+  if (catalogPath) {
+    const { loadHmsNativeCatalog } = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href) as {
+      loadHmsNativeCatalog: (input: { path: string; propertyCode: string }) => Promise<{ status: string; catalog?: {
+        schemaVersion: string; capturedAt: string; maxAgeMs?: number; sourceRevision?: string;
+        catalogs?: Record<string, { coverage?: { complete?: boolean }; records?: unknown[] }> } }>;
+    };
+    const result = await loadHmsNativeCatalog({ path: catalogPath, propertyCode: scope.propertyCode });
+    const data = result.status === 'available' ? result.catalog : undefined;
+    if (data) {
+      const coverage = (kind: string): 'complete' | 'partial' | 'unknown' => {
+        const section = data.catalogs?.[kind];
+        return !section ? 'unknown' : section.coverage?.complete === true ? 'complete' : 'partial';
+      };
+      const identity = createHash('sha256').update(JSON.stringify(data)).digest('hex');
+      catalogue = { identity, capturedAt: data.capturedAt,
+        expiresAt: data.maxAgeMs ? new Date(Date.parse(data.capturedAt) + data.maxAgeMs).toISOString() : null,
+        coverage: { rates: coverage('ratePlans'), roomTypes: coverage('roomTypes'), mealPlans: 'unknown' } };
+      if (scope.group === 'davinci') {
+        const records = (kind: string): Array<{ code: string; meaning: string }> =>
+          (data.catalogs?.[kind]?.records ?? []).flatMap((raw) => {
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+            const row = raw as Record<string, unknown>;
+            const code = typeof row.code === 'string' ? row.code.trim() : '';
+            const meaning = typeof row.meaning === 'string' ? row.meaning.trim() : '';
+            return code ? [{ code, meaning: meaning || code }] : [];
+          });
+        ratePlans = records('ratePlans').map(({ code, meaning }) => {
+          const known = legacy?.ratePlans.find((entry) => entry.code === code);
+          return known ? { ...known, name: meaning } : { code, name: meaning, mealPlan: 'unknown' as const };
+        });
+        roomTypes = records('roomTypes').map(({ code, meaning }) => ({ code, label: meaning }));
+      }
+    }
+  }
+  if (scope.group === 'davinci' && catalogue.identity === null) {
+    ratePlans = [];
+    roomTypes = [];
+  }
+  const capability = (workflow: 'reads' | 'quote' | 'create' | 'amend' | 'cancel' | 'attach' | 'addons' | 'guest_profile_create') => {
+    const status = scope.group === 'davinci' ? 'unavailable' : effectiveWorkflowPolicy(env, scope.propertyCode, workflow).capability;
+    return { status, reason: status === 'unavailable' ? 'This workflow is not available for this property yet.' : null };
+  };
+  return propertyConfigurationSchema.parse({
+    transportId: scope.transportId, propertyCode: scope.propertyCode, tenantId: scope.tenantId,
+    roomTypes, ratePlans, rates: ratePlans,
+    mealPlans: scope.group === 'davinci' ? boardsForPlans(ratePlans) : legacy?.mealPlans ?? [],
+    nativeMealMappings: scope.propertyCode === 'HRCEN' ? [
+      { label: 'Room Only R', mealPlan: 'room_only' },
+      { label: 'Bed & Breakfast R', mealPlan: 'bb' },
+      ...['Dinner Bed & Breakfast R', 'Dinner, Bed & Breakfast R', 'Dinner, Bed, Breakfast & Beverage R']
+        .map((label) => ({ label, mealPlan: 'dinner_bb' })),
+    ] : [],
+    salesStrategies: scope.group === 'davinci' ? [] : legacy?.salesStrategies ?? [],
+    overrideRateCodes: (legacy?.overrideRateCodes ?? []).filter((code) => scope.group === 'centurion' || ratePlans.some((plan) => plan.code === code)),
+    eventRateCodes: (legacy?.eventRateCodes ?? []).filter((code) => scope.group === 'centurion' || ratePlans.some((plan) => plan.code === code)),
+    shuttle: legacy?.shuttle,
+    formPolicy: { requiredFields: [], guestOptIn: 'unknown', cancellation: 'unknown',
+      guaranteeChoices: [], cmsChoices: [], childCategoryPolicy: 'discover_active' },
+    capabilities: { reads: capability('reads'), quote: capability('quote'), create: capability('create'),
+      amend: capability('amend'), cancel: capability('cancel'), attach: capability('attach'),
+      addons: capability('addons'), guest_profile_create: capability('guest_profile_create') },
+    catalogue,
+  });
+}
+
+/** Compatibility helper for existing explicit-property callers. */
+export async function quotePaneConfigForProperty(
+  propertyCode: string, transportId: string, env: NodeJS.ProcessEnv = process.env,
+): Promise<PropertyConfiguration | null> {
+  try {
+    const propertySwitch = propertyCode === 'HRDAV' || propertyCode === 'HRDAVS' ? propertyCode : undefined;
+    const scope = resolvePropertyScope({ transportId, propertySwitch });
+    if (scope.propertyCode !== propertyCode) return null;
+    return propertyConfigurationForScope(scope, env);
+  } catch {
+    return null;
+  }
 }

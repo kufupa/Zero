@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const clean = value => value == null ? null : String(value).trim() || null;
 const fields = {
@@ -47,7 +48,8 @@ export function validateRateMealReadback({ propertyCode, selection, form, observ
 }
 
 /** Normalize private read results without promoting filtered or partial grids to whole catalogs. */
-export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, catalogs, commissionMapping, rateMealReadbacks = [] } = {}) {
+export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, catalogs, commissionMapping, rateMealReadbacks = [],
+  tenantId, landingPropertyCode, credentialRef, credentialVersionHmacSha256, sourceRevision, maxAgeMs } = {}) {
   const property = clean(propertyCode)?.toUpperCase();
   if (!property || !Number.isFinite(Date.parse(capturedAt)) || !clean(source) || !catalogs || typeof catalogs !== 'object') {
     throw new TypeError('Catalog property, capture time, source and results are required.');
@@ -98,19 +100,49 @@ export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, ca
       return [base];
     }) };
   }
-  return { schemaVersion: 'hms-native-catalogs/v1', propertyCode: property, capturedAt: time,
+  const registration = getPropertyRegistration(property);
+  if (!registration) throw new TypeError('Unknown catalog property.');
+  const hasIdentity = tenantId !== undefined || landingPropertyCode !== undefined || credentialRef !== undefined ||
+    credentialVersionHmacSha256 !== undefined || sourceRevision !== undefined || maxAgeMs !== undefined;
+  if (!hasIdentity && property === 'HRCEN') return { schemaVersion: 'hms-native-catalogs/v1', propertyCode: property,
+    capturedAt: time, source: { reader: source }, catalogs: normalized };
+  if (tenantId !== registration.expectedTenant || landingPropertyCode !== registration.landingPropertyCode ||
+      credentialRef !== registration.credentialSecretRef || !/^[a-f0-9]{64}$/.test(credentialVersionHmacSha256 || '') ||
+      !clean(sourceRevision) || !Number.isSafeInteger(maxAgeMs) || maxAgeMs <= 0) {
+    throw new TypeError('Catalog property identity, credential binding, source revision and TTL are required.');
+  }
+  return { schemaVersion: 'hms-native-catalogs/v2', propertyCode: property, tenantId, landingPropertyCode,
+    credentialRef, credentialVersionHmacSha256, sourceRevision, maxAgeMs, capturedAt: time,
     source: { reader: source }, catalogs: normalized };
 }
 
 /** Preserve absence and invalid artifacts as explicit unavailable states. */
-export async function loadHmsNativeCatalog({ path, propertyCode } = {}) {
-  if (!path || !propertyCode) return { status: 'unavailable', issue: 'catalog_path_or_property_missing' };
+export async function loadHmsNativeCatalog({ path, propertyCode, tenantId, landingPropertyCode, credentialRef,
+  credentialVersionHmacSha256, sourceRevision, now = new Date() } = {}) {
+  const property = getPropertyRegistration(propertyCode);
+  if (!path || !property) return { status: 'unavailable', issue: 'catalog_path_or_property_missing' };
   try {
     const catalog = JSON.parse(await readFile(path, 'utf8'));
-    if (catalog?.schemaVersion !== 'hms-native-catalogs/v1' || catalog.propertyCode !== propertyCode ||
-        !Number.isFinite(Date.parse(catalog.capturedAt)) || !catalog.catalogs || typeof catalog.catalogs !== 'object') {
+    const capture = Date.parse(catalog?.capturedAt), current = now.getTime();
+    if (catalog?.propertyCode !== propertyCode || !Number.isFinite(capture) || !Number.isFinite(current) || capture > current ||
+        !catalog.catalogs || typeof catalog.catalogs !== 'object' || Array.isArray(catalog.catalogs)) {
       return { status: 'unavailable', issue: 'catalog_invalid' };
     }
+    if (catalog.schemaVersion === 'hms-native-catalogs/v1') {
+      return propertyCode === 'HRCEN' ? { status: 'available', catalog } : { status: 'unavailable', issue: 'catalog_identity_unverified' };
+    }
+    if (catalog.schemaVersion !== 'hms-native-catalogs/v2' || catalog.tenantId !== property.expectedTenant ||
+        catalog.landingPropertyCode !== property.landingPropertyCode || catalog.credentialRef !== property.credentialSecretRef ||
+        (tenantId !== undefined && catalog.tenantId !== tenantId) ||
+        (landingPropertyCode !== undefined && catalog.landingPropertyCode !== landingPropertyCode) ||
+        (credentialRef !== undefined && catalog.credentialRef !== credentialRef) ||
+        !/^[a-f0-9]{64}$/.test(catalog.credentialVersionHmacSha256 || '') ||
+        (credentialVersionHmacSha256 !== undefined && catalog.credentialVersionHmacSha256 !== credentialVersionHmacSha256) ||
+        !clean(catalog.sourceRevision) || (sourceRevision !== undefined && catalog.sourceRevision !== sourceRevision) ||
+        !Number.isSafeInteger(catalog.maxAgeMs) || catalog.maxAgeMs <= 0) {
+      return { status: 'unavailable', issue: 'catalog_identity_unverified' };
+    }
+    if (capture + catalog.maxAgeMs <= current) return { status: 'unavailable', issue: 'catalog_stale' };
     return { status: 'available', catalog };
   } catch (error) {
     return { status: 'unavailable', issue: ['ENOENT', 'EACCES', 'ENOTDIR'].includes(error?.code) ? 'catalog_files_unavailable' : 'catalog_invalid' };

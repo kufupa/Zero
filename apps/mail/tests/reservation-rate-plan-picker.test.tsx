@@ -5,6 +5,14 @@ import { nativeChoices } from '../lib/reservation-workflow/views';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const path = '/proposal/content/requests/quote-1/body/groups/0/ratePlan';
+const configuration = {
+  transportId: 'transport-1', propertyCode: 'HRCEN',
+  ratePlans: [
+    { code: 'BAR', name: 'Best Available Rate', mealPlan: 'bed_breakfast' },
+    { code: 'BARRO', name: 'Room Only', mealPlan: 'room_only' },
+    { code: 'NCOR1B', name: 'Corporate', mealPlan: 'unknown' },
+  ],
+} as any;
 
 function snapshot(observations: Record<string, unknown>[], propertyCode = 'HRCEN') {
   const request = {
@@ -16,6 +24,7 @@ function snapshot(observations: Record<string, unknown>[], propertyCode = 'HRCEN
   return {
     session: {
       draft: {
+        transportId: 'transport-1',
         generationId: 'generation-1',
         propertyCode,
         source: { messageId: 'message-1', sourceHash: 'source-hash-1' },
@@ -68,8 +77,8 @@ function rateOptionsObservation() {
 describe('reservation Rate Plan picker', () => {
   afterEach(cleanup);
 
-  it('merges static rate codes behind priced offers and lets the offer win duplicate codes', () => {
-    const choices = nativeChoices(snapshot([rateOptionsObservation()]), path, 'rate_plan');
+  it('merges configured rate codes behind priced offers and lets the offer win duplicate codes', () => {
+    const choices = nativeChoices(snapshot([rateOptionsObservation()]), path, 'rate_plan', configuration);
 
     expect(choices.find((choice) => choice.value === 'BAR')).toMatchObject({
       ref: 'rate-options-1',
@@ -104,6 +113,7 @@ describe('reservation Rate Plan picker', () => {
     const edit = vi.fn().mockResolvedValue(undefined);
     const value = {
       snapshot: snapshot([]),
+      configuration,
       request: { id: 'quote-1', kind: 'quote' },
       view: { busy: false, error: null, preview: false, saving: false },
       commands: {
@@ -159,6 +169,7 @@ describe('reservation Rate Plan picker', () => {
           },
         ],
       },
+      configuration,
       request: { id: 'create-1', kind: 'create' },
       view: { busy: false, error: null, preview: false, saving: false },
       commands: {

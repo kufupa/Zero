@@ -2,7 +2,6 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { autoTransferHistory, effectiveAt, hasCompleteNativeCatalogue, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { CENTURION_RATE_CATALOGUE } from '../../../../server-pilot/src/hms/centurion-rate-catalogue';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
@@ -50,7 +49,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
   const catalogueField = ['create', 'quote', 'amend'].includes(editor.request.kind) &&
     ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business', 'track'].includes(choiceKind ?? '');
-  const observedChoices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
+  const observedChoices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind, editor.configuration);
   const rateCatalogueObserved = choiceKind === 'rate_plan' && editor.snapshot.session.draft.observations.some((observation) => {
     const criteria = record(observation.criteria);
     return observation.generationId === editor.snapshot.session.draft.generationId &&
@@ -142,9 +141,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         // Quote groups alone auto-fill mealPlan from known Centurion boards. Create
         // keeps mealPlan as a staff override — writing it here leaves a stale board
         // after switching to an unknown-board rate (e.g. BARRO → NCOR1B).
-        const board = editor.request.kind === 'quote' && editor.snapshot.session.draft.propertyCode === 'HRCEN' &&
+        const board = editor.request.kind === 'quote' && editor.configuration?.propertyCode === editor.snapshot.session.draft.propertyCode &&
           choiceKind === 'rate_plan' && path.endsWith('/ratePlan')
-          ? CENTURION_RATE_CATALOGUE[value as keyof typeof CENTURION_RATE_CATALOGUE]?.mealPlan : undefined;
+          ? editor.configuration.ratePlans.find(rate => rate.code === value)?.mealPlan : undefined;
         const mealPlan = board === 'bed_breakfast' ? 'bb' : board === 'dinner_bed_breakfast' ? 'dinner_bb' : board;
         if (mealPlan && mealPlan !== 'unknown')
           await editor.commands.edit(path.replace(/\/ratePlan$/u, '/mealPlan'), mealPlan);

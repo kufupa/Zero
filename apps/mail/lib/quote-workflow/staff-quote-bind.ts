@@ -32,6 +32,7 @@ import type {
   QuoteSalesStrategyValue,
   QuoteStrategyRow,
   QuoteFailureCauseClass,
+  QuotePaneConfig,
 } from './types';
 import {
   HRCEN_PROPERTY_CODE,
@@ -455,11 +456,22 @@ export function resolveNativeRoomCodes(input: {
   roomPreference?: string;
   roomCodes?: string[];
   propertyCode?: string;
+  configuration?: QuotePaneConfig | null;
 }): NativeRoomCodeResolution {
+  const configuredCode = (raw: string, allowUnobservedCode = false): string | null => {
+    if (!input.configuration) return knownNativeCode(raw, input.propertyCode);
+    const code = raw.trim().toUpperCase();
+    const match = input.configuration.roomTypes.find(room => room.code.toUpperCase() === code) ??
+      matchConfiguredRoomType([raw], input.configuration.roomTypes);
+    if (match) return match.code;
+    // Incomplete catalogues cannot disprove a staff-entered code; HMS checks it during Prepare.
+    return allowUnobservedCode && input.configuration.catalogue?.coverage.roomTypes !== 'complete' &&
+      /^[A-Z0-9]{1,12}$/.test(code) ? code : null;
+  };
   if (input.roomCodes?.length) {
     const codes: string[] = [];
     for (const raw of input.roomCodes) {
-      const code = knownNativeCode(raw, input.propertyCode);
+      const code = configuredCode(raw, true);
       if (!code) return { status: 'unresolved', label: raw.trim() || '(empty code)' };
       codes.push(code);
     }
@@ -472,7 +484,9 @@ export function resolveNativeRoomCodes(input: {
     (input.propertyCode !== undefined && input.propertyCode !== HRCEN_PROPERTY_CODE)
       ? null
       : unpickedTwinRoomCode(raw);
-  const code = knownNativeCode(raw, input.propertyCode) ?? twin ?? null;
+  const legacyTwin = twin && (!input.configuration || input.configuration.catalogue?.coverage.roomTypes !== 'complete' ||
+    input.configuration.roomTypes.some(room => room.code.toUpperCase() === twin)) ? twin : null;
+  const code = configuredCode(raw) ?? legacyTwin;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };
 }
@@ -497,12 +511,10 @@ export function splitStayGroups(groups: readonly StayGroupRequirement[]): StayGr
 export function staffQuoteGroupsFromStay(
   groups: readonly StayGroupRequirement[],
   propertyCode?: string,
+  configuration?: QuotePaneConfig | null,
 ): { ok: StaffQuoteGroupInput[] } | { error: string } {
-  if (
-    propertyCode !== undefined &&
-    propertyCode !== HRCEN_PROPERTY_CODE &&
-    propertyCode !== HRDAV_PROPERTY_CODE
-  ) {
+  if (configuration ? configuration.propertyCode !== propertyCode :
+    propertyCode !== undefined && propertyCode !== HRCEN_PROPERTY_CODE && propertyCode !== HRDAV_PROPERTY_CODE) {
     return { error: 'Could not identify the hotel for this mailbox. Refresh the pane before running the quote.' };
   }
   const out: StaffQuoteGroupInput[] = [];
@@ -510,7 +522,8 @@ export function staffQuoteGroupsFromStay(
     if (!group.arrivalDate || !group.departureDate) {
       return { error: 'Enter the arrival and departure dates before running the quote.' };
     }
-    if (group.mealPlan === 'unknown' || (propertyCode === HRDAV_PROPERTY_CODE && group.mealPlan === 'dinner_bb')) {
+    if (group.mealPlan === 'unknown' || (group.mealPlan === 'dinner_bb' &&
+      (configuration ? !configuration.mealPlans.includes('dinner_bb') : propertyCode === HRDAV_PROPERTY_CODE))) {
       return { error: 'Choose a meal plan for the stay before running the quote.' };
     }
     if (group.fields.childAges === 'missing') {
@@ -524,12 +537,12 @@ export function staffQuoteGroupsFromStay(
     const rooms = resolveNativeRoomCodes({
       roomPreference: group.roomPreference,
       roomCodes: group.roomCodes?.length ? group.roomCodes : undefined,
-      propertyCode,
+      propertyCode, configuration,
     });
     // Ambiguous mail wording stays visible/editable, but its defaulted provenance means any type.
     if (rooms.status === 'unresolved' && group.fields.roomPreference !== 'defaulted') {
       return {
-        error: `Not in this hotel's room list: "${rooms.label}". Choose one of: ${[...nativeRoomCodeList(propertyCode)].join(', ')}.`,
+        error: `Not in this hotel's room list: "${rooms.label}". Choose one of: ${configuration ? configuration.roomTypes.map(room => room.code).join(', ') : [...nativeRoomCodeList(propertyCode)].join(', ')}.`,
       };
     }
     out.push({
@@ -1091,6 +1104,7 @@ type StaffQuoteRequestArgs = {
   stayKey?: string;
   /** Resolved quote-target property; staff quote requests refuse a missing or unknown code. */
   propertyCode?: string;
+  configuration?: QuotePaneConfig | null;
   /** Comparison rows are read-back bindings for an already prepared, property-allowed strategy. */
   strategyRequestValue?: QuoteSalesStrategyValue;
 };
@@ -1104,10 +1118,15 @@ type BuiltStaffQuoteRequest = {
 function staffQuoteRequest(
   args: StaffQuoteRequestArgs,
 ): BuiltStaffQuoteRequest | { error: string } {
-  if (args.propertyCode !== HRCEN_PROPERTY_CODE && args.propertyCode !== HRDAV_PROPERTY_CODE) {
+  if (args.configuration ? args.configuration.propertyCode !== args.propertyCode :
+      args.configuration !== undefined || args.propertyCode !== HRCEN_PROPERTY_CODE) {
     return { error: 'Could not identify the hotel for this mailbox. Refresh the pane before running the quote.' };
   }
-  const prepared = staffQuoteGroupsFromStay(args.groups, args.propertyCode);
+  if (args.propertyCode === 'HRDAVS') return { error: 'Quotes for this hotel are not available in this pane yet.' };
+  const capability = args.configuration?.capabilities?.quote;
+  if (args.configuration && (!capability || !['prepare-only', 'lab', 'staff-enabled'].includes(capability.status)))
+    return { error: capability?.reason || 'Quotes are not available for this hotel yet.' };
+  const prepared = staffQuoteGroupsFromStay(args.groups, args.propertyCode, args.configuration);
   if ('error' in prepared) return { error: prepared.error };
   const first = prepared.ok[0];
   const stayKey =

@@ -18,7 +18,7 @@ import {
   ensureHmsBrowserArtifactRoot,
   hmsProductionOriginForSlot,
 } from './browser-artifacts.js';
-import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import {
   revalidateEvidenceBindings,
   type HmsEvidenceHmacConfig,
@@ -37,6 +37,7 @@ import {
   createHmsRuntime,
   createPlaywrightBrowserFactory,
   hmsSecretSchema,
+  secretTransportIds,
   HmsRuntimeError,
   type HmsRuntime,
   type HmsSecretLoader,
@@ -54,7 +55,7 @@ function expectedProductionOrigin(config: HmsWorkerRuntimeConfig): string {
       'worker property is not a registered hotel',
     );
   }
-  const origin = hmsProductionOriginForSlot(property.browserSlot);
+  const origin = property.origin;
   if (!origin) {
     throw new HmsRuntimeError(
       'PRODUCTION_ORIGIN_MISMATCH',
@@ -257,7 +258,14 @@ async function createProductionHmsRuntimeInternal(
   liveProof: boolean,
 ): Promise<HmsRuntime> {
   const sourceRevision = resolveHmsSourceRevision(options?.sourceRevision);
-  await loadProductionRoleProof(config.roleProofPath);
+  const loadedProof = await loadProductionRoleProof(config.roleProofPath);
+  if (loadedProof.propertyCode !== config.expectedPropertyCode) {
+    throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof property does not match worker config');
+  }
+  // The HRDAVS native switch is implemented in P2; never read its landing hotel as Suites.
+  if (config.expectedPropertyCode === 'HRDAVS') {
+    throw new HmsRuntimeError('PROPERTY_MISMATCH', 'property switching is not available yet');
+  }
 
   const loadSecret =
     options?.loadSecret ?? createSecretsManagerLoader(options?.region);
@@ -274,19 +282,20 @@ async function createProductionHmsRuntimeInternal(
     );
   }
 
-  if (secret.expectedPropertyCode !== config.expectedPropertyCode) {
+  const registration = getPropertyRegistration(config.expectedPropertyCode);
+  if (!registration || secret.expectedPropertyCode !== registration.landingPropertyCode) {
     throw new HmsRuntimeError(
       'PROPERTY_MISMATCH',
       'secret property does not match worker config',
     );
   }
-  if (secret.expectedTenant !== config.expectedTenant) {
+  if (!registration || config.expectedTenant !== registration.expectedTenant || secret.expectedTenant !== registration.expectedTenant) {
     throw new HmsRuntimeError(
       'PROPERTY_MISMATCH',
       'secret tenant does not match worker config',
     );
   }
-  if (secret.mailboxTransportId !== config.expectedTransportId) {
+  if (!registration || !secretTransportIds(secret).includes(config.expectedTransportId)) {
     throw new HmsRuntimeError(
       'transport_mismatch',
       'secret transport does not match worker config',
@@ -369,32 +378,7 @@ async function createProductionHmsRuntimeInternal(
     requireViewOnly: true,
     expectedOrigin,
     roleProofPath: config.roleProofPath,
-    loadRoleProof: async (path, now) => {
-      const proof = await loadProductionRoleProof(path, { now });
-      // Runtime v1 loader shape expects v1 fields; v2 is validated above.
-      if (proof.schemaVersion === 2) {
-        return {
-          schemaVersion: 1 as const,
-          propertyCode: 'HRCEN' as const,
-          allowedSurfaces: ['Guest Stay'] as const,
-          deniedActions: [
-            'new_record',
-            'save',
-            'delete',
-            'duplicate',
-            'check_in',
-            'check_out',
-            'document_generate',
-            'document_send',
-          ] as const,
-          issuedAt: proof.issuedAt,
-          expiresAt: proof.expiresAt,
-          evidenceRef: `role-proof-v2:${proof.toolId}`,
-          evidenceSha256: proof.evidenceSha256,
-        };
-      }
-      return proof;
-    },
+    loadRoleProof: (path, now) => loadProductionRoleProof(path, { now }),
     healthHeartbeatMs: 10_000,
     healthStaleAfterMs: 30_000,
     runStartupCanary: false,

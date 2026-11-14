@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
-import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
+import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind, type PropertyConfiguration } from '@/lib/reservation-workflow/types';
 import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
@@ -35,6 +35,7 @@ function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pe
 }
 type Buffer = {
   sourceKey: string;
+  owner: symbol;
   snapshot: ReservationPaneSnapshot | null;
   sourceReviewBase: ReservationPaneSnapshot | null;
   pending: Map<string, Pending>;
@@ -48,10 +49,12 @@ type Buffer = {
 };
 const buffers = new Map<string, Buffer>();
 const guestCreatesInFlight = new Set<string>();
-const sourceKey = (source: ReservationSourceContext) => `${source.mailboxId}:${source.messageId}:${source.sourceHash}`;
+const sourceKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.propertySelectionEpoch ?? 0, source.selectionEpoch, source.messageId, source.sourceHash]);
 const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId]);
 const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
-  `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
+  source.propertyId === 'HRCEN'
+    ? `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`
+    : `nava:guest-profile:${source.mailboxId}:${source.propertyId}:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
 function readGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string): string | null {
   try { return window.localStorage.getItem(guestAttemptKey(source, requestId, allocationId)); } catch { return null; }
 }
@@ -157,24 +160,41 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
   return { ...snapshot, session: { ...snapshot.session, draft: { ...snapshot.session.draft, fieldOverrides } } };
 }
 
-export function useReservationWorkbench({ source, snapshot, client, onSnapshot, preview = false }: {
-  source: ReservationSourceContext; snapshot: ReservationPaneSnapshot | null; client: ReservationWorkflowClient;
+export function useReservationWorkbench({ source, activeProperty, configuration, snapshot, client, onSnapshot, preview = false }: {
+  source: ReservationSourceContext; activeProperty: PropertyConfiguration['propertyCode'] | undefined; configuration: PropertyConfiguration | null; snapshot: ReservationPaneSnapshot | null; client: ReservationWorkflowClient;
   onSnapshot(snapshot: ReservationPaneSnapshot): void; preview?: boolean;
 }) {
   const key = sourceKey(source);
   const draftKey = bufferKey(source);
-  const safeSnapshot = snapshotMatchesSource(snapshot, source) ? snapshot : null;
-  if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
+  const scoped = (!activeProperty || activeProperty === source.propertyId) && (!configuration ||
+    configuration.propertyCode === source.propertyId && configuration.transportId === source.mailboxId);
+  const capabilities = scoped ? configuration?.capabilities : undefined;
+  const canPrepare = (status: string | undefined) => status === 'prepare-only' || status === 'lab' || status === 'staff-enabled';
+  const canPrepareCreate = canPrepare(capabilities?.create?.status);
+  const canPrepareQuote = canPrepare(capabilities?.quote?.status);
+  const canPrepareAttach = canPrepare(capabilities?.attach?.status);
+  const canRead = canPrepare(capabilities?.reads?.status);
+  const canPrepareAddons = canPrepare(capabilities?.addons?.status);
+  const canSaveAddons = capabilities?.addons?.status === 'lab' || capabilities?.addons?.status === 'staff-enabled';
+  const canCreateGuest = capabilities?.guest_profile_create?.status === 'lab' || capabilities?.guest_profile_create?.status === 'staff-enabled';
+  const safeSnapshot = scoped && snapshotMatchesSource(snapshot, source) ? snapshot : null;
+  const owner = useRef(Symbol('reservation-workbench')).current;
+  if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, owner, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
     error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
   const entry = buffers.get(draftKey)!;
-  if (entry.sourceKey !== key) {
+  if (entry.sourceKey !== key || entry.owner !== owner) {
     entry.sourceKey = key;
+    entry.owner = owner;
     entry.snapshot = safeSnapshot;
     entry.sourceReviewBase = null;
   }
   if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) {
     retainReviewedSourceEdits(entry, safeSnapshot, source);
     entry.snapshot = safeSnapshot;
+    if ([...entry.pending.values()].some(pending => !pendingMatches(safeSnapshot, pending))) {
+      entry.conflict = true;
+      entry.error ??= 'Your pending edits are retained. Review the current draft before applying them.';
+    }
   }
   const active = useRef({ key, epoch: source.selectionEpoch });
   active.current = { key, epoch: source.selectionEpoch };
@@ -191,20 +211,20 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
-    if (buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(next, bound)) return;
+    if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(next, bound)) return;
     retainReviewedSourceEdits(buffer, next, bound);
     buffer.snapshot = next;
     notify(buffer);
     if (mounted.current && active.current.key === sourceKey(bound) && active.current.epoch === bound.selectionEpoch) onSnapshot(next);
-  }, [onSnapshot]);
+  }, [onSnapshot, owner]);
   const flush = async (bound: ReservationSourceContext, buffer: Buffer, captured?: Pending[]) => {
     if (buffer.conflict) throw new Error('This draft changed elsewhere. Apply your pending edits or discard them before continuing.');
+    let remaining = captured ?? Array.from(buffer.pending.values());
     try {
-      let remaining = captured ?? Array.from(buffer.pending.values());
       while (remaining.length) {
         for (const pending of remaining) {
           if (buffer.pending.get(pending.path)?.token !== pending.token) continue;
-          if (buffer.sourceKey !== sourceKey(bound)) throw new Error('The email changed. Review its updated evidence before applying your edits.');
+          if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound)) throw new Error('The email changed. Review its updated evidence before applying your edits.');
           if (!buffer.snapshot) throw new Error('The email draft is still opening.');
           if (buffer.snapshot.session.sourceChanged && /^\/proposal\/content\/services\/[^/]+\/targets$/.test(pending.path))
             throw new Error('Review the updated email and attachments before linking this Add-On.');
@@ -214,6 +234,14 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
           if (!requestId) throw new Error('Add an action before editing its fields.');
           const before = buffer.snapshot;
           const next = await client.edit({ source: bound, snapshot: before, requestId, fieldPath: pending.path, state: pending.state, value: pending.value });
+          if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound)) {
+            if (buffer.pending.get(pending.path)?.token === pending.token) {
+              buffer.conflict = true;
+              buffer.error ??= 'Your pending edits are retained. Review the current draft before applying them.';
+              notify(buffer);
+            }
+            return;
+          }
           // Acknowledging our own write may change an idless change row. Advance
           // retained input bindings only when the returned cursor and row values
           // are exactly the expected result; external edits remain fenced.
@@ -234,12 +262,17 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         remaining = captured || !mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch
           ? [] : Array.from(buffer.pending.values());
       }
-      buffer.error = null;
+      if (buffer.owner === owner && buffer.sourceKey === sourceKey(bound)) buffer.error = null;
     } catch (failure) {
-      if (failure instanceof ReservationWorkflowStaleRevisionError) apply(failure.snapshot, bound, buffer);
-      buffer.conflict = true;
-      buffer.error = failure instanceof Error ? failure.message : 'Your pending edits could not be saved.';
-      notify(buffer);
+      const currentBinding = buffer.owner === owner && buffer.sourceKey === sourceKey(bound);
+      if (currentBinding || remaining.some(pending => buffer.pending.get(pending.path)?.token === pending.token)) {
+        if (failure instanceof ReservationWorkflowStaleRevisionError) apply(failure.snapshot, bound, buffer);
+        buffer.conflict = true;
+        const message = failure instanceof Error ? failure.message : 'Your pending edits could not be saved.';
+        if (currentBinding) buffer.error = message;
+        else buffer.error ??= message;
+        notify(buffer);
+      }
       throw failure;
     }
   };
@@ -261,20 +294,21 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     const bound = source;
     const buffer = entry;
     const execute = async () => {
-      if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
+      if (buffer.owner !== owner || !mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
       setBusy(true); setError(null);
       if (write) beginMutation();
       try {
         if (!skipFlush) await flush(bound, buffer);
-        if (buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(buffer.snapshot, bound)) throw new Error('The email draft is still opening.');
+        if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(buffer.snapshot, bound)) throw new Error('The email draft is still opening.');
         if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
         const next = await action({ source: bound, snapshot: buffer.snapshot });
         if (next) { apply(next, bound, buffer); if (next.serviceNotice) throw new Error(next.serviceNotice); }
       } catch (failure) {
-        if (failure instanceof ReservationWorkflowStaleRevisionError) {
+        const currentBinding = buffer.owner === owner && buffer.sourceKey === sourceKey(bound);
+        if (currentBinding && failure instanceof ReservationWorkflowStaleRevisionError) {
           buffer.conflict = true; buffer.error = failure.message; apply(failure.snapshot, bound, buffer);
         }
-        if (mounted.current && active.current.key === key) setError(failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.');
+        if (currentBinding && mounted.current && active.current.key === key) setError(failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.');
         throw failure;
       } finally {
         if (write) endMutation();
@@ -306,6 +340,12 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
   });
   const request = current?.requests.find(row => row.id === activeId) ?? current?.requests[0];
   const requireRequest = () => { if (!request) throw new Error('Choose an action first.'); return request.id; };
+  const workflow = request?.kind === 'filing' ? 'attach' : request?.kind === 'services' ? 'addons' : request?.kind;
+  const workflowStatus = workflow && workflow !== 'other' ? capabilities?.[workflow]?.status : undefined;
+  const canPrepareRequest = canPrepare(workflowStatus);
+  const canReadRequest = canRead && canPrepareRequest;
+  const canExecuteRequest = request?.kind === 'quote' ? canPrepareRequest : workflowStatus === 'lab' || workflowStatus === 'staff-enabled';
+  const unavailable = () => Promise.reject(new Error('This action is not available for this hotel yet.'));
   // The native verifier is deployed independently; expose its action only when the client supports it.
   const verifyNativeLead = (client as ReservationWorkflowClient & {
     verifyNativeLead?: ReservationWorkflowClient['selectNative'];
@@ -332,11 +372,13 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     selectNative(fieldPath, observationRef) { return run(context => client.selectNative({ ...context, requestId: requireRequest(), fieldPath, observationRef })); },
     ...(verifyNativeLead ? { verifyNativeLead(fieldPath: string, observationRef: string) {
+      if (!canReadRequest) return unavailable();
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
     } } : {}),
-    lookup() { return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
-    lookupChoices(nativeFieldPath) { return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath })); },
+    lookup() { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
+    lookupChoices(nativeFieldPath) { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath })); },
     async guestProfileOptions(allocationId, field) {
+      if (!canReadRequest) throw new Error('Guest profile choices are not available for this hotel yet.');
       const requestId = requireRequest();
       let reply: Record<string, unknown> = {};
       await run(async context => {
@@ -348,6 +390,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
     },
     createGuestProfile(allocationId, confirmDuplicateName = false) {
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
+      if (!canCreateGuest) return Promise.reject(new Error('Guest profile creation is not available for this hotel yet.'));
       if (liveInputs.current.key === key && [...liveInputs.current.uncommitted].some(hold =>
         !hold.startsWith('service-candidate:/proposal/content/services/'))) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
       const requestId = requireRequest();
@@ -440,9 +483,9 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
         return result;
       });
     },
-    prepare(allocationId) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
+    prepare(allocationId) { if (!canPrepareRequest || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
     review(scope, ids) { return run(context => client.reviewScope({ ...context, requestId: requireRequest(), scope, ids })); },
-    execute(allocationId) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
+    execute(allocationId) { if (!canExecuteRequest) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
     reconcile(operationId) { return run(context => {
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });
@@ -462,27 +505,27 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       return { ...reviewed, workflowReply: context.snapshot.workflowReply };
     }); },
     configureFiling(attachmentId, target, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, ...(typeof target === 'string' ? { confirmation: target } : target), kind })); },
-    lookupServices(target, serviceId) { return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
-    previewServices(target, serviceId) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
-    executeServices(target, serviceId, reviewedPrepareRef) { if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
+    lookupServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
+    previewServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
+    executeServices(target, serviceId, reviewedPrepareRef) { if (!canSaveAddons) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
   };
   const initialLookup = useRef(new Set<string>());
   const prefill = current?.session.draft.prefill;
   const arrivalChecksPending = ['queued', 'running'].includes(prefill?.status ?? '') ||
     (prefill?.status === 'failed' && prefill.phase === 'native_checks');
   useEffect(() => {
-    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || request.kind !== 'create' || busy || entry.pending.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || request.kind !== 'create' || !canPrepareCreate || !canRead || busy || entry.pending.size || entry.conflict || preview) return;
     if (current.session.draft.prefill?.status !== 'superseded' &&
         current.session.draft.prefill?.nativeChecks?.some(check => check.key === `create:lookup:${request.id}`)) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
     const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
     return () => clearTimeout(timer);
-  }, [current, request, busy, changed, key, preview, arrivalChecksPending]);
+  }, [current, request, busy, changed, key, preview, arrivalChecksPending, canPrepareCreate, canRead]);
   // A created room unlocks its dependent PDF lookup without asking staff to copy the confirmation.
   const warmedFilings = useRef(new Set<string>());
   useEffect(() => {
-    if (!current || current.session.sourceChanged || arrivalChecksPending || busy || entry.pending.size ||
+    if (!current || current.session.sourceChanged || arrivalChecksPending || !canPrepareAttach || !canRead || busy || entry.pending.size ||
         entry.actionsPending || uncommitted.size || entry.conflict || preview) return;
     const draft = current.session.draft;
     for (const filing of draft.proposal.content.requests.filter(row => row.kind === 'filing')) {
@@ -501,12 +544,13 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       void run(context => client.lookup({ ...context, requestId: filing.id })).catch(() => {});
       break;
     }
-  }, [current, busy, changed, key, preview, arrivalChecksPending, uncommitted]);
+  }, [current, busy, changed, key, preview, arrivalChecksPending, uncommitted, canPrepareAttach, canRead]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
     if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
+    if (!canRead || (request.kind === 'create' ? !canPrepareCreate : !canPrepareQuote)) return;
     const digest = JSON.stringify({ generation: current.session.draft.generationId, body });
     const actionKey = `${key}:${request.id}`;
     if (autoDigest.current.get(actionKey) === digest) return;
@@ -547,7 +591,7 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       }
     }, 700);
     return () => clearTimeout(timer);
-  }, [current, request, busy, changed, uncommitted, key, preview, arrivalChecksPending]);
+  }, [current, request, busy, changed, uncommitted, key, preview, arrivalChecksPending, canPrepareCreate, canPrepareQuote, canRead]);
 
   return { snapshot: current, readyForReply: () => mounted.current && active.current.key === key
       && active.current.epoch === source.selectionEpoch && entry.pending.size === 0 && !entry.conflict && entry.actionsPending === 0
@@ -565,6 +609,8 @@ export function useReservationWorkbench({ source, snapshot, client, onSnapshot, 
       return run(async context => {
         const matching = Array.from(entry.pending.values()).filter(edit => pendingMatches(context.snapshot, edit));
         await flush(context.source, entry, matching);
+        if (entry.owner !== owner || entry.sourceKey !== sourceKey(context.source) || !mounted.current ||
+            active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return;
         if (entry.pending.size) {
           entry.conflict = true;
           entry.error = 'Some pending edits no longer match a room or action. Copy the values below before discarding them.';

@@ -310,6 +310,10 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
   const previewCurrent = Boolean(latest && selectedCandidateCurrent && (allocation ? createCurrent : savedTargetCurrent && amendmentCurrent)
     && servicePreviewMatches(editor, service, serviceRoot, targetRoot, operation, preview, Boolean(savedTarget)));
   const capability = record(preview.capability);
+  const addonStatus = editor.configuration?.propertyCode === editor.source.propertyId &&
+    editor.configuration.transportId === editor.source.mailboxId ? editor.configuration.capabilities?.addons?.status : undefined;
+  const addonCanPrepare = addonStatus === 'prepare-only' || addonStatus === 'lab' || addonStatus === 'staff-enabled';
+  const addonCanSave = addonStatus === 'lab' || addonStatus === 'staff-enabled';
   const serviceDate = (field: 'startDate' | 'endDate') => {
     const path = `${targetRoot}/fields/${field}`, override = draft.fieldOverrides[path];
     const local = valueAt(editor.snapshot, path);
@@ -382,7 +386,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     {allocation && operation !== 'add' && <div className={styles.warning}>Edit and remove apply to a specific saved stay and saved item.</div>}
     {ref.kind === 'quote_group' && <div className={styles.warning}>A quote group is not a saved room. Choose a room before adding this item.</div>}
     {connected && !multiTarget && <>
-      <div className={styles.row}><button type="button" disabled={editor.view.busy || !argument || Boolean(savedTarget && !selectedStay)} onClick={() => { if (argument) void editor.commands.lookupServices(argument, service.id).catch(() => {}); }}>Find Infor items</button></div>
+      <div className={styles.row}><button type="button" disabled={editor.view.busy || !addonCanPrepare || !argument || Boolean(savedTarget && !selectedStay)} onClick={() => { if (argument) void editor.commands.lookupServices(argument, service.id).catch(() => {}); }}>Find Infor items</button></div>
       <label className={styles.label}>{operation === 'add' ? 'Infor item' : 'Saved Add-On'}
         <select aria-label={operation === 'add' ? 'Infor item' : 'Saved Add-On'} value={text(selectedItem)} disabled={editor.view.busy || !catalogue.length} onChange={event => {
           const ref = event.target.value;
@@ -426,7 +430,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         {reversedDates ? 'End date must be on or after the start date.' : 'Start and end dates may be the same day.'}
       </small>}
       <div className={styles.hint}>{operation === 'add' ? 'A nonnegative explicit unit price and positive quantity are required. ' : operation === 'remove' ? 'Removing an item does not establish a refund. ' : ''}Infor returns actual service dates and total.</div>
-      <div className={styles.row}><button type="button" disabled={editor.view.busy || reversedDates || !argument || !catalogue.some(row => row.observation.ref === selectedItem)}
+      <div className={styles.row}><button type="button" disabled={editor.view.busy || !addonCanPrepare || reversedDates || !argument || !catalogue.some(row => row.observation.ref === selectedItem)}
         onClick={() => { if (argument) void editor.commands.previewServices(argument, service.id).catch(() => {}); }}>Check Add-On</button></div>
     </>}
     {latest && <div className={styles.stack}>
@@ -461,7 +465,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
     </div>)}
     {saved && <div className={styles.hint}>Infor readback confirmed this Add-On.</div>}
     {connected && latest && !saved && !multiTarget && <div className={styles.row}>
-      <button type="button" disabled={editor.view.busy || !previewCurrent || Boolean(fresh && !reviewPaths.length)} onClick={() => void (async () => {
+      <button type="button" disabled={editor.view.busy || !addonCanPrepare || !previewCurrent || Boolean(fresh && !reviewPaths.length)} onClick={() => void (async () => {
         if (!savedTarget) {
           if (fresh) for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, freshNote);
           else await editor.commands.review('services', [service.id]);
@@ -470,7 +474,7 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
         for (const path of reviewPaths) await editor.commands.acceptServiceReview(path, 'Reviewed the requested Add-On and native result');
         await editor.commands.acceptServiceReview(selectedPath, reviewNote);
       })().catch(() => {})}>{(savedTarget || fresh) && reviewed ? 'Reviewed' : 'Review this item'}</button>
-      <button type="button" disabled={editor.view.busy || !previewCurrent || Boolean(allocation && !linkedCreate) || uncertain || !argument || editor.view.preview || capability.canSave !== true || !reviewed}
+      <button type="button" disabled={editor.view.busy || !addonCanSave || !previewCurrent || Boolean(allocation && !linkedCreate) || uncertain || !argument || editor.view.preview || capability.canSave !== true || !reviewed}
         onClick={() => { if (argument) void editor.commands.executeServices(argument, service.id, savedTarget || fresh ? latest.ref : undefined).catch(() => {}); }}>Go · save Add-On</button>
     </div>}
   </div>;

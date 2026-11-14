@@ -11,6 +11,7 @@ import {
   DISCOVERY_OPERATION_IDS,
   HMS_READ_TOOL_IDS,
   READ_TOOL_IDS,
+  READ_TOOLS,
   ROLE_SURFACE_IDS,
   type ActiveReadToolId,
   type DiscoveryOperationId,
@@ -19,6 +20,8 @@ import {
   type ReadToolId,
 } from './read-tools.js';
 import { HmsRuntimeError } from './runtime.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { propertyCodeSchema, type PropertyCode } from './property-registry.js';
 
 const sha = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid();
@@ -79,7 +82,10 @@ export const hmsReadRoleProofV2Schema = z
     credentialVersionHmacSha256: sha,
     runtimeFingerprintSha256: sha,
     roleFingerprintSha256: sha,
-    propertyCode: z.literal('HRCEN'),
+    propertyCode: propertyCodeSchema,
+    tenantId: z.string().min(1).optional(),
+    landingPropertyCode: propertyCodeSchema.optional(),
+    origin: z.string().url().optional(),
     currency: z.literal('ZAR'),
     credentialMode: z.literal('view_only'),
     allowedSurfaces: z.array(roleSurfaceId).min(1),
@@ -159,7 +165,10 @@ export const hmsEvidenceBindingV1Schema = z
     operationId: uuid,
     discoveryOperationId,
     candidateSnapshotSha256: sha,
-    propertyCode: z.literal('HRCEN'),
+    propertyCode: propertyCodeSchema,
+    tenantId: z.string().min(1).optional(),
+    landingPropertyCode: propertyCodeSchema.optional(),
+    origin: z.string().url().optional(),
     credentialVersionHmacSha256: sha,
     runtimeFingerprintSha256: sha,
     privateDigestKeyVersion: z.string().min(1),
@@ -205,6 +214,10 @@ const shadowEnabledFields = {
 
 const hmsEvidenceFields = {
   evidenceKind: z.literal('hms'),
+  propertyCode: propertyCodeSchema.optional(),
+  tenantId: z.string().min(1).optional(),
+  landingPropertyCode: propertyCodeSchema.optional(),
+  origin: z.string().url().optional(),
   toolId: hmsToolId,
   toolVersion: z.string().min(1),
   requestBranches: z
@@ -288,8 +301,18 @@ export type HmsPortfolioToolReleaseV1 = z.infer<
 >;
 export type HmsActiveRegistryV1 = z.infer<typeof hmsActiveRegistryV1Schema>;
 
-export function roleProofV2Path(root: string, toolId: HmsReadToolId): string {
-  return join(root, 'role-proofs', `${toolId}.v2.json`);
+export function roleProofV2Path(root: string, toolId: HmsReadToolId, propertyCode: PropertyCode = 'HRCEN'): string {
+  return join(root, propertyCode, `${toolId}.v2.json`);
+}
+
+/** Legacy identity omissions are only valid in the HRCEN partition. */
+export function assertHmsPropertyIdentity(identity: { propertyCode?: PropertyCode; tenantId?: string; landingPropertyCode?: PropertyCode; origin?: string }, expected: PropertyCode): void {
+  const property = getPropertyRegistration(expected);
+  if (!property || (identity.propertyCode ?? 'HRCEN') !== expected ||
+      (expected !== 'HRCEN' && (!identity.propertyCode || !identity.tenantId || !identity.landingPropertyCode || !identity.origin)) ||
+      (identity.tenantId !== undefined && identity.tenantId !== property.expectedTenant) ||
+      (identity.landingPropertyCode !== undefined && identity.landingPropertyCode !== property.landingPropertyCode) ||
+      (identity.origin !== undefined && identity.origin !== property.origin)) throw new Error('HMS property identity mismatch');
 }
 
 export function validateRoleProofV2ForTool(
@@ -298,6 +321,7 @@ export function validateRoleProofV2ForTool(
   now: Date,
 ): void {
   const parsed = hmsReadRoleProofV2Schema.parse(proof);
+  assertHmsPropertyIdentity(parsed, parsed.propertyCode);
   if (tool.id === 'mail_read_artifact') {
     throw new Error('mail_read_artifact cannot enter HMS role proof v2');
   }
@@ -450,6 +474,7 @@ export async function loadHmsReadRoleProofV2ForTool(
   root: string,
   tool: ReadToolDefinition,
   now: Date = new Date(),
+  propertyCode: PropertyCode = 'HRCEN',
 ): Promise<HmsReadRoleProofV2> {
   if (tool.id === 'mail_read_artifact') {
     throw new HmsRuntimeError(
@@ -457,11 +482,17 @@ export async function loadHmsReadRoleProofV2ForTool(
       'mail_read_artifact cannot enter HMS role proof v2',
     );
   }
-  return loadHmsReadRoleProofV2(
-    roleProofV2Path(root, tool.id),
-    tool,
-    now,
-  );
+  let path = roleProofV2Path(root, tool.id, propertyCode);
+  if (propertyCode === 'HRCEN') {
+    const { access } = await import('node:fs/promises');
+    try { await access(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      path = join(root, 'role-proofs', `${tool.id}.v2.json`);
+    }
+  }
+  const proof = await loadHmsReadRoleProofV2(path, tool, now);
+  assertHmsPropertyIdentity(proof, propertyCode);
+  return proof;
 }
 
 async function atomicWrite(path: string, value: unknown): Promise<void> {
@@ -544,6 +575,10 @@ export const hmsActiveRegistryV2Schema = z
   .object({
     schemaVersion: z.literal(2),
     generation: z.number().int().nonnegative(),
+    propertyCode: propertyCodeSchema.optional(),
+    tenantId: z.string().min(1).optional(),
+    landingPropertyCode: propertyCodeSchema.optional(),
+    origin: z.string().url().optional(),
     toolsetVersion: z.string().min(1),
     toolsetFingerprint: sha,
     activeSetFingerprint: sha,
@@ -556,6 +591,10 @@ export type HmsActiveRegistryV2 = z.infer<typeof hmsActiveRegistryV2Schema>;
 
 export type HmsSessionAuthorization = {
   operationId: string;
+  propertyCode?: PropertyCode;
+  tenantId?: string;
+  landingPropertyCode?: PropertyCode;
+  origin?: string;
   toolId: HmsReadToolId;
   discoveryOperationId: DiscoveryOperationId;
   releaseId: string;
@@ -570,6 +609,20 @@ export type HmsSessionAuthorization = {
   sourceRevision: string;
   expiresAt: string;
 };
+
+/** Proof acquisition attests the tool's role surfaces; each session selects one admitted branch. */
+export function validateRoleProofV2ForSession(
+  proof: HmsReadRoleProofV2, authorization: HmsSessionAuthorization, now: Date,
+): void {
+  const tool = READ_TOOLS[authorization.toolId];
+  validateRoleProofV2ForTool(proof, tool, now);
+  assertHmsPropertyIdentity(proof, authorization.propertyCode ?? 'HRCEN');
+  const branch = tool.requestBranches?.find((candidate) => candidate.id === authorization.requestBranchId);
+  if (!branch || branch.discoveryOperationId !== authorization.discoveryOperationId ||
+      sha256Hex(JSON.stringify(authorization.manifest)) !== authorization.manifestSha256) {
+    throw new Error('session discovery branch or manifest mismatch');
+  }
+}
 
 export type MailArtifactAuthorization = {
   operationId: string;
@@ -586,12 +639,18 @@ export function fingerprintActiveSet(input: {
   active: Partial<Record<ActiveReadToolId, string>>;
   immediatePredecessor: Partial<Record<ActiveReadToolId, string>>;
   generation: number;
+  propertyCode?: PropertyCode;
+  tenantId?: string;
+  landingPropertyCode?: PropertyCode;
+  origin?: string;
   toolsetVersion: string;
   toolsetFingerprint: string;
 }): string {
   return sha256Hex(
     JSON.stringify({
       generation: input.generation,
+      ...(input.propertyCode ? { propertyCode: input.propertyCode, tenantId: input.tenantId,
+        landingPropertyCode: input.landingPropertyCode, origin: input.origin } : {}),
       toolsetVersion: input.toolsetVersion,
       toolsetFingerprint: input.toolsetFingerprint,
       active: Object.keys(input.active)
@@ -607,10 +666,16 @@ export function fingerprintActiveSet(input: {
 export function emptyActiveRegistryV2(input: {
   toolsetVersion: string;
   toolsetFingerprint: string;
+  propertyCode?: PropertyCode;
+  tenantId?: string;
+  landingPropertyCode?: PropertyCode;
+  origin?: string;
 }): HmsActiveRegistryV2 {
   const base = {
     schemaVersion: 2 as const,
     generation: 0,
+    ...(input.propertyCode ? { propertyCode: input.propertyCode, tenantId: input.tenantId,
+      landingPropertyCode: input.landingPropertyCode, origin: input.origin } : {}),
     toolsetVersion: input.toolsetVersion,
     toolsetFingerprint: input.toolsetFingerprint,
     active: {},
@@ -681,6 +746,7 @@ export async function loadValidatedActiveReadSet(input: {
   runtimeAbiVersion: string;
   runtimeFingerprintSha256: string;
   availableImplementationDigests: ReadonlyMap<ActiveReadToolId, ReadonlySet<string>>;
+  propertyCode?: PropertyCode;
 }): Promise<{
   toolIds: Set<ActiveReadToolId>;
   releases: Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>;
@@ -688,6 +754,8 @@ export async function loadValidatedActiveReadSet(input: {
   predecessors: Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>;
 }> {
   const registry = await loadActiveReadRegistryV2(input.registryPath);
+  const expectedProperty = input.propertyCode ?? 'HRCEN';
+  assertHmsPropertyIdentity(registry, expectedProperty);
   const releases = new Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>();
   const predecessors = new Map<ActiveReadToolId, HmsPortfolioToolReleaseV2>();
 
@@ -699,7 +767,10 @@ export async function loadValidatedActiveReadSet(input: {
     } catch {
       throw new Error(`release missing: ${releaseId}`);
     }
-    return hmsPortfolioToolReleaseV2Schema.parse(JSON.parse(raw));
+    const release = hmsPortfolioToolReleaseV2Schema.parse(JSON.parse(raw));
+    if (release.evidenceKind !== 'hms') throw new Error('mail release cannot enter HMS partition');
+    assertHmsPropertyIdentity(release, expectedProperty);
+    return release;
   };
 
   for (const [toolIdRaw, releaseId] of Object.entries(registry.active)) {
@@ -805,13 +876,17 @@ export async function promoteReadToolV2(input: {
   let current: HmsActiveRegistryV2;
   try {
     current = await loadActiveReadRegistryV2(input.path);
-  } catch {
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'active registry v2 missing') throw error;
     current = emptyActiveRegistryV2({
       toolsetVersion: release.toolsetVersion,
       toolsetFingerprint: release.toolsetFingerprint,
+      propertyCode: release.propertyCode, tenantId: release.tenantId,
+      landingPropertyCode: release.landingPropertyCode, origin: release.origin,
     });
   }
 
+  assertHmsPropertyIdentity(release, current.propertyCode ?? 'HRCEN');
   if (
     current.toolsetVersion !== release.toolsetVersion ||
     current.toolsetFingerprint !== release.toolsetFingerprint
@@ -835,6 +910,8 @@ export async function promoteReadToolV2(input: {
   const nextBase = {
     schemaVersion: 2 as const,
     generation: current.generation + 1,
+    ...(current.propertyCode ? { propertyCode: current.propertyCode, tenantId: current.tenantId,
+      landingPropertyCode: current.landingPropertyCode, origin: current.origin } : {}),
     toolsetVersion: current.toolsetVersion,
     toolsetFingerprint: current.toolsetFingerprint,
     active,
@@ -873,6 +950,8 @@ export async function rollbackReadToolV2(input: {
   const nextBase = {
     schemaVersion: 2 as const,
     generation: current.generation + 1,
+    ...(current.propertyCode ? { propertyCode: current.propertyCode, tenantId: current.tenantId,
+      landingPropertyCode: current.landingPropertyCode, origin: current.origin } : {}),
     toolsetVersion: current.toolsetVersion,
     toolsetFingerprint: current.toolsetFingerprint,
     active,

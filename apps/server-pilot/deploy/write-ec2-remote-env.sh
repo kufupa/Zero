@@ -8,6 +8,7 @@ set -euo pipefail
 : "${REMOTE_AUTH_URL:=https://nava-admin.trynava.io}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+POLICY_MODULE="$SCRIPT_DIR/../tooling/hms-cloud/hms-workflow-policy.mjs"
 REPO_ROOT="${REPO_ROOT:-/home/ubuntu/repos/zero}"
 SERVER_PILOT="${REPO_ROOT}/apps/server-pilot"
 LEGACY_ENV_FILE="${ENV_FILE:-${SERVER_PILOT}/.env.production}"
@@ -140,6 +141,21 @@ M1_ONLY_RUNTIME_DEPENDENCIES=(
   PARTY_INDEX_PATH_HRDAV
   NAVA_WORKFLOW_REPRO_DIR
 )
+# Both renderers obtain the same validated controls from the policy module.
+shared_controls="$(node --input-type=module -e 'const m=await import(process.argv[1]); process.stdout.write(m.SCOPED_RUNTIME_CONTROL_KEYS.join("\n"));' "$POLICY_MODULE")"
+shared_paths="$(node --input-type=module -e 'const m=await import(process.argv[1]); process.stdout.write(m.RUNTIME_PATH_KEYS.join("\n"));' "$POLICY_MODULE")"
+mapfile -t HMS_SHARED_CONTROLS <<<"$shared_controls"
+mapfile -t HMS_SHARED_PATHS <<<"$shared_paths"
+for key in "${HMS_SHARED_CONTROLS[@]}"; do
+  if [[ ! " ${REMOTE_COMMON_ALLOWLIST[*]} " == *" $key "* ]]; then REMOTE_COMMON_ALLOWLIST+=("$key"); fi
+  if [[ ! " ${M1_ONLY_WRITE_CONTROLS[*]} ${M1_ONLY_OPTIONAL_WRITE_CONTROLS[*]} ${M1_ONLY_RUNTIME_DEPENDENCIES[*]} " == *" $key "* ]]; then
+    if [[ " ${HMS_SHARED_PATHS[*]} " == *" $key "* ]]; then
+      M1_ONLY_RUNTIME_DEPENDENCIES+=("$key")
+    else
+      M1_ONLY_OPTIONAL_WRITE_CONTROLS+=("$key")
+    fi
+  fi
+done
 M1_ONLY_ALLOWLIST=("${M1_ONLY_WRITE_CONTROLS[@]}" "${M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}"
   "${M1_ONLY_RUNTIME_DEPENDENCIES[@]}")
 
@@ -154,9 +170,11 @@ validate_remote_env_file() {
     echo "remote env must be ubuntu-owned mode 0600: $path" >&2
     return 1
   fi
-  node - "$path" "$kind" <<'NODE'
-const fs = require("fs");
-const [path, kind] = process.argv.slice(2);
+  node --input-type=module - "$path" "$kind" "$POLICY_MODULE" <<'NODE'
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+const [path, kind, policyPath] = process.argv.slice(2);
+const { SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } = await import(pathToFileURL(policyPath).href);
 const common = new Set([
   "NODE_ENV", "DATABASE_URL", "AWS_REGION", "S3_BUCKET", "MAIL_TRANSPORT_MODE",
   "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER", "SMTP_PASSWORD",
@@ -186,6 +204,8 @@ try {
     values.set(match[1], match[2].replace(/'\\''/g, "'"));
   }
   if (kind === "common") {
+    for (const key of SCOPED_RUNTIME_CONTROL_KEYS) common.add(key);
+    for (const [key, value] of values) validateRuntimeControl(key, value);
     if (![...values.keys()].every((key) => common.has(key))) throw new Error("invalid");
     if (values.get("NODE_ENV") !== "production") throw new Error("invalid");
     for (const key of ["DATABASE_URL", "AWS_REGION", "S3_BUCKET"]) {
@@ -429,6 +449,7 @@ if [ "$M1_ONLY" -eq 1 ]; then
   M1_ADMIN_BEFORE_SHA="$(sha256sum -- "$REMOTE_ADMIN_ENV" | awk '{print $1}')"
 fi
 
+[ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo "render refused: HOLD file present" >&2; exit 2; }
 REMOTE_COMMON_TMP="$(mktemp "${SERVER_PILOT}/.env.remote-common.tmp.XXXXXX")"
 REMOTE_ADMIN_TMP=""
 REMOTE_M1_SOURCE_TMP=""
@@ -452,24 +473,25 @@ if [ "$M1_ONLY" -eq 1 ]; then
     "$LEGACY_ENV_FILE" \
     "$REMOTE_M1_SOURCE_TMP" \
     "${M1_ONLY_ALLOWLIST[@]}"
-  node - "$REMOTE_COMMON_ENV" "$REMOTE_M1_SOURCE_TMP" "$REMOTE_COMMON_TMP" \
+  node --input-type=module - "$REMOTE_COMMON_ENV" "$REMOTE_M1_SOURCE_TMP" "$REMOTE_COMMON_TMP" "$POLICY_MODULE" \
     "${M1_ONLY_ALLOWLIST[@]}" \
     "$((${#M1_ONLY_WRITE_CONTROLS[@]} + ${#M1_ONLY_OPTIONAL_WRITE_CONTROLS[@]}))" \
     "${#M1_ONLY_WRITE_CONTROLS[@]}" <<'NODE'
-const fs = require("fs");
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 const args = process.argv.slice(2);
-const [installedPath, sourcePath, candidatePath] = args;
+const [installedPath, sourcePath, candidatePath, policyPath] = args;
+const { RUNTIME_PATH_KEYS, SCOPED_RUNTIME_CONTROL_KEYS } = await import(pathToFileURL(policyPath).href);
 const requiredControlCount = Number(args.pop());
 const controlCount = Number(args.pop());
-const keys = args.slice(3);
+const keys = args.slice(4);
 const controlKeys = new Set(keys.slice(0, controlCount));
 const dependencyKeys = new Set(keys.slice(controlCount));
 const target = new Set(keys);
-const memoryPaths = new Set(["HMS_MEMORY_PMS_PATH", "HMS_MEMORY_OUTBOUND_PATH", "HMS_MEMORY_DATA_DIR",
-  "HMS_NATIVE_CATALOG_PATH", "HMS_MEMORY_OBSERVATIONS_PATH", "PARTY_INDEX_PATH", "PARTY_INDEX_PATH_HRDAV",
-  "NAVA_WORKFLOW_REPRO_DIR"]);
+const memoryPaths = new Set(RUNTIME_PATH_KEYS);
 const sourceAuthoritativeReadControls = new Set([
   "LEGACY_INBOUND_TRIAGE_PIPELINE", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT",
+  ...SCOPED_RUNTIME_CONTROL_KEYS.filter(key => key.startsWith("HMS_DAVINCI_") || (key.startsWith("HMS_WRITER_DEPENDENCY_DIGEST_") || key.startsWith("HMS_WRITER_CREDENTIAL_IDENTITY_"))),
 ]);
 const chunks = (text) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 const body = (line) => line.endsWith("\n") ? line.slice(0, -1) : line;
@@ -511,7 +533,7 @@ try {
       if (!sourceAuthoritativeReadControls.has(key)) merged.push(line);
       continue;
     }
-    if (memoryPaths.has(key)) {
+    if (memoryPaths.has(key) || ["HMS_EXPECTED_PROPERTY_CODE", "HMS_EXPECTED_TENANT", "HMS_EXPECTED_TRANSPORT_ID"].includes(key)) {
       const ending = line.endsWith("\n") ? "\n" : "";
       merged.push(body(source.get(key)) + ending);
       continue;
@@ -555,144 +577,13 @@ else
     "${REMOTE_COMMON_ALLOWLIST[@]}"
 fi
 
-# Flip to `on` needs CANARY PASS <workflow> <property> <sha> on the live SHA, except the narrow Labtest bootstraps below.
+# Compare effective scopes before promotion; narrow Labtest bootstrap remains available.
 nava_live_sha="${NAVA_LIVE_SHA:-}"
 if [ -z "$nava_live_sha" ] && [ -d "${REPO_ROOT}/.git" ]; then
   nava_live_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 fi
-node - "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV" \
-  "${NAVA_CANARY_PASS_FILE:-/tmp/mh1024/CANARY.txt}" "$nava_live_sha" <<'NODE'
-const fs = require("fs");
-const [newPath, oldPath, canaryPath, liveSha] = process.argv.slice(2);
-const WORKFLOW = {
-  HMS_DAVINCI_CREATE: "create",
-  HMS_DAVINCI_MAKE_QUOTE: "quote",
-  HMS_DAVINCI_READS: "reads",
-  HMS_QUOTE_PREPARE: "quote",
-  HMS_PREFETCH_ENABLED: "prefetch",
-  HMS_AVAILABILITY_PREFETCH: "availability",
-  PARTY_MATCH_V2: "party",
-  INBOUND_TRIAGE_CLASSIFIER: "triage",
-  LEGACY_INBOUND_TRIAGE_PIPELINE: "triage",
-  INBOUND_EXTRACTION: "extraction",
-  PANE_WRITE_CREATE: "create",
-  PANE_HMS_LAB_CREATE_WORKER: "create",
-  PANE_CLOUD_CREATE_DISPATCH: "create",
-  PANE_WRITE_AMEND_UNPAID: "amend",
-  PANE_WRITE_AMEND_PAID: "amend",
-  PANE_WRITE_AMEND: "amend",
-  PANE_HMS_LAB_AMEND_WORKER: "amend",
-  PANE_WRITE_CANCEL_UNPAID: "cancel",
-  PANE_WRITE_CANCEL_PAID: "cancel",
-  PANE_WRITE_ADDONS: "addons",
-  PANE_WRITE_ATTACH: "attach",
-  PANE_HMS_LAB_ATTACH_WORKER: "attach",
-  RESERVATIONIST_PANE_SAVE: "save",
-  HMS_JOB_QUEUE: "queue",
-};
-function parse(path) {
-  const map = new Map();
-  if (!path || !fs.existsSync(path)) return map;
-  for (const line of fs.readFileSync(path, "utf8").split("\n")) {
-    const match = /^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$/.exec(line);
-    if (match) map.set(match[1], match[2].replace(/'\\''/g, "'"));
-  }
-  return map;
-}
-function isOn(value) {
-  return /^(on|true|1)$/i.test(String(value ?? ""));
-}
-function isWorkflow(key) {
-  return Object.prototype.hasOwnProperty.call(WORKFLOW, key) || key.endsWith("_ON");
-}
-const next = parse(newPath);
-const prev = parse(oldPath);
-const flips = [];
-for (const [key, value] of next) {
-  if (!isWorkflow(key)) continue;
-  // Amend's lab mode is an enabled workflow too; lab -> on widens it to real guests.
-  const widensAmend = key === "PANE_WRITE_AMEND" &&
-    ((value === "lab" && !["lab", "on"].includes(prev.get(key))) || (value === "on" && prev.get(key) !== "on"));
-  if (!widensAmend && (!isOn(value) || isOn(prev.get(key)))) continue;
-  flips.push(key);
-}
-if (flips.length === 0) process.exit(0);
-if (!liveSha) {
-  process.stderr.write("write-ec2-remote-env: refuse: live SHA missing for flag on\n");
-  process.exit(2);
-}
-let canary = "";
-try {
-  canary = fs.readFileSync(canaryPath, "utf8");
-} catch {
-  canary = "";
-}
-const rows = [];
-const lineRe = /^CANARY PASS (\S+) (\S+) ([0-9a-fA-F]{7,40})\s*$/;
-for (const line of canary.split(/\r?\n/)) {
-  const match = lineRe.exec(line);
-  if (match) rows.push({ workflow: match[1], property: match[2], sha: match[3] });
-}
-function shaMatch(canarySha, live, exact) {
-  const a = canarySha.toLowerCase();
-  const b = live.toLowerCase();
-  if (exact) return /^[0-9a-f]{40}$/.test(a) && a === b;
-  if (a === b) return true;
-  if (a.length >= 7 && b.startsWith(a)) return true;
-  if (b.length >= 7 && a.startsWith(b)) return true;
-  return false;
-}
-function workflowMatch(flag, token) {
-  const alias = WORKFLOW[flag] || flag;
-  return token === flag || token.toLowerCase() === String(alias).toLowerCase();
-}
-const FLAG_PROPERTY = {
-  PANE_WRITE_CREATE: "HRCEN",
-  PANE_HMS_LAB_CREATE_WORKER: "HRCEN",
-  PANE_CLOUD_CREATE_DISPATCH: "HRCEN",
-  PANE_WRITE_AMEND: "HRCEN",
-  PANE_WRITE_AMEND_UNPAID: "HRCEN",
-  PANE_WRITE_AMEND_PAID: "HRCEN",
-  PANE_HMS_LAB_AMEND_WORKER: "HRCEN",
-  PANE_WRITE_CANCEL_UNPAID: "HRCEN",
-  PANE_WRITE_CANCEL_PAID: "HRCEN",
-  PANE_WRITE_ADDONS: "HRCEN",
-  PANE_WRITE_ATTACH: "HRCEN",
-  HMS_DAVINCI_CREATE: "HRDAV",
-  HMS_DAVINCI_MAKE_QUOTE: "HRDAV",
-  HMS_DAVINCI_READS: "HRDAV",
-  PANE_HMS_LAB_ATTACH_WORKER: "HRCEN",
-};
-const CONFIGURED_PROPERTY_FLAGS = new Set(["HMS_JOB_QUEUE", "HMS_QUOTE_PREPARE", "HMS_PREFETCH_ENABLED",
-  "HMS_AVAILABILITY_PREFETCH", "PARTY_MATCH_V2"]);
-for (const flag of flips) {
-  // These authority switches may bootstrap only in their dedicated Labtest modes.
-  // The PANE_WRITE_* lab -> on widenings below still require an exact HRCEN canary.
-  const labOnlyBootstrap =
-    (flag === "PANE_CLOUD_CREATE_DISPATCH" && next.get("PANE_WRITE_CREATE") === "lab") ||
-    (flag === "PANE_HMS_LAB_ATTACH_WORKER" && next.get("PANE_WRITE_ATTACH") === "lab");
-  if (labOnlyBootstrap) continue;
-  const neededProperty = FLAG_PROPERTY[flag] || (CONFIGURED_PROPERTY_FLAGS.has(flag) ?
-    (next.get("HMS_EXPECTED_PROPERTY_CODE") || "HRCEN") : undefined);
-  const exactSha = neededProperty === "HRCEN";
-  const hit = rows.find(
-    (row) =>
-      workflowMatch(flag, row.workflow) &&
-      /^(HRCEN|HRDAV)$/.test(row.property) &&
-      (!neededProperty || row.property === neededProperty) &&
-      shaMatch(row.sha, liveSha, exactSha),
-  );
-  if (hit) continue;
-  const stale = rows.some((row) => workflowMatch(flag, row.workflow) &&
-    (!neededProperty || row.property === neededProperty));
-  process.stderr.write(
-    stale
-      ? `write-ec2-remote-env: refuse: stale canary SHA for ${flag} (live ${liveSha})\n`
-      : `write-ec2-remote-env: refuse: no CANARY PASS <workflow> <property> <sha> for ${flag}\n`,
-  );
-  process.exit(2);
-}
-NODE
+node "$SCRIPT_DIR/validate-hms-canary.mjs" "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV" \
+  "${NAVA_CANARY_PASS_FILE:-}" "$nava_live_sha"
 
 if [ "$M1_ONLY" -eq 0 ]; then
 REMOTE_AUTH_SECRET="$(
@@ -762,6 +653,7 @@ if [ "$M1_ONLY" -eq 1 ] && {
 fi
 
 # All validation completes before promotion. M1-only replaces only common; admin stays byte-identical.
+[ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo "render refused: HOLD file present" >&2; exit 2; }
 mv -f -- "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV"
 if [ "$M1_ONLY" -eq 0 ]; then mv -f -- "$REMOTE_ADMIN_TMP" "$REMOTE_ADMIN_ENV"; fi
 node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$SERVER_PILOT"

@@ -11,7 +11,7 @@ import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign
 import { SelectedEmailBlock } from './blocks/selected-email';
 import { ReservationWorkspace } from '@/components/reservation-pane/reservation-workspace';
 import { createTrpcReservationWorkflowClient } from '@/lib/reservation-workflow/client';
-import type { ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import type { PropertyConfiguration, PropertySwitch, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 import {
@@ -60,6 +60,31 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const { data: session, isLoading: sessionLoading } = useSession();
   const { data: connection, isLoading: connectionLoading } = useActiveConnection();
   const email = bridge.activeEmail;
+  const [propertySelection, setPropertySelection] = useState<{ transportId: string; propertySwitch: PropertySwitch } | null>(null);
+  const propertySwitch = propertySelection && propertySelection.transportId === connection?.id ? propertySelection.propertySwitch : undefined;
+  const propertyScope = JSON.stringify([session?.user?.id, session?.session?.id, connection?.id, propertySwitch]);
+  const propertyEpoch = useRef({ scope: propertyScope, value: 0 });
+  if (propertyEpoch.current.scope !== propertyScope)
+    propertyEpoch.current = { scope: propertyScope, value: propertyEpoch.current.value + 1 };
+  const [loadedConfiguration, setLoadedConfiguration] = useState<{ key: string; value: PropertyConfiguration } | null>(null);
+  const [configurationError, setConfigurationError] = useState(false);
+  const configurationKey = JSON.stringify([session?.user?.id, session?.session?.id, connection?.id, propertySwitch]);
+  const configuration = loadedConfiguration?.key === configurationKey ? loadedConfiguration.value : null;
+  const configurationEpoch = useRef({ key: configurationKey, value: 0 });
+  if (configurationEpoch.current.key !== configurationKey)
+    configurationEpoch.current = { key: configurationKey, value: configurationEpoch.current.value + 1 };
+  useEffect(() => {
+    let live = true;
+    const selectedEpoch = configurationEpoch.current.value;
+    setConfigurationError(false);
+    const mailbox = inMailbox(connection?.id ?? null);
+    if (!session?.user?.id || !mailbox) return () => { live = false; };
+    void trpcClient.quoteWorkflow.rateCatalogue.query(propertySwitch ? { propertySwitch } : undefined, mailbox)
+      .then(value => { if (live && configurationEpoch.current.value === selectedEpoch && value.transportId === connection?.id && (!propertySwitch || value.propertyCode === propertySwitch))
+        setLoadedConfiguration({ key: configurationKey, value }); })
+      .catch(() => { if (live && configurationEpoch.current.value === selectedEpoch) setConfigurationError(true); });
+    return () => { live = false; };
+  }, [session?.user?.id, session?.session?.id, connection?.id, propertySwitch, configurationKey]);
   const sync = useOutlookSync({
     userId: session?.user?.id ?? null,
     sessionId: session?.session?.id ?? null,
@@ -81,7 +106,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       ...(email.folderEntryId ? { folderEntryId: email.folderEntryId } : {}) };
   }, [email?.entryId, email?.storeId, email?.folderEntryId, preview, webSelectedThreadId]);
   const owner = session?.user?.id && connection?.id && selection
-    ? JSON.stringify([session.user.id, session.session?.id, connection.id, selection,
+    ? JSON.stringify([session.user.id, session.session?.id, connection.id, propertySwitch, selection,
       email?.internetMessageId, email?.subject, email?.senderEmail, email?.transportHeaders,
       email?.bodyText, email?.bodyHtml]) : null;
   const epoch = useRef({ owner, value: 0 });
@@ -97,7 +122,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const sourceLoad = useRef({ owner, retry: sourceRetry, startedAt: null as number | null });
   if (sourceLoad.current.owner !== owner || sourceLoad.current.retry !== sourceRetry)
     sourceLoad.current = { owner, retry: sourceRetry, startedAt: null };
-  const client = useMemo(() => createTrpcReservationWorkflowClient(trpcClient), []);
+  const client = useMemo(() => createTrpcReservationWorkflowClient(trpcClient, configuration), [configuration]);
   const [pendingBuild, setPendingBuild] = useState<PaneVersion | null>(null);
   const [loadedBuild] = useState(() => loadedPaneBuild());
   const lastSelection = useRef<string | null>(null);
@@ -197,7 +222,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
     setResolved(null);
     setSourceError(null);
     setSourceRetryable(false);
-    if (!owner || !selection || !email || !connection?.id || bridge.requiresRelogin ||
+    if (!owner || !selection || !email || !connection?.id || !configuration || bridge.requiresRelogin ||
       (!preview && (bridge.updateRequired || bridge.authorizationUnavailable || bridge.selectionOutsideMailbox))) return;
     const startedAt = sourceLoad.current.startedAt ?? Date.now();
     sourceLoad.current.startedAt = startedAt;
@@ -210,6 +235,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
         const contentHash = preview ? undefined : await selectedContentHash(email);
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
         const result = await trpcClient.reservationWorkflowV2.resolveSource.query({ selection,
+          ...(propertySwitch ? { propertySwitch } : {}),
           ...(contentHash ? { contentHash } : {}),
           ...(email.internetMessageId ? { internetMessageId: email.internetMessageId } : {}) });
         if (!alive || currentOwner.current !== owner || epoch.current.value !== selectedEpoch) return;
@@ -235,10 +261,16 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
             timer = setTimeout(() => void resolve(), 10_000);
           return;
         }
+        if (result.propertyCode !== configuration.propertyCode || result.source.propertyId !== configuration.propertyCode) {
+          setSourceError('The selected hotel could not be verified. Reopen the email and try again.');
+          return;
+        }
         setSourceError(null);
         setResolved({ owner, source: {
           mailboxId: connection.id,
           propertyId: result.propertyCode,
+          ...(propertySwitch ? { propertySwitch } : {}),
+          propertySelectionEpoch: propertyEpoch.current.value,
           messageId: result.source.messageId,
           threadId: result.source.threadId,
           sourceHash: result.source.sourceHash,
@@ -269,7 +301,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
     void resolve();
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [owner, selection, connection?.id, resolved?.owner, bridge.requiresRelogin, bridge.updateRequired,
-    bridge.authorizationUnavailable, bridge.selectionOutsideMailbox, preview, sync.status?.committed, sourceRetry]);
+    bridge.authorizationUnavailable, bridge.selectionOutsideMailbox, preview, sync.status?.committed, sourceRetry, configuration, propertySwitch]);
 
   if (sessionLoading || connectionLoading) return <p className="p-4 text-sm text-slate-600">Loading Nava…</p>;
   if (!session?.user || bridge.requiresRelogin) return <OutlookPaneSignIn />;
@@ -280,6 +312,11 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       <header className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 bg-white p-3">
         <div className="min-w-0"><strong className="text-base">Nava</strong>
           <p className="truncate text-xs text-slate-500">{connection?.email || 'Select a mailbox'}</p></div>
+        {(configuration?.propertyCode === 'HRDAV' || configuration?.propertyCode === 'HRDAVS' || propertySwitch) && connection?.id &&
+          <label className="text-xs">Hotel <select value={propertySwitch ?? 'HRDAV'}
+            onChange={event => setPropertySelection({ transportId: connection.id, propertySwitch: event.target.value === 'HRDAVS' ? 'HRDAVS' : 'HRDAV' })}>
+            <option value="HRDAV">Da Vinci</option><option value="HRDAVS">Da Vinci HRDAVS</option>
+          </select></label>}
         <OutlookSyncProgress status={sync.status} notApplicable={sync.notApplicable} mailbox={connection?.email ?? ''}
           onControl={(operation) => void sync.control(operation)} error={sync.error} busy={sync.busy}
           controlsEnabled={!preview && sync.eligible} />
@@ -292,12 +329,13 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
       {!preview && bridge.authorizationUnavailable ? <button type="button" className="m-3 rounded border p-2 text-sm"
         onClick={bridge.refreshAuthorization}>Reconnect Outlook</button> : null}
       <SelectedEmailBlock activeEmail={email} />
+      {configurationError ? <p role="alert" className="p-3 text-sm">Hotel configuration is unavailable. Reopen Nava and try again.</p> : null}
       {sourceError ? <div className="p-3 text-sm text-slate-600"><p role="status">{sourceError}</p>
         {sourceRetryable && <button type="button" className="mt-2 rounded border border-slate-300 px-3 py-2"
           onClick={() => setSourceRetry(value => value + 1)}>Retry opening email</button>}
       </div> : null}
       {email && !source && !sourceError ? <p role="status" className="p-3 text-sm text-slate-600">Opening selected email…</p> : null}
-      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} client={client} bridge={bridge} hostType={preview ? 'webmail' : 'outlook'}
+      {source ? <ReservationWorkspace key={`${owner}:${source.selectionEpoch}`} source={source} activeProperty={configuration?.propertyCode} configuration={configuration} client={client} bridge={bridge} hostType={preview ? 'webmail' : 'outlook'}
         onOpenEvidence={(reference) => void openEvidence(reference)} onOpenAttachment={(reference) => void openAttachment(reference)} /> : null}
       <Dialog open={currentEvidencePreview !== null} onOpenChange={(open) => { if (!open) setSourceEvidencePreview(null); }}>
         <DialogContent showOverlay className="max-h-[85dvh] max-w-3xl overflow-y-auto">

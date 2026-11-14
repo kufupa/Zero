@@ -47,8 +47,8 @@ async function writeIndex(name: string, index: unknown): Promise<string> {
   return path;
 }
 
-const tourvest = { kind: 'company' as const, nativeId: '206', name: 'Tourvest Test Profile' };
-const cwt = { kind: 'agency' as const, nativeId: '290', name: 'CWT JNB' };
+const tourvest = { kind: 'organization' as const, nativeId: '206', name: 'Tourvest Test Profile' };
+const cwt = { kind: 'bookingAgency' as const, nativeId: '290', name: 'CWT JNB' };
 
 import { matchKey } from '../src/ai/party-match.js';
 describe('index load and miss', () => {
@@ -100,7 +100,7 @@ describe('index load and miss', () => {
     );
 
     const hrcen = await writeIndex('hrcen.json', indexFile([tourvest]));
-    const hrdav = await writeIndex('hrdav.json', indexFile([cwt]));
+    const hrdav = await writeIndex('hrdav.json', { ...indexFile([cwt]), propertyCode: 'HRDAV', tenantId: 'DAVINCI_PRD' });
     const env = { PARTY_INDEX_PATH: hrcen, PARTY_INDEX_PATH_HRDAV: hrdav };
     await expect(typeaheadPartyIndex('Tour', { propertyCode: 'HRCEN', env, now: NOW })).resolves.toMatchObject({
       available: true,
@@ -158,25 +158,25 @@ describe('ranking', () => {
 
   it('keeps the best ten of each kind, and companies do not crowd out agencies', () => {
     const companies = Array.from({ length: 25 }, (_, i) => ({
-      kind: 'company' as const,
+      kind: 'organization' as const,
       nativeId: String(1000 + i),
       name: `Tour Company ${String(i).padStart(2, '0')}`,
     }));
     const agencies = [
-      { kind: 'agency' as const, nativeId: '1', name: 'Tour Agency One' },
-      { kind: 'agency' as const, nativeId: '2', name: 'Tour Agency Two' },
+      { kind: 'bookingAgency' as const, nativeId: '1', name: 'Tour Agency One' },
+      { kind: 'bookingAgency' as const, nativeId: '2', name: 'Tour Agency Two' },
     ];
     const found = searchPartyIndex(indexFile([...companies, ...agencies]), 'Tour');
-    expect(found.filter((row) => row.kind === 'company')).toHaveLength(10);
-    expect(found.filter((row) => row.kind === 'agency').map((row) => row.nativeId)).toEqual(['1', '2']);
-    expect(found[0]).toEqual({ kind: 'company', nativeId: '1000', name: 'Tour Company 00' });
+    expect(found.filter((row) => row.kind === 'organization')).toHaveLength(10);
+    expect(found.filter((row) => row.kind === 'bookingAgency').map((row) => row.nativeId)).toEqual(['1', '2']);
+    expect(found[0]).toEqual({ kind: 'organization', nativeId: '1000', name: 'Tour Company 00' });
   });
 
   it('puts the exact name ahead of a longer name that starts with it', () => {
     const found = searchPartyIndex(
       indexFile([
-        { kind: 'company', nativeId: '9', name: 'Tourvest Group' },
-        { kind: 'company', nativeId: '8', name: 'Tourvest' },
+        { kind: 'organization', nativeId: '9', name: 'Tourvest Group' },
+        { kind: 'organization', nativeId: '8', name: 'Tourvest' },
       ]),
       'Tourvest',
     );
@@ -195,9 +195,9 @@ describe('Unicode', () => {
     expect(matchKey('Zoë Travel')).toBe('zoe travel');
     expect(matchKey('李明 有限公司')).toBe('李明 有限公司');
     const index = indexFile([
-      { kind: 'company', nativeId: '11', name: 'Société Générale' },
-      { kind: 'company', nativeId: '12', name: 'Zoë Travel' },
-      { kind: 'company', nativeId: '13', name: '李明 有限公司' },
+      { kind: 'organization', nativeId: '11', name: 'Société Générale' },
+      { kind: 'organization', nativeId: '12', name: 'Zoë Travel' },
+      { kind: 'organization', nativeId: '13', name: '李明 有限公司' },
     ]);
     expect(searchPartyIndex(index, 'societe').map((row) => row.nativeId)).toEqual(['11']);
     expect(searchPartyIndex(index, 'SOCIÉTÉ').map((row) => row.nativeId)).toEqual(['11']);
@@ -207,7 +207,7 @@ describe('Unicode', () => {
   });
 
   it('spacing and punctuation do not stop a multi-word match', () => {
-    const index = indexFile([{ kind: 'company', nativeId: '21', name: 'Woolworths Holdings (Pty) Ltd' }]);
+    const index = indexFile([{ kind: 'organization', nativeId: '21', name: 'Woolworths Holdings (Pty) Ltd' }]);
     expect(searchPartyIndex(index, '  woolworths   holdings ').map((row) => row.nativeId)).toEqual(['21']);
     expect(searchPartyIndex(index, 'woolworths-holdings').map((row) => row.nativeId)).toEqual(['21']);
   });
@@ -265,7 +265,7 @@ describe('the typeahead and the index age', () => {
       available: false,
       results: [],
     });
-    vi.stubEnv('PARTY_INDEX_PATH_HRDAV', await writeIndex('dv-route.json', indexFile([cwt])));
+    vi.stubEnv('PARTY_INDEX_PATH_HRDAV', await writeIndex('dv-route.json', { ...indexFile([cwt]), propertyCode: 'HRDAV', tenantId: 'DAVINCI_PRD' }));
     await expect(caller.panePartyLookup.typeahead({ query: 'cwt' })).resolves.toMatchObject({
       available: true,
       results: [cwt],
@@ -285,7 +285,7 @@ describe('a pick from the list is still checked live before a rate is bound', ()
       candidates: [{ nativeId: '999', displayName: 'Someone Else', kind: 'organization', matchedOn: ['store'] }],
       truncated: false,
     });
-    const refused = await verifyStaffParties({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } }).catch(
+    const refused = await verifyStaffParties({ organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } }).catch(
       (error: unknown) => error,
     );
     expect(refused).toBeInstanceOf(TRPCError);
@@ -303,7 +303,7 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     };
 
     const refused = await verifyStaffParties({
-      company: { kind: 'company', nativeId: 'busy-206', name: 'Busy Test Profile' },
+      organization: { kind: 'organization', nativeId: 'busy-206', name: 'Busy Test Profile' },
     }).catch((error: unknown) => error);
 
     expect(refused).toBeInstanceOf(TRPCError);
@@ -318,8 +318,8 @@ describe('a pick from the list is still checked live before a rate is bound', ()
       truncated: false,
     });
     await expect(
-      verifyStaffParties({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } }),
-    ).resolves.toEqual({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } });
+      verifyStaffParties({ organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } }),
+    ).resolves.toEqual({ organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } });
   });
 
   it('re-checks a Da Vinci pick on HRDAV so a valid DV id is not refused', async () => {
@@ -332,12 +332,12 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     panePartyLookupLoaders.spawn = spawn;
     await expect(
       verifyStaffParties(
-        { company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } },
+        { organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } },
         DAVINCI_HMS_READ_TARGET,
       ),
-    ).resolves.toEqual({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } });
+    ).resolves.toEqual({ organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } });
     expect(spawn).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'company', name: 'Tourvest Test Profile', target: DAVINCI_HMS_READ_TARGET }),
+      expect.objectContaining({ kind: 'organization', name: 'Tourvest Test Profile', target: DAVINCI_HMS_READ_TARGET }),
     );
   });
 });

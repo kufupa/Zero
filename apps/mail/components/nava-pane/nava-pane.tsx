@@ -355,7 +355,8 @@ export function NavaPane({
     () => hmsJobTransport(PANE_HMS_JOB_CLIENT, partyJobThreadId, partyJobMessageId),
     [partyJobThreadId, partyJobMessageId],
   );
-  const [quotePaneConfig, setQuotePaneConfig] = useState<QuotePaneConfig | null>(null);
+  const [propertySelection, setPropertySelection] = useState<{ transportId: string; propertySwitch: 'HRDAV' | 'HRDAVS' } | null>(null);
+  const [quotePaneConfig, setQuotePaneConfig] = useState<{ key: string; value: QuotePaneConfig } | null>(null);
   // Preview/Book in HMS show only when create mode is lab or on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
   // Legacy attach readiness. HRCEN filing uses its mailbox-scoped server flags instead.
@@ -473,7 +474,11 @@ export function NavaPane({
   const { data: session, isLoading } = useSession();
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
-  const activePaneConfig = quotePaneConfig?.transportId === activeConnection?.id ? quotePaneConfig : null;
+  const propertySwitch = propertySelection && propertySelection.transportId === activeConnection?.id ? propertySelection.propertySwitch : undefined;
+  const configKey = JSON.stringify([session?.user?.id, session?.session?.id, activeConnection?.id, propertySwitch]);
+  const configEpoch = useRef({ key: configKey, value: 0 });
+  if (configEpoch.current.key !== configKey) configEpoch.current = { key: configKey, value: configEpoch.current.value + 1 };
+  const activePaneConfig = quotePaneConfig?.key === configKey ? quotePaneConfig.value : null;
   const quoteStrategyRegistryKey = (activePaneConfig?.salesStrategies ?? [])
     .map((strategy) => `${strategy.code}:${strategy.requestValue}`)
     .join('|');
@@ -493,6 +498,7 @@ export function NavaPane({
   const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStayBySubject;
   useEffect(() => {
     let alive = true;
+    const selectedEpoch = configEpoch.current.value;
     setQuotePaneConfig(null);
     const transportId = activeConnection?.id;
     if (!session?.user?.id || !transportId) {
@@ -500,17 +506,17 @@ export function NavaPane({
         alive = false;
       };
     }
-    void trpcClient.quoteWorkflow.rateCatalogue.query()
+    void trpcClient.quoteWorkflow.rateCatalogue.query(propertySwitch ? { propertySwitch } : undefined, inMailbox(transportId) ?? undefined)
       .then((config) => {
-        if (alive && config.transportId === transportId) setQuotePaneConfig(config);
+        if (alive && configEpoch.current.value === selectedEpoch && config.transportId === transportId && (!propertySwitch || config.propertyCode === propertySwitch)) setQuotePaneConfig({ key: configKey, value: config });
       })
       .catch(() => {
-        if (alive) setQuotePaneConfig(null);
+        if (alive && configEpoch.current.value === selectedEpoch) setQuotePaneConfig(null);
       });
     return () => {
       alive = false;
     };
-  }, [session?.user?.id, activeConnection?.id]);
+  }, [session?.user?.id, session?.session?.id, activeConnection?.id, propertySwitch, configKey]);
   const readOnlySyncStatus = Boolean(preview || onOpenThread);
   const sync = useOutlookSync({
     userId: session?.user?.id ?? null,
@@ -546,7 +552,7 @@ export function NavaPane({
     };
   }, [activeEmail?.entryId, activeEmail?.storeId, activeEmail?.folderEntryId, preview, webSelectedThreadId]);
   const selectedIdentity = activeEmail?.entryId
-    ? JSON.stringify([sourceSelection ?? selectedEmailKey, activeEmail.internetMessageId ?? '']) : null;
+    ? JSON.stringify([...(propertySwitch ? [propertySwitch] : []), sourceSelection ?? selectedEmailKey, activeEmail.internetMessageId ?? '']) : null;
   const contextRevision = useRef({ scope: currentScope, selection: selectedIdentity, scopeEpoch: 0, selectionEpoch: 0 });
   if (contextRevision.current.scope !== currentScope) {
     contextRevision.current = { scope: currentScope, selection: selectedIdentity,
@@ -1175,6 +1181,7 @@ export function NavaPane({
         groups,
         header,
         propertyCode: paneConfig.propertyCode,
+        configuration: paneConfig,
         stayKey,
         onResult: ({ strategyCode, row, result }) => dispatchQuote({
           type: 'quote_strategy_comparison_result',
@@ -1299,6 +1306,7 @@ export function NavaPane({
               groups,
               header,
               propertyCode: activePaneConfig?.propertyCode,
+              configuration: activePaneConfig,
               stayKey,
             });
             return { stayKey, result };
@@ -1835,6 +1843,7 @@ export function NavaPane({
         groups,
         header,
         propertyCode: activePaneConfig?.propertyCode,
+        configuration: activePaneConfig,
       });
       return trackStaffQuoteRun(run).then((remote) => {
         // The reducer drops this result when the selection, inputs or stay rows moved on while HMS searched. Say so.
@@ -2005,6 +2014,7 @@ export function NavaPane({
           groups: stayGroups,
           header: runHeader,
           propertyCode: activePaneConfig?.propertyCode,
+          configuration: activePaneConfig,
           stayKey: step.shareKey,
         })
       : autoStart
@@ -2017,6 +2027,7 @@ export function NavaPane({
           groups: stayGroups,
           header: runHeader,
           propertyCode: activePaneConfig?.propertyCode,
+          configuration: activePaneConfig,
           stayKey: step.shareKey,
         })
         : bindExecuteStaffQuote({
@@ -2029,6 +2040,7 @@ export function NavaPane({
           groups: stayGroups,
           header: runHeader,
           propertyCode: activePaneConfig?.propertyCode,
+          configuration: activePaneConfig,
           stayKey: step.shareKey,
         });
     const noticeEmail = {
@@ -2051,6 +2063,7 @@ export function NavaPane({
             groups: stayGroups,
             header: runHeader,
             propertyCode: activePaneConfig?.propertyCode,
+            configuration: activePaneConfig,
             stayKey: step.shareKey,
           })
         : bindExecuteStaffQuote({
@@ -2063,6 +2076,7 @@ export function NavaPane({
             groups: stayGroups,
             header: runHeader,
             propertyCode: activePaneConfig?.propertyCode,
+            configuration: activePaneConfig,
             stayKey: step.shareKey,
           });
       runNoticed(retryRun);
@@ -2324,6 +2338,10 @@ export function NavaPane({
             >
               {mailboxLabel}
             </span>
+            {(activePaneConfig?.propertyCode === 'HRDAV' || activePaneConfig?.propertyCode === 'HRDAVS' || propertySwitch) && activeConnection?.id &&
+              <label className="inline-flex items-center gap-1">Hotel<select value={propertySwitch ?? 'HRDAV'} onChange={event => setPropertySelection({
+                transportId: activeConnection.id, propertySwitch: event.target.value === 'HRDAVS' ? 'HRDAVS' : 'HRDAV',
+              })}><option value="HRDAV">Da Vinci</option><option value="HRDAVS">Da Vinci HRDAVS</option></select></label>}
             <span className="flex shrink-0 items-center gap-1.5 [&_button]:whitespace-nowrap">
               <HmsJobRunningChip />
               {activeConnection?.email && (sync.eligible || readOnlySyncStatus) ? (
@@ -2521,6 +2539,7 @@ export function NavaPane({
                     transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
                     mailboxScope={voucherMailboxScope}
                     propertyCode={activePaneConfig?.propertyCode ?? null}
+                    filingCapability={activePaneConfig?.capabilities?.attach ?? null}
                     workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
                     trpc={trpcClient}
                     syncCommitted={sync.status?.committed ?? null}
@@ -2703,6 +2722,7 @@ export function NavaPane({
             <BookingVoucherCard
               session={quoteSession}
               propertyCode={activePaneConfig?.propertyCode ?? null}
+              filingCapability={activePaneConfig?.capabilities?.attach ?? null}
               transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
               mailboxScope={voucherMailboxScope}
               readAs={readAs}

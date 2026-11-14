@@ -5748,7 +5748,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         writeFileSync(aws, '#!/usr/bin/env bash\nprintf called >"$FAKE_AWS_MARKER"\nexit 7\n');
         chmodSync(aws, 0o755);
         for (const [key, value] of Object.entries({ PANE_WRITE_AMEND: 'always', PANE_HMS_LAB_CREATE_WORKER: 'lab',
-          PARTY_MATCH_V2: 'on', HMS_GUEST_PREFETCH_PER_HOUR: '-1', HMS_AVAILABILITY_PREFETCH: 'true' })) {
+          PARTY_MATCH_V2: 'on', HMS_GUEST_PREFETCH_PER_HOUR: '-1', HMS_AVAILABILITY_PREFETCH: 'true',
+          HMS_DAVINCI_ENABLED_PROPERTIES: 'HRCEN', HMS_DAVINCI_CREATE: 'invalid' })) {
           const result = spawnSync('bash', [writer], { encoding: 'utf8', env: {
             PATH: `${temp}${delimiter}${process.env.PATH ?? ''}`, S3_BUCKET: 'fixture', BETTER_AUTH_SECRET: 'fixture',
             FAKE_AWS_MARKER: marker, [key]: value,
@@ -5777,6 +5778,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         PANE_WRITE_CREATE: 'on', PANE_HMS_LAB_CREATE_WORKER: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on',
         PANE_WRITE_ATTACH: 'on', PANE_HMS_LAB_ATTACH_WORKER: 'on', PANE_WRITE_AMEND: 'on',
         PANE_HMS_LAB_AMEND_WORKER: 'on', PANE_WRITE_AMEND_UNPAID: 'on', PANE_WRITE_CANCEL_UNPAID: 'on',
+        HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV,HRDAVS', HMS_DAVINCI_CREATE: 'lab',
+        HMS_DAVINCI_AMEND: 'off', HMS_DAVINCI_CANCEL: 'off', HMS_DAVINCI_ATTACH: 'off',
+        HMS_DAVINCI_ADDONS: 'off', HMS_DAVINCI_GUEST_PROFILE_CREATE: 'off',
+        HMS_NATIVE_CATALOG_PATH_HRDAVS: '/opt/nava/catalog.json', PARTY_INDEX_PATH_HRDAVS: '/opt/nava/party.json',
+        HMS_READ_ROLE_PROOF_V2_PATH: '/opt/nava/proof.json',
+        HMS_READ_ROLE_PROOF_V2_ROOT: '/etc/nava/hms-read-role-proofs/v2', HMS_RELEASE_ROOT: '/opt/nava/releases',
       };
       const base = ["NODE_ENV='production'", "DATABASE_URL='fake-db'", "AWS_REGION='af-south-1'", "S3_BUCKET='fake-bucket'"];
       const run = (values: Record<string, string>) => {
@@ -5792,6 +5799,9 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           HMS_GUEST_PREFETCH_PER_HOUR: '-1', HMS_QUOTE_PREPARE_PER_HOUR: '60.5',
           PANE_WRITE_AMEND: 'always', PANE_HMS_LAB_AMEND_WORKER: 'lab',
           PANE_CLOUD_CREATE_DISPATCH: 'enabled', HMS_EXPECTED_TRANSPORT_ID: 'other',
+          HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV,HRDAV', HMS_DAVINCI_CREATE: 'always',
+          HMS_DAVINCI_ATTACH: 'true', HMS_NATIVE_CATALOG_PATH_HRDAVS: '/opt/nava/../secret',
+          HMS_READ_ROLE_PROOF_V2_ROOT: '/etc/nava/../proofs',
         })) {
           writeFileSync(result, 'unchanged\n');
           expect(run({ ...controls, [key]: value }).status, key).toBe(2);
@@ -5801,16 +5811,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
     });
 
     it('requires exact HRCEN final-SHA workflow canaries for release flag flips and amend widening', async () => {
-      const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
       const { tmpdir } = await import('node:os');
       const { fileURLToPath } = await import('node:url');
       const { dirname, join } = await import('node:path');
-      const writer = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'write-ec2-remote-env.sh'), 'utf8');
-      const start = writer.indexOf('const fs = require("fs");', writer.indexOf('# Flip to `on`'));
-      const end = writer.indexOf('\nNODE\n', start);
-      expect(start).toBeGreaterThan(0);
-      expect(end).toBeGreaterThan(start);
-      const guard = writer.slice(start, end);
+      const validator = join(dirname(fileURLToPath(import.meta.url)), '..', 'deploy', 'validate-hms-canary.mjs');
+      const { effectiveWorkflowPolicy } = await import('../tooling/hms-cloud/hms-workflow-policy.mjs');
       const temp = mkdtempSync(join(tmpdir(), 'nava-release-canary-'));
       const next = join(temp, 'next');
       const prev = join(temp, 'prev');
@@ -5820,7 +5826,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         writeFileSync(next, `HMS_EXPECTED_PROPERTY_CODE='HRCEN'\n${key}='${value}'\n`);
         writeFileSync(prev, `${key}='${previous}'\n`);
         writeFileSync(canary, proof);
-        return spawnSync(process.execPath, ['-e', guard, '-', next, prev, canary, sha], { encoding: 'utf8' });
+        return spawnSync(process.execPath, [validator, next, prev, canary, sha], { encoding: 'utf8' });
       };
       const flags = [
         ['HMS_PREFETCH_ENABLED', '1', 'prefetch'], ['HMS_JOB_QUEUE', 'on', 'queue'],
@@ -5833,6 +5839,31 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         ['PANE_WRITE_AMEND_UNPAID', 'on', 'amend'], ['PANE_WRITE_CANCEL_UNPAID', 'on', 'cancel'],
       ] as const;
       try {
+        for (const workflow of ['create', 'amend', 'cancel', 'attach', 'addons', 'guest_profile_create'] as const) {
+          expect(effectiveWorkflowPolicy({}, 'HRCEN', workflow).capability, workflow).toBe('prepare-only');
+          expect(effectiveWorkflowPolicy({ HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV', HMS_DAVINCI_READS: 'on',
+            HMS_DAVINCI_CREATE: 'on' }, 'HRDAV', workflow).capability, workflow).toBe('unavailable');
+        }
+        const createOn = { PANE_WRITE_CREATE: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on' };
+        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'on', capability: 'staff-enabled' });
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'lab', PANE_CLOUD_CREATE_DISPATCH: 'on' },
+          'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'lab', capability: 'lab' });
+        expect(effectiveWorkflowPolicy({ RESERVATIONIST_PANE_SAVE: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on' },
+          'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'lab', capability: 'lab' });
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'on' }, 'HRCEN', 'guest_profile_create'))
+          .toMatchObject({ mode: 'off', capability: 'prepare-only' });
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'on' }, 'HRCEN', 'create').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on' }, 'HRCEN', 'amend').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on', PANE_HMS_LAB_AMEND_WORKER: 'on' },
+          'HRCEN', 'amend').capability).toBe('staff-enabled');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on', PANE_HMS_LAB_AMEND_WORKER: 'on', PANE_STAY_LOOKUP: 'off' },
+          'HRCEN', 'amend').capability).toBe('unavailable');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_ATTACH: 'on' }, 'HRCEN', 'attach').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy({ PANE_WRITE_ATTACH: 'on', PANE_HMS_LAB_ATTACH_WORKER: 'on' },
+          'HRCEN', 'attach').capability).toBe('staff-enabled');
+        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'addons').capability).toBe('staff-enabled');
+        expect(effectiveWorkflowPolicy({ ...createOn, HMS_WRITER_CREDENTIAL_IDENTITY_HRCEN: 'wrong' },
+          'HRCEN', 'guest_profile_create').capability).toBe('prepare-only');
         for (const [key, value, workflow] of flags) {
           expect(run(key, value, '').status, key).toBe(2);
           expect(run(key, value, `CANARY PASS ${workflow} HRCEN ${sha}\n`).status, key).toBe(0);
@@ -5843,6 +5874,34 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         }
         expect(run('PANE_WRITE_AMEND', 'on', `CANARY PASS amend HRCEN ${sha}\n`, 'lab').status).toBe(0);
         expect(run('PANE_WRITE_AMEND', 'on', '', 'on').status).toBe(0);
+        const runScope = (before: string, after: string, proof: string) => {
+          writeFileSync(prev, before);
+          writeFileSync(next, after);
+          writeFileSync(canary, proof);
+          return spawnSync(process.execPath, [validator, next, prev, canary, sha], { encoding: 'utf8' });
+        };
+        const oldScope = "HMS_DAVINCI_ENABLED_PROPERTIES='HRDAV'\nHMS_DAVINCI_READS='on'\nHMS_DAVINCI_CREATE='on'\n";
+        const widerScope = oldScope.replace("HRDAV'", "HRDAV,HRDAVS'");
+        expect(runScope(oldScope, widerScope, '').status).toBe(2);
+        expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAV ${sha}\nCANARY PASS create HRDAV ${sha}\n`).status).toBe(2);
+        expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAVS ${sha}\nCANARY PASS create HRDAVS ${sha.slice(0, 7)}\n`).status).toBe(2);
+        expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAVS ${sha}\nCANARY PASS create HRDAVS ${sha}\n`).status).toBe(0);
+        expect(runScope(widerScope, widerScope, '').status).toBe(0);
+        const oldQuote = "HMS_DAVINCI_ENABLED_PROPERTIES='HRDAV'\nHMS_DAVINCI_MAKE_QUOTE='on'\n";
+        const widerQuote = oldQuote.replace("HRDAV'", "HRDAV,HRDAVS'");
+        expect(runScope(oldQuote, widerQuote, '').status).toBe(2);
+        expect(runScope(oldQuote, widerQuote, `CANARY PASS quote HRDAVS ${sha}\n`).status).toBe(0);
+        const oldDigest = `PANE_WRITE_CREATE='on'\nHMS_WRITER_DEPENDENCY_DIGEST_CREATE='${'a'.repeat(64)}'\n`;
+        const newDigest = oldDigest.replace('a'.repeat(64), 'b'.repeat(64));
+        expect(runScope(oldDigest, newDigest, '').status).toBe(2);
+        expect(runScope(oldDigest, newDigest, `CANARY PASS create HRCEN ${sha}\n`).status).toBe(0);
+        const oldCredential = "PANE_WRITE_CREATE='on'\nHMS_WRITER_CREDENTIAL_IDENTITY_HRCEN='nava-zero/old'\n";
+        const newCredential = oldCredential.replace('nava-zero/old', 'nava-zero/new');
+        expect(runScope(oldCredential, newCredential, '').status).toBe(2);
+        expect(runScope(oldCredential, newCredential, `CANARY PASS create HRCEN ${sha}\n`).status).toBe(0);
+        const legacy = "HMS_JOB_QUEUE='on'\nHMS_EXPECTED_PROPERTY_CODE='HRDAV'\n";
+        expect(runScope(legacy, legacy.replace('HRDAV', 'HRDAVS'), '').status).toBe(2);
+        expect(runScope(legacy, legacy.replace('HRDAV', 'HRDAVS'), `CANARY PASS queue HRDAVS ${sha}\n`).status).toBe(0);
       } finally { rmSync(temp, { recursive: true, force: true }); }
     });
 
@@ -5983,7 +6042,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
         'utf8',
       ).replaceAll('\r\n', '\n');
-      const start = 'node - "$path" "$kind" <<\'NODE\'\n';
+      const start = 'node --input-type=module - "$path" "$kind" "$POLICY_MODULE" <<\'NODE\'\n';
       const validatorStart = writer.indexOf(start);
       const validatorEnd = writer.indexOf('\nNODE\n}', validatorStart);
       const validator =
@@ -6011,7 +6070,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             ].join('\n'),
             'utf8',
           );
-          const result = spawnSync(process.execPath, ['-', adminEnv, 'admin'], {
+          const result = spawnSync(process.execPath, ['--input-type=module', '-', adminEnv, 'admin',
+            join(here, '..', 'tooling', 'hms-cloud', 'hms-workflow-policy.mjs')], {
             input: validator!,
             encoding: 'utf8',
           });
@@ -6025,7 +6085,6 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
 
     it('decodes required remote-common values during --validate', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
-      const { runInNewContext } = await import('node:vm');
       const { tmpdir } = await import('node:os');
       const { fileURLToPath } = await import('node:url');
       const { dirname, join } = await import('node:path');
@@ -6034,7 +6093,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         join(here, '..', 'deploy', 'write-ec2-remote-env.sh'),
         'utf8',
       ).replaceAll('\r\n', '\n');
-      const start = 'node - "$path" "$kind" <<\'NODE\'\n';
+      const start = 'node --input-type=module - "$path" "$kind" "$POLICY_MODULE" <<\'NODE\'\n';
       const validatorStart = writer.indexOf(start);
       const validatorEnd = writer.indexOf('\nNODE\n}', validatorStart);
       const validator =
@@ -6043,30 +6102,9 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           : writer.slice(validatorStart + start.length, validatorEnd);
 
       expect(validator).toBeTruthy();
-      const validate = (path: string) => {
-        let status = 0;
-        let stderr = '';
-        try {
-          runInNewContext(validator!, {
-            require: (name: string) => {
-              expect(name).toBe('fs');
-              return { readFileSync: (file: string, encoding: string) => readFileSync(file, encoding as BufferEncoding) };
-            },
-            process: {
-              argv: ['node', '-', path, 'common'],
-              stderr: { write: (message: string) => { stderr += message; } },
-              exit: (code: number) => {
-                status = code;
-                throw new Error('validator exit');
-              },
-            },
-            URL,
-          });
-        } catch (error) {
-          if (status === 0) throw error;
-        }
-        return { status, stderr };
-      };
+      const validate = (path: string) => spawnSync(process.execPath,
+        ['--input-type=module', '-', path, 'common', join(here, '..', 'tooling', 'hms-cloud', 'hms-workflow-policy.mjs')],
+        { input: validator!, encoding: 'utf8' });
       const tempDir = mkdtempSync(join(tmpdir(), 'nava-remote-common-validate-test-'));
       const commonEnv = join(tempDir, '.env.remote-common');
       const valid = [
@@ -6182,6 +6220,11 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         mkdirSync(copiedDeploy, { recursive: true });
         mkdirSync(bin);
         for (const file of ['write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'playwright-quote/hms-read-only-guard.mjs']) {
+          const destination = join(server, 'tooling', file);
+          mkdirSync(dirname(destination), { recursive: true });
+          copyFileSync(join(deploy, '..', 'tooling', file), destination);
+        }
         writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
         writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nif [ "$3" = "${FAKE_BAD_PATH:-}" ]; then echo 644:ubuntu:ubuntu; elif [ -d "$3" ]; then echo 700:ubuntu:ubuntu; else echo 600:ubuntu:ubuntu; fi\n', { mode: 0o755 });
         writeFileSync(join(bin, 'pm2'), '#!/usr/bin/env bash\nprintf called >"$HOME/pm2-mutated"\n', { mode: 0o755 });
@@ -6429,6 +6472,11 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         mkdirSync(join(server, 'dist'));
         mkdirSync(bin);
         for (const file of ['start-remote-http.sh', 'build-identity.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'playwright-quote/hms-read-only-guard.mjs']) {
+          const destination = join(server, 'tooling', file);
+          mkdirSync(dirname(destination), { recursive: true });
+          copyFileSync(join(deploy, '..', 'tooling', file), destination);
+        }
         writeFileSync(join(server, 'dist', '.nava-build-commit'), `${'a'.repeat(40)}\n`);
         writeFileSync(join(bin, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', { mode: 0o755 });
         writeFileSync(join(bin, 'stat'), '#!/usr/bin/env bash\nif [ -d "$3" ]; then echo 700:ubuntu:ubuntu; else echo 600:ubuntu:ubuntu; fi\n', { mode: 0o755 });

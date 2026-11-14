@@ -61,6 +61,11 @@ function BookingControl({ field, path, editor, defaultValue, emptyState }: {
 }
 
 function UnsupportedTerms({ editor, path }: { editor: Editor; path: string }) {
+  const policy = editor.configuration?.formPolicy.guestOptIn;
+  if (policy === 'optional' || policy === 'required') return <label className={styles.field} data-field-path={path}>
+    <input type="checkbox" checked={effectiveAt(editor.snapshot, path) === true} disabled={editor.view.busy}
+      onChange={event => void editor.commands.edit(path, event.target.checked)} /> Terms and Conditions
+  </label>;
   if (effectiveAt(editor.snapshot, path) !== true) return null;
   return <div className={styles.notice} data-field-path={path}>Terms and Conditions: this stored setting cannot be applied in Infor.
     <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.edit(path, false)}>Clear unsupported setting</button>
@@ -330,6 +335,9 @@ function GuestDetails({ editor, allocationPath, allocationId, newProfile, disabl
 
 function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor; allocationPath: string; allocationId: string }) {
   const guestPath = `${allocationPath}/guest`;
+  const profileStatus = editor.configuration?.propertyCode === editor.source.propertyId &&
+    editor.configuration.transportId === editor.source.mailboxId ? editor.configuration.capabilities?.guest_profile_create?.status : undefined;
+  const canCreateProfile = profileStatus === 'lab' || profileStatus === 'staff-enabled';
   const newProfile = valueAt(editor.snapshot, `${guestPath}/profileIntent`) === 'requested_new';
   const guest = record(effectiveAt(editor.snapshot, guestPath));
   const operations = editor.snapshot.operationResults.filter(row => row.workflow === 'guest_profile' &&
@@ -372,10 +380,11 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
       : newProfile && !succeeded && <>
         {duplicate && <p className={styles.notice}>Infor found a profile with this name. Search for the existing guest, or create a different profile.</p>}
         {pendingReview && <p className={styles.note}>Confirm the marked guest details before creating the profile.</p>}
-        <button type="button" className={styles.secondaryButton} disabled={locked || editor.view.preview || !required || pendingReview}
+        <button type="button" className={styles.secondaryButton} disabled={locked || editor.view.preview || !canCreateProfile || !required || pendingReview}
           onClick={() => void editor.commands.createGuestProfile(allocationId, Boolean(duplicate)).catch(() => {})}>
           {duplicate ? 'Create different profile' : 'Create profile & check price'}
         </button>
+        {!canCreateProfile && <p className={styles.note}>Guest profile creation is not available for this hotel yet.</p>}
         <p className={styles.note}>The profile remains in Infor even if the reservation is not saved. The room price is checked when the booking details are ready.</p>
       </>}
   </div>;

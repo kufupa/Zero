@@ -91,44 +91,31 @@ describe('mailbox-scoped quote pane configuration', () => {
     );
   });
 
-  it('loads Da Vinci room, plan, board, and override choices from its property profile only', async () => {
-    const config = await signedInCaller('transport-davinci').quoteWorkflow.rateCatalogue();
-    expect(config).toMatchObject({
-      propertyCode: 'HRDAV',
-      transportId: 'transport-davinci',
-      roomTypes: [
-        { code: 'JNRSUI', label: 'Junior Suite' },
-        { code: 'EXKNGB', label: 'Executive King Balcony' },
-        { code: 'EXKNGR', label: 'Executive King Round' },
-        { code: 'EXKNGS', label: 'Executive King Square' },
-        { code: 'DLXPAT', label: 'Deluxe Patio' },
-        { code: 'DLXKNG', label: 'Deluxe King' },
-        { code: 'ACCES', label: 'Accessible' },
-        { code: 'STKNG', label: 'Standard King' },
-        { code: 'STWN', label: 'Standard Twin' },
-      ],
-      mealPlans: ['room_only', 'bb'],
-      salesStrategies: [
-        { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
-        { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
-        { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
-        { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
-        { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
-        { code: 'GOV', label: 'Government', requestValue: 'Government' },
-        { code: 'AIR', label: 'Airline Crews', requestValue: 'AIR' },
-        { code: 'DOML', label: 'Domestic Leisure', requestValue: 'DOML' },
-        { code: 'OTHER', label: 'Other', requestValue: 'OTHER' },
-      ],
-      overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
-      eventRateCodes: [],
-      shuttle: {
-        provider: 'Jarat Tours',
-        to: expect.arrayContaining(['legacy@jarattours.co.za', 'info@jarattours.co.za']),
-      },
-    });
-    expect(config.shuttle?.to).toHaveLength(5);
-    expect(config.roomTypes.map(({ code }) => code)).not.toContain('STQN');
-    expect(config.ratePlans.map(({ code }) => code)).toEqual(['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF']);
+  it('uses Da Vinci native choices only from its own valid catalogue', async () => {
+    const empty = await quotePaneConfigForProperty('HRDAV', 'transport-davinci', {});
+    expect(empty).toMatchObject({ propertyCode: 'HRDAV', roomTypes: [], ratePlans: [],
+      catalogue: { coverage: { rates: 'unknown', roomTypes: 'unknown' } } });
+    const directory = await mkdtemp(join(tmpdir(), 'davinci-catalogue-'));
+    const path = join(directory, 'catalog.json');
+    try {
+      await writeFile(path, JSON.stringify({
+        schemaVersion: 'hms-native-catalogs/v2', propertyCode: 'HRDAV', tenantId: 'DAVINCI_PRD',
+        landingPropertyCode: 'HRDAV', credentialRef: 'nava-zero/server-pilot/infor-hms-read-davinci',
+        credentialVersionHmacSha256: 'a'.repeat(64), sourceRevision: 'fixture', maxAgeMs: 60_000,
+        capturedAt: new Date().toISOString(), catalogs: {
+          ratePlans: { coverage: { complete: false }, records: [{ code: 'BAR', meaning: 'Observed BAR' }] },
+          roomTypes: { coverage: { complete: false }, records: [{ code: 'STKNG', meaning: 'Observed King' }] },
+        },
+      }));
+      const config = await quotePaneConfigForProperty('HRDAV', 'transport-davinci', { HMS_NATIVE_CATALOG_PATH_HRDAV: path });
+      expect(config).toMatchObject({ ratePlans: [{ code: 'BAR', name: 'Observed BAR' }],
+        roomTypes: [{ code: 'STKNG', label: 'Observed King' }],
+        catalogue: { coverage: { rates: 'partial', roomTypes: 'partial' } } });
+      const suites = await quotePaneConfigForProperty('HRDAVS', 'transport-davinci', { HMS_NATIVE_CATALOG_PATH_HRDAVS: path });
+      expect(suites).toMatchObject({ propertyCode: 'HRDAVS', ratePlans: [], roomTypes: [] });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it('exposes no Da Vinci strategy that is outside the supported registry codes', () => {

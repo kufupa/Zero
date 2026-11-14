@@ -10,10 +10,13 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import { useStaffQuoteAutostart } from '../components/nava-pane/use-staff-quote-autostart';
+import { useReservationWorkbench } from '../components/reservation-pane/use-reservation-workbench';
+import { valueAt } from '../lib/reservation-workflow/views';
+import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient } from '../lib/reservation-workflow/types';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { initialQuoteSession, planQuoteSteps } from '../lib/quote-workflow/session';
 import {
-  HRDAV_PROPERTY_CODE,
+  HRCEN_PROPERTY_CODE,
   type QuotePaneConfig,
   type QuoteSelectionBinding,
   type QuoteSession,
@@ -311,7 +314,16 @@ vi.mock('../providers/query-provider', () => ({
         return bridgeMockState.amendRateCandidates ? { mutate: bridgeMockState.amendRateCandidates } : undefined;
       },
       rateCatalogue: {
-        query: async () => bridgeMockState.quotePaneConfig,
+        query: async () => {
+          const config = bridgeMockState.quotePaneConfig;
+          if (!config || config.propertyCode !== 'HRCEN' || config.capabilities) return config;
+          const unavailable = { status: 'unavailable', reason: 'Not enabled in this fixture' };
+          return { ...config, capabilities: {
+            reads: { status: 'staff-enabled', reason: null }, quote: { status: 'staff-enabled', reason: null },
+            create: unavailable, amend: unavailable, cancel: unavailable, attach: unavailable,
+            addons: unavailable, guest_profile_create: unavailable,
+          } };
+        },
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
@@ -893,7 +905,7 @@ describe('NavaPane', () => {
   const resolveCenturionProperty = () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: ['bb', 'dinner_bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
   };
 
@@ -2459,15 +2471,19 @@ describe('NavaPane', () => {
       staffSource: source,
     };
     const activeEmail = { ...fakeBridge.activeEmail!, internetMessageId: testMessageId };
+    const enabled = { status: 'staff-enabled' as const, reason: null };
+    const unavailable = { status: 'unavailable' as const, reason: 'Not enabled in this fixture' };
     const paneConfig: QuotePaneConfig = {
       transportId: binding.transportId,
-      propertyCode: HRDAV_PROPERTY_CODE,
+      propertyCode: HRCEN_PROPERTY_CODE,
       roomTypes: [],
       ratePlans: [],
       mealPlans: ['bb'],
       salesStrategies: [],
       overrideRateCodes: [],
       eventRateCodes: [],
+      capabilities: { reads: enabled, quote: enabled, create: unavailable, amend: unavailable,
+        cancel: unavailable, attach: unavailable, addons: unavailable, guest_profile_create: unavailable },
     };
     bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
       bridgeMockState.lastStaffQuoteInput = input;
@@ -2575,7 +2591,7 @@ describe('NavaPane', () => {
 
   it('auto-queues a complete stay and reports the rate run in the pane notice system', async () => {
     let staffQuotePolls = 0;
-    resolveDavinciProperty();
+    resolveCenturionProperty();
     sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -3058,7 +3074,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the completed rate notice global when Needs-you is gated off and on channel mail', async () => {
-    resolveDavinciProperty();
+    resolveCenturionProperty();
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
@@ -4012,4 +4028,77 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(await screen.findByTestId('mail-source-no-action')).toBeDefined();
     expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
   });
+});
+
+it('retains failed pending edits and rejects a late edit after switching hotels', async () => {
+  const path = '/proposal/content/requests/request-1/body/groups/0/ratePlan';
+  type TestSource = ReservationSourceContext & { propertyId: 'HRDAV' | 'HRDAVS' };
+  const source = (propertyId: 'HRDAV' | 'HRDAVS', propertySelectionEpoch: number): TestSource => ({
+    mailboxId: 'buffer-test-mailbox', propertyId, propertySelectionEpoch, selectionEpoch: 1,
+    messageId: 'buffer-test-message', threadId: 'buffer-test-thread', sourceHash: 'ab'.repeat(32),
+    arrivedAt: '2026-11-14T00:00:00Z', internetMessageId: null, subject: '', sender: '', attachments: [],
+  });
+  const snapshot = (selected: ReservationSourceContext, generationId: string): ReservationPaneSnapshot => ({
+    session: { seq: 1, revision: 1, revisionHead: 1, preparationViews: [], draft: {
+      transportId: selected.mailboxId, propertyCode: selected.propertyId, generationId,
+      source: { messageId: selected.messageId, threadId: selected.threadId, sourceHash: selected.sourceHash },
+      proposal: { content: { requests: [{ id: 'request-1', kind: 'quote', body: {
+        groups: [{ id: 'group-1', ratePlan: 'OLD' }],
+      } }], services: [], documents: [] } },
+      fieldOverrides: {}, staffReviews: {}, observations: [], operationResults: [],
+    } },
+    sourceMessageId: selected.messageId,
+    requests: [{ id: 'request-1', kind: 'quote', text: '', fieldPaths: [path], supported: false }],
+    fields: {}, issues: [], operationResults: [], preparationViews: [], preparation: { state: 'idle', message: '' },
+  } as unknown as ReservationPaneSnapshot);
+  let failFirst!: (error: Error) => void;
+  let finishSecond!: (result: ReservationPaneSnapshot) => void;
+  const first = new Promise<ReservationPaneSnapshot>((_, reject) => { failFirst = reject; });
+  const second = new Promise<ReservationPaneSnapshot>((resolve) => { finishSecond = resolve; });
+  const edit = vi.fn<ReservationWorkflowClient['edit']>().mockImplementationOnce(() => first).mockImplementationOnce(() => second);
+  const client = { edit } as unknown as ReservationWorkflowClient;
+  const onSnapshot = vi.fn();
+  function Workbench({ selected, current }: { selected: TestSource; current: ReservationPaneSnapshot }) {
+    const workbench = useReservationWorkbench({ source: selected, activeProperty: selected.propertyId,
+      configuration: null, snapshot: current, client, onSnapshot });
+    return <>
+      <output data-testid="current-rate">{workbench.snapshot ? String(valueAt(workbench.snapshot, path) ?? '') : ''}</output>
+      <output data-testid="pending-values">{workbench.unresolvedPending.map(row => row.value).join(', ')}</output>
+      <output data-testid="workbench-error">{workbench.error ?? ''}</output>
+      <output data-testid="workbench-saving">{workbench.saving ? 'pending' : 'saved'}</output>
+      <button type="button" onClick={() => void workbench.commands.edit(path, 'Staff correction').catch(() => {})}>Edit rate</button>
+      <button type="button" onClick={() => void workbench.applyPending().catch(() => {})}>Apply pending</button>
+      <button type="button" onClick={workbench.discardPending}>Discard pending</button>
+    </>;
+  }
+  const view = (selected: TestSource, generationId: string) =>
+    <Workbench key={`${selected.propertyId}:${selected.propertySelectionEpoch}`} selected={selected} current={snapshot(selected, generationId)} />;
+  const firstHotel = source('HRDAV', 0);
+  const otherHotel = source('HRDAVS', 1);
+  const pane = render(view(firstHotel, 'generation-1'));
+  fireEvent.click(screen.getByRole('button', { name: 'Edit rate' }));
+  await waitFor(() => expect(edit).toHaveBeenCalledTimes(1));
+  pane.rerender(view(otherHotel, 'other-generation'));
+  pane.rerender(view(source('HRDAV', 2), 'generation-1'));
+  await act(async () => failFirst(new Error('Save unavailable')));
+  await waitFor(() => expect(screen.getByTestId('workbench-error').textContent).toContain('Save unavailable'));
+  expect(screen.getByTestId('current-rate').textContent).toBe('Staff correction');
+  expect(screen.getByTestId('workbench-saving').textContent).toBe('pending');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Apply pending' }));
+  await waitFor(() => expect(edit).toHaveBeenCalledTimes(2));
+  pane.rerender(view(source('HRDAVS', 3), 'other-generation'));
+  pane.rerender(view(source('HRDAV', 4), 'generation-2'));
+  expect(screen.getByTestId('pending-values').textContent).toContain('Staff correction');
+  const priorError = screen.getByTestId('workbench-error').textContent;
+  expect(priorError).toBeTruthy();
+  const lateReply = snapshot(firstHotel, 'generation-1');
+  lateReply.session.seq = 2;
+  await act(async () => finishSecond(lateReply));
+  expect(screen.getByTestId('pending-values').textContent).toContain('Staff correction');
+  expect(screen.getByTestId('workbench-error').textContent).toBe(priorError);
+  expect(screen.getByTestId('workbench-saving').textContent).toBe('pending');
+  expect(onSnapshot).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Discard pending' }));
+  pane.unmount();
 });

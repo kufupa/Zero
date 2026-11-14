@@ -115,14 +115,19 @@ type TrpcAttachRoutes = {
 };
 
 function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, internetMessageId: string | null,
-  propertyCode: string | null, selectedSource?: SelectedSource | null): VoucherAttachClient | null {
+  propertyCode: string | null, selectedSource?: SelectedSource | null,
+  filingCapability?: import('@/lib/reservation-workflow/types').PropertyConfiguration['capabilities']['attach'] | null): VoucherAttachClient | null {
   const mailbox = inMailbox(transportId);
   if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = trpc as TrpcAttachRoutes;
-  const bindCloud = propertyCode === 'HRCEN' ? routes.hmsApproval?.bindAttach?.mutate : undefined;
-  const bindLegacy = propertyCode === 'HRCEN' ? undefined : routes.quoteWorkflow?.bindVoucherAttach?.mutate;
-  const writeState = routes.hmsApproval?.writeState?.query;
-  const preview = routes.hmsApproval?.previewAttach?.mutate;
+  const cloud = propertyCode === 'HRCEN' || propertyCode === 'HRDAV' || propertyCode === 'HRDAVS';
+  const canPrepare = propertyCode === 'HRCEN' && filingCapability === undefined ||
+    Boolean(filingCapability && ['prepare-only', 'lab', 'staff-enabled'].includes(filingCapability.status));
+  const bindCloud = cloud && canPrepare ? routes.hmsApproval?.bindAttach?.mutate : undefined;
+  const bindLegacy = cloud ? undefined : routes.quoteWorkflow?.bindVoucherAttach?.mutate;
+  // Retain status reads for earlier HRDAV filings; HRDAVS needs a property-scoped endpoint in P3.
+  const writeState = propertyCode === 'HRDAVS' ? undefined : routes.hmsApproval?.writeState?.query;
+  const preview = canPrepare ? routes.hmsApproval?.previewAttach?.mutate : undefined;
   if (!bindCloud && !bindLegacy && !writeState && !preview) return null;
   return {
     ...(bindCloud ? { bind: (input: VoucherAttachBindInput) => bindCloud({ ...input, internetMessageId }, mailbox) }
@@ -174,6 +179,7 @@ type VoucherFindCardProps = {
   onPrepared?: (formDigest?: string) => void;
   /** Registry-backed property for the active mailbox; unknown disables filing actions. */
   propertyCode?: string | null;
+  filingCapability?: import('@/lib/reservation-workflow/types').PropertyConfiguration['capabilities']['attach'] | null;
   /** Selection generation and current source keep every search and approval on this email revision. */
   selectionEpoch?: number | null;
   selectedSource?: SelectedSource | null;
@@ -187,7 +193,7 @@ export function VoucherFindCard(props: VoucherFindCardProps) {
   if (!props.transportId || !props.mailboxScope || !props.internetMessageId) return null;
   // Reset pending replies and previews whenever the selected mail, mailbox or actor/session changes.
   return <VoucherFindCardBody key={JSON.stringify([props.mailboxScope, props.transportId, props.internetMessageId,
-    props.lookupSelection, props.selectionEpoch, props.selectedSource?.threadId, props.selectedSource?.messageId,
+    props.lookupSelection, props.propertyCode, props.selectionEpoch, props.selectedSource?.threadId, props.selectedSource?.messageId,
     props.selectedSource?.sourceHash, props.reviewSource?.threadId, props.reviewSource?.messageId,
     props.reviewSource?.sourceHash, props.selectionCurrent])} {...props} />;
 }
@@ -205,17 +211,19 @@ function VoucherFindCardBody({
   approvalAvailable = false,
   onPrepared,
   propertyCode = null,
+  filingCapability,
   selectionEpoch = null,
   selectedSource,
   reviewSource,
   selectionCurrent = true,
   onTargetChanged,
 }: VoucherFindCardProps) {
+  const cloudFiling = propertyCode === 'HRCEN' || propertyCode === 'HRDAV' || propertyCode === 'HRDAVS';
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const reviewClient = useMemo(() => voucherReviewClientFromTrpc(trpc, transportId), [trpc, transportId]);
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc, transportId), [trpc, transportId]);
-  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId, propertyCode, selectedSource),
-    [trpc, transportId, internetMessageId, propertyCode, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash]);
+  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc, transportId, internetMessageId, propertyCode, selectedSource, filingCapability),
+    [trpc, transportId, internetMessageId, propertyCode, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash, filingCapability]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [inventory, setInventory] = useState<Extract<VoucherFindReply, { status: 'voucher' }> | null>(null);
   const [selectedFileId, setSelectedFileId] = useState('');
@@ -297,10 +305,10 @@ function VoucherFindCardBody({
   const validDocumentSource = Boolean(documentSource && /^[a-f0-9]{64}$/.test(documentSource.sha256) &&
     /^[a-f0-9]{64}$/.test(documentSource.snapshotDigest));
   const emailMatches = selectionCurrent &&
-    (selectedSource === undefined ? propertyCode !== 'HRCEN' : Boolean(selectedSource &&
+    (selectedSource === undefined ? !cloudFiling : Boolean(selectedSource &&
     selectedSource.threadId === replyThread && selectedSource.messageId === replyMessageId &&
     /^[a-f0-9]{64}$/.test(selectedSource.sourceHash)));
-  const sourceMatches = fileReady && emailMatches && (propertyCode !== 'HRCEN' || validDocumentSource);
+  const sourceMatches = fileReady && emailMatches && (!cloudFiling || validDocumentSource);
   // Payment-only views have no filing source; their reads still use the exact checked message.
   const lookupSourceMatches = lookupReady && (emailMatches || (selectedSource === undefined && selectionCurrent));
   const transport = useMemo(
@@ -363,7 +371,7 @@ function VoucherFindCardBody({
     searchRun.rows.some((row) => JSON.stringify(row) === JSON.stringify(picked.row)) ? picked.row : null;
   // For Cloud filing, even one surname match needs an explicit choice and an exact fresh HMS read.
   const explicitPick = pickedMatch ?? directMatch;
-  const selectedMatch = explicitPick ?? (propertyCode === 'HRCEN' || submittedDirect ? null : singleMatch);
+  const selectedMatch = explicitPick ?? (cloudFiling || submittedDirect ? null : singleMatch);
   const previewKey = JSON.stringify([internetMessageId, selectionEpoch, selectedSource?.sourceHash, workItemId,
     replyMessageId, approvalAvailable, searchRevision, currentSearchKey,
     reply?.status === 'voucher' ? reply.file : null, documentSource,
@@ -397,7 +405,7 @@ function VoucherFindCardBody({
     normalizedSurname(detailsRun.stay.lastName) === normalizedSurname(explicitPick.lastName) &&
     (!explicitPick.firstName || (detailsRun.stay.firstName &&
       normalizedSurname(detailsRun.stay.firstName) === normalizedSurname(explicitPick.firstName))) &&
-    (propertyCode !== 'HRCEN' || ((!explicitPick.departure || detailsRun.stay.departure === explicitPick.departure) &&
+    (!cloudFiling || ((!explicitPick.departure || detailsRun.stay.departure === explicitPick.departure) &&
       (!explicitPick.status || normalizedSurname(detailsRun.stay.status ?? '') === normalizedSurname(explicitPick.status)))));
   const retryableDetails =
     detailsRequested && detailsJob.view?.status === 'done' && detailsRun !== null && detailsRun.kind !== 'found';
@@ -510,7 +518,7 @@ function VoucherFindCardBody({
         if (!live) return;
         if (next.status !== 'voucher' || next.messageId !== inventory.messageId || next.threadId !== inventory.threadId ||
             next.file?.id !== selectedFileId || !next.files?.some((file) => file.id === selectedFileId) ||
-            (propertyCode === 'HRCEN' && (!/^[a-f0-9]{64}$/.test(next.documentSource?.sha256 ?? '') ||
+            (cloudFiling && (!/^[a-f0-9]{64}$/.test(next.documentSource?.sha256 ?? '') ||
               !/^[a-f0-9]{64}$/.test(next.documentSource?.snapshotDigest ?? '')))) {
           setFileError(true);
           return;
@@ -639,7 +647,7 @@ function VoucherFindCardBody({
     (attachWrite?.form?.action === 'attach_document' &&
       (attachWrite.needsCheck === true || ['UNKNOWN', 'LEASE_LOST'].includes(attachWrite.run?.failureClass ?? ''))));
   const attachSucceeded = listedWithHold || (attachWrite?.form?.action === 'attach_document' &&
-    (propertyCode === 'HRCEN' ? attachWrite.grant?.fingerprintMatches === true :
+    (cloudFiling ? attachWrite.grant?.fingerprintMatches === true :
       attachWrite.grant?.fingerprintMatches !== false) && attachWrite.run?.state === 'succeeded');
   const attachMoving = ['queued', 'claimed', 'running', 'retry_wait'].includes(attachWrite?.run?.state ?? '');
   const bindingFrozen = attachState?.workItemId === workItemId &&
@@ -724,7 +732,11 @@ function VoucherFindCardBody({
   };
   const attachPdf =
     file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
-  const filingEnabled = propertyCode === 'HRCEN' ? approvalAvailable && attachWrite?.filingConfigured === true : writesEnabled;
+  const legacyFiling = propertyCode === 'HRCEN' && filingCapability === undefined &&
+    (attachWrite?.filingConfigured === true || writesEnabled);
+  const propertyCanPrepare = legacyFiling || Boolean(filingCapability &&
+    ['prepare-only', 'lab', 'staff-enabled'].includes(filingCapability.status));
+  const filingEnabled = cloudFiling ? approvalAvailable && attachWrite?.filingConfigured === true && propertyCanPrepare : writesEnabled;
   const arrivalForMatch = selectedMatch?.arrival ?? submittedSearch?.arrival ?? '';
   const verifiedStay = pickedVerified && detailsRun?.kind === 'found' ? detailsRun.stay : null;
   const firstName = verifiedStay?.firstName?.trim() ?? '';
@@ -732,12 +744,12 @@ function VoucherFindCardBody({
   const departure = verifiedStay?.departure ?? '';
   const expectedStay = firstName && status && departure ? { firstName, status, departure } : null;
   const targetVerified = Boolean(selectedMatch && detailRequest?.arrival &&
-    (propertyCode === 'HRCEN' ? pickedVerified : !explicitPick || pickedVerified) &&
+    (cloudFiling ? pickedVerified : !explicitPick || pickedVerified) &&
     sendableArrival(arrivalForMatch));
   const canAttach = Boolean(propertyCode && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
     filingEnabled && attachStatusKnown && !searchFrozen && attach !== 'bound' &&
-    (propertyCode !== 'HRCEN' || (previewStatus === 'ready' && expectedStay)));
-  const canPreview = Boolean(propertyCode === 'HRCEN' && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId &&
+    (!cloudFiling || (previewStatus === 'ready' && expectedStay)));
+  const canPreview = Boolean(cloudFiling && propertyCanPrepare && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId &&
     attachClient?.preview && !searchFrozen && attach !== 'bound');
   const reviewAttach = async () => {
     if (!canPreview || !selectedMatch || !file || !workItemId || !attachClient?.preview || !documentSource || previewStatus === 'loading') return;
@@ -763,7 +775,7 @@ function VoucherFindCardBody({
   };
   const bindAttach = async () => {
     if (!canAttach || !selectedMatch || !file || !workItemId || !reply.messageId || !attachClient?.bind || bindingRequest.current ||
-        (propertyCode === 'HRCEN' && (!preview?.documentSource || preview.revisionSeq === undefined))) return;
+        (cloudFiling && (!preview?.documentSource || preview.revisionSeq === undefined))) return;
     const key = previewKey;
     const item = workItemId;
     bindingRequest.current = true;
@@ -777,7 +789,7 @@ function VoucherFindCardBody({
         lastName: selectedMatch.lastName,
         attachmentId: file.id,
         sourceMessageId: reply.messageId,
-        ...(propertyCode === 'HRCEN' ? { documentSource: preview!.documentSource, revisionSeq: preview!.revisionSeq,
+        ...(cloudFiling ? { documentSource: preview!.documentSource, revisionSeq: preview!.revisionSeq,
           expectedStay: expectedStay! } : {}),
         ...(selectedSource ? { selectedSource } : {}),
       });
@@ -829,8 +841,10 @@ function VoucherFindCardBody({
   // The id is the preview gate's sign that a voucher-only pane has settled (VOUCHER_CARD_SELECTOR in nava-preview-run.ts).
   return (
     <Section title={VOUCHER_COPY.heading} id="quote-voucher-find">
-      <p className={captionClass}>{propertyCode === 'HRCEN'
+      <p className={captionClass}>{cloudFiling
         ? 'Find the booking and review the document before upload.' : VOUCHER_COPY.caption}</p>
+      {(propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') && (!filingCapability || filingCapability.status === 'unavailable') &&
+        <Notice tone="warn">{filingCapability?.reason || 'Filing is not available for this hotel yet.'}</Notice>}
       {otherPendingFiles.length > 0 ? <Notice tone="warn">
         <p data-pii>Attached PDF needs review: {otherPendingFiles.map((file) => file.filename).join(', ')}. Select a file below.</p>
       </Notice> : null}
@@ -939,7 +953,7 @@ function VoucherFindCardBody({
         queueFailed={currentResult && searchJob.queueFailed}
         queueFailureMessage={searchJob.queueFailureMessage ?? AMEND_FIND_COPY.searchFailed}
       />
-      {searchRun && (propertyCode === 'HRCEN' || !singleMatch) && !searchJob.queueFailed ? <SearchResult run={searchRun} onPick={pickBooking}
+      {searchRun && (cloudFiling || !singleMatch) && !searchJob.queueFailed ? <SearchResult run={searchRun} onPick={pickBooking}
         selected={pickedMatch} arrival={submittedSearch?.arrival ?? ''} disabled={searchFrozen} /> : null}
       {currentResult && searchJob.view?.status === 'done' ? <HmsAsOf asOf={searchJob.view.asOf} /> : null}
       <div data-testid="voucher-save-and-match" className="flex flex-col gap-2 sm:flex-row sm:items-start">
@@ -989,7 +1003,7 @@ function VoucherFindCardBody({
             }}
             onRetryDetails={detailsJob.retry}
             canAttach={canAttach}
-            cloudFiling={propertyCode === 'HRCEN'}
+            cloudFiling={cloudFiling}
             canPreview={canPreview}
             previewStatus={previewStatus}
             onPreview={() => void reviewAttach()}

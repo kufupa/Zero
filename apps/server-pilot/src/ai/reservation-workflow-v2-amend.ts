@@ -37,6 +37,7 @@ import { hmsDispatchTargetKey, hmsDispatchTargetSchema } from './hms-dispatch-ta
 import {
   captureHmsLabtestDispatchEpoch,
   claimHmsLabtestDispatch,
+  normalizeHmsLabtestClaim,
   resolveHmsLabtestDispatch,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
@@ -1769,8 +1770,8 @@ async function executeCallbackFirst(ctx: ReservationWorkflowV2AmendContext, inpu
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !state.beforeEvidence) {
       throw new Error('AMEND_CALLBACK_APPROVAL_INVALID');
     }
-    const claim = { ...claimBase, requestDigest: step.requestDigest,
-      recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } };
+    const claim = normalizeHmsLabtestClaim({ ...claimBase, requestDigest: step.requestDigest,
+      recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } });
     approvedClaim = canonicalJson(claim);
     if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CALLBACK_CLAIM_TOO_LARGE');
     state.claimAttempted = true;
@@ -2019,8 +2020,8 @@ async function executeCallbackSecond(ctx: ReservationWorkflowV2AmendContext, inp
               typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !state.beforeEvidence) {
             throw new Error('AMEND_FINAL_APPROVAL_INVALID');
           }
-          const claim = { ...claimBase, requestDigest: step.requestDigest,
-            recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } };
+          const claim = normalizeHmsLabtestClaim({ ...claimBase, requestDigest: step.requestDigest,
+            recovery: { ...claimBase.recovery, firstPhase: step.phase, runId, beforeShot: state.beforeShot } });
           approvedClaim = canonicalJson(claim);
           if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CALLBACK_CLAIM_TOO_LARGE');
           state.claimAttempted = true;
@@ -2200,9 +2201,9 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
         typeof step.requestDigest !== 'string' || !/^[a-f0-9]{64}$/.test(step.requestDigest) || !dispatchState.beforeEvidence) {
       throw new Error('AMEND_APPROVAL_INVALID');
     }
-    const claimInput = { ...claimInputBase, requestDigest: step.requestDigest,
+    const claimInput = normalizeHmsLabtestClaim({ ...claimInputBase, requestDigest: step.requestDigest,
       recovery: { ...claimInputBase.recovery, firstPhase: step.phase,
-        runId, beforeShot: dispatchState.beforeShot } };
+        runId, beforeShot: dispatchState.beforeShot } });
     approvedClaim = canonicalJson(claimInput);
     if (Buffer.byteLength(approvedClaim) > 16_384) throw new Error('AMEND_CLAIM_TOO_LARGE');
     dispatchState.claimAttempted = true;

@@ -24,7 +24,17 @@ import type {
   StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import { defaultStaffStayExtras, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
-import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
+const fixtureRatePlans: RatePlanCatalogueEntry[] = [
+  { code: 'BAR', name: 'Best Available Rate', mealPlan: 'bed_breakfast' },
+  { code: 'BARRO', name: 'Room Only', mealPlan: 'room_only' },
+  { code: 'DBB', name: 'Dinner B&B', mealPlan: 'dinner_bed_breakfast' },
+  ...['DBBX', 'NCOR1B', 'NCOR2B', 'GNC3B', 'GNC4B', 'BCO1B', 'BCO2B', 'BBP', 'BWKPB', 'NGOVB'].map(code => ({
+    code, name: code, mealPlan: 'unknown' as const,
+    ...(['NCOR1B', 'NCOR2B', 'BCO1B', 'BCO2B'].includes(code) ? { contract: true } : {}),
+    ...(code === 'NGOVB' ? { government: true } : {}),
+    ...(['GNC3B', 'GNC4B'].includes(code) ? { event: true } : {}),
+  })),
+];
 
 vi.mock('sonner', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: vi.fn() } }));
 
@@ -1831,7 +1841,7 @@ describe('the Find in HMS picker in the quote header', () => {
   }
 
   it('lists every catalogue rate plan and reflects an auto-selected government party', () => {
-    const rateCatalogue: RatePlanCatalogueEntry[] = CENTURION_RATE_PLANS;
+    const rateCatalogue: RatePlanCatalogueEntry[] = fixtureRatePlans;
     const session = headerSession({});
     const { unmount } = render(
       <QuoteWorkflowPanel session={session} rateCatalogue={rateCatalogue as never} />,

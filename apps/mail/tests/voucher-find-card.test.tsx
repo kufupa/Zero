@@ -646,7 +646,7 @@ describe('voucher find card: the existing search', () => {
     });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()}
-      propertyCode="HRCEN" workItemId="wi-1" />);
+      propertyCode="HRCEN" filingCapability={{ status: 'prepare-only', reason: null }} workItemId="wi-1" />);
     await waitFor(() =>
       expect(screen.getByText(noSearchMatchCopy('Smith', '2026-11-12'))).toBeTruthy(),
     );
@@ -1059,10 +1059,14 @@ describe('voucher find card: attach to HMS', () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, bindAttach: { mutate: bind },
       writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false, filingConfigured: true })) } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    const { rerender } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
     await chooseCloudBooking();
     fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
     expect(await screen.findByText(/Upload is not available yet/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
+    rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN"
+      filingCapability={null} approvalAvailable />);
+    expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Prepare upload for approval' })).toBeNull();
     expect(bind).not.toHaveBeenCalled();
   });
@@ -1159,7 +1163,7 @@ describe('voucher find card: attach to HMS', () => {
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf', documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
     const { trpc, queueFind } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" filingCapability={{ status: 'prepare-only', reason: null }} />);
     await screen.findByRole('button', { name: 'Select booking' });
     expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
     await chooseCloudBooking();
@@ -1180,10 +1184,10 @@ describe('voucher find card: attach to HMS', () => {
     const preview = vi.fn(() => new Promise<Parameters<typeof resolve>[0]>((done) => { resolve = done; }));
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview } };
-    const { rerender } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    const { rerender } = render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" filingCapability={{ status: 'prepare-only', reason: null }} />);
     await chooseCloudBooking();
     fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
-    rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="other-item" propertyCode="HRCEN" />);
+    rerender(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId="other-item" propertyCode="HRCEN" filingCapability={{ status: 'prepare-only', reason: null }} />);
     await act(async () => resolve({ status: 'ready', confirmation: SMITH_ROW.confirmation,
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf', documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
     expect(screen.queryByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeNull();
@@ -1196,7 +1200,7 @@ describe('voucher find card: attach to HMS', () => {
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf', documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, writeState: { query: writeState } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" filingCapability={{ status: 'prepare-only', reason: null }} />);
     await chooseCloudBooking();
     fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
     expect(await screen.findByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeTruthy();
@@ -1214,7 +1218,7 @@ describe('voucher find card: attach to HMS', () => {
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf', documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, writeState: { query: writeState } };
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" />);
+    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN" filingCapability={{ status: 'prepare-only', reason: null }} />);
     await chooseCloudBooking();
     fireEvent.click(await screen.findByRole('button', { name: 'Check document and booking' }));
     expect(await screen.findByText('Document available. Booking found. Check they belong together. Upload is not available yet.')).toBeTruthy();
@@ -1236,13 +1240,14 @@ describe('voucher find card: attach to HMS', () => {
     expect(screen.getByText('Check in Infor')).toBeTruthy();
   });
 
-  it('keeps the legacy attach action at a different verified property', async () => {
+  it('does not use legacy filing at an unsupported Da Vinci property', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { quoteWorkflow: Record<string, unknown> }).quoteWorkflow.bindVoucherAttach = { mutate: vi.fn() };
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() },
       writeState: { query: vi.fn(async () => ({ run: null, needsCheck: false })) } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
-    expect(await screen.findByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
+    expect(await screen.findByText('Filing is not available for this hotel yet.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
   });
 
@@ -1276,7 +1281,7 @@ describe('voucher find card: attach to HMS', () => {
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 
-  it('offers Attach to HMS booking when Find matches exactly one stay and the email has a PDF', async () => {
+  it('does not offer filing for an unsupported hotel even after a stay is found', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     render(
       <VoucherFindCard
@@ -1289,20 +1294,17 @@ describe('voucher find card: attach to HMS', () => {
       />,
     );
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 
-  it('pins the status read to the selected email and waits for a safe response before attach', async () => {
-    let resolve!: (value: { run: null; needsCheck: boolean }) => void;
-    const writeState = vi.fn(() => new Promise<Parameters<typeof resolve>[0]>((done) => { resolve = done; }));
+  it('reads earlier filing state without offering attach for an unsupported property', async () => {
+    const writeState = vi.fn(async () => ({ run: null, needsCheck: false }));
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: writeState } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(writeState).toHaveBeenCalledWith({ workItemId: WORK_ITEM, internetMessageId: 'abc@host' }, MAILBOX);
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
-    await act(async () => resolve({ run: null, needsCheck: false }));
-    expect(await screen.findByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
   });
 
   it('keeps attach unavailable if the status read fails', async () => {
@@ -1315,7 +1317,7 @@ describe('voucher find card: attach to HMS', () => {
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 
-  it('binds the attach form to the matched stay and the voucher PDF', async () => {
+  it('does not bind a selected PDF using the unsupported legacy filing route', async () => {
     const bind = vi.fn(async () => ({
       status: 'bound' as const,
       form: {
@@ -1354,16 +1356,8 @@ describe('voucher find card: attach to HMS', () => {
     fireEvent.change(screen.getByLabelText('Document'), { target: { value: 'att-2' } });
     expect(screen.queryByText('John Smith · 57291630-1')).toBeNull();
     await waitFor(() => expect(query).toHaveBeenCalledWith({ internetMessageId: 'abc@host', attachmentId: 'att-2' }, MAILBOX));
-    fireEvent.click(await screen.findByRole('button', { name: 'Attach to HMS booking' }));
-    await waitFor(() =>
-      expect(bind).toHaveBeenCalledWith({
-        workItemId: WORK_ITEM,
-        confirmation: SMITH_ROW.confirmation,
-        arrival: SMITH_ROW.arrival,
-        lastName: SMITH_ROW.lastName,
-        attachmentId: 'att-2',
-      }, MAILBOX),
-    );
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+    expect(bind).not.toHaveBeenCalled();
   });
 
   it('shows Check in Infor and no success copy when the attach run is upload_unconfirmed', async () => {

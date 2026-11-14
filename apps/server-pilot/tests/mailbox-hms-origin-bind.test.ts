@@ -2,6 +2,8 @@ import { findParty, panePartyLookupLoaders } from '../src/ai/pane-party-lookup.j
 import {
   AYANDA_MAILBOX_IDENTITIES,
   bindCenturionHmsMailboxProperty,
+  bindHmsMailboxProperty,
+  hmsPropertyReadEnabled,
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
   EPICK_MAILBOX_IDENTITIES,
   FAITH_MAILBOX_IDENTITIES,
@@ -276,4 +278,18 @@ describe('findParty Da Vinci origin', () => {
     expect(seen).toEqual([]);
     expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
   });
+});
+
+
+it('requires DaVinci enabled-property and read/quote controls before admission', () => {
+  const propertyCode = 'HRDAVS';
+  const scope = { transportId: 'transport-davinci', propertyCode, origin: {} };
+  const enabled = { HMS_DAVINCI_ENABLED_PROPERTIES: propertyCode, HMS_DAVINCI_READS: 'on' };
+  for (const env of [{}, { ...enabled, HMS_DAVINCI_READS: 'off' }, { ...enabled, HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV' }]) {
+    expect(bindHmsMailboxProperty({ ...scope, env })).toEqual({ ok: false, code: 'READ_PROPERTY_DISABLED' });
+  }
+  expect(bindHmsMailboxProperty({ ...scope, env: enabled })).toEqual({ ok: true, propertyCode });
+  expect(hmsPropertyReadEnabled({ propertyCode, toolId: 'hms_quote_stay', env: enabled })).toBe(false);
+  expect(hmsPropertyReadEnabled({ propertyCode, toolId: 'hms_quote_stay', env: { ...enabled, HMS_DAVINCI_MAKE_QUOTE: 'on' } })).toBe(true);
+  expect(hmsPropertyReadEnabled({ propertyCode: 'HRCEN', env: {} })).toBe(true);
 });
