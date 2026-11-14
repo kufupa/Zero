@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   guestStaySaveOutcome,
   createSelectionProofTokensMatch,
@@ -288,13 +290,13 @@ function nativeCreateDraftPage() {
   const visible = { ta1: '', company: '', groupname: '', bacontract: '', confirmationnumber: '', guestid: '1234567',
     firstname: 'Proof', lastname: 'Labtest', arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', roomtype: 'STQN',
     roomtypecharge: '', rateplan: 'BAR', track: 'Best Available', guaranteetype: 'Non-Guaranteed Individual', reservationnote: saveInputs.note,
-    revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', udfchar13: '', emailaddress: '', adults: '2',
+    revenuevalue: '0', nightsvalue: '5', udfchkbox04: '', guestoptin4: '0', udfchar13: '', emailaddress: '', adults: '2',
     udfchar09: '03', reasonforstay: 'Business', araccountname: 'Test Account',
     bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT', billingreference: '' };
   const data = { ...Object.fromEntries(blanks.map((key) => [key, ''])), ...visible, propertycode: 'HRCEN',
     PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New', reservationid: '', reservationstayid: '', recordid: '',
     guaranteecreditcardid: '', leaseguaranteecreditcardid: '', araccountid: '75', arprofileid: '501',
-    bookingsessionid: 'synthetic-session', guaranteetype: 'NGI', reasonforstay: 'BUS',
+    bookingsessionid: 'synthetic-session', guaranteetype: 'NGI', reasonforstay: 'BUS', guestoptin4: false,
     bookingagencycommissionpricing: '', bookingagencycommissiontype: '' };
   const values = { ...data, bookingagencycommissionpricing: 'FLAT', bookingagencycommissiontype: 'PERCNT' }, elements = Object.entries(visible).map(([name, value]) => ({ name, value,
     id: `${name}-inputEl`, offsetWidth: 1, offsetHeight: 1, readOnly: ['revenuevalue', 'nightsvalue'].includes(name),
@@ -304,7 +306,8 @@ function nativeCreateDraftPage() {
     getForm: () => ({ getValues: () => ({ ...values }), getFields: () => ({ items: Object.values(components) }) }) };
   const components = Object.fromEntries(elements.map((element) => [element.name, {
     up: () => form, getName: () => element.name,
-    getValue: () => element.name === 'udfchkbox04' ? false : values[element.name],
+    getValue: () => ['udfchkbox04', 'guestoptin4'].includes(element.name) ? false : values[element.name],
+    getXType: () => element.name === 'guestoptin4' ? 'checkboxfield' : 'textfield',
     getSubmitData: () => ({ [element.name]: values[element.name] }),
     getFieldLabel: () => element.name === 'nightsvalue' ? 'Lifetime Nights' : '',
   }]));
@@ -329,6 +332,127 @@ function nativeCreateDraftPage() {
     } };
   return page;
 }
+
+test('native unchecked opt-in may omit submit data only with a current owned false control and record', async () => {
+  const makePage = () => {
+    const page = nativeCreateDraftPage();
+    for (const name of ['araccountid', 'arprofileid', 'araccountname']) { page.data[name] = ''; page.values[name] = ''; }
+    page.elements.find(field => field.name === 'araccountname').value = '';
+    delete page.values.guestoptin4;
+    page.components.guestoptin4.getSubmitData = () => null;
+    return page;
+  };
+  const run = (page, guestOptIn = false) => saveNewLabtestStay(page, { ...saveInputs, guestOptIn });
+  for (const omitted of [null, undefined, {}]) {
+    const page = makePage(); page.components.guestoptin4.getSubmitData = () => omitted;
+    assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');
+    assert.equal(page.lastDraft.guestOptInSubmitOmitted, true);
+    assert.equal(Object.hasOwn(page.lastDraft, 'guestOptInSubmitValue'), false);
+  }
+  for (const submitted of [0, '0', false, 'false']) {
+    const page = makePage(); page.components.guestoptin4.getSubmitData = () => ({ guestoptin4: submitted });
+    assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');
+    assert.equal(page.lastDraft.guestOptInSubmitValue, String(submitted));
+    assert.equal(page.lastDraft.guestOptInSubmitOmitted, false);
+  }
+  for (const mutate of [
+    page => { delete page.data.guestoptin4; },
+    page => { page.data.GuestOptIn4 = false; },
+    page => { page.data.guestoptin4 = true; },
+    page => { page.components.guestoptin4.getValue = () => true; },
+    page => { delete page.components.guestoptin4.getValue; },
+    page => { delete page.components.guestoptin4.getSubmitData; },
+    page => { page.components.guestoptin4.up = () => ({}); },
+    page => { page.components.guestoptin4.getXType = () => 'textfield'; },
+    page => { page.components.guestoptin4.getSubmitData = () => ({ GuestOptIn4: false }); },
+    page => { page.components.guestoptin4.getSubmitData = () => ({ guestoptin4: false, GuestOptIn4: false }); },
+    page => { page.components.guestoptin4.getSubmitData = () => ({ guestoptin4: true }); },
+    page => { page.components.guestoptin4.getSubmitData = () => ({ guestoptin4: undefined }); },
+  ]) {
+    const page = makePage(); mutate(page);
+    assert.equal((await run(page)).draftCheck, 'DRAFT_GUEST_OPT_IN');
+  }
+  const checked = makePage(); checked.data.guestoptin4 = true; checked.components.guestoptin4.getValue = () => true;
+  assert.equal((await run(checked, true)).draftCheck, 'DRAFT_GUEST_OPT_IN');
+  checked.components.guestoptin4.getSubmitData = () => ({ guestoptin4: '-1' });
+  assert.equal((await run(checked, true)).issue, 'LABTEST_PROFILE_PROOF_STALE');
+  assert.equal(checked.lastDraft.guestOptInSubmitOmitted, false);
+  assert.equal(checked.lastDraft.guestOptInSubmitValue, '-1');
+});
+
+test('actual native Save matcher binds unchecked omission and checked values in both body and query', async () => {
+  const script = `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    let captured;
+    mock.module('./tooling/hms-cloud/guest-profile.mjs', { namedExports: {
+      verifiedLabtestProfileToken: async () => 'fixture-token', isVerifiedLabtestProfileCurrent: () => true,
+    } });
+    mock.module('./tooling/hms-cloud/lookup.mjs', { namedExports: { verifiedArSelectionToken: async () => null, isVerifiedArSelectionCurrent: () => false } });
+    mock.module('./tooling/hms-cloud/labtest-preimage.mjs', { namedExports: { consumeLabtestPreimage: () => true } });
+    mock.module('./tooling/hms-cloud/guest-stay-rate-plan.mjs', { namedExports: { checkedChargeRateEvidence: async () => null } });
+    mock.module('./tooling/hms-cloud/page-request-fence.mjs', { namedExports: { installPageRequestFence: async () => ({
+      open: () => ({ close() {}, allow: () => true }), quarantine() {},
+    }), hasPageRequestAuthorization: () => false } });
+    mock.module('./tooling/hms-cloud/saved-stay-save-route-chain.mjs', { namedExports: { installLabtestSaveRouteChain: async (_page, options) => {
+      captured = options.matches; return { disarm() {}, close: async () => {}, drain: async () => true };
+    } } });
+    const { saveNewLabtestStay } = await import('./tooling/hms-cloud/guest-stay-save.mjs');
+    const saveInputs = ${JSON.stringify(saveInputs)};
+    const nativeCreateDraftPage = ${nativeCreateDraftPage.toString()};
+    async function matcher(checked, omitted) {
+      const page = nativeCreateDraftPage(), frame = {};
+      for (const name of ['araccountid', 'arprofileid', 'araccountname']) { page.data[name] = ''; page.values[name] = ''; }
+      page.elements.find(field => field.name === 'araccountname').value = '';
+      page.data.guestoptin4 = checked; page.components.guestoptin4.getValue = () => checked;
+      page.components.guestoptin4.getSubmitData = () => omitted ? null : { guestoptin4: checked ? '-1' : '0' };
+      page.mainFrame = () => frame; page.waitForResponse = async () => null;
+      captured = null;
+      const result = await saveNewLabtestStay(page, { ...saveInputs, guestOptIn: checked });
+      assert.equal(result.issue, 'SAVE_CONTROL_NOT_UNIQUE'); assert.equal(typeof captured, 'function');
+      const matches = captured;
+      const fields = { SYSTEM_FUNCTION_NAME:'OSRESV', USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', propertycode:'HRCEN',
+        PKID:'@[EMPTY]#@[EMPTY]#HRCEN#', status:'New', firstname:'Proof', lastname:'Labtest', guestid:saveInputs.guestId,
+        bookingsessionid:'synthetic-session', arrivaldate:'12/29/2027', departuredate:'12/31/2027', roomtype:'STQN', rateplan:'BAR',
+        track:'Best Available', reservationnote:saveInputs.note, confirmationnumber:'', reservationid:'', reservationstayid:'', recordid:'',
+        udfchkbox04:'0', udfchar13:'', emailaddress:'', arprofileid:'', araccountid:'', araccountname:'', guaranteetype:'NGI',
+        pagemode:'display', savecctoprofile:'0', savesettlementcctoprofile:'0', taid1:'', ta1:'', companyid:'', company:'' };
+      return (bodyEntries = [], queryEntries = []) => {
+        const body = new URLSearchParams(fields), query = new URLSearchParams({ pageaction:'SAVE' });
+        for (const entry of bodyEntries) body.append(...entry);
+        for (const entry of queryEntries) query.append(...entry);
+        return matches({ method:() => 'POST', frame:() => frame, url:() => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?' + query,
+          postData:() => body.toString(), headers:() => ({ 'content-type':'application/x-www-form-urlencoded' }) });
+      };
+    }
+    const unchecked = await matcher(false, true);
+    assert.equal(unchecked(), true);
+    for (const value of ['0','false']) assert.equal(unchecked([['guestoptin4',value]]), true);
+    for (const value of ['1','-1','true','','undefined']) assert.equal(unchecked([['guestoptin4',value]]), false);
+    assert.equal(unchecked([['GuestOptIn4','0']]), false);
+    assert.equal(unchecked([['guestoptin4','0'],['guestoptin4','0']]), false);
+    assert.equal(unchecked([['guestoptin4','0'],['GuestOptIn4','0']]), false);
+    assert.equal(unchecked([], [['guestoptin4','0']]), true);
+    for (const value of ['1','true','unknown']) assert.equal(unchecked([], [['guestoptin4',value]]), false);
+    assert.equal(unchecked([], [['GuestOptIn4','0']]), false);
+    assert.equal(unchecked([], [['guestoptin4','0'],['guestoptin4','0']]), false);
+    assert.equal(unchecked([], [['guestoptin4','0'],['GuestOptIn4','0']]), false);
+    assert.equal(unchecked([['guestoptin4','0']], [['guestoptin4','false']]), false);
+    assert.equal(unchecked([['guestoptin4','0']], [['guestoptin4','0']]), true);
+    const submittedFalse = await matcher(false, false);
+    assert.equal(submittedFalse(), false); assert.equal(submittedFalse([['guestoptin4','0']]), true);
+    const checked = await matcher(true, false);
+    assert.equal(checked(), false); assert.equal(checked([['guestoptin4','-1']]), true);
+    assert.equal(checked([['guestoptin4','1']]), false); assert.equal(checked([['guestoptin4','0']]), false);
+    assert.equal(checked([['guestoptin4','-1']], [['guestoptin4','0']]), false);
+    assert.equal(checked([['guestoptin4','-1']], [['guestoptin4','-1']]), true);
+    process.stdout.write('native opt-in matcher verified');
+  `;
+  const { stdout } = await promisify(execFile)(process.execPath,
+    ['--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    { cwd:new URL('../../', import.meta.url), timeout:30000, maxBuffer:1024 * 1024 });
+  assert.equal(stdout, 'native opt-in matcher verified');
+});
 
 test('native create draft tolerates unrelated HMS field drift but checks guest and room', async () => {
   const makePage = () => {
