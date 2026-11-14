@@ -1,4 +1,5 @@
-import { hmsDavinciReadsEnabled, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { hmsDavinciReadsEnabled, hmsReadTargetForProperty, ownerRefBelongsToProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 import { parsePartyIndexProperty } from './party-index.js';
 import {
   isDaVinciMailboxOrigin,
@@ -460,8 +461,24 @@ async function rememberedPartyJobName(
   pick: { kind: PanePartyKind; nativeId: string },
   name: string,
   transportId: string,
+  target: HmsReadTarget,
   db: DB = getDb(),
 ): Promise<string | null> {
+  if (!ownerRefBelongsToProperty(transportId, target.propertyCode)) return null;
+  let expected: HmsReadTarget;
+  try {
+    expected = hmsReadTargetForProperty(target.propertyCode);
+  } catch {
+    return null;
+  }
+  if (target.propertyCode !== expected.propertyCode || target.browserSlot !== expected.browserSlot ||
+      target.secretId !== expected.secretId || target.origin !== expected.origin ||
+      target.installationEnvName !== expected.installationEnvName) return null;
+  const allowLegacyHrcen = target.propertyCode === 'HRCEN' &&
+    transportId === getPropertyRegistration('HRCEN')?.mailboxTransportId;
+  const propertyFilter = allowLegacyHrcen
+    ? sql`(${aiWorkflowRun.readResult}->>'propertyCode' = ${target.propertyCode} or not (${aiWorkflowRun.readResult} ? 'propertyCode'))`
+    : sql`${aiWorkflowRun.readResult}->>'propertyCode' = ${target.propertyCode}`;
   const normalized = name.replace(/\s+/g, ' ').trim().toLowerCase();
   const legacyKind = pick.kind === 'organization' ? 'company' : 'agency';
   const rows = await db
@@ -475,6 +492,7 @@ async function rememberedPartyJobName(
         eq(aiWorkflowRun.state, 'succeeded'),
         gte(aiWorkflowRun.finishedAt, new Date(Date.now() - PARTY_ROW_CACHE_TTL_MS)),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+        propertyFilter,
         sql`exists (
           select 1
           from jsonb_array_elements(
@@ -505,6 +523,8 @@ async function rememberedPartyJobName(
     const request = objectRecord(row.readRequest);
     if (request.partyKind && request.partyKind !== pick.kind && request.partyKind !== legacyKind) continue;
     const result = objectRecord(row.readResult);
+    if (result.propertyCode !== target.propertyCode &&
+        !(allowLegacyHrcen && !Object.hasOwn(result, 'propertyCode'))) continue;
     if (!Array.isArray(result.results)) continue;
     for (const candidateValue of result.results) {
       const candidate = objectRecord(candidateValue);
@@ -825,9 +845,9 @@ export async function verifyPartyPick(
   const remembered = rememberedPartyName(pick, name, propertyCode);
   if (remembered !== null)
     return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: remembered } };
-  if (pick.transportId) {
+  if (pick.transportId && pick.target) {
     try {
-      const fromJob = await rememberedPartyJobName(pick, name, pick.transportId, db);
+      const fromJob = await rememberedPartyJobName(pick, name, pick.transportId, pick.target, db);
       if (fromJob !== null)
         return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: fromJob } };
     } catch {

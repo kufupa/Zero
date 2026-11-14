@@ -504,6 +504,7 @@ function refuseQuote(
 export async function verifyStaffParties(
   parties: StaffQuoteParties,
   target?: HmsReadTarget | null,
+  transportId?: string,
 ): Promise<StaffQuoteParties> {
   const verified: StaffQuoteParties = {};
   const refuse = (reason: string): never => {
@@ -524,6 +525,7 @@ export async function verifyStaffParties(
       nativeId: parties.organization.nativeId,
       name: parties.organization.name,
       target: target ?? null,
+      ...(transportId !== undefined && { transportId }),
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok)
@@ -539,6 +541,7 @@ export async function verifyStaffParties(
       nativeId: parties.bookingAgency.nativeId,
       name: parties.bookingAgency.name,
       target: target ?? null,
+      ...(transportId !== undefined && { transportId }),
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok)
@@ -728,7 +731,7 @@ export async function runStaffQuote(
           else refuseQuote('staff_quote_party_unavailable', 'The selected organisation or agency could not be verified.');
         }
         quoteInput = { ...input, parties: verified };
-      } else quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
+      } else quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target, identity.transportId) };
     } else {
       quoteInput = { ...input, parties: undefined };
       notes.push(PARTY_LOOKUP_OFF_NOTE);

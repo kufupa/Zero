@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import { resolveQuoteRevision, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
@@ -120,13 +121,13 @@ const STAFF_QUOTE_INPUT = {
       quantity: 1,
       adults: 2,
       childrenAges: [],
-      board: 'room_only',
+      mealPlan: 'room_only',
       roomCodes: ['SKNG'],
     },
   ],
   salesStrategy: 'BAR',
-  company: '',
-  agency: '',
+  organization: '',
+  bookingAgency: '',
   attention: '',
   clientEmail: '',
   clientTelephone: '',
@@ -140,7 +141,7 @@ function fixture(metrics: Record<string, unknown> = { userId: user.id, staffQuot
   const request = { kind: 'staff_quote', input: STAFF_QUOTE_INPUT };
   const run = {
     id: 'job-1',
-    transportId: 'transport-1',
+    transportId: TRANSPORT_ID,
     threadId: 'thread-1',
     runKind: 'read_tool',
     promptVersion: HMS_JOB_PROMPT_VERSION,
@@ -276,6 +277,7 @@ function staffQuoteRunDb(mail: Record<string, unknown>) {
   };
   let db: Record<string, unknown>;
   db = {
+    execute: async () => [],
     select() {
       let table: unknown;
       const query = {
@@ -339,7 +341,7 @@ async function provisionalWorkerQuote(
   onError?: (error: unknown) => void,
   inputOverrides: Partial<StaffQuoteInput> = {},
   prepared = false,
-  transportId = 'transport-1',
+  transportId = TRANSPORT_ID,
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -404,6 +406,34 @@ async function provisionalWorkerQuote(
   return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted };
 }
 
+async function syntheticSingleRevision(authorizationId: string, mealPlan: 'breakfast' | 'dinner_bed_breakfast') {
+  const room = { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] };
+  const source: QuoteSourceRecord = {
+    ref: 'dinner-source', sha256: 'a'.repeat(64), toolVersion: '2', observedAt: '2026-10-04T09:00:00Z',
+    request: { propertyCode: 'HRCEN', requestedCurrency: 'ZAR', arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14', rooms: [room] },
+    result: { outcome: 'quote', propertyCode: 'HRCEN', groups: [{ id: room.id, request: room,
+      completeness: { search: 'complete', requiredFacts: 'complete' }, options: [{
+        id: 'selected', room: { code: 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
+        rate: { code: 'BAR', label: 'Best Available' },
+        mealPlan: mealPlan === 'breakfast' ? 'Bed & Breakfast R' : 'Dinner Bed & Breakfast R',
+        appliedContext: {}, eligibility: 'verified', availability: 'available', matchStatus: 'match',
+        held: false, totals: { taxInclusive: true }, nightly: ['2026-11-12', '2026-11-13'].map(date =>
+          ({ date, inventory: 5, price: { amount: '600.00', currency: 'ZAR' } })),
+      }] }] },
+  };
+  return resolveQuoteRevision({
+    propertyCode: 'HRCEN', authoredDate: '2026-10-04',
+    selections: [{ sourceRef: source.ref, groupId: room.id, optionId: 'selected' }],
+    resolveSource: async () => source,
+    resolvePolicy: async () => ({ ref: 'synthetic-policy', propertyCode: 'HRCEN',
+      sourceHashes: ['b'.repeat(64)], authoredDates: ['2026-09-26'],
+      families: [{ rateCode: 'BAR', mealPlan }], vat: 'included', levy: 'included' }),
+    admission: { authorizationId, sourceEvaluationAt: '2026-10-04T10:00:00Z', maxSourceAgeMs: 3600000,
+      expectedRequests: { [source.ref]: source.request }, authorizeSource: async () => true },
+  });
+}
+
 describe('staff_quote HMS job execution', () => {
   it('records rate-pick history only for manual staff quotes', async () => {
     for (const autoStart of [false, true]) {
@@ -450,7 +480,7 @@ describe('staff_quote HMS job execution', () => {
         quantity: 2,
         adults: 1,
         childrenAges: [],
-        board: 'bb',
+        mealPlan: 'bb',
         roomCodes: ['SKNG'],
       },
     ];
@@ -498,7 +528,7 @@ describe('staff_quote HMS job execution', () => {
         quantity: 1,
         adults: 2,
         childrenAges: [],
-        board: 'dinner_bb',
+        mealPlan: 'dinner_bb',
         roomCodes: ['SKNG'],
       },
     ];
@@ -516,32 +546,25 @@ describe('staff_quote HMS job execution', () => {
         label: 'Dinner Allowance',
       },
     });
-    const requests: Array<{ salesStrategy: string; boardBases: string[] }> = [];
+    const requests: Array<{ salesStrategy: string; mealPlanBases: string[] }> = [];
     workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: {
       authorizationId: string;
       request: {
         search: { salesStrategy: string };
-        rooms: Array<{ required: { boardBases: string[] } }>;
+        rooms: Array<{ required: { mealPlanBases: string[] } }>;
       };
     }) => {
       requests.push({
         salesStrategy: prepared.request.search.salesStrategy,
-        boardBases: prepared.request.rooms[0]!.required.boardBases,
+        mealPlanBases: prepared.request.rooms[0]!.required.mealPlanBases,
       });
-      return syntheticRevision(
-        ['600.00', '600.00'],
-        'Dinner, Bed and Breakfast R',
-        'SKNG',
-        undefined,
-        '2026-11-12',
-        prepared.authorizationId,
-      );
+      return syntheticSingleRevision(prepared.authorizationId, 'dinner_bed_breakfast');
     });
 
     await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
 
     expect(workflowMocks.executeStaffQuote).toHaveBeenCalledOnce();
-    expect(requests).toEqual([{ salesStrategy: 'Government', boardBases: ['dinner_bed_breakfast'] }]);
+    expect(requests).toEqual([{ salesStrategy: 'Government', mealPlanBases: ['dinner_bed_breakfast'] }]);
     const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
     expect(readResult.extrasReviewItems).toContain(
       'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
@@ -559,7 +582,7 @@ describe('staff_quote HMS job execution', () => {
         quantity: 1,
         adults: 2,
         childrenAges: [],
-        board: 'dinner_bb',
+        mealPlan: 'dinner_bb',
         roomCodes: ['SKNG'],
       },
     ];
@@ -577,33 +600,26 @@ describe('staff_quote HMS job execution', () => {
         label: 'Dinner Allowance',
       },
     });
-    const requests: Array<{ salesStrategy: string; boardBases: string[] }> = [];
+    const requests: Array<{ salesStrategy: string; mealPlanBases: string[] }> = [];
     workflowMocks.executeStaffQuote.mockImplementation(async (prepared: {
       authorizationId: string;
       request: {
         search: { salesStrategy: string };
-        rooms: Array<{ required: { boardBases: string[] } }>;
+        rooms: Array<{ required: { mealPlanBases: string[] } }>;
       };
     }) => {
       requests.push({
         salesStrategy: prepared.request.search.salesStrategy,
-        boardBases: prepared.request.rooms[0]!.required.boardBases,
+        mealPlanBases: prepared.request.rooms[0]!.required.mealPlanBases,
       });
-      return syntheticRevision(
-        ['600.00', '600.00'],
-        requests.length === 1 ? 'Dinner, Bed and Breakfast R' : 'Bed & Breakfast R',
-        'SKNG',
-        undefined,
-        '2026-11-12',
-        prepared.authorizationId,
-      );
+      return syntheticSingleRevision(prepared.authorizationId, requests.length === 1 ? 'dinner_bed_breakfast' : 'breakfast');
     });
 
     await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
 
     expect(requests).toEqual([
-      { salesStrategy: 'BAR', boardBases: ['dinner_bed_breakfast'] },
-      { salesStrategy: 'BAR', boardBases: ['breakfast'] },
+      { salesStrategy: 'BAR', mealPlanBases: ['dinner_bed_breakfast'] },
+      { salesStrategy: 'BAR', mealPlanBases: ['breakfast'] },
     ]);
     const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
     expect(readResult).toMatchObject({
@@ -627,7 +643,7 @@ describe('staff_quote HMS job execution', () => {
         quantity: 1,
         adults: 2,
         childrenAges: [],
-        board: 'dinner_bb',
+        mealPlan: 'dinner_bb',
         roomCodes: ['SKNG'],
       },
     ];
@@ -646,17 +662,17 @@ describe('staff_quote HMS job execution', () => {
         label: 'Dinner Allowance',
       },
     });
-    const requests: Array<{ salesStrategy: string; boardBases: string[] }> = [];
+    const requests: Array<{ salesStrategy: string; mealPlanBases: string[] }> = [];
     workflowMocks.executeStaffQuote.mockImplementation(async (prepared: {
       authorizationId: string;
       request: {
         search: { salesStrategy: string };
-        rooms: Array<{ required: { boardBases: string[] } }>;
+        rooms: Array<{ required: { mealPlanBases: string[] } }>;
       };
     }) => {
       requests.push({
         salesStrategy: prepared.request.search.salesStrategy,
-        boardBases: prepared.request.rooms[0]!.required.boardBases,
+        mealPlanBases: prepared.request.rooms[0]!.required.mealPlanBases,
       });
       if (requests.length === 1) throw new Error('native_quote_no_matching_rate');
       return syntheticRevision(
@@ -676,7 +692,7 @@ describe('staff_quote HMS job execution', () => {
     try {
       await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
       expect(workflowMocks.executeStaffQuote).toHaveBeenCalledTimes(1);
-      expect(requests).toEqual([{ salesStrategy: 'Government', boardBases: ['dinner_bed_breakfast'] }]);
+      expect(requests).toEqual([{ salesStrategy: 'Government', mealPlanBases: ['dinner_bed_breakfast'] }]);
       const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
       expect(readResult).toMatchObject({ ok: false, code: 'PRECONDITION_FAILED',
         message: 'HMS has no rate for this meal plan under Government. Try another meal plan or rate type.' });
@@ -697,7 +713,7 @@ describe('staff_quote HMS job execution', () => {
         quantity: 2,
         adults: 1,
         childrenAges: [],
-        board: 'room_only',
+        mealPlan: 'room_only',
         roomCodes: ['SKNG'],
       },
     ];
@@ -911,7 +927,7 @@ describe('staff_quote HMS job execution', () => {
   it('keeps the worker deadline-bounded approval context and retries an unknown reader failure', async () => {
     const mail = {
       id: STAFF_QUOTE_INPUT.messageId,
-      transportId: 'transport-1',
+      transportId: TRANSPORT_ID,
       threadId: 'thread-1',
       direction: 'inbound',
       subject: 'Accommodation enquiry',
@@ -1291,6 +1307,10 @@ describe('staff_quote HMS job execution', () => {
 });
 
 describe('runStaffQuote property installation', () => {
+  beforeEach(() => {
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/synthetic-hrdav-quote.json');
+  });
+
   function mailFor(transportId: string) {
     return {
       id: STAFF_QUOTE_INPUT.messageId,
