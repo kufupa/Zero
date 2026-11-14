@@ -560,6 +560,7 @@ export async function issueReadAdmissionFromMailbox(
   const bound = bindHmsMailboxProperty({
     transportId: input.transportId,
     propertyCode: input.propertyCode,
+    toolId: input.toolId,
     origin: {
       fromAddress: trigger.fromAddress,
       ownerHeaderValue: trigger.ownerHeaderValue,
@@ -572,7 +573,8 @@ export async function issueReadAdmissionFromMailbox(
       bound.code,
       bound.code === 'READ_DAVINCI_ORIGIN_REFUSED'
         ? 'Da Vinci mailbox origin is not bound to Centurion HMS'
-        : 'read admission requires an explicit property code',
+        : bound.code === 'READ_PROPERTY_DISABLED' ? 'HMS reads are disabled for this property or workflow'
+          : 'read admission requires an explicit property code',
     );
   }
   const source: ReadAdmissionSource = {

@@ -12,6 +12,7 @@ import type { ReadRequest } from './read-service.js';
 import { reservationFindResultSchema, reservationContextReadResultSchema } from './reservation-context-contract.js';
 import { staffSessionSchema, loadHmsPreparation, type StaffSession } from './hms-preparation.js';
 import { verifyStaffGoForRun } from './staff-go-authority.js';
+import { hmsPropertyReadEnabled } from './mailbox-hms-origin-bind.js';
 
 export type HmsReadQuery = ReadRequest;
 export type ReadResult<Q extends HmsReadQuery> =
@@ -36,7 +37,9 @@ export function createHmsService(input: {
     propertyCode: scope.propertyCode,
     configuration: () => propertyConfigurationForScope(scope),
     read<Q extends HmsReadQuery>(query: Q, signal?: AbortSignal): Promise<ReadResult<Q>> {
-      if (!input.readAdapter) throw new Error('hms_read_capability_unavailable');
+      if (!input.readAdapter || !hmsPropertyReadEnabled({ propertyCode: scope.propertyCode, toolId: query.toolId })) {
+        throw new Error('hms_read_capability_unavailable');
+      }
       return input.readAdapter.read(scope, query, signal);
     },
     async prepare(request: Omit<Parameters<typeof prepareHmsWrite>[0], 'db' | 'transportId' | 'propertySwitch'>) {

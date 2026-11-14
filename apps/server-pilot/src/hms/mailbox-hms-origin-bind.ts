@@ -3,7 +3,8 @@ import { getDb } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
-import { propertySwitchSchema, resolvePropertyScope } from './property-registry.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { propertyCodeSchema, propertySwitchSchema, resolvePropertyScope } from './property-registry.js';
 import { TRPCError } from '@trpc/server';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
@@ -80,7 +81,7 @@ export type BindCenturionHmsMailboxPropertyResult =
   | { ok: true; propertyCode: string }
   | {
       ok: false;
-      code: 'READ_DAVINCI_ORIGIN_REFUSED' | 'READ_PROPERTY_CODE_REQUIRED' | 'READ_PROPERTY_UNKNOWN';
+      code: 'READ_DAVINCI_ORIGIN_REFUSED' | 'READ_PROPERTY_CODE_REQUIRED' | 'READ_PROPERTY_UNKNOWN' | 'READ_PROPERTY_DISABLED';
     };
 
 export type GuardCenturionHmsMailboxOriginResult =
@@ -151,16 +152,34 @@ export function bindCenturionHmsMailboxProperty(input: {
   return { ok: true, propertyCode: property.propertyCode };
 }
 
+/** Quote reads also require the property-specific quote control. */
+export function hmsPropertyReadEnabled(input: {
+  propertyCode: string; toolId?: string; env?: NodeJS.ProcessEnv;
+}): boolean {
+  const property = propertyCodeSchema.safeParse(input.propertyCode);
+  if (!property.success) return false;
+  if (input.toolId === 'documents_list_existing' || input.toolId === 'documents_read_existing') return true;
+  try {
+    const env = input.env ?? process.env;
+    return effectiveWorkflowPolicy(env, property.data, 'reads').readEnabled &&
+      (input.toolId !== 'hms_quote_stay' || effectiveWorkflowPolicy(env, property.data, 'quote').mode === 'on');
+  } catch { return false; }
+}
+
 /** Property identity comes from authenticated transport membership, never from sender alone. */
-export function bindHmsMailboxProperty(input: { transportId: string; propertyCode?: string | null; origin: MailboxHmsOriginFields }): BindCenturionHmsMailboxPropertyResult {
+export function bindHmsMailboxProperty(input: { transportId: string; propertyCode?: string | null; origin: MailboxHmsOriginFields;
+  toolId?: string; env?: NodeJS.ProcessEnv }): BindCenturionHmsMailboxPropertyResult {
   const code = input.propertyCode?.trim();
   if (!code) return { ok: false, code: 'READ_PROPERTY_CODE_REQUIRED' };
   const selected = propertySwitchSchema.safeParse(code);
   try {
     const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: selected.success ? selected.data : undefined });
     if (scope.propertyCode !== code) return { ok: false, code: 'READ_PROPERTY_UNKNOWN' };
-    return scope.group === 'centurion' ? bindCenturionHmsMailboxProperty({ propertyCode: code, origin: input.origin }) :
-      { ok: true, propertyCode: scope.propertyCode };
+    const bound = scope.group === 'centurion' ? bindCenturionHmsMailboxProperty({ propertyCode: code, origin: input.origin }) :
+      { ok: true as const, propertyCode: scope.propertyCode };
+    if (!bound.ok) return bound;
+    return hmsPropertyReadEnabled({ propertyCode: scope.propertyCode, toolId: input.toolId, env: input.env }) ? bound :
+      { ok: false, code: 'READ_PROPERTY_DISABLED' };
   } catch { return { ok: false, code: 'READ_PROPERTY_UNKNOWN' }; }
 }
 

@@ -22,8 +22,9 @@ import {
 } from './read-handler-index.js';
 import type { RequestPolicyManifest } from './contracts.js';
 import type { ActiveReadToolId, ReadToolId } from './read-tools.js';
-import { access } from 'node:fs/promises';
+import { access, lstat, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import type { PropertyCode } from './property-registry.js';
 
@@ -92,6 +93,31 @@ export function getCachedActiveReadRuntime(): ActiveReadRuntimeState | null {
 export function clearCachedActiveReadRuntimeForTests(): void { cached.clear(); }
 export function __setCachedActiveReadRuntimeForTests(state: ActiveReadRuntimeState | null): void {
   if (state) cached.set('HRCEN', state); else cached.delete('HRCEN');
+}
+
+export async function resolveWorkerActiveReadPaths(input: {
+  propertyCode: PropertyCode; root?: string; legacyRegistryPath: string; legacyReleaseRoot: string;
+}): Promise<{ registryPath: string; releaseRoot: string }> {
+  const legacy = { registryPath: input.legacyRegistryPath, releaseRoot: input.legacyReleaseRoot };
+  const root = input.root;
+  if (!root) return input.propertyCode === 'HRCEN' ? legacy : { registryPath: '', releaseRoot: '' };
+  const partition = { registryPath: join(root, input.propertyCode, 'active-registry.v2.json'),
+    releaseRoot: join(root, input.propertyCode, 'releases') };
+  if (input.propertyCode === 'HRCEN') {
+    try { await lstat(partition.registryPath); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      for (const directory of [root, join(root, input.propertyCode)]) {
+        let entry;
+        try { entry = await lstat(directory); } catch (directoryError) {
+          if ((directoryError as NodeJS.ErrnoException).code === 'ENOENT') continue;
+          throw directoryError;
+        }
+        if (entry.isSymbolicLink()) await stat(directory);
+      }
+      return legacy;
+    }
+  }
+  return partition;
 }
 
 /**

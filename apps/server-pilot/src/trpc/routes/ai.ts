@@ -10,6 +10,7 @@ import {
 import {
   getActiveReadRuntime,
   loadWorkerActiveReadSet,
+  resolveWorkerActiveReadPaths,
 } from '../../hms/active-read-runtime.js';
 import { folioReadSectionIdSchema, readRefSchema } from '../../hms/read-service-contracts.js';
 import { router as tRouter, privateProcedure, mailboxProcedure } from '../trpc.js';
@@ -27,7 +28,6 @@ import { getDb } from '../../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { join } from 'node:path';
 import { propertySwitchSchema, resolvePropertyScope, type PropertyCode } from '../../hms/property-registry.js';
 
 const EXISTING_DOCUMENT_RELEASE_ID = 'mail-existing-documents-v1';
@@ -67,11 +67,10 @@ async function activeReadSet(propertyCode: PropertyCode) {
   if (existing) return existing;
   const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim();
   if (!root && propertyCode !== 'HRCEN') throw new TRPCError({ code: 'FORBIDDEN', message: 'HMS_READ_RELEASE_UNAVAILABLE' });
-  return loadWorkerActiveReadSet({ propertyCode,
-    registryPath: root ? join(root, propertyCode, 'active-registry.v2.json') :
-      process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() || '/opt/nava/shared/hms-active-registry/active.json',
-    releaseRoot: root ? join(root, propertyCode, 'releases') :
-      process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
+  const paths = await resolveWorkerActiveReadPaths({ propertyCode, root,
+    legacyRegistryPath: process.env.HMS_ACTIVE_REGISTRY_PATH?.trim() || '/opt/nava/shared/hms-active-registry/active.json',
+    legacyReleaseRoot: process.env.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases' });
+  return loadWorkerActiveReadSet({ propertyCode, ...paths,
     runtimeFingerprintSha256: runtimeFingerprintSha256({ sourceRevision: resolveHmsSourceRevision(),
       playwrightRevision: '1.63.0', chromiumRevision: '1243' }),
   });

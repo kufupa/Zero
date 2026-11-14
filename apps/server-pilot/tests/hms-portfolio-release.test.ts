@@ -30,6 +30,7 @@ import {
   loadHmsReadRoleProofV2ForTool,
   roleProofV2Path,
   validateRoleProofV2ForTool,
+  validateRoleProofV2ForSession,
 } from '../src/hms/release-kernel.js';
 
 describe('CandidateReadPlan closed union', () => {
@@ -279,6 +280,26 @@ describe('Phase B evidence schemas (role proof / receipt / release v2)', () => {
       ...overrides,
     });
   }
+
+  it('uses a tool-wide folio proof for both admitted branches while rejecting altered branch or manifest', async () => {
+    const { buildHmsFolioSessionAuthorization } = await import('../src/hms/active-read-runtime.js');
+    const { buildLiveFolioReadManifest, buildLiveDepositLedgerManifest } = await import('../src/hms/live-read-manifest.js');
+    const tool = READ_TOOLS.hms_read_folio;
+    const proof = validRoleProofV2({ toolId: tool.id, discoveryOperationId: 'folio_summary',
+      allowedSurfaces: [...new Set(tool.requestBranches.flatMap(branch => branch.requiredRoleSurfaces))],
+      deniedActions: [...tool.deniedActions] });
+    for (const requestBranchId of ['folio_summary', 'deposit_ledger_summary'] as const) {
+      const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+      const manifest = requestBranchId === 'folio_summary' ? buildLiveFolioReadManifest(origin) : buildLiveDepositLedgerManifest(origin, 'HRCEN');
+      const auth = buildHmsFolioSessionAuthorization({ operationId: randomUUID(), propertyCode: 'HRCEN', requestBranchId,
+        manifest, roleProofPath: '/tmp/folio-proof', roleProofSha256: sha('a'), credentialVersionHmacSha256: sha('2'),
+        runtimeFingerprintSha256: sha('3'), privateDigestKeyVersion: 'v1', sourceRevision: 'rev' });
+      expect(() => validateRoleProofV2ForSession(proof, auth, new Date())).not.toThrow();
+      expect(() => validateRoleProofV2ForSession(proof, { ...auth, discoveryOperationId: 'guest_stay_search' }, new Date())).toThrow('branch');
+      expect(() => validateRoleProofV2ForSession(proof, { ...auth, manifestSha256: sha('b') }, new Date())).toThrow('manifest');
+      expect(() => validateRoleProofV2ForSession({ ...proof, allowedSurfaces: ['folio'] }, auth, new Date())).toThrow('surfaces');
+    }
+  });
 
   it('requires operator_observed_runtime and TTL >0 <=30d', () => {
     expect(() =>

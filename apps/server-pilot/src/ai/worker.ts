@@ -73,6 +73,7 @@ import {
   type EnvInput,
 } from '../env.js';
 import { readToolExpectedPropertyCode } from '../hms/hms-read-target.js';
+import { bindHmsMailboxProperty, hmsPropertyReadEnabled } from '../hms/mailbox-hms-origin-bind.js';
 import {
   companyAccountContextDataSchema,
   eventContextDataSchema,
@@ -816,7 +817,7 @@ async function productionReadRuntimeFacts(
 ) {
   const { resolveHmsSourceRevision } = await import('../hms/production-runtime.js');
   const { runtimeFingerprintSha256 } = await import('../hms/evidence-runtime.js');
-  const { loadWorkerActiveReadSet } = await import('../hms/active-read-runtime.js');
+  const { loadWorkerActiveReadSet, resolveWorkerActiveReadPaths } = await import('../hms/active-read-runtime.js');
   const sourceRevision = resolveHmsSourceRevision();
   const runtimeFp = runtimeFingerprintSha256({
     sourceRevision,
@@ -827,17 +828,16 @@ async function productionReadRuntimeFacts(
   const propertyCode = propertyCodeSchema.parse(config.expectedPropertyCode);
   let active = productionActiveReadStates.get(propertyCode);
   if (!active) {
-    const { join } = await import('node:path');
     const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim();
-    const registryPath = root ? join(root, propertyCode, 'active-registry.v2.json') : propertyCode === 'HRCEN' ? config.activeRegistryPath : '';
-    const releaseRoot = root ? join(root, propertyCode, 'releases') : propertyCode === 'HRCEN' ? config.releaseRoot : '';
-    const load = () =>
-      loadWorkerActiveReadSet({
-        registryPath,
-        releaseRoot,
+    const load = async () => {
+      const paths = await resolveWorkerActiveReadPaths({ propertyCode, root,
+        legacyRegistryPath: config.activeRegistryPath, legacyReleaseRoot: config.releaseRoot });
+      return loadWorkerActiveReadSet({
+        ...paths,
         propertyCode,
         runtimeFingerprintSha256: runtimeFp,
       });
+    };
     active =
       signal && deadlineAt
         ? await awaitSynchronousReadSetup({ operation: load, signal, deadlineAt })
@@ -846,6 +846,13 @@ async function productionReadRuntimeFacts(
     productionActiveReadStates.set(propertyCode, active);
   }
   return { sourceRevision, runtimeFp, active };
+}
+
+function assertHmsPropertyReadEnabled(propertyCode: string, toolId?: string, transportId?: string): void {
+  if (!hmsPropertyReadEnabled({ propertyCode, toolId }) || transportId &&
+      !bindHmsMailboxProperty({ transportId, propertyCode, toolId, origin: {} }).ok) {
+    throw Object.assign(new Error('HMS_PROPERTY_READ_DISABLED'), { failureClass: 'POLICY_BLOCK' as const });
+  }
 }
 
 async function getOrCreateProductionHmsRuntime(
@@ -857,6 +864,7 @@ async function getOrCreateProductionHmsRuntime(
   // The read lane is independent from draft mode: `off` still permits a
   // model-free browser runtime when the read service is enabled.
   const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  assertHmsPropertyReadEnabled(config.expectedPropertyCode);
   const { propertyCodeSchema } = await import('../hms/property-registry.js');
   const propertyCode = propertyCodeSchema.parse(config.expectedPropertyCode);
   const cachedRuntime = productionHmsRuntimes.get(propertyCode);
@@ -947,6 +955,7 @@ export function createLiveHmsCandidateSessionFactory(
         { failureClass: 'AUTH' as const },
       );
     }
+    assertHmsPropertyReadEnabled(propertyCode, input.readToolId);
     const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime());
     const active =
       options.activeReadState ??
@@ -2926,6 +2935,9 @@ async function executeProductionReadTool(input: {
           ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
               .expectedPropertyCode
           : readToolExpectedPropertyCode(process.env);
+  if (request.toolId !== 'documents_list_existing' && request.toolId !== 'documents_read_existing') {
+    assertHmsPropertyReadEnabled(expectedPropertyCode, request.toolId, input.run.transportId);
+  }
   const admission = 'admission' in request ? request.admission : undefined;
   if (!admission) {
     throw Object.assign(new Error('read_tool requires trusted release/input/capture admission'), {

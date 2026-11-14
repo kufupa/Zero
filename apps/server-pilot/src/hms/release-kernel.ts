@@ -11,6 +11,7 @@ import {
   DISCOVERY_OPERATION_IDS,
   HMS_READ_TOOL_IDS,
   READ_TOOL_IDS,
+  READ_TOOLS,
   ROLE_SURFACE_IDS,
   type ActiveReadToolId,
   type DiscoveryOperationId,
@@ -608,6 +609,20 @@ export type HmsSessionAuthorization = {
   sourceRevision: string;
   expiresAt: string;
 };
+
+/** Proof acquisition attests the tool's role surfaces; each session selects one admitted branch. */
+export function validateRoleProofV2ForSession(
+  proof: HmsReadRoleProofV2, authorization: HmsSessionAuthorization, now: Date,
+): void {
+  const tool = READ_TOOLS[authorization.toolId];
+  validateRoleProofV2ForTool(proof, tool, now);
+  assertHmsPropertyIdentity(proof, authorization.propertyCode ?? 'HRCEN');
+  const branch = tool.requestBranches.find((candidate) => candidate.id === authorization.requestBranchId);
+  if (!branch || branch.discoveryOperationId !== authorization.discoveryOperationId ||
+      sha256Hex(JSON.stringify(authorization.manifest)) !== authorization.manifestSha256) {
+    throw new Error('session discovery branch or manifest mismatch');
+  }
+}
 
 export type MailArtifactAuthorization = {
   operationId: string;

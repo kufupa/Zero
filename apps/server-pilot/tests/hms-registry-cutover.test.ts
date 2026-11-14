@@ -41,7 +41,8 @@ import {
 } from '../src/hms/candidate-read-plan.js';
 import { fingerprintReadToolRegistry, productionActiveReadToolIds } from '../src/hms/read-tools.js';
 import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { resolveWorkerActiveReadPaths, loadWorkerActiveReadSet } from '../src/hms/active-read-runtime.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
@@ -858,4 +859,26 @@ describe('Task 13 registry v2 cutover + plan-scoped authorization', () => {
       }),
     ).toBe(true);
   });
+});
+
+
+it('keeps validated Centurion legacy paths until a partition exists and never borrows them for DaVinci', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hms-partition-paths-'));
+  try {
+    const root = join(dir, 'proofs');
+    const legacy = { legacyRegistryPath: join(dir, 'active.json'), legacyReleaseRoot: join(dir, 'releases') };
+    await expect(resolveWorkerActiveReadPaths({ ...legacy, root, propertyCode: 'HRCEN' })).resolves.toEqual({
+      registryPath: legacy.legacyRegistryPath, releaseRoot: legacy.legacyReleaseRoot });
+    await expect(resolveWorkerActiveReadPaths({ ...legacy, root, propertyCode: 'HRDAV' })).resolves.toEqual({
+      registryPath: join(root, 'HRDAV', 'active-registry.v2.json'), releaseRoot: join(root, 'HRDAV', 'releases') });
+    await mkdir(join(root, 'HRCEN'), { recursive: true });
+    const registryPath = join(root, 'HRCEN', 'active-registry.v2.json');
+    await writeFile(registryPath, 'invalid json');
+    const paths = await resolveWorkerActiveReadPaths({ ...legacy, root, propertyCode: 'HRCEN' });
+    expect(paths.registryPath).toBe(registryPath);
+    await expect(loadWorkerActiveReadSet({ ...paths, propertyCode: 'HRCEN', runtimeFingerprintSha256: 'a'.repeat(64) })).rejects.toThrow();
+    const danglingRoot = join(dir, 'dangling');
+    await symlink(join(dir, 'absent-target'), danglingRoot);
+    await expect(resolveWorkerActiveReadPaths({ ...legacy, root: danglingRoot, propertyCode: 'HRCEN' })).rejects.toMatchObject({ code: 'ENOENT' });
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

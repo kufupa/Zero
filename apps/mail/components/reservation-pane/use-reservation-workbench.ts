@@ -35,6 +35,7 @@ function captureRows(snapshot: ReservationPaneSnapshot | null, path: string): Pe
 }
 type Buffer = {
   sourceKey: string;
+  owner: symbol;
   snapshot: ReservationPaneSnapshot | null;
   sourceReviewBase: ReservationPaneSnapshot | null;
   pending: Map<string, Pending>;
@@ -48,8 +49,8 @@ type Buffer = {
 };
 const buffers = new Map<string, Buffer>();
 const guestCreatesInFlight = new Set<string>();
-const sourceKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.propertySelectionEpoch ?? 0, source.messageId, source.sourceHash]);
-const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.propertySelectionEpoch ?? 0, source.threadId, source.messageId]);
+const sourceKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.propertySelectionEpoch ?? 0, source.selectionEpoch, source.messageId, source.sourceHash]);
+const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId]);
 const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
   source.propertyId === 'HRCEN'
     ? `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`
@@ -177,17 +178,23 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   const canSaveAddons = capabilities?.addons?.status === 'lab' || capabilities?.addons?.status === 'staff-enabled';
   const canCreateGuest = capabilities?.guest_profile_create?.status === 'lab' || capabilities?.guest_profile_create?.status === 'staff-enabled';
   const safeSnapshot = scoped && snapshotMatchesSource(snapshot, source) ? snapshot : null;
-  if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
+  const owner = useRef(Symbol('reservation-workbench')).current;
+  if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, owner, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
     error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
   const entry = buffers.get(draftKey)!;
-  if (entry.sourceKey !== key) {
+  if (entry.sourceKey !== key || entry.owner !== owner) {
     entry.sourceKey = key;
+    entry.owner = owner;
     entry.snapshot = safeSnapshot;
     entry.sourceReviewBase = null;
   }
   if (safeSnapshot && (!entry.snapshot || safeSnapshot.session.seq >= entry.snapshot.session.seq)) {
     retainReviewedSourceEdits(entry, safeSnapshot, source);
     entry.snapshot = safeSnapshot;
+    if ([...entry.pending.values()].some(pending => !pendingMatches(safeSnapshot, pending))) {
+      entry.conflict = true;
+      entry.error ??= 'Your pending edits are retained. Review the current draft before applying them.';
+    }
   }
   const active = useRef({ key, epoch: source.selectionEpoch });
   active.current = { key, epoch: source.selectionEpoch };
@@ -204,20 +211,20 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
-    if (buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(next, bound)) return;
+    if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(next, bound)) return;
     retainReviewedSourceEdits(buffer, next, bound);
     buffer.snapshot = next;
     notify(buffer);
     if (mounted.current && active.current.key === sourceKey(bound) && active.current.epoch === bound.selectionEpoch) onSnapshot(next);
-  }, [onSnapshot]);
+  }, [onSnapshot, owner]);
   const flush = async (bound: ReservationSourceContext, buffer: Buffer, captured?: Pending[]) => {
     if (buffer.conflict) throw new Error('This draft changed elsewhere. Apply your pending edits or discard them before continuing.');
+    let remaining = captured ?? Array.from(buffer.pending.values());
     try {
-      let remaining = captured ?? Array.from(buffer.pending.values());
       while (remaining.length) {
         for (const pending of remaining) {
           if (buffer.pending.get(pending.path)?.token !== pending.token) continue;
-          if (buffer.sourceKey !== sourceKey(bound)) throw new Error('The email changed. Review its updated evidence before applying your edits.');
+          if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound)) throw new Error('The email changed. Review its updated evidence before applying your edits.');
           if (!buffer.snapshot) throw new Error('The email draft is still opening.');
           if (buffer.snapshot.session.sourceChanged && /^\/proposal\/content\/services\/[^/]+\/targets$/.test(pending.path))
             throw new Error('Review the updated email and attachments before linking this Add-On.');
@@ -227,6 +234,14 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           if (!requestId) throw new Error('Add an action before editing its fields.');
           const before = buffer.snapshot;
           const next = await client.edit({ source: bound, snapshot: before, requestId, fieldPath: pending.path, state: pending.state, value: pending.value });
+          if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound)) {
+            if (buffer.pending.get(pending.path)?.token === pending.token) {
+              buffer.conflict = true;
+              buffer.error ??= 'Your pending edits are retained. Review the current draft before applying them.';
+              notify(buffer);
+            }
+            return;
+          }
           // Acknowledging our own write may change an idless change row. Advance
           // retained input bindings only when the returned cursor and row values
           // are exactly the expected result; external edits remain fenced.
@@ -247,12 +262,17 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         remaining = captured || !mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch
           ? [] : Array.from(buffer.pending.values());
       }
-      buffer.error = null;
+      if (buffer.owner === owner && buffer.sourceKey === sourceKey(bound)) buffer.error = null;
     } catch (failure) {
-      if (failure instanceof ReservationWorkflowStaleRevisionError) apply(failure.snapshot, bound, buffer);
-      buffer.conflict = true;
-      buffer.error = failure instanceof Error ? failure.message : 'Your pending edits could not be saved.';
-      notify(buffer);
+      const currentBinding = buffer.owner === owner && buffer.sourceKey === sourceKey(bound);
+      if (currentBinding || remaining.some(pending => buffer.pending.get(pending.path)?.token === pending.token)) {
+        if (failure instanceof ReservationWorkflowStaleRevisionError) apply(failure.snapshot, bound, buffer);
+        buffer.conflict = true;
+        const message = failure instanceof Error ? failure.message : 'Your pending edits could not be saved.';
+        if (currentBinding) buffer.error = message;
+        else buffer.error ??= message;
+        notify(buffer);
+      }
       throw failure;
     }
   };
@@ -274,20 +294,21 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
     const bound = source;
     const buffer = entry;
     const execute = async () => {
-      if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
+      if (buffer.owner !== owner || !mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
       setBusy(true); setError(null);
       if (write) beginMutation();
       try {
         if (!skipFlush) await flush(bound, buffer);
-        if (buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(buffer.snapshot, bound)) throw new Error('The email draft is still opening.');
+        if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(buffer.snapshot, bound)) throw new Error('The email draft is still opening.');
         if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
         const next = await action({ source: bound, snapshot: buffer.snapshot });
         if (next) { apply(next, bound, buffer); if (next.serviceNotice) throw new Error(next.serviceNotice); }
       } catch (failure) {
-        if (failure instanceof ReservationWorkflowStaleRevisionError) {
+        const currentBinding = buffer.owner === owner && buffer.sourceKey === sourceKey(bound);
+        if (currentBinding && failure instanceof ReservationWorkflowStaleRevisionError) {
           buffer.conflict = true; buffer.error = failure.message; apply(failure.snapshot, bound, buffer);
         }
-        if (mounted.current && active.current.key === key) setError(failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.');
+        if (currentBinding && mounted.current && active.current.key === key) setError(failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.');
         throw failure;
       } finally {
         if (write) endMutation();
@@ -588,6 +609,8 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       return run(async context => {
         const matching = Array.from(entry.pending.values()).filter(edit => pendingMatches(context.snapshot, edit));
         await flush(context.source, entry, matching);
+        if (entry.owner !== owner || entry.sourceKey !== sourceKey(context.source) || !mounted.current ||
+            active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return;
         if (entry.pending.size) {
           entry.conflict = true;
           entry.error = 'Some pending edits no longer match a room or action. Copy the values below before discarding them.';

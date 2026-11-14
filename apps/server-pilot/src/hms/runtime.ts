@@ -1701,13 +1701,15 @@ function createHmsRuntimeInternal(
         const legacyLease = auth.releaseId === '00000000-0000-4000-8000-0000000000a1';
         if (!legacyLease) {
           if (proof.schemaVersion !== 2 || proof.toolId !== auth.toolId ||
-              proof.discoveryOperationId !== auth.discoveryOperationId ||
               proof.credentialVersionHmacSha256 !== auth.credentialVersionHmacSha256 ||
               proof.runtimeFingerprintSha256 !== auth.runtimeFingerprintSha256 ||
               proof.privateDigestKeyVersion !== auth.privateDigestKeyVersion ||
               createHash('sha256').update(await readFile(auth.roleProofPath)).digest('hex') !== auth.roleProofSha256) {
             throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session proof and release evidence mismatch');
           }
+          const { validateRoleProofV2ForSession } = await import('./release-kernel.js');
+          try { validateRoleProofV2ForSession(proof, auth, new Date()); }
+          catch { throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session proof branch or manifest mismatch'); }
           const actual = options.evidenceBindings && revalidateEvidenceBindings({
             secretVersion: options.evidenceBindings.secretVersion, evidence: options.evidenceBindings.evidence,
             runtimeFingerprint: options.sourceRevision && options.playwrightRevision && options.chromiumRevision ? {
