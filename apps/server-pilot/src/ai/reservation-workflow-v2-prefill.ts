@@ -32,7 +32,7 @@ import { loadAgencyCommission, loadNativeBookingCodes } from './booking-code-rul
 import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
 import { paneStayLookupEnabled, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
-import { isStaySearchComplete } from './stay-search-completeness.js';
+import { coversStaySearchHorizon, isStaySearchComplete } from './stay-search-completeness.js';
 import { preloadNativeCatalogLookup, type PreloadedNativeCatalog } from './native-catalog-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
@@ -734,8 +734,8 @@ function exactSearchTerm(value: unknown): string | null {
 }
 
 function completeNativeRead(outcome: string): ReservationWorkflowV2ReadResult['status'] {
-  return ['found', 'not_found', 'resolved', 'ambiguous', 'no_match', 'read', 'ok'].includes(outcome) ? 'complete' :
-    ['ambiguous_capped', 'partial', 'not_found_in_window'].includes(outcome) ? 'partial' : 'failed';
+  return ['found', 'not_found', 'resolved', 'no_match', 'read', 'ok'].includes(outcome) ? 'complete' :
+    ['ambiguous', 'ambiguous_capped', 'partial', 'not_found_in_window'].includes(outcome) ? 'partial' : 'failed';
 }
 
 function isoDay(value: unknown): value is string {
@@ -832,7 +832,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const results = await searchGuestCloudBatch(items.map((item) => item.query), target, input.signal, input.transportId);
       for (let index = 0; index < items.length; index += 1) {
         const found = results[index]!;
-        const incomplete = found.completeness ? !isStaySearchComplete(found.completeness) : found.outcome === 'ok';
+        const incomplete = found.completeness ? !isStaySearchComplete(found.completeness) || !coversStaySearchHorizon(found.completeness) : found.outcome === 'ok';
         const status = incomplete ? 'partial' : completeNativeRead(found.outcome);
         const result: ReservationWorkflowV2ReadResult = { status,
           result: { propertyCode: target.propertyCode, outcome: found.outcome, rows: found.rows,
@@ -840,13 +840,14 @@ export function createReservationWorkflowV2CandidateReader(input: {
             ...(found.completeness ? { completeness: found.completeness, searchedDateRange: found.completeness.searchedDateRange,
               searchedRanges: found.completeness.searchedRanges, requestedDateHorizon: found.completeness.requestedDateHorizon } : {}),
             ...(found.error ? { reason: found.error } : {}) },
-          coverage: { complete: status === 'complete', notes: incomplete || found.outcome === 'ambiguous_capped'
-            ? ['Guest-stay search did not cover the complete grid and requested date horizon; absence is not established.'] : [] } };
+          coverage: { complete: status === 'complete', notes: status === 'complete' ? [] :
+            ['Guest-stay search did not verify the complete grid and requested date horizon; absence is not established.'] } };
         for (const item of items[index]!.items) output.set(item.id, result);
       }
     } catch {
       for (const read of reads.values()) for (const item of read.items) output.set(item.id,
-        { status: 'failed', result: { reason: 'guest_stay_session_failed' }, coverage: { complete: false } });
+        { status: 'failed', result: { reason: 'guest_stay_session_failed' },
+          coverage: { complete: false, notes: ['Guest-stay search failed.'] } });
     }
     return output;
   };
@@ -962,7 +963,8 @@ export function createReservationWorkflowV2CandidateReader(input: {
       }, { propertyCode: input.propertyCode, transportId: input.transportId, signal: input.signal });
     } catch {
       for (const item of guestReads) if (!output.has(item.id)) output.set(item.id,
-        { status: 'failed', result: { reason: 'guest_profile_session_failed' }, coverage: { complete: false } });
+        { status: 'failed', result: { reason: 'guest_profile_session_failed' },
+          coverage: { complete: false, notes: ['Guest-profile search failed.'] } });
     }
     return output;
   };
@@ -1042,7 +1044,8 @@ export function createReservationWorkflowV2CandidateReader(input: {
           ...(found.requestedDateHorizon !== undefined ? { requestedDateHorizon: found.requestedDateHorizon } : {}),
           ...(found.completeness !== undefined ? { completeness: found.completeness } : {}),
           ...(isRecord(found) && isRecord(found.reservationObservations) ? { reservationObservations: found.reservationObservations } : {}) },
-        coverage: { complete: status === 'complete', notes: [] } };
+        coverage: { complete: status === 'complete', notes: status === 'complete' ? [] :
+          ['Confirmation search was incomplete or could not be verified.'] } };
       }
       const dates = Array.isArray(candidate.criteria.dates) ? candidate.criteria.dates as Array<Record<string, unknown>> : [];
       const date = dates.find((row) => isoDay(row.arrival) && isoDay(row.departure));
@@ -1934,34 +1937,54 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
   const explicitlyLabeled = kind === 'room'
     ? /\broom\s*(?:type\s*)?code\b/i.test(raw)
     : /\brate\s*(?:plan\s*)?(?:code|plan)\b/i.test(raw);
-  if (explicitlyLabeled) {
-    const tokens = raw.toUpperCase().split(/[^A-Z0-9_-]+/).filter(Boolean);
-    return tokens.includes(code) ? code : null;
+  if (!explicitlyLabeled) {
+    const catalog = options.nativeCatalog;
+    if (!catalog || catalog.propertyCode !== options.propertyCode) return null;
+    const envelope = kind === 'room' ? catalog.roomsEnvelope() : catalog.ratesEnvelope();
+    if (envelope.status !== 'available' || envelope.coverage.scope !== 'whole_catalog' || !envelope.coverage.complete ||
+        catalog.lookupVerifiedCode(kind, code).status !== 'unique') return null;
   }
-  const catalog = options.nativeCatalog;
-  if (!catalog || catalog.propertyCode !== options.propertyCode) return null;
-  const envelope = kind === 'room' ? catalog.roomsEnvelope() : catalog.ratesEnvelope();
-  if (envelope.status !== 'available' || envelope.coverage.scope !== 'whole_catalog' || !envelope.coverage.complete ||
-      catalog.lookupVerifiedCode(kind, code).status !== 'unique') return null;
   const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const token = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'g');
   const context = options.rawContext ?? raw;
   if (!context.includes(raw) || !new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`).test(raw)) return null;
-  const match = token.exec(context);
-  if (!match) return null;
-  const start = Math.max(context.lastIndexOf('\n', match.index), context.lastIndexOf(';', match.index),
-    context.lastIndexOf('.', match.index), context.lastIndexOf('!', match.index), context.lastIndexOf('?', match.index)) + 1;
-  const before = context.slice(start, match.index);
-  const clause = context.slice(start).split(/[\n;.!?]/u, 1)[0] ?? '';
-  if (/\b(?:no|not|without|never|avoid|except|exclude|instead\s+of|rather\s+than)\b/i.test(before)) return null;
-  if (/\b(?:away\s+from|near|beside|next\s+to|at|inside|outside)\s+(?:the\s+)?$/i.test(before)) return null;
-  const labels = [...before.matchAll(/\b(room\s*(?:type|code)?|rate\s*(?:plan|code)?)\b/gi)];
-  const lastLabel = labels.at(-1)?.[1]?.toLowerCase();
-  if (lastLabel && (kind === 'room' ? lastLabel.startsWith('rate') : lastLabel.startsWith('room'))) return null;
-  if (!lastLabel && (kind === 'room' ? /\brate\s*(?:plan|code)?\b/i.test(clause)
-    : /\broom\s*(?:type|code)?\b/i.test(clause))) return null;
-  if (!lastLabel && before.trim() && !/\b(?:book|reserve|request|prefer|want|choose|select|use|quote|need|for)\s+(?:(?:the|a|an)\s+)?$/i.test(before)) return null;
   if (/^(?:A|AN|AND|AS|AT|BE|BOOK|FOR|FROM|IN|IS|IT|NO|NOT|OF|ON|OR|PLEASE|THE|TO|WE|WITH)$/u.test(code)) return null;
+  const negative = /\b(?:no|not|never|without|avoid|avoided|except|exclude|excluded|unavailable|unwanted|sold\s+out|fully\s+booked|closed|isn['’]t|aren['’]t|don['’]t|doesn['’]t|cannot|can['’]t|instead\s+of|rather\s+than)\b/i;
+  const positive = /\b(?:book|reserve|request|prefer|want|choose|select|use|quote|need)\b/i;
+  const boundaries = [...context.matchAll(/[,\n;.!?]|\b(?:and|but|or|however)\b/gi)];
+  const matches = [...context.matchAll(token)];
+  if (!matches.length) return null;
+  for (const match of matches) {
+    const previous = boundaries.findLast(boundary => boundary.index < match.index);
+    const next = boundaries.find(boundary => boundary.index > match.index);
+    const start = previous ? previous.index + previous[0].length : 0;
+    const before = context.slice(start, match.index);
+    const after = context.slice(match.index + code.length, next?.index).split(/\b(?:instead\s+of|rather\s+than)\b/i, 1)[0] ?? '';
+    const clause = before + after;
+    if (negative.test(before) || negative.test(after)) return null;
+    if (next && /^(?:and|or|,)$/i.test(next[0])) {
+      const following = boundaries.find(boundary => boundary.index > next.index);
+      const continuation = context.slice(next.index + next[0].length, following?.index);
+      if (/\b(?:are|were)\s+(?:(?:currently|both|no\s+longer)\s+)*(?:not\b|unavailable\b|unwanted\b|sold\s+out\b|fully\s+booked\b|closed\b)/i.test(continuation)) return null;
+    }
+    if (previous && !positive.test(before)) {
+      let boundary = previous;
+      while (/^(?:and|or)$/i.test(boundary[0])) {
+        const priorBoundary: RegExpExecArray | undefined = boundaries.findLast(item => item.index < boundary.index);
+        const prior = context.slice(priorBoundary ? priorBoundary.index + priorBoundary[0].length : 0, boundary.index);
+        if (negative.test(prior)) return null;
+        if (positive.test(prior) || !priorBoundary) break;
+        boundary = priorBoundary;
+      }
+    }
+    if (/\b(?:away\s+from|near|beside|next\s+to|at|inside|outside)\s+(?:the\s+)?$/i.test(before)) return null;
+    const labels = [...before.matchAll(/\b(room\s*(?:type|code)?|rate\s*(?:plan|code)?)\b/gi)];
+    const lastLabel = labels.at(-1)?.[1]?.toLowerCase();
+    if (lastLabel && (kind === 'room' ? lastLabel.startsWith('rate') : lastLabel.startsWith('room'))) return null;
+    if (!lastLabel && (kind === 'room' ? /\brate\s*(?:plan|code)?\b/i.test(clause)
+      : /\broom\s*(?:type|code)?\b/i.test(clause))) return null;
+    if (!lastLabel && before.trim() && !/\b(?:book|reserve|request|prefer|want|choose|select|use|quote|need|for)\s+(?:(?:the|a|an)\s+)?$/i.test(before)) return null;
+  }
   return code;
 }
 

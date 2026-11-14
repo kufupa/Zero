@@ -93,6 +93,24 @@ test('property restrictions, missing native flags and invalid rate currency stay
   assert.equal(result.outcome, 'partial');
 });
 
+test('retains departure restrictions and marks a missing departure column unverified', () => {
+  const fixture = selectionFixture();
+  fixture.data.children[0].columns = Object.fromEntries([1, 2, 3, 4].map(i => [`col${i}`, { restricted: false }]));
+  fixture.rate.columns.col4.combClosedToDeparture = true;
+  const normalize = () => normalizeQuoteRestAvailability({ appliedCriteria: body, availabilitydata: fixture.data }, body);
+  let result = normalize();
+  assert.equal(result.observations[0].departure.date, '2026-09-27');
+  assert.equal(result.observations[0].departure.verified, true);
+  assert.equal(result.observations[0].departure.restrictions.isclosetedeparture, true);
+  fixture.data.datesList.pop();
+  result = normalize();
+  assert.equal(result.outcome, 'partial');
+  assert.equal(result.observations[0].departure.verified, false);
+  assert.ok(result.observations[0].departure.restrictions.unknownRestrictionFlags.length);
+  fixture.data.children[0].children = [];
+  assert.equal(normalize().outcome, 'partial');
+});
+
 test('REST response must echo all criteria and the selected property and dates', () => {
   const fixture = selectionFixture();
   const response = { appliedCriteria: { ...body }, availabilitydata: fixture.data };

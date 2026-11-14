@@ -123,7 +123,7 @@ export function normalizeQuoteRestAvailability(response, body) {
   const seen = new Set();
   const roomFilter = body.roomTypeCodes ? new Set(body.roomTypeCodes.split(',')) : null;
   const rateFilter = body.ratePlanCodes ? new Set(body.ratePlanCodes.split(',')) : null;
-  let partial = false;
+  let partial = data.datesList.length === nights;
   for (const room of properties[0].children) {
     if (!object(room) || !code(room.code) || (roomFilter && !roomFilter.has(room.code)) ||
         !Array.isArray(room.children) || !object(room.columns)) return null;
@@ -151,8 +151,23 @@ export function normalizeQuoteRestAvailability(response, body) {
         if (count === null || value === null || !serverCurrency || restrictions.unknownRestrictionFlags.length) partial = true;
         return { date, availableCount: count, rate: value, currency: serverCurrency, restrictions };
       });
+      const departureColumn = `col${nights + 1}`;
+      const hasDeparture = data.datesList.length === nights + 1;
+      const propertyColumn = hasDeparture ? properties[0].columns?.[departureColumn] : null;
+      const roomColumn = hasDeparture ? room.columns[departureColumn] : null;
+      const rateColumn = hasDeparture ? rate.columns[departureColumn] : null;
+      const restrictions = restrictionEvidence(properties[0], propertyColumn, room, roomColumn, rate, rateColumn);
+      for (const [name, value] of [['property.restricted', propertyColumn?.restricted], ['rate.restricted', rate.restricted],
+        ['rateCell.restricted', rateColumn?.restricted], ['rateCell.combClosed', rateColumn?.combClosed],
+        ['rateCell.israteavailable', rateColumn?.israteavailable]]) {
+        if (typeof value !== 'boolean') restrictions.unknownRestrictionFlags.push(name);
+      }
+      restrictions.unknownRestrictionFlags.sort();
+      const departure = { date: new Date(start + nights * 86400000).toISOString().slice(0, 10),
+        verified: hasDeparture && restrictions.unknownRestrictionFlags.length === 0, restrictions };
+      if (!departure.verified) partial = true;
       observations.push({ room: { code: room.code, label: label(room.desc) },
-        rate: { code: rate.code, label: label(rate.desc), promotionCode }, nightly });
+        rate: { code: rate.code, label: label(rate.desc), promotionCode }, nightly, departure });
       if (observations.length > 1000) return null;
     }
   }

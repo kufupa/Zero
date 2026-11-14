@@ -101,6 +101,34 @@ describe('opt-in REST availability', () => {
     expect(result.groups[0]?.options[0]?.nightly[1]?.stockStatus).toBe('unknown');
   });
 
+  it.each(['closed', 'missing', 'unknown', 'arrival_only', 'open'] as const)(
+    'projects departure eligibility and preserves night evidence: %s', async scenario => {
+      fetchMock.mockImplementation((_url: string, options: RequestInit) => {
+        const fixture = selectionFixture();
+        fixture.data.children[0].columns = Object.fromEntries([1, 2, 3, 4].map(i => [`col${i}`, { restricted: false }]));
+        if (scenario === 'closed') fixture.rate.columns.col4.combClosedToDeparture = true;
+        if (scenario === 'missing') fixture.data.datesList.pop();
+        if (scenario === 'unknown') fixture.rate.columns.col4.someNewRestriction = true;
+        if (scenario === 'arrival_only') fixture.rate.columns.col4.combClosedToArrival = true;
+        if (scenario === 'missing') {
+          fixture.rate.columns.col2.combClosed = true;
+          fixture.data.children[0].children[0].columns.col3.value = 0;
+        }
+        return new Response(JSON.stringify({ appliedCriteria: JSON.parse(String(options.body)), availabilitydata: fixture.data }),
+          { status: 200, headers: { 'content-type': 'application/json' } });
+      });
+      const result = projectCloudAvailability(request, await runCloudAvailability({ request, target }));
+      if (result.outcome !== 'read') throw new Error('expected REST read');
+      const option = result.groups[0]?.options[0];
+      expect(option?.departure).toMatchObject({ date: '2026-09-27', verified: !['missing', 'unknown'].includes(scenario) });
+      expect(option?.nightly[0]?.stockStatus).toBe(scenario === 'closed' ? 'restricted' :
+        ['missing', 'unknown'].includes(scenario) ? 'unknown' : 'available');
+      if (scenario === 'missing') {
+        expect(option?.nightly[1]?.stockStatus).toBe('restricted');
+        expect(option?.nightly[2]?.stockStatus).toBe('sold');
+      }
+    });
+
   it('uses the existing browser path for full details or an unverified party', async () => {
     await runCloudAvailability({ request, target, details: 'full' });
     expect(session.open.mock.calls[0]?.[1]).toMatchObject({ startScreen: 'OSRESS' });

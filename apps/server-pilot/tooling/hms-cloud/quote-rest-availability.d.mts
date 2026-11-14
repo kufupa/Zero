@@ -6,12 +6,14 @@ export type RestAvailabilityEvidence = {
   evidenceKind: 'rest_availability_read'; domCalendarVerified: false; screenshotsVerified: false;
   displayedRounding: 'unverified_no_dom'; payableTotal: 'unverified';
 };
+export type RestAvailabilityRestrictions = { isclosed: boolean | null; isclosetoarrival: boolean | null;
+  isclosetedeparture: boolean | null; closedOrRestricted: boolean; unknownRestrictionFlags: string[] };
 export type RestAvailabilityObservation = {
   room: { code: string; label: string | null };
   rate: { code: string; label: string | null; promotionCode: string | null };
   nightly: Array<{ date: string; availableCount: number | null; rate: string | null; currency: string | null;
-    restrictions: { isclosed: boolean | null; isclosetoarrival: boolean | null; isclosetedeparture: boolean | null;
-      closedOrRestricted: boolean; unknownRestrictionFlags: string[] } }>;
+    restrictions: RestAvailabilityRestrictions }>;
+  departure: { date: string; verified: boolean; restrictions: RestAvailabilityRestrictions };
 };
 export type RestAvailabilityGroup = RestAvailabilityEvidence & {
   outcome: 'rest_observed' | 'partial'; observedAt: string; criteriaEchoVerified: true;

@@ -710,12 +710,14 @@ export async function guestDatesDuplicateCheckViaCli(
   });
   let run: PaneStayLookupSpawnResult | null = null;
   try {
-    run = await spawn({ mode: 'search-guest', ...input }, target);
-    const completeness = Object.hasOwn(run, 'completeness') ? parseStaySearchCompleteness(run.completeness) : null;
-    if (['truncated', 'gridComplete', 'requestedDatesCovered', 'allChunksSearched'].some((key) => Object.hasOwn(run, key)) &&
-        (run.truncated !== false || run.gridComplete !== true || run.requestedDatesCovered !== true || run.allChunksSearched !== true)) return 'duplicate';
-    if ((!paneStayLookupLoaders.spawn || Object.hasOwn(run, 'completeness')) && (!completeness || !isStaySearchComplete(completeness))) return 'duplicate';
-    return run.outcome === 'ok' ? guestDatesVerdict(run.rows, input) : 'duplicate';
+    const spawned = await spawn({ mode: 'search-guest', ...input }, target);
+    run = spawned;
+    if (!spawned) return 'duplicate';
+    const completeness = Object.hasOwn(spawned, 'completeness') ? parseStaySearchCompleteness(spawned.completeness) : null;
+    if (['truncated', 'gridComplete', 'requestedDatesCovered', 'allChunksSearched'].some((key) => Object.hasOwn(spawned, key)) &&
+        (spawned.truncated !== false || spawned.gridComplete !== true || spawned.requestedDatesCovered !== true || spawned.allChunksSearched !== true)) return 'duplicate';
+    if ((!paneStayLookupLoaders.spawn || Object.hasOwn(spawned, 'completeness')) && (!completeness || !isStaySearchComplete(completeness))) return 'duplicate';
+    return spawned.outcome === 'ok' ? guestDatesVerdict(spawned.rows, input) : 'duplicate';
   } catch {
     return 'duplicate';
   } finally {

@@ -82,6 +82,7 @@ export type HmsCloudAvailabilityResult = ({
       availability: 'unknown';
       category: string;
       reasons: string[];
+      departure?: { date: string; verified: boolean; restrictions: Record<string, unknown> };
       nightly: Array<{
         date: string;
         availableCount: number | null;
@@ -192,12 +193,19 @@ function restGroupView(group: RestAvailabilityGroup, quantity: number): CloudAva
     room: observation.room,
     rate: { ...observation.rate, promotioncode: observation.rate.promotionCode },
     category: 'unknown', reasons: ['REST_AVAILABILITY_WITHOUT_DOM'],
+    departure: observation.departure,
     nights: observation.nightly.map(night => {
       const closed = night.restrictions.closedOrRestricted || night.restrictions.isclosed ||
         night.restrictions.isclosetoarrival || night.restrictions.isclosetedeparture;
+      const departure = observation.departure;
+      const departureUnknown = !departure?.verified || !departure.restrictions ||
+        departure.restrictions.unknownRestrictionFlags.length > 0;
+      const departureClosed = !departureUnknown && (departure.restrictions.closedOrRestricted ||
+        departure.restrictions.isclosed || departure.restrictions.isclosetedeparture);
       return { date: night.date, roomsAvailable: night.availableCount, restrictions: night.restrictions,
-        reasons: [...(closed ? ['closed_or_restricted'] : []),
-          ...(night.restrictions.unknownRestrictionFlags.length ? [closed ? 'other_conditions_unverified' : 'unknown'] : [])],
+        reasons: [...(closed || departureClosed ? ['closed_or_restricted'] : []),
+          ...(night.restrictions.unknownRestrictionFlags.length ? [closed ? 'other_conditions_unverified' : 'unknown'] : []),
+          ...(departureUnknown && !closed && night.availableCount !== 0 ? ['unknown'] : [])],
         price: { responseValue: night.rate, currency: night.currency, displayedTextStatus: 'unverified_no_dom' } };
     }),
   }));
@@ -228,6 +236,8 @@ function mapOption(value: unknown, requestedCount: number, restEvidence: boolean
   const rate = record(source.rate);
   const category = text(source.category) ?? 'unknown';
   const reasons = Array.isArray(source.reasons) ? source.reasons.map(text).filter((item): item is string => item !== null).slice(0, 30) : [];
+  const departure = record(source.departure);
+  const departureRestrictions = record(departure?.restrictions);
   const nightly = Array.isArray(source.nights)
     ? source.nights.map((night) => mappedNight(night, requestedCount, restEvidence)).filter((night) => night !== null)
     : [];
@@ -242,6 +252,8 @@ function mapOption(value: unknown, requestedCount: number, restEvidence: boolean
     availability: 'unknown' as const,
     category,
     reasons,
+    ...(restEvidence && realDay(departure?.date) && typeof departure?.verified === 'boolean' && departureRestrictions
+      ? { departure: { date: departure.date, verified: departure.verified, restrictions: departureRestrictions } } : {}),
     nightly,
   };
 }
