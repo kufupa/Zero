@@ -1,4 +1,11 @@
 import { getPropertyRegistration } from './property-registry.mjs';
+import { tsImport } from 'tsx/esm/api';
+
+const { rejectDuplicateJsonBodyKeys } = await tsImport('../../src/hms/request-policy.ts', import.meta.url);
+
+export function rejectDuplicateAvailabilityJsonKeys(raw) {
+  return rejectDuplicateJsonBodyKeys(raw);
+}
 // Reviewed property-scoped Hotel Availability requests. Never admit Guest Stay or saves.
 export function availabilityScreenRules(origin, propertyCode) {
   if (!getPropertyRegistration(propertyCode)?.active) throw new Error('QUOTE_PROPERTY_REQUIRED');
@@ -94,6 +101,14 @@ const codes = (value) => typeof value === 'string' && /^(?:[A-Z0-9_-]+(?:,[A-Z0-
 const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
   new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
 const roomCode = (value) => typeof value === 'string' && /^[A-Z0-9_-]{1,128}$/.test(value);
+const writeAction = /^(?:save|delete|update|cancel|duplicate|checkin|checkout|insert|commit|create|submit|post|amend|book|confirm|upload|send)/i;
+function hasAvailabilityWriteIntent(value) {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, entry]) =>
+    (/^(?:pageaction|action|autosave)$/i.test(key) && writeAction.test(String(entry).trim())) ||
+    (/^(?:newprofileclick|confirmnewguestprofile|confirminactiveguestprofile|createinactiveprofileflag|linkprofileflag|savecctoprofile|savesettlementcctoprofile)$/i.test(key) &&
+      !['', '0', 'false', '-'].includes(String(entry).trim().toLowerCase())) || hasAvailabilityWriteIntent(entry));
+}
 
 // Derive a snapshot, not a reference to the caller's mutable quote request.
 export function availabilityDetailsScope(request, propertyCode) {
@@ -207,7 +222,7 @@ export function isReviewedAvailabilityInquiry(request, { origin, propertyCode, r
     if (contentType !== 'application/json' || typeof raw !== 'string' || Buffer.byteLength(raw) > 8192 ||
         typeof rejectDuplicateJsonBodyKeys !== 'function') return false;
     const body = JSON.parse(raw);
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    if (!body || typeof body !== 'object' || Array.isArray(body) || hasAvailabilityWriteIntent(body)) return false;
     rejectDuplicateJsonBodyKeys(raw);
     if (requiredKeys.some((key) => !Object.hasOwn(body, key))) return false;
     if (body.propertyCodes !== propertyCode || body.launchedFrom !== 'hotelavailability' || body.lengthOfStay !== 'DY' ||

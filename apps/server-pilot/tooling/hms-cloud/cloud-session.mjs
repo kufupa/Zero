@@ -11,6 +11,7 @@ import { consumePageRequestAuthorization } from './page-request-fence.mjs';
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { credentialVersionHmacSha256 } from './credential-version.mjs';
+import { isReviewedAvailabilityInquiry, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
 const readPosts = new Set([
   '/web/base/BSSTRT', '/web/base/BSSTRT.HDR', '/web/base/OSRESS', '/web/base/OSRESS.search',
@@ -379,7 +380,7 @@ function safeHeaderRead(url, body, propertyCode) {
   return blank || Boolean(fields.get('confirmationnumber') && fields.get('propertycode'));
 }
 
-async function installCloudReadGuard(context, property, state) {
+export async function installCloudReadGuard(context, property, state) {
   if (typeof context.routeWebSocket !== 'function') throw new Error('HMS_SOCKET_GUARD_UNAVAILABLE');
   await context.routeWebSocket('**/*', (socket) => socket.close());
   await context.route('**/*', async (route) => {
@@ -396,6 +397,9 @@ async function installCloudReadGuard(context, property, state) {
       catch { return route.abort(); }
       return route.fallback();
     }
+    if (path === '/api/internalBooking/rateshop/inquiryForGrid' &&
+        !isReviewedAvailabilityInquiry(request, { origin: property.origin, propertyCode: property.propertyCode,
+          rejectDuplicateJsonBodyKeys: rejectDuplicateAvailabilityJsonKeys })) return route.abort();
     if (url.username || url.password || forbiddenPath.test(path) || hasWriteIntent(request.url()) || hasWriteIntent(body) ||
         !['GET', 'HEAD', 'OPTIONS', 'POST'].includes(method)) return route.abort();
     if (request.isNavigationRequest() && url.origin !== property.origin) return route.abort();
@@ -427,7 +431,7 @@ async function installCloudReadGuard(context, property, state) {
         }
         return route.abort();
       }
-      if (path === '/api/internalBooking/rateshop/inquiryForGrid' || path === '/api/internalBooking/hotelAvail/inquiryForGrid') {
+      if (path === '/api/internalBooking/hotelAvail/inquiryForGrid') {
         let inquiry;
         try { inquiry = JSON.parse(body); } catch { return route.abort(); }
         if (typeof inquiry?.propertyCodes !== 'string' || inquiry.propertyCodes.trim().toUpperCase() !== property.propertyCode) return route.abort();
@@ -682,13 +686,15 @@ export function withCloudWriterSession(operation, options = {}) {
 }
 
 async function withCloudSession(operation, { propertyCode, transportId, signal, headless = true,
-  prepareContext, readRequestPolicy, startScreen = 'BSSTRT', loadSecret = loadCloudSecret, credentialLease, cloudTargetKey, cloudTargetKeys } = {}, writer) {
+  prepareContext, readRequestPolicy, startScreen = 'BSSTRT', loadSecret = loadCloudSecret, credentialLease, cloudTargetKey, cloudTargetKeys,
+  requireBoundCredentialVersion = false } = {}, writer) {
   const property = registeredProperty(propertyCode);
   if (typeof operation !== 'function' || typeof headless !== 'boolean' ||
       (transportId !== undefined && (typeof transportId !== 'string' || !property.transportIds.includes(transportId))) ||
       !['BSSTRT', 'OSRESV', 'OSRESS'].includes(startScreen) || typeof loadSecret !== 'function' ||
       (prepareContext !== undefined && typeof prepareContext !== 'function') ||
       (readRequestPolicy !== undefined && typeof readRequestPolicy !== 'function') ||
+      typeof requireBoundCredentialVersion !== 'boolean' ||
       (cloudTargetKeys !== undefined && (!Array.isArray(cloudTargetKeys) || !cloudTargetKeys.length ||
         cloudTargetKeys.length > 16 || cloudTargetKeys.some(key => typeof key !== 'string')))) throw new Error('HMS_SESSION_OPTIONS_INVALID');
   const aliases = [...new Set([...(cloudTargetKeys ?? []), ...(cloudTargetKey === undefined ? [] : [cloudTargetKey])])];
@@ -766,7 +772,8 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       throw new Error('HMS_CREDENTIALS_UNAVAILABLE');
     }
     secret = validateSecret(property, loaded, transportId);
-    await verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret: loaded, signal: sessionSignal, requireBoundVersion: writer });
+    const credentialVersionHmacSha256 = await verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret: loaded,
+      signal: sessionSignal, requireBoundVersion: writer || requireBoundCredentialVersion });
     sessionSignal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
     const launch = { headless, executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined };
@@ -813,7 +820,7 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
     sessionSignal?.throwIfAborted();
     result = await runUntilAborted(() => {
       operationTask = Promise.resolve().then(() => operation(page, Object.freeze({ ...identity,
-        landingPropertyCode: property.landingPropertyCode })));
+        landingPropertyCode: property.landingPropertyCode }), Object.freeze({ credentialVersionHmacSha256, signal: sessionSignal })));
       return operationTask;
     }, sessionSignal);
   } catch (error) {

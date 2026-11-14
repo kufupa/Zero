@@ -82,3 +82,64 @@ test('availability guard rejects invalid or credential-bearing origins before in
     assert.equal(installed, false);
   }
 });
+
+test('Cloud browser guard admits only the reviewed selected-property inquiry', async () => {
+  const { installCloudReadGuard } = await import('./cloud-session.mjs');
+  const { getPropertyRegistration } = await import('./property-registry.mjs');
+  const property = getPropertyRegistration('HRDAVS');
+  let handler;
+  await installCloudReadGuard({ routeWebSocket: async () => {}, route: async (_pattern, fn) => { handler = fn; } }, property,
+    { writer: false, verified: true, authenticated: true, switching: null, ownedPage: null });
+  const body = {
+    propertyCodes: 'HRDAVS', startDate: '2027-01-10T00:00:00', numberOfDays: '2', lengthOfStay: 'DY',
+    adultCount: 2, childCount: 0, childAges: [], salesStrategy: null, roomTypeCodes: '', ratePlanCodes: '', currency: null,
+    convertFromPropertyCurrency: false, shopByDay: false, showCollapsedByProperty: false, showCollapsedByRoomType: false,
+    excludeOverbookingLimits: false, showRestrictedSellOptions: false, showExclusiveRates: false, launchedFrom: 'hotelavailability',
+    showCollapsedByBuilding: false, buildingCodes: [], showArrivalDepartureCount: false, showSubGroupView: false,
+    groupID: '', organizationID: '', travelAgencyID: '', bookingSessionID: 'private',
+  };
+  const target = `${property.origin}${cloudPath}?houseAvailabilityOnly=false`;
+  const dispatch = async (url, raw, contentType = 'application/json') => {
+    let action;
+    await handler({ request: () => ({ method: () => 'POST', url: () => url, postData: () => raw,
+      headers: () => ({ 'content-type': contentType }), resourceType: () => 'xhr', isNavigationRequest: () => false }),
+    abort: async () => { action = 'abort'; }, fallback: async () => { action = 'fallback'; } });
+    return action;
+  };
+  assert.equal(await dispatch(target, JSON.stringify(body)), 'fallback');
+  for (const [url, raw, type] of [
+    [target, JSON.stringify({ ...body, propertyCodes: 'HRDAV' })],
+    [target, JSON.stringify({ ...body, adultCount: 0 })],
+    [target, JSON.stringify(body).replace('"adultCount":2', '"adultCount":2,"adultCount":1')],
+    [target, JSON.stringify({ ...body, nested: { action: 'SAVE' } })],
+    [`${target}&extra=1`, JSON.stringify(body)],
+    [target.replace('false', 'true'), JSON.stringify(body)],
+    [target, JSON.stringify(body), 'text/plain'],
+  ]) assert.equal(await dispatch(url, raw, type), 'abort');
+});
+
+test('Cloud guard preserves a page-fenced writer inquiry and rejects the same unfenced request', async () => {
+  const { installCloudReadGuard } = await import('./cloud-session.mjs');
+  const { getPropertyRegistration } = await import('./property-registry.mjs');
+  const { installPageRequestFence } = await import('./page-request-fence.mjs');
+  const property = getPropertyRegistration('HRCEN');
+  let fenceHandler, cloudHandler;
+  const page = { route: async (_pattern, fn) => { fenceHandler = fn; } };
+  const fence = await installPageRequestFence(page, [cloudPath]);
+  await installCloudReadGuard({ routeWebSocket: async () => {}, route: async (_pattern, fn) => { cloudHandler = fn; } }, property,
+    { writer: true, verified: true, authenticated: true, switching: null, ownedPage: page });
+  const request = { method: () => 'POST', url: () => `${property.origin}${cloudPath}?houseAvailabilityOnly=true`,
+    postData: () => JSON.stringify({ propertyCodes: 'HRCEN', launchedFrom: 'gueststay' }),
+    resourceType: () => 'xhr', headers: () => ({ 'content-type': 'application/json' }),
+    isNavigationRequest: () => false, frame: () => ({ page: () => page }) };
+  let result;
+  const route = { request: () => request, abort: async () => { result = 'abort'; }, fallback: async () => { result = 'fallback'; } };
+  const scope = fence.open();
+  assert.equal(scope.allow(request), true);
+  await fenceHandler(route);
+  await cloudHandler(route);
+  assert.equal(result, 'fallback');
+  await cloudHandler(route);
+  assert.equal(result, 'abort');
+  scope.close();
+});

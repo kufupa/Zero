@@ -1,4 +1,5 @@
 import type { Request } from 'playwright';
+export declare function rejectDuplicateAvailabilityJsonKeys(raw: string): void;
 export type QuoteDetailsScope = Readonly<{ arrivalDate: string; departureDate: string; roomCodes: readonly string[] | null }>;
 export declare function availabilityDetailsScope(request: unknown, propertyCode: string): QuoteDetailsScope | null;
 export declare function availabilityScreenRules(origin: string, propertyCode: string): unknown[];

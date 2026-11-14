@@ -8,6 +8,8 @@ import type { AvailabilityProbeDeps } from './hms-availability.js';
 import { hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import { withCloudReadSession } from '../../tooling/hms-cloud/cloud-session.mjs';
+import { hmsQuoteRestFastPathEnabled } from '../env.js';
+import type { RestAvailabilityGroup } from '../../tooling/hms-cloud/quote-rest-availability.mjs';
 
 const PRIVATE_SNAPSHOT_PREFIX = 'nava-cloud-availability-';
 // Prior HRCEN reads returned 496 rows; cap only unusually large views and expose any remaining cursor.
@@ -37,6 +39,7 @@ export type CloudAvailabilityRunInput = {
   target: HmsReadTarget;
   signal?: AbortSignal;
   transportId?: string;
+  details?: 'summary' | 'full';
 };
 
 export type HmsCloudAvailabilityResult = ({
@@ -86,6 +89,7 @@ export type HmsCloudAvailabilityResult = ({
         stockStatus: 'available' | 'sold' | 'restricted' | 'unknown';
         price: { status: 'known' | 'unknown'; amount: string | null; currency: string | null };
         reasons: string[];
+        restrictionEvidence?: Record<string, unknown>;
       }>;
     }>;
   }>;
@@ -155,7 +159,7 @@ function stockStatus(
   return 'unknown';
 }
 
-function mappedNight(value: unknown, requestedCount: number) {
+function mappedNight(value: unknown, requestedCount: number, restEvidence: boolean) {
   const source = record(value);
   if (!source || !realDay(source.date)) return null;
   const availableCount = Number.isSafeInteger(source.roomsAvailable) && Number(source.roomsAvailable) >= 0
@@ -165,7 +169,8 @@ function mappedNight(value: unknown, requestedCount: number) {
   const priceSource = record(source.price);
   const observedAmount = amountString(priceSource?.responseValue);
   const observedCurrency = currencyCode(priceSource?.currency);
-  const priceCaptured = priceSource?.displayedTextStatus === 'captured' && observedAmount !== null && observedCurrency !== null;
+  const restObserved = restEvidence && priceSource?.displayedTextStatus === 'unverified_no_dom';
+  const priceCaptured = (priceSource?.displayedTextStatus === 'captured' || restObserved) && observedAmount !== null && observedCurrency !== null;
   return {
     date: source.date,
     availableCount,
@@ -175,12 +180,48 @@ function mappedNight(value: unknown, requestedCount: number) {
       status: priceCaptured ? 'known' as const : 'unknown' as const,
       amount: priceCaptured ? observedAmount : null,
       currency: priceCaptured ? observedCurrency : null,
+      ...(restObserved ? { source: 'rest_availability_read', displayedRounding: 'unverified_no_dom' } : {}),
     },
     reasons,
+    ...(restObserved && record(source.restrictions) ? { restrictionEvidence: record(source.restrictions)! } : {}),
   };
 }
 
-function mapOption(value: unknown, requestedCount: number) {
+function restGroupView(group: RestAvailabilityGroup, quantity: number): CloudAvailabilityGroupRead {
+  const options = group.observations.map(observation => ({
+    room: observation.room,
+    rate: { ...observation.rate, promotioncode: observation.rate.promotionCode },
+    category: 'unknown', reasons: ['REST_AVAILABILITY_WITHOUT_DOM'],
+    nights: observation.nightly.map(night => {
+      const closed = night.restrictions.closedOrRestricted || night.restrictions.isclosed ||
+        night.restrictions.isclosetoarrival || night.restrictions.isclosetedeparture;
+      return { date: night.date, roomsAvailable: night.availableCount, restrictions: night.restrictions,
+        reasons: [...(closed ? ['closed_or_restricted'] : []),
+          ...(night.restrictions.unknownRestrictionFlags.length ? [closed ? 'other_conditions_unverified' : 'unknown'] : [])],
+        price: { responseValue: night.rate, currency: night.currency, displayedTextStatus: 'unverified_no_dom' } };
+    }),
+  }));
+  return { outcome: 'ok', view: {
+    evidenceKind: group.evidenceKind, observedAt: group.observedAt, appliedCriteria: group.appliedCriteria,
+    domCalendarVerified: group.domCalendarVerified, screenshotsVerified: group.screenshotsVerified,
+    displayedRounding: group.displayedRounding, payableTotal: group.payableTotal,
+    roomQuantity: { requested: quantity, basis: 'one_room_type_per_night', combinedAvailability: 'unknown' },
+    options,
+    coverage: {
+      evidenceKind: group.evidenceKind, criteriaEchoVerified: group.criteriaEchoVerified,
+      domCalendarVerified: false, screenshotsVerified: false, displayedRounding: group.displayedRounding,
+      payableTotal: group.payableTotal, completeForRequestedScope: false,
+      checkedCriteriaMatch: { property: true, dates: true, occupancy: true, partyContext: true,
+        roomTypes: group.appliedCriteria.roomTypeCodes ? true : null,
+        ratePlans: group.appliedCriteria.ratePlanCodes ? true : null },
+      roomCatalog: { complete: false }, rateCatalog: { complete: false },
+      page: { returned: options.length, nextOffset: null },
+      nights: { matchesAppliedCriteria: true, nextOffset: null },
+    },
+  } };
+}
+
+function mapOption(value: unknown, requestedCount: number, restEvidence: boolean) {
   const source = record(value);
   if (!source) return null;
   const room = record(source.room);
@@ -188,7 +229,7 @@ function mapOption(value: unknown, requestedCount: number) {
   const category = text(source.category) ?? 'unknown';
   const reasons = Array.isArray(source.reasons) ? source.reasons.map(text).filter((item): item is string => item !== null).slice(0, 30) : [];
   const nightly = Array.isArray(source.nights)
-    ? source.nights.map((night) => mappedNight(night, requestedCount)).filter((night) => night !== null)
+    ? source.nights.map((night) => mappedNight(night, requestedCount, restEvidence)).filter((night) => night !== null)
     : [];
   return {
     room: { code: text(room?.code), label: text(room?.label ?? room?.name ?? room?.desc) },
@@ -288,13 +329,17 @@ export function projectCloudAvailability(
         roomQuantity.combinedAvailability !== 'unknown') return null;
     const coverage = coverageFor(view);
     const criteriaMatch = record(coverage.checkedCriteriaMatch);
+    const rest = coverage.evidenceKind === 'rest_availability_read' && coverage.criteriaEchoVerified === true &&
+      coverage.domCalendarVerified === false && coverage.screenshotsVerified === false &&
+      coverage.displayedRounding === 'unverified_no_dom' && coverage.payableTotal === 'unverified';
     const criteriaVerified = criteriaMatch?.property === true && criteriaMatch.dates === true &&
       criteriaMatch.occupancy === true && criteriaMatch.partyContext === true &&
-      criteriaMatch.roomTypes === true && criteriaMatch.ratePlans === true;
+      (criteriaMatch.roomTypes === true || (rest && criteriaMatch.roomTypes === null)) &&
+      (criteriaMatch.ratePlans === true || (rest && criteriaMatch.ratePlans === null));
     const groupOutcome = read.outcome === 'criteria_unavailable' || !criteriaVerified
       ? 'criteria_unavailable' as const
       : 'observed' as const;
-    const options = view.options.map((option) => mapOption(option, requested.quantity)).filter((option) => option !== null);
+    const options = view.options.map((option) => mapOption(option, requested.quantity, rest)).filter((option) => option !== null);
     return {
       id: `group-${index + 1}`,
       requestedRoomType: requested.roomType,
@@ -379,6 +424,30 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
   const context = input.request.rateContext;
   if (context && context.propertyCode !== input.target.propertyCode) {
     return input.request.rooms.map(() => ({ outcome: 'unsupported_context', issue: 'CLOUD_RATE_CONTEXT_UNSUPPORTED' }));
+  }
+  // The job request drops picker provenance, so a bare party ID is not verified here.
+  if (hmsQuoteRestFastPathEnabled() && input.details !== 'full' &&
+      !Object.values(input.request.rateParties ?? {}).some(Boolean)) {
+    try {
+      const { readQuoteRestAvailability } = await import('../../tooling/hms-cloud/quote-rest-availability.mjs');
+      const result = await readQuoteRestAvailability({ propertyCode: property.propertyCode,
+        ...(input.transportId !== undefined ? { transportId: input.transportId } : {}),
+        ...(input.signal ? { signal: input.signal } : {}),
+        criteria: input.request.rooms.map(room => ({ propertyCode: property.propertyCode,
+          arrivalDate: input.request.arrival, departureDate: input.request.departure, adults: room.adults,
+          childAges: [...room.childAges], roomTypeCodes: context ? [context.roomCode] : [],
+          ratePlanCodes: context?.typedRatePlan ? [context.typedRatePlan] : [],
+          organizationID: '', travelAgencyID: '' })),
+      });
+      input.signal?.throwIfAborted();
+      if ((result.outcome === 'rest_observed' || result.outcome === 'partial') &&
+          result.groups.length === input.request.rooms.length) {
+        return result.groups.map((group, index) => restGroupView(group, input.request.rooms[index]!.quantity));
+      }
+    } catch {
+      input.signal?.throwIfAborted();
+      // An unproven or rejected REST session falls through to the browser path.
+    }
   }
   const hotelAvailabilityUrl = new URL('../../tooling/hms-cloud/hotel-availability.mjs', import.meta.url);
   const quoteReadUrl = new URL('../../tooling/hms-cloud/quote-read.mjs', import.meta.url);
