@@ -1373,3 +1373,30 @@ describe('paneStayLookup.searchGuest route', () => {
     });
   });
 });
+
+it('rejects explicit incomplete guest search evidence before a duplicate verdict', async () => {
+  const range = { from: '2027-09-01', to: '2027-09-30' };
+  const completeness = { searchedDateRange: range, searchedRanges: [range],
+    requestedDateHorizon: { from: DUP_QUERY.arrival, to: DUP_QUERY.departure }, displayed: 0, total: 0,
+    gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  for (const flags of [{ truncated: true }, { gridComplete: false }, { requestedDatesCovered: false }, { allChunksSearched: false }]) {
+    paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ok', rows: [], completeness: { ...completeness, ...flags } });
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
+  }
+  paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ok', rows: [], completeness });
+  await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
+  paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ok', rows: [], truncated: true });
+  await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
+});
+
+it('preserves stay search completeness through the pane find result', async () => {
+  const range = { from: '2027-09-01', to: '2027-09-30' };
+  const completeness = { searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+    displayed: 0, total: 0, gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  paneStayLookupLoaders.enabled = () => true;
+  paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'not_found', reason: 'CONFIRMATION_NOT_FOUND',
+    searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range, completeness });
+  await expect(findStay({ confirmation: '123456-1' }, { lock: () => passingLock() })).resolves.toMatchObject({
+    outcome: 'not_found', completeness, searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+  });
+});

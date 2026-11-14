@@ -1,3 +1,5 @@
+import { isStaySearchComplete, parseStaySearchCompleteness, type StaySearchCompleteness } from './stay-search-completeness.js';
+export type { StaySearchCompleteness } from './stay-search-completeness.js';
 import type { HmsCloudRateLookup, HmsCloudReservationObservations } from './hms-cloud-saved-stay-find.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -77,6 +79,10 @@ export type PaneStayFindOutcome = 'found' | 'not_found' | 'ambiguous' | 'executi
 export type PaneStayFindInput = { confirmation: string; arrival?: string };
 
 export type PaneStayFindResult = {
+  searchedDateRange?: { from: string; to: string };
+  searchedRanges?: Array<{ from: string; to: string }>;
+  requestedDateHorizon?: { from: string; to: string };
+  completeness?: StaySearchCompleteness;
   rateLookup?: HmsCloudRateLookup;
   reservationObservations?: Pick<HmsCloudReservationObservations, 'guestEmail' | 'bookerName' | 'bookerContact'>;
   outcome:
@@ -110,6 +116,7 @@ export type PaneStayLookupSpawnInput =
 export type PaneStayGuestSearchOutcome = 'ok' | 'ambiguous_capped' | 'execution_failure';
 
 export type PaneStayGuestSearchResult = {
+  completeness?: StaySearchCompleteness;
   outcome:
     | PaneStayGuestSearchOutcome
     | 'refused_flag_off'
@@ -128,6 +135,14 @@ export type PaneStayGuestSearchResult = {
 
 /** What one stay-lookup.mjs run reports in its result.json. Screenshots are absolute paths. */
 export type PaneStayLookupSpawnResult = {
+  searchedDateRange?: { from: string; to: string };
+  searchedRanges?: Array<{ from: string; to: string }>;
+  requestedDateHorizon?: { from: string; to: string };
+  completeness?: StaySearchCompleteness;
+  truncated?: boolean;
+  gridComplete?: boolean;
+  requestedDatesCovered?: boolean;
+  allChunksSearched?: boolean;
   rateLookup?: HmsCloudRateLookup;
   reservationObservations?: Pick<HmsCloudReservationObservations, 'guestEmail' | 'bookerName' | 'bookerContact'>;
   outcome: string;
@@ -374,6 +389,11 @@ async function nativeStayReadAvailable(target: HmsReadTarget | null | undefined,
   return nativeReadCapabilityAvailable({ propertyCode: target.propertyCode, transportId, capability: 'reads' });
 }
 
+function incompleteSearchCompleteness(): StaySearchCompleteness {
+  return { searchedDateRange: null, searchedRanges: [], requestedDateHorizon: null, displayed: null, total: null,
+    gridComplete: false, requestedDatesCovered: false, allChunksSearched: false, truncated: true };
+}
+
 async function defaultSpawn(
   input: PaneStayLookupSpawnInput,
   target: HmsReadTarget,
@@ -410,8 +430,10 @@ async function defaultSpawn(
         })
         : await cloud.searchGuestInCloud(request);
       if (result.propertyCode !== target.propertyCode) throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
+      const completeness = parseStaySearchCompleteness(result.completeness);
       return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
-        rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
+        rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir,
+        ...(completeness ? { completeness } : Object.hasOwn(result, 'completeness') ? { completeness: incompleteSearchCompleteness() } : {}) };
     } catch (error) {
       await rm(dir, { recursive: true, force: true }).catch(() => {});
       throw error;
@@ -460,6 +482,10 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
     outcome,
     reason: run.reason,
     stay,
+    ...(run.completeness ? { completeness: run.completeness } : {}),
+    ...(run.searchedDateRange ? { searchedDateRange: run.searchedDateRange } : {}),
+    ...(run.searchedRanges ? { searchedRanges: run.searchedRanges } : {}),
+    ...(run.requestedDateHorizon ? { requestedDateHorizon: run.requestedDateHorizon } : {}),
     ...(outcome === 'found' && run.rateLookup ? { rateLookup: run.rateLookup } : {}),
     ...(outcome === 'found' && run.reservationObservations ? { reservationObservations: {
       guestEmail: run.reservationObservations.guestEmail, bookerName: run.reservationObservations.bookerName,
@@ -556,7 +582,9 @@ export async function searchGuest(
   }
   if (!run) return refusedSearch('refused_flag_off');
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
-  const outcome = toSearchOutcome(run.outcome);
+  const completeness = Object.hasOwn(run, 'completeness') ? parseStaySearchCompleteness(run.completeness) ?? incompleteSearchCompleteness() : null;
+  const outcome = completeness && !isStaySearchComplete(completeness)
+    ? completeness.truncated ? 'ambiguous_capped' : 'execution_failure' : toSearchOutcome(run.outcome);
   const loginCode = lookupLoginOutageCode(run.reason) ?? lookupLoginOutageCode(run);
   return {
     outcome,
@@ -564,6 +592,7 @@ export async function searchGuest(
     screenshots: run.screenshots.map((path) => basename(path)),
     runId: run.runId ?? null,
     ...(loginCode ? { error: loginCode } : {}),
+    ...(completeness ? { completeness } : {}),
   };
 }
 
@@ -615,9 +644,11 @@ export async function searchGuestCloudBatch(
           const run = await cloud.searchGuestInCloud({ ...query, dir: queryDir, propertyCode: target.propertyCode },
             { signal: combinedSignal, openSession });
           if (run.propertyCode !== target.propertyCode) throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
-          const outcome = toSearchOutcome(run.outcome ?? 'execution_failure');
+          const completeness = Object.hasOwn(run, 'completeness') ? parseStaySearchCompleteness(run.completeness) ?? incompleteSearchCompleteness() : null;
+          const outcome = completeness && !isStaySearchComplete(completeness)
+            ? completeness.truncated ? 'ambiguous_capped' : 'execution_failure' : toSearchOutcome(run.outcome ?? 'execution_failure');
           results[index] = { outcome, rows: outcome === 'ok' ? rowsOnRequestedDates(toPanelRows(run.rows), query) : [],
-            screenshots: [], runId: null,
+            screenshots: [], runId: null, ...(completeness ? { completeness } : {}),
             ...(typeof run.reason === 'string' && /^[a-z0-9_:-]{1,100}$/i.test(run.reason) ? { error: run.reason } : {}) };
         } catch (error) {
           const code = error instanceof Error ? error.message : '';
@@ -680,6 +711,10 @@ export async function guestDatesDuplicateCheckViaCli(
   let run: PaneStayLookupSpawnResult | null = null;
   try {
     run = await spawn({ mode: 'search-guest', ...input }, target);
+    const completeness = Object.hasOwn(run, 'completeness') ? parseStaySearchCompleteness(run.completeness) : null;
+    if (['truncated', 'gridComplete', 'requestedDatesCovered', 'allChunksSearched'].some((key) => Object.hasOwn(run, key)) &&
+        (run.truncated !== false || run.gridComplete !== true || run.requestedDatesCovered !== true || run.allChunksSearched !== true)) return 'duplicate';
+    if ((!paneStayLookupLoaders.spawn || Object.hasOwn(run, 'completeness')) && (!completeness || !isStaySearchComplete(completeness))) return 'duplicate';
     return run.outcome === 'ok' ? guestDatesVerdict(run.rows, input) : 'duplicate';
   } catch {
     return 'duplicate';

@@ -16,13 +16,14 @@ function readFailure(error, stage, shallow) {
   const failure = lookupFailure(error, Date.now());
   const result = { outcome: failure.error.startsWith('INVALID_') ? 'input_gap' : 'read_failed',
     stage, issue: failure.error };
-  for (const name of ['candidates', 'searchedDateRange', 'searchResults']) {
+  for (const name of ['candidates', 'searchedDateRange', 'searchedRanges', 'requestedDateHorizon', 'completeness', 'searchResults']) {
     if (Object.hasOwn(failure, name)) result[name] = failure[name];
   }
   if (shallow) {
     result.shallow = shallow;
-    result.searchedDateRange = shallow.searchedDateRange;
-    result.searchResults = shallow.searchResults;
+    for (const name of ['searchedDateRange', 'searchedRanges', 'requestedDateHorizon', 'completeness', 'searchResults']) {
+      if (Object.hasOwn(shallow, name)) result[name] = shallow[name];
+    }
   }
   return result;
 }
@@ -79,13 +80,15 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
       let shallow;
       try {
         shallow = await readShallow(page, request.confirmation,
-          { guestName: request.guestName, arrivalDate: request.arrivalDate });
+          { guestName: request.guestName, arrivalDate: request.arrivalDate, signal, propertyCode });
       } catch (error) {
         const result = readFailure(error, 'shallow');
         if (!RETRYABLE_LOOKUPS.has(result.issue)) { sealed = true; result.next = 'fresh_session'; }
         return result;
       }
-      if (request.view === 'shallow') return { outcome: 'ok', shallow };
+      const searchEvidence = Object.fromEntries(['searchedDateRange', 'searchedRanges', 'requestedDateHorizon', 'completeness']
+        .filter((name) => Object.hasOwn(shallow, name)).map((name) => [name, shallow[name]]));
+      if (request.view === 'shallow') return { outcome: 'ok', shallow, ...searchEvidence };
       try {
         const record = await readRecord(page, shallow.confirmation, { nativePropertyCode: propertyCode,
           nativeIdentityOnly: request.includeNativeIdentityOnly === true });
@@ -95,7 +98,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
           shallow: structuredClone(shallow), record: structuredClone(record), observedAt: new Date().toISOString() };
         const publicRecord = request.includeNativePreimage === true ? record :
           Object.fromEntries(Object.entries(record).filter(([key]) => key !== 'nativePreimage'));
-        return { outcome: 'ok', shallow, record: publicRecord };
+        return { outcome: 'ok', shallow, record: publicRecord, ...searchEvidence };
       } catch (error) {
         sealed = true;
         return { ...readFailure(error, 'record', shallow), next: 'fresh_session' };
