@@ -458,19 +458,20 @@ export function resolveNativeRoomCodes(input: {
   propertyCode?: string;
   configuration?: QuotePaneConfig | null;
 }): NativeRoomCodeResolution {
-  const configuredCode = (raw: string): string | null => {
+  const configuredCode = (raw: string, allowUnobservedCode = false): string | null => {
     if (!input.configuration) return knownNativeCode(raw, input.propertyCode);
     const code = raw.trim().toUpperCase();
     const match = input.configuration.roomTypes.find(room => room.code.toUpperCase() === code) ??
       matchConfiguredRoomType([raw], input.configuration.roomTypes);
     if (match) return match.code;
     // Incomplete catalogues cannot disprove a staff-entered code; HMS checks it during Prepare.
-    return input.configuration.catalogue?.coverage.roomTypes !== 'complete' && /^[A-Z0-9]{1,12}$/.test(code) ? code : null;
+    return allowUnobservedCode && input.configuration.catalogue?.coverage.roomTypes !== 'complete' &&
+      /^[A-Z0-9]{1,12}$/.test(code) ? code : null;
   };
   if (input.roomCodes?.length) {
     const codes: string[] = [];
     for (const raw of input.roomCodes) {
-      const code = configuredCode(raw);
+      const code = configuredCode(raw, true);
       if (!code) return { status: 'unresolved', label: raw.trim() || '(empty code)' };
       codes.push(code);
     }
@@ -483,7 +484,9 @@ export function resolveNativeRoomCodes(input: {
     (input.propertyCode !== undefined && input.propertyCode !== HRCEN_PROPERTY_CODE)
       ? null
       : unpickedTwinRoomCode(raw);
-  const code = configuredCode(raw) ?? twin ?? null;
+  const legacyTwin = twin && (!input.configuration || input.configuration.catalogue?.coverage.roomTypes !== 'complete' ||
+    input.configuration.roomTypes.some(room => room.code.toUpperCase() === twin)) ? twin : null;
+  const code = configuredCode(raw) ?? legacyTwin;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };
 }

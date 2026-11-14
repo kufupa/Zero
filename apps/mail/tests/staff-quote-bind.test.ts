@@ -21,6 +21,7 @@ import {
   emptyStaffQuoteHeader,
   type QuoteSalesStrategy,
   hrdavBoardFromLabel,
+  type QuotePaneConfig,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 
@@ -212,6 +213,56 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['STQN'],
     });
+  });
+
+  it('keeps incomplete hotel catalogues from turning room labels into codes', async () => {
+    const centurion: QuotePaneConfig = {
+      transportId: 'centurion', propertyCode: HRCEN_PROPERTY_CODE, roomTypes: [], ratePlans: [],
+      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    const partialCatalogue: NonNullable<QuotePaneConfig['catalogue']> = {
+      identity: null, capturedAt: null, expiresAt: null,
+      coverage: { rates: 'unknown', roomTypes: 'partial', mealPlans: 'unknown' },
+    };
+    const partial: QuotePaneConfig = { ...centurion, catalogue: partialCatalogue };
+    for (const configuration of [centurion, partial]) {
+      expect(staffQuoteGroupsFromStay(
+        [stay({ roomPreference: 'Twin', fields: { roomPreference: 'defaulted' } })],
+        HRCEN_PROPERTY_CODE, configuration,
+      )).toMatchObject({ ok: [{ roomCodes: ['STWN'] }] });
+      const allRooms = staffQuoteGroupsFromStay(
+        [stay({ roomPreference: 'Single', fields: { roomPreference: 'defaulted' } })],
+        HRCEN_PROPERTY_CODE, configuration,
+      );
+      expect(allRooms).toMatchObject({ ok: [{ id: 'g1' }] });
+      if ('ok' in allRooms) expect(allRooms.ok[0]).not.toHaveProperty('roomCodes');
+      expect(resolveNativeRoomCodes({ roomPreference: 'Penthouse', propertyCode: HRCEN_PROPERTY_CODE, configuration }))
+        .toEqual({ status: 'unresolved', label: 'Penthouse' });
+      expect(resolveNativeRoomCodes({ roomCodes: ['new123'], propertyCode: HRCEN_PROPERTY_CODE, configuration }))
+        .toEqual({ status: 'codes', codes: ['NEW123'] });
+    }
+    const complete: QuotePaneConfig = { ...partial, catalogue: { ...partialCatalogue,
+      coverage: { rates: 'unknown', roomTypes: 'complete', mealPlans: 'unknown' } } };
+    expect(resolveNativeRoomCodes({ roomPreference: 'Twin', propertyCode: HRCEN_PROPERTY_CODE, configuration: complete }))
+      .toEqual({ status: 'unresolved', label: 'Twin' });
+
+    const unavailable = { status: 'unavailable', reason: 'Not available' } as const;
+    const davinci: QuotePaneConfig = { ...partial, propertyCode: HRDAV_PROPERTY_CODE, capabilities: {
+      reads: unavailable, quote: unavailable, create: unavailable, amend: unavailable, cancel: unavailable,
+      attach: unavailable, addons: unavailable, guest_profile_create: unavailable,
+    } };
+    const groups = [stay({ roomPreference: 'Twin', roomCodes: ['new123'] })];
+    expect(staffQuoteGroupsFromStay(groups, HRDAV_PROPERTY_CODE, davinci))
+      .toMatchObject({ ok: [{ roomCodes: ['NEW123'] }] });
+    expect(staffQuoteGroupsFromStay(groups, HRCEN_PROPERTY_CODE, davinci))
+      .toMatchObject({ error: expect.stringMatching(/hotel.*mailbox/i) });
+    const mutate = vi.fn();
+    expect(await bindExecuteStaffQuote({
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+      selectionEpoch: 1, inputRevision: 1, groups, header: emptyStaffQuoteHeader(),
+      propertyCode: HRDAV_PROPERTY_CODE, configuration: davinci, mutate,
+    })).toMatchObject({ status: 'unavailable', reason: 'Not available' });
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('normalizes each HRDAV room label as staff spellings and keeps HRCEN normalization', () => {
