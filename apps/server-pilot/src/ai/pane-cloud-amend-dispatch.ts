@@ -5,7 +5,7 @@ import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from './draft-approval.js';
 import { cloudAmendPreservedSchema, retainedPricesForApproval } from './cloud-amend-price-projection.js';
 import { formDigest, hmsStateDigest, hmsWriteEvidenceKey, lockConsumedCloudAmendApproval, type consumeHmsWriteApproval } from './hms-approval.js';
-import { claimHmsLabtestDispatch, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
+import { claimHmsLabtestDispatch, normalizeHmsLabtestClaim, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { cloudAmendChangesSchema, cloudAmendFirstPilotScopeSupported, cloudAmendSourceBindingSchema, lockBoundCloudAmendSource } from './pane-cloud-amend.js';
 import type { AiRunFence } from './run-ledger.js';
 import { resolvePropertyScope } from '../hms/property-registry.js';
@@ -111,7 +111,7 @@ export function cloudAmendDispatchCallbacks(input: {
       if (attempted || requested.operationDigest !== approvedDigest) throw new Error('CLOUD_AMEND_APPROVAL_CHANGED');
       attempted = true; // A lost commit response must never be retried.
       const current = preimage.native;
-      const claimInput: Parameters<typeof claimHmsLabtestDispatch>[1] = {
+      const claimInput = normalizeHmsLabtestClaim({
         workItemId: input.workItemId, transportId: input.transportId, actorUserId: authority.actorUserId,
         grantId: input.consumed.grantId, propertyCode: 'HRCEN', tenantId: scope.tenantId, firstName: current.firstName, lastName: current.lastName,
         target: { propertyCode: 'HRCEN', kind: 'saved', confirmation: current.confirmation, nativeStayId: current.reservationStayId },
@@ -124,7 +124,7 @@ export function cloudAmendDispatchCallbacks(input: {
           approved: parsed.data.fields, nativeDigest: parsed.data.cloudAmend.nativeDigest,
           approvedPrices: parsed.data.cloudAmend.approvedPrices, preserved: parsed.data.cloudAmend.preserved,
           hmsBeforeDigest: input.consumed.hmsBeforeDigest, beforeEvidence: requested.beforeEvidence },
-      };
+      });
       const encoded = canonicalJson(claimInput);
       const handle = await claim(input.db, claimInput, async (tx) => {
         const item = await lockSource(tx, { workItemId: input.workItemId, transportId: input.transportId, binding });

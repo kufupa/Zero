@@ -389,6 +389,17 @@ export async function captureHmsLabtestDispatchEpoch(db: DB, target?: HmsDispatc
   });
 }
 
+/** Normalize the scope before callers capture the immutable claim they will compare at readback. */
+export function normalizeHmsLabtestClaim(raw: Claim): Readonly<Claim & { tenantId: string }> {
+  const parsed = claimSchema.safeParse(raw);
+  if (!parsed.success) throw new HmsLabtestDispatchError('invalid');
+  const property = getPropertyRegistration(parsed.data.propertyCode);
+  if (!property || (parsed.data.tenantId !== undefined && parsed.data.tenantId !== property.expectedTenant)) {
+    throw new HmsLabtestDispatchError('invalid');
+  }
+  return Object.freeze({ ...parsed.data, tenantId: property.expectedTenant });
+}
+
 /**
  * Atomic one-shot claim for the selected target. The caller must
  * independently verify the native profile and validate operation-specific
@@ -414,11 +425,7 @@ export async function claimHmsLabtestDispatch(
       targetKeys.some((key) => !aliases.derivedKeys.has(key))) {
     throw new HmsLabtestDispatchError('invalid');
   }
-  const registration = getPropertyRegistration(parsed.data.propertyCode);
-  if (!registration || (parsed.data.tenantId !== undefined && parsed.data.tenantId !== registration.expectedTenant)) {
-    throw new HmsLabtestDispatchError('invalid');
-  }
-  const input = Object.freeze({ ...parsed.data, tenantId: registration.expectedTenant });
+  const input = normalizeHmsLabtestClaim(parsed.data);
   let encoded: string;
   try { encoded = canonicalJson(input); } catch { throw new HmsLabtestDispatchError('invalid'); }
   if (Buffer.byteLength(encoded) > 16_384) throw new HmsLabtestDispatchError('invalid');
