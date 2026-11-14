@@ -72,6 +72,19 @@ function UnsupportedTerms({ editor, path }: { editor: Editor; path: string }) {
   </div>;
 }
 
+/** Structural notice for source confirmation guards — Create has no confirmation-number field. */
+function SourceConfirmationNotice({ editor }: { editor: Editor }) {
+  const path = `${requestPath(editor.request.id)}/confirmationReference`;
+  const hit = editor.snapshot.preparationViews.some(view => view.requestId === editor.request.id &&
+      view.fields?.some(field => field === path || field.startsWith(`${path}:`) || field.startsWith(`${path}/`)))
+    || editor.snapshot.issues.some(issue => issue.path === path || Boolean(issue.path?.startsWith(`${path}/`)))
+    || Boolean(editor.snapshot.fields[path]?.issue);
+  if (!hit) return null;
+  return <div className={styles.notice} data-field-path={path} role="note">
+    Source confirmation: Create has no confirmation-number field. Review the email and PDF evidence, then use Amend or Filing for an existing stay — do not invent a Create confirmation input.
+  </div>;
+}
+
 function hasOwn(editor: Editor, path: string) {
   const override = editor.snapshot.session.draft.fieldOverrides[path];
   if (override) return override.state !== 'inherit';
@@ -401,6 +414,7 @@ export function CreateEditor(editor: Editor) {
     ...allocations.map(allocation => record(allocation.overrides).requestedMealPlan)].some(value => /\blunch\b/i.test(text(value)));
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
   return <div className={`${styles.editor} ${styles.compactCreate}`}>
+    <SourceConfirmationNotice editor={editor} />
     {lunchRequested && <p className={styles.notice} role="note">Centurion Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
     <Section title="Commercial">

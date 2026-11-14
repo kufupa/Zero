@@ -210,7 +210,8 @@ function selectedParty(
   const namePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'name');
   const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'nativeSelectionRef');
   const partyLeaf = resolvedLeaf(draft, basePath, raw);
-  if ('issue' in partyLeaf) return { reviewPaths: [], issue: `${role}_${partyLeaf.issue}` };
+  // Always surface the mounted party picker path so Review/focus can land (O8/O9).
+  if ('issue' in partyLeaf) return { reviewPaths: [basePath], issue: `${role}_${partyLeaf.issue}` };
   const value = isNone(partyLeaf.value) ? null : record(partyLeaf.value);
   // Child name edits can create a party even when extraction supplied null or no party object.
   // An explicit parent clear still wins over stale child overrides.
@@ -218,7 +219,7 @@ function selectedParty(
   const named = !value && !allowChildName
     ? { value: undefined, path: namePath }
     : resolvedLeaf(draft, namePath, value?.name);
-  if ('issue' in named) return { reviewPaths: [], issue: `${role}_${named.issue}` };
+  if ('issue' in named) return { reviewPaths: [basePath], issue: `${role}_${named.issue}` };
   const name = cleanText(named.value);
   if (!name) {
     if (partyLeaf.value === null || partyLeaf.value === undefined || isNone(partyLeaf.value)) {
@@ -226,14 +227,14 @@ function selectedParty(
       const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
       return { reviewPaths };
     }
-    return { reviewPaths: [], issue: `${role}_name_unresolved` };
+    return { reviewPaths: [basePath], issue: `${role}_name_unresolved` };
   }
   const selected = resolvedLeaf(draft, selectionPath, value?.suggestedRef ?? null);
-  if ('issue' in selected) return { reviewPaths: [], issue: `${role}_${selected.issue}` };
+  if ('issue' in selected) return { reviewPaths: [basePath], issue: `${role}_${selected.issue}` };
   const ref = typeof selected.value === 'string' ? selected.value : null;
   if (!ref) {
     const optionalByStaff = selected.unset && reviewAccepted(draft, basePath);
-    return { reviewPaths: execute && !optionalByStaff ? [basePath] : [], issue: optionalByStaff ? undefined : `${role}_selection_required` };
+    return { reviewPaths: optionalByStaff ? [] : [basePath], issue: optionalByStaff ? undefined : `${role}_selection_required` };
   }
   const observation = draft.observations.find((entry) => entry.ref === ref && entry.kind === 'party_candidate');
   const criteria = record(observation?.criteria);
@@ -243,7 +244,7 @@ function selectedParty(
       observation.sourceMessageId !== draft.source.messageId || criteria?.workflow !== 'quote' ||
       criteria.requestId !== request.id || criteria.role !== role ||
       !candidate || !cleanText(candidate.nativeId) || !cleanText(candidate.name) || !sameName(candidate.name, name)) {
-    return { reviewPaths: [], issue: `${role}_candidate_unverified` };
+    return { reviewPaths: [basePath], issue: `${role}_candidate_unverified` };
   }
   const reviewPaths = execute
     ? [basePath, namePath, selectionPath].filter((path) => !reviewAccepted(draft, path))

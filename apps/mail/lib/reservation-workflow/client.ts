@@ -465,6 +465,15 @@ export function inputFieldLabel(value: string): string {
   if (reason === 'allowance_requires_supported_staff_choice' || key === 'allowance_requires_supported_staff_choice') return 'Handle as for this extra';
   if (reason === 'native_meal_plan_code_required' || reason === 'native_board_code_required' ||
       key === 'native_meal_plan_code_required' || key === 'native_board_code_required') return 'Rate Plan (sets Meal Plan)';
+  if (reason === 'group_required' || key === 'group_required') return 'Add a room group';
+  if (reason === 'duplicate_group_id' || key === 'duplicate_group_id') return 'Remove a duplicate room group';
+  if (reason === 'native_quote_group_limit' || key === 'native_quote_group_limit') return 'Remove a room group (max 8)';
+  if (reason === 'native_group_id_limit' || key === 'native_group_id_limit') return 'Remove this room group (ID too long)';
+  if (reason === 'confirmation_claim_capacity_exceeded' || key === 'confirmationReference' ||
+      key === 'confirmation_claim_capacity_exceeded' || key === 'existing_confirmation_requires_lookup' ||
+      key === 'existing_confirmation_found') {
+    return 'source confirmation (review email/PDF — no Create field)';
+  }
   if (/^organization_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(key))
     return 'Organization';
   if (/^bookingAgency_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(key))
@@ -481,6 +490,7 @@ export function inputFieldLabel(value: string): string {
     staffAllowanceType: 'extra charge handling', cmsRecipient: 'confirmation recipient',
     cmsMessageId: 'confirmation message', targets: 'exact stays',
     artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice',
+    groups: 'room groups',
   };
   const suffix = value.split(':').slice(1).join(':');
   if (labels[key]) return labels[key]!;
@@ -501,6 +511,15 @@ export function attentionFieldPath(value: string, requestRoot: string): string {
     path += '/staffAllowanceType';
   if ((reason === 'native_meal_plan_code_required' || reason === 'native_board_code_required') && path.endsWith('/mealPlan'))
     path = `${path.slice(0, -'/mealPlan'.length)}/ratePlan`;
+  // Prefer Guest Profile picker over first/last name under the guest stack.
+  if ((reason === 'existing_profile_selection_required' || reason === 'native_profile_unverified') && path.endsWith('/guest'))
+    path += '/nativeSelectionRef';
+  // Quote group ID is generated — staff fix is remove/re-add, not edit id.
+  if (reason === 'native_group_id_limit' && path.endsWith('/id')) path = path.slice(0, -'/id'.length);
+  // Too many / duplicate groups: land on first group's Remove control.
+  if ((reason === 'native_quote_group_limit' || reason === 'duplicate_group_id') && path.endsWith('/groups'))
+    path = `${path}/0`;
+  // group_required keeps …/groups so focus hits + Group.
   return path;
 }
 function inputFieldLabels(values: unknown): string {
@@ -541,9 +560,15 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'filing_stay_not_found') return 'Infor did not find this confirmation. Check the confirmation and search again';
   if (issue === 'filing_stay_date_mismatch') return 'Infor returned a different arrival date. Check the original booking dates before filing';
   if (issue === 'filing_stay_unverified') return 'Infor did not verify one complete stay. Check the confirmation and original dates before filing';
-  if (issue === 'existing_confirmation_found') return 'Infor already has this booking. Use the existing stay for amendment or filing; do not create it again';
-  if (issue === 'existing_confirmation_requires_lookup') return 'A confirmation in this request may identify an existing booking. Find and verify that stay before creating a new reservation';
-  if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding';
+  if (issue === 'existing_confirmation_found') return 'Infor already has this booking. Use the existing stay for amendment or filing; do not create it again. Create has no confirmation-number field to edit';
+  if (issue === 'existing_confirmation_requires_lookup') return 'A confirmation in this request may identify an existing booking. Review the email/PDF evidence and verify that stay before creating; Create has no confirmation-number field';
+  if (issue === 'confirmation_claim_capacity_exceeded') return 'This request has too many confirmation references to check safely. Review the original email and PDF, and split it into explicit booking actions before proceeding. Create has no confirmation-number field';
+  if (issue === 'create_request_not_found') return 'This Create action is missing from the draft. Reload the proposal or contact Nava support — there is no staff field to edit';
+  if (issue === 'create_body_incomplete') return 'This Create draft is missing required room or date structure. Reload or rebuild the action — this is not a single-field edit';
+  if (issue === 'allocation_not_found') return 'The selected room allocation is missing from this Create draft. Pick another room or rebuild the action';
+  if (issue === 'date_section_not_found') return 'The date section for this room is missing from the Create draft. Rebuild dates and rooms — not a single-field edit';
+  if (issue === 'allocation_fields_incomplete') return 'This room is missing required guest or occupancy structure in the draft. Rebuild the room rather than editing a hidden field';
+  if (issue === 'invalid_create_target') return 'The Create target is invalid for this step. Reload the draft or contact Nava support — no staff field maps to this failure';
   if (issue === 'create_requested_totals_conflict') return 'The rooms or occupants do not match the requested totals. Review each room and the group totals';
   if (issue === 'amend_room_count_requires_separate_reservations') return 'Choose the rooms to add or cancel as separate reservations';
   if (issue === 'amend_track_target_selection_required') return 'Find and select each saved stay in Infor before loading Track choices';
@@ -660,6 +685,10 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     lunch_extra_price_required: 'lunch extra requested amount',
     allowance_requires_supported_staff_choice: 'Handle as for this extra',
     native_meal_plan_code_required: 'Rate Plan (sets Meal Plan)', native_board_code_required: 'Rate Plan (sets Meal Plan)',
+    group_required: 'Add a room group',
+    duplicate_group_id: 'Remove a duplicate room group',
+    native_quote_group_limit: 'Remove a room group (max 8)',
+    native_group_id_limit: 'Remove this room group (ID too long)',
   };
   const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
     const [path, reason] = field.split(':');
