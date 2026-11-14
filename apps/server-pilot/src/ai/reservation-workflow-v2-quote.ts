@@ -21,6 +21,7 @@ import type {
 import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { propertyCodeSchema } from '../hms/property-registry.js';
 import { buildStaffProposalFacts, staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
@@ -141,6 +142,17 @@ function quoteInputOverrides(draft: ReservationWorkflowV2Draft, requestId: strin
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([path, override]) => [path, { state: override.state,
       ...(override.state === 'set' ? { value: override.value } : {}) }]));
+}
+
+function pricingOverrides(overrides: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(overrides).filter(([path]) =>
+    !/\/body\/(?:guestNames|groups\/[^/]+\/(?:guestNames|requestedRoomDescription))(?:\/|$)/u.test(path)));
+}
+
+function quoteOverridesMatch(draft: ReservationWorkflowV2Draft, requestId: string, saved: unknown): boolean {
+  const overrides = record(saved);
+  return overrides !== null && hash(pricingOverrides(overrides)) ===
+    hash(pricingOverrides(quoteInputOverrides(draft, requestId)));
 }
 
 function quoteRequests(draft: ReservationWorkflowV2Draft, requestId?: string): QuoteRequest[] {
@@ -445,9 +457,8 @@ function unavailableInventoryProof(
   // Bind the shortage to the complete current request, not just its normalized
   // quote digest. Undo can restore the same values/revision while old receipts
   // still contain an earlier recipient, occupancy, party, or override set.
-  if (!result?.inputOverrides || typeof result.inputOverrides !== 'object' || Array.isArray(result.inputOverrides) ||
-      !Array.isArray(result.requestedGroups) ||
-      hash(result.inputOverrides) !== hash(quoteInputOverrides(draft, compiled.request.id)) ||
+  if (!quoteOverridesMatch(draft, compiled.request.id, result?.inputOverrides) ||
+      !Array.isArray(result?.requestedGroups) ||
       hash(result.requestedGroups) !== hash(compiled.input.groups)) return null;
   if (result?.failureCode !== 'native_quote_insufficient_inventory' || result.failureKind !== 'proven_shortage' ||
       result.sourceHash !== draft.source.sourceHash || result.inputDigest !== compiled.inputDigest ||
@@ -798,6 +809,7 @@ async function quoteTarget(ctx: ReadContext, input: QuoteBaseInput) {
       transportId: ctx.transport.id,
       threadId: input.source.threadId,
       messageId: input.source.messageId,
+      propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode),
     });
     if (!result.ok) return { target: null, issue: 'quote_property_not_enabled' };
     if (result.target.propertyCode !== ctx.property.propertyCode) return { target: null, issue: 'quote_property_scope_mismatch' };
@@ -884,6 +896,7 @@ function matchingPreparedQuote(
   return criteria?.workflow === 'quote' && criteria.requestId === compiled.request.id &&
     criteria.inputDigest === compiled.inputDigest && criteria.sourceHash === draft.source.sourceHash &&
     Number.isFinite(expires) && expires > now && revision?.propertyCode === draft.propertyCode &&
+    quoteOverridesMatch(draft, compiled.request.id, result?.inputOverrides) &&
     preparedQuoteMatches(compiled.input, revision, result?.facts, result?.dinnerFallbackGroupIds)
     ? observation : null;
 }
@@ -1035,9 +1048,13 @@ async function priceQuote(
   draft: ReservationWorkflowV2Draft,
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
 ) {
+  if (draft.propertyCode !== ctx.property.propertyCode) {
+    return { status: 'failed' as const, issue: 'quote_property_scope_mismatch' };
+  }
   let quote: QuoteRunResult;
   try {
-    quote = await runStaffQuote(compiled.input, { transportId: ctx.transport.id }, ctx.db,
+    quote = await runStaffQuote(compiled.input, { transportId: ctx.transport.id,
+      propertyCode: propertyCodeSchema.parse(draft.propertyCode) }, ctx.db,
       ctx.nativeBatch ? { persistence: 'return_only', signal: ctx.nativeBatch.signal,
         deadlineAt: ctx.nativeBatch.deadlineAt, preparedRunId: ctx.nativeBatch.jobFence.runId, autoStart: true } : {}) as unknown as QuoteRunResult;
   } catch (error) {

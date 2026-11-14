@@ -3,8 +3,19 @@ import {
   RESERVATION_WORKFLOW_V2_VERSION,
   type ReservationWorkflowV2Draft,
 } from '../src/ai/reservation-workflow-v2-contract.js';
-import { compileReservationWorkflowV2Quote } from '../src/ai/reservation-workflow-v2-quote.js';
-import { describe, expect, it } from 'vitest';
+import { compileReservationWorkflowV2Quote, reservationWorkflowV2QuoteLookup,
+  reservationWorkflowV2QuotePrepare } from '../src/ai/reservation-workflow-v2-quote.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const backend = vi.hoisted(() => ({ load: vi.fn(), append: vi.fn(), record: vi.fn(), run: vi.fn() }));
+vi.mock('../src/ai/reservation-workflow-v2-state.js', async (original) => ({
+  ...(await original<typeof import('../src/ai/reservation-workflow-v2-state.js')>()),
+  getReservationWorkflowV2Draft: backend.load, appendReservationWorkflowV2Observation: backend.append,
+  recordReservationWorkflowV2Result: backend.record,
+}));
+vi.mock('../src/ai/staff-quote-run.js', async (original) => ({
+  ...(await original<typeof import('../src/ai/staff-quote-run.js')>()), runStaffQuote: backend.run,
+}));
 
 const requestRoot = '/proposal/content/requests/quote-1/body';
 const groupRoot = `${requestRoot}/groups/0`;
@@ -195,5 +206,71 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
     value.fieldOverrides[`${groupRoot}/ratePlan`] = { state: 'set', value: 'BAR', updatedAt: now };
 
     expect(fields(value)).not.toContain(`${groupRoot}/ratePlan:native_rate_code_required`);
+  });
+});
+
+describe('quote receipt reuse and property propagation', () => {
+  afterEach(() => { vi.resetAllMocks(); vi.unstubAllEnvs(); });
+
+  function readyDraft() {
+    const value = draft();
+    const request = value.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('quote fixture missing');
+    request.body.parties.organization = null;
+    request.body.groups[0]!.ratePlan = 'BAR';
+    request.body.groups[0]!.occupancy.childCount = 0;
+    request.body.groups[0]!.occupancy.childAges = [];
+    value.observations = [];
+    return value;
+  }
+
+  function setup(value: ReservationWorkflowV2Draft) {
+    backend.load.mockResolvedValue({ status: 'ok', draft: value, revision: value.revision, seq: 0 });
+    backend.record.mockResolvedValue({ status: 'ok' });
+    backend.append.mockResolvedValue({ status: 'ok', revision: value.revision, seq: 0 });
+    backend.run.mockRejectedValue(new Error('native_unavailable'));
+    return { ctx: { db: {} as never, transport: { id: value.transportId }, user: { id: 'user' },
+      property: { propertyCode: value.propertyCode } },
+      input: { workItemId: value.workItemId, source: value.source, requestId: 'quote-1', expectedRevision: value.revision, expectedSeq: 0 } };
+  }
+
+  it('keeps HRDAVS through lookup and the pricing dispatch', async () => {
+    const value = readyDraft();
+    value.propertyCode = 'HRDAVS';
+    value.transportId = 'transport-davinci';
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS', '/tmp/suites.json');
+    const { ctx, input } = setup(value);
+    await reservationWorkflowV2QuoteLookup(ctx, input);
+    expect(backend.run).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ transportId: 'transport-davinci', propertyCode: 'HRDAVS' }), expect.anything(), expect.anything());
+  });
+
+  it('reuses shortage evidence after review-only edits but rechecks a pricing override', async () => {
+    const value = readyDraft();
+    const compiled = compile(value);
+    if (compiled.status !== 'ok') throw new Error(`invalid fixture: ${compiled.issue}`);
+    const freshUntil = new Date(Date.now() + 60_000).toISOString();
+    value.observations.push({ ref: 'shortage', generationId: value.generationId, kind: 'rate_availability',
+      status: 'failed', observedAt: new Date().toISOString(), propertyCode: value.propertyCode,
+      sourceMessageId: value.source.messageId, sourceRefs: [], coverage: { complete: false, notes: [] },
+      criteria: { workflow: 'quote', requestId: 'quote-1', sourceHash: value.source.sourceHash, inputDigest: compiled.inputDigest },
+      result: { inputOverrides: {}, requestedGroups: compiled.input.groups, failureCode: 'native_quote_insufficient_inventory',
+        failureKind: 'proven_shortage', sourceHash: value.source.sourceHash, inputDigest: compiled.inputDigest,
+        availabilityTruncated: false, freshUntil, shortfall: { roomCode: 'STD', roomLabel: 'Standard', date: '2027-02-01', demand: 1, supply: 0 },
+        quoteDiagnostics: [{ kind: 'requested', contextMatchesSelection: true, availabilityTruncated: false, freshUntil,
+          availabilityBoard: [{ groupId: 'group-1', roomCode: 'STD', rateCode: 'BAR', mealPlan: 'bb',
+            availability: 'unavailable', roomsLeft: 0, coverage: { search: 'complete', requiredFacts: 'complete' },
+            nightCoverage: { complete: true, expected: 1, observed: 1 },
+            nightly: [{ date: '2027-02-01', availableCount: 0, requestedCount: 1, stockStatus: 'sold' }] }] }] } });
+    const { ctx, input } = setup(value);
+    for (const path of [`${requestRoot}/guestNames/0`, `${groupRoot}/guestNames/0`, `${groupRoot}/requestedRoomDescription`]) {
+      value.fieldOverrides[path] = { state: 'set', value: 'review context', updatedAt: now };
+    }
+    await expect(reservationWorkflowV2QuotePrepare(ctx, input)).resolves.toMatchObject({ status: 'prepared', observationRef: 'shortage' });
+    expect(backend.run).not.toHaveBeenCalled();
+    value.fieldOverrides[`${groupRoot}/ratePlan`] = { state: 'set', value: 'BAR', updatedAt: now };
+    await reservationWorkflowV2QuotePrepare(ctx, input);
+    expect(backend.run).toHaveBeenCalledOnce();
   });
 });

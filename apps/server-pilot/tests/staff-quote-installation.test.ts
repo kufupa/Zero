@@ -16,18 +16,21 @@ function configuration(propertyCode: string, dinnerAddOn?: unknown) {
   return {
     tenantId: 'test-tenant',
     owner: {
-      cdpUrl: 'http://127.0.0.1:8765',
-      browserOwnership: 'borrowed',
       propertyCode,
-      secretPath: resolve(repo, 'private-secret'),
     },
-    outputDir: resolve(privateRoot, 'playwright-quote', 'test-output'),
+    outputDir: resolve(privateRoot, 'hms-cloud', 'test-output'),
     ratePolicyConfigurationPath: resolve(privateRoot, 'rate-policy.json'),
     ...(dinnerAddOn !== undefined ? { dinnerAddOn } : {}),
   };
 }
 
 describe('staff quote installation defaults', () => {
+  it('rejects legacy and outside output directories', () => {
+    for (const outputDir of [resolve(privateRoot, 'playwright-quote', 'test-output'), '/tmp/quote-output']) {
+      expect(() => validateStaffQuoteInstallationConfiguration({ ...configuration('HRCEN'), outputDir }))
+        .toThrow('staff_quote_installation_invalid');
+    }
+  });
   it('defaults Centurion dinner to an editable R350 per person per night', () => {
     const installed = validateStaffQuoteInstallationConfiguration(configuration('HRCEN'));
 

@@ -4,7 +4,7 @@ import {
   DAVINCI_HMS_READ_TARGET,
   DAVINCI_STAFF_TRANSPORT_IDS,
 } from '../src/hms/hms-read-target.js';
-import { bindCenturionHmsMailboxProperty } from '../src/hms/mailbox-hms-origin-bind.js';
+import { bindCenturionHmsMailboxProperty, mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { hmsDavinciMakeQuoteEnabled } from '../src/env.js';
 import { PropertyRefusalCause } from '../src/hms/property-refusal.js';
 import {
@@ -12,6 +12,7 @@ import {
   assertHmsQuoteOriginAllowed,
   quoteTargetForHmsJob,
   quoteTargetForTransport,
+  resolveHmsQuoteJobTarget,
 } from '../src/hms/hms-quote-target.js';
 
 const DAVINCI_ORIGIN = { toAddresses: ['davinci@legacyhotels.co.za'] } as const;
@@ -23,6 +24,7 @@ const EXTERNAL_GUEST_ORIGIN = { fromAddress: 'guest@example.invalid' } as const;
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
 });
 
 describe('hmsDavinciMakeQuoteEnabled', () => {
@@ -195,5 +197,38 @@ describe('assertHmsQuoteOriginAllowed', () => {
       transportId: 'transport-centurion', threadId: 'thread-cen', messageId: 'msg-cen',
       propertySwitch: 'HRDAVS', env: HRDAV_QUOTE_READY_ENV,
     })).rejects.toMatchObject({ message: 'hms_property_switch_unauthorized' });
+  });
+});
+
+describe('selected quote property', () => {
+  const env = { ...HRDAV_QUOTE_READY_ENV, RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS: '/tmp/suites.json' };
+  const input = { transportId: 'transport-davinci', threadId: 'thread-1', env };
+
+  it('defaults to HRDAV and preserves HRDAVS with its own installation', async () => {
+    expect(await resolveHmsQuoteJobTarget(input)).toEqual({ ok: true, target: DAVINCI_HMS_READ_TARGET });
+    const suites = await resolveHmsQuoteJobTarget({ ...input, propertyCode: 'HRDAVS' });
+    expect(suites).toMatchObject({ ok: true, target: { propertyCode: 'HRDAVS', browserSlot: 'davinci',
+      secretId: DAVINCI_HMS_READ_TARGET.secretId, origin: DAVINCI_HMS_READ_TARGET.origin,
+      installationEnvName: 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS' } });
+    await expect(resolveHmsQuoteJobTarget({ ...input, propertyCode: 'HRDAVS', env: HRDAV_QUOTE_READY_ENV }))
+      .rejects.toMatchObject({ cause: { code: 'not_set_up' } });
+  });
+
+  it.each([
+    ['transport-davinci', 'HRCEN'],
+    ['transport-centurion', 'HRDAV'],
+    ['transport-centurion', 'HRDAVS'],
+  ] as const)('refuses %s selecting %s', async (transportId, propertyCode) => {
+    await expect(resolveHmsQuoteJobTarget({ ...input, transportId, propertyCode }))
+      .rejects.toMatchObject({ cause: { code: 'property_unknown' } });
+  });
+
+  it('refuses an explicitly selected HRCEN when the thread has a Da Vinci origin', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selected: DAVINCI_ORIGIN, selectedFound: true, inbounds: [DAVINCI_ORIGIN],
+    });
+    await expect(resolveHmsQuoteJobTarget({ ...input, transportId: 'transport-centurion',
+      propertyCode: 'HRCEN', messageId: 'message-1' }))
+      .rejects.toMatchObject({ cause: { code: 'property_unknown' } });
   });
 });

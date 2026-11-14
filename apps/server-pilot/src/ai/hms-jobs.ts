@@ -3916,13 +3916,24 @@ export async function executeHmsJob(input: {
   let jobTarget: HmsReadTarget | null = null;
   const partyV2 = request.kind === 'party' && request.matchVersion === 2 &&
     run.priority < HMS_JOB_PRIORITY_USER && partyMatchV2Enabled();
-  if (request.kind === 'staff_quote' && run.threadId) {
+  if (request.kind === 'staff_quote') {
     try {
+      const stored = objectRecord(run.metrics);
+      const recordedTarget = parseHmsReadTarget(stored.hmsReadTarget);
+      const selected = propertyCodeSchema.safeParse(stored.selectedPropertyCode === undefined
+        ? recordedTarget?.propertyCode : stored.selectedPropertyCode);
+      if (!run.threadId || (stored.hmsReadTarget != null && !recordedTarget) ||
+          (stored.selectedPropertyCode !== undefined && !selected.success) ||
+          (recordedTarget && selected.success && recordedTarget.propertyCode !== selected.data)) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'property_unknown' }, db);
+        return 'dead_letter';
+      }
       const resolved = await resolveHmsQuoteJobTarget({
         transportId: run.transportId,
         threadId: run.threadId,
         messageId: run.triggerMessageId,
         propertySwitch: request.input.propertySwitch,
+        ...(selected.success ? { propertyCode: selected.data } : {}),
       });
       if (!resolved.ok) {
         await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
@@ -4176,7 +4187,8 @@ export async function executeHmsJob(input: {
         () =>
           runStaffQuote(
             request.input,
-            { transportId: run.transportId, ...(user ? { user } : {}) },
+            { transportId: run.transportId, propertyCode: propertyCodeSchema.parse(jobTarget!.propertyCode),
+              ...(user ? { user } : {}) },
             db,
             {
               signal: input.signal,

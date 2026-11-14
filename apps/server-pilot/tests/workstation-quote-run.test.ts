@@ -36,6 +36,11 @@ vi.mock('../src/ai/staff-quote-workflow.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ai/staff-quote-workflow.js')>()),
   executeStaffQuote: hoisted.executeStaffQuote,
 }));
+vi.mock('../src/ai/quote-outcomes.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ai/quote-outcomes.js')>()),
+  ensureQuoteOutcomeWorkItem: vi.fn().mockResolvedValue('quote-work-item'),
+  recordPreparedQuoteOutcome: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../src/hms/property-read-lock.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/property-read-lock.js')>()),
   createPostgresPropertyReadLock: () => ({
@@ -87,13 +92,13 @@ const quoteInput = {
       quantity: 2,
       adults: 1,
       childrenAges: [],
-      board: 'room_only',
+      mealPlan: 'room_only',
       roomCodes: ['SKNG'],
     },
   ],
   salesStrategy: 'BAR' as const,
-  company: '',
-  agency: '',
+  organization: '',
+  bookingAgency: '',
   attention: '',
   clientEmail: '',
   clientTelephone: '',
@@ -107,6 +112,7 @@ function fakeDb(options: {
   holder?: { elapsedMs: number } | null;
   failExecute?: boolean;
   ownedRunIds?: string[];
+  selectedPropertyCode?: string;
 }) {
   const inserted: Recorded[] = [];
   const updated: Array<{ table: unknown; values: Record<string, unknown> }> = [];
@@ -123,6 +129,7 @@ function fakeDb(options: {
         id,
         threadId: mail.threadId,
         triggerMessageId: mail.id,
+        metrics: options.selectedPropertyCode ? { selectedPropertyCode: options.selectedPropertyCode } : {},
       }));
     if (table === aiDraftGeneration) return lastGenerationId ? [{ id: lastGenerationId }] : [];
     return [];
@@ -188,7 +195,7 @@ function fakeDb(options: {
       if (options.failExecute) throw new Error('synthetic database unavailable');
       return options.holder ? [{ elapsed_ms: String(options.holder.elapsedMs) }] : [];
     },
-    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({ ...writes }),
+    transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(db),
   };
   return { db, inserted, updated, wheres, selectCalls, executeCalls };
 }
@@ -374,6 +381,7 @@ describe('workstation.quoteRunScreenshot', () => {
 
   it('reads the HRDAV install directory for a Da Vinci mailbox when the quote flag is on', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-install');
     await seedRun(['login-complete.png']);
     hoisted.db = fakeDb({ ownedRunIds: [RUN] }).db;
     hoisted.configure.mockReturnValue({
@@ -398,6 +406,7 @@ describe('workstation.quoteRunScreenshot', () => {
 
   it('does not fall back to the Centurion install when the HRDAV screenshot directory is missing', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-install');
     await seedRun(['login-complete.png']);
     hoisted.db = fakeDb({ ownedRunIds: [RUN] }).db;
     hoisted.configure.mockImplementation((propertyCode?: string) => {
@@ -411,6 +420,21 @@ describe('workstation.quoteRunScreenshot', () => {
       }),
     ).resolves.toEqual({ status: 'unavailable', reason: 'quote_run_unavailable' });
     expect(hoisted.configure.mock.calls).toEqual([['HRDAV']]);
+  });
+
+  it('uses the recorded HRDAVS install and refuses a cross-tenant screenshot', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS', '/tmp/hrdavs-install');
+    await seedRun(['login-complete.png']);
+    hoisted.db = fakeDb({ ownedRunIds: [RUN], selectedPropertyCode: 'HRDAVS' }).db;
+    hoisted.configure.mockReturnValue({ outputDir, owner: { propertyCode: 'HRDAVS' } });
+    await expect(caller(USER, 'transport-davinci').workstation.quoteRunScreenshot({ runId: RUN, name: 'login-complete.png' }))
+      .resolves.toMatchObject({ status: 'ready' });
+    expect(hoisted.configure).toHaveBeenCalledWith('HRDAVS');
+    hoisted.configure.mockClear();
+    await expect(caller().workstation.quoteRunScreenshot({ runId: RUN, name: 'login-complete.png' }))
+      .resolves.toEqual({ status: 'unavailable', reason: 'quote_run_unavailable' });
+    expect(hoisted.configure).not.toHaveBeenCalled();
   });
 });
 

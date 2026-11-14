@@ -93,6 +93,7 @@ import {
   resolveHmsQuoteJobTarget,
 } from '../../hms/hms-quote-target.js';
 import { hmsReadTargetForTransport, hmsReadTargetJobMetrics } from '../../hms/hms-read-target.js';
+import { propertyCodeSchema } from '../../hms/property-registry.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -851,6 +852,7 @@ export const workstationRouter = router({
           id: aiWorkflowRun.id,
           threadId: aiWorkflowRun.threadId,
           triggerMessageId: aiWorkflowRun.triggerMessageId,
+          metrics: aiWorkflowRun.metrics,
         })
         .from(aiWorkflowRun)
         .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
@@ -864,11 +866,17 @@ export const workstationRouter = router({
         .limit(1);
       const unavailable = { status: 'unavailable' as const, reason: 'quote_run_unavailable' };
       if (!owned) return unavailable;
-      const quoteTarget = await resolveHmsQuoteJobTarget({
-        transportId: ctx.activeTransportId,
-        threadId: owned.threadId,
-        messageId: owned.triggerMessageId,
-      });
+      const selectedProperty = propertyCodeSchema.safeParse(owned.metrics?.selectedPropertyCode);
+      if (owned.metrics?.selectedPropertyCode !== undefined && !selectedProperty.success) return unavailable;
+      let quoteTarget: Awaited<ReturnType<typeof resolveHmsQuoteJobTarget>>;
+      try {
+        quoteTarget = await resolveHmsQuoteJobTarget({
+          transportId: ctx.activeTransportId,
+          threadId: owned.threadId,
+          messageId: owned.triggerMessageId,
+          ...(selectedProperty.success ? { propertyCode: selectedProperty.data } : {}),
+        });
+      } catch { return unavailable; }
       if (!quoteTarget.ok) return unavailable;
       let outputDir: string;
       try {

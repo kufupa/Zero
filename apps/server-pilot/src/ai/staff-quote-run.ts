@@ -63,6 +63,7 @@ import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import type { PropertyCode } from '../hms/property-registry.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -593,6 +594,7 @@ async function awaitProvisionalCapture(
 
 export type StaffQuoteRunIdentity = {
   transportId: string;
+  propertyCode?: PropertyCode;
   /** Omitted for a system-prepared price. It is never replaced with a synthetic staff member. */
   user?: { id: string; name: string | null; email: string };
 };
@@ -661,6 +663,7 @@ export async function runStaffQuote(
     propertySwitch: input.propertySwitch,
     threadId: mail.threadId,
     messageId: mail.id,
+    propertyCode: identity.propertyCode,
     env: process.env,
   });
   if (!quoteTarget.ok) {
@@ -1070,6 +1073,7 @@ export async function runStaffQuote(
                 quoteRevisions: [revision],
                 proposalFacts: proposal.facts ? [{ ref: 'extras', facts: proposal.facts }] : [],
               },
+              selectedPropertyCode: quoteTarget.target.propertyCode,
               ...(runId ? { staffQuoteEvidence: { runId } } : {}),
             },
           });
