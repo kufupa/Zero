@@ -6,6 +6,7 @@ import { currentVerifiedLabtestProfileToken, isVerifiedLabtestProfile, isVerifie
 import { isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 import { parseResponse as parsePickerResponse } from './guest-stay-room-rate.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
+import { cloudSessionIdentity } from './cloud-session.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -17,6 +18,7 @@ const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType
 const DANGEROUS_PATH = /save|delete|cancel|duplicate|checkin|checkout|send|crs/i;
 const CHILD_AGE_VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const GUARANTEE_CHANGE = '/web/base/OSRESV.HDR.changeguaranteemethod';
+const MARKET_CHANGE = '/web/base/OSRESV.HDR.changemarketsegment';
 const GUARANTEE_BLANK_IDS = ['reservationstayid', 'reservationid', 'recordid'];
 const busyPages = new WeakSet();
 const cmsSearches = new WeakMap();
@@ -224,6 +226,129 @@ function guaranteeRequest(page, request, expected) {
   } catch { return false; }
 }
 
+// Keep the actual Ext record handle: an equivalent-looking replacement form is
+// not the draft on which the operator selected the market segment.
+async function marketDraft(page, propertyCode, record = null) {
+  if (!getPropertyRegistration(propertyCode)?.active || cloudSessionIdentity(page)?.propertyCode !== propertyCode) return null;
+  const owned = !record;
+  if (owned) record = await page.evaluateHandle(() => {
+    const visible = el => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const inputs = [...document.querySelectorAll('input[name="marketsegment"]')].filter(visible);
+    return inputs.length === 1 ? globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''))?.up?.('form')?.getRecord?.() ?? null : null;
+  });
+  try {
+    const state = await page.evaluate(({ record, origin, propertyCode, blankIds }) => {
+      if (location.origin !== origin || !record) return null;
+      const visible = el => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const names = ['marketsegment', 'ta1', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate'];
+      const fields = Object.fromEntries(names.map(name => [name, [...document.querySelectorAll(`input[name="${name}"]`)].filter(visible)]));
+      if (names.some(name => fields[name].length !== 1)) return null;
+      const component = name => globalThis.Ext?.getCmp?.(fields[name][0].id.replace(/-inputEl$/, ''));
+      const form = component('marketsegment')?.up?.('form');
+      if (!form?.el?.dom || form.getRecord?.() !== record || names.some(name => !form.el.dom.contains(fields[name][0]) || component(name)?.up?.('form') !== form)) return null;
+      const data = record.data, keys = data && Object.keys(data);
+      const unique = key => keys && Object.hasOwn(data, key) && keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+      const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
+      if (!data || !exact('propertycode', propertyCode) || !exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) || !exact('status', 'New') ||
+          !exact('confirmationnumber', '') || !blankIds.every(key => exact(key, '')) || !unique('guestid') || !unique('bookingsessionid') ||
+          !String(data.bookingsessionid ?? '').trim() || fields.confirmationnumber[0].value.trim() ||
+          typeof component('guestid')?.getValue !== 'function' ||
+          String(component('guestid').getValue() ?? '').trim() !== String(data.guestid ?? '').trim() ||
+          fields.guestid[0].value.trim() !== String(data.guestid ?? '').trim() ||
+          ['arprofileid', 'araccountid'].some(key => keys.filter(name => name.toLowerCase() === key).length > 1)) return null;
+      const hasProfileId = unique('arprofileid'), hasAccountId = unique('araccountid');
+      const profileId = hasProfileId ? String(data.arprofileid ?? '').trim() : '';
+      const accountId = hasAccountId ? String(data.araccountid ?? '').trim() : '';
+      if (Boolean(profileId) !== Boolean(accountId)) return null;
+      const protectedModelFields = new Set(['roomtypecharge', 'sourceofbusinessdesc', 'sourceofbus', 'childages', 'activechildcategories']);
+      const businessKeys = keys.filter(key => protectedModelFields.has(key.toLowerCase()) || /^child[1-9]\d*(?:_display|status)?$/i.test(key)).sort();
+      if (businessKeys.some(key => businessKeys.filter(other => other.toLowerCase() === key.toLowerCase()).length !== 1)) return null;
+      const business = businessKeys.map(key => [key, typeof data[key], JSON.stringify(data[key]) ?? null]);
+      return { session: String(data.bookingsessionid), guestId: String(data.guestid ?? '').trim(),
+        firstName: fields.firstname[0].value, lastName: fields.lastname[0].value,
+        arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value,
+        business, ar: profileId ? { profileId, accountId, hasProfileId, hasAccountId } : null };
+    }, { record, origin: CLOUD_ORIGIN, propertyCode, blankIds: GUARANTEE_BLANK_IDS });
+    if (!state) return null;
+    let guest = null;
+    if (state.guestId) {
+      if (!isVerifiedLabtestProfile(page, state.guestId)) return null;
+      const token = await verifiedLabtestProfileToken(page, { nativeId: state.guestId, session: state.session });
+      if (!token) return null;
+      guest = { nativeId: state.guestId, token };
+    }
+    let ar = null;
+    if (state.ar) {
+      const token = await verifiedArSelectionToken(page, { ...state.ar, session: state.session });
+      if (!token) return null;
+      ar = { ...state.ar, token };
+    }
+    if ((state.arrival && !wireDate(state.arrival)) || (state.departure && !wireDate(state.departure))) return null;
+    const result = { record, propertyCode, ...state, guest, ar };
+    record = null;
+    return result;
+  } finally { if (owned && record) await record.dispose(); }
+}
+
+function sameMarketDraft(a, b) {
+  if (!a || !b) return false;
+  const { record: _a, ...left } = a, { record: _b, ...right } = b;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+// Diagnostics contain only fixed field names and booleans; values, including
+// the booking session and profile identifiers, never leave runtime memory.
+export function marketChangeRequest(page, request, expected) {
+  const diagnostics = { transport: false, proof: false, fieldsPresent: {}, fields: {}, safeIntent: {} };
+  try {
+    const draft = expected.draft, ar = draft.ar, guest = draft.guest;
+    diagnostics.proof = (!guest || isVerifiedLabtestProfileCurrent(page, { session: draft.session, ...guest })) &&
+      (!ar || isVerifiedArSelectionCurrent(page, { session: draft.session, ...ar }));
+    const url = new URL(request.url()), frame = request.frame();
+    diagnostics.transport = request.method() === 'POST' && url.origin === CLOUD_ORIGIN && url.pathname === MARKET_CHANGE &&
+      !url.search && !url.hash && !url.username && !url.password && frame === page.mainFrame() && frame.page() === page &&
+      /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '');
+    const raw = request.postData() || '';
+    if (raw.length > 262144) return { allowed: false, diagnostics };
+    const body = new URLSearchParams(raw), keys = [...body.keys()];
+    const match = (key, value) => body.getAll(key).length === 1 && body.get(key) === value &&
+      keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+    const fields = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR',
+      propertycode: draft.propertyCode, PKID: `@[EMPTY]#@[EMPTY]#${draft.propertyCode}#`, status: 'New',
+      marketsegment: expected.value, bookingsessionid: draft.session, confirmationnumber: '', guestid: guest?.nativeId || '',
+      firstname: draft.firstName, lastname: draft.lastName, ONLY_DATA_REQUIRED: 'true', pagemode: 'display',
+      ...Object.fromEntries(GUARANTEE_BLANK_IDS.map(key => [key, ''])),
+      ...(draft.arrival ? { arrivaldate: wireDate(draft.arrival).wire } : {}),
+      ...(draft.departure ? { departuredate: wireDate(draft.departure).wire } : {}),
+      ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}) };
+    for (const [key, value] of Object.entries(fields)) {
+      diagnostics.fieldsPresent[key] = body.getAll(key).length === 1 && keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+      diagnostics.fields[key] = match(key, value);
+    }
+    const safe = ['action', 'pageaction', 'operation', 'autosave', 'newprofileclick', 'linkprofileflag', 'linkedprofileflag',
+      'savecctoprofile', 'savesettlementcctoprofile', 'createinactiveprofileflag', 'reqguestprofilelookup',
+      'isafterreservationsave', 'confirmnewguestprofile', 'confirminactiveguestprofile', 'cardnumber', 'cardnumber1',
+      'cardtypecode', 'cardtypecode1', 'cardhdname', 'cardhdname1', 'cardtrans', 'reservationshareid',
+      'additionalprofileids', 'addlplayerprofileid', 'sendemail', 'udfchkbox04'];
+    for (const name of safe) {
+      const entries = [...body].filter(([key]) => key.toLowerCase() === name);
+      // Native data-only field calls include the installation's autosave setting.
+      // YES is admitted only by this New-draft market endpoint and its response proof.
+      const nativeSetting = name === 'autosave' && entries.length === 1 && entries[0][1] === 'YES';
+      diagnostics.safeIntent[name] = entries.length <= 1 && (!entries.length || nativeSetting ||
+        ['', '0', 'false', 'null'].includes(entries[0][1].trim().toLowerCase()));
+    }
+    for (const name of ['araccountid', 'arprofileid']) {
+      if (!ar) {
+        const entries = [...body].filter(([key]) => key.toLowerCase() === name);
+        diagnostics.safeIntent[name] = entries.length <= 1 && (!entries.length || !entries[0][1].trim());
+      }
+    }
+    return { allowed: diagnostics.transport && diagnostics.proof && Object.values(diagnostics.fields).every(Boolean) &&
+      Object.values(diagnostics.safeIntent).every(Boolean), diagnostics };
+  } catch { return { allowed: false, diagnostics }; }
+}
+
 function parseGuaranteeResponse(text) {
   if (typeof text !== 'string' || !text.trim() || /^\s*</.test(text)) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
   let badEscape = false;
@@ -272,6 +397,72 @@ async function verifyGuaranteeResponse(response, expected) {
   }
 }
 
+function marketDiagnosticPayload(text) {
+  let badEscape = false;
+  const strings = text.replace(/("(?:\\.|[^"\\])*")|'((?:\\.|[^'\\])*)'/gs, (all, double, single) => {
+    if (double) return double;
+    const value = single.replace(/\\(u[\da-fA-F]{4}|x[\da-fA-F]{2}|.)/gs, (match, escape) => {
+      const values = { "'": "'", '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', v: '\v', 0: '\0' };
+      if (Object.hasOwn(values, escape)) return values[escape];
+      if (escape[0] === 'u' || escape[0] === 'x') return String.fromCharCode(parseInt(escape.slice(1), 16));
+      badEscape = true; return '';
+    });
+    return JSON.stringify(value);
+  });
+  if (badEscape) throw new Error('MARKET_RESPONSE_INVALID');
+  return JSON.parse(strings.replace(/("(?:\\.|[^"\\])*")|([,{]\s*)([A-Za-z_$][\w$]*)\s*:/g,
+    (match, quoted, prefix, key) => quoted || `${prefix}"${key}":`));
+}
+
+export async function observeMarketResponse(response, expected) {
+  const diagnostic = { status: null, parsed: false, accepted: false, valuesPresent: false, pkidCompatible: false, fieldsPresent: {}, fields: {} };
+  try {
+    diagnostic.status = response.status();
+    const text = await bounded(response.text(), 5000, 'MARKET_RESPONSE_TIMEOUT');
+    if (text.length > 2097152) throw new Error('MARKET_RESPONSE_TOO_LARGE');
+    const payload = marketDiagnosticPayload(text), data = payload?.pageData;
+    const content = value => Array.isArray(value) ? value.length > 0 : value != null && value !== false && value !== '';
+    diagnostic.parsed = true;
+    diagnostic.pageDataPresent = Boolean(data && typeof data === 'object');
+    diagnostic.success = typeof payload?.success === 'boolean' ? payload.success : null;
+    diagnostic.pageDataSuccess = typeof data?.success === 'boolean' ? data.success : null;
+    diagnostic.errorsPresent = [payload, data].some(part => content(part?.error) || content(part?.errors));
+    diagnostic.messagesPresent = content(data?.messages);
+    const values = parsePickerResponse(text)?.values;
+    diagnostic.accepted = true;
+    diagnostic.valuesPresent = Boolean(values && typeof values === 'object' && !Array.isArray(values));
+    if (diagnostic.valuesPresent) {
+      const draft = expected.draft, ar = draft.ar, guest = draft.guest;
+      const fields = { propertycode: draft.propertyCode, status: 'New',
+        marketsegment: expected.value, bookingsessionid: draft.session, confirmationnumber: '', guestid: guest?.nativeId || '',
+        firstname: draft.firstName, lastname: draft.lastName,
+        ...Object.fromEntries(GUARANTEE_BLANK_IDS.map(key => [key, ''])),
+        ...(draft.arrival ? { arrivaldate: wireDate(draft.arrival).wire } : {}),
+        ...(draft.departure ? { departuredate: wireDate(draft.departure).wire } : {}),
+        ...(ar ? { araccountid: ar.accountId, arprofileid: ar.profileId } : {}) };
+      const keys = Object.keys(values);
+      const pkidKeys = keys.filter(key => key.toLowerCase() === 'pkid');
+      diagnostic.pkidCompatible = pkidKeys.length === 0 || (pkidKeys.length === 1 &&
+        clean(values[pkidKeys[0]]) === `@[EMPTY]#@[EMPTY]#${draft.propertyCode}#`);
+      for (const [key, value] of Object.entries(fields)) {
+        diagnostic.fieldsPresent[key] = Object.hasOwn(values, key) && keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1;
+        diagnostic.fields[key] = diagnostic.fieldsPresent[key] && clean(values[key]) === value;
+      }
+    }
+  } catch { diagnostic.readOrParseFailed = true; }
+  return diagnostic;
+}
+
+function marketBusinessFieldsUnchanged(before, after) {
+  const names = new Set(['confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate',
+    'adults', 'children', 'ta1', 'company', 'araccountname', 'reservationnote', 'emailaddress', 'guaranteetype',
+    'roomtype', 'roomtypecharge', 'rateplan', 'sourceofbusiness', 'sourceofbusinessdesc', 'sourceofbus', 'reasonforstay', 'caller', 'udfchar06', 'guestoptin4',
+    'udfchkbox04', 'udfchar09', 'udfchar13', 'track', 'tracksubsegment']);
+  const protectedFields = fields => fields.filter(field => names.has(field.name) || /^child[1-9]\d*(?:_display)?$/i.test(field.name || ''))
+    .map(({ id, name, value }) => ({ id, name, value }));
+  return JSON.stringify(protectedFields(before)) === JSON.stringify(protectedFields(after));
+}
+
 async function dialogs(page, nativeDialog, allowed) {
   if (nativeDialog()) throw new Error('UNEXPECTED_DIALOG');
   const windows = page.locator('.x-window:visible:not(.x-menu)');
@@ -284,7 +475,7 @@ async function dialogs(page, nativeDialog, allowed) {
   if (allowed !== 'ages' && await page.locator('.x-window[id^="childagespopup"]:visible').count()) throw new Error('UNEXPECTED_DIALOG');
 }
 
-async function run(page, propertyCode, { allowed = null, post = null, expectedAges = null, guaranteeFence = false,
+async function run(page, propertyCode, { allowed = null, post = null, expectedAges = null, guaranteeFence = false, marketFence = false,
   createAuthority } = {}, operation) {
   if (typeof propertyCode !== 'string' || !/^[A-Z0-9]+$/.test(propertyCode)) return inputGap('PROPERTY_CODE_REQUIRED');
   if (!page || typeof page.route !== 'function' || typeof page.evaluate !== 'function') return inputGap('PAGE_REQUIRED');
@@ -294,26 +485,44 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
   let fence = null, approval = null, ageValidationReady = false, ageValidationCount = 0;
   let guaranteeExpected = null, guaranteeApproved = null, rejectDialog;
   const guaranteeResponses = [];
+  let marketExpected = null, marketApproved = null, marketRecord = null, marketResponseTask = null, marketFinished = false;
+  const marketResponses = [], marketDiagnostic = {};
   const dialogPromise = new Promise((_, reject) => { rejectDialog = reject; });
   const onDialog = dialog => { nativeDialog = true; fence?.quarantine();
-    void dialog.dismiss().catch(() => {}); if (post === 'guarantee') rejectDialog(new Error('UNEXPECTED_DIALOG')); };
-  const onResponse = (response) => { if (response.request() === guaranteeApproved) guaranteeResponses.push(response); };
+    void dialog.dismiss().catch(() => {}); if (post === 'guarantee' || post === 'market') rejectDialog(new Error('UNEXPECTED_DIALOG')); };
+  const onResponse = (response) => {
+    if (response.request() === guaranteeApproved) guaranteeResponses.push(response);
+    if (response.request() === marketApproved) {
+      marketResponses.push(response);
+      marketResponseTask = observeMarketResponse(response, marketExpected).then(diagnostic => { marketDiagnostic.response = diagnostic; });
+    }
+  };
+  const onFinished = request => { if (request === marketApproved) marketFinished = true; };
+  const onFailed = request => { if (request === marketApproved) { marketDiagnostic.requestFailed = true; fence?.quarantine(); } };
   const ensureActive = () => { if (!active) throw new Error('ACTION_EXPIRED'); };
   const guard = async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
-    const safeRead = ['GET', 'HEAD', 'OPTIONS'].includes(method) && !DANGEROUS_PATH.test(url.pathname);
+    const safeRead = ['GET', 'HEAD', 'OPTIONS'].includes(method) && !DANGEROUS_PATH.test(url.pathname) &&
+      !(post === 'market' && marketExpected);
     let allowed = method === 'POST' && post && allowedPost(request, CLOUD_ORIGIN, propertyCode, post, expectedAges);
     if (post === 'guarantee' && method === 'POST' && url.pathname === GUARANTEE_CHANGE && guaranteeExpected &&
         guaranteeRequest(page, request, guaranteeExpected)) {
       if (active && !guaranteeApproved && approval?.allow(request)) { guaranteeApproved = request; allowed = true; }
       else if (active) fence?.quarantine();
     }
+    if (post === 'market' && method === 'POST' && url.pathname === MARKET_CHANGE && marketExpected) {
+      const match = marketChangeRequest(page, request, marketExpected);
+      match.diagnostics.identity = cloudSessionIdentity(page)?.propertyCode === propertyCode;
+      marketDiagnostic.request = match.diagnostics;
+      if (match.allowed && match.diagnostics.identity && active && !marketApproved && approval?.allow(request)) { marketApproved = request; allowed = true; }
+      else if (active) fence?.quarantine();
+    }
     const ageValidation = method === 'POST' && url.pathname === CHILD_AGE_VALIDATE;
     if ((!safeRead && !allowed) || (ageValidation &&
         (!ageValidationReady || ageValidationCount !== 0 || !approval?.allow(request)))) {
-      if (post === 'guarantee' && attempted) fence?.quarantine();
+      if ((post === 'guarantee' || post === 'market') && attempted) fence?.quarantine();
       blocked.push({ method, path: url.pathname });
       await route.abort();
     } else {
@@ -330,22 +539,26 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
     ensureActive();
   };
   page.on('dialog', onDialog);
-  if (post === 'guarantee') page.on('response', onResponse);
+  if (post === 'guarantee' || post === 'market') page.on('response', onResponse);
+  if (post === 'market') { page.on('requestfinished', onFinished); page.on('requestfailed', onFailed); }
   try {
     const execute = async () => {
       await check();
       before = await readFields(page); ensureActive();
       const paths = [...(post === 'ages' ? [CHILD_AGE_VALIDATE] : []),
-        ...(post === 'guarantee' || guaranteeFence ? [GUARANTEE_CHANGE] : [])];
+        ...(post === 'guarantee' || guaranteeFence ? [GUARANTEE_CHANGE] : []),
+        ...(post === 'market' || marketFence ? [MARKET_CHANGE] : [])];
       if (paths.length) {
         fence = await installPageRequestFence(page, paths); ensureActive();
-        if (post === 'ages' || post === 'guarantee') approval = fence.open();
+        if (post === 'ages' || post === 'guarantee' || post === 'market') approval = fence.open();
       }
       await page.route('**/*', guard);
       if (!active) { await page.unroute('**/*', guard).catch(() => {}); throw new Error('ACTION_EXPIRED'); }
       const result = await operation({ check, mark: () => { ensureActive(); attempted = true; },
         allowAgeValidation: () => { ensureActive(); ageValidationReady = true; },
-        allowGuarantee: (expected) => { ensureActive(); guaranteeExpected = expected; } });
+        allowGuarantee: (expected) => { ensureActive(); guaranteeExpected = expected; },
+        ownMarketRecord: record => { ensureActive(); marketRecord = record; },
+        allowMarket: expected => { ensureActive(); marketExpected = expected; } });
       ensureActive();
       if (post === 'guarantee' && result.outcome === 'updated_unsaved') {
         const deadline = Date.now() + 10000;
@@ -355,10 +568,24 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
         if (!guaranteeApproved || guaranteeResponses.length !== 1) throw new Error('GUARANTEE_RESPONSE_UNVERIFIED');
         await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: 10000 }); ensureActive();
       }
+      if (post === 'market' && result.outcome === 'updated_unsaved') {
+        const deadline = Date.now() + 10000;
+        while ((!marketResponses.length || !marketFinished) && Date.now() < deadline && !marketDiagnostic.requestFailed) {
+          await new Promise(resolve => setTimeout(resolve, 100)); ensureActive();
+        }
+        if (marketResponseTask) await marketResponseTask;
+        if (!marketApproved || marketResponses.length !== 1 || !marketFinished || marketDiagnostic.requestFailed ||
+            marketDiagnostic.response?.status !== 200 || !marketDiagnostic.response?.accepted || !marketDiagnostic.response?.valuesPresent ||
+            marketDiagnostic.response?.pkidCompatible !== true ||
+            !Object.values(marketDiagnostic.response.fields).every(Boolean)) throw new Error('MARKET_RESPONSE_UNVERIFIED');
+        await page.waitForFunction(() => !Ext.Ajax.isLoading(), null, { timeout: 10000 }); ensureActive();
+        await page.waitForTimeout(1000); ensureActive();
+        if (fence?.isQuarantined()) throw new Error('MARKET_REQUEST_UNCERTAIN');
+      }
       // Child Apply has a validated response and response-derived parent counts;
       // guarantee has its matched response and draft checks. Other controls still
       // need the guarded observation window for uncorrelated blur effects.
-      const correlatedUpdate = result.outcome === 'updated_unsaved' && ['ages', 'guarantee'].includes(post);
+      const correlatedUpdate = result.outcome === 'updated_unsaved' && ['ages', 'guarantee', 'market'].includes(post);
       if (!correlatedUpdate) await page.waitForTimeout(1000);
       await check();
       const after = await readFields(page); ensureActive();
@@ -369,30 +596,46 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
         await verifyGuaranteeResponse(guaranteeResponses[0], guaranteeExpected); ensureActive();
         await check();
       }
+      if (post === 'market' && result.outcome === 'updated_unsaved') {
+        const current = await marketDraft(page, propertyCode, marketRecord); ensureActive();
+        if (!sameMarketDraft(current, marketExpected?.draft) || !marketBusinessFieldsUnchanged(before, after)) throw new Error('MARKET_DRAFT_CHANGED');
+        const submitted = await (await uniqueInput(page, 'marketsegment')).evaluate(el => Ext.getCmp(el.id.replace(/-inputEl$/, ''))?.getSubmitData?.()?.marketsegment);
+        if (clean(submitted) !== clean(result.requested)) throw new Error('SETTLED_READBACK_MISMATCH');
+        await check();
+      }
       const changedFields = changes(before, after);
       if (result.outcome === 'closed_unsaved' && changedFields.length) throw new Error('CMS_CANCEL_FORM_CHANGED');
-      return { ...result, changedFields };
+      return { ...result, changedFields, ...(post === 'market' && marketDiagnostic.response ? { marketDiagnostic } : {}) };
     };
-    return post === 'guarantee' ? await bounded(Promise.race([execute(), dialogPromise]), 30000, 'GUARANTEE_ACTION_TIMEOUT') : await execute();
+    return post === 'guarantee' || post === 'market'
+      ? await bounded(Promise.race([execute(), dialogPromise]), 30000, post === 'market' ? 'MARKET_ACTION_TIMEOUT' : 'GUARANTEE_ACTION_TIMEOUT') : await execute();
   } catch (error) {
     active = false;
     if (attempted && fence) fence.quarantine();
+    if (post === 'market' && marketApproved && !marketResponseTask && !marketDiagnostic.requestFailed) {
+      const deadline = Date.now() + 5000;
+      while (!marketResponseTask && !marketDiagnostic.requestFailed && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    if (marketResponseTask) await bounded(marketResponseTask, 6000, 'MARKET_RESPONSE_TIMEOUT').catch(() => {});
     let observed;
     if (!nativeDialog) {
       try {
         const readback = async () => { await assertForm(page, propertyCode); return readFields(page); };
-        observed = post === 'guarantee' ? await bounded(readback(), 5000, 'GUARANTEE_READBACK_TIMEOUT') : await readback();
+        observed = post === 'guarantee' || post === 'market' ? await bounded(readback(), 5000, 'READBACK_TIMEOUT') : await readback();
       } catch { /* No safe readback. */ }
     }
     return { outcome: attempted ? 'action_uncertain' : 'execution_failure',
       issue: blocked.length ? 'UNEXPECTED_REQUEST_BLOCKED' : nativeDialog ? 'UNEXPECTED_DIALOG' : safeIssue(error),
-      ...(blocked.length ? { blockedRequests: blocked } : {}), ...(observed && before ? { changedFields: changes(before, observed) } : {}) };
+      ...(blocked.length ? { blockedRequests: blocked } : {}), ...(observed && before ? { changedFields: changes(before, observed) } : {}),
+      ...(post === 'market' ? { marketDiagnostic } : {}) };
   } finally {
     active = false;
     approval?.close();
     await page.unroute('**/*', guard).catch(() => {});
     page.off('dialog', onDialog);
-    if (post === 'guarantee') page.off('response', onResponse);
+    if (post === 'guarantee' || post === 'market') page.off('response', onResponse);
+    if (post === 'market') { page.off('requestfinished', onFinished); page.off('requestfailed', onFailed); }
+    if (marketRecord) await marketRecord.dispose().catch(() => {});
     busyPages.delete(page);
   }
 }
@@ -478,7 +721,7 @@ async function openCombo(page, input) {
 
 export async function listGuestStayDropdown(page, { propertyCode, field } = {}) {
   if (!Object.hasOwn(COMBOS, field || '')) return inputGap('DROPDOWN_FIELD_UNSUPPORTED');
-  return run(page, propertyCode, { guaranteeFence: field === 'guaranteeType' }, async ({ check, mark }) => {
+  return run(page, propertyCode, { guaranteeFence: field === 'guaranteeType', marketFence: field === 'marketSegment' }, async ({ check, mark }) => {
     const input = await uniqueInput(page, COMBOS[field]);
     await check(); mark();
     await openCombo(page, input);
@@ -503,9 +746,14 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
   if (!['string', 'number'].includes(typeof value) || clean(value) === '') return inputGap('DROPDOWN_VALUE_REQUIRED');
   if (field === 'adults' && (!Number.isInteger(value) || value < 0)) return inputGap('ADULT_COUNT_INVALID');
   const guarantee = field === 'guaranteeType';
-  return run(page, propertyCode, { post: guarantee ? 'guarantee' : null, createAuthority }, async ({ check, mark, allowGuarantee }) => {
-    const draft = guarantee ? await guaranteeDraft(page, propertyCode, createAuthority) : null;
+  const market = field === 'marketSegment';
+  return run(page, propertyCode, { post: guarantee ? 'guarantee' : market ? 'market' : null, createAuthority }, async ({ check, mark, allowGuarantee, allowMarket, ownMarketRecord }) => {
+    const draft = guarantee ? await guaranteeDraft(page, propertyCode, createAuthority) : market ? await marketDraft(page, propertyCode) : null;
     if (guarantee && !draft) return { outcome: 'unsupported', issue: 'GUARANTEE_DRAFT_UNSUPPORTED', field, requested: value };
+    if (market && !draft) return { outcome: 'unsupported', issue: 'MARKET_DRAFT_UNSUPPORTED', field, requested: value };
+    if (market) {
+      try { ownMarketRecord(draft.record); } catch (error) { await draft.record.dispose(); throw error; }
+    }
     const input = await uniqueInput(page, COMBOS[field]);
     await check(); mark();
     const list = await openCombo(page, input);
@@ -535,6 +783,20 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
         return { outcome: 'unchanged_unsaved', field, requested: value, actual: existing };
       }
       allowGuarantee({ draft: ready, value: clean(value) });
+    } else if (market) {
+      const existing = await input.evaluate(el => {
+        const cmp = Ext.getCmp(el.id.replace(/-inputEl$/, ''));
+        return { value: cmp?.getValue?.(), display: el.value, submitted: cmp?.getSubmitData?.()?.marketsegment };
+      });
+      await check();
+      const ready = await marketDraft(page, propertyCode, draft.record);
+      if (!sameMarketDraft(ready, draft)) throw new Error('MARKET_DRAFT_CHANGED');
+      if (clean(existing.value) === clean(value)) {
+        if (clean(existing.display) !== clean(matches[0].label) || clean(existing.submitted) !== clean(value)) throw new Error('DROPDOWN_READBACK_MISMATCH');
+        await page.keyboard.press('Escape'); await check();
+        return { outcome: 'unchanged_unsaved', field, requested: value, actual: existing };
+      }
+      allowMarket({ draft: ready, value: clean(value) });
     } else await check();
     await items.nth(indexes[0]).click({ timeout: 5000 });
     const checkSubmitted = guarantee || field === 'marketSegment';

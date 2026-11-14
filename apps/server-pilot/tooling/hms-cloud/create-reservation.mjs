@@ -564,6 +564,8 @@ export async function createReservation(input, options = {}) {
         output.applied.reasonForStay = state.reason.actual.display;
       }
       if (input.marketSegment != null) {
+        const cmsOff = await call(runTool, 'setCmsSendCheckbox', { propertyCode, checked: false });
+        if (cmsOff.actual !== false) stop('uncertain', 'requested_field_not_staged', { field: 'cms.send' });
         const selected = await call(runTool, 'selectGuestStayDropdown', { propertyCode, field: 'marketSegment', value: input.marketSegment });
         if (selected.actual?.value !== input.marketSegment || selected.actual?.submitted !== input.marketSegment ||
             !text(selected.actual?.display)) stop('uncertain', 'requested_field_not_staged', { field: 'marketSegment' });
