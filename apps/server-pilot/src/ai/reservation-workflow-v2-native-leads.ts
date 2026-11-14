@@ -308,6 +308,7 @@ export async function loadReservationNativeLeads(input: NativeLeadsInput): Promi
 async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { savedAmendBaseline?: SavedAmendBaseline }):
   Promise<ReservationWorkflowV2Observation[]> {
   if (input.propertyCode !== 'HRCEN' || input.signal?.aborted || (!input.db && !input.sourceThreadMessageIds)) return [];
+  const propertyCode = input.propertyCode;
   try {
     const loaded = await loadMemory(input.env ?? process.env);
     input.signal?.throwIfAborted();
@@ -393,7 +394,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
       const confidence = denominator ? support / denominator : 0;
       if (confidence < 0.8) return;
       observations.push({ ref: randomUUID(), generationId: input.generationId, kind: 'stay_candidate', status: 'partial',
-        observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
+        observedAt: new Date().toISOString(), propertyCode, sourceMessageId: input.source.messageId,
         sourceRefs: [], criteria: { kind: 'historical_auto_transfer_hint', workflow, requestId,
           sourceHash: input.source.sourceHash, fieldPath, partyKind, partyQuery, ...binding },
         coverage: { complete: false, notes: ['Prior native stays are informational; missing Auto Transfer details are unknown.'] },

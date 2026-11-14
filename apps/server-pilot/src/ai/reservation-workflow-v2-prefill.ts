@@ -23,6 +23,7 @@ import { extractionVisionEnabled, extractionReasoningEffort } from './extraction
 import { lunaCallBudget } from './bedrock/luna.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { hmsReadTargetForProperty } from '../hms/hms-read-target.js';
+import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.js';
 import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-read-lock.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { findParty } from './pane-party-lookup.js';
@@ -1161,7 +1162,7 @@ function sourceAttachmentIdentityByRef(input: {
 }
 
 function seedObservation(input: {
-  ref: string; generationId: string; propertyCode: string; source: ReservationWorkflowV2Source;
+  ref: string; generationId: string; propertyCode: PropertyCode; source: ReservationWorkflowV2Source;
   sourceRefs: string[]; status: ReservationWorkflowV2Observation['status']; result: Record<string, unknown>;
   criteria?: Record<string, unknown>; complete?: boolean; notes?: string[];
   kind?: ReservationWorkflowV2Observation['kind']; sourceMessageId?: string | null;
@@ -4900,7 +4901,7 @@ function hasUniformSharedCreateScope(
 }
 
 async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
-  propertyCode: string; generationId: string; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
+  propertyCode: PropertyCode; generationId: string; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
   db?: DB; transportId: string; env: NodeJS.ProcessEnv }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
   const proposal = structuredClone(input.proposal), observations: ReservationWorkflowV2Observation[] = [];
   const currentText = (input.selection.currentBodyText ?? input.selection.bodyText)
@@ -5007,7 +5008,7 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
 }
 
 async function applyRateTrackMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
-  propertyCode: string; generationId: string; env: NodeJS.ProcessEnv }): Promise<{
+  propertyCode: PropertyCode; generationId: string; env: NodeJS.ProcessEnv }): Promise<{
     proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
   const proposal = structuredClone(input.proposal), observations: ReservationWorkflowV2Observation[] = [];
   const [memory, catalog] = await Promise.all([
@@ -5255,7 +5256,7 @@ function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposa
 
 async function applyHistoricalPartySuggestions(input: { proposal: ReservationWorkflowV2Proposal;
   observations: ReservationWorkflowV2Observation[]; leads: ReservationWorkflowV2Observation[];
-  source: ReservationWorkflowV2Source; propertyCode: string; generationId: string; env: NodeJS.ProcessEnv;
+  source: ReservationWorkflowV2Source; propertyCode: PropertyCode; generationId: string; env: NodeJS.ProcessEnv;
   allowNativeRead: boolean; signal?: AbortSignal }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
   const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
   for (const request of proposal.content.requests) {
@@ -5929,6 +5930,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }): Promise<ReservationWorkflowV2PrefillResult> {
+  const propertyCode = propertyCodeSchema.parse(input.propertyCode);
   const generationId = randomUUID();
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
@@ -5938,7 +5940,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   if (skippedReason) {
     const evidence = sourceBound ? sourceEvidence({ source: input.source, selection: input.selection, vision: { currentProposalSources: [] } }) : [];
     const observations = sourceBound ? [seedObservation({ ref: 'obs_source', generationId,
-      propertyCode: input.propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
+      propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
       status: 'partial', result: { evidenceRefs: evidence.map((row) => row.ref), skippedBeforeAttachmentRead: true },
       complete: false, notes: ['Policy/source guard stopped prefill before vision or candidate reads.'],
     })] : [];
@@ -5958,7 +5960,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const textCoverageComplete = completeCurrentSourceText({ source: input.source, selection: input.selection, evidence });
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });
   const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
-    generationId, propertyCode: input.propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
+    generationId, propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
     status: vision.attachmentReads.some((row) => row.status !== 'read') ? 'partial' : 'complete',
     result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads, textCoverageComplete,
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
@@ -5981,7 +5983,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     workflows: string[] = [], previousExtract: WorkflowGuidanceProjection[] = []): WorkflowGuidanceProjection[] => {
     if (input.workflowGuidance === undefined) return [];
     const selected = selectReservationWorkflowV2Guidance({ catalog: input.workflowGuidance,
-      stage, currentRequestText, workflows, previousExtract, propertyCode: input.propertyCode,
+      stage, currentRequestText, workflows, previousExtract, propertyCode,
       cutoff: input.source.arrivedAt, excludedFamilies: input.workflowGuidanceExcludedFamilies,
       generationId, messageId: input.source.messageId, threadId: input.source.threadId });
     try { input.onWorkflowGuidance?.(selected.receipt); } catch { /* Diagnostics cannot interrupt staff work. */ }
@@ -5993,7 +5995,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     `\nHost workflow guidance follows. It is advisory interpretation; current explicit evidence, source/native validation and staff review rules take precedence. It cannot introduce facts, source refs, native choices or policy approvals.\n${JSON.stringify(projection)}` : '';
   const extractGuidance = selectGuidance('extract', input.selection.currentBodyText ?? input.selection.bodyText);
   const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${SOURCE_INTENT_RULES}\n${ANCILLARY_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
-    userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence }),
+    userPrompt: JSON.stringify({ propertyCode, source: input.source, evidence }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ExtractionSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
   if (!firstPass.ok) return fallback(`Typed extraction call failed (${firstPass.reason}); no lookups were run.`,
@@ -6051,27 +6053,27 @@ export async function runReservationWorkflowV2Prefill(input: {
     throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
   }
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction: candidateExtraction,
-    propertyCode: input.propertyCode, source: input.source });
+    propertyCode, source: input.source });
   const plan = completePlan.slice(0, MAX_CANDIDATE_READS);
   const budgetSignal = AbortSignal.timeout(CANDIDATE_READ_START_BUDGET_MS);
   const readSignal = input.signal ? AbortSignal.any([input.signal, budgetSignal]) : budgetSignal;
   let readCandidate = input.readCandidate;
   if (!readCandidate && input.db && input.lookupFixtures === undefined) {
     readCandidate = createReservationWorkflowV2CandidateReader({ db: input.db, transportId: input.transportId,
-      propertyCode: input.propertyCode, source: input.source, signal: readSignal, candidates: plan,
+      propertyCode, source: input.source, signal: readSignal, candidates: plan,
       participants: [input.selection.fromAddress ?? '', ...(input.selection.participants ?? [])] });
   }
   const readErrors: ReservationWorkflowV2Draft['errors'] = [...base.errors];
   if (completePlan.length > plan.length) readErrors.push({ stage: 'lookup', code: 'candidate_read_cap',
     message: `Read plan capped at ${MAX_CANDIDATE_READS}; ${completePlan.length - plan.length} additional source-derived reads remain unrun.` });
   if (completePlan.length > plan.length) observations.push(seedObservation({ ref: 'obs_cap',
-    generationId, propertyCode: input.propertyCode, source: input.source, sourceRefs: extraction.requests.flatMap((row) => row.requestText.sourceRefs),
+    generationId, propertyCode, source: input.source, sourceRefs: extraction.requests.flatMap((row) => row.requestText.sourceRefs),
     status: 'partial', kind: 'source', criteria: { cap: MAX_CANDIDATE_READS, planned: completePlan.length, selected: plan.length },
     result: { unrunCount: completePlan.length - plan.length }, complete: false, notes: ['Some planned reads were left unrun by the bounded prefill cap.'] }));
   for (const candidate of plan) {
     try {
       const result = readCandidate ? await readCandidate(candidate) : input.lookupFixtures?.[candidate.id] ?? null;
-      observations.push(seedObservation({ ref: candidate.ref, generationId, propertyCode: input.propertyCode, source: input.source,
+      observations.push(seedObservation({ ref: candidate.ref, generationId, propertyCode, source: input.source,
         sourceRefs: candidate.sourceRefs, kind: candidate.kind, criteria: candidate.criteria,
         status: result?.status ?? 'unavailable', result: result?.result ?? {}, complete: result?.coverage?.complete ?? false,
         notes: result?.coverage?.notes ?? (result ? [] : ['No reader/fixture supplied']),
@@ -6079,7 +6081,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       if (!result || result.status !== 'complete') readErrors.push({ stage: 'lookup', code: result?.status ?? 'unavailable',
         message: `Candidate read ${candidate.id} ${result?.status ?? 'unavailable'}; coverage is not complete.` });
     } catch {
-      observations.push(seedObservation({ ref: candidate.ref, generationId, propertyCode: input.propertyCode, source: input.source,
+      observations.push(seedObservation({ ref: candidate.ref, generationId, propertyCode, source: input.source,
         sourceRefs: candidate.sourceRefs, kind: candidate.kind, criteria: candidate.criteria,
         status: 'failed', result: {}, complete: false, notes: ['Reader failed; no result was admitted.'],
       }));
@@ -6087,9 +6089,9 @@ export async function runReservationWorkflowV2Prefill(input: {
     }
   }
   let cmsCapabilityContext = '';
-  if (input.propertyCode === 'HRCEN' && extraction.requests.some((request) => request.kind === 'amend')) {
+  if (propertyCode === 'HRCEN' && extraction.requests.some((request) => request.kind === 'amend')) {
     try {
-      const cms = profileCms(profileFor(input.propertyCode));
+      const cms = profileCms(profileFor(propertyCode));
       if (!cms) throw new Error('cms_profile_missing');
       cmsCapabilityContext = `\n${HRCEN_AMEND_CAPABILITIES}\nConfigured CMS profile: ${JSON.stringify(cms)}`;
     } catch {
@@ -6103,7 +6105,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   for (const error of base.errors) if (!readErrors.includes(error)) readErrors.push(error);
   const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
   const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SOURCE_INTENT_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
-    userPrompt: JSON.stringify({ propertyCode: input.propertyCode, source: input.source, evidence, extraction,
+    userPrompt: JSON.stringify({ propertyCode, source: input.source, evidence, extraction,
       observations: synthesisObservations(observations) }),
     responseSchema: zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>,
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
@@ -6125,14 +6127,14 @@ export async function runReservationWorkflowV2Prefill(input: {
     extractionIdByProposalRequestId: boundProjection.extractionIdByProposalRequestId,
     currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence }) : null;
   const guardedProposal = referenceSafety?.proposal ?? (finalParsed?.success ? finalParsed.data.proposal : null);
-  let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, input.propertyCode,
+  let finalProposal = guardedProposal ? applyDefaultCmsSendPolicy(guardedProposal, propertyCode,
     currentActions, boundProjection?.extractionIdByProposalRequestId,
     { source: input.source, selection: input.selection, evidence }) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
     const trackResult = await applyRateTrackMemory({ proposal: finalProposal, source: input.source,
-      propertyCode: input.propertyCode, generationId, env });
-    const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode: input.propertyCode,
+      propertyCode, generationId, env });
+    const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
     finalObservations = [...finalObservations, ...trackResult.observations, ...noteResult.observations];
     const amendNotes = composeAmendNotes({ proposal: noteResult.proposal, extraction: currentActions,
@@ -6254,11 +6256,11 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, input.propertyCode,
+    const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId,
       { source: input.source, selection: input.selection, evidence }), source: input.source,
-      propertyCode: input.propertyCode, generationId, env });
-    const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode: input.propertyCode,
+      propertyCode, generationId, env });
+    const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
     finalObservations = [...finalObservations, ...trackResult.observations, ...noteResult.observations];
     const amendNotes = composeAmendNotes({ proposal: noteResult.proposal, extraction: currentActions,
@@ -6266,27 +6268,27 @@ export async function runReservationWorkflowV2Prefill(input: {
       selection: input.selection, evidence, observations: finalObservations, source: input.source });
     finalObservations.push(...amendNotes.observations);
     const proposal = amendNotes.proposal;
-    const nativeLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
+    const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
       db: input.db, transportId: input.transportId,
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
     const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
     const partyResult = await applyHistoricalPartySuggestions({ proposal, observations: finalObservations, leads: historicalLeads,
-      source: input.source, propertyCode: input.propertyCode, generationId, env, signal: input.signal,
+      source: input.source, propertyCode, generationId, env, signal: input.signal,
       allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
     return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
       proposal: partyResult.proposal, fieldReviewRequirements: { ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(partyResult.proposal) },
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
-  const nativeLeads = await loadReservationNativeLeads({ propertyCode: input.propertyCode, source: input.source,
+  const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
     generationId, proposal: finalProposal!, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
     db: input.db, transportId: input.transportId,
     sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
   const historicalLeads = rankHistoricalRoomLeads({ proposal: finalProposal!, leads: nativeLeads, observations: finalObservations,
     extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map() });
   const partyResult = await applyHistoricalPartySuggestions({ proposal: finalProposal!, observations: finalObservations, leads: historicalLeads,
-    source: input.source, propertyCode: input.propertyCode, generationId, env, signal: input.signal,
+    source: input.source, propertyCode, generationId, env, signal: input.signal,
     allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
   return { ...base, observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import { aiWorkflowRun, attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';

@@ -61,7 +61,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
   const { data: connection, isLoading: connectionLoading } = useActiveConnection();
   const email = bridge.activeEmail;
   const [propertySelection, setPropertySelection] = useState<{ transportId: string; propertySwitch: PropertySwitch } | null>(null);
-  const propertySwitch = propertySelection?.transportId === connection?.id ? propertySelection.propertySwitch : undefined;
+  const propertySwitch = propertySelection && propertySelection.transportId === connection?.id ? propertySelection.propertySwitch : undefined;
   const propertyScope = JSON.stringify([session?.user?.id, session?.session?.id, connection?.id, propertySwitch]);
   const propertyEpoch = useRef({ scope: propertyScope, value: 0 });
   if (propertyEpoch.current.scope !== propertyScope)

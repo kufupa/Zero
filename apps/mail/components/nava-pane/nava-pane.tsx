@@ -474,7 +474,7 @@ export function NavaPane({
   const { data: session, isLoading } = useSession();
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
-  const propertySwitch = propertySelection?.transportId === activeConnection?.id ? propertySelection.propertySwitch : undefined;
+  const propertySwitch = propertySelection && propertySelection.transportId === activeConnection?.id ? propertySelection.propertySwitch : undefined;
   const configKey = JSON.stringify([session?.user?.id, session?.session?.id, activeConnection?.id, propertySwitch]);
   const configEpoch = useRef({ key: configKey, value: 0 });
   if (configEpoch.current.key !== configKey) configEpoch.current = { key: configKey, value: configEpoch.current.value + 1 };
