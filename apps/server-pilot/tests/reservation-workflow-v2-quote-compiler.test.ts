@@ -138,6 +138,8 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
   it('clears organization selection blockers after native selection and staff acceptance', () => {
     const value = draft();
     expect(fields(value)).toContain('organization_selection_required');
+    // O8: bare code plus mounted picker path for Review/focus.
+    expect(fields(value)).toContain(`${requestRoot}/parties/organization`);
 
     const selectionPath = `${requestRoot}/parties/organization/nativeSelectionRef`;
     value.fieldOverrides[selectionPath] = { state: 'set', value: candidateRef, updatedAt: now };
@@ -153,6 +155,37 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
 
     expect(fields(value, true)).not.toContain('organization_selection_required');
     expect(fields(value, true)).not.toContain('organization_requires_staff_acceptance');
+  });
+
+  it('surfaces focus paths for poisoned org/agency names (Pass4/Pass6 fail modes)', () => {
+    // Former workItemIds: 7940e9dc… unknown_staff; e497761d… name_unresolved; 6678481f… agency.
+    const orgPath = `${requestRoot}/parties/organization`;
+    const agencyPath = `${requestRoot}/parties/bookingAgency`;
+
+    const unknownStaff = draft();
+    unknownStaff.fieldOverrides[`${orgPath}/name`] = { state: 'unknown', updatedAt: now };
+    expect(fields(unknownStaff)).toEqual(expect.arrayContaining([
+      'organization_unknown_staff_value',
+      orgPath,
+    ]));
+
+    const unresolved = draft();
+    unresolved.proposal.content.requests[0]!.body.parties.organization = {
+      name: null, candidateRefs: [], suggestedRef: null,
+    } as never;
+    expect(fields(unresolved)).toEqual(expect.arrayContaining([
+      'organization_name_unresolved',
+      orgPath,
+    ]));
+
+    const agency = draft();
+    agency.proposal.content.requests[0]!.body.parties.bookingAgency = {
+      name: 'Poisoned Agency', candidateRefs: [], suggestedRef: null,
+    } as never;
+    expect(fields(agency)).toEqual(expect.arrayContaining([
+      'bookingAgency_selection_required',
+      agencyPath,
+    ]));
   });
 
   it('clears native rate code blocker when staff sets a valid rate plan', () => {

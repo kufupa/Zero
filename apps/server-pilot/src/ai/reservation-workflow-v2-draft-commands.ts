@@ -18,6 +18,32 @@ const ptr = (...parts: (string | number)[]) => '/' + parts.map((part) => encodeU
 const rec = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, any> : {};
 const id = () => randomUUID();
+
+/** Poisoned whole-array overrides (clear/unknown/non-array) block structural edits unless discarded. */
+export function isPoisonedStructuralArrayOverride(override: { state: string; value?: unknown } | undefined): boolean {
+  if (!override) return false;
+  return override.state !== 'set' || !Array.isArray(override.value);
+}
+
+/** Resolve remove_quote_group entityId; accept stable group id or numeric index. */
+export function resolveQuoteGroupEntityId(
+  groups: Array<{ id: string }>,
+  entityId: string | undefined,
+): string | null {
+  if (entityId && groups.some((row) => row.id === entityId)) return entityId;
+  if (typeof entityId === 'string' && /^\d{1,3}$/.test(entityId)) {
+    return groups[Number(entityId)]?.id ?? null;
+  }
+  return null;
+}
+
+/** Quote selectNative replaces typed/poisoned names with the Infor candidate; Create still gates on name. */
+export function partySelectNativeRequiresMatchingName(
+  requestKind: string,
+  amendPath: boolean,
+): boolean {
+  return Boolean(amendPath) || requestKind !== 'quote';
+}
 type FilingRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'filing' }>;
 type FilingTargetHint = NonNullable<FilingRequest['body']['targets']>['include'][number];
 type CancelRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'cancel' }>;
@@ -218,7 +244,12 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
       const materializeArray = (path: string): boolean => {
         const override = draft.fieldOverrides[path];
         if (!override) return true;
-        if (override.state !== 'set' || !Array.isArray(override.value)) return false;
+        // Poisoned whole-array overrides (clear/unknown/non-array) must not block
+        // structural row commands such as remove_quote_group — drop and use body.
+        if (isPoisonedStructuralArrayOverride(override)) {
+          delete draft.fieldOverrides[path];
+          return true;
+        }
         const parts = path.slice('/proposal/'.length).split('/').map(decodeURIComponent);
         let parent: any = proposal;
         for (const part of parts.slice(0, -1)) parent = Array.isArray(parent)
@@ -497,8 +528,11 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           request.body.groups.push(row); createdId = row.id; changedRoots.push(`${root}/body/groups`); break;
         }
         case 'remove_quote_group': {
-          if (request.kind !== 'quote' || request.body.groups.length <= 1 || !request.body.groups.some((row) => row.id === input.entityId)) return null;
-          request.body.groups = request.body.groups.filter((row) => row.id !== input.entityId); removeLinked('quote_group', input.entityId!);
+          if (request.kind !== 'quote' || request.body.groups.length <= 1) return null;
+          const entityId = resolveQuoteGroupEntityId(request.body.groups, input.entityId);
+          if (!entityId) return null;
+          request.body.groups = request.body.groups.filter((row) => row.id !== entityId);
+          removeLinked('quote_group', entityId);
           changedRoots.push(`${root}/body/groups`); break;
         }
         case 'add_target': {
@@ -1067,7 +1101,10 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
         const nativeId = String(candidate.nativeId ?? '');
         if (!(request.kind === 'quote' ? /^[A-Za-z0-9._-]{1,64}$/ : /^\d{1,30}$/).test(nativeId) ||
             typeof candidate.name !== 'string' || !candidate.name.trim()) return null;
-        if (!amendPath) {
+        if (partySelectNativeRequiresMatchingName(request.kind, amendPath)) {
+          // Create/Amend still require the typed name to match the lookup query
+          // (or an already-bound selection). Quote selectNative replaces poisoned
+          // or cleared names with the chosen Infor candidate below.
           const normalize = (value: unknown) => typeof value === 'string'
             ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : '';
           const name = normalize(valueAt(draft, `${parent}/name`));

@@ -9,6 +9,13 @@ describe('reservation workflow attention fields', () => {
       .toBe(`${root}/body/parties/organization`);
     expect(attentionFieldPath('bookingAgency_requires_staff_acceptance', root))
       .toBe(`${root}/body/parties/bookingAgency`);
+    // Former Pass4/Pass6 fail modes (7940e9dc, 65c27686, e497761d).
+    expect(attentionFieldPath('organization_unknown_staff_value', root))
+      .toBe(`${root}/body/parties/organization`);
+    expect(attentionFieldPath('organization_name_unresolved', root))
+      .toBe(`${root}/body/parties/organization`);
+    expect(attentionFieldPath('organization_selection_required', root))
+      .toBe(`${root}/body/parties/organization`);
   });
 
   it('maps extra and meal-plan blockers to editable controls', () => {
