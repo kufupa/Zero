@@ -226,6 +226,27 @@ test('record header POST is bound to the selected HRCEN confirmation and native 
   assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', partial.toString()), selected), false);
   const repeated = new URLSearchParams(withChrome); repeated.append('menu_module_key', '0');
   assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', repeated.toString()), selected), false);
+  const recordReturn = new URLSearchParams(body);
+  recordReturn.set('SCROLLROW', 'YES');
+  recordReturn.set('ONLY_DATA_REQUIRED', 'true');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', recordReturn.toString()), selected), true);
+  for (const [key, value] of [['SCROLLROW', 'NO'], ['ONLY_DATA_REQUIRED', 'false'],
+    ['confirmationnumber', '999-1'], ['propertycode', 'HRDAV'], ['CURRENT_TAB_NAME', 'SAVE']]) {
+    const changed = new URLSearchParams(recordReturn); changed.set(key, value);
+    assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', changed.toString()), selected), false);
+  }
+  for (const key of ['SCROLLROW', 'ONLY_DATA_REQUIRED', 'guestid']) {
+    const changed = new URLSearchParams(recordReturn); changed.delete(key);
+    assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', changed.toString()), selected), false);
+  }
+  const duplicateReturn = new URLSearchParams(recordReturn); duplicateReturn.append('scrollrow', 'YES');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', duplicateReturn.toString()), selected), false);
+  for (const [key, value] of [['pageaction', 'SAVE'], ['MENU_MODULE_KEY', '0'], ['removescreenflows', 'yes']]) {
+    const changed = new URLSearchParams(recordReturn); changed.set(key, value);
+    assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', changed.toString()), selected), false);
+  }
+  assert.equal(savedStayReadMayRequest({ ...post('/web/base/OSRESV.HDR', recordReturn.toString()),
+    url: `${origin}/web/base/OSRESV.HDR?pageaction=SAVE` }, selected), false);
   for (const [key, value] of [['confirmationnumber', '999-1'], ['propertycode', 'HRDAV'],
     ['reservationstayid', '456&action=SAVE'], ['guestid', ''], ['CURRENT_TAB_NAME', 'SAVE']]) {
     const changed = new URLSearchParams(body); changed.set(key, value);
