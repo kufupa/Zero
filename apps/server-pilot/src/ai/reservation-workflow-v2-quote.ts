@@ -789,6 +789,8 @@ function compileQuote(
   };
 }
 
+export const compileReservationWorkflowV2Quote = compileQuote;
+
 async function quoteTarget(ctx: ReadContext, input: QuoteBaseInput) {
   try {
     const result = await resolveHmsQuoteJobTarget({

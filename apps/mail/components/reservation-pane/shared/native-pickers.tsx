@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { autoTransferHistory, effectiveAt, hasCompleteNativeCatalogue, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { CENTURION_RATE_CATALOGUE } from '../../../../server-pilot/src/hms/centurion-rate-catalogue';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
@@ -50,6 +51,16 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const catalogueField = ['create', 'quote', 'amend'].includes(editor.request.kind) &&
     ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business', 'track'].includes(choiceKind ?? '');
   const observedChoices = nativeChoices(editor.snapshot, entity ? selectionPath : path, choiceKind);
+  const rateCatalogueObserved = choiceKind === 'rate_plan' && editor.snapshot.session.draft.observations.some((observation) => {
+    const criteria = record(observation.criteria);
+    return observation.generationId === editor.snapshot.session.draft.generationId &&
+      observation.propertyCode === editor.snapshot.session.draft.propertyCode &&
+      observation.sourceMessageId === editor.snapshot.session.draft.source.messageId &&
+      criteria.kind === 'native_catalogue' && criteria.catalogueKind === 'rate_plan' &&
+      criteria.requestId === editor.request.id;
+  });
+  const rateCatalogueLoaded = choiceKind !== 'rate_plan' ||
+    observedChoices.some((choice) => choice.ref.startsWith('catalogue:')) || rateCatalogueObserved;
   const availableChoices = choiceKind === 'reason_for_stay' ? observedChoices
     .filter(row => /^(business|leisure(?: guest)?)$/i.test(row.label))
     .map(row => ({ ...row, label: /^leisure/i.test(row.label) ? 'Leisure' : 'Business' })) : observedChoices;
@@ -87,7 +98,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const openChoices = () => {
     if (!open) setCatalogueSearch(null);
     setOpen(true); setActiveIndex(-1);
-    if ((amendTrack && !open) || (!choices.length && !lookupError && (entity ? Boolean(query.trim()) : true))) void loadChoices();
+    if ((amendTrack && !open) || ((!rateCatalogueLoaded || !choices.length) && !lookupError &&
+        (entity ? Boolean(query.trim()) : true))) void loadChoices();
   };
   useEffect(() => {
     if (!open) return;
@@ -125,7 +137,14 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     editVersion.current += 1;
     const before = editVersion.current;
     try { if (entity) await editor.commands.selectNative(selectionPath, ref);
-      else await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
+      else {
+        await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
+        const board = editor.snapshot.session.draft.propertyCode === 'HRCEN' && choiceKind === 'rate_plan' &&
+          path.endsWith('/ratePlan') ? CENTURION_RATE_CATALOGUE[value as keyof typeof CENTURION_RATE_CATALOGUE]?.mealPlan : undefined;
+        const mealPlan = board === 'bed_breakfast' ? 'bb' : board === 'dinner_bed_breakfast' ? 'dinner_bb' : board;
+        if (mealPlan && mealPlan !== 'unknown')
+          await editor.commands.edit(path.replace(/\/ratePlan$/u, '/mealPlan'), mealPlan);
+      }
       if (editVersion.current === before) {
         if (catalogueField) editor.commands.setUncommitted(path, false);
         setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1);

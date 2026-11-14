@@ -20,7 +20,7 @@ const partyFields: BookingField[] = [
   { key: 'bookingAgency', label: 'Primary Booking Agency', party: true },
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
-  { key: 'billingReference', label: 'Billing Reference', maxLength: 4000, hint: 'Select an A/R Account. Infor accepts at most 50 characters.' },
+  { key: 'billingReference', label: 'Billing Reference', maxLength: 50, hint: 'Select an A/R Account. Infor accepts at most 50 characters.' },
   { key: 'taCommission', label: 'Travel agency commission (%)', type: 'percentage', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
 ];
 const stayFields: BookingField[] = [
@@ -62,7 +62,7 @@ function BookingControl({ field, path, editor, defaultValue, emptyState }: {
 
 function UnsupportedTerms({ editor, path }: { editor: Editor; path: string }) {
   if (effectiveAt(editor.snapshot, path) !== true) return null;
-  return <div className={styles.notice}>Terms and Conditions: this stored setting cannot be applied in Infor.
+  return <div className={styles.notice} data-field-path={path}>Terms and Conditions: this stored setting cannot be applied in Infor.
     <button type="button" disabled={editor.view.busy} onClick={() => void editor.commands.edit(path, false)}>Clear unsupported setting</button>
   </div>;
 }
@@ -344,7 +344,7 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
       editor.snapshot.session.draft.staffReviews[path]?.status !== 'accepted';
   });
   const required = ['firstName', 'lastName', 'mobile'].every(field => text(guest[field]).trim());
-  return <div className={styles.stack}>
+  return <div className={styles.stack} data-field-path={guestPath}>
     {newProfile ? <div className={styles.groupHeading}><strong>New guest profile</strong>
       <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'existing_or_unknown')}>Search instead</button></div>
       : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={`${guestPath}/nativeSelectionRef`} editor={editor} kind="guest_candidate" disabled={locked} compact />

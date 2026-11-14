@@ -144,10 +144,10 @@ const bookingFieldsSchema = z.object({
   taCommission: value(z.union([z.number().min(0).max(100), z.string().max(40)])).optional(),
   sourceOfBusiness: value(z.string().max(120)).optional(),
   reasonForStay: value(z.string().max(500)).optional(),
-  billingReference: value(z.string().max(4000)).optional(),
+  billingReference: value(z.string().max(50)).optional(),
   track: value(z.string().max(120)).optional(),
-  guestOptIn: value(z.boolean()).optional(),
-  bookerName: value(z.string().max(300)).optional(),
+  guestOptIn: value(z.literal(false)).optional(),
+  bookerName: value(z.string().max(50)).optional(),
   bookerEmail: value(z.string().max(320)).optional(),
   bookerMobile: value(z.string().max(120)).optional(),
   reservationNote: value(z.string().max(2000)).optional(),
@@ -237,7 +237,13 @@ const changeSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('clear'), field: amendFieldSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
   z.object({ op: z.literal('shift_dates'), days: z.number().int(), sourceRefs: z.array(refSchema).max(100) }).strict(),
   z.object({ op: z.literal('shift_departure'), days: z.number().int(), sourceRefs: z.array(refSchema).max(100) }).strict(),
-]);
+]).superRefine((change, ctx) => {
+  if (change.op === 'set' && change.field === 'billingReference' &&
+      (typeof change.value !== 'string' || change.value.length > 50)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['value'],
+      message: 'Billing Reference must be at most 50 characters.' });
+  }
+});
 const amendBodySchema = z.object({
   targets: savedScopeSchema,
   sharedChanges: z.array(changeSchema).max(200),
@@ -342,7 +348,12 @@ export function separatedQuoteMoneyLinked(
 
 // Existing drafts may contain notes accepted before the native limit was fixed.
 // New/model proposals still use the strict 2,000-character schema above.
-const storedBookingFieldsSchema = bookingFieldsSchema.extend({ reservationNote: value(z.string().max(4000)).optional() });
+const storedBookingFieldsSchema = bookingFieldsSchema.extend({
+  billingReference: value(z.string().max(4000)).optional(),
+  guestOptIn: value(z.boolean()).optional(),
+  bookerName: value(z.string().max(300)).optional(),
+  reservationNote: value(z.string().max(4000)).optional(),
+});
 const storedCreateBodySchema = createBodySchema.extend({
   shared: storedBookingFieldsSchema,
   dateSections: z.array(createBodySchema.shape.dateSections.element.extend({ defaults: storedBookingFieldsSchema })).max(100),

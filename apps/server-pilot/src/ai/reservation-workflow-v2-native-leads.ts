@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import { z } from 'zod';
 import { and, eq, lt, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
@@ -61,15 +63,30 @@ const rateTrackMappingSchema = z.array(z.object({ propertyCode: z.string(), rate
   candidates: z.array(z.object({ track: z.string(), support: z.number().int().positive(),
     denominator: z.number().int().positive(), confidence: z.number().min(0).max(1) })) }));
 
+const defaultMemoryDir = '/home/orca/.local/share/zero/research/halloween/raw-data';
+async function firstExistingPath(paths: string[]): Promise<string | undefined> {
+  for (const path of paths) {
+    try {
+      await access(path);
+      return path;
+    } catch {}
+  }
+}
+async function resolveMemoryPmsPath(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  if (env.HMS_MEMORY_PMS_PATH) return env.HMS_MEMORY_PMS_PATH;
+  const dir = env.HMS_MEMORY_DATA_DIR || defaultMemoryDir;
+  return firstExistingPath([join(dir, 'pms.json'), join(dir, 'stay360-1a-1b-1c-20261029-run01.json')]);
+}
+
 /** Native stay evidence, scoped to the selected message's arrival; no rate-code guessing. */
 export async function loadReservationRateMealMapping(input: { propertyCode: string; arrivedAt: string; env?: NodeJS.ProcessEnv }):
   Promise<{ status: 'available'; mappings: z.infer<typeof rateMealMappingSchema> } | { status: 'unavailable'; issue: string }> {
   const env = input.env ?? process.env;
-  const dir = env.HMS_MEMORY_DATA_DIR || '/home/orca/.local/share/zero/research/halloween/raw-data';
   try {
     const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
+    const pmsPath = await resolveMemoryPmsPath(env);
     const parsed = rateMealMappingSchema.safeParse(await module.loadHmsRateMealMapping({ propertyCode: input.propertyCode,
-      asOf: input.arrivedAt, pmsPaths: [env.HMS_MEMORY_PMS_PATH || `${dir}/stay360-1a-1b-1c-20261029-run01.json`],
+      asOf: input.arrivedAt, pmsPaths: pmsPath ? [pmsPath] : [],
       observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
     if (!parsed.success) return { status: 'unavailable', issue: 'RATE_MEAL_MEMORY_INVALID' };
     return { status: 'available', mappings: parsed.data };
@@ -82,11 +99,11 @@ export async function loadReservationRateMealMapping(input: { propertyCode: stri
 export async function loadReservationRateTrackMapping(input: { propertyCode: string; arrivedAt: string; env?: NodeJS.ProcessEnv }):
   Promise<{ status: 'available'; mappings: z.infer<typeof rateTrackMappingSchema> } | { status: 'unavailable'; issue: string }> {
   const env = input.env ?? process.env;
-  const dir = env.HMS_MEMORY_DATA_DIR || '/home/orca/.local/share/zero/research/halloween/raw-data';
   try {
     const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
+    const pmsPath = await resolveMemoryPmsPath(env);
     const parsed = rateTrackMappingSchema.safeParse(await module.loadHmsRateTrackMapping({ propertyCode: input.propertyCode,
-      asOf: input.arrivedAt, pmsPaths: [env.HMS_MEMORY_PMS_PATH || `${dir}/stay360-1a-1b-1c-20261029-run01.json`],
+      asOf: input.arrivedAt, pmsPaths: pmsPath ? [pmsPath] : [],
       observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
     if (!parsed.success) return { status: 'unavailable', issue: 'RATE_TRACK_MEMORY_INVALID' };
     return { status: 'available', mappings: parsed.data };
@@ -176,10 +193,13 @@ async function loadMemory(env: NodeJS.ProcessEnv): Promise<Memory | null> {
   if (!cached || cached.key !== key || Date.now() - cached.loadedAt > 5 * 60_000) {
     const value = (async () => {
       const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href);
-      const dir = env.HMS_MEMORY_DATA_DIR || '/home/orca/.local/share/zero/research/halloween/raw-data';
+      const dir = env.HMS_MEMORY_DATA_DIR || defaultMemoryDir;
+      const pmsPath = await resolveMemoryPmsPath(env);
+      const outboundPdfPath = env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
+        await firstExistingPath([join(dir, 'outbound.jsonl'), join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl')]));
       const loaded = await tool.loadOptionalBookingMemory({
-        pmsPath: env.HMS_MEMORY_PMS_PATH || `${dir}/stay360-1a-1b-1c-20261029-run01.json`,
-        outboundPdfPath: env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined : `${dir}/centurion-outbound-pdf-records-2026-10-29.jsonl`),
+        pmsPath,
+        outboundPdfPath,
         observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined,
       });
       const parsed = memorySchema.safeParse(loaded.memory);

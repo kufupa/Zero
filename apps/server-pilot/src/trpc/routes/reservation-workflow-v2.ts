@@ -80,7 +80,7 @@ export const reservationWorkflowV2Procedure = mailboxProcedure.use(async ({ ctx,
   const startedAt = Date.now();
   const result = await next();
   try {
-    logReservationWorkflowFailure({ path, rawInput: await getRawInput(),
+    await logReservationWorkflowFailure({ path, rawInput: await getRawInput(),
       ...(result.ok ? { result: result.data } : { error: result.error }),
       userId: ctx.sessionUser.id, transportId: ctx.activeTransportId,
       correlationId: ctx.reqHeaders.get('x-nava-action-id'), elapsedMs: Date.now() - startedAt });

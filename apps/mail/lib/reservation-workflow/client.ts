@@ -448,7 +448,16 @@ function okResult(result: unknown): RecordValue {
 
 /** Translate compiler pointers into the business fields staff can correct. */
 export function inputFieldLabel(value: string): string {
-  const key = value.split(':')[0]!.split('/').at(-1) ?? value;
+  const [rawPath, reason = ''] = value.split(':');
+  const key = rawPath!.split('/').at(-1) ?? value;
+  if (reason === 'lunch_extra_price_required' || key === 'lunch_extra_price_required') return 'lunch extra requested amount';
+  if (reason === 'allowance_requires_supported_staff_choice' || key === 'allowance_requires_supported_staff_choice') return 'Handle as for this extra';
+  if (reason === 'native_meal_plan_code_required' || reason === 'native_board_code_required' ||
+      key === 'native_meal_plan_code_required' || key === 'native_board_code_required') return 'Rate Plan (sets Meal Plan)';
+  if (/^organization_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(key))
+    return 'Organization';
+  if (/^bookingAgency_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(key))
+    return 'Primary Booking Agency';
   const labels: Record<string, string> = {
     scope: 'occupancy scope', occupancy: 'number of children and their ages', known_child_count_and_ages_required: 'number of children and their ages', known_child_count: 'number of children and their ages',
     childCount: 'number of children', childAges: 'children’s ages', adults: 'adults',
@@ -456,7 +465,7 @@ export function inputFieldLabel(value: string): string {
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
     roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'Meal Plan request', guaranteeType: 'guarantee',
     sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
-    guestOptIn: 'guest opt-in', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
+    guestOptIn: 'Terms and Conditions', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
     staffAllowanceType: 'extra charge handling', cmsRecipient: 'confirmation recipient',
     cmsMessageId: 'confirmation message', targets: 'exact stays',
@@ -467,6 +476,21 @@ export function inputFieldLabel(value: string): string {
   if (suffix && labels[suffix]) return labels[suffix]!;
   const plain = key.replace(/([a-z])([A-Z])/g, '$1 $2').replaceAll('_', ' ');
   return /^\d+$/.test(plain) ? 'requested details' : plain;
+}
+
+/** Normalize compiler-only issue fields to mounted, editable pane controls. */
+export function attentionFieldPath(value: string, requestRoot: string): string {
+  const [rawPath, reason = ''] = value.split(':');
+  let path = rawPath!;
+  if (/^organization_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(path))
+    return `${requestRoot}/body/parties/organization`;
+  if (/^bookingAgency_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(path))
+    return `${requestRoot}/body/parties/bookingAgency`;
+  if (reason === 'allowance_requires_supported_staff_choice' && /\/requestedMoney\/[^/]+$/u.test(path))
+    path += '/staffAllowanceType';
+  if ((reason === 'native_meal_plan_code_required' || reason === 'native_board_code_required') && path.endsWith('/mealPlan'))
+    path = `${path.slice(0, -'/mealPlan'.length)}/ratePlan`;
+  return path;
 }
 function inputFieldLabels(values: unknown): string {
   return Array.isArray(values) ? [...new Set(values.filter(isString).map(inputFieldLabel))].join(', ') : '';
@@ -622,13 +646,18 @@ function quoteOperationNotice(result: unknown, success: string[], action: string
     salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
     artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',
     bookingAgency_selection_required: 'Primary Booking Agency', organization_selection_required: 'Organization',
+    lunch_extra_price_required: 'lunch extra requested amount',
+    allowance_requires_supported_staff_choice: 'Handle as for this extra',
+    native_meal_plan_code_required: 'Rate Plan (sets Meal Plan)', native_board_code_required: 'Rate Plan (sets Meal Plan)',
   };
   const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
     const [path, reason] = field.split(':');
     const group = /\/groups\/(\d+)(?:\/|$)/u.exec(path ?? '');
     const key = path?.split('/').at(-1) ?? '';
     const label = reason === 'separate_quote_runs_required' ? 'separate date ranges'
-      : reason === 'date_range_invalid' ? 'date range' : key === 'groups' ? 'room groups' : labels[key] ?? labels[reason ?? ''] ?? 'quote details';
+      : reason === 'date_range_invalid' ? 'date range'
+        : /^(?:organization|bookingAgency)_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(key)
+          ? inputFieldLabel(key) : labels[reason ?? ''] ?? (key === 'groups' ? 'room groups' : labels[key]) ?? 'quote details';
     return group ? `room group ${Number(group[1]) + 1}: ${label}` : label;
   }))] : [];
   return `${action}: ${issue ?? 'Infor could not complete this step. Review the quote and recorded result'}${fields.length ? `. Review: ${fields.join(', ')}` : ''}.`;

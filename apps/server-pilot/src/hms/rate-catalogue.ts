@@ -13,6 +13,7 @@ export type { CenturionRateBoard, CenturionRatePlan, CenturionRateCode, Centurio
 type HmsPropertyCode = 'HRCEN' | 'HRDAV';
 type QuotePaneBoard = 'room_only' | 'bb' | 'dinner_bb';
 type PropertyRatePlan = CenturionRatePlan & { code: string };
+type NativeRatePlan = { code: string; name: string };
 
 export type QuoteSalesStrategyCode = 'BAR' | 'PROMO' | 'PRESET' | 'WS' | 'NC' | 'GOV' | 'AIR' | 'DOML' | 'OTHER';
 export type QuoteSalesStrategy = {
@@ -95,18 +96,53 @@ function boardsForPlans(plans: readonly PropertyRatePlan[]): QuotePaneBoard[] {
   return PANE_BOARD_ORDER.filter((board) => known.has(board));
 }
 
+/** Prefer captured HMS rate plans when available; static entries only cover catalog absence. */
+export async function loadNativeRatePlans(
+  propertyCode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<NativeRatePlan[] | null> {
+  const path = env.HMS_NATIVE_CATALOG_PATH;
+  if (!path) return null;
+  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href) as {
+    loadHmsNativeCatalog: (input: { path: string; propertyCode: string }) => Promise<
+      { status: string; catalog?: { catalogs?: { ratePlans?: { records?: unknown[] } } } }
+    >;
+  };
+  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode });
+  if (loaded.status !== 'available') return null;
+  const records = loaded.catalog?.catalogs?.ratePlans?.records;
+  if (!Array.isArray(records)) return null;
+  const rates = new Map<string, NativeRatePlan>();
+  for (const raw of records) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    const code = typeof record.code === 'string' ? record.code.trim() : '';
+    const meaning = typeof record.meaning === 'string' ? record.meaning.trim() : '';
+    if (code) rates.set(code, { code, name: meaning || code });
+  }
+  return rates.size ? [...rates.values()] : null;
+}
+
 /** Build safe pane choices for a property already resolved from the active mailbox registry entry. */
 export async function quotePaneConfigForProperty(
   propertyCode: string,
   transportId: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<PropertyQuotePaneConfig | null> {
   if (propertyCode === 'HRCEN') {
+    const nativeRates = await loadNativeRatePlans(propertyCode, env);
+    const ratePlans: PropertyRatePlan[] = nativeRates?.map(({ code, name }) => ({
+      code,
+      mealPlan: 'unknown',
+      ...CENTURION_RATE_CATALOGUE[code as keyof typeof CENTURION_RATE_CATALOGUE],
+      name,
+    })) ?? CENTURION_RATE_PLANS;
     return {
       transportId,
       propertyCode,
       roomTypes: Object.entries(ROOM_TYPE_NAMES).map(([code, label]) => ({ code, label })),
-      ratePlans: CENTURION_RATE_PLANS,
-      mealPlans: boardsForPlans(CENTURION_RATE_PLANS),
+      ratePlans,
+      mealPlans: boardsForPlans(ratePlans),
       salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, null),
       overrideRateCodes: [...CENTURION_OVERRIDE_RATE_CODES],
       eventRateCodes: [...CENTURION_EVENT_RATE_CODES],

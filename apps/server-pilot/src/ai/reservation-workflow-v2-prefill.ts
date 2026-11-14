@@ -1279,18 +1279,26 @@ function buildFallbackProposal(input: {
     const bookerName = safeCurrentText(booker?.name, currentRefs, 50);
     const bookerEmail = safeCurrentText(booker?.email, currentRefs, 320);
     const bookerMobile = safeCurrentText(booker?.mobile, currentRefs, 120);
-    const board = safeCurrentText(request.mealPlanHints[0], currentRefs, 120);
+    const fallbackBoards = [...new Map(request.mealPlanHints.flatMap((hint) => {
+      const value = safeCurrentText(hint, currentRefs, 120);
+      return value ? [[boardMeaning(value), boardValue(value)] as const] : [];
+    })).values()];
     if (request.kind === 'quote') return { ...base, kind: 'quote' as const, body: {
-      groups: request.dates.length ? request.dates.map((date, dateIndex) => ({ id: stableId(id, 'date', String(dateIndex)),
-        arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
-        departure: currentClaim(date.departure, currentRefs) && typeof date.departure?.value === 'string' && date.departure.value.length <= 40 ? date.departure.value : null,
-        quantity: quoteDatedRoomCount(request, date, currentRefs).count,
-        guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300) ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? [],
-        mealPlan: null, requestedMealPlan: safeCurrentText(date.mealPlan, currentRefs, 120) ?? board ?? null,
-        roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room').codes, ratePlan: null,
-        occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
-      })) : [{ id: stableId(id, 'date', '0'), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan: null,
-        roomCodes: [], ratePlan: null, occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [] }],
+      groups: request.dates.length ? request.dates.flatMap((date, dateIndex) => {
+        const datedBoard = safeCurrentText(date.mealPlan, currentRefs, 120);
+        return (datedBoard ? [datedBoard] : fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
+          id: stableId(id, 'date', String(dateIndex), 'board', String(boardIndex)),
+          arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
+          departure: currentClaim(date.departure, currentRefs) && typeof date.departure?.value === 'string' && date.departure.value.length <= 40 ? date.departure.value : null,
+          quantity: quoteDatedRoomCount(request, date, currentRefs).count,
+          guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300) ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? [],
+          mealPlan: null, requestedMealPlan,
+          roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room').codes, ratePlan: null,
+          occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
+        }));
+      }) : (fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
+        id: stableId(id, 'date', '0', 'board', String(boardIndex)), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan,
+        roomCodes: [], ratePlan: null, occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [] })),
       guestNames: request.guests.flatMap(guest => guest.role === 'guest' && safeCurrentText(guest.name, currentRefs, 300) ? [safeCurrentText(guest.name, currentRefs, 300)!] : []),
       parties: Object.fromEntries(request.parties.filter(party => party.role !== 'ar_account').flatMap(party => {
         const name = safeCurrentText(party.name, currentRefs, 300);
@@ -1491,9 +1499,37 @@ function citedText(claim: { value: unknown } | undefined): string | null | undef
 /** Preserve only occupancy claims cited by the active mail/attachment; prior-thread values are context. */
 function fallbackQuoteOccupancy(request: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>) {
   const empty = { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null };
-  if (request.dates.filter((date) => currentClaim(date.arrival, currentRefs) || currentClaim(date.departure, currentRefs)).length > 1 ||
-      request.occupancy.length !== 1) return { occupancy: empty, sourceRefs: [] as string[] };
-  const row = request.occupancy[0]!;
+  const currentRows = request.occupancy.filter((row) => currentClaim(row.adults, currentRefs) ||
+    currentClaim(row.childCount, currentRefs) || row.childAges?.some((claim) => currentClaim(claim, currentRefs)));
+  if (!currentRows.length) return { occupancy: empty, sourceRefs: [] as string[] };
+  const perRoomAdults = currentRows.flatMap((row) => {
+    const claim = row.scope === 'per_room' ? currentClaim(row.adults, currentRefs) : undefined;
+    const value = citedInteger(claim);
+    return claim && typeof value === 'number' ? [{ claim, value }] : [];
+  });
+  const counts = new Map<number, number>();
+  for (const candidate of perRoomAdults) counts.set(candidate.value, (counts.get(candidate.value) ?? 0) + 1);
+  const ranked = [...counts].sort((left, right) => right[1] - left[1]);
+  const dominantAdult = ranked.length && (ranked.length === 1 || ranked[0]![1] > ranked[1]![1]) ? ranked[0]![0] : undefined;
+  if (dominantAdult !== undefined) {
+    const adultClaims = perRoomAdults.filter((candidate) => candidate.value === dominantAdult).map((candidate) => candidate.claim);
+    const childCountClaims = currentRows.flatMap((row) => {
+      const claim = row.scope === 'per_room' ? currentClaim(row.childCount, currentRefs) : undefined;
+      const value = citedInteger(claim);
+      return claim && typeof value === 'number' ? [{ claim, value }] : [];
+    });
+    const childCounts = [...new Set(childCountClaims.map(({ value }) => value))];
+    const childCount = childCounts.length === 1 ? childCounts[0]! : null;
+    const ageClaims = currentRows.flatMap((row) => row.scope === 'per_room'
+      ? row.childAges?.filter((claim) => currentClaim(claim, currentRefs)) ?? [] : []);
+    const childAges = ageClaims.length && childCount === ageClaims.length ? ageClaims.map((claim) => citedInteger(claim) ?? null)
+      : childCount === 0 ? [] : null;
+    const claims = [...adultClaims, ...childCountClaims.map(({ claim }) => claim), ...ageClaims];
+    return { occupancy: { scope: 'per_room' as const, adults: dominantAdult, childCount, childAges },
+      sourceRefs: [...new Set(claims.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))] };
+  }
+  if (currentRows.length !== 1) return { occupancy: empty, sourceRefs: [] as string[] };
+  const row = currentRows[0]!;
   const adultsClaim = currentClaim(row.adults, currentRefs);
   const childCountClaim = currentClaim(row.childCount, currentRefs);
   const ageClaims = row.childAges?.filter((claim) => currentClaim(claim, currentRefs));
@@ -3579,6 +3615,24 @@ function projectCurrentExtraction(input: {
       const originalDateGroups = structuredClone(request.body.groups);
       for (const group of request.body.groups) { group.mealPlan = null; group.requestedMealPlan = null; }
       const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
+      const currentBoards = extracted.mealPlanHints.flatMap((hint) => {
+        const claim = currentClaim(hint, currentRefs);
+        return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
+      });
+      const boardsByValue = new Map(currentBoards.map((claim) => [boardMeaning(claim.value), claim]));
+      if (request.body.groups.length === 1 && boardsByValue.size === 2 && boardsByValue.has('dinner') && boardsByValue.has('bb')) {
+        const dinner = boardsByValue.get('dinner')!, breakfast = boardsByValue.get('bb')!;
+        boardsByValue.clear();
+        boardsByValue.set('dinner_bb', { raw: `${dinner.raw}; ${breakfast.raw}`, value: 'dinner_bb',
+          sourceRefs: [...new Set([...dinner.sourceRefs, ...breakfast.sourceRefs])] });
+      }
+      if (!sourceRooms.length && boardsByValue.size > 1) {
+        for (const group of request.body.groups) {
+          const original = originalDateGroups.find((candidate) => candidate.id === group.id);
+          const board = boardsByValue.get(boardMeaning(original?.requestedMealPlan ?? original?.mealPlan));
+          if (board) group.requestedMealPlan = boardValue(board.value);
+        }
+      }
       const sourceRoomByGroupId = new Map<string, typeof sourceRooms[number]>();
       if (sourceRooms.length && singleCurrentDatePair(projectedDates, currentRefs)) {
         const originalGroups = request.body.groups;
@@ -3667,17 +3721,6 @@ function projectCurrentExtraction(input: {
         }
       }
 
-      const currentBoards = extracted.mealPlanHints.flatMap((hint) => {
-        const claim = currentClaim(hint, currentRefs);
-        return claim && typeof claim.value === 'string' && claim.value.trim() ? [claim] : [];
-      });
-      const boardsByValue = new Map(currentBoards.map((claim) => [boardMeaning(claim.value), claim]));
-      if (request.body.groups.length === 1 && boardsByValue.size === 2 && boardsByValue.has('dinner') && boardsByValue.has('bb')) {
-        const dinner = boardsByValue.get('dinner')!, breakfast = boardsByValue.get('bb')!;
-        boardsByValue.clear();
-        boardsByValue.set('dinner_bb', { raw: `${dinner.raw}; ${breakfast.raw}`, value: 'dinner_bb',
-          sourceRefs: [...new Set([...dinner.sourceRefs, ...breakfast.sourceRefs])] });
-      }
       if (sourceRoomByGroupId.size && linkedQuoteGroups.length === request.body.groups.length) {
         for (const groupIndex of linkedQuoteGroups) {
           const group = request.body.groups[groupIndex]!;
@@ -3720,9 +3763,10 @@ function projectCurrentExtraction(input: {
         const sameRoomScope = request.body.groups.length === 1 || roomCodes.codes.length === 1 &&
           quoteGroupsShareRoomScope(request.body.groups);
         const oneDateScope = Boolean(currentDatePair) && linkedQuoteGroups.length === request.body.groups.length;
-        const canProject = request.body.groups.length > 0 && extracted.occupancy.length === 1 &&
-          occupancy.sourceRefs.length > 0 && oneDateScope &&
-          sameRoomScope && (request.body.groups.length === 1 || occupancy.occupancy.scope === 'per_room');
+        const allGroupsLinked = linkedQuoteGroups.length === request.body.groups.length;
+        const canProject = request.body.groups.length > 0 && occupancy.sourceRefs.length > 0 &&
+          (occupancy.occupancy.scope === 'per_room' ? allGroupsLinked :
+            extracted.occupancy.length === 1 && oneDateScope && sameRoomScope && request.body.groups.length === 1);
         if (canProject) {
           for (const groupIndex of linkedQuoteGroups) request.body.groups[groupIndex]!.occupancy = occupancy.occupancy;
         } else {
@@ -3914,6 +3958,33 @@ function projectCurrentExtraction(input: {
             (boardsByValue.size === 1 ? boardValue([...boardsByValue.values()][0]!.value) : null);
           const dateMatches = previous.filter(group => !usedIds.has(group.id) &&
             arrival && departure && group.arrival === arrival && group.departure === departure);
+          const boardAlternatives = !safeCurrentText(date.mealPlan, currentRefs, 120) && boardsByValue.size > 1
+            ? dateMatches.filter((group) => boardsByValue.has(matchedBoard(group.requestedMealPlan ?? group.mealPlan))) : [];
+          if (new Set(boardAlternatives.map((group) =>
+              matchedBoard(group.requestedMealPlan ?? group.mealPlan))).size === boardsByValue.size) {
+            return boardAlternatives.map((group) => {
+              usedIds.add(group.id);
+              projectedGroupRows.push({ date, inferred, category: false });
+              const claim = boardsByValue.get(matchedBoard(group.requestedMealPlan ?? group.mealPlan))!;
+              return { ...group, arrival, departure, quantity, mealPlan: null, requestedMealPlan: boardValue(claim.value),
+                guestNames: date.guestNames?.flatMap((candidate) => safeCurrentText(candidate, currentRefs, 300)
+                  ? [safeCurrentText(candidate, currentRefs, 300)!] : []) ?? group.guestNames ?? [] };
+            });
+          }
+          if (!safeCurrentText(date.mealPlan, currentRefs, 120) && boardsByValue.size > 1 && dateMatches.length === 1) {
+            const template = dateMatches[0]!;
+            const templateBoard = matchedBoard(template.requestedMealPlan ?? template.mealPlan);
+            const retainedBoard = boardsByValue.has(templateBoard) ? templateBoard : boardsByValue.keys().next().value as string;
+            usedIds.add(template.id);
+            return [...boardsByValue].map(([meaning, claim], boardIndex) => {
+              projectedGroupRows.push({ date, inferred, category: false });
+              return { ...template, id: meaning === retainedBoard ? template.id :
+                stableId(request.id, 'dated_room_row', String(index), 'board', String(boardIndex)),
+                arrival, departure, quantity, mealPlan: null, requestedMealPlan: boardValue(claim.value),
+                guestNames: date.guestNames?.flatMap((candidate) => safeCurrentText(candidate, currentRefs, 300)
+                  ? [safeCurrentText(candidate, currentRefs, 300)!] : []) ?? template.guestNames ?? [] };
+            });
+          }
           const boardMatches = board ? dateMatches.filter(group =>
             matchedBoard(group.requestedMealPlan ?? group.mealPlan) === matchedBoard(board)) : dateMatches;
           const priorBoardMatches = board ? dateMatches.filter(group => {

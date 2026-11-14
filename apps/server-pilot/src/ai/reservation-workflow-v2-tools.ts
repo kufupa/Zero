@@ -44,6 +44,7 @@ import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-
 import { persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
+import { loadNativeRatePlans } from '../hms/rate-catalogue.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
 import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
@@ -1016,7 +1017,8 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
         observation.coverage.complete && Number.isFinite(observedAt) && Date.now() - observedAt < 30 * 60_000 &&
         result?.closeOutcome === 'closed_unsaved' && Array.isArray(result.candidates);
     });
-    if (cached) {
+    // A staff refresh of rate plans must reach HMS; captured catalog data is fallback only.
+    if (cached && kind !== 'rate_plan') {
       const observation = { ...cached, ref: randomUUID(), criteria: { ...cached.criteria,
         workflow: `${request.kind}_catalogue`, requestId: request.id, catalogueKind: kind, fieldPaths: [path] } };
       const appended = await appendReservationWorkflowV2Observation(stateContext(ctx), { workItemId: input.workItemId,
@@ -1025,11 +1027,15 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
         observationRef: observation.ref } : appended;
     }
   }
-  const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
-    withBookingLookupSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
-      Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
-  };
   let read: Record<string, unknown> | null;
+  const nativeRates = kind === 'rate_plan'
+    ? await loadNativeRatePlans(ctx.property.propertyCode).catch(() => null)
+    : null;
+  const rateCatalogueFallback = () => nativeRates ? {
+    candidates: nativeRates.map(({ code, name }) => ({ code, label: name })),
+      complete: false, clean: true, nativeCriteria: { scope: 'configured_native_catalog' },
+      nativeCoverage: { complete: false, loaded: nativeRates.length },
+  } : null;
   if (request.kind === 'amend' && field === 'track') {
     const amend = await import('./reservation-workflow-v2-amend.js');
     const scoped = await amend.readAmendTrackChoices(ctx, loaded.draft, request.id, path);
@@ -1037,6 +1043,10 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
     read = { candidates: scoped.candidates, complete: true, clean: true,
       selectedTargets: scoped.selectedTargets, nativeCoverage: scoped.nativeCoverage };
   } else try {
+    const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
+      withBookingLookupSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+        Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+    };
     read = record(await tool.withBookingLookupSession(async ({ page, runTool }) => {
       if (field === 'track') {
         const tracks = await import(new URL('../../tooling/hms-cloud/guest-stay-track-catalog.mjs', import.meta.url).href) as {
@@ -1097,7 +1107,12 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
         clean: ['matches', 'no_match'].includes(String(found.outcome)) && closed.outcome === 'closed_unchanged',
         nativeCoverage: coverage, issue: found.issue };
     }, { memory: null, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
-  } catch { return { status: 'failed', issue: 'native_choices_read_failed' }; }
+  } catch {
+    read = rateCatalogueFallback();
+    if (!read) return { status: 'failed', issue: 'native_choices_read_failed' };
+  }
+  if (kind === 'rate_plan' && (read?.clean !== true || !Array.isArray(read.candidates) || !read.candidates.length))
+    read = rateCatalogueFallback() ?? read;
   if (read?.clean !== true) return { status: 'failed', issue: text(read?.issue) ?? 'native_choice_picker_close_unverified' };
   const candidates = Array.isArray(read.candidates) ? read.candidates : [];
   if (!candidates.length && read.complete !== true) return { status: 'failed', issue: text(read.issue) ?? 'native_choices_unavailable' };
