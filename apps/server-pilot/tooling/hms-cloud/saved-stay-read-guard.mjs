@@ -106,9 +106,12 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
       if (!body) return false;
       const chrome = body.size === recordHeaderKeys.size + 2 && body.get('menu_module_key') === '0' &&
         body.get('removescreenflows') === 'yes';
-      if (body.size !== recordHeaderKeys.size && !chrome) return false;
+      const recordReturn = body.size === recordHeaderKeys.size + 2 && body.get('scrollrow') === 'YES' &&
+        body.get('only_data_required') === 'true';
+      if (body.size !== recordHeaderKeys.size && !chrome && !recordReturn) return false;
       return [...recordHeaderKeys].every((key) => body.has(key)) && [...body].every(([key, value]) =>
-        (recordHeaderKeys.has(key) || (chrome && ['menu_module_key', 'removescreenflows'].includes(key))) &&
+        (recordHeaderKeys.has(key) || (chrome && ['menu_module_key', 'removescreenflows'].includes(key)) ||
+          (recordReturn && ['scrollrow', 'only_data_required'].includes(key))) &&
         value.length <= 256 && !/[\p{Cc}]/u.test(value)) &&
         body.get('system_function_name') === 'OSRESV' && body.get('user_function_name') === 'OSRESV' &&
         body.get('current_tab_name') === 'HDR' && body.get('confirmationnumber') === confirmation &&
