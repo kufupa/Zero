@@ -428,7 +428,9 @@ export function QuoteEditor(editor: Editor) {
       {!groups.length && <p className={styles.notice}>Add a room group to start a manual quote.</p>}
       {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Refresh before relying on it.`}</p>}
       <div className={styles.groupHeading}><strong>Room groups</strong>
-        <button type="button" className={styles.linkButton} aria-label="Add room group" disabled={view.busy || groups.length >= 8}
+        <button type="button" className={styles.linkButton} aria-label="Add room group"
+          data-field-path={`${bodyPath}/groups`}
+          disabled={view.busy || groups.length >= 8}
           onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
             entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Group</button></div>
       {groups.map((group, index) => {
@@ -438,7 +440,8 @@ export function QuoteEditor(editor: Editor) {
         const scope = text(record(group.occupancy).scope);
         return <div className={styles.roomCard} key={text(group.id) || index}>
           <div className={styles.groupHeading}><strong>Room group {index + 1}</strong>
-            <button type="button" className={styles.linkButton} disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
+            <button type="button" className={styles.linkButton} data-field-path={groupPath}
+              disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
               requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
           <div className={styles.twoCol}><Field label="Arrival" path={`${groupPath}/arrival`} editor={editor} type="date" review />
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>
