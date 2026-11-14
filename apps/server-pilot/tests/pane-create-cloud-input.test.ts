@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from '../src/ai/pane-create-cloud-input.js';
+import { digestPaneCloudCreateProof as digestRawProof, mapPaneStayToCloudCreateInput } from '../src/ai/pane-create-cloud-input.js';
 import { CREATE_GUARANTEES } from '../tooling/hms-cloud/cloud-create-policy.mjs';
 import generatedNote from '../tooling/hms-cloud/fixtures/generated-reservation-note.json';
 
@@ -16,8 +16,20 @@ const proof = {
   sourceOfBusiness: { nativeCode: 'WKIN', description: 'Walk in' }, note: stay.reservationNote,
   sendHmsConfirmation: { kind: 'never' },
 };
+const digestPaneCloudCreateProof = (reviewed: Parameters<typeof digestRawProof>[0], native: unknown,
+  visibleGuarantee: unknown = CREATE_GUARANTEES.NGI, selectedGuestId?: string, requireVisibleGuarantee?: boolean, allowRealGuest?: boolean) =>
+  digestRawProof(reviewed, native, visibleGuarantee, selectedGuestId, requireVisibleGuarantee, allowRealGuest);
 
 describe('Cloud pane create mapping', () => {
+  it.each([50, 51, 300, 301])('enforces the native booker limit at %i characters', (length) => {
+    const result = mapPaneStayToCloudCreateInput({ ...stay, bookerName: 'N'.repeat(length) }, 'prepare');
+    expect(result.outcome).toBe(length <= 50 ? 'ok' : 'refused');
+  });
+
+  it('requires a visible guarantee readback for proof', () => {
+    expect(digestRawProof(stay, proof)).toMatchObject({ outcome: 'refused' });
+    expect(digestRawProof(stay, proof, CREATE_GUARANTEES.NGI)).toMatchObject({ outcome: 'ok' });
+  });
   it('binds the exact generated multiline reservation note through prepare and commit', () => {
     const reviewed = { ...stay, reservationNote: generatedNote.note };
     const native = { ...proof, note: generatedNote.note };
@@ -72,7 +84,7 @@ describe('Cloud pane create mapping', () => {
     const other = native === 'NGI' ? 'GTDAGT' : 'NGI';
     expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: other }, display).outcome).toBe('refused');
     if (display !== native) {
-      expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }).outcome).toBe('refused');
+      expect(digestRawProof(reviewed, { ...proof, guaranteeType: native }).outcome).toBe('refused');
       expect(digestPaneCloudCreateProof(reviewed, { ...proof, guaranteeType: native }, 'different').outcome).toBe('refused');
     }
   });

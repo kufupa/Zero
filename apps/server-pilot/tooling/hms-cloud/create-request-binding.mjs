@@ -138,7 +138,7 @@ export function normalizeCloudCreateRequest(input) {
   const parties = normalizeParties(input.parties, canonical);
   if (parties.outcome !== 'ok') return parties;
   if (input.billingReference !== undefined &&
-      (!exactText(input.billingReference, { max: 4000 }) || !parties.value.arAccount)) {
+      (!exactText(input.billingReference, { max: 50 }) || !parties.value.arAccount)) {
     return fail('CREATE_BILLING_REFERENCE_INVALID', 'billingReference');
   }
   if (input.nativeCommissionPercent !== undefined && (typeof input.nativeCommissionPercent !== 'number' ||

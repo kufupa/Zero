@@ -149,7 +149,7 @@ const bookingFieldsSchema = z.object({
   track: value(z.string().max(120)).optional(),
   marketSegment: value(z.string().max(20)).optional(),
   guestOptIn: value(z.boolean()).optional(),
-  bookerName: value(z.string().max(50)).optional(),
+  bookerName: value(z.string().max(300)).optional(),
   bookerEmail: value(z.string().max(320)).optional(),
   bookerMobile: value(z.string().max(120)).optional(),
   reservationNote: value(z.string().max(2000)).optional(),

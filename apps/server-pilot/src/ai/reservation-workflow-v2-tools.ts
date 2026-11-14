@@ -584,12 +584,15 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
   const optional = Object.fromEntries(optionalFields.map((field) => [field, readValue(field)]));
   if (mode !== 'lookup') {
     const nativeTextFields = [
-      ['reasonForStay', optional.reasonForStay, 100], ['bookerName', optional.bookerName, 50],
+      ['reasonForStay', optional.reasonForStay, 100], ['billingReference', optional.billingReference, 50], ['bookerName', optional.bookerName, 50],
       ['bookerEmail', optional.bookerEmail, 320], ['bookerMobile', optional.bookerMobile, 120], ['cmsMessageId', optional.cmsMessageId, 100],
       ['cmsRecipient', optional.cmsRecipient, 255],
     ] as const;
     for (const [field, value, max] of nativeTextFields) {
       if (value == null) continue;
+      if (field === 'bookerName' && typeof value === 'string' && value.length > 50) {
+        issues.push('bookerName:native_booker_name_max_50');
+      }
       if (typeof value !== 'string' || value.trim() !== value || !value.length || value.length > max || /[\r\n]/.test(value)) {
         issues.push(`${field}:native_text_limit`);
       }

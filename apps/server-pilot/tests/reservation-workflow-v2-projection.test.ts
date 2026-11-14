@@ -3,6 +3,8 @@ import { createReservationWorkflowV2CandidateReader, runReservationWorkflowV2Pre
 import * as cloudStay from '../src/ai/hms-cloud-saved-stay-find.js';
 import * as paneStaySave from '../src/ai/pane-stay-save.js';
 import * as hmsService from '../src/hms/hms-service.js';
+import * as paneLookup from '../src/ai/pane-stay-lookup.js';
+import * as nativeCatalog from '../src/ai/native-catalog-lookup.js';
 import { lookupNativeParty } from '../src/ai/reservation-workflow-v2-native-party.js';
 import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
@@ -41,6 +43,7 @@ function projectionFixture(
 async function project(
   extraction: (sourceRef: string) => ReservationWorkflowV2Extraction,
   synthesis?: (sourceRef: string) => Record<string, unknown>,
+  body = 'Please quote both stays for two adults per room, room only or bed and breakfast.',
 ) {
   const messageId = 'projection-message';
   const threadId = 'projection-thread';
@@ -58,9 +61,8 @@ async function project(
       messageId,
       threadId,
       subject: 'Quote request',
-      bodyText: 'Please quote both stays for two adults per room, room only or bed and breakfast.',
-      currentBodyText:
-        'Please quote both stays for two adults per room, room only or bed and breakfast.',
+      bodyText: body,
+      currentBodyText: body,
       fromAddress: 'guest@example.com',
       preceding: [],
       attachments: [],
@@ -96,6 +98,103 @@ function quoteFixture(sourceRef: string): ReservationWorkflowV2Extraction['reque
 }
 
 describe('reservation workflow host projection', () => {
+  it.each([
+    ['Please book ROOMX', 'ROOMX', 'available', true],
+    ['Please book no ROOMX', 'ROOMX', 'available', false],
+    ['Please book without ROOMX', 'ROOMX', 'available', false],
+    ['Please book rate ROOMX', 'ROOMX', 'available', false],
+    ['Please book away from the ROOMX', 'ROOMX', 'available', false],
+    ['We visited ROOMX', 'ROOMX', 'available', false],
+    ['Please book away from the roomx', 'away from the roomx', 'available', false],
+    ['Please book roomx', 'roomx', 'available', false],
+    ['Please book ROOMX', 'ROOMX', 'partial_or_legacy', false],
+  ])('requires exact source intent and complete catalog: %s (%s, %s)', async (body, raw, status, expected) => {
+    const envelope = { status, coverage: { scope: 'whole_catalog', complete: status === 'available' } };
+    vi.spyOn(nativeCatalog, 'preloadNativeCatalogLookup').mockResolvedValue({ propertyCode: 'HRCEN',
+      roomsEnvelope: () => envelope, ratesEnvelope: () => envelope,
+      lookupVerifiedCode: (kind: string, code: string) => ({ status: kind === 'room' && code === 'ROOMX' ? 'unique' : 'not_found' }),
+    } as never);
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'create',
+      requestText: claim('Please book', 'Please book', ref), roomTypeHints: [claim(raw, 'ROOMX', ref)],
+      dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }] }], issues: [] }),
+    undefined, `${body} 2027-01-10 to 2027-01-12`);
+    const request = result.proposal.content.requests.find(row => row.kind === 'create');
+    if (request?.kind !== 'create') throw new Error('expected Create');
+    expect(request.body.shared.roomType ?? null).toBe(expected ? 'ROOMX' : null);
+    expect(request.body.shared.requestedRoomDescription).toBe(raw);
+  });
+  it('keeps partial guest-search coverage and never presents it as complete absence', async () => {
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    vi.spyOn(hmsService, 'nativeReadCapabilityAvailable').mockResolvedValue(true);
+    const completeness = { searchedDateRange: { from: '2027-01-01', to: '2027-01-02' },
+      searchedRanges: [{ from: '2027-01-01', to: '2027-01-02' }],
+      requestedDateHorizon: { from: '2027-01-01', to: '2027-01-10' }, displayed: 0, total: 0,
+      gridComplete: true, requestedDatesCovered: false, allChunksSearched: false, truncated: false };
+    vi.spyOn(paneLookup, 'searchGuestCloudBatch').mockResolvedValue([{ outcome: 'execution_failure', rows: [],
+      screenshots: [], runId: null, error: 'incomplete', completeness }]);
+    const candidate = { id: 'guest-stay', ref: 'guest-stay', kind: 'stay_candidate' as const, propertyCode: 'HRCEN',
+      criteria: { confirmationOrGuestText: 'Example', dates: [{ arrival: '2027-01-01', departure: '2027-01-10' }] }, sourceRefs: [] };
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode: 'HRCEN', transportId: 'transport',
+      source: { messageId: 'source', threadId: 'thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' }, candidates: [candidate] });
+    expect(await read(candidate)).toMatchObject({ status: 'partial', result: { completeness, truncated: false,
+      searchedDateRange: completeness.searchedDateRange, requestedDateHorizon: completeness.requestedDateHorizon, reason: 'incomplete' },
+      coverage: { complete: false, notes: [expect.stringContaining('absence is not established')] } });
+  });
+
+  it('does not treat a guest search without coverage metadata as complete', async () => {
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    vi.spyOn(hmsService, 'nativeReadCapabilityAvailable').mockResolvedValue(true);
+    vi.spyOn(paneLookup, 'searchGuestCloudBatch').mockResolvedValue([{ outcome: 'ok', rows: [], screenshots: [], runId: null }]);
+    const candidate = { id: 'guest-stay', ref: 'guest-stay', kind: 'stay_candidate' as const, propertyCode: 'HRCEN',
+      criteria: { confirmationOrGuestText: 'Example', dates: [{ arrival: '2027-01-01', departure: '2027-01-10' }] }, sourceRefs: [] };
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode: 'HRCEN', transportId: 'transport',
+      source: { messageId: 'source', threadId: 'thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' }, candidates: [candidate] });
+    expect(await read(candidate)).toMatchObject({ status: 'partial', coverage: { complete: false } });
+  });
+  it.each([50, 51, 300, 301])('preserves a %i-character Create booker only within draft limits', async (length) => {
+    const name = 'N'.repeat(length);
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'create',
+      requestText: claim('Please book', 'Please book', ref),
+      guests: [{ role: 'booker', name: claim(name, name, ref) }] }], issues: [] }), undefined, `Please book. Booker: ${name}`);
+    const request = result.proposal.content.requests.find(row => row.kind === 'create');
+    expect(request?.kind).toBe('create');
+    if (request?.kind !== 'create') throw new Error('expected Create');
+    expect(request.body.shared.bookerName ?? null).toBe(length <= 300 ? name : null);
+    expect(result.proposal.issues.some(issue => issue.kind === 'native_booker_name_max_50')).toBe(length > 50 && length <= 300);
+  });
+
+  it.each([
+    ['Please update the booker email to new@example.test', true],
+    ['Please amend the stay. Regards, booker new@example.test', false],
+    ['Please send the confirmation to new@example.test', false],
+    ['Please amend the stay and send confirmation to the booker contact new@example.test', false],
+    ['Please do not update the booker email to new@example.test', false],
+  ])('projects booker contact only for explicit Amend intent: %s', async (body, expected) => {
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'amend',
+      requestText: claim(body, body, ref), guests: [{ role: 'booker', email: claim('new@example.test', 'new@example.test', ref) }] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'amend');
+    expect(request?.kind).toBe('amend');
+    if (request?.kind !== 'amend') throw new Error('expected Amend');
+    const changes = [...request.body.sharedChanges, ...request.body.perTarget.flatMap(row => row.changes)];
+    const email = changes.find(change => 'field' in change && change.field === 'bookerEmail');
+    expect(Boolean(email)).toBe(expected);
+    if (expected) expect(email).toMatchObject({ op: 'set', value: 'new@example.test', sourceRefs: [expect.any(String)] });
+    expect(changes.some(change => 'field' in change && (change.field === 'bookerName' || change.field === 'bookerMobile'))).toBe(false);
+  });
+
+  it('projects explicitly changed Amend name and mobile without inventing an email change', async () => {
+    const body = 'Please update the booker contact name Jane Example and phone 0123456789';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'amend',
+      requestText: claim(body, body, ref), guests: [{ role: 'booker',
+        name: claim('Jane Example', 'Jane Example', ref), mobile: claim('0123456789', '0123456789', ref) }] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'amend');
+    if (request?.kind !== 'amend') throw new Error('expected Amend');
+    expect(request.body.sharedChanges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ op: 'set', field: 'bookerName', value: 'Jane Example' }),
+      expect.objectContaining({ op: 'set', field: 'bookerMobile', value: '0123456789' }),
+    ]));
+    expect(request.body.sharedChanges.some(change => 'field' in change && change.field === 'bookerEmail')).toBe(false);
+  });
   it.each(['HRCEN', 'HRDAV', 'HRDAVS'])('reads an exact source confirmation through the selected %s Cloud session', async (propertyCode) => {
     vi.stubEnv('PANE_STAY_LOOKUP', 'on');
     vi.spyOn(hmsService, 'nativeReadCapabilityAvailable').mockResolvedValue(true);
