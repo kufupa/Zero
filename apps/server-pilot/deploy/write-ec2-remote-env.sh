@@ -52,6 +52,8 @@ REMOTE_COMMON_ALLOWLIST=(
   NAVA_BUILD_COMMIT
   PLAYWRIGHT_BROWSERS_PATH
   HMS_CHROMIUM_EXECUTABLE_PATH
+  HMS_EVIDENCE_HMAC_SECRET_ARN
+  HMS_EVIDENCE_HMAC_KEY_VERSION
   HMS_DAVINCI_CREATE
   HMS_DAVINCI_MAKE_QUOTE
   HMS_DAVINCI_READS
@@ -131,6 +133,8 @@ M1_ONLY_RUNTIME_DEPENDENCIES=(
   HMS_EXPECTED_TENANT
   HMS_EXPECTED_TRANSPORT_ID
   HMS_CHROMIUM_EXECUTABLE_PATH
+  HMS_EVIDENCE_HMAC_SECRET_ARN
+  HMS_EVIDENCE_HMAC_KEY_VERSION
   PLAYWRIGHT_BROWSERS_PATH
   HMS_MEMORY_PMS_PATH
   HMS_MEMORY_OUTBOUND_PATH
@@ -184,7 +188,8 @@ const common = new Set([
   "AI_DRAFTS_ENABLED", "CATCHUP_UPLOAD_ENABLED", "AI_STALE_RUN_TIMEOUT_MS", "AI_MODEL_ID", "PANE_BRAIN", "QUOTE_WORKFLOW_LLM",
   "AI_WORKER_IDEMPOTENCY_PREFIX", "BEDROCK_REGION", "BEDROCK_GUARDRAIL_ID",
   "BEDROCK_GUARDRAIL_VERSION", "MASTRA_STORAGE_PATH", "GOTENBERG_URL", "NAVA_BUILD_COMMIT", "PLAYWRIGHT_BROWSERS_PATH",
-  "HMS_CHROMIUM_EXECUTABLE_PATH", "HMS_DAVINCI_CREATE", "HMS_DAVINCI_MAKE_QUOTE", "HMS_DAVINCI_READS",
+  "HMS_CHROMIUM_EXECUTABLE_PATH", "HMS_EVIDENCE_HMAC_SECRET_ARN", "HMS_EVIDENCE_HMAC_KEY_VERSION",
+  "HMS_DAVINCI_CREATE", "HMS_DAVINCI_MAKE_QUOTE", "HMS_DAVINCI_READS",
   "HMS_EXPECTED_TENANT", "HMS_EXPECTED_PROPERTY_CODE", "HMS_EXPECTED_TRANSPORT_ID", "HMS_JOB_QUEUE", "HMS_LANE_PAUSED",
   "HMS_PREFETCH_ENABLED", "HMS_PREFETCH_PER_HOUR", "HMS_GUEST_PREFETCH_PER_HOUR", "HMS_AVAILABILITY_PREFETCH",
   "HMS_AVAILABILITY_PER_HOUR", "HMS_QUOTE_PREPARE", "HMS_QUOTE_PREPARE_PER_HOUR", "PARTY_MATCH_V2", "HMS_STAGEHAND_CDP_URL_DAVINCI",
@@ -489,6 +494,7 @@ const controlKeys = new Set(keys.slice(0, controlCount));
 const dependencyKeys = new Set(keys.slice(controlCount));
 const target = new Set(keys);
 const memoryPaths = new Set(RUNTIME_PATH_KEYS);
+const evidenceMetadata = new Set(["HMS_EVIDENCE_HMAC_SECRET_ARN", "HMS_EVIDENCE_HMAC_KEY_VERSION"]);
 const sourceAuthoritativeReadControls = new Set([
   "LEGACY_INBOUND_TRIAGE_PIPELINE", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT",
   ...SCOPED_RUNTIME_CONTROL_KEYS.filter(key => key.startsWith("HMS_DAVINCI_") || (key.startsWith("HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_") || key.startsWith("HMS_WRITER_DEPENDENCY_DIGEST_") || key.startsWith("HMS_WRITER_CREDENTIAL_IDENTITY_"))),
@@ -514,7 +520,7 @@ try {
   const source = parse(sourcePath);
   for (const key of keys) {
     // The Centurion descriptor is optional on installations using only the HRDAV descriptor.
-    const required = (dependencyKeys.has(key) && key !== "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION" && !memoryPaths.has(key)) || keys.indexOf(key) < requiredControlCount;
+    const required = (dependencyKeys.has(key) && key !== "RESERVATIONIST_STAFF_QUOTE_CONFIGURATION" && !memoryPaths.has(key) && !evidenceMetadata.has(key)) || keys.indexOf(key) < requiredControlCount;
     if (!target.has(key) || (required && !source.has(key))) fail(`M1 durable key missing: ${key}`);
   }
   const installed = chunks(fs.readFileSync(installedPath, "utf8"));
@@ -533,7 +539,7 @@ try {
       if (!sourceAuthoritativeReadControls.has(key)) merged.push(line);
       continue;
     }
-    if (memoryPaths.has(key) || ["HMS_EXPECTED_PROPERTY_CODE", "HMS_EXPECTED_TENANT", "HMS_EXPECTED_TRANSPORT_ID"].includes(key)) {
+    if (memoryPaths.has(key) || evidenceMetadata.has(key) || ["HMS_EXPECTED_PROPERTY_CODE", "HMS_EXPECTED_TENANT", "HMS_EXPECTED_TRANSPORT_ID"].includes(key)) {
       const ending = line.endsWith("\n") ? "\n" : "";
       merged.push(body(source.get(key)) + ending);
       continue;

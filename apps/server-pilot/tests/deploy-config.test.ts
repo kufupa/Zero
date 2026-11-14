@@ -5955,6 +5955,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(allowlist).not.toContain('POP3_');
       expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual([
         'HMS_CHROMIUM_EXECUTABLE_PATH',
+        'HMS_EVIDENCE_HMAC_SECRET_ARN',
+        'HMS_EVIDENCE_HMAC_KEY_VERSION',
         'HMS_DAVINCI_CREATE',
         'HMS_DAVINCI_MAKE_QUOTE',
         'HMS_DAVINCI_READS',
@@ -6118,6 +6120,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         "HMS_QUOTE_PREPARE_PER_HOUR='6'",
         "HMS_DAVINCI_READS='on'",
         "HMS_DAVINCI_CREATE='lab'",
+        "HMS_EVIDENCE_HMAC_SECRET_ARN='arn:aws:secretsmanager:af-south-1:123456789012:secret:fixture'",
+        "HMS_EVIDENCE_HMAC_KEY_VERSION='fixture-version'",
         "HMS_STAGEHAND_CDP_URL_DAVINCI='http://127.0.0.1:19225'",
         '',
       ].join('\n');
@@ -6127,6 +6131,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
           validate(commonEnv).status,
           '--validate rejected remote quote-preparation flags',
         ).toBe(0);
+        writeFileSync(commonEnv, `${valid}HMS_EVIDENCE_HMAC_KEY='fake-raw-key'\n`, 'utf8');
+        expect(validate(commonEnv).status).toBe(2);
 
         const releaseValues = ["HMS_EXPECTED_TENANT='THECENTURION_PRD'", "HMS_EXPECTED_PROPERTY_CODE='HRCEN'",
           "HMS_EXPECTED_TRANSPORT_ID='transport-centurion'", "HMS_LANE_PAUSED='0'", "HMS_PREFETCH_ENABLED='1'",
@@ -6221,7 +6227,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       try {
         mkdirSync(copiedDeploy, { recursive: true });
         mkdirSync(bin);
-        for (const file of ['write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
+        for (const file of ['write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs', 'validate-hms-canary.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
         for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'hms-cloud/hms-read-only-guard.mjs', 'hms-cloud/page-request-fence.mjs']) {
           const destination = join(server, 'tooling', file);
           mkdirSync(dirname(destination), { recursive: true });
@@ -6308,6 +6314,21 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect(readFileSync(oldModel, 'utf8')).toBe('old model overlay untouched\n');
         expect(readFileSync(oldBrain, 'utf8')).toBe('old routing overlay untouched\n');
         expect(readFileSync(common, 'utf8')).toBe(commonText);
+        expect(readFileSync(admin, 'utf8')).toBe(adminText);
+
+        const metadataKeys = ['HMS_EVIDENCE_HMAC_SECRET_ARN', 'HMS_EVIDENCE_HMAC_KEY_VERSION'];
+        const m1 = ['--m1-only', '--keys', ...metadataKeys];
+        const holdFile = toBashPath(join(temp, 'hold'));
+        writeFileSync(legacy, source(pair));
+        expect((await run(m1, { NAVA_RUN_HOLD_FILE: holdFile })).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(commonText);
+        const metadata = "HMS_EVIDENCE_HMAC_SECRET_ARN='arn:aws:secretsmanager:af-south-1:123456789012:secret:fixture'\nHMS_EVIDENCE_HMAC_KEY_VERSION='version-a'\n";
+        writeFileSync(legacy, source(pair) + metadata + "HMS_EVIDENCE_HMAC_KEY='fake-raw-key'\n");
+        expect((await run(m1, { NAVA_RUN_HOLD_FILE: holdFile })).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(commonText + metadata);
+        writeFileSync(legacy, source(pair) + metadata.replace('version-a', 'version-b'));
+        expect((await run(m1, { NAVA_RUN_HOLD_FILE: holdFile })).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toBe(commonText + metadata.replace('version-a', 'version-b'));
         expect(readFileSync(admin, 'utf8')).toBe(adminText);
       } finally {
         if (snapshot) rmSync(snapshot, { recursive: true, force: true });
