@@ -934,6 +934,7 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
       await assertHmsQuoteOriginAllowed({
         transportId: ctx.activeTransportId,
+        propertySwitch: input.propertySwitch,
         threadId: mail.threadId,
         messageId: input.messageId,
       });
@@ -965,6 +966,7 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
       const quoteTarget = await assertHmsQuoteOriginAllowed({
         transportId: ctx.activeTransportId,
+        propertySwitch: input.propertySwitch,
         threadId: mail.threadId,
         messageId: mail.id,
       });

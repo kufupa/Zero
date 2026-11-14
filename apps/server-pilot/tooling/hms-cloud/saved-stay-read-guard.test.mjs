@@ -73,6 +73,8 @@ test('Stay 360 search pins every identity filter to the selected confirmation', 
   const selected = { confirmation: '123-1' };
   const request = (body) => post('/web/base/OSRESS.search', body.toString());
   assert.equal(savedStayReadMayRequest(request(searchBody), selected), true);
+  const metadata = new URLSearchParams(searchBody); metadata.set('_dc', '1794699000000');
+  assert.equal(savedStayReadMayRequest(request(metadata), selected), true);
   assert.equal(savedStayReadMayRequest(request(searchBody)), false);
   for (const [key, value] of [
     ['maddon_filter_value_3', '999-1'], ['maddon_filter_value_4', ''],
@@ -211,8 +213,8 @@ test('record header POST is bound to the selected HRCEN confirmation and native 
     twitterid: '-', facebookid: '-', tripadvisorid: '-', bookingdotcomid: '-', room: '' });
   const selected = { confirmation: '123-1' };
   assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', body.toString()), selected), true);
-  // The reviewed native detail-open manifest records both the 17-field and
-  // 19-field forms. Accept the latter only with the known shell values.
+  const displayDrift = new URLSearchParams(body); displayDrift.delete('twitterid'); displayDrift.set('displayhint', 'current');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', displayDrift.toString()), selected), true);
   const withChrome = new URLSearchParams(body);
   withChrome.set('MENU_MODULE_KEY', '0');
   withChrome.set('removescreenflows', 'yes');
@@ -230,6 +232,8 @@ test('record header POST is bound to the selected HRCEN confirmation and native 
   recordReturn.set('SCROLLROW', 'YES');
   recordReturn.set('ONLY_DATA_REQUIRED', 'true');
   assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', recordReturn.toString()), selected), true);
+  const combined = new URLSearchParams(recordReturn); combined.set('menu_module_key', '0'); combined.set('removescreenflows', 'yes');
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', combined.toString()), selected), true);
   for (const [key, value] of [['SCROLLROW', 'NO'], ['ONLY_DATA_REQUIRED', 'false'],
     ['confirmationnumber', '999-1'], ['propertycode', 'HRDAV'], ['CURRENT_TAB_NAME', 'SAVE']]) {
     const changed = new URLSearchParams(recordReturn); changed.set(key, value);

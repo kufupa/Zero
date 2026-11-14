@@ -4,6 +4,7 @@ import {
   resolveQuoteRevision,
   type QuoteRevision,
 } from '../quote-proposal/quote-revision.js';
+import { propertySwitchSchema } from '../hms/property-registry.js';
 import type {
   NativeQuoteRequest,
   createReservationistBusinessServices,
@@ -109,6 +110,7 @@ export const staffQuoteInput = z
   .object({
     messageId: z.string().min(1),
     sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
+    propertySwitch: propertySwitchSchema.optional(),
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
     groups: z.array(groupSchema).min(1).max(8),

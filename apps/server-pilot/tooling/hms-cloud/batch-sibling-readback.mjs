@@ -2,7 +2,7 @@
 import { digestCloudCreateRequest } from './create-request-binding.mjs';
 import { readLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
-import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { CREATE_GUARANTEES, blockingCreateMatches, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 /** Compare a fresh writer-page census to siblings independently verified before the writer opened. */
 export function censusMatchesApprovedSiblings(census, siblings, { propertyCode = 'HRCEN' } = {}) {
@@ -19,7 +19,7 @@ export function censusMatchesApprovedSiblings(census, siblings, { propertyCode =
           request.propertyCode !== propertyCode || !/^\d{1,100}$/.test(sibling.nativeStayId || '')) return false;
       if (sameCreateGuest(request.guest, target) && request.stay.arrival === census.arrival) matching.push({ sibling, request });
     }
-    if (census.sameArrival.length !== matching.length) return false;
+    if (blockingCreateMatches(census.sameArrival).length !== matching.length) return false;
     return matching.every(({ sibling, request }) => {
       const row = census.sameArrival.find(item => item.confirmation === sibling.confirmation);
       return Boolean(row && sameCreateGuest(row, request.guest) && row.status === 'Reserved' &&
@@ -51,7 +51,7 @@ async function verifySiblings(census, siblings, {
           !(cloudTargetKey ?? createCloudTargetKey(target, census.arrival, propertyCode))) return false;
       matching = siblings.filter(({ approvedRequest: request }) =>
         sameCreateGuest(request?.guest, target) && request?.stay?.arrival === census.arrival);
-      if (census.sameArrival.length !== matching.length) return false;
+      if (blockingCreateMatches(census.sameArrival).length !== matching.length) return false;
     }
     for (const sibling of siblings) {
       const { confirmation, approvedRequest, requestDigest } = sibling;

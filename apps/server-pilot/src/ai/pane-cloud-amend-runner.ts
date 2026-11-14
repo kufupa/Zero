@@ -33,8 +33,8 @@ const readbackSchema = z.object({ confirmation: z.string(), nativeStayId: z.stri
   roomType: z.string(), ratePlan: z.string(), adults: z.number().int(), children: z.number().int(),
   childAges: z.union([z.literal('unknown'), z.array(z.number().int())]), firstName: z.string(), lastName: z.string(),
   guestEmail: z.string(), bookerName: z.string(), bookerContact: z.string(), cmsSend: z.boolean(),
-  cmsMessageId: z.string(), cmsRecipient: z.string(),
-  price: z.unknown().nullable() }).strict();
+  cmsMessageId: z.string(), cmsRecipient: z.string(), reservationNote: z.string(), guaranteeType: z.string(),
+  price: z.unknown().nullable() }).passthrough();
 
 /** Complete only after a fresh read of the selected stay and requested business fields. */
 export function verifiedCloudAmendReadback(form: z.infer<typeof cloudAmendDispatchFormSchema>, result: NativeResult) {

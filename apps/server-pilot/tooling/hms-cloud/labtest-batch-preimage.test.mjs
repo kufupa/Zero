@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { consumeLabtestPreimage, searchLabtestPreimage } from './labtest-preimage.mjs';
 
-function pageFixture({ tamperAbsolute = false, duplicateRelative = false, arrival = '2027-08-01', departure = '2027-08-02',
+function pageFixture({ tamperAbsolute = false, duplicateRelative = false, arrival = '2027-08-01', departure = '2027-08-02', status = 'Reserved',
   from = '2027-07-18', to = '2027-08-15' } = {}) {
   const page = new EventEmitter();
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -22,7 +22,7 @@ function pageFixture({ tamperAbsolute = false, duplicateRelative = false, arriva
   const response = { request: () => request, status: () => 200, text: async () => JSON.stringify({ pageData: {
     grid: { GRIDRESULT: { GRID: { METADATA: { GRIDNAME: 'OSRESS', RECORDS: '1', MORERECORDPRESENT: '-' }, DATA: [
       { confirmationnumber: '123456-1', firstname: 'Proof', lastname: 'Labtest', arrivaldate: display(arrival),
-        departuredate: display(departure), status: 'Reserved' },
+        departuredate: display(departure), status },
     ] } } },
   } }) };
   const rows = { count: async () => 1, evaluateAll: async () => [[['123456-1'], [], [], [display(arrival), display(departure)]]] };
@@ -63,11 +63,16 @@ function pageFixture({ tamperAbsolute = false, duplicateRelative = false, arriva
   return { page, arrival, departure, request };
 }
 
-test('existing matches remain blocked without a server verifier', async () => {
-  const { page, arrival, departure } = pageFixture();
-  const result = await searchLabtestPreimage(page, { arrival, departure });
-  assert.equal(result.outcome, 'existing_matches');
-  assert.equal(consumeLabtestPreimage(page, { ...result, arrival, departure }), false);
+test('existing active matches remain blocked without a server verifier', async () => {
+  for (const status of ['Reserved', '', 'Unknown', 'Cancelled', 'Canceled', 'CANCELED']) {
+    const { page, arrival, departure } = pageFixture({ status });
+    const result = await searchLabtestPreimage(page, { arrival, departure });
+    const cancelled = ['Cancelled', 'Canceled', 'CANCELED'].includes(status);
+    assert.equal(result.outcome, cancelled ? 'clear' : 'existing_matches');
+    assert.equal(result.sameArrival.length, 1);
+    assert.equal(result.sameArrival[0].status, status);
+    assert.equal(consumeLabtestPreimage(page, { ...result, arrival, departure }), cancelled);
+  }
 });
 
 test('verified siblings issue one page-bound proof and cannot be consumed twice', async () => {

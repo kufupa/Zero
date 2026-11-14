@@ -4,6 +4,7 @@ import {
   DAVINCI_HMS_READ_TARGET,
   DAVINCI_ORIGIN_REFUSED_MESSAGE,
   assertPropertyQuoteReady,
+  hmsReadTargetForProperty,
   hmsReadTargetForTransport,
   type HmsReadTarget,
 } from './hms-read-target.js';
@@ -13,6 +14,7 @@ import {
   type MailboxHmsOriginFields,
   type MailboxHmsOriginLoadInput,
 } from './mailbox-hms-origin-bind.js';
+import { resolvePropertyScope, type PropertySwitch } from './property-registry.js';
 
 /** Same staff copy as the Centurion refuse. Quote flag off keeps that refuse. */
 export const DAVINCI_QUOTE_REFUSED_MESSAGE = DAVINCI_ORIGIN_REFUSED_MESSAGE;
@@ -21,7 +23,7 @@ export type HmsQuoteJobTargetResult =
   | { ok: true; target: HmsReadTarget }
   | { ok: false; code: 'QUOTE_DAVINCI_DISABLED'; message: string };
 
-function davinciQuoteOrRefuse(env?: NodeJS.Dict<string>): HmsQuoteJobTargetResult {
+function davinciQuoteOrRefuse(env?: NodeJS.Dict<string>, propertyCode = DAVINCI_HMS_READ_TARGET.propertyCode): HmsQuoteJobTargetResult {
   if (!hmsDavinciMakeQuoteEnabled(env)) {
     return {
       ok: false,
@@ -31,7 +33,7 @@ function davinciQuoteOrRefuse(env?: NodeJS.Dict<string>): HmsQuoteJobTargetResul
   }
   return {
     ok: true,
-    target: assertPropertyQuoteReady(DAVINCI_HMS_READ_TARGET.propertyCode, env),
+    target: assertPropertyQuoteReady(propertyCode, env),
   };
 }
 
@@ -63,13 +65,15 @@ export function quoteTargetForHmsJob(input: {
 
 /**
  * Thread-scan plus Da Vinci staff transports. Never returns Centurion for a Da Vinci inbox.
- * Flag off: same refuse as #292. Flag on: HRDAV.
+ * An explicit Da Vinci selection is validated against the authenticated mailbox.
  */
 export async function resolveHmsQuoteJobTarget(
-  input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string> },
+  input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string>; propertySwitch?: PropertySwitch },
 ): Promise<HmsQuoteJobTargetResult> {
-  const target = hmsReadTargetForTransport(input.transportId);
-  if (target.browserSlot === 'davinci') return davinciQuoteOrRefuse(input.env);
+  const target = input.propertySwitch
+    ? hmsReadTargetForProperty(resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch }).propertyCode)
+    : hmsReadTargetForTransport(input.transportId);
+  if (target.browserSlot === 'davinci') return davinciQuoteOrRefuse(input.env, target.propertyCode);
   const guard = await guardCenturionHmsMailboxOrigin(input);
   if (guard.ok) return { ok: true, target };
   return davinciQuoteOrRefuse(input.env);
@@ -77,7 +81,7 @@ export async function resolveHmsQuoteJobTarget(
 
 /** Quote routes: Da Vinci origins pass only when HMS_DAVINCI_MAKE_QUOTE=on. */
 export async function assertHmsQuoteOriginAllowed(
-  input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string> },
+  input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string>; propertySwitch?: PropertySwitch },
 ): Promise<HmsReadTarget> {
   const resolved = await resolveHmsQuoteJobTarget(input);
   if (!resolved.ok) {

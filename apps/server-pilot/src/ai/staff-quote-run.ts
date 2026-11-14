@@ -658,6 +658,7 @@ export async function runStaffQuote(
   const systemPrepared = identity.user === undefined;
   const quoteTarget = await resolveHmsQuoteJobTarget({
     transportId: identity.transportId,
+    propertySwitch: input.propertySwitch,
     threadId: mail.threadId,
     messageId: mail.id,
     env: process.env,

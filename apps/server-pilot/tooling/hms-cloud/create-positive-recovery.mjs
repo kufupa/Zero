@@ -7,7 +7,7 @@ import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { cloudWriterQuiesced, withCloudReadSession, withCloudCredentialLease } from './cloud-session.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
-import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { CREATE_GUARANTEES, blockingCreateMatches, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
 const censusDefault = (stay, guest, cloudTargetKey, options) => withCloudReadSession((page) => searchLabtestPreimage(page,
   { ...stay, propertyCode: options.propertyCode, firstName: guest.firstName, lastName: guest.lastName }, { allowRealGuest: true, allowPast: true }), {
@@ -63,22 +63,23 @@ export async function provePositiveCreateRecovery(intent, options = {}) {
         (request.billingReference !== undefined && !request.parties?.arAccount)) return blocked('intent_unverified');
     const preimage = recovery.preimage;
     if (preimage?.arrival !== stay.arrival || preimage?.departure !== stay.departure ||
-        !Array.isArray(preimage.sameArrival) || preimage.sameArrival.length > 7 ||
+        !Array.isArray(preimage.sameArrival) || blockingCreateMatches(preimage.sameArrival).length > 7 ||
         preimage.coverage?.complete !== true || !Number.isSafeInteger(preimage.coverage.displayed) ||
         preimage.coverage.displayed < preimage.sameArrival.length || preimage.coverage.displayed !== preimage.coverage.total ||
         preimage.searchedDateRange?.from > stay.arrival || preimage.searchedDateRange?.to < stay.arrival ||
         typeof preimage.searchedDateRange?.from !== 'string' || typeof preimage.searchedDateRange?.to !== 'string') {
       return blocked('preimage_unverified');
     }
-    // The claim sealed only siblings that the server independently verified
-    // before Save. Their exact identities must still be present in the census.
+    // Retain every prior identity, including cancelled stays, for attribution.
+    // Active prior rows are independently verified siblings, not new inserts.
     const prior = preimage.sameArrival;
+    const siblings = blockingCreateMatches(prior);
     const sameIdentity = (left, right) => left?.confirmation === right?.confirmation &&
       left?.firstName === right?.firstName && left?.lastName === right?.lastName &&
       left?.arrival === right?.arrival && left?.departure === right?.departure && left?.status === right?.status;
     if (new Set(prior.map((row) => row?.confirmation)).size !== prior.length || prior.some((row) =>
       !/^\d{6,10}-\d{1,2}$/.test(row?.confirmation || '') || !sameCreateGuest(row, guest) ||
-      row.arrival !== stay.arrival || typeof row.departure !== 'string' || row.status !== 'Reserved')) {
+      row.arrival !== stay.arrival || typeof row.departure !== 'string') || siblings.some(row => row.status !== 'Reserved')) {
       return blocked('preimage_unverified');
     }
     if (recovery.batchManifest !== undefined) {
@@ -90,7 +91,7 @@ export async function provePositiveCreateRecovery(intent, options = {}) {
           })) return blocked('preimage_unverified');
       const matching = manifest.filter((item) => sameCreateGuest(item.approvedRequest.guest, guest) &&
         item.approvedRequest.stay.arrival === stay.arrival);
-      if (matching.length !== prior.length || prior.some((row) => !matching.some((item) => item.confirmation === row.confirmation))) {
+      if (matching.length !== siblings.length || siblings.some((row) => !matching.some((item) => item.confirmation === row.confirmation))) {
         return blocked('preimage_unverified');
       }
     }

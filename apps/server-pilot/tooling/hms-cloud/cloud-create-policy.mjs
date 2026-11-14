@@ -1,4 +1,7 @@
 import { getPropertyRegistration } from './property-registry.mjs';
+import { isCancelledStatus } from './cancel-stay-rules.mjs';
+
+export const blockingCreateMatches = rows => rows.filter(row => !isCancelledStatus(row.status));
 
 // HRCEN's native selector was read in a guarded, unsaved draft. Values here
 // are code/display pairs, not aliases inferred from their descriptions.
