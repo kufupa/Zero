@@ -229,6 +229,18 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
   });
   const work = (async () => { try {
     const policyPath = `/api/booking/${encodeURIComponent(expected.propertyCode)}/cancelPolicy/${encodeURIComponent(expected.confirmation)}`;
+    const matchesPolicyRead = (request) => {
+      try {
+        const url = new URL(request.url()), query = url.searchParams;
+        if (request.method() !== 'GET' || url.origin !== ORIGIN || url.username || url.password || url.hash ||
+            url.pathname !== policyPath) return false;
+        if (!url.search) return true;
+        return [...query].length === 3 && query.getAll('requestedLanguage').length === 1 &&
+          query.get('requestedLanguage') === 'EN' && query.getAll('forceApplyCxlPolicy').length === 1 &&
+          query.get('forceApplyCxlPolicy') === 'false' && query.getAll('_dc').length === 1 &&
+          /^\d{13}$/.test(query.get('_dc'));
+      } catch { return false; }
+    };
     fence = await installPageRequestFence(page, [OPEN_PATH, policyPath]);
     action.check();
     scope = fence.open();
@@ -254,8 +266,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
         const url = new URL(request.url());
         pathname = url.pathname;
         action = url.searchParams.get('pageaction') || '';
-        policyRead = request.method() === 'GET' && url.origin === ORIGIN && !url.hash &&
-          pathname === policyPath && !url.search;
+        policyRead = matchesPolicyRead(request);
       }
       catch { /* Block unparseable targets. */ }
       if (policyRead && scope.allow(request)) return route.fallback();
@@ -276,13 +287,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     action.check();
     usedPages.add(page);
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
-    const policyPending = page.waitForResponse((item) => {
-      try {
-        const url = new URL(item.url());
-        return item.request().method() === 'GET' && url.origin === ORIGIN &&
-          url.pathname === policyPath && !url.search;
-      } catch { return false; }
-    }, { timeout: timeoutMs }).catch(() => null);
+    const policyPending = page.waitForResponse((item) => matchesPolicyRead(item.request()),
+      { timeout: timeoutMs }).catch(() => null);
     action.check();
     armed = true;
     interactionStarted = true;
