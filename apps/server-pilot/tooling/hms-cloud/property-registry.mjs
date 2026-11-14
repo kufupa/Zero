@@ -102,7 +102,7 @@ export const PROPERTY_REGISTRY = Object.freeze({
       credentialSecretRef: 'nava-zero/server-pilot/infor-hms-read-davinci',
       credentialMode: 'view_only',
       browserSlot: 'davinci',
-      profileFile: null,
+      profileFile: 'property-profiles/HRDAVS.json',
     }),
   ]),
   collectorTransportIds: Object.freeze(['transport-nava']),

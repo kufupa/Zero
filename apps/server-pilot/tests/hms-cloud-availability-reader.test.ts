@@ -1,6 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { projectCloudAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
-import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { describe, expect, it, vi } from 'vitest';
+import { projectCloudAvailability, probeCloudRateAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
+import { classifyHmsLoginOutage } from '../src/hms/property-outage.js';
+import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
+
+const session = vi.hoisted(() => ({ open: vi.fn() }));
+vi.mock('../tooling/hms-cloud/cloud-session.mjs', () => ({ withCloudReadSession: session.open }));
 import { buildCloudRateCandidates } from '../src/ai/rate-options.js';
 import type { RateContext } from '../src/ai/hms-availability.js';
 
@@ -37,6 +41,35 @@ function readView(displayedTextStatus: string = 'captured', datesMatch = true) {
 }
 
 describe('Cloud HMS read result projection', () => {
+  it('preserves a returned native login outage instead of replacing it with incomplete availability', () => {
+    const result = projectCloudAvailability(request, [{ outcome: 'execution_failure', issue: 'AUTHENTICATED_SHELL_TIMEOUT' }]);
+    expect(result).toEqual({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+    expect(classifyHmsLoginOutage(result)).toBe(true);
+  });
+
+  it.each([
+    new Error('AUTHENTICATED_SHELL_TIMEOUT'),
+    { phase: 'login', message: 'sensitive details must not escape' },
+    new Error('wrapper failed', { cause: { code: 'AUTHENTICATED_SHELL_TIMEOUT' } }),
+  ])('keeps only the safe login outage code for queue parking', async (failure) => {
+    const result = await probeCloudRateAvailability(request, {
+      target: hmsReadTargetForProperty('HRDAVS'), transportId: 'transport-faith', acquisition: { tryOnce: true },
+      lock: () => ({ withLock: async () => { throw failure; } }),
+    });
+    expect(result).toEqual({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+    expect(classifyHmsLoginOutage(result)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('sensitive');
+  });
+
+  it('keeps unrelated read failures out of login outage parking', async () => {
+    const result = await probeCloudRateAvailability(request, {
+      target: hmsReadTargetForProperty('HRDAVS'), transportId: 'transport-faith', acquisition: { tryOnce: true },
+      lock: () => ({ withLock: async () => { throw new Error('native grid unavailable'); } }),
+    });
+    expect(result).toEqual({ outcome: 'execution_failure', error: 'CLOUD_RATE_READ_FAILED' });
+    expect(classifyHmsLoginOutage(result)).toBe(false);
+  });
+
   it('labels nightly observations as estimates and leaves totals and entitlements unknown', () => {
     const reads: CloudAvailabilityGroupRead[] = [{ outcome: 'ok', view: readView() }];
     const result = projectCloudAvailability(request, reads);
@@ -136,6 +169,23 @@ describe('Cloud HMS read result projection', () => {
       request, target: { ...CENTURION_HMS_READ_TARGET, origin: 'https://wrong-origin.example' },
     });
     expect(result).toEqual([{ outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' }]);
+  });
+
+  it('opens the selected registered property and rejects a different observed session before reading', async () => {
+    for (const propertyCode of ['HRCEN', 'HRDAV', 'HRDAVS']) {
+      const target = hmsReadTargetForProperty(propertyCode);
+      session.open.mockImplementationOnce(async (operation) => operation({}, {
+        propertyCode: propertyCode === 'HRCEN' ? 'HRDAV' : 'HRCEN',
+        tenantId: propertyCode === 'HRCEN' ? 'THECENTURION_PRD' : 'DAVINCI_PRD',
+        landingPropertyCode: propertyCode === 'HRCEN' ? 'HRCEN' : 'HRDAV', origin: target.origin,
+      }));
+      await expect(runCloudAvailability({ request, target })).resolves.toEqual([
+        { outcome: 'execution_failure', issue: 'CLOUD_SESSION_IDENTITY_MISMATCH' },
+      ]);
+      expect(session.open).toHaveBeenLastCalledWith(expect.any(Function), expect.objectContaining({
+        propertyCode, startScreen: 'OSRESS',
+      }));
+    }
   });
 
   it('uses the oldest valid observed-group timestamp, or unknown if one is missing', () => {

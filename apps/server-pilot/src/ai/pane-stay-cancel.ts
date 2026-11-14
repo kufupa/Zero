@@ -285,9 +285,8 @@ async function runPaneStayCancel(
     return refused('refused_reason_missing');
   // A commit needs the grant of a preview of this same stay. Both checks run before the lock and the browser.
   const digest = paneCancelDigest(input);
-  const resolved = paneStayHmsTargetForTransport(
-    input.transportId ?? paneStayTransportIdFromOwner(input.owner),
-  );
+  const transportId = input.transportId ?? paneStayTransportIdFromOwner(input.owner);
+  const resolved = paneStayHmsTargetForTransport(transportId);
   if (!resolved.ok) return refused('refused_unknown_transport');
   const target = resolved.target;
   if (target.propertyCode === 'HRCEN') {
@@ -345,6 +344,7 @@ async function runPaneStayCancel(
             {
               lock: () => HELD_LOCK,
               target,
+              transportId,
               onRun: ({ dir }) => lookupDirs.push(dir),
             },
           ).finally(() =>

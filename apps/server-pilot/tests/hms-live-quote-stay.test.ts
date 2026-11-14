@@ -37,6 +37,53 @@ function candidate(): QuoteStayCandidate {
   return parsed!;
 }
 
+describe('property-scoped quote policy', () => {
+  it.each(['HRCEN', 'HRDAV', 'HRDAVS'] as const)('binds native quote body and policy to %s', (propertyCode) => {
+    const body = buildExactOsrravSearchBody(candidate(), {}, propertyCode);
+    const manifest = buildExactOsrravSearchManifest(ORIGIN, candidate(), {}, propertyCode);
+    expect(body.property).toBe(propertyCode);
+    const request = {
+      url: `${ORIGIN}${LIVE_QUOTE_STAY_SEARCH_PATH}`, method: 'POST', resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' }, postData: new URLSearchParams(body).toString(),
+    };
+    expect(evaluateObservedRequest(manifest, request).action).toBe('allow');
+    expect(evaluateObservedRequest(manifest, { ...request, postData: new URLSearchParams({ ...body, property: propertyCode === 'HRCEN' ? 'HRDAV' : 'HRCEN' }).toString() }).action).toBe('block');
+  });
+
+  it('rejects chrome from another property before compiling a quote request', () => {
+    expect(() => buildExactOsrravSearchBody(candidate(), { property: 'HRDAV' }, 'HRDAVS')).toThrow('quote chrome property mismatch');
+    expect(() => buildExactOsrravSearchManifest(ORIGIN, candidate(), { property: 'HRCEN' }, 'HRDAV')).toThrow('quote chrome property mismatch');
+  });
+
+  it.each(['HRDAV', 'HRDAVS'] as const)('uses %s authority for the native quote request and evidence', async (propertyCode) => {
+    const fixture = mockRuntime(liveEnvelope([
+      { date: '2026-09-10', rate: 100, avail: 1 },
+      { date: '2026-09-11', rate: 110, avail: 1 },
+    ]), null, propertyCode);
+    const manifest = buildExactOsrravSearchManifest(ORIGIN, candidate(), {}, propertyCode);
+    const authorization = auth({
+      propertyCode, tenantId: 'DAVINCI_PRD', landingPropertyCode: 'HRDAV', origin: ORIGIN,
+      manifest, manifestSha256: createHash('sha256').update(JSON.stringify(manifest)).digest('hex'),
+    });
+    const driver = createLiveQuoteStayDriver({ runtime: fixture.runtime, transportId: 'transport-faith' });
+    const result = await driver.observeExactQuote(authorization, candidate(), new AbortController().signal);
+    expect(fixture.posts[0]?.fields.property).toBe(propertyCode);
+    expect(result.evidence).toMatchObject({ kind: 'hms', propertyCode });
+    expect(fixture.openReadSession).toHaveBeenCalledWith(expect.objectContaining({ transportId: 'transport-faith', sessionAuthorization: authorization }));
+  });
+
+  it('refuses a DaVinci authorization with omitted or foreign tenant before opening the browser', async () => {
+    const fixture = mockRuntime('', null, 'HRDAVS');
+    const driver = createLiveQuoteStayDriver({ runtime: fixture.runtime, transportId: 'transport-faith' });
+    for (const tenantId of [undefined, 'THECENTURION_PRD']) {
+      await expect(driver.observeExactQuote(auth({
+        propertyCode: 'HRDAVS', tenantId, landingPropertyCode: 'HRDAV', origin: ORIGIN,
+      }), candidate(), new AbortController().signal)).rejects.toMatchObject({ code: 'ROLE_SCOPE_INVALID' });
+    }
+    expect(fixture.openReadSession).not.toHaveBeenCalled();
+  });
+});
+
 function liveEnvelope(nights: Array<{ date: string; rate: number; avail: number }>): string {
   return JSON.stringify({
     pageData: {
@@ -133,7 +180,7 @@ function claimAuthorizationFor(at: Date) {
   };
 }
 
-function mockRuntime(htmlOrBody: string, receipt: Record<string, unknown> | null = null) {
+function mockRuntime(htmlOrBody: string, receipt: Record<string, unknown> | null = null, propertyCode: 'HRCEN' | 'HRDAV' | 'HRDAVS' = 'HRCEN') {
   const posts: Array<{ path: string; fields: Record<string, string> }> = [];
   const page: Partial<HmsPage> = {
     async content() {
@@ -143,7 +190,7 @@ function mockRuntime(htmlOrBody: string, receipt: Record<string, unknown> | null
     async evaluate(fn: (arg?: unknown) => unknown, arg?: unknown) {
       if (typeof fn === 'function' && fn.length === 0) {
         return {
-          property: 'HRCEN',
+          property: propertyCode,
           currency: 'ZAR',
           salesstrategy: 'TRANSI',
           showunavailable: '0',

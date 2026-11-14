@@ -1,8 +1,9 @@
 // The exact-confirmation reader owns a fresh context and admits only the
 // observed login and Stay 360 navigation posts. Unknown requests fail closed.
 import { fulfillGuestLookupRequest, guestLookupMayRequest } from './pane-guest-search.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
-const readPosts = new Set(['/web/base/login', '/web/base/BSSTRT', '/web/base/BSSTRT.HDR']);
+const readPosts = new Set(['/web/base/login', '/web/base/BSSTRT', '/web/base/BSSTRT.HDR', '/web/base/LOVPOP']);
 const recordQuery = new Map([
   ['current_tab_name', 'HDR'], ['fromlogin', 'yes'], ['hyperlinksource', 'F'],
   ['includeinitparams', 'true'], ['initpath', 'OSRESV'], ['menu_module_key', '-1'],
@@ -78,11 +79,12 @@ function isSelectedStaySearch(url, request, confirmation) {
   return body.size === expected.size && [...expected].every((key) => body.has(key));
 }
 
-export function savedStayReadMayRequest(request, { confirmation } = {}) {
+export function savedStayReadMayRequest(request, { confirmation, propertyCode = 'HRCEN' } = {}) {
   try {
+    if (!getPropertyRegistration(propertyCode)?.active) return false;
     const url = new URL(request.url);
     if (String(request.method).toUpperCase() === 'GET' && url.pathname === '/web/base/loadmain') {
-      return isSelectedRecordNavigation(url, confirmation);
+      return isSelectedRecordNavigation(url, confirmation) || guestLookupMayRequest({ ...request, propertyCode });
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV.LST') {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
@@ -106,7 +108,7 @@ export function savedStayReadMayRequest(request, { confirmation } = {}) {
         value.length <= 256 && !/[\p{Cc}]/u.test(value)) &&
         body.get('system_function_name') === 'OSRESV' && body.get('user_function_name') === 'OSRESV' &&
         body.get('current_tab_name') === 'HDR' && body.get('confirmationnumber') === confirmation &&
-        body.get('propertycode') === 'HRCEN' && /^\d{1,100}$/.test(body.get('reservationstayid') || '') &&
+        body.get('propertycode') === propertyCode && /^\d{1,100}$/.test(body.get('reservationstayid') || '') &&
         /^\d{1,100}$/.test(body.get('guestid') || '');
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV' && !url.search) {
@@ -137,9 +139,9 @@ export function savedStayReadMayRequest(request, { confirmation } = {}) {
       // Same observed read/search shape as the surname finder, but the Stay
       // 360 confirmation search identifies its user function as OSRESS.
       body.set(userKeys[0], 'OSRESV');
-      return guestLookupMayRequest({ ...request, postData: body.toString() });
+      return guestLookupMayRequest({ ...request, postData: body.toString(), propertyCode });
     }
-    if (!guestLookupMayRequest(request)) return false;
+    if (!guestLookupMayRequest({ ...request, propertyCode })) return false;
     if (String(request.method).toUpperCase() === 'GET') return true;
     if (String(request.method).toUpperCase() !== 'POST') return false;
     if (url.pathname === '/web/base/OSRESS') {
@@ -152,14 +154,15 @@ export function savedStayReadMayRequest(request, { confirmation } = {}) {
   catch { return false; }
 }
 
-export async function installSavedStayReadGuard(context, { confirmation } = {}) {
+export async function installSavedStayReadGuard(context, { confirmation, propertyCode = 'HRCEN' } = {}) {
   if (!/^\d+-\d+$/.test(confirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
+  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('READ_PROPERTY_UNSUPPORTED');
   if (typeof context.routeWebSocket !== 'function') throw new Error('READ_SOCKET_GUARD_UNAVAILABLE');
   await context.routeWebSocket('**/*', (socket) => socket.close());
   await context.route('**/*', async (route) => {
     const request = route.request();
     const allowed = savedStayReadMayRequest({ method: request.method(), url: request.url(),
-      postData: request.postData?.(), contentType: request.headers()['content-type'] }, { confirmation });
+      postData: request.postData?.(), contentType: request.headers()['content-type'] }, { confirmation, propertyCode });
     return allowed ? fulfillGuestLookupRequest(route) : route.abort();
   });
 }

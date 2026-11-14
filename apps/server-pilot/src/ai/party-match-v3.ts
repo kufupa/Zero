@@ -29,6 +29,7 @@ export type PartyMatchV3FindResult = {
   results: readonly PartyMatchV3Row[];
   truncated: boolean;
   searchedFor?: string | null;
+  error?: string;
 };
 
 const PARTY_OUTCOMES = new Set<string>([
@@ -51,6 +52,7 @@ function partyOutcome(value: string): PanePartyOutcome {
 
 export type PartyMatchV3JobResult = {
   outcome: PanePartyOutcome;
+  error?: string;
   results: PartyMatchV3Row[];
   truncated: boolean;
   best: PartyMatchV3Row | null;
@@ -535,6 +537,7 @@ function finish(input: {
         : 'no_match';
   return {
     outcome,
+    ...(input.failure?.error ? { error: input.failure.error } : {}),
     results: input.rows,
     truncated: input.truncated,
     best: input.decision.boundParty,

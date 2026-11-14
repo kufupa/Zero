@@ -82,6 +82,7 @@ export function availableImplementationDigestsFromHandlerIndex(): Map<
 }
 
 const cached = new Map<PropertyCode, ActiveReadRuntimeState>();
+export const DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT = '/etc/nava/hms-read-role-proofs/v2';
 
 export function getActiveReadRuntime(propertyCode: PropertyCode): ActiveReadRuntimeState | null {
   return cached.get(propertyCode) ?? null;
@@ -99,8 +100,8 @@ export async function resolveWorkerActiveReadPaths(input: {
   propertyCode: PropertyCode; root?: string; legacyRegistryPath: string; legacyReleaseRoot: string;
 }): Promise<{ registryPath: string; releaseRoot: string }> {
   const legacy = { registryPath: input.legacyRegistryPath, releaseRoot: input.legacyReleaseRoot };
-  const root = input.root;
-  if (!root) return input.propertyCode === 'HRCEN' ? legacy : { registryPath: '', releaseRoot: '' };
+  const root = input.root?.trim() || (input.propertyCode === 'HRCEN' ? undefined : DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT);
+  if (!root) return legacy;
   const partition = { registryPath: join(root, input.propertyCode, 'active-registry.v2.json'),
     releaseRoot: join(root, input.propertyCode, 'releases') };
   if (input.propertyCode === 'HRCEN') {

@@ -334,6 +334,14 @@ describe('createRequestFieldOptions', () => {
     expect(options).toHaveProperty('requiredCreateFields', [...profile.requiredCreateFields, 'marketsegment', 'guestoptin4']);
   });
 
+  it('exposes observed HRDAVS rooms without inventing inventory or source choices', () => {
+    const options = createRequestFieldOptions('HRDAVS');
+    expect(options.roomType).toEqual(['1BLX', '2BLX', '3BLX', 'PENT']);
+    expect(options.sourceOfBusiness).toEqual([]);
+    expect(options.track).toEqual([]);
+    expect(options.guaranteeType).toContain('Awaiting Voucher');
+  });
+
   it('keeps HRCEN choices unchanged and has no extra required create fields', () => {
     const schema = JSON.parse(
       readFileSync(

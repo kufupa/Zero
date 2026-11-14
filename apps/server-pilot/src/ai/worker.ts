@@ -72,7 +72,9 @@ import {
   type AiExecutorLane,
   type EnvInput,
 } from '../env.js';
-import { readToolExpectedPropertyCode } from '../hms/hms-read-target.js';
+import { propertyCodeSchema, resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT } from '../hms/active-read-runtime.js';
 import { bindHmsMailboxProperty, hmsPropertyReadEnabled } from '../hms/mailbox-hms-origin-bind.js';
 import {
   companyAccountContextDataSchema,
@@ -636,6 +638,7 @@ async function failAiRun(
 }
 
 export type ReadAdmissionBinding = {
+  propertyCode?: import('../hms/property-registry.js').PropertyCode;
   releaseId: string;
   requestBranchId: string;
   /** Non-browser existing-document reads carry null; PMS reads carry a digest. */
@@ -716,6 +719,30 @@ export type LiveHmsCandidateSessionFactoryOptions = {
 /** Runtime and activation authority are isolated by property. */
 const productionHmsRuntimes = new Map<import('../hms/property-registry.js').PropertyCode, import('../hms/runtime.js').HmsRuntime>();
 const productionActiveReadStates = new Map<import('../hms/property-registry.js').PropertyCode, import('../hms/active-read-runtime.js').ActiveReadRuntimeState>();
+const pendingProductionHmsRuntimes = new Map<import('../hms/property-registry.js').PropertyCode, Promise<import('../hms/runtime.js').HmsRuntime>>();
+
+function scopedReadRuntimeConfig(scope?: { propertyCode: string; transportId?: string }) {
+  if (!scope) return requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  const code = propertyCodeSchema.parse(scope.propertyCode);
+  const property = getPropertyRegistration(code);
+  if (!property) throw new Error('unknown read runtime property');
+  const transportId = scope.transportId ?? property.transportIds[0];
+  if (!transportId || !property.transportIds.includes(transportId)) throw new Error('read runtime transport mismatch');
+  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT;
+  return requireHmsReadRuntimeConfig({ ...process.env,
+    HMS_EXPECTED_PROPERTY_CODE: code,
+    HMS_EXPECTED_TENANT: property.expectedTenant,
+    HMS_EXPECTED_TRANSPORT_ID: transportId,
+    HMS_READ_SECRET_ARN: property.credentialSecretRef,
+    ...(code === 'HRCEN' ? {} : {
+      HMS_READ_ROLE_PROOF_PATH: `${root}/${code}/hms_find_reservation.v2.json`,
+      HMS_ACTIVE_REGISTRY_PATH: `${root}/${code}/active-registry.v2.json`,
+      HMS_RELEASE_ROOT: `${root}/${code}/releases`,
+      HMS_HEALTH_STATUS_PATH: `${process.env.HMS_HEALTH_STATUS_PATH}.${code}`,
+    }),
+  });
+}
+
 
 
 function synchronousReadError(code: 'READ_ABORTED' | 'READ_SYNC_DEADLINE', message: string) {
@@ -858,12 +885,35 @@ function assertHmsPropertyReadEnabled(propertyCode: string, toolId?: string, tra
 async function getOrCreateProductionHmsRuntime(
   signal?: AbortSignal,
   deadlineAt?: Date,
+  scope?: { propertyCode: string; transportId?: string },
+): Promise<import('../hms/runtime.js').HmsRuntime> {
+  const config = scopedReadRuntimeConfig(scope);
+  const propertyCode = propertyCodeSchema.parse(config.expectedPropertyCode);
+  const cached = productionHmsRuntimes.get(propertyCode);
+  if (cached) return cached;
+  let pending = pendingProductionHmsRuntimes.get(propertyCode);
+  if (!pending) {
+    pending = createAndStartProductionHmsRuntime(signal, deadlineAt, config);
+    pendingProductionHmsRuntimes.set(propertyCode, pending);
+    void pending.finally(() => {
+      if (pendingProductionHmsRuntimes.get(propertyCode) === pending) pendingProductionHmsRuntimes.delete(propertyCode);
+    }).catch(() => undefined);
+  }
+  const startup = pending;
+  return signal && deadlineAt
+    ? awaitSynchronousReadSetup({ operation: () => startup, signal, deadlineAt })
+    : startup;
+}
+
+async function createAndStartProductionHmsRuntime(
+  signal: AbortSignal | undefined,
+  deadlineAt: Date | undefined,
+  config: ReturnType<typeof requireHmsReadRuntimeConfig>,
 ): Promise<import('../hms/runtime.js').HmsRuntime> {
   if (signal && deadlineAt) assertSynchronousReadActive(signal, deadlineAt);
   const { createProductionHmsRuntime } = await import('../hms/production-runtime.js');
   // The read lane is independent from draft mode: `off` still permits a
   // model-free browser runtime when the read service is enabled.
-  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
   assertHmsPropertyReadEnabled(config.expectedPropertyCode);
   const { propertyCodeSchema } = await import('../hms/property-registry.js');
   const propertyCode = propertyCodeSchema.parse(config.expectedPropertyCode);
@@ -947,16 +997,13 @@ export function createLiveHmsCandidateSessionFactory(
   options: LiveHmsCandidateSessionFactoryOptions = {},
 ): CandidateSessionFactory {
   return async (input) => {
-    const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
-    const propertyCode = input.propertyCode ?? config.expectedPropertyCode;
-    if (propertyCode !== config.expectedPropertyCode) {
-      throw Object.assign(
-        new Error('quote authority property does not match the configured live property'),
-        { failureClass: 'AUTH' as const },
-      );
-    }
+    const selectedScope = resolvePropertyScope({ transportId: input.transportId,
+      propertySwitch: input.propertyCode === 'HRDAV' || input.propertyCode === 'HRDAVS' ? input.propertyCode : undefined });
+    if (input.propertyCode && input.propertyCode !== selectedScope.propertyCode) throw new Error('read property and transport mismatch');
+    const propertyCode = selectedScope.propertyCode;
+    const config = scopedReadRuntimeConfig(selectedScope);
     assertHmsPropertyReadEnabled(propertyCode, input.readToolId);
-    const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime());
+    const runtime = options.runtime ?? (await getOrCreateProductionHmsRuntime(undefined, undefined, selectedScope));
     const active =
       options.activeReadState ??
       productionActiveReadStates.get((await import('../hms/property-registry.js')).propertyCodeSchema.parse(propertyCode)) ??
@@ -1005,7 +1052,7 @@ export function createLiveHmsCandidateSessionFactory(
     const origin = registration.origin;
     const authIdentity = { propertyCode: registration.propertyCode, tenantId: registration.expectedTenant,
       landingPropertyCode: registration.landingPropertyCode, origin };
-    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || '/etc/nava/hms-read-role-proofs/v2';
+    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT;
     const { statSync } = await import('node:fs');
     const { join } = await import('node:path');
     const proofExists = (path: string) => {
@@ -1151,8 +1198,8 @@ export function createLiveHmsCandidateSessionFactory(
         : undefined,
       sessionAuthorizationFor: ({ candidate }) => {
         const manifest = candidate
-          ? buildExactOsressSearchManifest(origin, candidate)
-          : buildLiveGuestStayReadManifest(origin);
+          ? buildExactOsressSearchManifest(origin, candidate, propertyCode)
+          : buildLiveGuestStayReadManifest(origin, propertyCode);
         // Canary / login still get a find-scoped lease — never process-wide alone.
         void liveNotFoundCanaryCandidate;
         const auth = buildHmsFindSessionAuthorization({
@@ -1379,7 +1426,7 @@ export function createLiveHmsCandidateSessionFactory(
         manifest:
           inputData.toolId === 'hms_group_block_read'
             ? buildLiveGroupBlockListManifest(origin)
-            : buildLiveGuestStayReadManifest(origin),
+            : buildLiveGuestStayReadManifest(origin, propertyCode),
         manifestSha256: branch.manifestSha256,
         roleProofPath: roleProofPathFor(inputData.toolId),
         roleProofSha256: inputData.release.roleProofSha256 ?? placeholderDigest('u15-role'),
@@ -1578,7 +1625,7 @@ export function createLiveHmsCandidateSessionFactory(
                 discoveryOperationId: 'notes_traces_list',
                 releaseId: notesRelease.releaseId,
                 requestBranchId: branch.id,
-                manifest: buildLiveGuestStayReadManifest(origin),
+                manifest: buildLiveGuestStayReadManifest(origin, propertyCode),
                 manifestSha256: branch.manifestSha256,
                 roleProofPath: roleProofPathFor('hms_read_notes_traces'),
                 roleProofSha256: notesRelease.roleProofSha256 ?? placeholderDigest('notes-role'),
@@ -1634,7 +1681,7 @@ export function createLiveHmsCandidateSessionFactory(
         ? (quoteCand) => {
             const auth = buildHmsQuoteSessionAuthorization({
               operationId, propertyCode: (propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') ? propertyCode : 'HRCEN',
-              manifest: buildExactOsrravSearchManifest(origin, quoteCand),
+              manifest: buildExactOsrravSearchManifest(origin, quoteCand, undefined, propertyCode),
               roleProofPath: roleProofPathFor('hms_quote_stay'),
               roleProofSha256: quoteRelease.roleProofSha256 ?? placeholderDigest('quote-role'),
               credentialVersionHmacSha256:
@@ -1657,6 +1704,7 @@ export type SynchronousHmsFindInput = {
   userId: string;
   transportId: string;
   threadId: string;
+  propertySwitch?: PropertySwitch;
   signal?: AbortSignal;
   runtime?: import('../hms/runtime.js').HmsRuntime;
   /** Test-only lower edge; admission and source checks remain production code. */
@@ -1674,7 +1722,9 @@ export async function executeSynchronousHmsFindReservation(input: SynchronousHms
   if (input.signal?.aborted) {
     throw synchronousReadError('READ_ABORTED', 'read was aborted');
   }
-  const config = requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>);
+  const scope = resolvePropertyScope(input);
+  const config = scopedReadRuntimeConfig(scope);
+  assertHmsPropertyReadEnabled(scope.propertyCode, 'hms_find_reservation', scope.transportId);
   if (!input.userId.trim()) {
     throw Object.assign(new Error('synchronous read requires current application user access'), {
       failureClass: 'AUTH' as const,
@@ -1836,7 +1886,7 @@ export async function executeSynchronousHmsFindReservation(input: SynchronousHms
     },
     now: new Date(),
   });
-  const runtime = input.runtime ?? (await getOrCreateProductionHmsRuntime(signal, deadlineAt));
+  const runtime = input.runtime ?? (await getOrCreateProductionHmsRuntime(signal, deadlineAt, scope));
   assertSynchronousReadActive(signal, deadlineAt);
   const liveSessionFactory = createLiveHmsCandidateSessionFactory({
     runtime,
@@ -2555,6 +2605,9 @@ async function assertCurrentReadAdmissionAuthority(input: {
     );
   }
 
+  if (input.expectedPropertyCode && (issuerData.propertyCode ?? 'HRCEN') !== input.expectedPropertyCode) {
+    throw readAdmissionAuthError('read admission selected property differs from its issuer');
+  }
   const [grant] = await getDb()
     .select({ id: mailboxAccess.id })
     .from(mailboxAccess)
@@ -2929,12 +2982,11 @@ async function executeProductionReadTool(input: {
   const expectedPropertyCode =
     request.toolId === 'documents_list_existing' || request.toolId === 'documents_read_existing'
       ? ''
-      : request.toolId === 'hms_quote_stay'
-        ? request.quoteRequest.propertyCode
-        : request.toolId === 'hms_read_folio'
-          ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
-              .expectedPropertyCode
-          : readToolExpectedPropertyCode(process.env);
+      : propertyCodeSchema.parse(request.admission?.propertyCode ?? (() => {
+          const legacyScope = resolvePropertyScope({ transportId: input.run.transportId });
+          if (legacyScope.propertyCode !== 'HRCEN') throw readAdmissionAuthError('read admission selected property is missing');
+          return legacyScope.propertyCode;
+        })());
   if (request.toolId !== 'documents_list_existing' && request.toolId !== 'documents_read_existing') {
     assertHmsPropertyReadEnabled(expectedPropertyCode, request.toolId, input.run.transportId);
   }
@@ -3288,6 +3340,7 @@ async function executeProductionReadTool(input: {
       transportId: input.run.transportId,
       threadId: input.run.threadId,
       triggerMessageId: input.run.triggerMessageId,
+      propertyCode: expectedPropertyCode,
       lookupCandidates: [],
       signal: input.signal,
       runId: input.run.id,
@@ -3597,6 +3650,7 @@ async function executeProductionReadTool(input: {
     transportId: input.run.transportId,
     threadId: input.run.threadId,
     triggerMessageId: input.run.triggerMessageId,
+    propertyCode: expectedPropertyCode,
     lookupCandidates: [candidate],
     signal: input.signal,
     runId: input.run.id,

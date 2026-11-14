@@ -152,10 +152,10 @@ export async function loadAgencyCommission(input: { propertyCode: string; native
   { status: 'verified'; percent: number; capturedAt: string; confidence: number; numerator: number; denominator: number } |
   { status: 'unavailable' | 'not_found'; issue: string }
 > {
-  const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
-  if (!path) return { status: 'unavailable', issue: 'catalog_path_missing' };
-  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
-  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
+  const module = await import('../../tooling/hms-cloud/hms-native-catalog.mjs');
+  const options = module.nativeCatalogReadOptions({ propertyCode: input.propertyCode, env: input.env ?? process.env });
+  if (!options.path) return { status: 'unavailable', issue: 'catalog_path_missing' };
+  const loaded = await module.loadHmsNativeCatalog(options);
   if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
   const parsed = commissionCatalogSchema.safeParse(loaded.catalog);
   if (!parsed.success) return { status: 'unavailable', issue: 'commission_catalog_invalid' };
@@ -176,10 +176,10 @@ export async function loadAgencyCommission(input: { propertyCode: string; native
 export async function loadNativeRateMealPlan(input: { propertyCode: string; ratePlan: string; env?: NodeJS.ProcessEnv }): Promise<
   { status: 'verified'; mealPlan: string; capturedAt: string } | { status: 'unavailable' | 'not_found'; issue: string }
 > {
-  const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
-  if (!path) return { status: 'unavailable', issue: 'catalog_path_missing' };
-  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
-  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
+  const module = await import('../../tooling/hms-cloud/hms-native-catalog.mjs');
+  const options = module.nativeCatalogReadOptions({ propertyCode: input.propertyCode, env: input.env ?? process.env });
+  if (!options.path) return { status: 'unavailable', issue: 'catalog_path_missing' };
+  const loaded = await module.loadHmsNativeCatalog(options);
   if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
   // A selected draft readback is not a property-wide configuration: the native
   // rate-change call sends the whole draft, and its dependencies are unknown.
@@ -198,10 +198,10 @@ export async function loadNativeBookingCodes(input: { propertyCode: string; kind
   { status: 'available'; capturedAt: string; records: { code: string | null; meaning: string | null; capturedAt: string }[] } |
   { status: 'unavailable'; issue: string }
 > {
-  const path = (input.env ?? process.env).HMS_NATIVE_CATALOG_PATH;
-  if (!path) return { status: 'unavailable', issue: 'catalog_path_missing' };
-  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href);
-  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode: input.propertyCode });
+  const module = await import('../../tooling/hms-cloud/hms-native-catalog.mjs');
+  const options = module.nativeCatalogReadOptions({ propertyCode: input.propertyCode, env: input.env ?? process.env });
+  if (!options.path) return { status: 'unavailable', issue: 'catalog_path_missing' };
+  const loaded = await module.loadHmsNativeCatalog(options);
   if (loaded.status !== 'available') return { status: 'unavailable', issue: loaded.issue };
   const parsed = nativeCodeCatalogSchema.safeParse(loaded.catalog);
   if (!parsed.success) return { status: 'unavailable', issue: 'booking_code_catalog_invalid' };

@@ -221,6 +221,7 @@ export const paneStayLookupRouter = router({
           lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
           target,
+          transportId: ctx.activeTransportId,
         },
       );
       if (input.sourceHash) await assertSelectedMessage(input, ctx.activeTransportId);
@@ -260,6 +261,7 @@ export const paneStayLookupRouter = router({
           lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
           target,
+          transportId: ctx.activeTransportId,
         },
       );
       if (input.sourceHash) await assertSelectedMessage(input, ctx.activeTransportId);

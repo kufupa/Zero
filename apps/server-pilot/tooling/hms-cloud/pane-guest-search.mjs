@@ -1,5 +1,6 @@
-// Staff surname search in an owned HRCEN browser, using the existing complete-panel parser.
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+// Staff surname search in a property-scoped Cloud browser, using the existing complete-panel parser.
+import { withCloudReadSession } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
 import { searchGuestOnOpenGuestStay } from '../playwright-quote/stay-lookup.mjs';
 
@@ -35,16 +36,25 @@ function uniqueParams(params) {
   return values;
 }
 
-export function guestLookupMayRequest({ method, url, postData, contentType }) {
+export function guestLookupMayRequest({ method, url, postData, contentType, propertyCode = 'HRCEN' }) {
   try {
+    const property = getPropertyRegistration(propertyCode);
+    if (!property?.active) return false;
     const target = new URL(url), verb = String(method).toUpperCase();
     const decodedPath = decodeURIComponent(target.pathname);
-    if (target.origin !== ORIGIN || target.username || target.password || decodedPath !== target.pathname ||
+    if (target.origin !== property.origin || target.origin !== ORIGIN || target.username || target.password || target.hash || decodedPath !== target.pathname ||
         shouldAbortReadOnlyRequest({ method: verb, url, postData })) return false;
     const query = uniqueParams(target.searchParams);
     if (!query) return false;
     if (verb === 'GET') {
-      if (decodedPath === '/web/base/logindisp') return query.size === 1 && query.get('tenant') === 'THECENTURION_PRD';
+      if (decodedPath === '/web/base/logindisp') return query.size === 1 && query.get('tenant') === property.expectedTenant;
+      if (decodedPath === '/web/base/loadmain' && propertyCode !== property.landingPropertyCode) {
+        const fixed = new Map([['initpath', 'BSSTRT'], ['user_function_name', 'BSSTRT'],
+          ['menu_module_key', '-1'], ['fromlogin', 'yes'], ['defaultproperty', propertyCode]]);
+        const token = query.get('requesttoken') || '';
+        return query.size === fixed.size + 1 && [...fixed].every(([key, value]) => query.get(key) === value) &&
+          token.length > 0 && token.length <= 1024 && !/[\p{Cc}]/u.test(token);
+      }
       if (decodedPath === '/web/base/COMMON') {
         const key = query.get('req_key') || '';
         return query.size === 1 && key.length <= 1024 && key.length > 0 && !/[\p{Cc}]/u.test(key) && !mutatingPath.test(key);
@@ -52,6 +62,18 @@ export function guestLookupMayRequest({ method, url, postData, contentType }) {
       if (query.size) return false;
       return ['/web/base/login-all.js', '/web/base/all-classes.js', '/web/jsp/interfaceStatusAlert.jsp'].includes(decodedPath) ||
         assetPath.test(decodedPath);
+    }
+    // The native property chooser is a scoped LOV read, never a reservation form action.
+    if (verb === 'POST' && decodedPath === '/web/base/LOVPOP' && propertyCode !== property.landingPropertyCode &&
+        query.size === 0 && typeof postData === 'string' &&
+        /^application\/x-www-form-urlencoded(?:;|$)/i.test(contentType || '')) {
+      const body = uniqueParams(new URLSearchParams(postData));
+      const required = new Map([['system_function_name', 'SWITCHPROP'], ['user_function_name', 'SWITCHPROP'],
+        ['grid_name', 'LVSORGALL'], ['grid_type', 'LOV'], ['request_type', 'LOV.HEAD_DATA.STORED'],
+        ['lov_tagname', 'propertylookup'], ['popup', 'true']]);
+      return Boolean(body && [...required].every(([key, value]) => body.get(key) === value) &&
+        [...body].every(([key, value]) => key.length <= 100 && value.length <= 1024 && !/[\p{Cc}]/u.test(value) &&
+          (required.has(key) || !/(?:action|operation|command|method|save|delete|cancel|update|insert|submit|create|write|upload|send)/i.test(key))));
     }
     const rule = posts.get(target.pathname);
     if (verb !== 'POST' || mutatingPath.test(decodedPath) || !rule || typeof postData !== 'string' ||
@@ -62,9 +84,10 @@ export function guestLookupMayRequest({ method, url, postData, contentType }) {
         [...body.keys()].some((key) => !rule.fields.includes(key) && !(rule.search && searchField.test(key)))) return false;
     if (rule.menuQuery && (query.size !== 2 || query.get('user_function_name') !== rule.user ||
         query.get('function_class') !== 'WEBL' || body.get('function_class') !== 'WEBL')) return false;
-    if (decodedPath === '/web/base/login' && (body.get('tenant') !== 'THECENTURION_PRD' ||
+    if (decodedPath === '/web/base/login' && (body.get('tenant') !== property.expectedTenant ||
         !body.get('csrftckt') || !body.get('userid') || !body.get('password') ||
         !['', 'false', '0'].includes(body.get('resetpassword').toLowerCase()))) return false;
+    if (decodedPath === '/web/base/OSRESV.HDR' && body.get('propertycode') && body.get('propertycode') !== propertyCode) return false;
     return body.get('system_function_name') === rule.system && body.get('user_function_name') === rule.user &&
       (rule.tab === undefined || body.get('current_tab_name') === rule.tab);
   } catch { return false; }
@@ -81,53 +104,69 @@ export async function fulfillGuestLookupRequest(route) {
   }
 }
 
-export async function installGuestLookupGuard(context) {
+export async function installGuestLookupGuard(context, propertyCode = 'HRCEN') {
+  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('GUEST_STAY_PROPERTY_UNSUPPORTED');
   // A service worker or socket could bypass ordinary request routing.
   if (typeof context.routeWebSocket !== 'function') throw new Error('LOOKUP_SOCKET_GUARD_UNAVAILABLE');
   await context.routeWebSocket('**/*', (socket) => socket.close());
   await context.route('**/*', async (route) => {
     const request = route.request();
     const allowed = guestLookupMayRequest({ method: request.method(), url: request.url(), postData: request.postData?.(),
-      contentType: request.headers()['content-type'] });
+      contentType: request.headers()['content-type'], propertyCode });
     return allowed ? fulfillGuestLookupRequest(route) : route.abort();
   });
 }
 
-async function openGuestStay(page) {
-  const node = (name) => page.locator('span.x-tree-node-text:visible')
-    .filter({ hasText: new RegExp(`^${name}$`) });
-  const trigger = page.locator('a.app-menu-trigger:visible');
-  if (await trigger.count() !== 1) throw new Error('MENU_NOT_UNIQUE');
-  await trigger.click({ timeout: 10_000 });
-  // Children can take a moment to render; inspect the branch state instead of
-  // toggling an expanded branch merely because Guest Stay is not visible yet.
-  const front = node('Front Desk');
-  await front.waitFor({ state: 'visible', timeout: 10_000 });
-  if (await front.count() !== 1) throw new Error('FRONT_DESK_NOT_UNIQUE');
-  const branch = await front.locator('xpath=ancestor::tr[1]').getAttribute('class');
-  if (!branch || !branch.split(/\s+/).includes('x-grid-row')) throw new Error('FRONT_DESK_STATE_UNVERIFIED');
-  if (!branch.split(/\s+/).includes('x-grid-tree-node-expanded')) await front.click({ timeout: 10_000 });
-  const guest = node('Guest Stay');
-  await guest.waitFor({ state: 'visible', timeout: 10_000 });
-  if (await guest.count() !== 1) throw new Error('GUEST_STAY_NOT_UNIQUE');
-  await guest.click({ timeout: 10_000 });
-  await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ state: 'visible', timeout: 10_000 });
-  const valid = await page.evaluate(() => {
+async function openGuestStay(page, propertyCode, { forceMenu = false } = {}) {
+  const search = page.getByPlaceholder(/Search by Name, Confirmation/i).first();
+  const alreadyOpen = !forceMenu && typeof search.isVisible === 'function' && await search.isVisible();
+  if (!alreadyOpen) {
+    const node = (name) => page.locator('span.x-tree-node-text:visible')
+      .filter({ hasText: new RegExp(`^${name}$`) });
+    const trigger = page.locator('a.app-menu-trigger:visible');
+    if (await trigger.count() !== 1) throw new Error('MENU_NOT_UNIQUE');
+    await trigger.click({ timeout: 10_000 });
+    // Children can take a moment to render; inspect the branch state instead of
+    // toggling an expanded branch merely because Guest Stay is not visible yet.
+    const front = node('Front Desk');
+    await front.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await front.count() !== 1) throw new Error('FRONT_DESK_NOT_UNIQUE');
+    const branch = await front.locator('xpath=ancestor::tr[1]').getAttribute('class');
+    if (!branch || !branch.split(/\s+/).includes('x-grid-row')) throw new Error('FRONT_DESK_STATE_UNVERIFIED');
+    if (!branch.split(/\s+/).includes('x-grid-tree-node-expanded')) await front.click({ timeout: 10_000 });
+    const guest = node('Guest Stay');
+    await guest.waitFor({ state: 'visible', timeout: 10_000 });
+    if (await guest.count() !== 1) throw new Error('GUEST_STAY_NOT_UNIQUE');
+    await guest.click({ timeout: 10_000 });
+  }
+  await search.waitFor({ state: 'visible', timeout: 10_000 });
+  const valid = await page.evaluate((expected) => {
+    const header = document.querySelector('button.switchproperty')?.textContent?.trim();
     const property = document.documentElement.dataset.propertyCode ??
-      /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
-    return location.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com' && property === 'HRCEN';
-  });
+      /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1] ?? header;
+    return location.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com' && property === expected;
+  }, propertyCode);
   if (!valid) throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
 }
 
 /** No write operations; search result cap and unreadable-row handling remain with the existing parser. */
-export async function searchGuestInCloud(input, { openSession = withCenturionStay360Page,
-  guard = installGuestLookupGuard, navigate = openGuestStay, search = searchGuestOnOpenGuestStay, signal } = {}) {
+export async function searchGuestInCloud(input, { openSession = withCloudReadSession,
+  guard = installGuestLookupGuard, navigate = openGuestStay, search = searchGuestOnOpenGuestStay, signal, transportId, forceNavigate = false } = {}) {
+  const propertyCode = input.propertyCode ?? 'HRCEN';
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active) throw new Error('GUEST_STAY_PROPERTY_UNSUPPORTED');
   const timeout = AbortSignal.timeout(5 * 60_000);
-  return openSession(async (page) => {
-    await navigate(page);
-    return search({ page, args: { mode: 'search-guest', lastName: input.lastName, arrival: input.arrival,
+  return openSession(async (page, identity) => {
+    if ((openSession === withCloudReadSession && !identity) || (identity &&
+        (identity.propertyCode !== propertyCode || identity.tenantId !== property.expectedTenant ||
+         identity.landingPropertyCode !== property.landingPropertyCode || identity.origin !== property.origin))) {
+      throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
+    }
+    await navigate(page, propertyCode, { forceMenu: forceNavigate });
+    const result = await search({ page, args: { mode: 'search-guest', lastName: input.lastName, arrival: input.arrival,
       departure: input.departure ?? null, debugHtml: false }, dir: input.dir, started: Date.now() });
-  }, { headless: true, blockServiceWorkers: true, prepareContext: guard,
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    return input.propertyCode === undefined ? result : { ...result, propertyCode };
+  }, { propertyCode, startScreen: 'OSRESV', headless: true, blockServiceWorkers: true,
+    prepareContext: (context) => guard(context, propertyCode),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout, ...(transportId !== undefined && { transportId }) });
 }

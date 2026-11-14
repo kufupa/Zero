@@ -239,7 +239,7 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
   const request = { confirmation: String(confirmation), ...(typeof arrival === 'string' && arrival ? { arrival } : {}) };
   let result: ReturnType<typeof projectCloudStayFind> | null = null;
   try {
-    result = projectCloudStayFind(request, await runCloudStayFind({ request, target: resolved.target, signal }));
+    result = projectCloudStayFind(request, await runCloudStayFind({ request, target: resolved.target, transportId, signal }));
     signal.throwIfAborted();
   } catch { signal.throwIfAborted(); }
   const stay = record(result?.stay), selectedStay = amendSelection?.stay;

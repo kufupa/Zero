@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { propertyConfigurationSchema, type PropertyConfiguration } from './property-configuration.js';
 import { resolvePropertyScope, type ResolvedPropertyScope } from './property-registry.js';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { loadHmsNativeCatalog, nativeCatalogReadOptions } from '../../tooling/hms-cloud/hms-native-catalog.mjs';
 import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
 import { readShuttleProviderConfig, type ShuttleProviderConfig } from '../ai/shuttle-draft.js';
 import {
@@ -105,16 +106,7 @@ export async function loadNativeRatePlans(
   propertyCode: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<NativeRatePlan[] | null> {
-  const path = propertyCode === 'HRCEN' ? env.HMS_NATIVE_CATALOG_PATH :
-    propertyCode === 'HRDAV' ? env.HMS_NATIVE_CATALOG_PATH_HRDAV :
-    propertyCode === 'HRDAVS' ? env.HMS_NATIVE_CATALOG_PATH_HRDAVS : undefined;
-  if (!path) return null;
-  const module = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href) as {
-    loadHmsNativeCatalog: (input: { path: string; propertyCode: string }) => Promise<
-      { status: string; catalog?: { catalogs?: { ratePlans?: { records?: unknown[] } } } }
-    >;
-  };
-  const loaded = await module.loadHmsNativeCatalog({ path, propertyCode });
+  const loaded = await loadHmsNativeCatalog(nativeCatalogReadOptions({ propertyCode, env }));
   if (loaded.status !== 'available') return null;
   const records = loaded.catalog?.catalogs?.ratePlans?.records;
   if (!Array.isArray(records)) return null;
@@ -181,21 +173,18 @@ async function legacyQuotePaneConfigForProperty(
 export async function propertyConfigurationForScope(
   scope: ResolvedPropertyScope,
   env: NodeJS.ProcessEnv = process.env,
+  validatedReadCapabilities?: { reads: boolean; quote: boolean },
 ): Promise<PropertyConfiguration> {
   const legacy = await legacyQuotePaneConfigForProperty(scope.propertyCode, scope.transportId, env);
   let ratePlans = legacy?.ratePlans ?? [];
   let roomTypes = legacy?.roomTypes ?? [];
-  const catalogPath = scope.propertyCode === 'HRCEN' ? env.HMS_NATIVE_CATALOG_PATH :
-    scope.propertyCode === 'HRDAV' ? env.HMS_NATIVE_CATALOG_PATH_HRDAV : env.HMS_NATIVE_CATALOG_PATH_HRDAVS;
+  let salesStrategies = scope.group === 'centurion' ? legacy?.salesStrategies ?? [] : [];
   let catalogue: PropertyConfiguration['catalogue'] = { identity: null, capturedAt: null, expiresAt: null,
     coverage: { rates: 'unknown', roomTypes: 'unknown', mealPlans: 'unknown' } };
-  if (catalogPath) {
-    const { loadHmsNativeCatalog } = await import(new URL('../../tooling/hms-cloud/hms-native-catalog.mjs', import.meta.url).href) as {
-      loadHmsNativeCatalog: (input: { path: string; propertyCode: string }) => Promise<{ status: string; catalog?: {
-        schemaVersion: string; capturedAt: string; maxAgeMs?: number; sourceRevision?: string;
-        catalogs?: Record<string, { coverage?: { complete?: boolean }; records?: unknown[] }> } }>;
-    };
-    const result = await loadHmsNativeCatalog({ path: catalogPath, propertyCode: scope.propertyCode });
+  let formPolicy: PropertyConfiguration['formPolicy'] = { requiredFields: [], guestOptIn: 'unknown', cancellation: 'unknown',
+    guaranteeChoices: [], cmsChoices: [], childCategoryPolicy: 'discover_active' };
+  {
+    const result = await loadHmsNativeCatalog(nativeCatalogReadOptions({ propertyCode: scope.propertyCode, env }));
     const data = result.status === 'available' ? result.catalog : undefined;
     if (data) {
       const coverage = (kind: string): 'complete' | 'partial' | 'unknown' => {
@@ -207,6 +196,25 @@ export async function propertyConfigurationForScope(
         expiresAt: data.maxAgeMs ? new Date(Date.parse(data.capturedAt) + data.maxAgeMs).toISOString() : null,
         coverage: { rates: coverage('ratePlans'), roomTypes: coverage('roomTypes'), mealPlans: 'unknown' } };
       if (scope.group === 'davinci') {
+        const strategyChoices = data.availabilityForm?.fields.find((field) => field.name === 'salesstrategy')?.choices ?? [];
+        salesStrategies = quoteSalesStrategiesFromRegistry(scope.propertyCode,
+          strategyChoices.map(({ code, meaning }) => ({ value: code, display: meaning })));
+        const formFields = data.form?.fields ?? [];
+        const guestOptIn = formFields.find((field) => field.name === 'guestoptin4');
+        const guarantee = formFields.find((field) => field.name === 'guaranteetype');
+        const marketSegment = formFields.find((field) => field.name === 'marketsegment');
+        const childCategories = formFields.flatMap((field) => {
+          if (!/^child[1-6]$/.test(field.name)) return [];
+          const match = /^Child\s+(\d+)\s*-\s*(\d+)$/i.exec(field.label);
+          if (!match) return [];
+          const minimumAge = Number(match[1]), maximumAge = Number(match[2]);
+          return minimumAge <= maximumAge ? [{ field: field.name, label: field.label, minimumAge, maximumAge, visible: field.visible }] : [];
+        });
+        formPolicy = { ...formPolicy, requiredFields: formFields.filter((field) => field.required).map((field) => field.name),
+          guestOptIn: guestOptIn ? guestOptIn.required ? 'required' : 'optional' : 'unknown', childCategories,
+          marketSegmentChoices: marketSegment?.choices ?? [],
+          guaranteeChoices: (guarantee?.choices ?? []).map(({ code, meaning }) => ({ code, meaning, ready: false,
+            reason: 'This choice is not available for this property yet.' })) };
         const records = (kind: string): Array<{ code: string; meaning: string }> =>
           (data.catalogs?.[kind]?.records ?? []).flatMap((raw) => {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
@@ -215,10 +223,7 @@ export async function propertyConfigurationForScope(
             const meaning = typeof row.meaning === 'string' ? row.meaning.trim() : '';
             return code ? [{ code, meaning: meaning || code }] : [];
           });
-        ratePlans = records('ratePlans').map(({ code, meaning }) => {
-          const known = legacy?.ratePlans.find((entry) => entry.code === code);
-          return known ? { ...known, name: meaning } : { code, name: meaning, mealPlan: 'unknown' as const };
-        });
+        ratePlans = records('ratePlans').map(({ code, meaning }) => ({ code, name: meaning, mealPlan: 'unknown' as const }));
         roomTypes = records('roomTypes').map(({ code, meaning }) => ({ code, label: meaning }));
       }
     }
@@ -228,7 +233,10 @@ export async function propertyConfigurationForScope(
     roomTypes = [];
   }
   const capability = (workflow: 'reads' | 'quote' | 'create' | 'amend' | 'cancel' | 'attach' | 'addons' | 'guest_profile_create') => {
-    const status = scope.group === 'davinci' ? 'unavailable' : effectiveWorkflowPolicy(env, scope.propertyCode, workflow).capability;
+    const proven = scope.group === 'centurion' ||
+      (workflow === 'reads' && validatedReadCapabilities?.reads === true) ||
+      (workflow === 'quote' && validatedReadCapabilities?.quote === true && catalogue.identity !== null);
+    const status = proven ? effectiveWorkflowPolicy(env, scope.propertyCode, workflow).capability : 'unavailable';
     return { status, reason: status === 'unavailable' ? 'This workflow is not available for this property yet.' : null };
   };
   return propertyConfigurationSchema.parse({
@@ -241,12 +249,11 @@ export async function propertyConfigurationForScope(
       ...['Dinner Bed & Breakfast R', 'Dinner, Bed & Breakfast R', 'Dinner, Bed, Breakfast & Beverage R']
         .map((label) => ({ label, mealPlan: 'dinner_bb' })),
     ] : [],
-    salesStrategies: scope.group === 'davinci' ? [] : legacy?.salesStrategies ?? [],
+    salesStrategies,
     overrideRateCodes: (legacy?.overrideRateCodes ?? []).filter((code) => scope.group === 'centurion' || ratePlans.some((plan) => plan.code === code)),
     eventRateCodes: (legacy?.eventRateCodes ?? []).filter((code) => scope.group === 'centurion' || ratePlans.some((plan) => plan.code === code)),
     shuttle: legacy?.shuttle,
-    formPolicy: { requiredFields: [], guestOptIn: 'unknown', cancellation: 'unknown',
-      guaranteeChoices: [], cmsChoices: [], childCategoryPolicy: 'discover_active' },
+    formPolicy,
     capabilities: { reads: capability('reads'), quote: capability('quote'), create: capability('create'),
       amend: capability('amend'), cancel: capability('cancel'), attach: capability('attach'),
       addons: capability('addons'), guest_profile_create: capability('guest_profile_create') },

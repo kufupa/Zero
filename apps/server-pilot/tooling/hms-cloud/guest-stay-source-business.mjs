@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { readUnsavedGuestStay } from './booking-lookup-session.mjs';
 import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -73,9 +74,13 @@ function isSupportScript(request) {
   } catch { return false; }
 }
 
-async function guardPage(page) {
-  if (scopes.has(page)) return scopes.get(page);
-  const scope = { search: null, expected: null, nativeDialog: false, blockedWrites: 0, blockedOther: 0 };
+async function guardPage(page, propertyCode = PROPERTY) {
+  if (scopes.has(page)) {
+    const existing = scopes.get(page);
+    if (existing.propertyCode !== propertyCode) throw new Error('PROPERTY_MISMATCH');
+    return existing;
+  }
+  const scope = { propertyCode, search: null, expected: null, nativeDialog: false, blockedWrites: 0, blockedOther: 0 };
   scope.guard = async (route) => {
     const request = route.request();
     const expected = scope.expected;
@@ -144,8 +149,8 @@ async function readForm(page, scope) {
     const confirmation = fields('confirmationnumber');
     return /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1] === property && confirmation.length === 1 &&
       !confirmation[0].value.trim() && fields('ta1').length === 1 && fields('sourceofbusinessdesc').length === 1;
-  }, PROPERTY), 15000, 'FORM_READ_TIMEOUT');
-  if (!valid) throw new Error('NOT_A_BLANK_HRCEN_GUEST_STAY');
+  }, scope.propertyCode), 15000, 'FORM_READ_TIMEOUT');
+  if (!valid) throw new Error('NOT_A_BLANK_GUEST_STAY');
   const result = await readUnsavedGuestStay(page);
   if (result.outcome !== 'ok' || result.notes?.length) throw new Error('GUEST_FORM_UNAVAILABLE');
   await checkDialogs(page, scope);
@@ -222,6 +227,8 @@ async function requireCurrent(page, scope, searchId) {
 
 /** List or refine current Source of Business descriptions on the blank stay. */
 export async function searchGuestStaySourceBusiness(page, input = {}, options = {}) {
+  const propertyCode = options.propertyCode ?? PROPERTY;
+  if (!getPropertyRegistration(propertyCode)?.active) return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED', candidates: [] };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'SOURCE_LOOKUP_IN_PROGRESS', candidates: [] };
   busy.add(page);
   let scope, stage = 'validating';
@@ -236,7 +243,7 @@ export async function searchGuestStaySourceBusiness(page, input = {}, options = 
     }
     const query = (input.query || '').trim();
     if (query.length > 200 || /[\r\n]/.test(query)) throw new Error('SOURCE_QUERY_INVALID');
-    scope = await guardPage(page);
+    scope = await guardPage(page, propertyCode);
     const blocked = scope.blockedWrites;
     const initialForm = await readForm(page, scope);
     let win = picker(page);
@@ -337,7 +344,7 @@ export async function searchGuestStaySourceBusiness(page, input = {}, options = 
       throw new Error('SOURCE_PICKER_UNAVAILABLE');
     }
     const result = { outcome: candidates.length ? 'matches' : 'no_match', searchId, observedAt: new Date().toISOString(),
-      criteria: { propertyCode: PROPERTY, field: 'description', query, controls: criteria,
+      criteria: { propertyCode, field: 'description', query, controls: criteria,
         gridId: requestBody.get('GRID_ID'), dataspyId: requestBody.get('DATASPY_ID') }, coverage: resultCoverage,
       columns: grid.columns, metadata, candidates };
     scope.search = { searchId, windowId, windowHandle, fieldHandle, form: JSON.stringify(form), grid: JSON.stringify(grid.records),
@@ -391,6 +398,7 @@ export async function selectGuestStaySourceBusiness(page, { searchId, nativeCode
   const scope = scopes.get(page);
   let attempted = false, observed = null;
   try {
+    if (scope?.propertyCode !== PROPERTY) throw new Error('SOURCE_SELECTION_PROPERTY_UNSUPPORTED');
     const { state, win, form: before, grid } = await requireCurrent(page, scope || {}, searchId);
     const matches = state.result.candidates.filter((item) => item.nativeCode === code);
     if (matches.length !== 1 || !matches[0].description || grid.records.filter((row) => clean(row.codevalue) === code).length !== 1) {

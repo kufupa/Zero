@@ -15,10 +15,11 @@ import { createReservationistBusinessServices } from '../src/ai/reservationist-b
 import { occupiedDates, type Board } from '../src/quote-proposal/quote-revision.js';
 import { deriveAuthorizedExtraLines } from '../src/quote-proposal/quote-lines.js';
 import { resolveLedgerProposal, resolvePreparedLedgerProposal } from '../src/trpc/routes/workstation.js';
+import { TRANSPORT_ID } from '../src/db/seed.js';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
 const scope = {
-  transportId: 'transport',
+  transportId: TRANSPORT_ID,
   userId: 'staff',
   threadId: 'thread',
   messageId: 'message',

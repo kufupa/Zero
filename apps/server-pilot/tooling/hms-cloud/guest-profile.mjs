@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readUnsavedGuestStay } from './booking-lookup-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { validCreateGuest } from './cloud-create-policy.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -143,7 +144,7 @@ async function checkDialogs(page, nativeDialog, allowGuest = true) {
   if (await guestWindow(page).count() > 1) throw new Error('GUEST_PICKER_NOT_UNIQUE');
 }
 
-async function readForm(page) {
+async function readForm(page, propertyCode = PROPERTY) {
   if (new URL(page.url()).origin !== ORIGIN) throw new Error('HMS_TARGET_MISMATCH');
   const valid = await page.evaluate((property) => {
     const visible = (el) => Boolean(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' &&
@@ -152,12 +153,12 @@ async function readForm(page) {
     const confirmation = find('confirmationnumber');
     return /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1] === property &&
       confirmation.length === 1 && find('ta1').length === 1 && !confirmation[0].value.trim();
-  }, PROPERTY);
-  if (!valid) throw new Error('NOT_A_BLANK_HRCEN_GUEST_STAY');
+  }, propertyCode);
+  if (!valid) throw new Error('NOT_A_BLANK_GUEST_STAY');
   const result = await readUnsavedGuestStay(page);
   if (result.outcome !== 'ok') throw new Error('GUEST_FORM_UNAVAILABLE');
   if (result.notes?.length) throw new Error('UNEXPECTED_DIALOG');
-  return { propertyCode: PROPERTY, fields: result.form.fields };
+  return { propertyCode, fields: result.form.fields };
 }
 
 function uniqueField(form, name) {
@@ -222,13 +223,13 @@ async function responseText(response, timeoutMs) {
     timer = setTimeout(() => reject(new Error('GUEST_RESPONSE_TIMEOUT')), timeoutMs);
   })]).finally(() => clearTimeout(timer));
 }
-function matchesRun(request, alias, query) {
+export function matchesGuestProfileReadRequest(request, alias, query, propertyCode = PROPERTY) {
   try {
     const url = new URL(request.url());
     const body = new URLSearchParams(request.postData() || '');
     return request.method() === 'POST' && url.origin === ORIGIN && url.pathname === '/web/base/GRIDDATA' &&
       body.get('GRID_NAME') === 'LVGUESTS' && body.get('REQUEST_TYPE') === 'LOV.DATA_ONLY.STORED' &&
-      body.get('LOV_ALIAS_VALUE_1') === PROPERTY && body.get('MADDON_FILTER_ALIAS_NAME_1') === alias &&
+      body.get('LOV_ALIAS_VALUE_1') === propertyCode && body.get('MADDON_FILTER_ALIAS_NAME_1') === alias &&
       sameText(body.get('MADDON_FILTER_VALUE_1'), query);
   } catch { return false; }
 }
@@ -288,7 +289,7 @@ async function requireCurrent(page, state, searchId, nativeDialog) {
       !await win.evaluate((element, saved) => element === saved, state.handle).catch(() => false)) {
     throw new Error('GUEST_SEARCH_STALE');
   }
-  const form = await readForm(page);
+  const form = await readForm(page, state.propertyCode ?? PROPERTY);
   const grid = await readGrid(page, state.windowId);
   if (JSON.stringify(await readCriteria(win)) !== state.criteria || JSON.stringify(grid.records) !== state.grid ||
       JSON.stringify(formIdentity(form)) !== state.formIdentity || currentSearches.get(page) !== state) {
@@ -298,7 +299,8 @@ async function requireCurrent(page, state, searchId, nativeDialog) {
 }
 
 /** Search one observed Guests filter; repeat with another criterion to refine. */
-export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {}) {
+export async function searchGuestProfiles(page, input, { timeoutMs = 20000, propertyCode = PROPERTY } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active) return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED', candidates: [] };
   forgetGuaranteeProfile(page);
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS', candidates: [] };
   forget(page);
@@ -317,8 +319,8 @@ export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {
     const body = new URLSearchParams(request.postData() || '');
     const popup = request.method() === 'POST' && url.origin === ORIGIN && url.pathname === '/web/base/LOVPOP' &&
       body.get('GRID_NAME') === 'LVGUESTS' && body.get('REQUEST_TYPE') === 'LOV.HEAD_DATA.STORED' &&
-      body.get('LOV_TAGNAME') === 'lastname' && body.get('LOV_ALIAS_VALUE_1') === PROPERTY;
-    if (safeRead(request) || popup || matchesRun(request, spec[1], query)) {
+      body.get('LOV_TAGNAME') === 'lastname' && body.get('LOV_ALIAS_VALUE_1') === propertyCode;
+    if (safeRead(request) || popup || matchesGuestProfileReadRequest(request, spec[1], query, propertyCode)) {
       return route.fallback();
     }
     blocked = true;
@@ -327,7 +329,7 @@ export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {
   page.on('dialog', onDialog);
   try {
     await page.route('**/*', guard);
-    await readForm(page);
+    await readForm(page, propertyCode);
     const win = await openPicker(page, () => nativeDialog);
     const windowId = await win.getAttribute('id');
     if (!windowId) throw new Error('GUEST_PICKER_UNAVAILABLE');
@@ -349,7 +351,7 @@ export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {
     await inputField.fill(query);
     if ((await inputField.inputValue()).trim() !== query) throw new Error('GUEST_FILTER_NOT_APPLIED');
     const criteria = await readCriteria(win);
-    const responsePromise = page.waitForResponse((response) => matchesRun(response.request(), spec[1], query), { timeout: timeoutMs })
+    const responsePromise = page.waitForResponse((response) => matchesGuestProfileReadRequest(response.request(), spec[1], query, propertyCode), { timeout: timeoutMs })
       .catch(() => null);
     stage = 'running_search';
     await checkDialogs(page, () => nativeDialog);
@@ -372,7 +374,7 @@ export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {
     if (!rows.length && !(resultCoverage.serverMoreRecords === false && resultCoverage.total === 0)) {
       throw new Error('GUEST_EMPTY_UNVERIFIED');
     }
-    const form = await readForm(page);
+    const form = await readForm(page, propertyCode);
     const candidates = rows.map((row) => candidate(row, grid.records, keys));
     const searchId = randomUUID();
     const handle = await win.elementHandle();
@@ -387,7 +389,7 @@ export async function searchGuestProfiles(page, input, { timeoutMs = 20000 } = {
         unverifiedGridFields: [...new Set(grid.records.flatMap((row) => Object.keys(row)))].filter((key) => !keys.includes(key)),
       },
     };
-    const state = { searchId, windowId, handle, criteria: JSON.stringify(criteria), grid: JSON.stringify(grid.records),
+    const state = { searchId, propertyCode, windowId, handle, criteria: JSON.stringify(criteria), grid: JSON.stringify(grid.records),
       formIdentity: JSON.stringify(formIdentity(form)), result: structuredClone(result) };
     state.invalidateOnRun = (request) => {
       try {
@@ -438,7 +440,9 @@ export async function inspectGuestProfileCandidates(page, { searchId, nativeId, 
 }
 
 /** Cancel the Guests picker without changing the unsaved form. */
-export async function closeGuestProfilePicker(page) {
+export async function closeGuestProfilePicker(page, { propertyCode = currentSearches.get(page)?.propertyCode ?? PROPERTY } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active || (currentSearches.get(page)?.propertyCode &&
+      currentSearches.get(page).propertyCode !== propertyCode)) return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS' };
   busy.add(page);
   let nativeDialog = false, blocked = false, attempted = false;
@@ -451,7 +455,7 @@ export async function closeGuestProfilePicker(page) {
   page.on('dialog', onDialog);
   try {
     await checkDialogs(page, () => nativeDialog);
-    const before = await readForm(page);
+    const before = await readForm(page, propertyCode);
     const win = guestWindow(page);
     if (await win.count() !== 1) throw new Error('GUEST_PICKER_UNAVAILABLE');
     await page.route('**/*', guard);
@@ -459,7 +463,7 @@ export async function closeGuestProfilePicker(page) {
     await win.locator('a.x-btn:visible').filter({ hasText: /^\s*Cancel\s*$/ }).first().click();
     await win.waitFor({ state: 'hidden', timeout: 10000 });
     await checkDialogs(page, () => nativeDialog, false);
-    const after = await readForm(page);
+    const after = await readForm(page, propertyCode);
     if (blocked || JSON.stringify(before.fields) !== JSON.stringify(after.fields)) throw new Error('GUEST_FORM_CHANGED');
     forget(page);
     return { outcome: 'closed_unsaved', form: { fields: after.fields } };
@@ -537,6 +541,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     fence = await installPageRequestFence(page, [CHANGE_PATH]);
     scope = fence.open();
     state = currentSearches.get(page);
+    if (state?.propertyCode !== PROPERTY) throw new Error('GUEST_SELECTION_PROPERTY_UNSUPPORTED');
     const { win, form: before, grid } = await requireCurrent(page, state, searchId, () => nativeDialog);
     const candidates = state.result.candidates.filter((item) => item.nativeId === id);
     if (candidates.length !== 1 || (!candidates[0].firstName && !candidates[0].lastName) ||

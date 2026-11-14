@@ -307,6 +307,8 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     ),
   ) as {
     roomCapacity?: Record<string, number>;
+    rooms?: Record<string, unknown>;
+    schemaVersion?: string;
     ratePlans?: Record<string, unknown>;
     requiredCreateFields?: string[];
     cms?: {
@@ -334,13 +336,13 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     cmsRows.some((row) => row.code === cms.defaultAgency) &&
     cmsRows.some((row) => row.code === cms.defaultGuest);
   return {
-    track: (propertyTrackChoices ?? props.track.enum).filter((track) => validTracks.has(track)),
+    track: (propertyTrackChoices ?? (profile.schemaVersion === 'hms-property-profile/v2' ? [] : props.track.enum)).filter((track) => validTracks.has(track)),
     sourceOfBusiness:
       createOptions?.sourceofbusinessdesc?.choices?.map(({ display }) => display) ??
-      props.sourceOfBusiness.enum,
+      (profile.schemaVersion === 'hms-property-profile/v2' ? [] : props.sourceOfBusiness.enum),
     guaranteeType:
       createOptions?.guaranteetype?.choices?.map(({ display }) => display) ?? props.guaranteeType.enum ?? [],
-    roomType: Object.keys(profile.roomCapacity ?? {}),
+    roomType: Object.keys(profile.rooms ?? profile.roomCapacity ?? {}),
     ratePlans: profile.ratePlans ? Object.keys(profile.ratePlans) :
       propertyCode === 'HRCEN' ? CENTURION_RATE_PLANS.map(({ code }) => code) : [],
     requiredCreateFields: [...new Set([...(profile.requiredCreateFields ?? []), ...requiredBookNativeFields({ createForm: profile.createForm })])],

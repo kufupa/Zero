@@ -1,4 +1,5 @@
-import { hmsDavinciReadsEnabled, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { hmsDavinciReadsEnabled, hmsReadTargetForProperty, ownerRefBelongsToProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 import { parsePartyIndexProperty } from './party-index.js';
 import {
   isDaVinciMailboxOrigin,
@@ -15,6 +16,7 @@ import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
+import { lookupNativeParty, type ReservationWorkflowV2NativePartyRead } from './reservation-workflow-v2-native-party.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { HMS_JOB_PROMPT_VERSION } from './run-ledger.js';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
@@ -100,6 +102,11 @@ const CLI_OUTCOMES: ReadonlySet<string> = new Set([
   'input_gap',
   'execution_failure',
   'external_system_unavailable',
+  'refused_flag_off',
+  'refused_input_invalid',
+  'refused_origin_mismatch',
+  'refused_lock_unavailable',
+  'refused_lock_busy',
 ]);
 
 // Outcomes that stop a search: a half-run search must never look like a clean no_match.
@@ -110,7 +117,9 @@ export type PanePartySearchInput = { kind: PanePartyKind; name: string };
 
 export type PanePartySpawnInput = PanePartySearchInput & {
   target?: HmsReadTarget | null;
-  /** When set, one CLI spawn runs every search on one login. */
+  transportId?: string;
+  signal?: AbortSignal;
+  /** Planned searches run in order under one property lock. */
   searches?: readonly PanePartySearchInput[];
   stopOnFirstHit?: boolean;
 };
@@ -224,7 +233,9 @@ export function mergePartyKindResults(
   const refused = perKind.find((result) => result.outcome.startsWith('refused_'));
   if (refused) return withoutResults(refused.outcome);
   for (const failure of KIND_FAILURES) {
-    if (perKind.some((result) => result.outcome === failure)) return withoutResults(failure);
+    const found = perKind.find((result) => result.outcome === failure && result.error) ??
+      perKind.find((result) => result.outcome === failure);
+    if (found) return { ...withoutResults(failure), ...(found.error ? { error: found.error } : {}) };
   }
   const candidates = perKind.flatMap((result) => result.results);
   const results: PanePartyCandidate[] = [];
@@ -290,10 +301,77 @@ export function panePartyCoresFromSpawn(
   return planned.map((item) => panePartyFindResultFromCli(item.kind, raw));
 }
 
+function nativePartyAsCli(kind: PanePartyKind, read: ReservationWorkflowV2NativePartyRead): unknown {
+  const result = read.result;
+  const outcome = result.outcome;
+  if (read.status !== 'complete' || !read.coverage.complete) {
+    const refusal = typeof outcome === 'string' && outcome.startsWith('refused_') ? outcome : null;
+    return {
+      outcome: refusal ?? (outcome === 'input_gap' ? 'input_gap' :
+        outcome === 'external_system_unavailable' || read.status === 'unavailable'
+        ? 'external_system_unavailable' : 'execution_failure'),
+      reason: result.reason,
+    };
+  }
+  if ((outcome !== 'matches' && outcome !== 'no_match') || result.truncated !== false) {
+    return { outcome: 'execution_failure' };
+  }
+  if (!Array.isArray(result.candidates)) return { outcome: 'execution_failure' };
+  const candidates = result.candidates.flatMap((value) => {
+    const row = objectRecord(value);
+    if (typeof row.nativeId !== 'string' || !row.nativeId.trim() ||
+        typeof row.name !== 'string' || !row.name.trim()) return [];
+    return [{ kind, nativeId: row.nativeId, displayName: row.name,
+      ...(kind === 'bookingAgency' && typeof row.referenceNumberType === 'string' &&
+        row.referenceNumberType.trim().toUpperCase() === 'IATA' && row.referenceNumber
+        ? { iata: row.referenceNumber } : {}),
+      ...(row.address ? { address: row.address } : {}),
+      ...(row.city ? { city: row.city } : {}),
+      ...(row.country ? { country: row.country } : {}) }];
+  });
+  if (candidates.length !== result.candidates.length ||
+      (outcome === 'matches' ? !candidates.length : candidates.length !== 0)) {
+    return { outcome: 'execution_failure' };
+  }
+  return { outcome: outcome === 'no_match' ? 'no_match' : candidates.length === 1 ? 'resolved' : 'ambiguous',
+    candidates, truncated: false };
+}
+
+async function spawnCloudPartyLookup(input: PanePartySpawnInput, target: HmsReadTarget): Promise<unknown> {
+  const planned = plannedSearchesOf(input);
+  const signal = AbortSignal.any([
+    AbortSignal.timeout(spawnTimeoutMs(planned.length)),
+    ...(input.signal ? [input.signal] : []),
+  ]);
+  const searches: unknown[] = [];
+  const hits = new Set<PanePartyKind>();
+  for (const item of planned) {
+    signal.throwIfAborted();
+    if (input.stopOnFirstHit && hits.has(item.kind)) {
+      searches.push({ outcome: 'no_match', candidates: [], truncated: false, skipped: true });
+      continue;
+    }
+    const read = await lookupNativeParty({
+      role: item.kind === 'bookingAgency' ? 'agency' : 'organization',
+      name: item.name,
+      target,
+      transportId: input.transportId,
+      signal,
+      exactTerm: true,
+    });
+    const result = nativePartyAsCli(item.kind, read);
+    if (read.status === 'complete' && read.coverage.complete &&
+        read.result.outcome === 'matches' && objectRecord(result).outcome !== 'execution_failure') hits.add(item.kind);
+    searches.push(result);
+  }
+  return input.searches?.length ? { searches } : searches[0];
+}
+
 /** One runner run for one kind and name. The sweep and the pane both call it, so both use the fail-closed runner. */
 export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unknown> {
   if (!input.target) throw new Error('pane_stay_target_required');
   const target = input.target;
+  if (target.browserSlot === 'davinci') return spawnCloudPartyLookup(input, target);
   // mkdtemp makes the directory 0700. The request holds only the typed name, and the directory goes after the run.
   const dir = await mkdtemp(join(tmpdir(), 'pane-party-'));
   try {
@@ -314,9 +392,11 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
           killSignal: 'SIGKILL',
           env: paneStaySpawnEnv(process.env, undefined, target),
           maxBuffer: 1024 * 1024,
+          signal: input.signal,
         },
       ));
     } catch (error) {
+      input.signal?.throwIfAborted();
       // The CLI exits 2 on failures but still prints its result line. Without one, the run failed.
       stdout = String((error as { stdout?: unknown }).stdout ?? '');
       if (!stdout.trim()) throw error;
@@ -381,8 +461,24 @@ async function rememberedPartyJobName(
   pick: { kind: PanePartyKind; nativeId: string },
   name: string,
   transportId: string,
+  target: HmsReadTarget,
   db: DB = getDb(),
 ): Promise<string | null> {
+  if (!ownerRefBelongsToProperty(transportId, target.propertyCode)) return null;
+  let expected: HmsReadTarget;
+  try {
+    expected = hmsReadTargetForProperty(target.propertyCode);
+  } catch {
+    return null;
+  }
+  if (target.propertyCode !== expected.propertyCode || target.browserSlot !== expected.browserSlot ||
+      target.secretId !== expected.secretId || target.origin !== expected.origin ||
+      target.installationEnvName !== expected.installationEnvName) return null;
+  const allowLegacyHrcen = target.propertyCode === 'HRCEN' &&
+    transportId === getPropertyRegistration('HRCEN')?.mailboxTransportId;
+  const propertyFilter = allowLegacyHrcen
+    ? sql`(${aiWorkflowRun.readResult}->>'propertyCode' = ${target.propertyCode} or not (${aiWorkflowRun.readResult} ? 'propertyCode'))`
+    : sql`${aiWorkflowRun.readResult}->>'propertyCode' = ${target.propertyCode}`;
   const normalized = name.replace(/\s+/g, ' ').trim().toLowerCase();
   const legacyKind = pick.kind === 'organization' ? 'company' : 'agency';
   const rows = await db
@@ -396,6 +492,7 @@ async function rememberedPartyJobName(
         eq(aiWorkflowRun.state, 'succeeded'),
         gte(aiWorkflowRun.finishedAt, new Date(Date.now() - PARTY_ROW_CACHE_TTL_MS)),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
+        propertyFilter,
         sql`exists (
           select 1
           from jsonb_array_elements(
@@ -426,6 +523,8 @@ async function rememberedPartyJobName(
     const request = objectRecord(row.readRequest);
     if (request.partyKind && request.partyKind !== pick.kind && request.partyKind !== legacyKind) continue;
     const result = objectRecord(row.readResult);
+    if (result.propertyCode !== target.propertyCode &&
+        !(allowLegacyHrcen && !Object.hasOwn(result, 'propertyCode'))) continue;
     if (!Array.isArray(result.results)) continue;
     for (const candidateValue of result.results) {
       const candidate = objectRecord(candidateValue);
@@ -480,8 +579,8 @@ function rankRows(
 }
 
 /** A refusal or failure as the reply: no rows, no best, nothing searched. */
-function replyWithout(outcome: PanePartyOutcome): PanePartyFindResult {
-  return { ...withoutResults(outcome), best: null, searchedFor: null };
+function replyWithout(outcome: PanePartyOutcome, error?: string): PanePartyFindResult {
+  return { ...withoutResults(outcome), ...(error ? { error } : {}), best: null, searchedFor: null };
 }
 
 /** The reply for a search that ran: rows best first and capped, the best row, and the HMS text that was searched. */
@@ -492,7 +591,7 @@ function rankedReply(
   cap: number = PANE_PARTY_RESULT_CAP,
   propertyCode: string = 'HRCEN',
 ): PanePartyFindResult {
-  if (!ANSWERED_OUTCOMES.has(core.outcome)) return replyWithout(core.outcome);
+  if (!ANSWERED_OUTCOMES.has(core.outcome)) return replyWithout(core.outcome, core.error);
   const ranked = rankRows(name, core.results);
   const results = ranked.slice(0, cap).map(({ row }) => row);
   rememberPartyRows(results, propertyCode);
@@ -517,12 +616,17 @@ async function spawnUnderOneLock(
   acquisition?: PropertyReadLockAcquisitionOptions,
 ): Promise<PartySpawnRun> {
   try {
+    const bounds = acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS);
+    const signal = input.signal && bounds.signal && input.signal !== bounds.signal
+      ? AbortSignal.any([input.signal, bounds.signal])
+      : input.signal ?? bounds.signal;
     const raw = await lock.withLock(
       () => spawn(input),
-      acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+      input.signal ? { ...bounds, signal } : bounds,
     );
     return { ok: true, raw };
   } catch (error) {
+    input.signal?.throwIfAborted();
     if (isPropertyReadLockDeadline(error)) return { ok: false, core: withoutResults('refused_lock_busy') };
     warnPaneStaySpawnFailed('party', error);
     const loginCode = classifyHmsLoginOutage(error) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
@@ -537,8 +641,7 @@ async function spawnUnderOneLock(
 }
 
 /**
- * A search for one kind. Its HMS texts go in one spawn. The first term with rows is the answer; later same-kind
- * terms are skipped by the CLI when stopOnFirstHit is set.
+ * A search for one kind. The first term with rows is the answer; later same-kind terms are skipped.
  */
 async function findPartyOfKind(
   kind: PanePartyKind,
@@ -550,6 +653,8 @@ async function findPartyOfKind(
     exactTerm?: boolean;
     resultCap?: number;
     target?: HmsReadTarget | null;
+    transportId?: string;
+    signal?: AbortSignal;
   } = {},
 ): Promise<PanePartyFindResult> {
   const terms = options.exactTerm ? [name] : partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
@@ -560,6 +665,8 @@ async function findPartyOfKind(
       kind,
       name: tries[0],
       target: options.target,
+      transportId: options.transportId,
+      signal: options.signal,
       ...(tries.length > 1 ? { searches: planned, stopOnFirstHit: true } : {}),
     },
     lock,
@@ -581,7 +688,7 @@ async function findPartyOfKind(
 
 /**
  * Read-only HMS search of companies and agencies for one name, under the session hotel's property lock. With a kind, only
- * that kind is searched, and its HMS texts go in one spawn. Without one, both kinds share one spawn and one lock hold.
+ * that kind is searched. Without one, both kinds share one lock hold.
  * It links nothing: every candidate goes back to staff, who pick one. The kill switch QUOTE_RATE_CONTEXT=off refuses it.
  */
 export async function findParty(
@@ -596,6 +703,8 @@ export async function findParty(
     origin?: MailboxHmsOriginFields;
     /** Explicit HMS property/slot. Never a module global. */
     target?: HmsReadTarget | null;
+    transportId?: string;
+    signal?: AbortSignal;
   } = {},
 ): Promise<PanePartyFindResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
@@ -616,7 +725,8 @@ export async function findParty(
   if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options);
   const planned = PARTY_KINDS.map((kind) => ({ kind, name }));
   const run = await spawnUnderOneLock(
-    { kind: planned[0].kind, name, searches: planned, target: options.target },
+    { kind: planned[0].kind, name, searches: planned, target: options.target,
+      transportId: options.transportId, signal: options.signal },
     lock,
     spawn,
     options.acquisition,
@@ -635,8 +745,8 @@ export async function findParty(
 }
 
 /**
- * One lock hold and one CLI spawn for a planned list of (kind, term) searches. V2 uses this so a party job
- * logs in once. Results stay in plan order.
+ * One lock hold for a planned list of (kind, term) searches. The legacy runner uses one login; Cloud uses
+ * a fresh guarded session per term. Results stay in plan order.
  */
 export async function findPartyJob(
   searches: readonly PanePartySearchInput[],
@@ -645,6 +755,8 @@ export async function findPartyJob(
     resultCap?: number;
     origin?: MailboxHmsOriginFields;
     target?: HmsReadTarget | null;
+    transportId?: string;
+    signal?: AbortSignal;
   } = {},
 ): Promise<PanePartyFindResult[]> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
@@ -676,6 +788,8 @@ export async function findPartyJob(
       name: planned[0].name,
       searches: planned,
       target: options.target,
+      transportId: options.transportId,
+      signal: options.signal,
     },
     lock,
     spawn,
@@ -731,9 +845,9 @@ export async function verifyPartyPick(
   const remembered = rememberedPartyName(pick, name, propertyCode);
   if (remembered !== null)
     return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: remembered } };
-  if (pick.transportId) {
+  if (pick.transportId && pick.target) {
     try {
-      const fromJob = await rememberedPartyJobName(pick, name, pick.transportId, db);
+      const fromJob = await rememberedPartyJobName(pick, name, pick.transportId, pick.target, db);
       if (fromJob !== null)
         return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: fromJob } };
     } catch {
@@ -746,7 +860,7 @@ export async function verifyPartyPick(
   let raw: unknown;
   try {
     raw = await lock.withLock(
-      () => spawn({ kind: pick.kind, name, target: pick.target ?? null }),
+      () => spawn({ kind: pick.kind, name, target: pick.target ?? null, transportId: pick.transportId }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
@@ -765,7 +879,7 @@ export async function verifyPartyPick(
   if (!row)
     return {
       ok: false,
-      reason: found.outcome === 'execution_failure' ? 'unverified' : 'not_found',
+      reason: ANSWERED_OUTCOMES.has(found.outcome) ? 'not_found' : 'unverified',
     };
   return { ok: true, party: { kind: row.kind, nativeId: row.nativeId, name: row.name } };
 }

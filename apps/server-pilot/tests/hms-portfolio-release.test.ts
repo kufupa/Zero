@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { captureCloudReadRoleProof, cloudReadRoleObservationSchema } from '../src/hms/read-role-proof-capture.js';
 import portfolioCases from '../evals/hms/portfolio-cases.v3.json';
 import {
   MAX_RESERVATION_FOLLOWUPS,
@@ -32,6 +33,42 @@ import {
   validateRoleProofV2ForTool,
   validateRoleProofV2ForSession,
 } from '../src/hms/release-kernel.js';
+
+describe('property-scoped native read role capture', () => {
+  const now = new Date('2026-11-14T09:00:00.000Z');
+  const capture = (propertyCode: 'HRDAV' | 'HRDAVS') => ({
+    observation: {
+      propertyCode, tenantId: 'DAVINCI_PRD', landingPropertyCode: 'HRDAV',
+      origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com', toolId: 'hms_find_reservation',
+      discoveryOperationId: 'guest_stay_search', operationId: randomUUID(), observedAt: now.toISOString(),
+      observedSurfaces: ['guest_stay'], deniedActions: READ_TOOLS.hms_find_reservation.deniedActions
+        .map(action => ({ action, basis: 'native_role_permission', evidenceRef: `native-permission:${action}` })),
+    },
+    credential: { secretArn: 'nava-zero/server-pilot/infor-hms-read-davinci', versionId: 'observed-current-version',
+      versionStages: ['AWSCURRENT'], mode: 'view_only' as const, actor: 'test-observer' },
+    evidence: { key: Buffer.alloc(32, 7), keyVersion: 'test-key-v1' },
+    sourceRevision: 'observed-reader-revision', playwrightRevision: '1.63.0', chromiumRevision: '1243',
+    expiresAt: '2026-11-15T09:00:00.000Z', now,
+  });
+
+  it('binds separate property proofs and never persists raw credential identity', () => {
+    const hotel = captureCloudReadRoleProof(capture('HRDAV'));
+    const suites = captureCloudReadRoleProof(capture('HRDAVS'));
+    expect(hotel.proof.roleFingerprintSha256).not.toBe(suites.proof.roleFingerprintSha256);
+    expect(suites.proof).toMatchObject({ propertyCode: 'HRDAVS', tenantId: 'DAVINCI_PRD', landingPropertyCode: 'HRDAV' });
+    expect(JSON.stringify(suites)).not.toContain('test-observer');
+    expect(JSON.stringify(suites)).not.toContain('observed-current-version');
+  });
+
+  it('refuses client guard aborts as native permission evidence and rejects foreign identity', () => {
+    const input = capture('HRDAVS');
+    expect(cloudReadRoleObservationSchema.safeParse({ ...input.observation,
+      deniedActions: [{ action: 'save', basis: 'request_policy_blocked', evidenceRef: 'guard' }] }).success).toBe(false);
+    expect(() => captureCloudReadRoleProof({ ...input, observation: { ...input.observation, tenantId: 'THECENTURION_PRD' } })).toThrow();
+    expect(() => captureCloudReadRoleProof({ ...input, now: new Date(now.getTime() + 6 * 60_000) })).toThrow();
+    expect(() => captureCloudReadRoleProof({ ...input, credential: { ...input.credential, versionStages: ['AWSPREVIOUS'] } })).toThrow();
+  });
+});
 
 describe('CandidateReadPlan closed union', () => {
   it('accepts reservation with at most two unique followups', () => {

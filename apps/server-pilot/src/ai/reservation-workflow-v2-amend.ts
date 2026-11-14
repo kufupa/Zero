@@ -345,7 +345,7 @@ function propertyTarget(ctx: ReadContext): HmsReadTarget | null {
 }
 
 async function readCandidate(target: HmsReadTarget, confirmation: string,
-  arrival?: string, signal?: AbortSignal) {
+  arrival?: string, signal?: AbortSignal, transportId?: string) {
   if (!paneStayLookupEnabled()) return null;
   const lock = paneStayPropertyLock(target);
   if (!lock) return null;
@@ -353,7 +353,7 @@ async function readCandidate(target: HmsReadTarget, confirmation: string,
     return await lock.withLock(async () => {
       const request = { confirmation, ...(arrival ? { arrival } : {}) };
       const timeout = AbortSignal.timeout(5 * 60_000);
-      const raw = await runCloudStayFind({ request, target, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+      const raw = await runCloudStayFind({ request, target, transportId, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
       return projectCloudStayFind(request, raw);
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal });
   } catch (error) {
@@ -367,7 +367,7 @@ type LookupHintResult = { rows: Array<{ observation: ReservationWorkflowV2Observ
 
 async function lookupHint(draft: ReservationWorkflowV2Draft,
   target: HmsReadTarget, requestId: string, hintId: string, hint: Record<string, unknown>, selectionPath: string,
-  signal?: AbortSignal): Promise<LookupHintResult> {
+  signal?: AbortSignal, transportId?: string): Promise<LookupHintResult> {
   const query: Record<string, unknown> = {
     confirmation: hint.confirmation ?? null, guestName: hint.guestName ?? null,
     bookedArrival: hint.bookedArrival ?? null, bookedDeparture: hint.bookedDeparture ?? null,
@@ -376,7 +376,7 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
   const confirmation = text(hint.confirmation);
   if (confirmation) {
     if (!/^\d{6,10}-\d{1,2}$/.test(confirmation)) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query, 'confirmation_hint_invalid') };
-    const found = await readCandidate(target, confirmation, realDate(hint.bookedArrival) ? hint.bookedArrival : undefined, signal);
+    const found = await readCandidate(target, confirmation, realDate(hint.bookedArrival) ? hint.bookedArrival : undefined, signal, transportId);
     const native = record(found)?.nativePreimage;
     const mismatch = validNative(native) ? validateHintAgainstNative(hint, native) : 'native_stay_unverified';
     if (!validNative(native) || mismatch || found?.outcome !== 'found') {
@@ -396,7 +396,7 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
   let search: Awaited<ReturnType<typeof searchGuest>>;
   try {
     search = await searchGuest({ lastName, arrival, ...(realDate(departure) ? { departure } : {}) }, {
-      target, lock: () => paneStayPropertyLock(target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+      target, transportId, lock: () => paneStayPropertyLock(target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     });
   } catch {
     return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query, 'stay_search_failed') };
@@ -405,7 +405,7 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     search.outcome === 'ambiguous_capped' ? 'stay_search_ambiguous' : 'stay_search_failed') };
   for (const row of search.rows) {
     if (row.arrival !== arrival || (realDate(departure) && row.departure !== departure)) continue;
-    const found = await readCandidate(target, row.confirmation, row.arrival ?? undefined);
+    const found = await readCandidate(target, row.confirmation, row.arrival ?? undefined, undefined, transportId);
     const native = record(found)?.nativePreimage;
     const mismatch = validNative(native) ? validateHintAgainstNative(hint, native) : 'native_stay_unverified';
     if (!validNative(native) || mismatch || found?.outcome !== 'found') continue;
@@ -1105,7 +1105,7 @@ export async function reservationWorkflowV2AmendLookup(ctx: ReadContext,
         continue;
       }
       const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'targets', 'include', index, 'suggestedRef');
-      const result = await lookupHint(loaded.draft, target, request.id, hintId, hint, selectionPath, ctx.nativeBatch?.signal);
+      const result = await lookupHint(loaded.draft, target, request.id, hintId, hint, selectionPath, ctx.nativeBatch?.signal, ctx.transport.id);
       const checkedRows = result.rows.map((row) => ({ row,
         issue: auditTargetExclusions(row.native as unknown as Record<string, unknown>, targetExclusions, exclusionPath) }));
       const safeRows = checkedRows.filter((entry) => !entry.issue).map((entry) => entry.row);

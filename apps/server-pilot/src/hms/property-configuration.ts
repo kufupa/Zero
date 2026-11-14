@@ -30,6 +30,9 @@ export const propertyConfigurationSchema = z.object({
     cancellation: z.enum(['unknown', 'supported']),
     guaranteeChoices: z.array(choiceSchema.extend({ ready: z.boolean(), reason: z.string().nullable() })),
     cmsChoices: z.array(choiceSchema), childCategoryPolicy: z.literal('discover_active'),
+    marketSegmentChoices: z.array(choiceSchema).optional(),
+    childCategories: z.array(z.object({ field: z.string(), label: z.string(), minimumAge: z.number().int(),
+      maximumAge: z.number().int(), visible: z.boolean() })).optional(),
   }),
   capabilities: z.object({
     reads: capabilitySchema, quote: capabilitySchema, create: capabilitySchema, amend: capabilitySchema,

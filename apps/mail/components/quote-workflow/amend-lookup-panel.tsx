@@ -1055,6 +1055,7 @@ export function AmendLookupPanel({
             durableDraft={durableDraft}
             refreshPending={readOnlyAmend.refreshPending}
             ratePlans={readOnlyAmend.ratePlans}
+            propertyCode={readOnlyAmend.propertyCode}
             defaultRecipient={session.staffHeader.clientEmail}
             onApprovalVisibilityChange={setActiveAmendApproval}
             writeContext={currentAmendReview && selectedTransportId && workItemId ? { trpc, transportId: selectedTransportId, workItemId } : null}
@@ -1395,7 +1396,7 @@ function RequestedChangeRow({ label, from, to }: { label: string; from: string; 
 
 /** Bind the editable request to the current selected email and booking. */
 function LocalAmendReview({ identity, revision, confirmation, stay, contactObservations, requestedArrival, requestedDeparture,
-  requestedAdults, requestedChildren, requestedChildAges, durableDraft, refreshPending, ratePlans, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
+  requestedAdults, requestedChildren, requestedChildAges, durableDraft, refreshPending, ratePlans, propertyCode, defaultRecipient, writeContext, onApprovalVisibilityChange }: {
   identity: SavedStayAmendEditorIdentity;
   revision: string;
   confirmation: string;
@@ -1409,6 +1410,7 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
   durableDraft: NonNullable<AmendReadOnlyContext['draft']> | null;
   refreshPending?: boolean;
   ratePlans: RatePlanCatalogueEntry[];
+  propertyCode: AmendReadOnlyContext['propertyCode'];
   defaultRecipient: string;
   onApprovalVisibilityChange: (visible: boolean) => void;
   writeContext: { trpc: unknown; transportId: string; workItemId: string } | null;
@@ -1463,17 +1465,18 @@ function LocalAmendReview({ identity, revision, confirmation, stay, contactObser
           durableDraft.record('childAges', value.trim() && valid ? parts.map(Number) : value.trim() ? null : [], valid);
         }
       }} onDraftChange={setDraft} />
-    <LocalAmendChoices stay={stay} ratePlans={ratePlans} draft={currentDraft}
+    <LocalAmendChoices stay={stay} ratePlans={ratePlans} propertyCode={propertyCode} draft={currentDraft}
       identity={identity} confirmation={confirmation} contactObservations={contactObservations}
       defaultRecipient={defaultRecipient} writeContext={writeContext} durableDraft={durableDraft} refreshPending={refreshPending}
       onApprovalVisibilityChange={onApprovalVisibilityChange} />
   </>;
 }
 
-function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext,
+function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, confirmation, contactObservations, defaultRecipient, writeContext,
   durableDraft, refreshPending, onApprovalVisibilityChange }: {
   stay: StayRecordWire;
   ratePlans: RatePlanCatalogueEntry[];
+  propertyCode: AmendReadOnlyContext['propertyCode'];
   draft: SavedStayAmendDraftUpdate | null;
   identity: SavedStayAmendEditorIdentity;
   confirmation: string;
@@ -1593,6 +1596,7 @@ function LocalAmendChoices({ stay, ratePlans, draft, identity, confirmation, con
     !/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType));
   const rates = useAmendRateCandidates({ trpc: writeContext?.trpc ?? null,
     transportId: writeContext?.transportId ?? null, workItemId: writeContext?.workItemId ?? null,
+    propertyCode,
     source: { threadId: identity.threadId, messageId: identity.messageId, sourceHash: identity.sourceHash },
     confirmation, draft: durableDraft, selectedRatePlan: ratePlan,
     contextKey: JSON.stringify([draft?.basis, draft?.proposal?.changes, roomType, retainRates]), locked: rateLocked });

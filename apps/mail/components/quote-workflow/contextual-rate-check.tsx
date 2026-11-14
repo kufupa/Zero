@@ -3,9 +3,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { workItemsFromTrpc, type RecordFieldEventInput } from '@/lib/quote-workflow/backend-bind';
-import { rateMoney, rateReason, type RateReply } from '@/lib/quote-workflow/use-amend-rate-candidates';
+import { propertySwitchForRateRead, rateMoney, rateReason, type RateReply } from '@/lib/quote-workflow/use-amend-rate-candidates';
+import type { PropertySwitch } from '@/lib/reservation-workflow/types';
 import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
-import type { QuoteSession, RatePlanCatalogueEntry, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import type { HmsQuotePropertyCode, QuoteSession, RatePlanCatalogueEntry, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import type { RatePartyEvidence } from './party-picker';
 import { HmsAsOf } from './hms-queue-status';
 
@@ -14,7 +15,8 @@ type CreateContext = { roomIndex: number; rateCode: string; bookingAgency: 'none
   organization: 'none' | 'selected' | 'unknown'; contextKey: string; locked: boolean; prepare: () => boolean;
   onContextChange?: () => void };
 type Binding = { workItemId: string; source: { threadId: string; messageId: string; sourceHash: string };
-  request: { requestId: string; stayId: string; rowId: string; roomIndex: number | null }; expectedSeq: number; expectedExtractionId: string };
+  request: { requestId: string; stayId: string; rowId: string; roomIndex: number | null }; expectedSeq: number; expectedExtractionId: string;
+  propertySwitch?: PropertySwitch };
 type Selection = { kind: 'none'; ratePlan: string | null } | { kind: 'selected';
   bookingAgency: { nativeId: string; name: string; jobId: string } | null;
   organization: { nativeId: string; name: string; jobId: string } | null; ratePlan: string | null };
@@ -27,9 +29,9 @@ type RatesRoute = { mutate: (input: { kind: 'start'; binding: Binding; typedRate
 type View = { key: string; status: 'checking' | 'saving' | 'ready' | 'blocked'; reply?: RateReply; message?: string };
 
 /** A rate read is tied to the selected mail, saved row, party job and revision. */
-export function ContextualRateCheck({ group, session, pane, evidence, plans, onChoose, create }: {
+export function ContextualRateCheck({ group, session, pane, evidence, plans, propertyCode, onChoose, create }: {
   group: StayGroupRequirement; session: QuoteSession; pane: WorkItemPaneControls | null;
-  evidence: PartyEvidence; plans: RatePlanCatalogueEntry[]; onChoose?: (code: string) => void;
+  evidence: PartyEvidence; plans: RatePlanCatalogueEntry[]; propertyCode: HmsQuotePropertyCode; onChoose?: (code: string) => void;
   create?: CreateContext;
 }) {
   const inputId = useId();
@@ -54,7 +56,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
   const usable = Boolean(draft && sourceMatches && request && ref?.rowId && projectedRow &&
     client?.quoteWorkflow?.rateContextSelection?.mutate && client.quoteWorkflow.rateCandidates?.mutate);
   const header = session.staffHeader;
-  const key = JSON.stringify([draft?.transportId, draft?.snapshot.workItemId, source, request?.requestId, ref,
+  const key = JSON.stringify([draft?.transportId, propertyCode, draft?.snapshot.workItemId, source, request?.requestId, ref,
     session.binding?.selectionEpoch, request?.fields?.value, session.groups, header.bookingAgency, header.organization, header.parties, evidence,
     create && [create.roomIndex, create.rateCode, create.bookingAgency, create.organization, create.contextKey, create.locked], pane?.historyBusy]);
   const currentKey = useRef(key);
@@ -95,7 +97,7 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
   const rate = (create?.rateCode ?? group.rateCode ?? projectedRow.ratePlan ?? group.quotedRateCode ?? '').trim().toUpperCase();
   const validRate = !rate || /^[A-Z0-9]{1,12}$/.test(rate);
   const mailbox = inMailbox(draft.transportId);
-  const savedRateKey = JSON.stringify([draft.transportId, draft.snapshot.workItemId, source,
+  const savedRateKey = JSON.stringify([draft.transportId, propertyCode, draft.snapshot.workItemId, source,
     draft.snapshot.revisionSeq, request.requestId, ref.rowId]);
 
   const persistRate = async (code: string | null, cursor: { seq: number; revision: number; revisionHead: number }, isCurrent: () => boolean) => {
@@ -138,10 +140,11 @@ export function ContextualRateCheck({ group, session, pane, evidence, plans, onC
       if (!queue) cursor = await persistRate(rate || null, cursor, active);
       if (!active()) return;
       if (!cursor) return fail('Could not save this rate. Check the draft and try again.');
+      const propertySwitch = propertySwitchForRateRead(propertyCode);
       const binding: Binding = { workItemId: draft.snapshot.workItemId,
         source: { threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash },
         request: { requestId: request.requestId, stayId: request.stayId, rowId: ref.rowId!, roomIndex: create?.roomIndex ?? null }, expectedSeq: cursor.seq,
-        expectedExtractionId: source.extractionId };
+        expectedExtractionId: source.extractionId, ...(propertySwitch ? { propertySwitch } : {}) };
       const selection: Selection = agency.pick || company.pick
         ? { kind: 'selected', bookingAgency: agency.pick, organization: company.pick, ratePlan: rate || null }
         : { kind: 'none', ratePlan: rate || null };

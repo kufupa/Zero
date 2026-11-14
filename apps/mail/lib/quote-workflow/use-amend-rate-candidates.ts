@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import type { PropertySwitch } from '@/lib/reservation-workflow/types';
+import type { HmsQuotePropertyCode } from './types';
 import type { useAmendWorkItem } from './use-amend-work-item';
 
 type RateCandidate = {
@@ -20,14 +22,20 @@ export type RateReply = {
 type RateBinding = {
   workItemId: string; source: { threadId: string; messageId: string; sourceHash: string };
   request: { requestId: string; stayId: string; rowId: null; roomIndex: null }; expectedSeq: number; expectedExtractionId: string;
+  propertySwitch?: PropertySwitch;
 };
 type RateRoute = { mutate: (input: { kind: 'start'; binding: RateBinding; typedRatePlan?: string; forceRefresh?: boolean } |
   { kind: 'read'; binding: RateBinding; jobId: string }, options: { context: { activeTransportId: string } }) => Promise<RateReply> };
 type RateView = { key: string; status: 'checking' | 'ready' | 'blocked'; reply?: RateReply; message?: string };
 
+export function propertySwitchForRateRead(propertyCode: HmsQuotePropertyCode): PropertySwitch | undefined {
+  return propertyCode === 'HRDAV' || propertyCode === 'HRDAVS' ? propertyCode : undefined;
+}
+
 /** A rate observation belongs to one source, request and saved edit revision. */
 export function useAmendRateCandidates(args: {
   trpc: unknown; transportId: string | null; workItemId: string | null;
+  propertyCode: HmsQuotePropertyCode;
   source: { threadId: string; messageId: string; sourceHash: string }; confirmation: string;
   draft: ReturnType<typeof useAmendWorkItem> | null;
   selectedRatePlan?: string; contextKey?: string; locked?: boolean;
@@ -35,7 +43,7 @@ export function useAmendRateCandidates(args: {
   const latest = useRef(args);
   latest.current = args;
   const route = (args.trpc as { quoteWorkflow?: { rateCandidates?: RateRoute } } | null)?.quoteWorkflow?.rateCandidates;
-  const key = JSON.stringify([args.transportId, args.workItemId, args.source, args.confirmation,
+  const key = JSON.stringify([args.transportId, args.propertyCode, args.workItemId, args.source, args.confirmation,
     args.draft?.source, args.draft?.request?.requestId, args.draft?.request?.stayId, args.draft?.editVersion,
     args.selectedRatePlan, args.contextKey, args.locked]);
   const currentKey = useRef(key);
@@ -67,9 +75,10 @@ export function useAmendRateCandidates(args: {
         setView({ key: startedKey, status: 'blocked', message: 'Save valid changes before checking rates.' });
         return;
       }
+      const propertySwitch = propertySwitchForRateRead(current.propertyCode);
       const binding: RateBinding = { workItemId: current.workItemId, source: current.source,
         request: { requestId: cursor.requestId, stayId: cursor.stayId, rowId: null, roomIndex: null }, expectedSeq: cursor.expectedSeq,
-        expectedExtractionId: current.draft.source.extractionId };
+        expectedExtractionId: current.draft.source.extractionId, ...(propertySwitch ? { propertySwitch } : {}) };
       let expectedContext: string | null = null;
       let polls = 0;
       const accept = async (reply: RateReply): Promise<void> => {

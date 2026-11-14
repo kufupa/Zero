@@ -774,6 +774,139 @@ describe('Task 2 production composition + browser guards', () => {
     }
   });
 
+  it.each(['verified', 'wrong_landing', 'wrong_target', 'wrong_tenant', 'wrong_origin'] as const)(
+    'DaVinci verifies landing and selected Suites in a fresh context: %s',
+    async (scenario) => {
+      const cloud = await import('../tooling/hms-cloud/cloud-session.mjs');
+      const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+      const events: string[] = [];
+      const contextOptions: unknown[] = [];
+      const originalAcquireLease = cloud.acquireCloudCredentialLease;
+      const acquireLease = vi.spyOn(cloud, 'acquireCloudCredentialLease').mockImplementation(async (propertyCode, options) => {
+        expect(propertyCode).toBe('HRDAVS');
+        return originalAcquireLease('HRCEN', options);
+      });
+      let selectedProperty: 'HRDAV' | 'HRDAVS' = 'HRDAV';
+      const nativePages: object[] = [];
+      const contextCloses = vi.fn(async () => { events.push('close'); });
+      vi.doMock('playwright', () => ({
+        chromium: {
+          launch: async () => ({
+            async newContext(options: unknown) {
+              contextOptions.push(options);
+              selectedProperty = 'HRDAV';
+              const nativePage = {
+                goto: async () => { events.push('login'); },
+                content: async () => '',
+                title: async () => '',
+                url: () => `${origin}/web/base/COMMON`,
+                close: async () => undefined,
+                setDefaultTimeout() {},
+                setDefaultNavigationTimeout() {},
+                on() {},
+                locator: () => ({ fill: async () => undefined }),
+                getByRole: () => ({ click: async () => undefined }),
+                waitForURL: async () => undefined,
+                waitForLoadState: async () => undefined,
+              };
+              nativePages.push(nativePage);
+              return {
+                tracing: { start: async () => undefined, stop: async () => undefined },
+                route: async () => undefined,
+                routeWebSocket: async () => undefined,
+                on() {},
+                newPage: async () => nativePage,
+                pages: () => [nativePage],
+                close: contextCloses,
+                storageState: async () => { throw new Error('DaVinci must never export cookies'); },
+              };
+            },
+            close: async () => undefined,
+          }),
+        },
+      }));
+      const verify = vi.spyOn(cloud, 'verifyCloudProperty').mockImplementation(async (page, input) => {
+        expect(nativePages).toContain(page);
+        expect(input.tenantId).toBe('DAVINCI_PRD');
+        events.push(`verify:${input.propertyCode}`);
+        if (scenario === 'wrong_landing' && input.propertyCode === 'HRDAV') {
+          throw new Error('landing property mismatch');
+        }
+        return {
+          propertyCode: scenario === 'wrong_target' && input.propertyCode === 'HRDAVS' ? 'HRDAV' : selectedProperty,
+          tenantId: scenario === 'wrong_tenant' && input.propertyCode === 'HRDAVS' ? 'THECENTURION_PRD' : 'DAVINCI_PRD',
+          origin: scenario === 'wrong_origin' && input.propertyCode === 'HRDAVS' ? 'https://wrong.invalid' : origin,
+          observedName: null,
+        };
+      });
+      const switchProperty = vi.spyOn(cloud, 'switchCloudProperty').mockImplementation(async (page, input) => {
+        expect(nativePages).toContain(page);
+        expect(input).toMatchObject({ propertyCode: 'HRDAVS', landingPropertyCode: 'HRDAV', tenantId: 'DAVINCI_PRD' });
+        events.push('switch:HRDAVS');
+        selectedProperty = 'HRDAVS';
+        return { propertyCode: selectedProperty, tenantId: 'DAVINCI_PRD', origin, observedName: null };
+      });
+      const runtime = createHmsRuntime({
+        manifest: fixtureManifest(origin),
+        secretArn: 'fixture-davinci-secret',
+        loadSecret: async () => fixtureSecret(origin, {
+          expectedTenant: 'DAVINCI_PRD', expectedPropertyCode: 'HRDAV', expectedPropertyName: 'Davinci Hotel',
+          mailboxTransportId: 'transport-davinci',
+          mailboxTransportIds: ['transport-davinci', 'transport-faith', 'transport-ayanda', 'transport-epick', 'transport-kmgidi'],
+        }),
+        browserFactory: createPlaywrightBrowserFactory(),
+        expectedPropertyCode: 'HRDAVS',
+        runStartupCanary: false,
+      });
+      try {
+        await runtime.start(AbortSignal.timeout(10_000));
+        const open = () => runtime.openReadSession({ transportId: 'transport-faith', signal: AbortSignal.timeout(10_000) });
+        if (scenario === 'verified') {
+          const first = await open();
+          expect(events).toEqual(['login', 'verify:HRDAV', 'switch:HRDAVS', 'verify:HRDAVS']);
+          await first.close();
+          const second = await open();
+          expect(second.page).not.toBe(first.page);
+          await second.close();
+          expect(contextOptions).toHaveLength(2);
+          for (const options of contextOptions) expect(options).not.toHaveProperty('storageState');
+          expect(switchProperty).toHaveBeenCalledTimes(2);
+        } else {
+          await expect(open()).rejects.toBeInstanceOf(HmsRuntimeError);
+          expect(runtime.health().activeSessions).toBe(0);
+          expect(runtime.stats()).toMatchObject({ contextsCreated: 1, contextsClosed: 1 });
+          if (scenario === 'wrong_landing') expect(switchProperty).not.toHaveBeenCalled();
+        }
+      } finally {
+        await runtime.close();
+        verify.mockRestore();
+        switchProperty.mockRestore();
+        acquireLease.mockRestore();
+        vi.doUnmock('playwright');
+      }
+    },
+  );
+
+  it('refuses a landing-property proof for a Suites runtime before launching Chromium', async () => {
+    const browserFactory = vi.fn(createFetchBrowserFactory());
+    const runtime = createHmsRuntime({
+      manifest: fixtureManifest('https://hmsweb.hms.eu1.inforcloudsuite.com'),
+      secretArn: 'fixture-davinci-secret',
+      loadSecret: vi.fn(),
+      browserFactory,
+      expectedPropertyCode: 'HRDAVS',
+      roleProofPath: '/tmp/suites-role-proof.v2.json',
+      loadRoleProof: async () => ({ propertyCode: 'HRDAV' }) as never,
+      runStartupCanary: false,
+    });
+    try {
+      await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toMatchObject({ code: 'ROLE_SCOPE_INVALID' });
+      expect(browserFactory).not.toHaveBeenCalled();
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it('installs routeWebSocket before first navigation on session open', async () => {
     const server = await startHmsFixtureServer({ scenario: 'reservation-not-found' });
     cleanup.push(server.close);

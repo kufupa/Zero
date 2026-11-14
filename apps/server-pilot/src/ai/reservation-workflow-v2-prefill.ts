@@ -26,13 +26,12 @@ import { hmsReadTargetForProperty } from '../hms/hms-read-target.js';
 import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.js';
 import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-read-lock.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
-import { findParty } from './pane-party-lookup.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
 import { loadAgencyCommission, loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
-import { findStay, paneStayLookupEnabled, searchGuest, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
+import { paneStayLookupEnabled, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { normalizeGuestName, sameGuestName } from './guest-name-match.js';
 import { combineBookerPhones } from './reservation-workflow-v2-booker-contact.js';
@@ -809,7 +808,6 @@ export function createReservationWorkflowV2CandidateReader(input: {
   let guestStayBatch: Promise<Map<string, ReservationWorkflowV2ReadResult>> | null = null;
   const searchGuestStays = async (): Promise<Map<string, ReservationWorkflowV2ReadResult>> => {
     const output = new Map<string, ReservationWorkflowV2ReadResult>();
-    if (input.propertyCode !== 'HRCEN') return output;
     const reads = new Map<string, { query: GuestSearchQuery; items: ReservationWorkflowV2CandidateRead[] }>();
     for (const item of input.candidates ?? []) {
       if (item.kind !== 'stay_candidate') continue;
@@ -827,12 +825,12 @@ export function createReservationWorkflowV2CandidateReader(input: {
     try {
       const target = hmsReadTargetForProperty(input.propertyCode);
       const items = [...reads.values()];
-      const results = await searchGuestCloudBatch(items.map((item) => item.query), target, input.signal);
+      const results = await searchGuestCloudBatch(items.map((item) => item.query), target, input.signal, input.transportId);
       for (let index = 0; index < items.length; index += 1) {
         const found = results[index]!;
         const status = completeNativeRead(found.outcome);
         const result: ReservationWorkflowV2ReadResult = { status,
-          result: { outcome: found.outcome, rows: found.rows, truncated: found.outcome === 'ambiguous_capped',
+          result: { propertyCode: target.propertyCode, outcome: found.outcome, rows: found.rows, truncated: found.outcome === 'ambiguous_capped',
             ...(found.error ? { reason: found.error } : {}) },
           coverage: { complete: status === 'complete', notes: found.outcome === 'ambiguous_capped' ? ['Guest-stay search was capped.'] : [] } };
         for (const item of items[index]!.items) output.set(item.id, result);
@@ -846,18 +844,15 @@ export function createReservationWorkflowV2CandidateReader(input: {
   const searchGuestProfiles = async (): Promise<Map<string, ReservationWorkflowV2ReadResult>> => {
     const output = new Map<string, ReservationWorkflowV2ReadResult>();
     const guestReads = (input.candidates ?? []).filter((item) => item.kind === 'guest_candidate');
-    if (input.propertyCode !== 'HRCEN' || !guestReads.length) {
-      for (const item of guestReads) output.set(item.id, unavailable('Native guest-profile lookup currently supports HRCEN only.'));
-      return output;
-    }
+    if (!guestReads.length) return output;
     try {
-      const sessionUrl = new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url);
+      const sessionUrl = new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url);
       const profileUrl = new URL('../../tooling/hms-cloud/guest-profile.mjs', import.meta.url);
-      const session = await import(sessionUrl.href) as { withBookingLookupSession<T>(operation: (context: { page: unknown }) => Promise<T>, options?: Record<string, unknown>): Promise<T> };
+      const session = await import(sessionUrl.href) as { withCloudLookupReadSession<T>(operation: (context: { page: unknown }) => Promise<T>, options?: Record<string, unknown>): Promise<T> };
       const profile = await import(profileUrl.href) as {
-        searchGuestProfiles(page: unknown, input: { field: 'email' | 'lastName'; query: string }): Promise<Record<string, unknown>>;
-        inspectGuestProfileCandidates(page: unknown, input: { searchId: string; offset: number; limit: number }): Promise<Record<string, unknown>>;
-        closeGuestProfilePicker(page: unknown): Promise<Record<string, unknown>>;
+        searchGuestProfiles(page: unknown, input: { field: 'email' | 'lastName'; query: string }, options: { propertyCode: string }): Promise<Record<string, unknown>>;
+        inspectGuestProfileCandidates(page: unknown, input: { searchId: string; offset: number; limit: number }, options: { propertyCode: string }): Promise<Record<string, unknown>>;
+        closeGuestProfilePicker(page: unknown, options: { propertyCode: string }): Promise<Record<string, unknown>>;
       };
       const reads = new Map<string, { field: 'email' | 'lastName'; query: string; items: ReservationWorkflowV2CandidateRead[] }>();
       for (const item of guestReads) {
@@ -870,11 +865,11 @@ export function createReservationWorkflowV2CandidateReader(input: {
         const existing = reads.get(key);
         if (existing) existing.items.push(item); else reads.set(key, { field, query, items: [item] });
       }
-      await session.withBookingLookupSession(async ({ page }) => {
+      await session.withCloudLookupReadSession(async ({ page }) => {
         for (const read of reads.values()) {
           input.signal?.throwIfAborted();
           let search: Record<string, unknown>;
-          try { search = await profile.searchGuestProfiles(page, { field: read.field, query: read.query }); }
+          try { search = await profile.searchGuestProfiles(page, { field: read.field, query: read.query }, { propertyCode: input.propertyCode }); }
           catch { search = { outcome: 'execution_failure', issue: 'GUEST_SEARCH_FAILED' }; }
           const coverage = isRecord(search.coverage) ? search.coverage : {};
           const criteria = isRecord(search.criteria) ? search.criteria : {};
@@ -900,7 +895,7 @@ export function createReservationWorkflowV2CandidateReader(input: {
           while (enumerationComplete && loaded !== null && rows.length < loaded) {
             const offset = rows.length;
             let inspected: Record<string, unknown>;
-            try { inspected = await profile.inspectGuestProfileCandidates(page, { searchId: searchId!, offset, limit: 50 }); }
+            try { inspected = await profile.inspectGuestProfileCandidates(page, { searchId: searchId!, offset, limit: 50 }, { propertyCode: input.propertyCode }); }
             catch { inspected = { outcome: 'execution_failure' }; }
             const pageRows = Array.isArray(inspected.candidates) ? inspected.candidates.flatMap((candidate) => {
               if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
@@ -942,20 +937,20 @@ export function createReservationWorkflowV2CandidateReader(input: {
             (loaded > 0 ? search.outcome === 'matches' : search.outcome === 'no_match');
           // The search result is only usable while the live picker remains current. Close only after every
           // page is correlated, then include that verified cancellation in the read-completeness decision.
-          const closed = await profile.closeGuestProfilePicker(page).catch(() => ({ outcome: 'close_uncertain' }));
+          const closed = await profile.closeGuestProfilePicker(page, { propertyCode: input.propertyCode }).catch(() => ({ outcome: 'close_uncertain' }));
           const verified = Boolean(completeEnumeration && closed.outcome === 'closed_unsaved');
           const verifiedRows = candidatesCorrelated && verifiedFields.includes('guestid') &&
             verifiedFields.includes('firstname') && verifiedFields.includes('lastname') ? rows : initialRows;
           const result: ReservationWorkflowV2ReadResult = {
             status: verified ? 'complete' : String(search.outcome) === 'execution_failure' || closed.outcome === 'close_uncertain' ? 'failed' : 'partial',
-            result: { outcome: search.outcome, field: read.field, query: read.query, searchId,
+            result: { propertyCode: input.propertyCode, outcome: search.outcome, field: read.field, query: read.query, searchId,
               criteria, correlation: { verifiedFields }, candidates: verifiedRows, coverage,
               enumeratedCount: rows.length, observedAt: search.observedAt ?? null, closeOutcome: closed.outcome },
             coverage: { complete: verified, notes: verified ? [] : ['Guest-profile enumeration, response/grid correlation, identity fields or unsaved picker close was not fully verified.'] },
           };
           for (const item of read.items) output.set(item.id, result);
         }
-      }, { memory: null, blockServiceWorkers: true, signal: input.signal });
+      }, { propertyCode: input.propertyCode, transportId: input.transportId, signal: input.signal });
     } catch {
       for (const item of guestReads) if (!output.has(item.id)) output.set(item.id,
         { status: 'failed', result: { reason: 'guest_profile_session_failed' }, coverage: { complete: false } });
@@ -964,6 +959,13 @@ export function createReservationWorkflowV2CandidateReader(input: {
   };
   return async (candidate) => {
     if (candidate.propertyCode !== input.propertyCode) return { status: 'failed', result: { reason: 'property_mismatch' }, coverage: { complete: false } };
+    if (input.propertyCode !== 'HRCEN' && ['guest_candidate', 'party_candidate', 'stay_candidate', 'rate_availability'].includes(candidate.kind)) {
+      const { nativeReadCapabilityAvailable } = await import('../hms/hms-service.js');
+      if (!await nativeReadCapabilityAvailable({ propertyCode: input.propertyCode, transportId: input.transportId,
+        capability: candidate.kind === 'rate_availability' ? 'quote' : 'reads' })) {
+        return unavailable('The selected property read capability is unavailable.');
+      }
+    }
     if (candidate.kind === 'stay_candidate' && !paneStayLookupEnabled()) return unavailable('Stay lookup is disabled.');
     const cachedGuestProfiles = candidate.kind === 'guest_candidate' && guestProfileBatch;
     const stayText = typeof candidate.criteria.confirmationOrGuestText === 'string' ? candidate.criteria.confirmationOrGuestText.trim() : '';
@@ -1005,20 +1007,10 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const name = exactSearchTerm(candidate.criteria.name);
       const role = candidate.criteria.role;
       if (!name) return unavailable('Party name is missing or too short.');
-      if (target.propertyCode === 'HRCEN') {
-        if (role !== 'bookingAgency' && role !== 'organization' && role !== 'ar_account')
-          return unavailable('Native party role is not supported.');
-        const found = await lookupNativeParty({ role: role === 'bookingAgency' ? 'agency' : role, name, target, signal: input.signal });
-        return { ...found, result: { ...found.result, kind: role } };
-      }
-      if (role === 'ar_account') return unavailable('A/R account search is not exposed by the existing party lookup.');
-      if (role !== 'bookingAgency' && role !== 'organization') return unavailable('Native party role is not supported.');
-      const kind = role;
-      const found = await findParty({ name, kind }, { target, exactTerm: true, resultCap: 20 });
-      const status = completeNativeRead(found.outcome);
-      return { status: found.truncated ? 'partial' : status,
-        result: { outcome: found.outcome, kind, searchedFor: found.searchedFor, candidates: found.results, truncated: found.truncated },
-        coverage: { complete: status === 'complete' && !found.truncated, notes: found.truncated ? ['HMS party candidate list was truncated.'] : [] } };
+      if (role !== 'bookingAgency' && role !== 'organization' && role !== 'ar_account')
+        return unavailable('Native party role is not supported.');
+      const found = await lookupNativeParty({ role: role === 'bookingAgency' ? 'agency' : role, name, target, transportId: input.transportId, signal: input.signal });
+      return { ...found, result: { ...found.result, kind: role, propertyCode: target.propertyCode } };
     }
     if (candidate.kind === 'stay_candidate') {
       const query = exactSearchTerm(candidate.criteria.confirmationOrGuestText);
@@ -1029,12 +1021,11 @@ export function createReservationWorkflowV2CandidateReader(input: {
         const request = { confirmation: query, ...(arrivals.length === 1 ? { arrival: arrivals[0] } : {}) };
         const propertyLock = lock();
         if (!propertyLock) return unavailable('Property read lock is unavailable.');
-        const found = target.propertyCode === 'HRCEN'
-          ? await propertyLock.withLock(async () => projectCloudStayFind(request,
-            await runCloudStayFind({ request, target, signal: input.signal })), { ...acquisition, signal: input.signal })
-          : await findStay(request, { lock, target, acquisition });
+        const found = await propertyLock.withLock(async () => projectCloudStayFind(request,
+          await runCloudStayFind({ request, target, transportId: input.transportId, signal: input.signal }), target.propertyCode),
+        { ...acquisition, signal: input.signal });
         const status = completeNativeRead(found.outcome);
-        return { status, result: { outcome: found.outcome, stay: found.stay, commercial: found.commercial ?? null,
+        return { status, result: { propertyCode: target.propertyCode, outcome: found.outcome, stay: found.stay, commercial: found.commercial ?? null,
           arrivalMismatch: found.arrivalMismatch,
           ...(isRecord(found) && isRecord(found.reservationObservations) ? { reservationObservations: found.reservationObservations } : {}) },
         coverage: { complete: status === 'complete', notes: [] } };
@@ -1042,24 +1033,16 @@ export function createReservationWorkflowV2CandidateReader(input: {
       const dates = Array.isArray(candidate.criteria.dates) ? candidate.criteria.dates as Array<Record<string, unknown>> : [];
       const date = dates.find((row) => isoDay(row.arrival) && isoDay(row.departure));
       if (!date || !isoDay(date.arrival) || !isoDay(date.departure)) return unavailable('Guest stay search needs source-grounded arrival and departure dates.');
-      const lastName = query.split(/\s+/).at(-1)!;
-      if (target.propertyCode === 'HRCEN') {
-        guestStayBatch ??= searchGuestStays();
-        return (await guestStayBatch).get(candidate.id) ?? unavailable('Guest stay candidate was not covered by the read plan.');
-      }
-      const found = await searchGuest({ lastName, arrival: date.arrival, departure: date.departure }, { lock, target, acquisition });
-      const status = completeNativeRead(found.outcome);
-      return { status, result: { outcome: found.outcome, rows: found.rows, truncated: found.outcome === 'ambiguous_capped' },
-        coverage: { complete: status === 'complete', notes: found.outcome === 'ambiguous_capped' ? ['Guest-stay search was capped.'] : [] } };
+      guestStayBatch ??= searchGuestStays();
+      return (await guestStayBatch).get(candidate.id) ?? unavailable('Guest stay candidate was not covered by the read plan.');
     }
     if (candidate.kind === 'rate_availability') {
       const request = availabilityInput(candidate);
       if (!request) return unavailable('Rate/availability read requires source-grounded dates, room count and per-room occupancy.');
-      if (target.propertyCode !== 'HRCEN') return unavailable('Cloud availability reader currently supports HRCEN only.');
-      const result = await probeCloudRateAvailability(request, { lock, target, acquisition, signal: input.signal });
+      const result = await probeCloudRateAvailability(request, { lock, target, acquisition, transportId: input.transportId, signal: input.signal });
       const status = result.outcome === 'read' ? result.searchOutcome === 'partial' || result.searchOutcome === 'unavailable' ? 'partial' : 'complete' :
         result.outcome === 'blocked' || result.outcome === 'execution_failure' ? 'failed' : 'unavailable';
-      return { status, result: { ...result },
+      return { status, result: { ...result, propertyCode: target.propertyCode },
         coverage: { complete: status === 'complete', notes: status === 'complete' ? [] : ['Availability coverage/read was partial or unavailable.'] } };
     }
     return unavailable(`No reader is bound for ${candidate.kind}.`);
@@ -5256,7 +5239,7 @@ function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposa
 
 async function applyHistoricalPartySuggestions(input: { proposal: ReservationWorkflowV2Proposal;
   observations: ReservationWorkflowV2Observation[]; leads: ReservationWorkflowV2Observation[];
-  source: ReservationWorkflowV2Source; propertyCode: PropertyCode; generationId: string; env: NodeJS.ProcessEnv;
+  source: ReservationWorkflowV2Source; propertyCode: PropertyCode; transportId: string; generationId: string; env: NodeJS.ProcessEnv;
   allowNativeRead: boolean; signal?: AbortSignal }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
   const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
   for (const request of proposal.content.requests) {
@@ -5332,7 +5315,7 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
       let chosen = matching.length === 1 ? matching[0] : undefined;
       if (!chosen && !matching.length && input.allowNativeRead && !input.signal?.aborted) {
         let read: Awaited<ReturnType<typeof lookupNativeParty>> | null = null;
-        try { read = await lookupNativeParty({ role, name: leadName, target: hmsReadTargetForProperty(input.propertyCode), signal: input.signal }); }
+        try { read = await lookupNativeParty({ role, name: leadName, target: hmsReadTargetForProperty(input.propertyCode), transportId: input.transportId, signal: input.signal }); }
         catch { input.signal?.throwIfAborted(); }
         const rows = read?.status === 'complete' && read.coverage.complete && Array.isArray(read.result.candidates) &&
           read.result.candidates.length === 1 && matchesLead(read.result.candidates[0])
@@ -6275,7 +6258,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
     const partyResult = await applyHistoricalPartySuggestions({ proposal, observations: finalObservations, leads: historicalLeads,
-      source: input.source, propertyCode, generationId, env, signal: input.signal,
+      source: input.source, propertyCode, transportId: input.transportId, generationId, env, signal: input.signal,
       allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
     return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
       proposal: partyResult.proposal, fieldReviewRequirements: { ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(partyResult.proposal) },
@@ -6288,7 +6271,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const historicalLeads = rankHistoricalRoomLeads({ proposal: finalProposal!, leads: nativeLeads, observations: finalObservations,
     extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map() });
   const partyResult = await applyHistoricalPartySuggestions({ proposal: finalProposal!, observations: finalObservations, leads: historicalLeads,
-    source: input.source, propertyCode, generationId, env, signal: input.signal,
+    source: input.source, propertyCode, transportId: input.transportId, generationId, env, signal: input.signal,
     allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
   return { ...base, observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||

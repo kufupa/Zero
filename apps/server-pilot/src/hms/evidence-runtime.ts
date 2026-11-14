@@ -4,9 +4,9 @@
  */
 import { createHash } from 'node:crypto';
 import {
-  hmacSha256PrivateValue,
   sha256Integrity,
 } from './private-digests.js';
+import { credentialVersionHmacSha256 as canonicalCredentialVersionHmacSha256 } from '../../tooling/hms-cloud/credential-version.mjs';
 import { HmsRuntimeError } from './runtime.js';
 
 export type HmsSecretVersionMetadata = {
@@ -45,12 +45,7 @@ export function credentialVersionHmacSha256(input: {
       'HMS secret ARN and VersionId required for credential version HMAC',
     );
   }
-  return hmacSha256PrivateValue({
-    key: input.evidenceKey,
-    keyVersion: input.evidenceKeyVersion,
-    purpose: 'credential_version',
-    value: JSON.stringify({ secretArn: arn, versionId }),
-  }).hmacSha256;
+  return canonicalCredentialVersionHmacSha256({ ...input, hmsSecretArn: arn, hmsSecretVersionId: versionId });
 }
 
 /** Public integrity fingerprint over runtime revision tuple (SHA-256, not HMAC). */

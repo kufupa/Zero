@@ -17,7 +17,7 @@ import {
   type PartyIndexFile,
 } from '../src/ai/party-index.js';
 import { panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
-import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import { verifyStaffParties } from '../src/trpc/routes/workstation.js';
 import { appRouter } from '../src/trpc/router.js';
 
@@ -322,7 +322,9 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     ).resolves.toEqual({ organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } });
   });
 
-  it('re-checks a Da Vinci pick on HRDAV so a valid DV id is not refused', async () => {
+  it.each(['HRDAV', 'HRDAVS'])('re-checks an uncached Da Vinci pick on %s with the authenticated mailbox', async (propertyCode) => {
+    const target = hmsReadTargetForProperty(propertyCode);
+    const transportId = 'transport-faith';
     panePartyLookupLoaders.lock = { withLock: async (fn) => fn() };
     const spawn = vi.fn(async () => ({
       outcome: 'resolved',
@@ -333,11 +335,12 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     await expect(
       verifyStaffParties(
         { organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } },
-        DAVINCI_HMS_READ_TARGET,
+        target,
+        transportId,
       ),
     ).resolves.toEqual({ organization: { kind: 'organization', nativeId: '206', name: 'Tourvest Test Profile' } });
     expect(spawn).toHaveBeenCalledWith(
-      expect.objectContaining({ kind: 'organization', name: 'Tourvest Test Profile', target: DAVINCI_HMS_READ_TARGET }),
+      expect.objectContaining({ kind: 'organization', name: 'Tourvest Test Profile', target, transportId }),
     );
   });
 });

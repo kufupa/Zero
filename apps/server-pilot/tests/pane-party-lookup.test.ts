@@ -7,7 +7,10 @@ import {
   panePartyCandidates,
   panePartyFindResultFromCli,
   panePartyLookupLoaders,
+  spawnPartyLookup,
 } from '../src/ai/pane-party-lookup.js';
+import { lookupNativeParty } from '../src/ai/reservation-workflow-v2-native-party.js';
+import { readFile } from 'node:fs/promises';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
 import { quoteRateContextEnabled } from '../src/ai/quote-rate-switch.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
@@ -19,6 +22,7 @@ import {
   CENTURION_HMS_READ_TARGET,
   DAVINCI_HMS_READ_TARGET,
   DAVINCI_STAFF_TRANSPORT_IDS,
+  hmsReadTargetForProperty,
 } from '../src/hms/hms-read-target.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +33,20 @@ import {
   resetPartyCacheForTests,
   verifyPartyPick,
 } from '../src/ai/pane-party-lookup.js';
+
+const { execFileMock } = vi.hoisted(() => {
+  const execFileMock = vi.fn();
+  Object.defineProperty(execFileMock, Symbol.for('nodejs.util.promisify.custom'), {
+    value: (...args: unknown[]) => execFileMock(...args),
+  });
+  return { execFileMock };
+});
+
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFile: execFileMock,
+}));
+vi.mock('../src/ai/reservation-workflow-v2-native-party.js', () => ({ lookupNativeParty: vi.fn() }));
 
 vi.mock('../src/db/client.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/db/client.js')>()),
@@ -142,6 +160,8 @@ afterEach(() => {
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   replaceLearnedSenderMapForTests(null);
+  vi.mocked(lookupNativeParty).mockReset();
+  execFileMock.mockReset();
   vi.unstubAllEnvs();
 });
 
@@ -208,6 +228,29 @@ describe('findParty: refusals before any lock or spawn', () => {
       best: null,
       searchedFor: null,
     });
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('cancels a property-lock wait when only the caller signal is supplied', async () => {
+    const controller = new AbortController();
+    const spawn = vi.fn();
+    let lockSignal: AbortSignal | undefined;
+    let deadlineAt: number | undefined;
+    panePartyLookupLoaders.spawn = spawn;
+    panePartyLookupLoaders.lock = {
+      withLock: async (_fn, acquisition) => {
+        lockSignal = acquisition?.signal;
+        deadlineAt = acquisition?.deadlineAt;
+        return new Promise<never>((_resolve, reject) => {
+          lockSignal?.addEventListener('abort', () => reject(lockSignal?.reason), { once: true });
+        });
+      },
+    };
+    const result = findParty({ name: 'ABC', kind: 'organization' }, { signal: controller.signal });
+    expect(lockSignal).toBe(controller.signal);
+    expect(deadlineAt).toEqual(expect.any(Number));
+    controller.abort();
+    await expect(result).rejects.toMatchObject({ name: 'AbortError' });
     expect(spawn).not.toHaveBeenCalled();
   });
 });
@@ -859,6 +902,148 @@ describe('findPartyJob: V2 planned terms in one spawn', () => {
     }));
     expect(seen).toEqual(['lock']);
     expect(found.map((row) => row.best?.nativeId)).toEqual(['206', '113']);
+  });
+});
+
+describe('Da Vinci guarded party reads', () => {
+  const target = hmsReadTargetForProperty('HRDAVS');
+  const transportId = 'transport-faith';
+  const complete = (outcome: 'matches' | 'no_match', candidates: unknown[]) => ({
+    status: 'complete' as const,
+    result: { outcome, candidates, truncated: false },
+    coverage: { complete: true, notes: [] },
+  });
+
+  beforeEach(() => {
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.enabled = () => true;
+    resetPartyCacheForTests();
+  });
+
+  it('passes the actual transport and signal through a planned job in order', async () => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    vi.mocked(lookupNativeParty)
+      .mockResolvedValueOnce(complete('no_match', []))
+      .mockResolvedValueOnce(complete('matches', [{ nativeId: '29', name: 'ABC Travel', city: 'Pretoria' }]));
+    const found = await findPartyJob([
+      { kind: 'organization', name: 'ABC' },
+      { kind: 'bookingAgency', name: 'ABC Travel' },
+    ], { target, transportId, signal });
+    const calls = vi.mocked(lookupNativeParty).mock.calls.map(([input]) => input);
+    expect(calls).toEqual([
+      { role: 'organization', name: 'ABC', target, transportId, signal: expect.any(AbortSignal), exactTerm: true },
+      { role: 'agency', name: 'ABC Travel', target, transportId, signal: expect.any(AbortSignal), exactTerm: true },
+    ]);
+    expect(calls[0].signal).toBe(calls[1].signal);
+    controller.abort();
+    expect(calls[0].signal?.aborted).toBe(true);
+    expect(found).toMatchObject([
+      { outcome: 'no_match', results: [], searchedFor: 'ABC' },
+      { outcome: 'resolved', results: [{ kind: 'bookingAgency', nativeId: '29', name: 'ABC Travel', city: 'Pretoria' }], searchedFor: 'ABC Travel' },
+    ]);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves fallback order and stops after the first matching term', async () => {
+    const signal = new AbortController().signal;
+    vi.mocked(lookupNativeParty).mockResolvedValue(complete('matches', [{ nativeId: '77', name: 'FOSCHINI GROUP LIMITED' }]));
+    const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'organization' },
+      { target, transportId, signal });
+    expect(lookupNativeParty).toHaveBeenCalledTimes(1);
+    expect(lookupNativeParty).toHaveBeenCalledWith({
+      role: 'organization', name: 'Foschini Retail Group', target, transportId, signal: expect.any(AbortSignal), exactTerm: true,
+    });
+    expect(found).toMatchObject({ outcome: 'resolved', searchedFor: 'Foschini Retail Group', best: { nativeId: '77' } });
+
+    vi.mocked(lookupNativeParty).mockReset();
+    vi.mocked(lookupNativeParty)
+      .mockResolvedValueOnce(complete('no_match', []))
+      .mockResolvedValueOnce(complete('matches', [{ nativeId: '77', name: 'FOSCHINI GROUP LIMITED' }]));
+    const fallback = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'organization' },
+      { target, transportId, signal });
+    expect(vi.mocked(lookupNativeParty).mock.calls.map(([input]) => input.name)).toEqual(['Foschini Retail Group', 'Foschini']);
+    expect(fallback).toMatchObject({ outcome: 'resolved', searchedFor: 'Foschini', best: { nativeId: '77' } });
+  });
+
+  it('only exposes an agency reference as IATA when its verified type is IATA', async () => {
+    vi.mocked(lookupNativeParty).mockResolvedValue(complete('matches', [
+      { nativeId: '1', name: 'ABC One', referenceNumber: '12345', referenceNumberType: 'IATA' },
+      { nativeId: '2', name: 'ABC Two', referenceNumber: '67890', referenceNumberType: 'TIDS' },
+      { nativeId: '3', name: 'ABC Three', referenceNumber: '98765' },
+    ]));
+    const found = await findParty({ name: 'ABC', kind: 'bookingAgency' }, { target, transportId });
+    expect(found.results).toEqual([
+      { kind: 'bookingAgency', nativeId: '1', name: 'ABC One', iata: '12345' },
+      { kind: 'bookingAgency', nativeId: '2', name: 'ABC Two' },
+      { kind: 'bookingAgency', nativeId: '3', name: 'ABC Three' },
+    ]);
+  });
+
+  it('does not turn incomplete coverage or a refusal into a clean result', async () => {
+    vi.mocked(lookupNativeParty)
+      .mockResolvedValueOnce({ status: 'partial', result: { outcome: 'matches', candidates: [{ nativeId: '77', name: 'ABC' }], truncated: false }, coverage: { complete: false, notes: ['unverified'] } })
+      .mockResolvedValueOnce({ status: 'partial', result: { outcome: 'no_match', candidates: [], truncated: false }, coverage: { complete: false, notes: ['unverified'] } })
+      .mockResolvedValueOnce({ status: 'failed', result: { outcome: 'refused_flag_off' }, coverage: { complete: false, notes: ['refused_flag_off'] } });
+    const found = await findPartyJob([
+      { kind: 'organization', name: 'ABC' },
+      { kind: 'organization', name: 'DEF' },
+      { kind: 'bookingAgency', name: 'GHI' },
+    ], { target, transportId });
+    expect(found.map(({ outcome, results }) => ({ outcome, results }))).toEqual([
+      { outcome: 'execution_failure', results: [] },
+      { outcome: 'execution_failure', results: [] },
+      { outcome: 'refused_flag_off', results: [] },
+    ]);
+  });
+
+  it('carries a login outage through both the per-kind and merged replies for queue parking', async () => {
+    vi.mocked(lookupNativeParty).mockResolvedValue({
+      status: 'failed', result: { outcome: 'execution_failure', reason: 'AUTHENTICATED_SHELL_TIMEOUT' },
+      coverage: { complete: false, notes: ['AUTHENTICATED_SHELL_TIMEOUT'] },
+    });
+    await expect(findParty({ name: 'ABC', kind: 'organization' }, { target, transportId }))
+      .resolves.toMatchObject({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+    await expect(findParty({ name: 'ABC' }, { target, transportId }))
+      .resolves.toMatchObject({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+    await expect(findPartyJob([{ kind: 'organization', name: 'ABC' }], { target, transportId }))
+      .resolves.toMatchObject([{ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' }]);
+  });
+
+  it('propagates aborts and forwards transport for live pick verification', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(findParty({ name: 'ABC', kind: 'organization' }, { target, transportId, signal: controller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' });
+    expect(lookupNativeParty).not.toHaveBeenCalled();
+
+    vi.mocked(lookupNativeParty).mockResolvedValue(complete('matches', [{ nativeId: '77', name: 'ABC' }]));
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '77', name: 'ABC', target, transportId }))
+      .resolves.toEqual({ ok: true, party: { kind: 'organization', nativeId: '77', name: 'ABC' } });
+    expect(lookupNativeParty).toHaveBeenCalledWith(expect.objectContaining({ target, transportId }));
+
+    resetPartyCacheForTests();
+    vi.mocked(lookupNativeParty).mockResolvedValue({
+      status: 'unavailable', result: { outcome: 'unavailable', reason: 'capability_unavailable' },
+      coverage: { complete: false, notes: ['capability_unavailable'] },
+    });
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '77', name: 'ABC', target, transportId }))
+      .resolves.toEqual({ ok: false, reason: 'unverified' });
+  });
+
+  it('keeps the HRCEN CLI path and request', async () => {
+    execFileMock.mockImplementation(async (_executable: string, args: string[]) => {
+      expect(args[0]).toContain('tooling/playwright-quote/party-lookup.mjs');
+      expect(args[1]).toBe('--request');
+      expect(JSON.parse(await readFile(args[2], 'utf8'))).toEqual({
+        kind: 'organization', query: { organizationName: 'ABC' }, propertyCode: 'HRCEN',
+      });
+      return { stdout: JSON.stringify({ outcome: 'no_match', candidates: [], truncated: false }) };
+    });
+    await expect(spawnPartyLookup({ kind: 'organization', name: 'ABC', target: CENTURION_HMS_READ_TARGET }))
+      .resolves.toEqual({ outcome: 'no_match', candidates: [], truncated: false });
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+    expect(lookupNativeParty).not.toHaveBeenCalled();
   });
 });
 

@@ -108,7 +108,7 @@ function validateRooms(rooms, capacity) {
   if (!rooms || typeof rooms !== 'object' || Array.isArray(rooms)) invalid('rooms must be an object keyed by HMS code');
   for (const [code, room] of Object.entries(rooms)) {
     if (!ROOM_CODE.test(code)) invalid(`room type ${code} is not an HMS code`);
-    if (!capacity[code]) invalid(`rooms.${code} is not in roomCapacity`);
+    if (capacity && !capacity[code]) invalid(`rooms.${code} is not in roomCapacity`);
     if (!room || typeof room !== 'object' || Array.isArray(room) || typeof room.label !== 'string' || !room.label.trim()) {
       invalid(`rooms.${code}.label is required`);
     }
@@ -190,7 +190,7 @@ function validateSalesStrategies(rows) {
     if (!PROFILE_SALES_STRATEGY_CODE_SET.has(value)) {
       invalid(`sales strategy ${value || '(empty)'} is not a known HMS strategy`);
     }
-    if (!display || display.length > 80 || /[<>\u0000-\u001f\u007f]/.test(display)) {
+    if (!display || display.length > 80 || /[<>\p{Cc}]/u.test(display)) {
       invalid(`sales strategy ${value} display is invalid`);
     }
     if (Object.prototype.hasOwnProperty.call(candidate, 'scope') && !STRATEGY_SCOPES.has(candidate.scope)) {
@@ -205,19 +205,23 @@ function validateSalesStrategies(rows) {
 export function validateProfile(raw, propertyCode) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) invalid('not an object');
   if (raw.propertyCode !== propertyCode) invalid('property code does not match its file');
-  if (raw.building !== 'none') invalid('only a property with no HMS building has a room profile');
-  if (!Number.isInteger(raw.publishedRooms) || raw.publishedRooms < 1) invalid('publishedRooms must be a positive integer');
+  const inventoryRequired = raw.schemaVersion !== 'hms-property-profile/v2';
+  if (raw.schemaVersion !== undefined && raw.schemaVersion !== 'hms-property-profile/v2') invalid('unsupported profile version');
+  const inventoryPresent = raw.building !== undefined || raw.publishedRooms !== undefined || raw.roomCapacity !== undefined;
+  if ((inventoryRequired || inventoryPresent) && raw.building !== 'none') invalid('only a property with no HMS building has a room profile');
+  if ((inventoryRequired || inventoryPresent) && (!Number.isInteger(raw.publishedRooms) || raw.publishedRooms < 1)) invalid('publishedRooms must be a positive integer');
   const capacity = raw.roomCapacity;
-  if (!capacity || typeof capacity !== 'object' || Array.isArray(capacity) || !Object.keys(capacity).length) {
+  if ((inventoryRequired || inventoryPresent) && (!capacity || typeof capacity !== 'object' || Array.isArray(capacity) || !Object.keys(capacity).length)) {
     invalid('roomCapacity must list room types');
   }
   let total = 0;
-  for (const code of Object.keys(capacity)) {
+  for (const code of Object.keys(capacity ?? {})) {
     if (!ROOM_CODE.test(code)) invalid(`room type ${code} is not an HMS code`);
     if (!Number.isInteger(capacity[code]) || capacity[code] < 1) invalid(`capacity of ${code} must be a positive integer`);
     total += capacity[code];
   }
-  if (total !== raw.publishedRooms) invalid(`capacities sum to ${total} but the property publishes ${raw.publishedRooms} rooms`);
+  if ((inventoryRequired || inventoryPresent) && total !== raw.publishedRooms) invalid(`capacities sum to ${total} but the property publishes ${raw.publishedRooms} rooms`);
+  if (!inventoryRequired && !inventoryPresent && (!raw.rooms || !Object.keys(raw.rooms).length)) invalid('rooms must list witnessed room types');
   const requiredFields = raw.requiredCreateFields;
   if (!Array.isArray(requiredFields)) invalid('requiredCreateFields must list HMS field names');
   const seenFields = new Set();
@@ -245,12 +249,12 @@ export function validateProfile(raw, propertyCode) {
   if (Object.prototype.hasOwnProperty.call(raw, 'rooms')) validateRooms(raw.rooms, capacity);
   if (!Array.isArray(raw.evidence?.sources) || !raw.evidence.sources.length) invalid('evidence sources are required');
   // The digest covers room facts only, so editing the evidence wording does not invalidate recorded allocations.
-  const identity = JSON.stringify({
+  const identity = JSON.stringify(inventoryPresent ? {
     propertyCode,
     publishedRooms: raw.publishedRooms,
     building: raw.building,
     roomCapacity: Object.fromEntries(Object.keys(capacity).sort().map((code) => [code, capacity[code]])),
-  });
+  } : { propertyCode, roomTypes: Object.keys(raw.rooms).sort(), inventory: null });
   const profile = {
     ...raw,
     digest: createHash('sha256').update(identity).digest('hex'),
@@ -359,7 +363,8 @@ export function stayBookFieldRefusal(stay, profile) {
   const options = marketSegmentOptions(profile);
   if (required.includes('marketsegment') && !marketSegment) return 'pane_save_market_segment_required';
   if (marketSegment && options && !options.includes(marketSegment)) return 'pane_save_market_segment_invalid';
-  if (required.includes('guestoptin4') && stay?.guestoptin4 !== true) return 'pane_save_guest_opt_in_required';
+  if (required.includes('guestoptin4') && (profile.createForm?.guestOptInPolicy === 'required_boolean'
+    ? typeof stay?.guestoptin4 !== 'boolean' : stay?.guestoptin4 !== true)) return 'pane_save_guest_opt_in_required';
   if ((profile.requiredCreateFields?.includes('reservationnote') || profile.createForm?.requiredMarkers?.reservationnote?.required) && !String(stay?.reservationNote ?? '').trim()) return 'pane_save_reservation_note_required';
   const messageId = typeof stay?.cmsMessageId === 'string' ? stay.cmsMessageId.trim() : '';
   if ((stay?.confirmationSendMail === true || stay?.confirmationRecipient != null) && !messageId) return 'cms_message_id_required';
@@ -371,7 +376,7 @@ export function stayBookFieldRefusal(stay, profile) {
 /** Amend allow-list: room type codes this property actually sells. */
 export function amendRoomTypes(propertyCode) {
   const profile = profileFor(propertyCode);
-  return profile ? Object.keys(profile.roomCapacity) : [];
+  return profile ? Object.keys(profile.rooms ?? profile.roomCapacity ?? {}) : [];
 }
 
 /** Required `--property CODE` of an active registered hotel. Strips the flag so other parsers never see it. */

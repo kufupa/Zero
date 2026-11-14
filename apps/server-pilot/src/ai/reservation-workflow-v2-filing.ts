@@ -662,9 +662,9 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
         const lock = paneStayPropertyLock(target.target);
         if (!lock) return null;
         return lock.withLock(async () => projectCloudStayFind(stayRequest,
-          await runCloudStayFind({ request: stayRequest, target: target.target, signal: ctx.nativeBatch!.signal })),
+          await runCloudStayFind({ request: stayRequest, target: target.target, transportId: ctx.transport.id, signal: ctx.nativeBatch!.signal })),
         { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
-      })().catch(() => null) : await findStay(stayRequest, { target: target.target,
+      })().catch(() => null) : await findStay(stayRequest, { target: target.target, transportId: ctx.transport.id,
         lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
       const stay = found?.stay;
       const complete = found?.outcome === 'found' && Boolean(stay?.confirmation === confirmation && stay.firstName && stay.lastName && stay.status &&
@@ -761,7 +761,7 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   // Native staging is read-only; write admission is checked separately on Go.
   const allowRealGuest = true;
   const cloud = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
-    target: target.target, allowRealGuest });
+    target: target.target, transportId: ctx.transport.id, allowRealGuest });
   if (!cloud || cloud.nativeGuestId === '' || cloud.nativeStayId === '' ||
       bound.form.filingStateDigest !== filingStateDigest(cloud)) return { status: 'failed', issue: 'filing_target_unavailable' };
   const semanticDigest = selectionDigest(selection, preview);
@@ -1013,7 +1013,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
   const hmsTarget = paneStayHmsTargetForTransport(ctx.transport.id);
   if (!hmsTarget.ok || hmsTarget.target.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'filing_property_unavailable' };
   const cloud = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
-    target: hmsTarget.target, allowRealGuest });
+    target: hmsTarget.target, transportId: ctx.transport.id, allowRealGuest });
   if (!cloud || filingStateDigest(cloud) !== prepared.result.filingStateDigest ||
       cloud.nativeGuestId !== prepared.target.nativeGuestId || cloud.nativeStayId !== prepared.target.nativeStayId ||
       cloud.filingSnapshot.cmsSend !== prepared.target.cmsSend) return { status: 'needs_prepare', issue: 'filing_target_changed' };
@@ -1065,7 +1065,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         if (!liveBytes || !liveBytes.length || liveBytes.length > 10 * 1024 * 1024 ||
             sha256(liveBytes) !== pdfSha256 || liveBytes.subarray(0, 5).toString('ascii') !== '%PDF-') return false;
         const current = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
-          target: hmsTarget.target, allowRealGuest, cloudTargetKey: hmsDispatchTargetKey(target) });
+          target: hmsTarget.target, transportId: ctx.transport.id, allowRealGuest, cloudTargetKey: hmsDispatchTargetKey(target) });
         return Boolean(current && filingStateDigest(current) === prepared.result.filingStateDigest &&
           current.nativeStayId === cloud.nativeStayId && current.nativeGuestId === cloud.nativeGuestId &&
           current.filingSnapshot.cmsSend === cloud.filingSnapshot.cmsSend);
@@ -1082,7 +1082,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
         if (!liveBytes || !liveBytes.length || liveBytes.length > 10 * 1024 * 1024 ||
             sha256(liveBytes) !== pdfSha256 || liveBytes.subarray(0, 5).toString('ascii') !== '%PDF-') return false;
         const current = await readPaneCloudFilingRecord({ confirmation: selection.confirmation, arrival: selection.arrival,
-          target: hmsTarget.target, allowRealGuest, cloudTargetKey: hmsDispatchTargetKey(target) });
+          target: hmsTarget.target, transportId: ctx.transport.id, allowRealGuest, cloudTargetKey: hmsDispatchTargetKey(target) });
         return Boolean(current && filingStateDigest(current) === prepared.result.filingStateDigest &&
           current.nativeStayId === cloud.nativeStayId && current.nativeGuestId === cloud.nativeGuestId &&
           current.filingSnapshot.cmsSend === cloud.filingSnapshot.cmsSend);

@@ -15,6 +15,7 @@ import { quoteRequestSchema } from './quote-request-normalization.js';
 import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { propertyCodeSchema } from './property-registry.js';
 
 export const readRefSchema = z
   .string()
@@ -31,6 +32,7 @@ export const readDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
  */
 export const readAdmissionSchema = z
   .object({
+    propertyCode: propertyCodeSchema.optional(),
     releaseId: readRefSchema,
     requestBranchId: z.string().min(1).max(128),
     /** Independently reviewed manifest digest for this exact request branch. */

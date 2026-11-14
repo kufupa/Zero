@@ -87,6 +87,13 @@ function highPick(nativeId: string, kind: 'organization' | 'bookingAgency' = 'bo
 }
 
 describe('PARTY_MATCH_V3 flag', () => {
+  it('preserves native login outage codes so queued party reads can park', async () => {
+    const result = await runPartyMatchV3({ adapter: null, candidates: [candidate('Tourvest Travel Services')],
+      context, emailText: 'Tourvest Travel Services', findParty: async (searches) => searches.map(() => ({
+        outcome: 'execution_failure', results: [], truncated: false, error: 'AUTHENTICATED_SHELL_TIMEOUT',
+      })) });
+    expect(result).toMatchObject({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+  });
   it('stays off by default and ignores on/falsey values so the V2 path is unchanged', () => {
     expect(partyMatchV3Enabled({})).toBe(false);
     expect(partyMatchV3Enabled({ PARTY_MATCH_V3: undefined })).toBe(false);

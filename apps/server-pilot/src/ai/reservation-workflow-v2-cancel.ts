@@ -413,7 +413,7 @@ async function nativeCancelRead(target: HmsReadTarget, confirmation: string, arr
   finally { await removeNativeRunDir(native?.runDir); }
 }
 
-async function safeCancelTargetRead(target: HmsReadTarget, confirmation: string, arrival?: string, signal?: AbortSignal) {
+async function safeCancelTargetRead(target: HmsReadTarget, confirmation: string, arrival?: string, signal?: AbortSignal, transportId?: string) {
   if (!paneStayLookupEnabled()) return null;
   const request = { confirmation, ...(arrival ? { arrival } : {}) };
   const lock = paneStayPropertyLock(target);
@@ -421,7 +421,7 @@ async function safeCancelTargetRead(target: HmsReadTarget, confirmation: string,
   const readSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(5 * 60_000)]) : AbortSignal.timeout(5 * 60_000);
   try {
     return await lock.withLock(async () => projectCloudStayFind(request,
-      await runCloudStayFind({ request, target, signal: readSignal, nativeIdentityOnly: true })),
+      await runCloudStayFind({ request, target, transportId, signal: readSignal, nativeIdentityOnly: true })),
     { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), ...(signal ? { signal } : {}) });
   } catch { return null; }
 }
@@ -714,7 +714,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
       let preimage: CancelPreimage | null = null, reason: string | null = null;
       let preflightFacts: Record<string, unknown> | null = null, preflightObservedAt: string | null = null;
       let warmCancellationCheck: Record<string, unknown> | null = null;
-      const currentRead = await safeCancelTargetRead(target, confirmation, arrival, ctx.nativeBatch?.signal);
+      const currentRead = await safeCancelTargetRead(target, confirmation, arrival, ctx.nativeBatch?.signal, ctx.transport.id);
       const current = currentRead?.outcome === 'found' ? record(currentRead.stay) : null;
       const currentStay = current ? { confirmation: current.confirmation, status: current.status,
         firstName: current.firstName, lastName: current.lastName, guestName: currentRead?.guestName ?? null,

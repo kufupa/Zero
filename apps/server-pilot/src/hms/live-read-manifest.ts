@@ -15,6 +15,56 @@ import {
   type RequestRule,
 } from './contracts.js';
 import { isoDateToHmsDisplay, type QuoteStayCandidate } from './quote-stay-candidate.js';
+import { getPropertyRegistration, type PropertyCode } from '../../tooling/hms-cloud/property-registry.mjs';
+
+function readProperty(propertyCode: PropertyCode) {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active) throw new Error('read manifest property is not registered');
+  return property;
+}
+
+/** Native DaVinci property chooser witnessed on Cloud; no other LOV is admitted. */
+export function buildCloudPropertySwitchRules(origin: string, propertyCode: PropertyCode): RequestRule[] {
+  const property = readProperty(propertyCode);
+  if (property.landingPropertyCode === property.propertyCode) return [];
+  return [{
+    id: 'live-cloud-property-switch-lookup',
+    origin,
+    method: 'POST',
+    path: '/web/base/LOVPOP',
+    resourceTypes: ['xhr', 'fetch'],
+    contentType: 'application/x-www-form-urlencoded',
+    fixedQuery: {},
+    variableQuery: {},
+    fixedBody: {
+      SYSTEM_FUNCTION_NAME: 'SWITCHPROP',
+      USER_FUNCTION_NAME: 'SWITCHPROP',
+      GRID_NAME: 'LVSORGALL',
+      GRID_TYPE: 'LOV',
+      REQUEST_TYPE: 'LOV.HEAD_DATA.STORED',
+      LOV_TAGNAME: 'propertylookup',
+      popup: 'true',
+    },
+    variableBody: {},
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain',
+  }, {
+    id: 'live-cloud-property-switch-loadmain',
+    origin,
+    method: 'GET',
+    path: '/web/base/loadmain',
+    resourceTypes: ['document'],
+    fixedQuery: {
+      initpath: 'BSSTRT', USER_FUNCTION_NAME: 'BSSTRT', MENU_MODULE_KEY: '-1',
+      fromlogin: 'yes', defaultproperty: property.propertyCode,
+    },
+    variableQuery: { requestToken: { pattern: '[^\\u0000-\\u001f\\u007f-\\u009f]{1,1024}', maxLength: 1024 } },
+    fixedBody: {},
+    variableBody: {},
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain',
+  }];
+}
 
 /** Guest Stay quick-search endpoint (not OSRESV). */
 export const LIVE_GUEST_STAY_SEARCH_PATH = '/web/base/OSRESS.search';
@@ -497,8 +547,10 @@ export function buildLiveGuestStayChromeGetRules(origin: string): RequestRule[] 
  * OSRESS.search omitted until exactSearchCandidate binds via
  * buildExactOsressSearchManifest (fail closed — no variable confirmation body).
  */
-export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[] {
+export function buildLiveGuestStayFunctionalRules(origin: string, propertyCode: PropertyCode = 'HRCEN'): RequestRule[] {
+  const property = readProperty(propertyCode);
   return [
+    ...buildCloudPropertySwitchRules(origin, propertyCode),
     {
       id: 'live-login-get',
       origin,
@@ -507,7 +559,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       resourceTypes: ['document'],
       fixedQuery: {},
       variableQuery: {
-        tenant: { pattern: 'THECENTURION_PRD', maxLength: 32 },
+        tenant: { pattern: property.expectedTenant, maxLength: 32 },
       },
       fixedBody: {},
       variableBody: {},
@@ -552,7 +604,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       fixedQuery: {},
       variableQuery: {},
       fixedBody: {
-        tenant: 'THECENTURION_PRD',
+        tenant: property.expectedTenant,
       },
       variableBody: {
         userid: { pattern: '.{1,64}', maxLength: 64 },
@@ -653,7 +705,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
         guestid: VAR64,
         hoteldate: VAR32,
         lastname: VAR64,
-        propertycode: { pattern: 'HRCEN|', maxLength: 16 },
+        propertycode: { pattern: `${property.propertyCode}|`, maxLength: 16 },
         reservationstayid: VAR64,
         room: VAR32,
         tripadvisorid: VAR64,
@@ -766,7 +818,8 @@ export function buildLiveOsresvLstDetailOpenRule(origin: string): RequestRule {
  * sometimes includes them (19 keys). Variable keys are required when declared,
  * so keep two reviewed templates.
  */
-export function buildLiveOsresvHdrDetailOpenRule(origin: string): RequestRule {
+export function buildLiveOsresvHdrDetailOpenRule(origin: string, propertyCode: PropertyCode = 'HRCEN'): RequestRule {
+  const property = readProperty(propertyCode);
   return {
     id: 'live-osresv-hdr-detail-open',
     origin,
@@ -784,7 +837,7 @@ export function buildLiveOsresvHdrDetailOpenRule(origin: string): RequestRule {
     variableBody: {
       confirmationnumber: VAR64,
       reservationstayid: VAR64,
-      propertycode: VAR64,
+      propertycode: property.propertyCode === 'HRCEN' ? VAR64 : { pattern: property.propertyCode, maxLength: 16 },
       guestfullname: VAR64,
       account: VAR64,
       guestid: VAR64,
@@ -803,7 +856,8 @@ export function buildLiveOsresvHdrDetailOpenRule(origin: string): RequestRule {
 }
 
 /** Same open with shell chrome keys present (MENU_MODULE_KEY / removescreenflows). */
-export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): RequestRule {
+export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string, propertyCode: PropertyCode = 'HRCEN'): RequestRule {
+  const property = readProperty(propertyCode);
   return {
     id: 'live-osresv-hdr-detail-open-chrome',
     origin,
@@ -823,7 +877,7 @@ export function buildLiveOsresvHdrDetailOpenWithChromeRule(origin: string): Requ
       removescreenflows: VAR32,
       confirmationnumber: VAR64,
       reservationstayid: VAR64,
-      propertycode: VAR64,
+      propertycode: property.propertyCode === 'HRCEN' ? VAR64 : { pattern: property.propertyCode, maxLength: 16 },
       guestfullname: VAR64,
       account: VAR64,
       guestid: VAR64,
@@ -895,11 +949,11 @@ export function buildLiveGuestStayDetailChromeGetRules(origin: string): RequestR
 }
 
 /** Request-policy-only manifest for unit tests / production live sessions. */
-export function buildLiveGuestStayReadManifest(origin: string): RequestPolicyManifest {
+export function buildLiveGuestStayReadManifest(origin: string, propertyCode: PropertyCode = 'HRCEN'): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveGuestStayFunctionalRules(origin),
+      ...buildLiveGuestStayFunctionalRules(origin, propertyCode),
     ],
   });
 }
@@ -1134,11 +1188,12 @@ export function buildExactOsressSearchRule(
 export function buildExactOsressSearchManifest(
   origin: string,
   candidate: ReservationSearchCandidate,
+  propertyCode: PropertyCode = 'HRCEN',
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveGuestStayFunctionalRules(origin),
+      ...buildLiveGuestStayFunctionalRules(origin, propertyCode),
       buildExactOsressSearchRule(origin, candidate),
     ],
   });
@@ -1151,6 +1206,7 @@ export function buildExactOsressSearchManifest(
 export function buildExactOsressSearchThenDetailManifest(
   origin: string,
   candidate: ReservationSearchCandidate,
+  propertyCode: PropertyCode = 'HRCEN',
 ): RequestPolicyManifest {
   // Keep shell OSRESV.HDR (now guestNumber-aware) plus detail-open templates for
   // the no-MENU 17-key ExtJS shape. Find-only manifests still omit row-open.
@@ -1158,12 +1214,12 @@ export function buildExactOsressSearchThenDetailManifest(
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
       ...buildLiveGuestStayDetailChromeGetRules(origin),
-      ...buildLiveGuestStayFunctionalRules(origin),
+      ...buildLiveGuestStayFunctionalRules(origin, propertyCode),
       buildExactOsressSearchRule(origin, candidate),
       buildLiveOsresvOpenMatchedRowRule(origin),
       buildLiveOsresvLstDetailOpenRule(origin),
-      buildLiveOsresvHdrDetailOpenRule(origin),
-      buildLiveOsresvHdrDetailOpenWithChromeRule(origin),
+      buildLiveOsresvHdrDetailOpenRule(origin, propertyCode),
+      buildLiveOsresvHdrDetailOpenWithChromeRule(origin, propertyCode),
     ],
   });
 }
@@ -1184,10 +1240,12 @@ export function liveNotFoundCanaryCandidate(): ExactReservationCandidate {
 export function buildExactOsrravSearchBody(
   candidate: QuoteStayCandidate,
   chrome: Record<string, string> = {},
+  propertyCode: PropertyCode = 'HRCEN',
 ): Record<string, string> {
   const start = isoDateToHmsDisplay(candidate.arrivalDate);
   const requestedCurrency = candidate.currency ?? chrome.currency ?? 'ZAR';
-  const property = chrome.property || 'HRCEN';
+  const property = readProperty(propertyCode).propertyCode;
+  if (chrome.property && chrome.property !== property) throw new Error('quote chrome property mismatch');
   // HRCEN: TRANSI sales strategy can return empty roomTypeInvArray even when
   // roomtypes filter is valid. Prefer chrome value when present; otherwise leave
   // unscoped so roomtypes+rateplans drive the inventory rows.
@@ -1258,12 +1316,12 @@ export function buildExactOsrravSearchRule(
   origin: string,
   candidate: QuoteStayCandidate,
   chrome: Record<string, string> = {},
+  propertyCode: PropertyCode = 'HRCEN',
 ): RequestRule {
   // The release binds this reviewed template, while the trusted producer
   // binds candidate values in the request body. Candidate fields remain
   // bounded variables; property and read-only chrome invariants stay fixed.
-  void chrome;
-  const body = buildExactOsrravSearchBody(candidate, {});
+  const body = buildExactOsrravSearchBody(candidate, { property: chrome.property ?? '' }, propertyCode);
   const variableBody: Record<string, { pattern: string; maxLength: number }> = {
     extId: { pattern: '[A-Za-z0-9._:-]{0,64}', maxLength: 64 },
     roomtypes: { pattern: '[A-Za-z0-9][A-Za-z0-9._/-]{0,31}', maxLength: 32 },
@@ -1306,10 +1364,12 @@ export function buildExactOsrravSearchManifest(
   origin: string,
   candidate: QuoteStayCandidate,
   chrome: Record<string, string> = {},
+  propertyCode: PropertyCode = 'HRCEN',
 ): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
+      ...buildCloudPropertySwitchRules(origin, propertyCode),
       {
         id: 'live-osrrav-open',
         origin,
@@ -1352,7 +1412,7 @@ export function buildExactOsrravSearchManifest(
         maxBodyBytes: 4096,
         redirectPolicy: 'same-reviewed-chain',
       },
-      buildExactOsrravSearchRule(origin, candidate, chrome),
+      buildExactOsrravSearchRule(origin, candidate, chrome, propertyCode),
     ],
   });
 }
@@ -1374,8 +1434,10 @@ export const LIVE_SENT_EMAIL_LIST_PATH = '/web/base/PSSNEL.HDR';
  * Functional Sent Email POSTs: open PSSNEL + list HDR only.
  * Search/print/email/resend/attachment paths are structurally absent.
  */
-export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[] {
+export function buildLiveSentEmailFunctionalRules(origin: string, propertyCode: PropertyCode = 'HRCEN'): RequestRule[] {
+  const property = readProperty(propertyCode);
   return [
+    ...buildCloudPropertySwitchRules(origin, propertyCode),
     {
       id: 'live-login-post',
       origin,
@@ -1387,7 +1449,7 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
       variableQuery: {},
       fixedBody: {},
       variableBody: {
-        tenant: { pattern: '.{0,32}', maxLength: 32 },
+        tenant: property.propertyCode === 'HRCEN' ? { pattern: '.{0,32}', maxLength: 32 } : { pattern: property.expectedTenant, maxLength: 32 },
         USER_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
         SYSTEM_FUNCTION_NAME: { pattern: '.{0,64}', maxLength: 64 },
         userid: { pattern: '.{0,128}', maxLength: 128 },
@@ -1406,7 +1468,7 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
       resourceTypes: ['document'],
       fixedQuery: {},
       variableQuery: {
-        tenant: { pattern: 'THECENTURION_PRD', maxLength: 32 },
+        tenant: { pattern: property.expectedTenant, maxLength: 32 },
       },
       fixedBody: {},
       variableBody: {},
@@ -1511,11 +1573,11 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
 }
 
 /** Session manifest for Sent Email list (shared by audit + sent-document branches). */
-export function buildLiveSentEmailListManifest(origin: string): RequestPolicyManifest {
+export function buildLiveSentEmailListManifest(origin: string, propertyCode: PropertyCode = 'HRCEN'): RequestPolicyManifest {
   return requestPolicyManifestSchema.parse({
     rules: [
       ...buildLiveGuestStayChromeGetRules(origin),
-      ...buildLiveSentEmailFunctionalRules(origin),
+      ...buildLiveSentEmailFunctionalRules(origin, propertyCode),
     ],
   });
 }
