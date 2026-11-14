@@ -384,6 +384,16 @@ describe('HRDAV native room and board maps', () => {
       mutate,
     });
     expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(reason) });
+    for (const scope of [
+      { propertyCode: HRCEN_PROPERTY_CODE, configuration: null },
+      { propertyCode: HRDAV_PROPERTY_CODE },
+    ]) {
+      const blocked = await bindExecuteStaffQuote({
+        source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+        selectionEpoch: 1, inputRevision: 1, groups: [stay()], header: emptyStaffQuoteHeader(), mutate, ...scope,
+      });
+      expect(blocked.status).toBe('unavailable');
+    }
     expect(mutate).not.toHaveBeenCalled();
   });
 });
@@ -404,7 +414,7 @@ describe('staff quote strategy comparisons', () => {
     inputRevision: 1,
     groups: [stay({ roomPreference: 'Standard King' })],
     header: emptyStaffQuoteHeader(),
-    propertyCode: HRDAV_PROPERTY_CODE,
+    propertyCode: HRCEN_PROPERTY_CODE,
     registryStrategies: strategies,
   };
 
@@ -432,7 +442,7 @@ describe('staff quote strategy comparisons', () => {
           mealPlanLabel: 'Bed & Breakfast',
           rateCode: 'BAR',
           rateLabel: 'Best available',
-          roomCode: 'STKNG',
+          roomCode: 'SKNG',
           roomLabel: 'Standard King',
           contract: false,
           onlyContract: false,

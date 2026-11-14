@@ -1,3 +1,4 @@
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 /**
  * HMS browser runtime — singleton Chromium, one-session semaphore, fail-closed
  * request policy, abort-first contexts, startup canary + circuit breaker.
@@ -6,8 +7,8 @@
  * so fixture/unit tests run without live Chromium.
  */
 
-import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { zipSync } from 'fflate';
@@ -43,12 +44,31 @@ export const hmsSecretSchema = z
     expectedTenant: z.string().min(1),
     expectedPropertyCode: z.string().min(1),
     expectedPropertyName: z.string().min(1),
-    mailboxTransportId: z.string().min(1),
+    mailboxTransportId: z.string().min(1).optional(),
+    mailboxTransportIds: z.array(z.string().min(1)).min(1).optional(),
     credentialMode: z.enum(['audited_write', 'view_only']),
   })
-  .strict();
+  .strict()
+  .refine((secret) => Boolean(secret.mailboxTransportId || secret.mailboxTransportIds?.length), 'credential transport membership required');
 
 export type HmsSecret = z.infer<typeof hmsSecretSchema>;
+
+/** The credential retains its own membership; a caller cannot rewrite it to match. */
+export function secretTransportIds(secret: HmsSecret): string[] {
+  const scalar = secret.mailboxTransportId;
+  const array = secret.mailboxTransportIds;
+  if ((array && new Set(array).size !== array.length) || (scalar && array && !array.includes(scalar))) {
+    throw new HmsRuntimeError('transport_mismatch', 'credential transport membership disagrees');
+  }
+  const ids = array ?? (scalar ? [scalar] : []);
+  const registration = getPropertyRegistration(secret.expectedPropertyCode);
+  if (registration && (ids.some((id) => !registration.transportIds.includes(id)) ||
+      (registration.group === 'davinci' && array &&
+        (ids.length !== registration.transportIds.length || registration.transportIds.some((id) => !ids.includes(id)))))) {
+    throw new HmsRuntimeError('transport_mismatch', 'credential transport membership is not authorized for its property');
+  }
+  return ids;
+}
 
 export type HmsHealthState =
   | 'stopped'
@@ -239,16 +259,7 @@ export type HmsRuntime = {
 export type HmsRoleProofLoader = (
   path: string,
   now?: Date,
-) => Promise<{
-  schemaVersion: 1;
-  propertyCode: 'HRCEN';
-  allowedSurfaces: readonly string[];
-  deniedActions: readonly string[];
-  issuedAt: string;
-  expiresAt: string;
-  evidenceRef: string;
-  evidenceSha256: string;
-}>;
+) => Promise<import('./release-kernel.js').HmsReadRoleProof>;
 
 export type HmsRuntimeOptions = {
   manifest: RequestPolicyManifest;
@@ -1353,30 +1364,11 @@ function createHmsRuntimeInternal(
               'role proof v2 requires HmsReadToolId',
             );
           }
-          const proof = await loadHmsReadRoleProofV2(
+          return loadHmsReadRoleProofV2(
             path,
             READ_TOOLS[toolId as keyof typeof READ_TOOLS],
             now,
           );
-          return {
-            schemaVersion: 1 as const,
-            propertyCode: 'HRCEN' as const,
-            allowedSurfaces: ['Guest Stay'] as const,
-            deniedActions: [
-              'new_record',
-              'save',
-              'delete',
-              'duplicate',
-              'check_in',
-              'check_out',
-              'document_generate',
-              'document_send',
-            ] as const,
-            issuedAt: proof.issuedAt,
-            expiresAt: proof.expiresAt,
-            evidenceRef: `role-proof-v2:${proof.toolId}`,
-            evidenceSha256: proof.evidenceSha256,
-          };
         }
         return loadHmsReadRoleProof(path, now);
       });
@@ -1553,7 +1545,7 @@ function createHmsRuntimeInternal(
    */
   async function runCanary(signal: AbortSignal): Promise<void> {
     const session = await openReadSessionInternal({
-      transportId: (await getSecret(signal)).mailboxTransportId,
+      transportId: secretTransportIds(await getSecret(signal))[0] ?? '',
       signal,
       canary: true,
     });
@@ -1658,10 +1650,10 @@ function createHmsRuntimeInternal(
     revalidateEvidenceIfConfigured();
 
     const secret = await getSecret(input.signal);
-    if (input.transportId !== secret.mailboxTransportId) {
+    if (!secretTransportIds(secret).includes(input.transportId)) {
       throw new HmsRuntimeError(
         'transport_mismatch',
-        'transportId does not match secret mailboxTransportId',
+        'transportId is not authorized by credential membership',
       );
     }
     if (requireViewOnly && secret.credentialMode !== 'view_only') {
@@ -1690,14 +1682,50 @@ function createHmsRuntimeInternal(
           'session authorization expired',
         );
       }
+      const expectedProperty = auth.propertyCode ?? 'HRCEN';
+      const property = getPropertyRegistration(expectedProperty);
+      if (!property || secret.expectedTenant !== property.expectedTenant ||
+          secret.expectedPropertyCode !== property.landingPropertyCode ||
+          auth.tenantId !== property.expectedTenant || auth.landingPropertyCode !== property.landingPropertyCode ||
+          auth.origin !== property.origin || new URL(secret.loginUrl).origin !== property.origin) {
+        throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session authorization property mismatch');
+      }
       const loader = options.loadRoleProof;
-      if (loader) {
-        try {
-          await loader(auth.roleProofPath, new Date());
-        } catch (err) {
-          if (err instanceof HmsRuntimeError) throw err;
-          throw new HmsRuntimeError('ROLE_PROOF_MISSING', redactError(err));
+      if (!loader) {
+        if (options.requireSessionAuthorization) throw new HmsRuntimeError('ROLE_PROOF_MISSING', 'session proof loader required');
+        return;
+      }
+      try {
+        const proof = await loader(auth.roleProofPath, new Date());
+        if (proof.propertyCode !== expectedProperty) throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session proof property mismatch');
+        const legacyLease = auth.releaseId === '00000000-0000-4000-8000-0000000000a1';
+        if (!legacyLease) {
+          if (proof.schemaVersion !== 2 || proof.toolId !== auth.toolId ||
+              proof.discoveryOperationId !== auth.discoveryOperationId ||
+              proof.credentialVersionHmacSha256 !== auth.credentialVersionHmacSha256 ||
+              proof.runtimeFingerprintSha256 !== auth.runtimeFingerprintSha256 ||
+              proof.privateDigestKeyVersion !== auth.privateDigestKeyVersion ||
+              createHash('sha256').update(await readFile(auth.roleProofPath)).digest('hex') !== auth.roleProofSha256) {
+            throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session proof and release evidence mismatch');
+          }
+          const actual = options.evidenceBindings && revalidateEvidenceBindings({
+            secretVersion: options.evidenceBindings.secretVersion, evidence: options.evidenceBindings.evidence,
+            runtimeFingerprint: options.sourceRevision && options.playwrightRevision && options.chromiumRevision ? {
+              sourceRevision: options.sourceRevision, playwrightRevision: options.playwrightRevision,
+              chromiumRevision: options.chromiumRevision,
+            } : undefined, hmsSecretArn: options.secretArn,
+          });
+          if (!actual || actual.credentialVersionHmacSha256 !== auth.credentialVersionHmacSha256 ||
+              actual.runtimeFingerprintSha256 !== auth.runtimeFingerprintSha256 ||
+              options.evidenceBindings?.evidence.keyVersion !== auth.privateDigestKeyVersion || options.sourceRevision !== auth.sourceRevision) {
+            throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session credential or runtime evidence mismatch');
+          }
+        } else if (expectedProperty !== 'HRCEN') {
+          throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'legacy proof is Centurion only');
         }
+      } catch (err) {
+        if (err instanceof HmsRuntimeError) throw err;
+        throw new HmsRuntimeError('ROLE_PROOF_MISSING', redactError(err));
       }
     };
 
@@ -2729,10 +2757,10 @@ function createHmsRuntimeInternal(
       await revalidateRoleProof();
       revalidateEvidenceIfConfigured();
       const currentSecret = await getSecret(input.signal);
-      if (input.transportId !== currentSecret.mailboxTransportId) {
+      if (!secretTransportIds(currentSecret).includes(input.transportId)) {
         throw new HmsRuntimeError(
           'transport_mismatch',
-          'transportId does not match secret mailboxTransportId',
+          'transportId is not authorized by credential membership',
         );
       }
       if (requireViewOnly && currentSecret.credentialMode !== 'view_only') {

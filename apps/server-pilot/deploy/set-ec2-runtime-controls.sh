@@ -5,6 +5,8 @@ set -euo pipefail
 [ "$(id -un)" = ubuntu ] || { echo 'must run as ubuntu' >&2; exit 2; }
 [ "$#" -gt 0 ] || { echo "usage: $0 KEY=value [KEY=value ...]" >&2; exit 2; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+POLICY_MODULE="$SCRIPT_DIR/../tooling/hms-cloud/hms-workflow-policy.mjs"
+[ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo "scoped update refused: HOLD file present" >&2; exit 2; }
 REPO_ROOT="${REPO_ROOT:-$(cd -- "$SCRIPT_DIR/../../.." && pwd)}"
 SERVER_PILOT="$REPO_ROOT/apps/server-pilot"
 ENV_FILE="${ENV_FILE:-$SERVER_PILOT/.env.production}"
@@ -61,25 +63,19 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 2' HUP INT TERM
 [ "$(sha256sum "$backup" | cut -d' ' -f1)" = "$common_sha" ] || { echo 'common env changed during backup' >&2; exit 2; }
-node - "$ENV_FILE" "$candidate" "$@" <<'NODE'
-const fs = require('fs');
-const [source, dest, ...args] = process.argv.slice(2);
-const flags = new Map([
-  ...['PANE_WRITE_CREATE', 'PANE_WRITE_AMEND', 'PANE_WRITE_AMEND_UNPAID', 'PANE_WRITE_AMEND_PAID',
-    'PANE_WRITE_CANCEL_UNPAID', 'PANE_WRITE_CANCEL_PAID', 'PANE_WRITE_ADDONS', 'PANE_WRITE_ATTACH'].map(k => [k, /^(off|lab|on)$/]),
-  ...['PANE_CLOUD_CREATE_DISPATCH', 'PANE_HMS_LAB_CREATE_WORKER', 'PANE_HMS_LAB_AMEND_WORKER',
-    'PANE_HMS_LAB_ATTACH_WORKER'].map(k => [k, /^(off|on)$/]),
-  ...['HMS_MEMORY_PMS_PATH', 'HMS_MEMORY_OUTBOUND_PATH', 'HMS_MEMORY_DATA_DIR', 'HMS_NATIVE_CATALOG_PATH',
-    'HMS_MEMORY_OBSERVATIONS_PATH', 'PARTY_INDEX_PATH', 'PARTY_INDEX_PATH_HRDAV', 'NAVA_WORKFLOW_REPRO_DIR']
-    .map(k => [k, /^\/[A-Za-z0-9._/-]+$/]),
-]);
+node --input-type=module - "$POLICY_MODULE" "$ENV_FILE" "$candidate" "$@" <<'NODE'
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [policyPath, source, dest, ...args] = process.argv.slice(2);
+const { SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } = await import(pathToFileURL(policyPath).href);
+const flags = new Set(SCOPED_RUNTIME_CONTROL_KEYS);
 try {
   const changes = new Map();
   for (const arg of args) {
     const index = arg.indexOf('=');
     const key = arg.slice(0, index), value = arg.slice(index + 1);
-    if (index < 1 || !flags.has(key) || changes.has(key) || !flags.get(key).test(value) ||
-      (value.startsWith('/') && value.split('/').some(part => part === '..' || part === '.'))) throw Error();
+    if (index < 1 || !flags.has(key) || changes.has(key) || (value === '' && key !== 'HMS_DAVINCI_ENABLED_PROPERTIES')) throw Error();
+    validateRuntimeControl(key, value);
     changes.set(key, `${key}='${value}'`);
   }
   const text = fs.readFileSync(source, 'utf8');
@@ -90,6 +86,9 @@ try {
     const match = /^([A-Z][A-Z0-9_]*)=(?:'((?:[^']|'\\'')*)'|[A-Za-z0-9_./:=?@%+,-]+)$/.exec(line);
     if (!match || seen.has(match[1])) throw Error();
     seen.add(match[1]);
+    const raw = line.slice(match[1].length + 1);
+    const value = raw.startsWith("'") ? raw.slice(1, -1).replace(/'\\''/g, "'") : raw;
+    validateRuntimeControl(match[1], value);
     if (!changes.has(match[1])) return line;
     const replacement = changes.get(match[1]); changes.delete(match[1]); return replacement;
   });
@@ -118,6 +117,7 @@ rendered_sha="$(sha256sum "$staged_common" | cut -d' ' -f1)"
 [ "$(sha256sum "$ENV_FILE" | cut -d' ' -f1)" = "$source_sha" ] &&
   [ "$(sha256sum "$COMMON" | cut -d' ' -f1)" = "$common_sha" ] &&
   [ "$(sha256sum "$ADMIN" | cut -d' ' -f1)" = "$admin_sha" ] || { echo 'env changed during update' >&2; exit 2; }
+[ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo "scoped update refused: HOLD file present" >&2; exit 2; }
 armed=1
 mv -f -- "$staged_common" "$COMMON"
 mv -f -- "$candidate" "$ENV_FILE"

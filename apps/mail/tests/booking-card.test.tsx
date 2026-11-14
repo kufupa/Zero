@@ -1621,13 +1621,20 @@ describe('Cloud create controls', () => {
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
   });
 
-  it('preserves the other hotel’s existing preview and Save controls', async () => {
-    const { client, preview } = paneClient({ canPreview: () => true });
-    render(<BookingCards draft={cloudPreviewableDraft()} propertyCode="HRDAV" paneSave={client} />);
-    fireEvent.click(previewButton(0));
-    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRDAV' }));
-    expect(bookButton(0).disabled).toBe(false);
+  it('keeps scoped Create unavailable when its property capability is missing', () => {
+    const { client, preview, commit } = paneClient({ canPreview: () => true });
+    const draft = cloudPreviewableDraft();
+    const { rerender } = render(<BookingCards draft={draft} propertyCode="HRDAV" paneSave={client} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    rerender(<BookingCards draft={draft} propertyCode="HRCEN" configuration={null} paneSave={client} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    rerender(<BookingCards draft={draft} propertyCode="HRCEN" paneSave={client} configuration={{
+      transportId: 't1', propertyCode: HRCEN_PROPERTY_CODE, roomTypes: [], ratePlans: [], mealPlans: [],
+      salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    }} />);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 });
 
@@ -1687,31 +1694,27 @@ describe('HRDAV booking fields and CMS', () => {
     expect(room.getByRole('option', { name: 'CCIATA' })).toBeDefined();
   });
 
-  it('defaults CMS by bound party, sends selected message and the exact bound HMS id', async () => {
-    const { client, preview, commit } = paneClient();
+  it('defaults CMS by bound party and keeps edits without dispatching an unavailable preview', () => {
+    const { client, preview, commit } = paneClient({ canPreview: () => true });
     const draft = hrdavDraft();
     delete draft.draft.rooms[0]!.request.bookingAgency;
-    render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE} parties={agency}
+    render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE} configuration={null} parties={agency}
       paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', true);
     const message = screen.getByLabelText('Message Id') as unknown as HTMLSelectElement;
     expect(message.value).toBe('03');
     fireEvent.change(message, { target: { value: '08' } });
-    fireEvent.change(screen.getByLabelText('Guarantee'), { target: { value: 'CCIATA' } });
-    fireEvent.click(previewButton(0));
-    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
-      bookingAgency: { name: 'Woolworths Travel', nativeId: '571' },
-      guaranteeType: 'CCIATA',
-      cmsMessageId: '08',
-      confirmationSendMail: true,
-      confirmationRecipient: { mode: 'client', address: 'booker@example.invalid' },
-    }));
-    fireEvent.click(bookButton(0));
-    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-    expect(commit.mock.calls[0]?.[0]).toMatchObject({
-      bookingAgency: { name: 'Woolworths Travel', nativeId: '571' }, cmsMessageId: '08',
-    });
+    const guarantee = screen.getByLabelText('Guarantee') as unknown as HTMLSelectElement;
+    fireEvent.change(guarantee, { target: { value: 'CCIATA' } });
+    expect(message.value).toBe('08');
+    expect(guarantee.value).toBe('CCIATA');
+    const agencyField = screen.getByLabelText('Booking agency') as unknown as HTMLSelectElement;
+    expect(agencyField.options[agencyField.selectedIndex]?.textContent).toBe('Woolworths Travel');
+    expect(screen.getByText(/saving to HMS from this pane is off/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Create (?:provisional )?booking$/ })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it('defaults to guest CMS type without a bound party and blocks a blank type', () => {
@@ -1770,18 +1773,13 @@ describe('HRDAV booking fields and CMS', () => {
     const draft = hrdavDraft();
     expect(draft.draft.rooms[0]!.request.bookerEmail).toBe('booker@example.invalid');
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} confirmation={null} />);
-    expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe('self');
-    expect(previewButton(0).disabled).toBe(true);
-    expect(bookButton(0).disabled).toBe(true);
-    fireEvent.click(previewButton(0));
+    const recipient = screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement;
+    expect(recipient.value).toBe('self');
+    fireEvent.change(recipient, { target: { value: 'client' } });
+    expect(recipient.value).toBe('client');
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
-    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
-    expect(previewButton(0).disabled).toBe(false);
-    fireEvent.click(previewButton(0));
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
-      confirmationRecipient: { mode: 'client', address: 'booker@example.invalid' },
-    }));
   });
 
   it('fails closed if confirmation sources disappear after a saved client default', () => {
@@ -1789,54 +1787,50 @@ describe('HRDAV booking fields and CMS', () => {
     const draft = hrdavDraft();
     const view = render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    expect(previewButton(0).disabled).toBe(false);
+    expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe('client');
     view.rerender(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={null} />);
     expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe('self');
-    expect(previewButton(0).disabled).toBe(true);
-    fireEvent.click(previewButton(0));
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(preview).not.toHaveBeenCalled();
   });
 
-  it('blocks CMS preview and booking when no recipient is available', () => {
+  it('keeps HMS preview and booking unavailable when no recipient is available', () => {
     const { client, preview, commit } = paneClient();
     const draft = hrdavDraft();
     delete draft.draft.rooms[0]!.request.bookerEmail;
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} confirmation={null} />);
     expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', true);
-    expect(previewButton(0).disabled).toBe(true);
-    expect(bookButton(0).disabled).toBe(true);
-    fireEvent.click(previewButton(0));
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
   });
 
-  it('does not send a confirmation recipient when Send confirmation from HMS is off', () => {
+  it('hides confirmation recipient when Send confirmation from HMS is off', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' }));
-    fireEvent.click(previewButton(0));
-    expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('confirmationRecipient');
-    expect(preview.mock.calls[0]?.[0]).toHaveProperty('cmsMessageId', '01');
-    expect(preview.mock.calls[0]?.[0]).toHaveProperty('confirmationSendMail', false);
+    expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', false);
+    expect(screen.queryByLabelText('Send HMS confirmation to')).toBeNull();
+    expect((screen.getByLabelText('Message Id') as unknown as HTMLSelectElement).value).toBe('01');
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('clearing a bound agency clears it from the preview instead of sending the draft name', () => {
+  it('allows clearing a bound agency', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     render(<BookingCards draft={draft} paneSave={client} parties={agency} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     const noAgency = screen.getByRole('option', { name: /no agency/i }) as unknown as HTMLOptionElement;
-    fireEvent.change(screen.getByLabelText('Booking agency'), { target: { value: noAgency.value } });
-    fireEvent.click(previewButton(0));
-    expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('bookingAgency');
+    const field = screen.getByLabelText('Booking agency') as unknown as HTMLSelectElement;
+    fireEvent.change(field, { target: { value: noAgency.value } });
+    expect(field.value).toBe(noAgency.value);
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('requires a new applicable rate and fresh preview after staff changes room type', async () => {
+  it('requires a new applicable rate after staff changes room type', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     const initial: StayGroupRequirement = {
@@ -1856,15 +1850,9 @@ describe('HRDAV booking fields and CMS', () => {
         session={currentSession} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />
     );
     const { rerender } = render(view(initial, session));
-    fireEvent.click(previewButton(0));
-    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'DLXKNG' } });
-    expect(bookButton(0).disabled).toBe(true);
-    expect(previewButton(0).disabled).toBe(true);
     expect((screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement).value).not.toBe('TAXYZ');
-    expect(preview).toHaveBeenCalledTimes(1);
 
-    // A fresh applicable rate arrives for the new room, not the earlier room's quote.
     const refreshed = {
       ...session,
       rateOptions: [
@@ -1875,18 +1863,19 @@ describe('HRDAV booking fields and CMS', () => {
     rerender(view({ ...initial, roomTypeCode: 'DLXKNG', roomCodes: ['DLXKNG'], rateCode: 'NEWKNG' }, refreshed));
     const rate = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     fireEvent.change(rate, { target: { value: 'NEWKNG' } });
-    await waitFor(() => expect(previewButton(0).disabled).toBe(false));
-    fireEvent.click(previewButton(0));
-    await waitFor(() => expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ roomType: 'DLXKNG', ratePlan: 'NEWKNG' })));
+    expect(rate.value).toBe('NEWKNG');
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('blocks preview when there are no adults', () => {
+  it('marks zero adults invalid while preview is unavailable', () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={hrdavDraft()} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '0' } });
-    expect(previewButton(0).disabled).toBe(true);
-    fireEvent.click(previewButton(0));
+    const adults = screen.getByLabelText('Adults') as HTMLInputElement;
+    fireEvent.change(adults, { target: { value: '0' } });
+    expect(adults.checkValidity()).toBe(false);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(preview).not.toHaveBeenCalled();
   });
 
@@ -1899,76 +1888,72 @@ describe('HRDAV booking fields and CMS', () => {
     expect((screen.getByLabelText('Child age 1') as HTMLInputElement).value).toBe('5');
   });
 
-  it('rejects child ages outside 0–17 and accepts the boundary values', async () => {
+  it('marks child ages outside 0–17 invalid and accepts the boundary values', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     draft.draft.rooms[0]!.request.childAges = [5];
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    const age = screen.getByLabelText(/child age 1/i);
+    const age = screen.getByLabelText(/child age 1/i) as HTMLInputElement;
     for (const value of ['-1', '18']) {
       fireEvent.change(age, { target: { value } });
-      expect(previewButton(0).disabled).toBe(true);
+      expect(age.checkValidity()).toBe(false);
     }
     for (const value of ['0', '17']) {
       fireEvent.change(age, { target: { value } });
-      expect(previewButton(0).disabled).toBe(false);
-      fireEvent.click(previewButton(0));
-      await waitFor(() => expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ childAges: [Number(value)] })));
-      await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+      expect(age.checkValidity()).toBe(true);
     }
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('requires Market segment only while it is blank', async () => {
+  it('allows staff to edit Market segment while preview is unavailable', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     draft.options = { ...draft.options, requiredCreateFields: ['marketsegment'] };
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    expect(screen.getByText(/set market segment before you preview/i)).toBeDefined();
-    expect(previewButton(0).disabled).toBe(true);
-    expect(bookButton(0).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Market Segment'), { target: { value: 'Leisure' } });
-    expect(screen.queryByText(/set market segment before you preview/i)).toBeNull();
-    expect(screen.queryByText(/required hotel field/i)).toBeNull();
-    expect(previewButton(0).disabled).toBe(false);
-    fireEvent.click(previewButton(0));
-    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ marketSegment: 'Leisure' })));
+    const market = screen.getByLabelText('Market Segment') as HTMLInputElement;
+    expect(market.value).toBe('');
+    fireEvent.change(market, { target: { value: 'Leisure' } });
+    expect(market.value).toBe('Leisure');
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('previews HRDAV after all required hotel fields are filled together', async () => {
+  it('retains edits to required hotel fields while preview is unavailable', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     draft.options = { ...draft.options, requiredCreateFields: ['marketsegment', 'guestoptin4', 'reservationnote'] };
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    expect(previewButton(0).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Market Segment'), { target: { value: 'Leisure' } });
+    const market = screen.getByLabelText('Market Segment') as HTMLInputElement;
+    const note = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
+    fireEvent.change(market, { target: { value: 'Leisure' } });
     fireEvent.click(screen.getByRole('checkbox', { name: 'Guest opt-in' }));
-    expect(previewButton(0).disabled).toBe(true);
-    fireEvent.change(screen.getByLabelText('Reservation note'), { target: { value: 'Guest request' } });
-    expect(previewButton(0).disabled).toBe(false);
-    fireEvent.click(previewButton(0));
-    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({
-      marketSegment: 'Leisure', guestoptin4: true, reservationNote: 'Guest request',
-    })));
+    fireEvent.change(note, { target: { value: 'Guest request' } });
+    expect(market.value).toBe('Leisure');
+    expect(screen.getByRole('checkbox', { name: 'Guest opt-in' })).toHaveProperty('checked', true);
+    expect(note).toHaveProperty('required', true);
+    expect(note.value).toBe('Guest request');
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('requires Terms only when the hotel marks guestoptin4 required', async () => {
+  it('allows staff to record the guest opt-in while preview is unavailable', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     draft.options = { ...draft.options, requiredCreateFields: ['guestoptin4'] };
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    expect(previewButton(0).disabled).toBe(true);
     expect(screen.getAllByText(/terms/i).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Guest opt-in' }));
-    expect(previewButton(0).disabled).toBe(false);
-    fireEvent.click(previewButton(0));
-    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ guestoptin4: true })));
+    expect(screen.getByRole('checkbox', { name: 'Guest opt-in' })).toHaveProperty('checked', true);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 
-  it('uses quoted rate before draft default and blocks while all rates are missing', () => {
+  it('uses quoted rate before draft default and shows when rates are missing', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
     const group: StayGroupRequirement = { ...g1, quantity: 1, quotedRateCode: 'Q-HRDAV' };
@@ -1978,8 +1963,7 @@ describe('HRDAV booking fields and CMS', () => {
     );
     const { unmount } = render(view(draft, group));
     expect((screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement).value).toBe('Q-HRDAV');
-    fireEvent.click(previewButton(0));
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ ratePlan: 'Q-HRDAV' }));
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     unmount();
 
     const loading = hrdavDraft();
@@ -1988,8 +1972,8 @@ describe('HRDAV booking fields and CMS', () => {
     const loadingRate = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     expect(loadingRate.options[loadingRate.selectedIndex]?.getAttribute('value')).toBe('');
     expect(screen.getByText(/rates loading/i)).toBeDefined();
-    expect(previewButton(0).disabled).toBe(true);
-    expect(bookButton(0).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -2920,7 +2904,7 @@ describe('booking card save modes and the note fields', () => {
       const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
       expect(note).toBeTruthy();
       render(<BookingCards draft={draft} groups={session.groups} session={session} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} />);
-      expect(previewButton(0).disabled).toBe(false);
+      expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
       const field = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
       expect(field.value).toBe(note);
       if (changed === 'room') fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'SKNG' } });
@@ -2929,9 +2913,8 @@ describe('booking card save modes and the note fields', () => {
       if (changed === 'children') fireEvent.change(screen.getByLabelText('Children'), { target: { value: '1' } });
       expect(field.value).toBe('');
       expect(screen.queryByRole('button', { name: 'Regenerate reservation note' })).toBeNull();
-      expect(screen.getByText(/reservation note before you preview/i)).toBeDefined();
-      expect(previewButton(0).disabled).toBe(true);
-      expect(bookButton(0).disabled).toBe(true);
+      expect(field).toHaveProperty('required', true);
+      expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
       expect(preview).not.toHaveBeenCalled();
     },
   );

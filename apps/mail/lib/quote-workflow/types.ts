@@ -8,7 +8,8 @@ export type QuoteBoard = 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
 
 export const HRDAV_PROPERTY_CODE = 'HRDAV' as const;
 export const HRCEN_PROPERTY_CODE = 'HRCEN' as const;
-export type HmsQuotePropertyCode = typeof HRCEN_PROPERTY_CODE | typeof HRDAV_PROPERTY_CODE;
+export const HRDAVS_PROPERTY_CODE = 'HRDAVS' as const;
+export type HmsQuotePropertyCode = typeof HRCEN_PROPERTY_CODE | typeof HRDAV_PROPERTY_CODE | typeof HRDAVS_PROPERTY_CODE;
 
 /** D0 HRDAV BAR shop room labels. Shared codes DLXKNG and STWN are this property's product. */
 export const HRDAV_ROOM_NAMES = {
@@ -332,6 +333,9 @@ export type ShuttleProviderConfig = { provider: string; to: string[] };
 export type QuotePaneConfig = {
   transportId: string;
   propertyCode: HmsQuotePropertyCode;
+  tenantId?: string;
+  catalogue?: import('../../../server-pilot/src/hms/property-configuration.js').PropertyConfiguration['catalogue'];
+  capabilities?: import('../../../server-pilot/src/hms/property-configuration.js').PropertyConfiguration['capabilities'];
   roomTypes: QuotePaneRoomType[];
   ratePlans: RatePlanCatalogueEntry[];
   mealPlans: QuotePaneBoard[];

@@ -2,7 +2,7 @@ import { Fragment } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
-import type { QuoteSession, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
+import type { QuoteSession, QuotePaneConfig, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import type { PartyEvidence } from './contextual-rate-check';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
@@ -17,6 +17,7 @@ export function QuoteBookingHost({
   savedStays,
   screenshot,
   propertyCode,
+  configuration,
   rateCatalogue,
   workItemPane,
   rateEvidence,
@@ -31,6 +32,7 @@ export function QuoteBookingHost({
   /** Reads a stored screenshot when Book writes are off. */
   screenshot?: PaneStayClient['screenshot'] | null;
   propertyCode?: string | null;
+  configuration?: QuotePaneConfig | null;
   rateCatalogue?: RatePlanCatalogueEntry[];
   workItemPane?: WorkItemPaneControls | null;
   rateEvidence?: PartyEvidence;
@@ -78,6 +80,7 @@ export function QuoteBookingHost({
               guestEditorKey={guestEditorKeyFor(session)}
               session={session}
               propertyCode={propertyCode}
+              configuration={configuration}
               rateCatalogue={rateCatalogue}
               workItemPane={workItemPane}
               rateEvidence={rateEvidence}

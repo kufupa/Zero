@@ -3,6 +3,7 @@ import { getDb } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { propertySwitchSchema, resolvePropertyScope } from './property-registry.js';
 import { TRPCError } from '@trpc/server';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 
@@ -148,6 +149,19 @@ export function bindCenturionHmsMailboxProperty(input: {
     return { ok: false, code: 'READ_PROPERTY_UNKNOWN' };
   }
   return { ok: true, propertyCode: property.propertyCode };
+}
+
+/** Property identity comes from authenticated transport membership, never from sender alone. */
+export function bindHmsMailboxProperty(input: { transportId: string; propertyCode?: string | null; origin: MailboxHmsOriginFields }): BindCenturionHmsMailboxPropertyResult {
+  const code = input.propertyCode?.trim();
+  if (!code) return { ok: false, code: 'READ_PROPERTY_CODE_REQUIRED' };
+  const selected = propertySwitchSchema.safeParse(code);
+  try {
+    const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: selected.success ? selected.data : undefined });
+    if (scope.propertyCode !== code) return { ok: false, code: 'READ_PROPERTY_UNKNOWN' };
+    return scope.group === 'centurion' ? bindCenturionHmsMailboxProperty({ propertyCode: code, origin: input.origin }) :
+      { ok: true, propertyCode: scope.propertyCode };
+  } catch { return { ok: false, code: 'READ_PROPERTY_UNKNOWN' }; }
 }
 
 function originFields(row: {

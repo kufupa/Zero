@@ -16,7 +16,7 @@ import { FilingEditor } from './editors/filing-editor';
 import styles from './reservation-pane.module.css';
 
 export type ReservationPaneProps = {
-  source: ReservationSourceContext; snapshot: ReservationPaneSnapshot | null; loadError: string | null;
+  source: ReservationSourceContext; activeProperty: import('@/lib/reservation-workflow/types').PropertyConfiguration['propertyCode'] | undefined; configuration: import('@/lib/reservation-workflow/types').PropertyConfiguration | null; snapshot: ReservationPaneSnapshot | null; loadError: string | null;
   client: ReservationWorkflowClient; onSnapshot(snapshot: ReservationPaneSnapshot): void;
   onOpenEvidence?: (ref: string) => void; onOpenAttachment?: (ref: string) => void; preview?: boolean; onSaveQuoteOutput?: SaveQuoteOutput;
 };
@@ -130,10 +130,17 @@ export function ReservationPane(props: ReservationPaneProps) {
   const { source, preview = false } = props;
   const { snapshot, request, commands, busy } = workbench;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
+  const capabilityKind = request?.kind === 'filing' ? 'attach' : request?.kind === 'services' ? 'addons' : request?.kind;
+  const scopedConfiguration = props.configuration?.propertyCode === source.propertyId &&
+    props.configuration.transportId === source.mailboxId ? props.configuration : null;
+  const capability = capabilityKind && capabilityKind !== 'other' ? scopedConfiguration?.capabilities?.[capabilityKind] : undefined;
+  const capabilityUnavailable = Boolean(capabilityKind && capabilityKind !== 'other' &&
+    !(capability && ['prepare-only', 'lab', 'staff-enabled'].includes(capability.status)));
+  const capabilitySaveUnavailable = capability?.status === 'prepare-only' && request?.kind !== 'quote';
   const prefill = snapshot?.session.draft.prefill;
   const directPrefillAbandoned = prefill?.status === 'running' && !prefill.jobRunId && prefill.startedAt
     && Date.now() - Date.parse(prefill.startedAt) >= 12 * 60_000;
-  const editor: WorkbenchEditorProps | null = snapshot && request ? { source, snapshot, request,
+  const editor: WorkbenchEditorProps | null = snapshot && request ? { source, activeProperty: props.activeProperty, configuration: props.configuration, snapshot, request,
     view: { busy, error: workbench.error, preview, saving: workbench.saving, blocked: workbench.blocked }, commands, onOpenEvidence: props.onOpenEvidence } : null;
   const body = snapshot && request ? record(effectiveAt(snapshot, `${requestPath(request.id)}/body`)) : {};
   const ids = request?.kind === 'create' ? (Array.isArray(body.allocations) ? body.allocations.map(row => text(record(row).id)) : [])
@@ -414,7 +421,8 @@ export function ReservationPane(props: ReservationPaneProps) {
     }
   };
   const save = async () => {
-    if (!request || createBlocked || preview) return;
+    if (!request || createBlocked || preview || capabilityUnavailable) return;
+    if (capabilitySaveUnavailable && !needsCheck()) return;
     if (request.kind === 'amend' && !workbench.readyForReply()) {
       setChecked(null);
       showAttention('Finish editing and check the current details before saving.');
@@ -475,7 +483,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   };
   const Editor = request && request.kind !== 'other' ? editors[request.kind] : null;
   const sourceChanged = snapshot?.session.sourceChanged === true;
-  const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged;
+  const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged || capabilityUnavailable;
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     hasPendingAmendPrice || (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
   const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' &&
@@ -611,6 +619,8 @@ export function ReservationPane(props: ReservationPaneProps) {
       {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}
+      {capabilityUnavailable && <small role="status">{capability?.reason || 'This action is not available for this hotel yet.'}</small>}
+      {capabilitySaveUnavailable && !needsCheck() && <small role="status">{capability?.reason || 'Saving is not available for this hotel yet.'}</small>}
       {needsCheck() && <small className={styles.small}>Check the current details and Infor price first. Then approve the final action.</small>}
       {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <div className={styles.notice}>
         For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)}.
@@ -619,7 +629,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         <br />Infor details may change when you check the price. Review that price before saving.
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
       {(workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;

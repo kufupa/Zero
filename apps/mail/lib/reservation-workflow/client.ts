@@ -19,10 +19,13 @@ import type {
   ReservationSourceContext,
   ReservationWorkflowClient,
   ReservationWorkflowV2Session,
+  PropertyConfiguration,
+  PropertySwitch,
 } from './types';
 import { ReservationWorkflowStaleRevisionError } from './types';
 
 type ItemInput = {
+  propertySwitch?: PropertySwitch;
   workItemId: string;
   source: ReservationWorkflowV2Source;
   expectedRevision: number;
@@ -40,7 +43,7 @@ type RecordActionsMutation = {
 export type ReservationWorkflowV2TrpcClient = {
   workItems?: { recordActions?: RecordActionsMutation };
   reservationWorkflowV2: {
-    ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source; mode?: 'initialize' | 'prefill' }>;
+    ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source; propertySwitch?: PropertySwitch; mode?: 'initialize' | 'prefill' }>;
     prefill: MutationProcedure<ItemInput>;
     addAction: MutationProcedure<ItemInput & { kind: 'create' | 'quote' | 'amend' | 'cancel' | 'services' | 'filing' }>;
     changeRows: MutationProcedure<ItemInput & RowChange>;
@@ -79,7 +82,9 @@ function apiSource(source: ReservationSourceContext): ReservationWorkflowV2Sourc
   if (!source.threadId || !source.messageId || !source.sourceHash || !source.arrivedAt) {
     throw new Error('The selected email is not resolved to a source-bound Nava message yet.');
   }
-  return { threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash, arrivedAt: source.arrivedAt };
+  if (source.propertyId !== 'HRCEN' && source.propertyId !== 'HRDAV' && source.propertyId !== 'HRDAVS')
+    throw new Error('The selected hotel could not be verified.');
+  return { propertyId: source.propertyId, threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash, arrivedAt: source.arrivedAt };
 }
 
 function itemInput(context: ReservationCommandContext): ItemInput {
@@ -87,6 +92,7 @@ function itemInput(context: ReservationCommandContext): ItemInput {
   return {
     workItemId: draft.workItemId,
     source: apiSource(context.source),
+    ...(context.source.propertySwitch ? { propertySwitch: context.source.propertySwitch } : {}),
     expectedRevision: context.snapshot.session.revision,
     expectedSeq: context.snapshot.session.seq,
   };
@@ -344,7 +350,7 @@ function flattenFields(value: unknown, path: string, out: ReservationPaneSnapsho
   };
 }
 
-export function projectReservationSession(session: ReservationWorkflowV2Session): ReservationPaneSnapshot {
+export function projectReservationSession(session: ReservationWorkflowV2Session, configuration?: PropertyConfiguration | null): ReservationPaneSnapshot {
   const { draft } = session;
   const fields: ReservationPaneSnapshot['fields'] = {};
   const requests: ReservationRequestProjection[] = [];
@@ -353,8 +359,13 @@ export function projectReservationSession(session: ReservationWorkflowV2Session)
     flattenFields(request, root, fields, draft);
     requests.push({ id: request.id, kind: request.kind, text: request.requestText,
       fieldPaths: Object.keys(fields).filter((path) => path.startsWith(`${root}/`)),
-      supported: (request.kind === 'create' || request.kind === 'quote' || request.kind === 'amend'
-        || request.kind === 'cancel' || request.kind === 'filing' || request.kind === 'services') && draft.propertyCode === 'HRCEN' });
+      supported: (() => {
+        const workflow = request.kind === 'filing' ? 'attach' : request.kind === 'services' ? 'addons' : request.kind;
+        if (workflow === 'other' || !configuration || configuration.propertyCode !== draft.propertyCode ||
+            configuration.transportId !== draft.transportId) return false;
+        const status = configuration.capabilities?.[workflow]?.status;
+        return status === 'prepare-only' || status === 'lab' || status === 'staff-enabled';
+      })() });
   }
   for (const [index, row] of draft.proposal.content.services.entries()) {
     flattenFields(row, pointer('proposal', 'content', 'services', index), fields, draft);
@@ -739,15 +750,16 @@ function reportClientContractFailure(
 }
 
 /** Typed adapter to reservationWorkflowV2. All mutations refresh the single canonical server draft. */
-export function createTrpcReservationWorkflowClient<T extends ReservationWorkflowV2TrpcClient>(trpcClient: T): ReservationWorkflowClient {
+export function createTrpcReservationWorkflowClient<T extends ReservationWorkflowV2TrpcClient>(trpcClient: T, configuration?: PropertyConfiguration | null): ReservationWorkflowClient {
   const api = trpcClient.reservationWorkflowV2;
   const load = async (input: ItemInput, source: ReservationSourceContext, backgroundPoll = false) => {
     const queryInput = {
       workItemId: input.workItemId, source: input.source, expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
+      ...(source.propertySwitch ? { propertySwitch: source.propertySwitch } : {}),
     };
     const raw = await api.get.query(queryInput, mailboxOptions(source, backgroundPoll));
     try {
-      return projectReservationSession(decodeDraft(raw));
+      return projectReservationSession(decodeDraft(raw), configuration);
     } catch (error) {
       if (isResponseContractFailure(raw)) reportClientContractFailure(trpcClient, 'get', queryInput, input.workItemId, source);
       throw error;
@@ -806,11 +818,12 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     async ensure({ source, mode }) {
       const wire = apiSource(source);
       const queryInput = {
-        ...(source.internetMessageId ? { internetMessageId: source.internetMessageId } : {}), source: wire, ...(mode ? { mode } : {}),
+        ...(source.internetMessageId ? { internetMessageId: source.internetMessageId } : {}), source: wire,
+        ...(source.propertySwitch ? { propertySwitch: source.propertySwitch } : {}), ...(mode ? { mode } : {}),
       };
       const raw = await api.ensure.mutate(queryInput, mailboxOptions(source));
       try {
-        return projectReservationSession(decodeDraft(raw));
+        return projectReservationSession(decodeDraft(raw), configuration);
       } catch (error) {
         const rawWorkItemId = isRecord(raw) && isRecord(raw.draft) && typeof raw.draft.workItemId === 'string'
           ? raw.draft.workItemId

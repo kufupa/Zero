@@ -53,7 +53,7 @@ describe('rate catalogue strategies from property profiles', () => {
         property.propertyCode,
         property.mailboxTransportId,
       );
-      expect(pane?.salesStrategies).toEqual(expected);
+      expect(pane?.salesStrategies).toEqual(property.propertyCode === 'HRCEN' ? expected : []);
     }
 
     expect(profileFor('NOTAPROP')).toBeNull();

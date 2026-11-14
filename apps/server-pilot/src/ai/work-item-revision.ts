@@ -8,6 +8,7 @@ import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from '
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
 const RESERVATION_V2_KEY = 'reservationWorkflowV2';
+export const RESERVATION_V2_PROPERTY_HISTORY_FLOOR_KEY = 'reservationWorkflowV2PropertyHistoryFloor';
 const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept', 'field.reset'] as const;
 
 export type PaneState = Record<string, unknown>;
@@ -422,7 +423,8 @@ async function applyHistoryMove(
       return { status: 'stale' as const, revision, revisionHead, seq };
     }
     const undo = input.direction === 'undo';
-    if (undo ? revision <= 0 : revision >= revisionHead) {
+    const historyFloor = asRevision(item.state[RESERVATION_V2_PROPERTY_HISTORY_FLOOR_KEY]) ?? 0;
+    if (undo ? revision <= historyFloor : revision >= revisionHead) {
       return { status: 'at_boundary' as const, revision, revisionHead, seq };
     }
     const snapshot = await latestEvidence(tx, input.workItemId, undo ? revision : revision + 1);

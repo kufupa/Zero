@@ -6,6 +6,7 @@ import type {
   BookingRateCheck,
   QuoteSession,
   RatePlanCatalogueEntry,
+  QuotePaneConfig,
   StaffQuoteParties,
   StaffQuoteParty,
   StayGroupRequirement,
@@ -349,7 +350,9 @@ function uncertainCommit(commit: CommitView | undefined): boolean {
 }
 
 // Match the server's Create target identity. This only controls the card; the server rechecks authority.
-function cloudCreateTargetKey(stay: { firstName?: unknown; lastName?: unknown; arrival?: unknown }): string | null {
+function cloudCreateTargetKey(stay: { firstName?: unknown; lastName?: unknown; arrival?: unknown; propertyCode?: unknown }, scope?: { propertyCode?: string | null; tenantId?: string }): string | null {
+  const propertyCode = typeof stay.propertyCode === 'string' ? stay.propertyCode : scope?.propertyCode;
+  if (!propertyCode || (scope?.propertyCode && propertyCode !== scope.propertyCode)) return null;
   if (typeof stay.firstName !== 'string' || typeof stay.lastName !== 'string' || typeof stay.arrival !== 'string') return null;
   const name = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
   const first = name(stay.firstName), last = name(stay.lastName), arrival = stay.arrival;
@@ -357,15 +360,15 @@ function cloudCreateTargetKey(stay: { firstName?: unknown; lastName?: unknown; a
       !/^\d{4}-\d{2}-\d{2}$/.test(arrival)) return null;
   const date = new Date(`${arrival}T00:00:00Z`);
   if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== arrival) return null;
-  return JSON.stringify(['HRCEN', 'create', first, last, arrival]);
+  return JSON.stringify([scope?.tenantId ?? null, propertyCode, 'create', first, last, arrival]);
 }
 
-function cloudStopsFromSaved(savedStays: Record<string, SavedStayCommit> | undefined): CloudCreateStop[] {
+function cloudStopsFromSaved(savedStays: Record<string, SavedStayCommit> | undefined, scope: { propertyCode?: string | null; tenantId?: string }): CloudCreateStop[] {
   return Object.entries(savedStays ?? {}).flatMap(([stayId, saved]) => {
     const hold = saved.status === 'unknown' || (saved.status === 'booked' && saved.confirmationNumber)
       ? saved.cloudCreateHold : undefined;
-    if (!hold || hold.target?.propertyCode !== 'HRCEN' || hold.target.kind !== 'create') return [];
-    const targetKey = cloudCreateTargetKey(hold.target);
+    if (!hold || hold.target?.propertyCode !== scope.propertyCode || hold.target.kind !== 'create') return [];
+    const targetKey = cloudCreateTargetKey(hold.target, scope);
     if (!targetKey) return [];
     if (!hold.batch) return [{ unknownStayId: stayId, targetKey, members: [{ stayId, targetKey }] }];
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(hold.batch.id) ||
@@ -373,8 +376,8 @@ function cloudStopsFromSaved(savedStays: Record<string, SavedStayCommit> | undef
     const members: CloudCreateStop['members'] = [];
     for (const room of hold.batch.rooms) {
       if (!room || !/^[A-Za-z0-9_-]{1,120}$/.test(room.stayId) ||
-          room.target?.propertyCode !== 'HRCEN' || room.target.kind !== 'create') return [];
-      const memberTarget = cloudCreateTargetKey(room.target);
+          room.target?.propertyCode !== scope.propertyCode || room.target.kind !== 'create') return [];
+      const memberTarget = cloudCreateTargetKey(room.target, scope);
       if (!memberTarget || members.some((member) => member.stayId === room.stayId)) return [];
       members.push({ stayId: room.stayId, targetKey: memberTarget });
     }
@@ -1108,6 +1111,7 @@ export function BookingCards({
   guestEditorKey,
   session,
   propertyCode,
+  configuration,
   rateCatalogue = [],
   workItemPane,
   rateEvidence,
@@ -1137,6 +1141,7 @@ export function BookingCards({
   session?: QuoteSession;
   /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
   propertyCode?: string | null;
+  configuration?: QuotePaneConfig | null;
   rateCatalogue?: RatePlanCatalogueEntry[];
   workItemPane?: WorkItemPaneControls | null;
   rateEvidence?: PartyEvidence;
@@ -1154,10 +1159,20 @@ export function BookingCards({
   contactRef.current = contact;
   const requiredCreateFields = draft.options.requiredCreateFields ?? [];
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
-  const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
-  const savesOn = mode !== 'off';
-  const cloudPreview = Boolean(client?.canPreview?.() && propertyCode !== 'HRDAV');
+  const reportedMode = client?.mode?.() ?? null;
+  const mode: PaneSaveMode = client ? (reportedMode ?? 'lab') : 'off';
+  const capability = configuration && configuration.propertyCode === propertyCode ? configuration.capabilities?.create : undefined;
+  const backendLegacyEnabled = reportedMode === 'lab' || reportedMode === 'on';
+  const legacyScoped = propertyCode === 'HRCEN' && configuration === undefined &&
+    (backendLegacyEnabled || Boolean(client?.canPreview?.()));
+  const prepareAllowed = capability ? ['prepare-only', 'lab', 'staff-enabled'].includes(capability.status) : legacyScoped;
+  const saveAllowed = capability ? capability.status === 'lab' || capability.status === 'staff-enabled' :
+    legacyScoped && backendLegacyEnabled;
+  const legacyUnscoped = propertyCode == null && configuration === undefined && backendLegacyEnabled && !client?.canPreview?.();
+  const savesOn = mode !== 'off' && (saveAllowed || legacyUnscoped);
+  const cloudPreview = Boolean(client?.canPreview?.() && prepareAllowed);
   const cloudCreate = cloudPreview || propertyCode === 'HRCEN';
+  const createScope = { propertyCode, tenantId: configuration?.tenantId };
   const requireDurableCreate = cloudCreate && workItemPane !== undefined;
   const previewsOn = cloudPreview || savesOn;
   const selectedGuestName = useSyncExternalStore(
@@ -1756,9 +1771,8 @@ export function BookingCards({
     const selectedRoom = roomChoice.roomType ?? '';
     if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
     if (!cloudPreview) {
-      const legacy = built.stay && client?.canPreview?.() && propertyCode === 'HRDAV'
-        ? { ...built.stay, propertyCode } : built.stay;
-      return { stay: missing.length ? null : legacy, missing: [...new Set(missing)] };
+      if (propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') missing.push('Create is not available for this hotel');
+      return { stay: missing.length ? null : built.stay, missing: [...new Set(missing)] };
     }
     const source = session?.staffSource;
     const stableId = /^[A-Za-z0-9_-]{1,40}$/;
@@ -1854,7 +1868,7 @@ export function BookingCards({
       preview.editGeneration === revision.editGeneration);
   }
 
-  const storedCloudStops = cloudStopsFromSaved(savedStays);
+  const storedCloudStops = cloudStopsFromSaved(savedStays, createScope);
   const cloudStops = [...localCloudStops, ...storedCloudStops];
   const unprocessedStoredStop = storedCloudStops.some((stop) => !seenCloudStops.current.has(cloudStopIdentity(stop)));
   const cloudUnknownStays = new Set([
@@ -1871,7 +1885,7 @@ export function BookingCards({
   const unknownTargetMissing = [...cloudUnknownStays].some((id) => !cloudStops.some((stop) => stop.unknownStayId === id));
 
   useEffect(() => {
-    const unseen = cloudStopsFromSaved(savedStays).filter((stop) => !seenCloudStops.current.has(cloudStopIdentity(stop)));
+    const unseen = cloudStopsFromSaved(savedStays, createScope).filter((stop) => !seenCloudStops.current.has(cloudStopIdentity(stop)));
     if (!unseen.length) return;
     for (const stop of unseen) seenCloudStops.current.add(cloudStopIdentity(stop));
     setCloudStops((current) => [...current, ...unseen]);
@@ -1906,7 +1920,7 @@ export function BookingCards({
   function cloudRoomTarget(room: BookingDraftReady['draft']['rooms'][number]): string | null {
     const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
     const request = roomRequestFor(room, roomGroupFor(room, groups), choice);
-    return cloudCreateTargetKey({ firstName: choice.firstName, lastName: choice.lastName, arrival: textValue(request.arrival) });
+    return cloudCreateTargetKey({ firstName: choice.firstName, lastName: choice.lastName, arrival: textValue(request.arrival) }, createScope);
   }
 
   function confirmedStay(stayId: string, expectedTarget: string): boolean {
@@ -1914,7 +1928,7 @@ export function BookingCards({
     if (stored?.status === 'booked' && Boolean(stored.confirmationNumber)) {
       // Legacy positive rows lack target provenance: retain the conservative
       // sibling stop. New Cloud rows compare their actual authorized target.
-      return !stored.cloudCreateTarget || cloudCreateTargetKey(stored.cloudCreateTarget) === expectedTarget;
+      return !stored.cloudCreateTarget || cloudCreateTargetKey(stored.cloudCreateTarget, createScope) === expectedTarget;
     }
     return draft.draft.rooms.some((room) => {
       if (!roomIds(room, groups).includes(stayId)) return false;
@@ -1983,7 +1997,7 @@ export function BookingCards({
       if (commit?.status === 'booked' || uncertainCommit(commit) || !cloudRoomEligible(room)) continue;
       const ready = roomPreviewReady(room);
       if (!ready) return;
-      const targetKey = cloudPreview ? cloudCreateTargetKey(ready.stay) : null;
+      const targetKey = cloudPreview ? cloudCreateTargetKey(ready.stay, createScope) : null;
       if (cloudPreview && !targetKey) return;
       snapshot.push({ roomKey: roomKeyOf(room), stayId: allocationIdForRoom(room),
         stay: ready.stay, digest: ready.digest, targetKey });
@@ -2136,7 +2150,7 @@ export function BookingCards({
       return;
     }
     const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
-    const targetKey = cloudCreateTargetKey(stay);
+    const targetKey = cloudCreateTargetKey(stay, createScope);
     if (!room || !targetKey || stayBookingRef.current || !cloudRoomEligible(room)) return;
     stayBookingRef.current = true;
     setStayBooking(true);

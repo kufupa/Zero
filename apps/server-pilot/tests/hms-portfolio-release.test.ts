@@ -328,13 +328,13 @@ describe('Phase B evidence schemas (role proof / receipt / release v2)', () => {
       validateRoleProofV2ForTool(proof, READ_TOOLS.mail_read_artifact, new Date()),
     ).toThrow(/mail_read_artifact/);
     expect(roleProofV2Path('/opt/nava', 'hms_find_reservation')).toMatch(
-      /role-proofs[/\\]hms_find_reservation\.v2\.json$/,
+      /HRCEN[/\\]hms_find_reservation\.v2\.json$/,
     );
   });
 
   it('loads v2 role proof from path helper and rejects cross-tool file', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hms-role-proof-v2-'));
-    await mkdir(join(root, 'role-proofs'), { recursive: true });
+    await mkdir(join(root, 'HRCEN'), { recursive: true });
     const proof = validRoleProofV2();
     const path = roleProofV2Path(root, 'hms_find_reservation');
     await writeFile(path, `${JSON.stringify(proof)}\n`, { mode: 0o600 });

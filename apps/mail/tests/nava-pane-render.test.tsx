@@ -13,7 +13,7 @@ import { useStaffQuoteAutostart } from '../components/nava-pane/use-staff-quote-
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { initialQuoteSession, planQuoteSteps } from '../lib/quote-workflow/session';
 import {
-  HRDAV_PROPERTY_CODE,
+  HRCEN_PROPERTY_CODE,
   type QuotePaneConfig,
   type QuoteSelectionBinding,
   type QuoteSession,
@@ -311,7 +311,16 @@ vi.mock('../providers/query-provider', () => ({
         return bridgeMockState.amendRateCandidates ? { mutate: bridgeMockState.amendRateCandidates } : undefined;
       },
       rateCatalogue: {
-        query: async () => bridgeMockState.quotePaneConfig,
+        query: async () => {
+          const config = bridgeMockState.quotePaneConfig;
+          if (!config || config.propertyCode !== 'HRCEN' || config.capabilities) return config;
+          const unavailable = { status: 'unavailable', reason: 'Not enabled in this fixture' };
+          return { ...config, capabilities: {
+            reads: { status: 'staff-enabled', reason: null }, quote: { status: 'staff-enabled', reason: null },
+            create: unavailable, amend: unavailable, cancel: unavailable, attach: unavailable,
+            addons: unavailable, guest_profile_create: unavailable,
+          } };
+        },
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
@@ -893,7 +902,7 @@ describe('NavaPane', () => {
   const resolveCenturionProperty = () => {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      mealPlans: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      mealPlans: ['bb', 'dinner_bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
   };
 
@@ -2459,15 +2468,19 @@ describe('NavaPane', () => {
       staffSource: source,
     };
     const activeEmail = { ...fakeBridge.activeEmail!, internetMessageId: testMessageId };
+    const enabled = { status: 'staff-enabled' as const, reason: null };
+    const unavailable = { status: 'unavailable' as const, reason: 'Not enabled in this fixture' };
     const paneConfig: QuotePaneConfig = {
       transportId: binding.transportId,
-      propertyCode: HRDAV_PROPERTY_CODE,
+      propertyCode: HRCEN_PROPERTY_CODE,
       roomTypes: [],
       ratePlans: [],
       mealPlans: ['bb'],
       salesStrategies: [],
       overrideRateCodes: [],
       eventRateCodes: [],
+      capabilities: { reads: enabled, quote: enabled, create: unavailable, amend: unavailable,
+        cancel: unavailable, attach: unavailable, addons: unavailable, guest_profile_create: unavailable },
     };
     bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
       bridgeMockState.lastStaffQuoteInput = input;
@@ -2575,7 +2588,7 @@ describe('NavaPane', () => {
 
   it('auto-queues a complete stay and reports the rate run in the pane notice system', async () => {
     let staffQuotePolls = 0;
-    resolveDavinciProperty();
+    resolveCenturionProperty();
     sessionStorage.removeItem(`nava.staff-quote-auto-suppressed:${selectedMailKey('001', '<quote-request@example.invalid>')}`);
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -3058,7 +3071,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the completed rate notice global when Needs-you is gated off and on channel mail', async () => {
-    resolveDavinciProperty();
+    resolveCenturionProperty();
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);

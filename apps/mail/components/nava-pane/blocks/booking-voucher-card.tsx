@@ -25,6 +25,7 @@ export function BookingVoucherCard({
   workItemId = null,
   writesEnabled = false,
   propertyCode = null,
+  filingCapability,
   transportId = null,
   mailboxScope = null,
   senderEmail = null,
@@ -46,6 +47,7 @@ export function BookingVoucherCard({
   writesEnabled?: boolean;
   /** Registry-backed property for the active mailbox. */
   propertyCode?: string | null;
+  filingCapability?: import('@/lib/reservation-workflow/types').PropertyConfiguration['capabilities']['attach'] | null;
   transportId?: string | null;
   mailboxScope?: string | null;
   senderEmail?: string | null;
@@ -62,10 +64,10 @@ export function BookingVoucherCard({
   const amendment = amendmentOf(session);
   const [approvalRevision, setApprovalRevision] = useState(0);
   const [preparedFiling, setPreparedFiling] = useState<{ scope: string; digest: string | null } | null>(null);
-  const filingScope = JSON.stringify([mailboxScope, transportId, internetMessageId, lookupSelection, workItemId,
+  const filingScope = JSON.stringify([mailboxScope, propertyCode, filingCapability?.status ?? null, transportId, internetMessageId, lookupSelection, workItemId,
     session.binding?.selectionEpoch, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash,
     readOnlyAmend?.historyEpoch, readOnlyAmend?.historyBusy]);
-  const filingSourceCurrent = propertyCode !== 'HRCEN' || Boolean(selectedSource && readOnlyAmend?.selectionCurrent !== false &&
+  const filingSourceCurrent = Boolean(selectedSource && readOnlyAmend?.selectionCurrent !== false &&
     !readOnlyAmend?.sourceContentChanged && !readOnlyAmend?.historyBusy);
   const intent = session.treatAs ?? session.analysis?.luna?.workflow;
   const hasBookingWorkflow = intent === 'create_booking';
@@ -107,7 +109,7 @@ export function BookingVoucherCard({
             session.binding?.selectionEpoch, session.staffSource?.threadId, session.staffSource?.messageId, session.staffSource?.sourceHash])}
           client={approvalClient}
           workItemId={workItemId}
-          writesEnabled={writesEnabled}
+          writesEnabled={writesEnabled && ((propertyCode === 'HRCEN' && filingCapability === undefined) || filingCapability?.status === 'lab' || filingCapability?.status === 'staff-enabled')}
           confirmation={null}
           guestSurname={guestSurname}
           arrival={arrival}
@@ -134,12 +136,13 @@ export function BookingVoucherCard({
           writesEnabled={writesEnabled}
           approvalAvailable={Boolean(filingSourceCurrent && approvalClient && workItemId && mailboxScope && transportId && internetMessageId)}
           selectionEpoch={session.binding?.selectionEpoch}
-          selectedSource={propertyCode === 'HRCEN' ? (selectedSource ?? null) : undefined}
+          selectedSource={selectedSource ?? null}
           reviewSource={selectedSource}
           selectionCurrent={filingSourceCurrent}
           onTargetChanged={() => setPreparedFiling(null)}
           onPrepared={(digest) => { setPreparedFiling({ scope: filingScope, digest: digest ?? null }); setApprovalRevision((revision) => revision + 1); }}
           propertyCode={propertyCode}
+          filingCapability={filingCapability}
         />
       ) : null}
     </>

@@ -1,5 +1,4 @@
-import { CENTURION_RATE_CATALOGUE } from '../../../server-pilot/src/hms/centurion-rate-catalogue';
-import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField } from './types';
+import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationRequestProjection, ReservationFieldOverride, ReservationSavedServiceTarget, ReservationGuestProfileOptionField, PropertyConfiguration } from './types';
 
 type BasicRowChange = { requestId: string; parentId?: string; entityId?: string; childIds?: string[] };
 export type RowChange =
@@ -48,6 +47,8 @@ export function savedTargetOperationLocks(snapshot: ReservationPaneSnapshot, req
 }
 export type WorkbenchEditorProps = {
   source: ReservationSourceContext;
+  configuration: PropertyConfiguration | null;
+  activeProperty: PropertyConfiguration['propertyCode'] | undefined;
   snapshot: ReservationPaneSnapshot;
   request: ReservationRequestProjection;
   view: { busy: boolean; error: string | null; preview: boolean; saving: boolean; blocked?: boolean };
@@ -518,7 +519,7 @@ export function hasCompleteNativeCatalogue(snapshot: ReservationPaneSnapshot, pa
     observation.status === 'complete' && observation.coverage.complete === true));
 }
 
-export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string): NativeChoice[] {
+export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, kind?: string, configuration?: PropertyConfiguration | null): NativeChoice[] {
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const draft = snapshot.session.draft;
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
@@ -611,10 +612,22 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     latest.delete(key); latest.set(key, { choice, candidate });
   }
   const native = [...latest.values()].map(row => row.choice);
-  if (kind !== 'rate_plan') return native;
   const available = new Map<string, NativeChoice>();
-  if (draft.propertyCode === 'HRCEN') for (const [code, entry] of Object.entries(CENTURION_RATE_CATALOGUE))
-    available.set(code, { ref: `catalogue:${code}`, value: code, label: entry.name, detail: 'Check price and availability in Infor' });
+  const scoped = configuration?.propertyCode === draft.propertyCode && configuration.transportId === draft.transportId ? configuration : null;
+  if (scoped && (kind === 'room_type' || kind === 'room_type_for_charge'))
+    for (const entry of scoped.roomTypes) available.set(entry.code, { ref: `catalogue:${entry.code}`, value: entry.code, label: entry.label });
+  if (scoped && kind === 'guarantee')
+    for (const entry of scoped.formPolicy.guaranteeChoices) available.set(entry.code, { ref: `catalogue:${entry.code}`, value: entry.code,
+      label: entry.meaning, ...(entry.reason ? { detail: entry.reason } : {}) });
+  if (scoped && kind === 'cms_message')
+    for (const entry of scoped.formPolicy.cmsChoices) available.set(entry.code, { ref: `catalogue:${entry.code}`, value: entry.code, label: entry.meaning });
+  if (kind !== 'rate_plan') {
+    for (const choice of native) available.set(choice.value, choice);
+    return [...available.values()];
+  }
+  if (configuration?.propertyCode === draft.propertyCode && configuration.transportId === draft.transportId)
+    for (const entry of configuration.ratePlans) available.set(entry.code, { ref: `catalogue:${entry.code}`, value: entry.code,
+      label: entry.name, detail: 'Check price and availability in Infor' });
   for (const choice of native) available.set(choice.value, choice);
   for (const observation of draft.observations) {
     if (observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||

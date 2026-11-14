@@ -44,6 +44,23 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           >
             ropperman@legacyhotels.co.za
           </span>
+          <label
+            class="inline-flex items-center gap-1"
+          >
+            Hotel
+            <select>
+              <option
+                value="HRDAV"
+              >
+                Da Vinci
+              </option>
+              <option
+                value="HRDAVS"
+              >
+                Da Vinci HRDAVS
+              </option>
+            </select>
+          </label>
           <span
             class="flex shrink-0 items-center gap-1.5 [&_button]:whitespace-nowrap"
           >

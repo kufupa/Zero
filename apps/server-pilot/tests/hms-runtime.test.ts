@@ -2545,6 +2545,14 @@ describe('HMS browser audit capture order', () => {
 
   it('revalidates the lease before the recorded context and closes auth when that check expires', async () => {
     const server = await startHmsFixtureServer();
+    const registry = await import('../tooling/hms-cloud/property-registry.mjs');
+    const originalRegistration = registry.getPropertyRegistration;
+    const registrySpy = vi.spyOn(registry, 'getPropertyRegistration').mockImplementation((code) => {
+      const property = originalRegistration(code);
+      return property && code === 'HRCEN'
+        ? { ...property, landingPropertyCode: FIXTURE_IDS.propertyCode as 'HRCEN', origin: server.origin }
+        : property;
+    });
     const events: string[] = [];
     const baseFactory = createFetchBrowserFactory();
     const browserFactory: typeof baseFactory = async (input) => {
@@ -2569,7 +2577,7 @@ describe('HMS browser audit capture order', () => {
         if (roleChecks === 3) {
           throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'lease expired');
         }
-        return {} as never;
+        return { propertyCode: 'HRCEN' } as never;
       },
       browserFactory,
       requireSessionAuthorization: true,
@@ -2585,7 +2593,9 @@ describe('HMS browser audit capture order', () => {
             operationId: randomUUID(),
             toolId: 'hms_find_reservation',
             discoveryOperationId: 'guest_stay_search',
-            releaseId: randomUUID(),
+            releaseId: '00000000-0000-4000-8000-0000000000a1',
+            propertyCode: 'HRCEN', tenantId: FIXTURE_IDS.tenant,
+            landingPropertyCode: FIXTURE_IDS.propertyCode as 'HRCEN', origin: server.origin,
             requestBranchId: 'guest_stay_search',
             manifest: fixtureManifest(server.origin),
             manifestSha256: 'a'.repeat(64),
@@ -2606,6 +2616,7 @@ describe('HMS browser audit capture order', () => {
       expect(runtime.stats().contextsClosed).toBe(1);
       expect(runtime.health().activeSessions).toBe(0);
     } finally {
+      registrySpy.mockRestore();
       await runtime.close().catch(() => undefined);
       await server.close();
     }
@@ -3369,7 +3380,7 @@ describe('HMS browser audit capture order', () => {
       });
 
       const root = join(dir, 'proofs');
-      await mkdir(join(root, 'role-proofs'), { recursive: true });
+      await mkdir(join(root, 'HRCEN'), { recursive: true });
       const v2Path = roleProofV2Path(root, 'hms_find_reservation');
       const { READ_TOOLS } = await import('../src/hms/read-tools.js');
       const tool = READ_TOOLS.hms_find_reservation;
@@ -3637,7 +3648,7 @@ describe('HMS browser audit capture order', () => {
     expect(src).toMatch(/requireSessionAuthorization/);
   });
 
-  it('Task 13: requireSessionAuthorization rejects open without lease (behavioral)', async () => {
+  it('Task 13: requireSessionAuthorization rejects missing or unbound lease', async () => {
     const server = await startHmsFixtureServer();
     try {
       const secret = fixtureSecret(server.origin);
@@ -3662,7 +3673,7 @@ describe('HMS browser audit capture order', () => {
         });
 
         const leaseManifest = fixtureManifest(server.origin);
-        const session = await runtime.openReadSession({
+        await expect(runtime.openReadSession({
           transportId: secret.mailboxTransportId,
           signal: AbortSignal.timeout(5_000),
           sessionAuthorization: {
@@ -3681,8 +3692,7 @@ describe('HMS browser audit capture order', () => {
             sourceRevision: 'test',
             expiresAt: new Date(Date.now() + 60_000).toISOString(),
           },
-        });
-        await session.close();
+        })).rejects.toMatchObject({ code: 'ROLE_SCOPE_INVALID' });
       } finally {
         await runtime.close();
       }

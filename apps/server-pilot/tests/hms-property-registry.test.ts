@@ -16,10 +16,11 @@ const DAVINCI_SECRET = {
   loginUrl: 'https://hms.example.invalid',
   username: 'NAVAAI',
   password: 'test-only',
-  expectedTenant: 'HMS_DAVINCI',
+  expectedTenant: 'DAVINCI_PRD',
   expectedPropertyCode: 'HRDAV',
   expectedPropertyName: 'Davinci Hotel',
   mailboxTransportId: 'transport-davinci',
+  mailboxTransportIds: ['transport-davinci', 'transport-faith', 'transport-ayanda', 'transport-epick', 'transport-kmgidi'],
   credentialMode: 'view_only',
 };
 
@@ -100,7 +101,7 @@ describe('read-only HMS property registry', () => {
     expect(property).toMatchObject({
       transportId: 'transport-davinci',
       propertyCode: 'HRDAV',
-      expectedTenant: 'HMS_DAVINCI',
+      expectedTenant: 'DAVINCI_PRD',
       expectedPropertyName: 'Davinci Hotel',
       username: 'NAVAAI',
       mailboxTransportId: 'transport-davinci',
@@ -158,6 +159,11 @@ describe('read-only HMS property registry', () => {
 
     const davinci = getHmsPropertyRegistration('transport-davinci');
     expect(validateHmsPropertySecret(davinci, DAVINCI_SECRET)).toEqual(DAVINCI_SECRET);
+    expect(validateHmsPropertySecret(getHmsPropertyRegistration('transport-faith'), DAVINCI_SECRET)).toEqual(DAVINCI_SECRET);
+    expect(validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, mailboxTransportIds: undefined }))
+      .toMatchObject({ mailboxTransportId: 'transport-davinci' });
+    expect(() => validateHmsPropertySecret(getHmsPropertyRegistration('transport-faith'),
+      { ...DAVINCI_SECRET, mailboxTransportIds: undefined })).toThrow('hms_property_credential_mismatch');
     expect(() =>
       validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'write_capable' }),
     ).toThrow('hms_property_credential_mismatch');

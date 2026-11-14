@@ -1692,6 +1692,7 @@ export function QuoteWorkflowPanel({
         savedStays={savedStays}
         screenshot={screenshot ?? paneSave?.screenshot}
         propertyCode={paneConfig?.propertyCode ?? null}
+        configuration={paneConfig}
         rateCatalogue={rateCatalogue}
         workItemPane={workItemPane}
         rateEvidence={rateEvidence}

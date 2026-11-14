@@ -583,7 +583,7 @@ export async function executeCloudCancel(input: {
             source: bound.source, actorUserId: authority.actorUserId, sessionId: authority.sessionId,
             sessionProfile: authority.sessionProfile });
           await lockConsumedCloudCancelApproval(tx, { fence, transportId: input.transportId, item,
-            grantId: consumed.grantId, approvedDigest, authority, env: input.env });
+            grantId: consumed.grantId, approvedDigest, authority, env: input.env, phase: 'dispatch' });
           if (!hasBudget()) throw new Error('cancel_authority_changed');
         } catch (error) { authorizationRefusal = error; throw error; }
       }, epoch);

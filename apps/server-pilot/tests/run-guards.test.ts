@@ -291,7 +291,7 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
     for (const canaryLine of [null, `CANARY PASS create HRDAV ${sha}`, 'CANARY PASS create HRCEN deadbeef']) {
       const refused = runWriter({ liveSha: sha, canaryLine, quoteOn: false, createDispatch: 'on' });
       expect(refused.status).toBe(2);
-      expect(refused.stderr).toMatch(/PANE_CLOUD_CREATE_DISPATCH/);
+      expect(refused.stderr).toMatch(/create HRCEN/);
     }
     const passed = runWriter({ liveSha: sha, canaryLine: `CANARY PASS create HRCEN ${sha}`,
       quoteOn: false, createDispatch: 'on' });

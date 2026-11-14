@@ -4,6 +4,7 @@ import { typeaheadPartyIndex } from '../../ai/party-index.js';
 import { assertHmsReadOriginAllowed, hmsReadTargetForTransport } from '../../hms/hms-read-target.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
+import { propertySwitchSchema, resolvePropertyScope } from '../../hms/property-registry.js';
 
 // Read-only. strict(): no native id or other key reaches the module. One name searches companies and agencies, or one
 // kind when given; staff pick the candidate in the pane.
@@ -19,7 +20,7 @@ const findPartyInput = z
   .strict();
 
 const suggestInput = z.object({ sender: z.string().max(320), body: z.string().max(20000) }).strict();
-const typeaheadInput = z.object({ query: z.string().max(256) }).strict();
+const typeaheadInput = z.object({ query: z.string().max(256), propertySwitch: propertySwitchSchema.optional() }).strict();
 
 export const panePartyLookupRouter = router({
   findParty: mailboxProcedure.input(findPartyInput).mutation(async ({ input, ctx }) => {
@@ -42,7 +43,7 @@ export const panePartyLookupRouter = router({
   // Mailbox transport picks the property file. A Da Vinci inbox never reads the Centurion index.
   typeahead: mailboxProcedure.input(typeaheadInput).query(({ input, ctx }) =>
     typeaheadPartyIndex(input.query, {
-      propertyCode: hmsReadTargetForTransport(ctx.activeTransportId).propertyCode,
+      propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode,
     }),
   ),
 });

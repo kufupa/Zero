@@ -1,4 +1,5 @@
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import type { PropertyConfiguration, PropertySwitch } from '@/lib/reservation-workflow/types';
 import type {
   QuoteAmendment,
   QuoteAnalysis,
@@ -6,7 +7,6 @@ import type {
   QuoteDocumentFailure,
   QuoteOffer,
   QuoteReviewItem,
-  RatePlanCatalogueEntry,
   QuoteWorkflowFallbackReason,
   LunaAnalysisWire,
 } from './types';
@@ -107,7 +107,7 @@ export type QualifiedProposalPdfResult = {
 };
 
 type QuoteWorkflowClient = {
-  rateCatalogue?: { query: () => Promise<RatePlanCatalogueEntry[]> };
+  rateCatalogue?: { query: (input?: { propertySwitch?: PropertySwitch }) => Promise<PropertyConfiguration> };
   analyseSelection?: { mutate: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult> };
   runStep?: {
     mutate: (input: RunStepRequest) => Promise<RunStepResult>;
@@ -199,12 +199,12 @@ export type StoredStayCommit = {
   screenshotRef: { runId: string; name: string } | null;
   runId?: string;
   shots?: Array<{ name: string; sha256: string; at: string }>;
-  cloudCreateTarget?: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+  cloudCreateTarget?: { propertyCode: 'HRCEN' | 'HRDAV' | 'HRDAVS'; kind: 'create'; firstName: string; lastName: string; arrival: string };
   cloudCreateHold?: {
-    target: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+    target: { propertyCode: 'HRCEN' | 'HRDAV' | 'HRDAVS'; kind: 'create'; firstName: string; lastName: string; arrival: string };
     batch?: { id: string; rooms: Array<{
       stayId: string;
-      target: { propertyCode: 'HRCEN'; kind: 'create'; firstName: string; lastName: string; arrival: string };
+      target: { propertyCode: 'HRCEN' | 'HRDAV' | 'HRDAVS'; kind: 'create'; firstName: string; lastName: string; arrival: string };
     }> };
   };
 };

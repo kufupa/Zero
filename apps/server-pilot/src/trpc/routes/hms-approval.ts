@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   HmsApprovalError,
   approveHmsWrite,
+  prepareHmsWrite,
+  publicHmsPreparedSummary,
   hmsWriteStateOf,
   readHmsWriteEvidence,
   resolveHmsNeedsCheck,
@@ -17,6 +19,7 @@ import { bindCloudAmendForm, bindCloudAmendInput, cloudAmendSelectionSchema, clo
 import { labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
 import { CENTURION_HMS_READ_TARGET } from '../../hms/hms-read-target.js';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
+import { propertySwitchSchema, resolvePropertyScope } from '../../hms/property-registry.js';
 import { mailboxProcedure, router } from '../trpc.js';
 
 const uuid = z.string().uuid();
@@ -31,7 +34,9 @@ const cancelCommit = cancelTarget.extend({ reason: z.string().trim().min(1).max(
 const cancelPreviewInput = cancelTarget.extend({ workItemId: uuid, internetMessageId: selectedEmail,
   formDigest: formDigestInput }).strict().refine(completeCancelRequestBinding);
 const cloudStateInput = z.object({ workItemId: uuid, source: cloudAmendSelectionSchema }).strict();
-const cloudApproveInput = cloudStateInput.extend({ formDigest: formDigestInput }).strict();
+const cloudApproveInput = cloudStateInput.extend({ formDigest: formDigestInput,
+  preparedRef: uuid.optional(), expectedRevision: z.number().int().nonnegative().safe().optional(),
+  propertySwitch: propertySwitchSchema.optional() }).strict();
 const cloudEvidenceInput = cloudStateInput.extend({ eventId: uuid }).strict();
 const cloudReviewInput = z.discriminatedUnion('decision', [
   z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema, decision: z.literal('ok') }).strict(),
@@ -41,7 +46,11 @@ const cloudReviewInput = z.discriminatedUnion('decision', [
 
 // strict(): the client names the work item and the form digest it showed. Grant, HMS digest and snapshot are server-made.
 const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, formDigest: formDigestInput,
-  selectedSource: selectedSource.optional(), cancel: cancelCommit.optional() }).strict();
+  selectedSource: selectedSource.optional(), cancel: cancelCommit.optional(),
+  preparedRef: uuid.optional(), expectedRevision: z.number().int().nonnegative().safe().optional(),
+  propertySwitch: propertySwitchSchema.optional() }).strict().refine((value) => !value.cancel ||
+    (value.preparedRef === undefined && value.expectedRevision === undefined),
+    'Legacy cancellation requires its native preview; durable preparation fields are not accepted here.');
 const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, eventId: uuid,
   selectedSource: selectedSource.optional() }).strict();
 const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional(),
@@ -86,6 +95,35 @@ function refusal(err: unknown): never {
 }
 
 export const hmsApprovalRouter = router({
+  prepare: mailboxProcedure.input(stateInput.extend({ formDigest: formDigestInput,
+    confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    propertySwitch: propertySwitchSchema.optional() }).strict()).mutation(async ({ input, ctx }) => {
+    try {
+      if (resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode !== 'HRCEN') {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'write_unavailable' });
+      }
+      const view = await hmsWriteStateOf({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
+        selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource });
+      if (!view || view.formDigest !== input.formDigest || view.form.confirmation !== input.confirmation ||
+          view.form.arrival !== input.arrival) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'state_changed' });
+      const canonicalCloudPreview = Object.hasOwn(view.form, 'cloudAmend') || Object.hasOwn(view.form, 'cloudCancel');
+      if (view.form.action === 'cancel' && !canonicalCloudPreview) {
+        return { status: 'refused' as const, reason: 'cancel_preview_required' };
+      }
+      if (!canonicalCloudPreview) {
+        const snapshot = await prepareHmsWriteSnapshot({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
+          selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource,
+          expectedFormDigest: input.formDigest, confirmation: input.confirmation, arrival: input.arrival });
+        if (snapshot.status !== 'stored') return snapshot;
+      }
+      const prepared = await prepareHmsWrite({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
+        actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId,
+        sessionProfile: ctx.sessionUser.sessionProfile, propertySwitch: input.propertySwitch,
+        selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource,
+        expectedFormDigest: input.formDigest });
+      return { status: 'prepared' as const, ...publicHmsPreparedSummary(prepared) };
+    } catch (err) { return refusal(err); }
+  }),
   previewCancel: mailboxProcedure.input(cancelPreviewInput).mutation(async ({ input, ctx }) => {
     const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
     if (!target.ok || target.target.propertyCode !== 'HRCEN') {
@@ -116,7 +154,8 @@ export const hmsApprovalRouter = router({
     try {
       return await approveHmsWrite({ transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id,
         sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
-        workItemId: input.workItemId, formDigest: input.formDigest, cloudSelection: input.source });
+        workItemId: input.workItemId, formDigest: input.formDigest, cloudSelection: input.source,
+        preparedRef: input.preparedRef, expectedRevision: input.expectedRevision, propertySwitch: input.propertySwitch });
     } catch (err) { return refusal(err); }
   }),
   reviewCloudAmend: mailboxProcedure.input(cloudReviewInput).mutation(async ({ input, ctx }) => {
@@ -164,6 +203,8 @@ export const hmsApprovalRouter = router({
   }),
   approve: mailboxProcedure.input(approveInput).mutation(async ({ input, ctx }) => {
     try {
+      const scope = resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch });
+      if (scope.propertyCode !== 'HRCEN') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'write_unavailable' });
       if (input.cancel) {
         const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
         if (!target.ok || target.target.propertyCode !== 'HRCEN') {
@@ -188,6 +229,7 @@ export const hmsApprovalRouter = router({
         selectedInternetMessageId: input.internetMessageId,
         selectedSource: input.selectedSource,
         formDigest: input.formDigest,
+        preparedRef: input.preparedRef, expectedRevision: input.expectedRevision, propertySwitch: input.propertySwitch,
       });
     } catch (err) {
       return refusal(err);

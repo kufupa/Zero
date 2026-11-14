@@ -4,9 +4,12 @@ import type { SQL } from 'drizzle-orm';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { message } from '../src/db/schema/mail.js';
 import { workItem } from '../src/db/schema/work.js';
-import { approveHmsWrite, formDigest, storeHmsSnapshot } from '../src/ai/hms-approval.js';
+import { approveHmsWrite, formDigest, storeHmsSnapshot, publicHmsPreparedSummary } from '../src/ai/hms-approval.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { hmsApprovalRouter } from '../src/trpc/routes/hms-approval.js';
+import { hmsPreparationSchema, hmsWriteGrantV2Schema, loadHmsPreparation,
+  preparationDigest } from '../src/hms/hms-preparation.js';
+import { resolvePropertyScope } from '../src/hms/property-registry.js';
 
 const transportId = 'transport-centurion';
 const workItemId = '48a2ac3d-b4c8-48f1-a17e-4a8f1f31b3a6';
@@ -157,4 +160,67 @@ describe('approval selected-email scope', () => {
     })).rejects.toMatchObject({ refusal: 'source_mail_changed' });
     expect(f.update).not.toHaveBeenCalled();
   });
+});
+
+const preparedFixture = () => {
+  const fields = { action: 'cancel', confirmation: '123456-1', reason: 'Guest request' };
+  const aliases = ['verified:123456-1'];
+  return hmsPreparationSchema.parse({ version: 2, preparedRef: '7a1c23e2-0f23-4dbe-89c1-61f6beb0674a', workItemId,
+    scope: resolvePropertyScope({ transportId }), session: { actorUserId: 'staff', sessionId: 'staff-session', sessionProfile: 'remote' },
+    source: { transportId, threadId: source.threadId, sourceMessageId: source.id, sourceHash: staffQuoteSourceHash(source) },
+    generationId: 'generation-2', revision: 2, operation: 'cancel', targetAliases: aliases,
+    businessFields: fields, businessDigest: preparationDigest(fields), targetDigest: preparationDigest(aliases),
+    nativeObservation: { beforeDigest: 'a'.repeat(64), capturedAt: '2026-11-14T07:00:00.000Z', price: null, warnings: [] },
+    policyIdentity: 'policy-v2', catalogueIdentity: 'catalogue-v2', capturedAt: '2026-11-14T07:01:00.000Z',
+    expiresAt: '2026-11-14T07:30:00.000Z' });
+};
+
+describe('durable HMS preparation and v2 Go receipt', () => {
+  it('round-trips preparation through JSON and rejects altered persisted evidence', async () => {
+    const prepared = preparedFixture();
+    let row = { value: JSON.parse(JSON.stringify(prepared)), payloadHash: preparationDigest(prepared),
+      actorKind: 'user', actorUserId: 'staff', expiresAt: new Date(prepared.expiresAt) };
+    const db = { select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => [row] }) }) }) }) } as unknown as DB;
+    await expect(loadHmsPreparation(db, prepared.preparedRef, workItemId)).resolves.toEqual(prepared);
+    row = { ...row, value: { ...row.value, targetDigest: 'b'.repeat(64) } };
+    await expect(loadHmsPreparation(db, prepared.preparedRef, workItemId)).rejects.toThrow('hms_preparation_invalid');
+  });
+
+  it('requires exact source/scope and snapshot expiry and refuses private browser data', () => {
+    const prepared = preparedFixture();
+    expect(hmsPreparationSchema.safeParse({ ...prepared, source: { ...prepared.source, transportId: 'transport-davinci' } }).success).toBe(false);
+    expect(hmsPreparationSchema.safeParse({ ...prepared, expiresAt: '2026-11-14T07:31:00.000Z' }).success).toBe(false);
+    expect(hmsPreparationSchema.safeParse({ ...prepared, businessFields: { storageState: {} } }).success).toBe(false);
+  });
+
+  it('requires session, preparation, property and all business/source bindings on new receipts', () => {
+    const p = preparedFixture();
+    const grant = { version: 2, grantId: 'abf42ce1-17dc-4b87-9ac9-fd4a96f6425a', preparedRef: p.preparedRef,
+      workItemId, ...p.session, transportId, threadId: p.source.threadId, sourceMessageId: p.source.sourceMessageId,
+      sourceHash: p.source.sourceHash, propertyCode: p.scope.propertyCode, tenantId: p.scope.tenantId,
+      operation: p.operation, generationId: p.generationId, expectedRevision: p.revision,
+      businessDigest: p.businessDigest, targetDigest: p.targetDigest, formDigest: p.businessDigest,
+      hmsBeforeDigest: p.nativeObservation.beforeDigest, hmsReadAt: p.nativeObservation.capturedAt,
+      issuedAt: p.capturedAt, expiresAt: p.expiresAt };
+    expect(hmsWriteGrantV2Schema.safeParse(JSON.parse(JSON.stringify(grant))).success).toBe(true);
+    for (const field of ['sessionId', 'sessionProfile', 'preparedRef', 'sourceHash', 'targetDigest', 'generationId', 'propertyCode']) {
+      const incomplete: Record<string, unknown> = { ...grant };
+      delete incomplete[field];
+      expect(hmsWriteGrantV2Schema.safeParse(incomplete).success).toBe(false);
+    }
+    expect(hmsWriteGrantV2Schema.safeParse({ ...grant, formDigest: 'c'.repeat(64) }).success).toBe(false);
+  });
+});
+
+
+it('uses the pane privacy projection for the durable preparation summary', () => {
+  const prepared = preparedFixture();
+  prepared.businessFields.reservationNote = 'Card 4111111111111111';
+  prepared.businessFields.cloudCancel = { preimage: { privateNativeField: 'not public' } };
+  prepared.businessDigest = preparationDigest(prepared.businessFields);
+  const summary = publicHmsPreparedSummary(prepared);
+  expect(summary.stagedFields.cloudCancel).toEqual({});
+  expect(JSON.stringify(summary)).not.toContain('4111111111111111');
+  expect(JSON.stringify(summary)).not.toContain('privateNativeField');
+  expect(summary).not.toHaveProperty('scope');
 });

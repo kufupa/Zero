@@ -54,14 +54,11 @@ function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote
     return (!roomCodes.length || roomCodes.includes(native.roomCode)) && (!group.ratePlan || group.ratePlan === native.rateCode);
   });
 }
-function quoteMealPlanCode(value: unknown, propertyCode: string) {
-  const label = text(value).trim().toLowerCase().replace(/\s+/gu, ' ');
-  if (propertyCode === 'HRCEN') {
-    if (label === 'room only r') return 'room_only';
-    if (label === 'bed & breakfast r') return 'bb';
-    if (['dinner bed & breakfast r', 'dinner, bed & breakfast r', 'dinner, bed, breakfast & beverage r'].includes(label)) return 'dinner_bb';
-  }
-  const mealPlan = text(value).trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
+function quoteMealPlanCode(value: unknown, configuration: Editor['configuration']) {
+  const label = text(value).trim().toLocaleLowerCase().replace(/\s+/gu, ' ');
+  const observed = configuration?.nativeMealMappings.find(row => row.label.trim().toLocaleLowerCase().replace(/\s+/gu, ' ') === label);
+  if (observed) return observed.mealPlan;
+  const mealPlan = label.replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   if (['room_only', 'roomonly', 'ro'].includes(mealPlan)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(mealPlan)) return 'bb';
   if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(mealPlan)) return 'dinner_bb';
@@ -91,8 +88,9 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
     const native = requested.find((row) => row.id === group.id), occupancy = record(group.occupancy);
     return native && native.arrivalDate === group.arrival && native.departureDate === group.departure &&
       native.quantity === group.quantity && native.adults === occupancy.adults &&
-      native.mealPlan === (quoteMealPlanCode(group.mealPlan, editor.snapshot.session.draft.propertyCode)
-        ?? quoteMealPlanCode(group.requestedMealPlan, editor.snapshot.session.draft.propertyCode) ?? 'bb') &&
+      native.mealPlan === (quoteMealPlanCode(group.mealPlan, editor.configuration)
+        ?? quoteMealPlanCode(group.requestedMealPlan, editor.configuration)
+        ?? (!text(group.mealPlan).trim() && !text(group.requestedMealPlan).trim() ? 'bb' : null)) &&
       native.childrenAges instanceof Array && native.childrenAges.length === occupancy.childCount &&
       JSON.stringify(native.childrenAges) === JSON.stringify(occupancy.childAges ?? []) &&
       JSON.stringify(native.roomCodes ?? []) === JSON.stringify(group.roomCodes ?? []) &&
@@ -149,7 +147,7 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
     document.addEventListener('pointerdown', dismiss, true); document.addEventListener('focusin', dismiss, true);
     return () => { document.removeEventListener('pointerdown', dismiss, true); document.removeEventListener('focusin', dismiss, true); };
   }, [open]);
-  const codes = [...new Map([...nativeChoices(editor.snapshot, path, 'room_type').map(row => [row.value, row.label] as const),
+  const codes = [...new Map([...nativeChoices(editor.snapshot, path, 'room_type', editor.configuration).map(row => [row.value, row.label] as const),
     ...options.map(option => [text(option.roomCode), text(option.roomLabel)] as const)].filter(([code]) => code)).entries()];
   const load = async () => {
     if (loadingRef.current) return;

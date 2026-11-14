@@ -5,6 +5,10 @@
 # must be passed in via env. File is owned by ubuntu, mode 600, untracked.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+POLICY_MODULE="$SCRIPT_DIR/../tooling/hms-cloud/hms-workflow-policy.mjs"
+[ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo 'durable env refused: HOLD file present' >&2; exit 2; }
+
 : "${AWS_REGION:=af-south-1}"
 : "${DB_SECRET_NAME:=nava-zero/server-pilot/database-url}"
 : "${OUTLOOK_DEVICE_WRAPPING_KEY_SECRET_NAME:=nava-zero/server-pilot/outlook-device-wrapping-key}"
@@ -15,6 +19,19 @@ set -euo pipefail
 : "${POP3_MAX_MESSAGES_PER_CYCLE:=500}"
 : "${UNDO_SEND_SECONDS:=20}"
 
+# Validate the shared controls before fetching secrets or preparing a candidate.
+node --input-type=module - "$POLICY_MODULE" <<'NODE'
+import { pathToFileURL } from 'node:url';
+const { SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } = await import(pathToFileURL(process.argv[2]).href);
+try {
+  for (const key of SCOPED_RUNTIME_CONTROL_KEYS) validateRuntimeControl(key, process.env[key]);
+} catch {
+  process.stderr.write('invalid shared runtime control\n');
+  process.exit(2);
+}
+NODE
+shared_controls="$(node --input-type=module -e 'const m=await import(process.argv[1]); process.stdout.write(m.SCOPED_RUNTIME_CONTROL_KEYS.join("\n"));' "$POLICY_MODULE")"
+mapfile -t HMS_SHARED_CONTROLS <<<"$shared_controls"
 # Reject misspelled release controls before touching the existing env file.
 for key in PANE_WRITE_CREATE PANE_WRITE_AMEND PANE_WRITE_AMEND_UNPAID PANE_WRITE_AMEND_PAID \
   PANE_WRITE_CANCEL_UNPAID PANE_WRITE_CANCEL_PAID PANE_WRITE_ATTACH; do
@@ -240,6 +257,10 @@ append_env PANE_WRITE_CANCEL_PAID "${PANE_WRITE_CANCEL_PAID:-}"
 append_env PANE_WRITE_ATTACH "${PANE_WRITE_ATTACH:-}"
 # The dedicated Labtest attachment claimant stays off unless explicitly enabled.
 append_env PANE_HMS_LAB_ATTACH_WORKER "${PANE_HMS_LAB_ATTACH_WORKER:-}"
+# Carry every supplied shared control without duplicating keys already written above.
+for key in "${HMS_SHARED_CONTROLS[@]}"; do
+  if ! grep -q "^${key}=" "$ENV_TMP"; then append_env "$key" "${!key:-}"; fi
+done
 unset AZURE_LUNA_PARSED AZURE_OPENAI_BASE_URL AZURE_FOUNDRY_API_KEY
 # Intentionally omitted (must never appear): HMS_MUTATION_ENABLED, HMS_WRITE_ENABLED,
 # HMS_WRITE_ADAPTERS, HMS_ALLOW_LIVE_WRITE, HMS_LIVE_MUTATION, INFOR_HMS_WRITE.
@@ -247,6 +268,7 @@ unset AZURE_LUNA_PARSED AZURE_OPENAI_BASE_URL AZURE_FOUNDRY_API_KEY
 node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$ENV_TMP"
 chown ubuntu:ubuntu "$ENV_TMP"
 chmod 600 "$ENV_TMP"
+[ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo 'durable env refused: HOLD file present' >&2; exit 2; }
 mv -f -- "$ENV_TMP" "$ENV_PATH"
 node -e 'const fs=require("fs");const fd=fs.openSync(process.argv[1],"r");try{fs.fsyncSync(fd)}finally{fs.closeSync(fd)}' "$(dirname "$ENV_PATH")"
 ENV_TMP=""

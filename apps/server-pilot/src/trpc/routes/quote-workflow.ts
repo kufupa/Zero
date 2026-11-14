@@ -75,7 +75,8 @@ import { assertNoCreateDispatchFence } from '../../ai/pane-create-dispatch-fence
 import { advancePaneRevision } from '../../ai/work-item-revision.js';
 import { and, eq } from 'drizzle-orm';
 import { mailboxProcedure, router } from '../trpc.js';
-import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
+import { createHmsService } from '../../hms/hms-service.js';
+import { propertySwitchSchema } from '../../hms/property-registry.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { refuseProperty } from '../../hms/property-refusal.js';
 import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
@@ -532,16 +533,20 @@ export const quoteWorkflowRouter = router({
             ? 'No rate history is linked to these native company and agency IDs.' : 'Some rate history is unavailable; native rate observations are still shown.',
           blocksPrepare: false, blocksGo: false }))] };
   }),
-  rateCatalogue: mailboxProcedure.query(async ({ ctx }) => {
-    const resolved = resolvePropertyTransport(ctx.activeTransportId);
-    if (resolved.kind === 'collector') {
-      refuseProperty({ code: 'collector_no_hotel', transportId: resolved.transportId });
-    }
-    if (resolved.kind === 'refusal') refuseProperty(resolved);
-    const config = await quotePaneConfigForProperty(resolved.property.propertyCode, resolved.transportId);
-    if (!config) refuseProperty({ code: 'not_set_up', transportId: resolved.transportId });
-    return config;
-  }),
+  rateCatalogue: mailboxProcedure
+    .input(z.object({ propertySwitch: propertySwitchSchema.optional() }).optional())
+    .query(async ({ ctx, input }) => {
+      const resolved = resolvePropertyTransport(ctx.activeTransportId);
+      if (resolved.kind === 'collector') refuseProperty({ code: 'collector_no_hotel', transportId: resolved.transportId });
+      if (resolved.kind === 'refusal') refuseProperty(resolved);
+      let service;
+      try {
+        service = createHmsService({ transportId: ctx.activeTransportId, propertySwitch: input?.propertySwitch });
+      } catch {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'This property is not available for this mailbox.' });
+      }
+      return service.configuration();
+    }),
   /** Server-backed Make quote: DV mailboxes only when HMS_DAVINCI_MAKE_QUOTE=on. Writes stay ungated here. */
   makeQuote: mailboxProcedure.query(({ ctx }) => {
     const resolved = quoteTargetForTransport(ctx.activeTransportId);

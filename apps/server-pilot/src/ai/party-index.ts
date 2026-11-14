@@ -1,9 +1,10 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { matchKey } from './party-match.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 
 /**
  * The HMS company and agency list the sweep writes (scripts/party-index-sweep.ts). Staff search it instantly while
@@ -13,7 +14,7 @@ import { matchKey } from './party-match.js';
 export type PartyIndexKind = 'organization' | 'bookingAgency';
 
 /** The only HMS properties that have a party index. Unknown codes stay unknown. */
-export const PARTY_INDEX_PROPERTIES = ['HRCEN', 'HRDAV'] as const;
+export const PARTY_INDEX_PROPERTIES = ['HRCEN', 'HRDAV', 'HRDAVS'] as const;
 export type PartyIndexProperty = (typeof PARTY_INDEX_PROPERTIES)[number];
 
 /** Results per kind. A broad name shows the best ten of each kind, so one kind cannot crowd out the other. */
@@ -21,13 +22,15 @@ export const PARTY_INDEX_CAP_PER_KIND = 10;
 
 export function parsePartyIndexProperty(code: string | null | undefined): PartyIndexProperty | null {
   const value = String(code ?? '').trim().toUpperCase();
-  return value === 'HRCEN' || value === 'HRDAV' ? value : null;
+  return value === 'HRCEN' || value === 'HRDAV' || value === 'HRDAVS' ? value : null;
 }
 
 const plainNativeId = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
 
 export const partyIndexFileSchema = z
   .object({
+    propertyCode: z.enum(PARTY_INDEX_PROPERTIES).optional(),
+    tenantId: z.string().min(1).optional(),
     generatedAt: z.string().refine((value) => Number.isFinite(Date.parse(value)), 'generatedAt must be a date'),
     entries: z
       .array(
@@ -59,22 +62,22 @@ export function partyIndexPath(
 ): string {
   const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
   const property = parsePartyIndexProperty(propertyCode);
-  if (property === 'HRDAV') {
-    const override = env.PARTY_INDEX_PATH_HRDAV?.trim();
+  if (property === 'HRDAV' || property === 'HRDAVS') {
+    const override = (property === 'HRDAV' ? env.PARTY_INDEX_PATH_HRDAV : env.PARTY_INDEX_PATH_HRDAVS)?.trim();
     if (override) return override;
-    return join(repoRoot, '.private/pms-pipeline/party-index/party-index-HRDAV.json');
+    return join(repoRoot, `.private/pms-pipeline/party-index/party-index-${property}.json`);
   }
   if (property === 'HRCEN') {
     const override = env.PARTY_INDEX_PATH?.trim();
     if (override) return override;
     return join(repoRoot, '.private/pms-pipeline/party-index/party-index.json');
   }
-  return join(repoRoot, '.private/pms-pipeline/party-index/unknown.json');
+  throw new Error('party_index_property_required');
 }
 
 /** Progress beside the index. HRCEN keeps `party-index.progress.json`; HRDAV uses its own file. */
 export function partyIndexProgressPath(indexPath: string, propertyCode: string = 'HRCEN'): string {
-  if (parsePartyIndexProperty(propertyCode) === 'HRDAV') {
+  if (parsePartyIndexProperty(propertyCode) !== 'HRCEN') {
     return indexPath.replace(/\.json$/i, '.progress.json');
   }
   return join(dirname(indexPath), 'party-index.progress.json');
@@ -89,38 +92,29 @@ export async function writePrivateFile(path: string, text: string): Promise<void
   await rename(temp, path);
 }
 
-let cache: { path: string; mtimeMs: number; size: number; index: PartyIndexFile } | null = null;
+const cache = new Map<string, PartyIndexFile>();
 
-/**
- * The index at `path`, or null when there is no file or it does not parse against the schema. A null index means the
- * typeahead is off, so staff see the current behaviour. The parsed file is cached until its mtime or size changes.
- */
-export async function loadPartyIndex(path: string = partyIndexPath()): Promise<PartyIndexFile | null> {
+/** Legacy unlabelled files are accepted only for explicitly scoped HRCEN reads. */
+export async function loadPartyIndex(path: string, propertyCode: PartyIndexProperty = 'HRCEN'): Promise<PartyIndexFile | null> {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property) return null;
+  const absolutePath = resolve(path);
   let info: { mtimeMs: number; size: number };
-  try {
-    info = await stat(path);
-  } catch {
-    cache = null;
-    return null;
-  }
-  if (cache && cache.path === path && cache.mtimeMs === info.mtimeMs && cache.size === info.size) return cache.index;
-  let parsed: z.SafeParseReturnType<unknown, PartyIndexFile>;
-  try {
-    const raw: unknown = JSON.parse(await readFile(path, 'utf8'));
-    const legacy = legacyPartyIndexFileSchema.safeParse(raw);
-    const hydrated = legacy.success ? {
-      ...legacy.data,
-      entries: legacy.data.entries.map((entry) => ({
-        ...entry,
-        kind: entry.kind === 'company' ? 'organization' : 'bookingAgency',
-      })),
-    } : raw;
-    parsed = partyIndexFileSchema.safeParse(hydrated);
-  } catch {
-    return null;
-  }
-  if (!parsed.success) return null;
-  cache = { path, mtimeMs: info.mtimeMs, size: info.size, index: parsed.data };
+  try { info = await stat(absolutePath); } catch { return null; }
+  const key = JSON.stringify([property.expectedTenant, propertyCode, absolutePath, info.mtimeMs, info.size]);
+  const cached = cache.get(key);
+  if (cached) return cached;
+  let raw: unknown;
+  try { raw = JSON.parse(await readFile(absolutePath, 'utf8')); } catch { return null; }
+  const legacy = legacyPartyIndexFileSchema.safeParse(raw);
+  const hydrated = legacy.success ? { ...legacy.data, entries: legacy.data.entries.map((entry) => ({
+    ...entry, kind: entry.kind === 'company' ? 'organization' : 'bookingAgency',
+  })) } : raw;
+  const parsed = partyIndexFileSchema.safeParse(hydrated);
+  if (!parsed.success || (parsed.data.propertyCode ?? 'HRCEN') !== propertyCode ||
+      (propertyCode !== 'HRCEN' && (!parsed.data.propertyCode || !parsed.data.tenantId)) ||
+      (parsed.data.tenantId !== undefined && parsed.data.tenantId !== property.expectedTenant)) return null;
+  cache.set(key, parsed.data);
   return parsed.data;
 }
 
@@ -184,14 +178,9 @@ export async function typeaheadPartyIndex(
   query: string,
   options: { path?: string; now?: number; propertyCode?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<PartyIndexReply> {
-  let index: PartyIndexFile | null;
-  if (options.path) {
-    index = await loadPartyIndex(options.path);
-  } else {
-    const property = parsePartyIndexProperty(options.propertyCode ?? 'HRCEN');
-    if (!property) return EMPTY_PARTY_INDEX;
-    index = await loadPartyIndex(partyIndexPath(options.env ?? process.env, property));
-  }
+  const property = parsePartyIndexProperty(options.propertyCode ?? (options.path ? 'HRCEN' : undefined));
+  if (!property) return EMPTY_PARTY_INDEX;
+  const index = await loadPartyIndex(options.path ?? partyIndexPath(options.env ?? process.env, property), property);
   if (!index) return EMPTY_PARTY_INDEX;
   const now = options.now ?? Date.now();
   const updated = Date.parse(index.generatedAt);

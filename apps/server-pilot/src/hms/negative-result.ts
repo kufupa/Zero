@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   hmsEvidenceBindingV1Schema,
   type HmsEvidenceBindingV1,
+  assertHmsPropertyIdentity,
 } from './release-kernel.js';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -44,6 +45,9 @@ export const negativeResultCertificateV1Schema = z
   })
   .strict()
   .superRefine((cert, ctx) => {
+    try { assertHmsPropertyIdentity(cert.binding, cert.binding.propertyCode); } catch {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'property identity mismatch', path: ['binding'] });
+    }
     if (cert.verifierVersion !== cert.binding.verifierVersion) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -67,6 +71,7 @@ export type NegativeGateEvidenceArtifact = {
   discoveryOperationId: HmsEvidenceBindingV1['discoveryOperationId'];
   candidateSnapshotSha256: string;
   propertyCode: HmsEvidenceBindingV1['propertyCode'];
+  tenantId?: string; landingPropertyCode?: HmsEvidenceBindingV1['landingPropertyCode']; origin?: string;
   credentialVersionHmacSha256: string;
   runtimeFingerprintSha256: string;
   privateDigestKeyVersion: string;
@@ -82,7 +87,7 @@ const ARTIFACT_BINDING_KEYS = [
   'operationId',
   'discoveryOperationId',
   'candidateSnapshotSha256',
-  'propertyCode',
+  'propertyCode', 'tenantId', 'landingPropertyCode', 'origin',
   'credentialVersionHmacSha256',
   'runtimeFingerprintSha256',
   'privateDigestKeyVersion',
@@ -104,7 +109,8 @@ export function evidenceArtifactForBinding(
     operationId: binding.operationId,
     discoveryOperationId: binding.discoveryOperationId,
     candidateSnapshotSha256: binding.candidateSnapshotSha256,
-    propertyCode: binding.propertyCode,
+    propertyCode: binding.propertyCode, tenantId: binding.tenantId,
+    landingPropertyCode: binding.landingPropertyCode, origin: binding.origin,
     credentialVersionHmacSha256: binding.credentialVersionHmacSha256,
     runtimeFingerprintSha256: binding.runtimeFingerprintSha256,
     privateDigestKeyVersion: binding.privateDigestKeyVersion,
@@ -174,7 +180,7 @@ const BINDING_FIELD_ORDER = [
   'operationId',
   'discoveryOperationId',
   'candidateSnapshotSha256',
-  'propertyCode',
+  'propertyCode', 'tenantId', 'landingPropertyCode', 'origin',
   'credentialVersionHmacSha256',
   'runtimeFingerprintSha256',
   'privateDigestKeyVersion',

@@ -1,6 +1,7 @@
 {
   "property": {
-    "propertyCode": "HRFAKE", "active": true,
+    "propertyCode": "HRFAKE", "active": true, "group": "davinci",
+    "landingPropertyCode": "HRFAKE", "origin": "https://hms.example.invalid",
     "transportIds": ["transport-hrfake", "transport-hrfake-sales"],
     "expectedTenant": "HMS_FAKE",
     "expectedPropertyName": "HRFAKE Fixture Hotel",

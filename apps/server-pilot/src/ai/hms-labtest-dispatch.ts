@@ -1,6 +1,8 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { propertyCodeSchema } from '../hms/property-registry.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import { consumeNeverDispatchedCreateProof } from '../../tooling/hms-cloud/saved-stay-save-route-chain.mjs';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
@@ -19,7 +21,8 @@ const operation = z.enum(['create', 'attach_document', 'amend', 'cancel', 'add_o
 const shot = z.object({ runId: z.string().uuid(), sha256: digest }).strict();
 const claimSchema = z.object({
   workItemId: uuid, transportId: identifier, actorUserId: identifier, grantId: uuid,
-  propertyCode: z.literal('HRCEN'), firstName: z.string().trim().min(1).max(256), lastName: z.string().trim().min(1).max(256),
+  propertyCode: propertyCodeSchema, tenantId: identifier.optional(),
+  firstName: z.string().trim().min(1).max(256), lastName: z.string().trim().min(1).max(256),
   nativeGuestId: z.string().regex(/^[0-9]{1,30}$/), operation,
   stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/).optional(),
   sourceDigest: digest, approvedDigest: digest, requestDigest: digest,
@@ -118,7 +121,12 @@ function evidenceTargets(raw: unknown): HmsDispatchTarget[] {
 
 /** Only identities bound together in one sealed intent may become aliases. */
 function intentAliases(raw: unknown) {
-  const value = object(raw), explicit = hmsDispatchTargetSchema.safeParse(value.target), derived = evidenceTargets(raw);
+  const value = object(raw), scope = propertyCodeSchema.safeParse(object(raw).propertyCode);
+  if (!scope.success) return { keys: [] as string[], conflict: true, target: null, derivedKeys: new Set<string>() };
+  const registration = getPropertyRegistration(scope.data);
+  if (!registration) return { keys: [] as string[], conflict: true, target: null, derivedKeys: new Set<string>() };
+  const tenantMismatch = value.tenantId !== undefined && value.tenantId !== registration.expectedTenant;
+  const explicit = hmsDispatchTargetSchema.safeParse(value.target), derived = evidenceTargets(raw);
   const candidates = [...(explicit.success ? [explicit.data] : []), ...derived];
   const allKeys = [...new Set(candidates.flatMap(hmsDispatchTargetKeys))];
   const expectedKind = value.operation === 'create' ? 'create' : 'saved';
@@ -126,9 +134,9 @@ function intentAliases(raw: unknown) {
   const create = candidates.find((candidate) => candidate.kind === 'create');
   const saved = candidates.filter((candidate) => candidate.kind === 'saved');
   const confirmations = saved.filter((candidate) => candidate.confirmation).map((candidate) =>
-    hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved', confirmation: candidate.confirmation }));
+    hmsDispatchTargetKey({ propertyCode: candidate.propertyCode, kind: 'saved', confirmation: candidate.confirmation }));
   const nativeIds = saved.filter((candidate) => candidate.nativeStayId).map((candidate) =>
-    hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved', nativeStayId: candidate.nativeStayId }));
+    hmsDispatchTargetKey({ propertyCode: candidate.propertyCode, kind: 'saved', nativeStayId: candidate.nativeStayId }));
   const recovery = object(value.recovery), request = object(recovery.request), selected = object(recovery.selected);
   const preimage = object(recovery.preimage), native = object(preimage.native);
   const invalidIdentity = value.operation !== 'create' && [
@@ -138,15 +146,15 @@ function intentAliases(raw: unknown) {
       selected.reservationStayId, selected.nativeStayId, preimage.reservationStayId, native.reservationStayId, native.nativeStayId]
       .map((nativeStayId) => ({ nativeStayId })),
   ].some((identity) => Object.values(identity).some((part) => part !== undefined && part !== null && part !== '') &&
-    !hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved', ...identity }).success);
+    !hmsDispatchTargetSchema.safeParse({ propertyCode: scope.data, kind: 'saved', ...identity }).success);
   const derivedKeys = new Set(derived.flatMap(hmsDispatchTargetKeys));
   const explicitUnverified = explicit.success && hmsDispatchTargetKeys(explicit.data).some((key) => !derivedKeys.has(key));
-  const conflict = wrongKind || invalidIdentity || explicitUnverified || (expectedKind === 'create' && allKeys.length > 1) ||
+  const conflict = tenantMismatch || wrongKind || invalidIdentity || explicitUnverified || (expectedKind === 'create' && allKeys.length > 1) ||
     new Set(confirmations).size > 1 || new Set(nativeIds).size > 1;
   const confirmation = saved.find((candidate) => candidate.confirmation)?.confirmation;
   const nativeStayId = saved.find((candidate) => candidate.nativeStayId)?.nativeStayId;
   const target: HmsDispatchTarget | null = conflict ? null : expectedKind === 'create' ? create ?? null
-    : confirmation || nativeStayId ? { propertyCode: 'HRCEN', kind: 'saved', confirmation, nativeStayId } : null;
+    : confirmation || nativeStayId ? { propertyCode: scope.data, kind: 'saved', confirmation, nativeStayId } : null;
   return { keys: allKeys, conflict, target, derivedKeys };
 }
 
@@ -190,14 +198,14 @@ function resolutionMatchesIntent(intent: Intent, evidence: { confirmation: strin
   if (!target) return intent.operation === 'create';
   if (target.kind !== 'saved') return true;
   if (target.confirmation) {
-    const reported = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved', confirmation: evidence.confirmation });
-    if (!reported.success || hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved', confirmation: target.confirmation }) !==
+    const reported = hmsDispatchTargetSchema.safeParse({ propertyCode: intent.propertyCode, kind: 'saved', confirmation: evidence.confirmation });
+    if (!reported.success || hmsDispatchTargetKey({ propertyCode: intent.propertyCode, kind: 'saved', confirmation: target.confirmation }) !==
         hmsDispatchTargetKey(reported.data)) return false;
   }
   if (evidence.nativeReadback) {
-    const readback = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
+    const readback = hmsDispatchTargetSchema.safeParse({ propertyCode: intent.propertyCode, kind: 'saved',
       confirmation: evidence.nativeReadback.confirmation, nativeStayId: evidence.nativeReadback.nativeStayId });
-    const reported = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'saved',
+    const reported = hmsDispatchTargetSchema.safeParse({ propertyCode: intent.propertyCode, kind: 'saved',
       confirmation: evidence.confirmation, nativeStayId: evidence.nativeStayId });
     let encoded: string;
     try { encoded = canonicalJson(evidence.nativeReadback); } catch { return false; }
@@ -208,8 +216,8 @@ function resolutionMatchesIntent(intent: Intent, evidence: { confirmation: strin
       (evidence.nativeStayId && !target.nativeStayId)) return false;
   if (!target.nativeStayId) return true;
   if (!evidence.nativeStayId) return !requireNative;
-  return hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved', nativeStayId: target.nativeStayId }) ===
-    hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved', nativeStayId: evidence.nativeStayId });
+  return hmsDispatchTargetKey({ propertyCode: intent.propertyCode, kind: 'saved', nativeStayId: target.nativeStayId }) ===
+    hmsDispatchTargetKey({ propertyCode: intent.propertyCode, kind: 'saved', nativeStayId: evidence.nativeStayId });
 }
 
 type HistoryEntry = { intent: Intent; keys: string[] };
@@ -280,7 +288,7 @@ async function readHistory(tx: CreateFenceTransaction) {
     }
     // A trusted positive readback can join a newly observed confirmation/native pair.
     if (value.kind === 'resolved' && intent.operation !== 'create' && value.nativeStayId) {
-      entry!.keys = [...new Set([...entry!.keys, ...hmsDispatchTargetKeys({ propertyCode: 'HRCEN', kind: 'saved',
+      entry!.keys = [...new Set([...entry!.keys, ...hmsDispatchTargetKeys({ propertyCode: intent.propertyCode, kind: 'saved',
         confirmation: value.confirmation, nativeStayId: value.nativeStayId })])];
     }
     resolved.add(value.holdId);
@@ -320,6 +328,15 @@ export async function readResolvedHmsLabtestCreates(tx: CreateFenceTransaction, 
 }
 
 type History = Awaited<ReturnType<typeof readHistory>>;
+
+/** Changing selected property cannot discard an uncertain or corrupt dispatch. */
+export async function assertNoUnresolvedHmsDispatchForWorkItem(tx: CreateFenceTransaction, workItemId: string): Promise<void> {
+  const history = await readHistory(tx);
+  const id = workItemId.toLowerCase();
+  if (history.corruptItems.has(id) || history.active.some((entry) => entry.intent.workItemId === id)) {
+    throw new HmsLabtestDispatchError('occupied');
+  }
+}
 const historyEpoch = (history: History, keys: string[]) =>
   createHash('sha256').update([...history.intents.values()].filter((entry) => entry.keys.some((key) => keys.includes(key)))
     .map(({ intent }) => intent.holdId).sort().join('\0')).digest('hex');
@@ -397,7 +414,11 @@ export async function claimHmsLabtestDispatch(
       targetKeys.some((key) => !aliases.derivedKeys.has(key))) {
     throw new HmsLabtestDispatchError('invalid');
   }
-  const input = Object.freeze(parsed.data);
+  const registration = getPropertyRegistration(parsed.data.propertyCode);
+  if (!registration || (parsed.data.tenantId !== undefined && parsed.data.tenantId !== registration.expectedTenant)) {
+    throw new HmsLabtestDispatchError('invalid');
+  }
+  const input = Object.freeze({ ...parsed.data, tenantId: registration.expectedTenant });
   let encoded: string;
   try { encoded = canonicalJson(input); } catch { throw new HmsLabtestDispatchError('invalid'); }
   if (Buffer.byteLength(encoded) > 16_384) throw new HmsLabtestDispatchError('invalid');
@@ -429,7 +450,7 @@ async function finishDispatch(db: DB, holdId: string, evidence: Resolution | { o
       throw new HmsLabtestDispatchError('phase');
     }
     return !('notDispatched' in evidence) && entry.intent.operation !== 'create' && evidence.nativeStayId
-      ? [...entry.keys, ...hmsDispatchTargetKeys({ propertyCode: 'HRCEN', kind: 'saved',
+      ? [...entry.keys, ...hmsDispatchTargetKeys({ propertyCode: entry.intent.propertyCode, kind: 'saved',
         confirmation: evidence.confirmation, nativeStayId: evidence.nativeStayId })]
       : entry.keys;
   };
@@ -517,7 +538,7 @@ export async function consumeNeverDispatchedCancelProof(proof: unknown, binding:
   const target = hmsDispatchTargetSchema.safeParse(binding.target);
   if (!target.success || target.data.kind !== 'saved' || !target.data.confirmation || !target.data.nativeStayId ||
       !z.string().uuid().safeParse(binding.runId).success || typeof binding.cloudTargetKey !== 'string') return false;
-  return consume(proof, { operation: 'cancel', propertyCode: 'HRCEN', target: target.data,
+  return consume(proof, { operation: 'cancel', propertyCode: target.data.propertyCode, target: target.data,
     recovery: { runId: binding.runId, confirmation: target.data.confirmation,
       nativeStayId: target.data.nativeStayId, cloudTargetKey: binding.cloudTargetKey } });
 }

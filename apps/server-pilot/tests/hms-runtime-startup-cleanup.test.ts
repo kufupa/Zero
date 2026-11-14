@@ -13,8 +13,8 @@ vi.mock('../src/hms/production-runtime.js', () => ({
 const ENV = {
   HMS_HEALTH_STATUS_PATH: '/tmp/hms-runtime-cleanup-test-health.json',
   HMS_EXPECTED_PROPERTY_CODE: 'HRCEN',
-  HMS_EXPECTED_TENANT: 'runtime-cleanup-test-tenant',
-  HMS_EXPECTED_TRANSPORT_ID: 'runtime-cleanup-test-transport',
+  HMS_EXPECTED_TENANT: 'THECENTURION_PRD',
+  HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
   HMS_READ_SECRET_ARN: 'runtime-cleanup-test-secret',
   HMS_CHROMIUM_EXECUTABLE_PATH: '/bin/false',
   HMS_READ_ROLE_PROOF_PATH: '/tmp/runtime-cleanup-test-role-proof.json',
@@ -33,7 +33,7 @@ let previousEnv: Partial<Record<keyof typeof ENV, string | undefined>>;
 
 async function waitForStart(start: ReturnType<typeof vi.fn>): Promise<void> {
   // Module loading can outlast 100 immediate turns when test files run together.
-  await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1), { timeout: 2_000 });
+  await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1), { timeout: 5_000 });
 }
 
 beforeEach(async () => {
@@ -43,10 +43,10 @@ beforeEach(async () => {
   await worker.closeProductionHmsRuntimeForTests();
   createProductionHmsRuntime.mockReset();
   resolveHmsSourceRevision.mockReset().mockReturnValue('runtime-cleanup-test-source');
-});
+}, 30_000);
 
 afterEach(async () => {
-  await worker.closeProductionHmsRuntimeForTests();
+  await worker?.closeProductionHmsRuntimeForTests();
   for (const key of ENV_KEYS) {
     const value = previousEnv[key];
     if (value === undefined) delete process.env[key];

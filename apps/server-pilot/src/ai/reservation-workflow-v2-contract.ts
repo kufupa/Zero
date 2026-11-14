@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { propertyCodeSchema, propertySwitchSchema } from '../hms/property-registry.js';
 
 /** Wire contract for the source-bound reservation draft. No runtime/database imports. */
 export const RESERVATION_WORKFLOW_V2_VERSION = 2 as const;
@@ -123,7 +124,7 @@ export const reservationWorkflowV2ExtractionSchema = z.object({
 export type ReservationWorkflowV2Extraction = z.infer<typeof reservationWorkflowV2ExtractionSchema>;
 export const reservationWorkflowV2PrefillInputSchema = z.object({
   transportId: z.string().min(1).max(200),
-  propertyCode: z.string().min(1).max(80),
+  propertyCode: propertyCodeSchema,
   source: z.object({ threadId: z.string().min(1).max(500), messageId: z.string().min(1).max(500),
     sourceHash: z.string().regex(/^[a-f0-9]{64}$/), decisionAt: z.string().datetime({ offset: true }) }).strict(),
   evidence: z.array(reservationWorkflowV2EvidenceSchema).max(500),
@@ -146,7 +147,7 @@ const bookingFieldsSchema = z.object({
   reasonForStay: value(z.string().max(500)).optional(),
   billingReference: value(z.string().max(50)).optional(),
   track: value(z.string().max(120)).optional(),
-  guestOptIn: value(z.literal(false)).optional(),
+  guestOptIn: value(z.boolean()).optional(),
   bookerName: value(z.string().max(50)).optional(),
   bookerEmail: value(z.string().max(320)).optional(),
   bookerMobile: value(z.string().max(120)).optional(),
@@ -395,7 +396,7 @@ export const reservationWorkflowV2ObservationSchema = z.object({
     'rate_availability', 'service_preview', 'document']),
   status: z.enum(['complete', 'partial', 'unavailable', 'failed']),
   observedAt: z.string().datetime({ offset: true }),
-  propertyCode: z.string().min(1).max(80),
+  propertyCode: propertyCodeSchema,
   sourceMessageId: z.string().max(500).nullable(),
   sourceRefs: z.array(refSchema).max(500),
   criteria: z.record(z.unknown()),
@@ -405,6 +406,7 @@ export const reservationWorkflowV2ObservationSchema = z.object({
 export type ReservationWorkflowV2Observation = z.infer<typeof reservationWorkflowV2ObservationSchema>;
 
 export const reservationWorkflowV2SourceSchema = z.object({
+  propertyId: propertyCodeSchema.optional(),
   threadId: z.string().min(1).max(500),
   messageId: z.string().min(1).max(500),
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/),
@@ -444,7 +446,7 @@ export const reservationWorkflowV2DraftSchema = z.object({
   schemaVersion: z.literal(RESERVATION_PREFILL_SCHEMA_VERSION),
   workItemId: z.string().uuid(),
   transportId: z.string().min(1).max(200),
-  propertyCode: z.string().min(1).max(80),
+  propertyCode: propertyCodeSchema,
   source: reservationWorkflowV2SourceSchema,
   generationId: z.string().uuid(),
   revision: z.number().int().nonnegative(),
@@ -515,11 +517,13 @@ export const reservationWorkflowV2EnsureInputSchema = z.object({
   /** Optional display/routing convenience only; canonical messageId on `source` is authoritative. */
   internetMessageId: z.string().min(1).max(998).nullable().optional(),
   source: reservationWorkflowV2SourceSchema,
+  propertySwitch: propertySwitchSchema.optional(),
   mode: z.enum(['initialize', 'prefill']).optional(),
 }).strict();
 export type ReservationWorkflowV2EnsureInput = z.infer<typeof reservationWorkflowV2EnsureInputSchema>;
 export const reservationWorkflowV2ItemInputSchema = z.object({
   workItemId: z.string().uuid(), source: reservationWorkflowV2SourceSchema,
+  propertySwitch: propertySwitchSchema.optional(),
   expectedRevision: z.number().int().nonnegative(), expectedSeq: z.number().int().nonnegative(),
 }).strict();
 export type ReservationWorkflowV2ItemInput = z.infer<typeof reservationWorkflowV2ItemInputSchema>;

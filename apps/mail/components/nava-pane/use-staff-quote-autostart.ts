@@ -114,6 +114,7 @@ export function useStaffQuoteAutostart({
         groups: groupsForQuoteStep(quoteSession, candidate),
         header: autoRunHeader(quoteSession),
         propertyCode: activePaneConfig?.propertyCode,
+        configuration: activePaneConfig,
         stayKey: candidate.shareKey,
       });
     });
