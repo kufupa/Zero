@@ -144,10 +144,10 @@ const bookingFieldsSchema = z.object({
   taCommission: value(z.union([z.number().min(0).max(100), z.string().max(40)])).optional(),
   sourceOfBusiness: value(z.string().max(120)).optional(),
   reasonForStay: value(z.string().max(500)).optional(),
-  billingReference: value(z.string().max(4000)).optional(),
+  billingReference: value(z.string().max(50)).optional(),
   track: value(z.string().max(120)).optional(),
-  guestOptIn: value(z.boolean()).optional(),
-  bookerName: value(z.string().max(300)).optional(),
+  guestOptIn: value(z.literal(false)).optional(),
+  bookerName: value(z.string().max(50)).optional(),
   bookerEmail: value(z.string().max(320)).optional(),
   bookerMobile: value(z.string().max(120)).optional(),
   reservationNote: value(z.string().max(2000)).optional(),
@@ -237,7 +237,13 @@ const changeSchema = z.discriminatedUnion('op', [
   z.object({ op: z.literal('clear'), field: amendFieldSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
   z.object({ op: z.literal('shift_dates'), days: z.number().int(), sourceRefs: z.array(refSchema).max(100) }).strict(),
   z.object({ op: z.literal('shift_departure'), days: z.number().int(), sourceRefs: z.array(refSchema).max(100) }).strict(),
-]);
+]).superRefine((change, ctx) => {
+  if (change.op === 'set' && change.field === 'billingReference' &&
+      (typeof change.value !== 'string' || change.value.length > 50)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['value'],
+      message: 'Billing Reference must be at most 50 characters.' });
+  }
+});
 const amendBodySchema = z.object({
   targets: savedScopeSchema,
   sharedChanges: z.array(changeSchema).max(200),
@@ -342,14 +348,40 @@ export function separatedQuoteMoneyLinked(
 
 // Existing drafts may contain notes accepted before the native limit was fixed.
 // New/model proposals still use the strict 2,000-character schema above.
-const storedBookingFieldsSchema = bookingFieldsSchema.extend({ reservationNote: value(z.string().max(4000)).optional() });
+const storedBookingFieldsSchema = bookingFieldsSchema.extend({
+  billingReference: value(z.string().max(4000)).optional(),
+  guestOptIn: value(z.boolean()).optional(),
+  bookerName: value(z.string().max(300)).optional(),
+  reservationNote: value(z.string().max(4000)).optional(),
+});
 const storedCreateBodySchema = createBodySchema.extend({
   shared: storedBookingFieldsSchema,
   dateSections: z.array(createBodySchema.shape.dateSections.element.extend({ defaults: storedBookingFieldsSchema })).max(100),
   allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: storedBookingFieldsSchema })).max(100),
 });
+// Existing Amend drafts may retain billing references accepted before the native
+// 50-character limit. New/model proposals still use the strict changeSchema above.
+const storedAmendChangeSchema = z.discriminatedUnion('op', [
+  z.object({ op: z.literal('set'), field: amendFieldSchema, value: amendScalarSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
+  z.object({ op: z.literal('clear'), field: amendFieldSchema, sourceRefs: z.array(refSchema).max(100) }).strict(),
+  z.object({ op: z.literal('shift_dates'), days: z.number().int(), sourceRefs: z.array(refSchema).max(100) }).strict(),
+  z.object({ op: z.literal('shift_departure'), days: z.number().int(), sourceRefs: z.array(refSchema).max(100) }).strict(),
+]).superRefine((change, ctx) => {
+  if (change.op === 'set' && change.field === 'billingReference' &&
+      (typeof change.value !== 'string' || change.value.length > 4000)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['value'],
+      message: 'Billing Reference must be at most 4000 characters.' });
+  }
+});
+const storedAmendBodySchema = z.object({
+  targets: savedScopeSchema,
+  sharedChanges: z.array(storedAmendChangeSchema).max(200),
+  perTarget: z.array(z.object({ hintId: idSchema, changes: z.array(storedAmendChangeSchema).max(200),
+    rateHandling: z.enum(['retain', 'reprice']).nullable(), currentObservationRefs: z.array(refSchema).max(100) }).strict()).max(100),
+}).strict();
 const storedRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0],
-  requestSchema.options[1].extend({ body: storedCreateBodySchema }), requestSchema.options[2], requestSchema.options[3],
+  requestSchema.options[1].extend({ body: storedCreateBodySchema }),
+  requestSchema.options[2].extend({ body: storedAmendBodySchema }), requestSchema.options[3],
   requestSchema.options[4], requestSchema.options[5], requestSchema.options[6]]);
 const storedProposalSchema = reservationWorkflowV2ProposalSchema.extend({
   content: reservationWorkflowV2ProposalSchema.shape.content.extend({ requests: z.array(storedRequestSchema).max(200) }),

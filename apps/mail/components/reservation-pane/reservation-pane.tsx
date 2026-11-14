@@ -2,7 +2,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { inputFieldLabel } from '@/lib/reservation-workflow/client';
+import { attentionFieldPath, inputFieldLabel } from '@/lib/reservation-workflow/client';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
 import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
@@ -209,7 +209,12 @@ export function ReservationPane(props: ReservationPaneProps) {
   const focusField = (field: string) => {
     const pane = paneRef.current;
     if (!pane || !request) return;
-    let path = field.split(':')[0]!;
+    let path = attentionFieldPath(field, requestPath(request.id));
+    if (field.endsWith(':lunch_extra_price_required') && request.kind === 'quote') {
+      const money = Array.isArray(body.requestedMoney) ? body.requestedMoney.map(record) : [];
+      const lunchIndex = money.findIndex(row => row.staffAllowanceType === 'lunch');
+      if (lunchIndex >= 0) path = `${requestPath(request.id)}/body/requestedMoney/${lunchIndex}/amount`;
+    }
     if (path.endsWith('/occupancy') && field.endsWith(':known_child_count_and_ages_required')) path += '/childCount';
     const invalidDateRange = field.endsWith(':date_range_invalid');
     if (invalidDateRange && request.kind === 'create' && path === 'stay') {

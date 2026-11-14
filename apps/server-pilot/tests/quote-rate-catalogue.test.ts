@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { appRouter } from '../src/trpc/router.js';
-import { quoteSalesStrategiesFromRegistry } from '../src/hms/rate-catalogue.js';
+import { quotePaneConfigForProperty, quoteSalesStrategiesFromRegistry } from '../src/hms/rate-catalogue.js';
 
 function signedInCaller(transportId = 'transport-centurion') {
   return appRouter.createCaller({
@@ -21,6 +24,39 @@ function anonymousCaller() {
 }
 
 describe('mailbox-scoped quote pane configuration', () => {
+  it('uses HMS native rate plans when the catalog has rates', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'rate-catalogue-'));
+    const path = join(directory, 'catalogs.json');
+    try {
+      await writeFile(path, JSON.stringify({
+        schemaVersion: 'hms-native-catalogs/v1',
+        propertyCode: 'HRCEN',
+        capturedAt: '2026-11-14T00:00:00.000Z',
+        source: { reader: 'test' },
+        catalogs: {
+          ratePlans: {
+            status: 'matches',
+            scope: { kind: 'rate_shop', query: null, wholeCatalogComplete: false },
+            coverage: { complete: false },
+            records: [
+              { nativeId: null, code: 'GNC1B', meaning: 'Group Negotiated 1', capturedAt: '2026-11-14T00:00:00.000Z' },
+              { nativeId: null, code: 'BAR', meaning: 'Native Best Available', capturedAt: '2026-11-14T00:00:00.000Z' },
+            ],
+          },
+        },
+      }));
+
+      const config = await quotePaneConfigForProperty('HRCEN', 'transport-centurion', {
+        HMS_NATIVE_CATALOG_PATH: path,
+      } as NodeJS.ProcessEnv);
+
+      expect(config?.ratePlans.map(({ code }) => code)).toEqual(['GNC1B', 'BAR']);
+      expect(config?.ratePlans[0]).toMatchObject({ code: 'GNC1B', name: 'Group Negotiated 1' });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('keeps Centurion room, rate, and override choices unchanged', async () => {
     const config = await signedInCaller().quoteWorkflow.rateCatalogue();
     expect(config).toMatchObject({

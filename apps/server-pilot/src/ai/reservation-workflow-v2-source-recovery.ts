@@ -9,7 +9,7 @@ const roomCandidateSchema = z.object({ code: z.string().regex(/^[A-Z0-9]{1,12}$/
 /** Recover source-backed suggestions; booking recovery never changes a native action. */
 export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkflowV2Draft): { draft: ReservationWorkflowV2Draft; paths: string[] } | null {
   if (!input.extraction || input.extractionGenerationId !== input.generationId ||
-      !['complete', 'superseded'].includes(input.prefill?.status ?? '')) return null;
+      !['complete', 'failed', 'superseded'].includes(input.prefill?.status ?? '')) return null;
   const currentRef = `src_${createHash('sha256').update(`${input.source.messageId}\u001fmessage\u001f${input.source.messageId}`).digest('hex').slice(0, 12)}`;
   const sourceObservations = input.observations.filter(row => row.kind === 'source' && row.generationId === input.generationId &&
       row.sourceMessageId === input.source.messageId && row.propertyCode === input.propertyCode &&
@@ -43,6 +43,32 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
           const occupancy = group.occupancy;
           const hasChildren = extracted.occupancy.some(row => Boolean(row.childCount || row.childAges?.length));
           const root = `${bodyRoot}/groups/${index}/occupancy`, alias = `${bodyAlias}/groups/${index}/occupancy`;
+          const parentOverrides = [root, alias].flatMap((path) => {
+            const override = draft.fieldOverrides[path];
+            return override?.state === 'set' && override.value && typeof override.value === 'object' && !Array.isArray(override.value)
+              ? [{ override, value: override.value as Record<string, unknown> }] : [];
+          });
+          const leafOverride = (field: 'childCount' | 'childAges') => [root, alias]
+            .map((path) => draft.fieldOverrides[`${path}/${field}`]).find((override) => override && override.state !== 'inherit');
+          const parentValue = (field: 'childCount' | 'childAges') => parentOverrides[0]?.value[field] ?? occupancy[field];
+          const childCountOverride = leafOverride('childCount'), childAgesOverride = leafOverride('childAges');
+          const effectiveChildCount = childCountOverride?.state === 'set' ? childCountOverride.value :
+            childCountOverride ? undefined : parentValue('childCount');
+          const effectiveChildAges = childAgesOverride?.state === 'set' ? childAgesOverride.value :
+            childAgesOverride ? undefined : parentValue('childAges');
+          if (!hasChildren && effectiveChildCount === null && effectiveChildAges === null) {
+            occupancy.childCount = 0;
+            occupancy.childAges = [];
+            for (const { override, value } of parentOverrides) override.value = { ...value, childCount: 0, childAges: [] };
+            if (childCountOverride?.state === 'set') childCountOverride.value = 0;
+            if (childAgesOverride?.state === 'set') childAgesOverride.value = [];
+            for (const path of [`${root}/childCount`, `${root}/childAges`]) {
+              draft.proposal.annotations = draft.proposal.annotations.filter(annotation => annotation.path !== path);
+              if (draft.proposal.annotations.length < 2000)
+                draft.proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
+              paths.push(path);
+            }
+          }
           for (const [field, value] of [['scope', 'per_room'], ['adults', 1], ['childCount', 0], ['childAges', []]] as const) {
             if ((field === 'scope' || field === 'adults') && (occupancyConflict || hasOccupancy || occupancy.scope !== 'unresolved' && occupancy.scope !== 'per_room')) continue;
             if ((field === 'childCount' || field === 'childAges') && hasChildren) continue;

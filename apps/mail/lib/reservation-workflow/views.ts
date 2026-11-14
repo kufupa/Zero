@@ -615,6 +615,7 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
   const available = new Map<string, NativeChoice>();
   if (draft.propertyCode === 'HRCEN') for (const [code, entry] of Object.entries(CENTURION_RATE_CATALOGUE))
     available.set(code, { ref: `catalogue:${code}`, value: code, label: entry.name, detail: 'Check price and availability in Infor' });
+  for (const choice of native) available.set(choice.value, choice);
   for (const observation of draft.observations) {
     if (observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
       observation.sourceMessageId !== draft.source.messageId || observation.criteria.requestId !== requestId) continue;
@@ -625,7 +626,6 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
         label: text(option.rateName ?? option.label) || code, detail: 'Check price and availability in Infor' });
     }
   }
-  for (const choice of native) available.set(choice.value, choice);
   return [...available.values()];
 }
 

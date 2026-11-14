@@ -267,6 +267,7 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
       { kind: 'office_transfer', label: 'Office Transfer' },
       { kind: 'dinner', label: 'Dinner' },
     ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || rows.length >= 100}
+      data-field-path={extra.kind === 'lunch' ? `${bodyPath}/requestedMoney` : undefined}
       onClick={() => void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })}>+ {extra.label}</button>)}</div>
     <p className={styles.note}>Customer amounts are separate from Infor room rates. They never replace a native rate.</p>
     {rows.map((row, index) => {
