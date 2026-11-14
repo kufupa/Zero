@@ -44,8 +44,12 @@ test('HRDAVS records observed choices without claiming room inventory or true co
   assert.equal(Object.keys(profile.ratePlans).length, 100);
   assert.equal(profile.ratePlans.BAR.mealPlan, 'unknown');
   const stay = { marketSegment: 'Airline', guestoptin4: false, reservationNote: 'note' };
+  assert.deepEqual(profile.requiredCreateFields, ['reservationnote']);
   assert.equal(stayBookFieldRefusal(stay, profile), null);
   assert.equal(stayBookFieldRefusal({ ...stay, guestoptin4: undefined }, profile), 'pane_save_guest_opt_in_required');
+  const hrdav = profileFor('HRDAV');
+  assert.equal(stayBookFieldRefusal(stay, hrdav), null);
+  assert.equal(stayBookFieldRefusal({ ...stay, guestoptin4: undefined }, hrdav), 'pane_save_guest_opt_in_required');
 });
 
 test('capacities summing to 161 against 160 published rooms are rejected', async () => {

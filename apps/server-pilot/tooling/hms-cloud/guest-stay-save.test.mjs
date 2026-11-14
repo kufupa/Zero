@@ -349,6 +349,13 @@ test('native unchecked opt-in may omit submit data only with a current owned fal
     assert.equal(page.lastDraft.guestOptInSubmitOmitted, true);
     assert.equal(Object.hasOwn(page.lastDraft, 'guestOptInSubmitValue'), false);
   }
+  const requiredButtonCheckbox = makePage();
+  const checkboxEl = requiredButtonCheckbox.elements.find(field => field.name === 'guestoptin4');
+  checkboxEl.type = 'button';
+  checkboxEl.value = '';
+  requiredButtonCheckbox.components.guestoptin4.allowBlank = false;
+  requiredButtonCheckbox.components.guestoptin4.isValid = () => true;
+  assert.equal((await run(requiredButtonCheckbox)).issue, 'LABTEST_PROFILE_PROOF_STALE');
   for (const submitted of [0, '0', false, 'false']) {
     const page = makePage(); page.components.guestoptin4.getSubmitData = () => ({ guestoptin4: submitted });
     assert.equal((await run(page)).issue, 'LABTEST_PROFILE_PROOF_STALE');

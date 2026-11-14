@@ -340,6 +340,7 @@ describe('createRequestFieldOptions', () => {
     expect(options.sourceOfBusiness).toEqual([]);
     expect(options.track).toEqual([]);
     expect(options.guaranteeType).toContain('Awaiting Voucher');
+    expect(options.requiredCreateFields).toEqual(['reservationnote', 'marketsegment', 'guestoptin4']);
   });
 
   it('keeps HRCEN choices unchanged and has no extra required create fields', () => {

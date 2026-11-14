@@ -3,20 +3,7 @@
   "propertyCode": "HRDAVS",
   "propertyName": "Davinci Suites",
   "requiredCreateFields": [
-    "arrivaldate",
-    "departuredate",
-    "adults",
-    "sourceofbusinessdesc",
-    "guaranteetype",
-    "roomtype",
-    "rateplan",
-    "marketsegment",
-    "track",
-    "reservationnote",
-    "channel",
-    "lastname",
-    "firstname",
-    "guestoptin4"
+    "reservationnote"
   ],
   "rooms": {
     "1BLX": {

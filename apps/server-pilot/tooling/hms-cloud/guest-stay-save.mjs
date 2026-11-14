@@ -428,10 +428,22 @@ async function draft(page, expected) {
       }
       if (organizationName && !['', organizationName].includes(String(data.companyname ?? '').trim())) return 'DRAFT_ORGANIZATION_MODEL';
     }
+    const isCheckbox = (el, component) =>
+      el.type === 'checkbox' ||
+      component?.xtype === 'checkbox' ||
+      component?.xtype === 'checkboxfield' ||
+      component?.getXType?.() === 'checkboxfield' ||
+      component?.isXType?.('checkboxfield');
     const blankRequired = [...form.el.dom.querySelectorAll('input,textarea,select')].filter(visible).some((el) => {
       const component = el.id && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
-      return component?.allowBlank === false && !String(el.value ?? '').trim() &&
-        !(expected.billingPhase === 'before' && el === fields.billingreference?.[0]);
+      if (component?.allowBlank !== false) return false;
+      if (expected.billingPhase === 'before' && el === fields.billingreference?.[0]) return false;
+      // ExtJS checkbox inputs render as <input type="button" value=""> regardless of checked state.
+      if (isCheckbox(el, component)) {
+        return typeof component?.getValue !== 'function' || typeof component.getValue() !== 'boolean' ||
+          (typeof component?.isValid === 'function' && !component.isValid());
+      }
+      return !String(el.value ?? '').trim();
     });
     if (blankRequired) return 'DRAFT_REQUIRED_FIELDS';
     const verifiedPartyValues = { ...partyValues };

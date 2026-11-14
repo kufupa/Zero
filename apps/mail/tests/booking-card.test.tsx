@@ -2119,6 +2119,30 @@ describe('booking card pane save', () => {
     expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', false);
   });
 
+  it('allows preview and Book with unchecked Terms when boolean guestoptin4 is required', async () => {
+    const base = draftReady();
+    const draft = {
+      ...base,
+      draft: { ...base.draft, rooms: base.draft.rooms.slice(0, 1) },
+      options: { ...base.options, requiredCreateFields: ['reservationnote', 'marketsegment', 'guestoptin4'] } as BookingDraftReady['options'],
+    };
+    const { client, preview } = paneClient();
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.change(screen.getByLabelText('Market Segment'), { target: { value: 'Leisure' } });
+    fireEvent.change(screen.getByLabelText('Reservation note'), { target: { value: 'Late arrival' } });
+    expect((screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement).checked).toBe(false);
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      marketSegment: 'Leisure',
+      guestoptin4: false,
+      reservationNote: 'Late arrival',
+    }));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+  });
+
   it('previews with the typed guest names, not the draft request', async () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
