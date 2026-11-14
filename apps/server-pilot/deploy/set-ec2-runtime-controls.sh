@@ -70,7 +70,8 @@ const flags = new Map([
   ...['PANE_CLOUD_CREATE_DISPATCH', 'PANE_HMS_LAB_CREATE_WORKER', 'PANE_HMS_LAB_AMEND_WORKER',
     'PANE_HMS_LAB_ATTACH_WORKER'].map(k => [k, /^(off|on)$/]),
   ...['HMS_MEMORY_PMS_PATH', 'HMS_MEMORY_OUTBOUND_PATH', 'HMS_MEMORY_DATA_DIR', 'HMS_NATIVE_CATALOG_PATH',
-    'HMS_MEMORY_OBSERVATIONS_PATH', 'PARTY_INDEX_PATH', 'PARTY_INDEX_PATH_HRDAV'].map(k => [k, /^\/[A-Za-z0-9._/-]+$/]),
+    'HMS_MEMORY_OBSERVATIONS_PATH', 'PARTY_INDEX_PATH', 'PARTY_INDEX_PATH_HRDAV', 'NAVA_WORKFLOW_REPRO_DIR']
+    .map(k => [k, /^\/[A-Za-z0-9._/-]+$/]),
 ]);
 try {
   const changes = new Map();
