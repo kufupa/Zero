@@ -67,7 +67,8 @@ export function projectNativeSavedStayPreimage(snapshot, expected, { identityOnl
   const statusKeys = Object.keys(data).filter(key => /^child[1-9]\d*status$/.test(key));
   if (statusKeys.some(key => !bucketKeys.includes(key.slice(0, -6)))) return null;
   const activeKeys = bucketKeys.filter(key => !statusKeys.length || value(data, `${key}status`) === 'ACTIVE');
-  if (statusKeys.length && bucketKeys.some(key => !['ACTIVE', 'INACTIVE'].includes(value(data, `${key}status`)))) return null;
+  // Infor HMS properties such as HRCEN return the 6-char status `'INACTV'` for disabled child age buckets.
+  if (statusKeys.length && bucketKeys.some(key => !['ACTIVE', 'INACTIVE', 'INACTV'].includes(value(data, `${key}status`)))) return null;
   if (activeKeys.some(key => value(form, key) !== null && field(key) !== value(form, key))) return null;
   const bands = activeKeys.map(key => count(field(key), 9));
   if (adults === null || adults < 1 || children === null || bands.some((band) => band === null) ||
