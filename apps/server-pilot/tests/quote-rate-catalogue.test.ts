@@ -128,7 +128,7 @@ describe('mailbox-scoped quote pane configuration', () => {
       expect(config).toMatchObject({ ratePlans: [{ code: 'BAR', name: 'Observed BAR' }],
         roomTypes: [{ code: 'STKNG', label: 'Observed King' }],
         formPolicy: { guestOptIn: 'required', requiredFields: ['guestoptin4', 'guaranteetype'],
-          guaranteeChoices: [{ code: 'AVOUCH', meaning: 'Awaiting Voucher', ready: false }],
+          guaranteeChoices: [{ code: 'AVOUCH', meaning: 'Awaiting Voucher', ready: true }],
           childCategories: [{ field: 'child1', minimumAge: 0, maximumAge: 2, visible: false }] },
         catalogue: { coverage: { rates: 'partial', roomTypes: 'complete' } } });
       expect(config?.salesStrategies.map(({ code }) => code)).toEqual(['BAR', 'PRESET']);
@@ -136,9 +136,9 @@ describe('mailbox-scoped quote pane configuration', () => {
       const scope = resolvePropertyScope({ transportId: 'transport-davinci', propertySwitch: 'HRDAV' });
       const enabled = { ...env, HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV', HMS_DAVINCI_READS: 'on', HMS_DAVINCI_MAKE_QUOTE: 'on' };
       expect((await propertyConfigurationForScope(scope, enabled)).capabilities).toMatchObject({
-        reads: { status: 'unavailable' }, quote: { status: 'unavailable' }, create: { status: 'unavailable' } });
+        reads: { status: 'unavailable' }, quote: { status: 'unavailable' }, create: { status: 'prepare-only' } });
       expect((await propertyConfigurationForScope(scope, enabled, { reads: true, quote: true })).capabilities).toMatchObject({
-        reads: { status: 'staff-enabled' }, quote: { status: 'staff-enabled' }, create: { status: 'unavailable' } });
+        reads: { status: 'staff-enabled' }, quote: { status: 'staff-enabled' }, create: { status: 'prepare-only' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, NAVA_BUILD_COMMIT: 'other' }, { reads: true, quote: true })).capabilities)
         .toMatchObject({ reads: { status: 'staff-enabled' }, quote: { status: 'unavailable' } });
       expect((await quotePaneConfigForProperty('HRDAV', 'transport-davinci', { ...env, NAVA_BUILD_COMMIT: 'other' }))?.ratePlans).toEqual([]);
