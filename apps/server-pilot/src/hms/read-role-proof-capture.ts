@@ -49,6 +49,7 @@ export function captureCloudReadRoleProof(input: {
     throw new Error('cloud read role observation identity or freshness mismatch');
   }
   const tool = READ_TOOLS[observation.toolId];
+  if (tool.privacyClass !== 'minimized_hms') throw new Error('native role proof requires an HMS tool');
   const surfaces = new Set(tool.requestBranches.flatMap(branch => branch.requiredRoleSurfaces));
   if (observation.observedSurfaces.length !== surfaces.size ||
       observation.observedSurfaces.some(surface => !surfaces.has(surface)) ||

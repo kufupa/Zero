@@ -1077,7 +1077,7 @@ export async function resolveSelectedHmsReadJobTarget(input: {
   }
   if (target.browserSlot === 'centurion' && input.threadId) {
     const origin = await resolveHmsReadJobTarget({ transportId: input.transportId,
-      threadId: input.threadId, messageId: input.messageId });
+      threadId: input.threadId, messageId: input.messageId ?? undefined });
     if (!origin.ok || origin.target.propertyCode !== target.propertyCode) {
       return { ok: false, code: 'davinci_origin_refused' };
     }

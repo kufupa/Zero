@@ -875,7 +875,7 @@ export async function probeAvailability(
     const result = await probeCloudRateAvailability(request, deps);
     if (result.outcome === 'read') return { outcome: 'read', ...cloudAvailabilitySnapshotOf(result, deps.target.propertyCode) };
     if (result.outcome === 'blocked' || result.outcome === 'refused_unknown_transport') return { outcome: 'refused_input_invalid' };
-    return result;
+    return { outcome: result.outcome, ...(result.error ? { error: result.error } : {}) };
   }
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
