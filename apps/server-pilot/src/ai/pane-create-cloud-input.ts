@@ -3,8 +3,9 @@ import {
   normalizeCloudCreateRequest,
   validCreateNote,
 } from '../../tooling/hms-cloud/create-request-binding.mjs';
-import { normalizeCreateTrack } from '../../tooling/playwright-quote/create-request.mjs';
 import { CREATE_GUARANTEES, createGuaranteeCode, isLabtestGuest, validCreateGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import type { PropertyConfiguration } from '../hms/property-configuration.js';
 import type { PaneStay } from './pane-stay-save.js';
 
 // Cloud preparation permits an omitted track; legacy pane saves still require one.
@@ -27,7 +28,8 @@ type CloudCreateProof = {
   cmsRecipient?: string;
   booker?: { name?: string; contact?: string };
   track?: { lookupCode: string; display: string };
-  guestOptIn?: false;
+  marketSegment?: { value: string; display: string };
+  guestOptIn?: boolean;
   sendHmsConfirmation: { kind: 'never' } | { kind: 'send'; recipient: string };
 };
 
@@ -41,6 +43,19 @@ const cleanText = (value: unknown): value is string => typeof value === 'string'
   ![...value].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127);
 const guaranteeCode = createGuaranteeCode;
 
+export function cloudCreatePolicyIssue(policy: PropertyConfiguration['formPolicy'], input: Record<string, unknown>): string | null {
+  const optIn = input.guestoptin4;
+  if ((policy.guestOptIn === 'required' || policy.requiredFields.includes('guestoptin4')) && typeof optIn !== 'boolean') {
+    return 'guest_opt_in_required';
+  }
+  if (policy.guestOptIn === 'unsupported' && optIn !== undefined) return 'guest_opt_in_unsupported';
+  const segment = input.marketSegment;
+  if (policy.requiredFields.includes('marketsegment') && (typeof segment !== 'string' || !segment)) return 'market_segment_required';
+  if (segment !== undefined && policy.marketSegmentChoices?.length &&
+      policy.marketSegmentChoices.filter(choice => choice.code === segment).length !== 1) return 'market_segment_unavailable';
+  return null;
+}
+
 /** Exact supported subset. Unsupported pane properties are refused, never dropped. */
 export function mapPaneStayToCloudCreateInput(
   stay: PaneCloudStay,
@@ -48,10 +63,8 @@ export function mapPaneStayToCloudCreateInput(
   nativeGuestId?: string,
   { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
 ): PaneCloudCreateMapping {
-  for (const [field, value] of [
-    ['marketSegment', stay.marketSegment],
-  ] as const) {
-    if (value !== undefined) return { outcome: 'refused', reason: 'cloud_create_field_unsupported', field };
+  if (stay.marketSegment !== undefined && !/^[A-Z0-9]{1,20}$/.test(stay.marketSegment)) {
+    return { outcome: 'refused', reason: 'cloud_create_field_unsupported', field: 'marketSegment' };
   }
   if (stay.confirmationSendMail === true && (!allowRealGuest || isLabtestGuest(stay))) {
     return { outcome: 'refused', reason: 'labtest_send_forbidden', field: 'confirmationSendMail' };
@@ -69,13 +82,10 @@ export function mapPaneStayToCloudCreateInput(
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(stay.confirmationRecipient.address))) {
     return { outcome: 'refused', reason: 'cloud_create_field_unsupported', field: 'confirmationRecipient' };
   }
-  if (stay.track !== undefined && !normalizeCreateTrack(stay.track)) {
+  if (stay.track !== undefined && !/^[A-Z0-9]{1,12}$/.test(stay.track)) {
     return { outcome: 'refused', reason: 'cloud_create_field_unsupported', field: 'track' };
   }
-  if (stay.guestoptin4 !== undefined && stay.guestoptin4 !== false) {
-    return { outcome: 'refused', reason: 'cloud_create_field_unsupported', field: 'guestoptin4' };
-  }
-  if (stay.propertyCode !== undefined && stay.propertyCode !== 'HRCEN') {
+  if (!stay.propertyCode || !getPropertyRegistration(stay.propertyCode)?.active) {
     return { outcome: 'refused', reason: 'property_mismatch', field: 'propertyCode' };
   }
   if (!validCreateGuest(stay)) {
@@ -129,7 +139,7 @@ export function mapPaneStayToCloudCreateInput(
     outcome: 'ok',
     input: {
       mode,
-      propertyCode: 'HRCEN',
+      propertyCode: stay.propertyCode,
       guest: nativeGuestId !== undefined
         ? { profileId: nativeGuestId }
         : { search: { firstName: stay.firstName, lastName: stay.lastName } },
@@ -139,7 +149,8 @@ export function mapPaneStayToCloudCreateInput(
       },
       room: { roomType: stay.roomType, ratePlan: stay.ratePlan },
       ...(stay.track !== undefined ? { track: stay.track } : {}),
-      ...(stay.guestoptin4 === false ? { guestoptin4: false } : {}),
+      ...(stay.marketSegment !== undefined ? { marketSegment: stay.marketSegment } : {}),
+      ...(stay.guestoptin4 !== undefined ? { guestoptin4: stay.guestoptin4 } : {}),
       ...(stay.bookerName !== undefined || stay.bookerEmail !== undefined ? { booker: {
         ...(stay.bookerName !== undefined ? { name: stay.bookerName } : {}),
         ...(stay.bookerEmail !== undefined ? { contact: stay.bookerEmail } : {}),
@@ -167,8 +178,11 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, 
   // When staff selected a display label, a matching code alone does not prove
   // HMS showed that label. The bridge must supply its fresh form readback.
   const code = guaranteeCode(stay.guaranteeType);
-  if (!code || ((requireVisibleGuarantee || stay.guaranteeType !== code || visibleGuarantee !== undefined) &&
-      visibleGuarantee !== CREATE_GUARANTEES[code])) {
+  if (!code) return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
+  const expectedGuarantee = stay.propertyCode === 'HRCEN' ? CREATE_GUARANTEES[code] :
+    stay.guaranteeType === code ? undefined : stay.guaranteeType;
+  if ((requireVisibleGuarantee || expectedGuarantee !== undefined || visibleGuarantee !== undefined) &&
+      (!cleanText(visibleGuarantee) || (expectedGuarantee !== undefined && visibleGuarantee !== expectedGuarantee))) {
     return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { outcome: 'refused', reason: 'cloud_create_proof_invalid' };
@@ -184,7 +198,7 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, 
   const agency = parties?.bookingAgency ?? parties?.agency;
   const organization = parties?.organization;
   const track = request.track as CloudCreateProof['track'];
-  const expectedTrack = stay.track !== undefined ? normalizeCreateTrack(stay.track) : undefined;
+  const marketSegment = request.marketSegment as CloudCreateProof['marketSegment'];
   const booker = request.booker as CloudCreateProof['booker'];
   // This pane subset cannot request these fields. A prepared form containing them
   // must not become approval evidence for a different, narrower staff request.
@@ -192,7 +206,7 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, 
       (parties && Object.hasOwn(parties, 'arAccount'))) {
     return { outcome: 'refused', reason: 'cloud_create_proof_mismatch' };
   }
-  if (request.propertyCode !== 'HRCEN' || guest.firstName !== stay.firstName || guest.lastName !== stay.lastName ||
+  if (request.propertyCode !== stay.propertyCode || guest.firstName !== stay.firstName || guest.lastName !== stay.lastName ||
       !/^\d+$/.test(guest.nativeId) || (selectedGuestId !== undefined && guest.nativeId !== selectedGuestId) ||
       requestedStay.arrival !== stay.arrival || requestedStay.departure !== stay.departure ||
       requestedStay.adults !== stay.adults || JSON.stringify(requestedStay.childAges) !== JSON.stringify(stay.childAges) ||
@@ -201,8 +215,9 @@ export function digestPaneCloudCreateProof(stay: PaneCloudStay, value: unknown, 
       (stay.confirmationRecipient ? request.cmsRecipient !== stay.confirmationRecipient.address : request.cmsRecipient !== undefined) ||
       (stay.bookerName !== undefined ? booker?.name !== stay.bookerName : booker?.name !== undefined) ||
       (stay.bookerEmail !== undefined ? booker?.contact !== stay.bookerEmail : booker?.contact !== undefined) ||
-      (expectedTrack ? !track || track.lookupCode !== expectedTrack.lookupCode || track.display !== expectedTrack.display : track !== undefined) ||
-      (stay.guestoptin4 === false ? request.guestOptIn !== false : request.guestOptIn !== undefined) ||
+      (stay.track !== undefined ? !track || track.lookupCode !== stay.track : track !== undefined) ||
+      (stay.marketSegment !== undefined ? !marketSegment || marketSegment.value !== stay.marketSegment : marketSegment !== undefined) ||
+      (stay.guestoptin4 !== undefined ? request.guestOptIn !== stay.guestoptin4 : request.guestOptIn !== undefined) ||
       !source || (!same(source.nativeCode, stay.sourceOfBusiness) && !same(source.description, stay.sourceOfBusiness)) ||
       (stay.cmsMessageId !== undefined ? request.cmsMessageId !== stay.cmsMessageId : request.cmsMessageId !== undefined) ||
       !request.sendHmsConfirmation || (stay.confirmationSendMail === true

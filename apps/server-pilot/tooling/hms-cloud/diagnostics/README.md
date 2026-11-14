@@ -13,7 +13,7 @@ The forms driver reads a JSON object with a `candidates` array. Each item contai
 
 `workers` is a positive integer. Each worker launches a headless browser for each attempt, so at most that many browsers run concurrently; an ambiguous lookup may need a second attempt. Both drivers exit nonzero if a read fails or the run is interrupted. The forms driver also fails when guest identities are unresolved or the grid is known to be incomplete, retaining partial data privately.
 
-Keep inputs, hints, outputs, Notes, and screenshots in private storage; never commit or print their contents. The output's parent directory must deny group and other access. Each driver reserves a new output file and writes private, atomic snapshots without overwriting an existing output. Legacy `playwright-quote/diagnostics/` paths remain available as wrappers.
+Keep inputs, hints, outputs, Notes, and screenshots in private storage; never commit or print their contents. The output's parent directory must deny group and other access. Each driver reserves a new output file and writes private, atomic snapshots without overwriting an existing output.
 
 ## Historical confirmation-corpus helpers
 

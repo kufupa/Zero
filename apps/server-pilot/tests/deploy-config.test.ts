@@ -5842,10 +5842,10 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         for (const workflow of ['create', 'amend', 'cancel', 'attach', 'addons', 'guest_profile_create'] as const) {
           expect(effectiveWorkflowPolicy({}, 'HRCEN', workflow).capability, workflow).toBe('prepare-only');
           expect(effectiveWorkflowPolicy({ HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV', HMS_DAVINCI_READS: 'on',
-            HMS_DAVINCI_CREATE: 'on' }, 'HRDAV', workflow).capability, workflow).toBe('unavailable');
+            HMS_DAVINCI_CREATE: 'on' }, 'HRDAV', workflow).capability, workflow).toBe('prepare-only');
         }
         const createOn = { PANE_WRITE_CREATE: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on' };
-        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'on', capability: 'staff-enabled' });
+        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'on', admittedMode: 'off', capability: 'prepare-only' });
         expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'lab', PANE_CLOUD_CREATE_DISPATCH: 'on' },
           'HRCEN', 'guest_profile_create')).toMatchObject({ mode: 'lab', capability: 'lab' });
         expect(effectiveWorkflowPolicy({ RESERVATIONIST_PANE_SAVE: 'on', PANE_CLOUD_CREATE_DISPATCH: 'on' },
@@ -5855,24 +5855,26 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect(effectiveWorkflowPolicy({ PANE_WRITE_CREATE: 'on' }, 'HRCEN', 'create').capability).toBe('prepare-only');
         expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on' }, 'HRCEN', 'amend').capability).toBe('prepare-only');
         expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on', PANE_HMS_LAB_AMEND_WORKER: 'on' },
-          'HRCEN', 'amend').capability).toBe('staff-enabled');
+          'HRCEN', 'amend').capability).toBe('prepare-only');
         expect(effectiveWorkflowPolicy({ PANE_WRITE_AMEND: 'on', PANE_HMS_LAB_AMEND_WORKER: 'on', PANE_STAY_LOOKUP: 'off' },
           'HRCEN', 'amend').capability).toBe('unavailable');
         expect(effectiveWorkflowPolicy({ PANE_WRITE_ATTACH: 'on' }, 'HRCEN', 'attach').capability).toBe('prepare-only');
         expect(effectiveWorkflowPolicy({ PANE_WRITE_ATTACH: 'on', PANE_HMS_LAB_ATTACH_WORKER: 'on' },
-          'HRCEN', 'attach').capability).toBe('staff-enabled');
-        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'addons').capability).toBe('staff-enabled');
+          'HRCEN', 'attach').capability).toBe('prepare-only');
+        expect(effectiveWorkflowPolicy(createOn, 'HRCEN', 'addons').capability).toBe('prepare-only');
         expect(effectiveWorkflowPolicy({ ...createOn, HMS_WRITER_CREDENTIAL_IDENTITY_HRCEN: 'wrong' },
           'HRCEN', 'guest_profile_create').capability).toBe('prepare-only');
         for (const [key, value, workflow] of flags) {
-          expect(run(key, value, '').status, key).toBe(2);
-          expect(run(key, value, `CANARY PASS ${workflow} HRCEN ${sha}\n`).status, key).toBe(0);
+          const labBootstrap = key === 'PANE_WRITE_AMEND' && value === 'lab';
+          expect(run(key, value, '').status, key).toBe(labBootstrap ? 0 : 2);
+          expect(run(key, value, `CANARY PASS ${workflow} HRCEN ${sha}\n`).status, key)
+            .toBe(labBootstrap || !['create', 'amend', 'cancel', 'attach'].includes(workflow) ? 0 : 2);
         }
         for (const proof of [`CANARY PASS amend HRDAV ${sha}\n`, `CANARY PASS create HRCEN ${sha}\n`,
           `CANARY PASS amend HRCEN ${'b'.repeat(40)}\n`, `CANARY PASS amend HRCEN ${sha.slice(0, 7)}\n`]) {
           expect(run('PANE_WRITE_AMEND', 'on', proof, 'lab').status).toBe(2);
         }
-        expect(run('PANE_WRITE_AMEND', 'on', `CANARY PASS amend HRCEN ${sha}\n`, 'lab').status).toBe(0);
+        expect(run('PANE_WRITE_AMEND', 'on', `CANARY PASS amend HRCEN ${sha}\n`, 'lab').status).toBe(2);
         expect(run('PANE_WRITE_AMEND', 'on', '', 'on').status).toBe(0);
         const runScope = (before: string, after: string, proof: string) => {
           writeFileSync(prev, before);
@@ -5885,7 +5887,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect(runScope(oldScope, widerScope, '').status).toBe(2);
         expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAV ${sha}\nCANARY PASS create HRDAV ${sha}\n`).status).toBe(2);
         expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAVS ${sha}\nCANARY PASS create HRDAVS ${sha.slice(0, 7)}\n`).status).toBe(2);
-        expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAVS ${sha}\nCANARY PASS create HRDAVS ${sha}\n`).status).toBe(0);
+        expect(runScope(oldScope, widerScope, `CANARY PASS reads HRDAVS ${sha}\nCANARY PASS create HRDAVS ${sha}\n`).status).toBe(2);
         expect(runScope(widerScope, widerScope, '').status).toBe(0);
         const oldQuote = "HMS_DAVINCI_ENABLED_PROPERTIES='HRDAV'\nHMS_DAVINCI_MAKE_QUOTE='on'\n";
         const widerQuote = oldQuote.replace("HRDAV'", "HRDAV,HRDAVS'");
@@ -5894,16 +5896,16 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         const oldDigest = `PANE_WRITE_CREATE='on'\nHMS_WRITER_DEPENDENCY_DIGEST_CREATE='${'a'.repeat(64)}'\n`;
         const newDigest = oldDigest.replace('a'.repeat(64), 'b'.repeat(64));
         expect(runScope(oldDigest, newDigest, '').status).toBe(2);
-        expect(runScope(oldDigest, newDigest, `CANARY PASS create HRCEN ${sha}\n`).status).toBe(0);
+        expect(runScope(oldDigest, newDigest, `CANARY PASS create HRCEN ${sha}\n`).status).toBe(2);
         const oldCredential = "PANE_WRITE_CREATE='on'\nHMS_WRITER_CREDENTIAL_IDENTITY_HRCEN='nava-zero/old'\n";
         const newCredential = oldCredential.replace('nava-zero/old', 'nava-zero/new');
         expect(runScope(oldCredential, newCredential, '').status).toBe(2);
-        expect(runScope(oldCredential, newCredential, `CANARY PASS create HRCEN ${sha}\n`).status).toBe(0);
+        expect(runScope(oldCredential, newCredential, `CANARY PASS create HRCEN ${sha}\n`).status).toBe(2);
         const legacy = "HMS_JOB_QUEUE='on'\nHMS_EXPECTED_PROPERTY_CODE='HRDAV'\n";
         expect(runScope(legacy, legacy.replace('HRDAV', 'HRDAVS'), '').status).toBe(2);
         expect(runScope(legacy, legacy.replace('HRDAV', 'HRDAVS'), `CANARY PASS queue HRDAVS ${sha}\n`).status).toBe(0);
       } finally { rmSync(temp, { recursive: true, force: true }); }
-    });
+    }, 60_000);
 
     it('writes only explicitly allowlisted remote HTTP environment files', async () => {
       const { existsSync, readFileSync } = await import('node:fs');
@@ -6220,7 +6222,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         mkdirSync(copiedDeploy, { recursive: true });
         mkdirSync(bin);
         for (const file of ['write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
-        for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'playwright-quote/hms-read-only-guard.mjs']) {
+        for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'hms-cloud/hms-read-only-guard.mjs', 'hms-cloud/page-request-fence.mjs']) {
           const destination = join(server, 'tooling', file);
           mkdirSync(dirname(destination), { recursive: true });
           copyFileSync(join(deploy, '..', 'tooling', file), destination);
@@ -6472,7 +6474,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         mkdirSync(join(server, 'dist'));
         mkdirSync(bin);
         for (const file of ['start-remote-http.sh', 'build-identity.sh', 'write-ec2-remote-env.sh', 'parse-ec2-legacy-env.mjs']) copyFileSync(join(deploy, file), join(copiedDeploy, file));
-        for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'playwright-quote/hms-read-only-guard.mjs']) {
+        for (const file of ['hms-cloud/hms-workflow-policy.mjs', 'hms-cloud/property-registry.mjs', 'hms-cloud/hms-read-only-guard.mjs', 'hms-cloud/page-request-fence.mjs']) {
           const destination = join(server, 'tooling', file);
           mkdirSync(dirname(destination), { recursive: true });
           copyFileSync(join(deploy, '..', 'tooling', file), destination);

@@ -2,7 +2,7 @@ import { createRequestFieldOptions, prefillBoardFromLuna } from './booking-draft
 import { bookingCodeDefaults } from './booking-code-rules.js';
 import { DIRECT_BOOKING_DEFAULTS, buildCreatePrefill } from './aop/create-prefill.js';
 import { dayFromText } from './voucher-find.js';
-import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
 
 export const FIELD_PARITY_FIELDS = [
   'agency', 'guaranteeType', 'roomType', 'ratePlan', 'adults', 'children', 'arrivalDate', 'departureDate',

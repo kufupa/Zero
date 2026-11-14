@@ -1,7 +1,8 @@
 // A same-page, read-only census before a guarded HRCEN create.
 import { randomUUID } from 'node:crypto';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
@@ -184,11 +185,11 @@ function forget(page) {
 }
 
 // Returns private candidate data. A clear result is usable once, on this page, for five minutes.
-export async function searchLabtestPreimage(page, { arrival, departure, firstName = 'Proof', lastName = 'Labtest' } = {},
+export async function searchLabtestPreimage(page, { arrival, departure, propertyCode = 'HRCEN', firstName = 'Proof', lastName = 'Labtest' } = {},
   { verifyExisting, allowRealGuest = false, allowPast = false } = {}) {
   const start = date(arrival), end = date(departure);
   const guest = { firstName, lastName };
-  if (!validCreateGuest(guest) || (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest')) ||
+  if (!getPropertyRegistration(propertyCode)?.active || !validCreateGuest(guest) || (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest')) ||
       !start || !end || !validCreateDates(arrival, departure, allowRealGuest, allowPast)) {
     return { outcome: 'input_gap', issue: 'INVALID_LABTEST_DATES' };
   }
@@ -197,7 +198,8 @@ export async function searchLabtestPreimage(page, { arrival, departure, firstNam
   busy.add(page);
   forget(page);
   try {
-    if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
+    if (new URL(page.url()).origin !== ORIGIN ||
+        /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(await page.title())?.[1]?.toUpperCase() !== propertyCode) {
       throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
     }
     await installReadOnlyGuard(page.context());
@@ -242,11 +244,11 @@ export async function searchLabtestPreimage(page, { arrival, departure, firstNam
       throw new Error('SEARCH_RESULTS_INCOMPLETE');
     }
     const sameArrival = candidates.filter((row) => sameCreateGuest(row, guest) && row.arrival === arrival);
-    const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', firstName, lastName, arrival, departure,
+    const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', propertyCode, firstName, lastName, arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
     if (sameArrival.length && !verifyExisting) return result;
     const observedAt = Date.now();
-    const proof = { id: randomUUID(), firstName, lastName, arrival, departure, expiresAt: observedAt + 5 * 60_000 };
+    const proof = { id: randomUUID(), propertyCode, firstName, lastName, arrival, departure, expiresAt: observedAt + 5 * 60_000 };
     proof.invalidate = (request) => {
       try {
         const url = new URL(request.url());
@@ -276,10 +278,10 @@ export async function searchLabtestPreimage(page, { arrival, departure, firstNam
 }
 
 // Consuming a proof never asserts that another session cannot change HMS afterward.
-export function consumeLabtestPreimage(page, { preimageId, arrival, departure, firstName = 'Proof', lastName = 'Labtest' } = {}) {
+export function consumeLabtestPreimage(page, { preimageId, arrival, departure, propertyCode = 'HRCEN', firstName = 'Proof', lastName = 'Labtest' } = {}) {
   const proof = proofs.get(page);
   forget(page);
-  return Boolean(proof && proof.id === preimageId && proof.firstName === firstName && proof.lastName === lastName &&
+  return Boolean(proof && proof.id === preimageId && proof.propertyCode === propertyCode && proof.firstName === firstName && proof.lastName === lastName &&
     proof.arrival === arrival && proof.departure === departure &&
     Date.now() <= proof.expiresAt);
 }

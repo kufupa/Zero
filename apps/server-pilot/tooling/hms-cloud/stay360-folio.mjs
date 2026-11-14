@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { openStay360RecordTab } from './stay360-record-tabs.mjs';
 import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
-import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 
 // The observed Cloud Folio grid uses a data-only response, not Ext store load().
 // Parse its JSON-shaped wrapper as data, never execute server-supplied JavaScript.

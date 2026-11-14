@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { getQuoteOutput, quoteCoverHtml, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
-import type { ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import styles from './reservation-pane.module.css';
 
 export type SaveQuoteOutput = (input: { snapshot: ReservationPaneSnapshot; requestId: string; html: string;
@@ -23,11 +23,12 @@ function failureMessage(code: string): string {
   }
 }
 
-export function QuoteOutputPanel({ source, snapshot, requestId, save, latestSnapshot, readyForReply, blocked }: {
+export function QuoteOutputPanel({ source, configuration, snapshot, requestId, save, latestSnapshot, readyForReply, blocked }: {
   source: ReservationSourceContext; snapshot: ReservationPaneSnapshot; requestId: string;
+  configuration: PropertyConfiguration | null;
   save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; blocked: boolean;
 }) {
-  const output = getQuoteOutput(source, snapshot, requestId);
+  const output = getQuoteOutput(source, snapshot, requestId, configuration);
   const [body, setBody] = useState(output?.cover?.body ?? '');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);

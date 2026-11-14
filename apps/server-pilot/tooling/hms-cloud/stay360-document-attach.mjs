@@ -7,8 +7,9 @@ import { isAbsolute, join } from 'node:path';
 import { readDocumentsFromStay360 } from './stay360-documents.mjs';
 import { cleanLabtestRecord, currentLabtestDocumentRecord, currentLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import { fulfillGuestLookupRequest } from './pane-guest-search.mjs';
-import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const OPEN = '/web/base/BSUPLD', CHECK = '/web/base/BSUPLD.checkfile';
@@ -287,8 +288,9 @@ function validFile(file) {
 
 /** Returns awaiting_readback, uncertain, or not_dispatched. A fresh session must reconcile every dispatch. */
 export async function attachLabtestDocument(page, expected, file, { evidenceRoot, expectedOrganization, expectedDocumentContext, timeoutMs = 30000,
-  beforeDispatch, finalAuthority, dispatchWithAuthority, continuationAllowed, onDispatched, strictNetwork = false, prepareOnly = false } = {}) {
-  if (!validFile(file) || typeof evidenceRoot !== 'string' || !isAbsolute(evidenceRoot) ||
+  beforeDispatch, finalAuthority, dispatchWithAuthority, continuationAllowed, onDispatched, strictNetwork = false, cloudGuarded = false,
+  prepareOnly = false } = {}) {
+  if (!getPropertyRegistration(expected?.propertyCode)?.active || !validFile(file) || typeof evidenceRoot !== 'string' || !isAbsolute(evidenceRoot) ||
       !Number.isFinite(timeoutMs) || timeoutMs <= 0 ||
       (beforeDispatch !== undefined && typeof beforeDispatch !== 'function') ||
       (finalAuthority !== undefined && typeof finalAuthority !== 'function') ||
@@ -296,7 +298,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
       (continuationAllowed !== undefined && typeof continuationAllowed !== 'function') ||
       (onDispatched !== undefined && typeof onDispatched !== 'function') ||
       (expectedDocumentContext !== undefined && expectedOrganization !== undefined) || typeof strictNetwork !== 'boolean' ||
-      typeof prepareOnly !== 'boolean') {
+      typeof cloudGuarded !== 'boolean' || typeof prepareOnly !== 'boolean') {
     return { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' };
   }
   if (!page || typeof page.context !== 'function' || usedPages.has(page)) return { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' };
@@ -325,7 +327,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
   };
   const deadline = performance.now() + timeoutMs;
   const timer = setTimeout(() => stop('DOCUMENT_TIMEOUT'), timeoutMs);
-  const onDialog = () => stop('UNEXPECTED_DIALOG');
+  const onDialog = dialog => { stop('UNEXPECTED_DIALOG'); void dialog.dismiss().catch(() => {}); };
   const onWorker = () => stop('UNEXPECTED_SERVICE_WORKER');
   page.on('dialog', onDialog); context.on('serviceworker', onWorker);
   try {
@@ -344,8 +346,8 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
         if (request.method() !== 'POST' || request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== REFRESH || url.search || url.hash) return;
         const params = new URLSearchParams(request.postData() || '');
         const target = new Map(Object.entries({ CURRENT_TAB_NAME: 'DOC', confirmationnumber: expected.confirmation,
-          reservationstayid: state.native.reservationstayid, propertycode: 'HRCEN', daeRentity: 'RESV',
-          daeCode: `${state.native.reservationid}#${expected.confirmation}#HRCEN` }));
+          reservationstayid: state.native.reservationstayid, propertycode: expected.propertyCode, daeRentity: 'RESV',
+          daeCode: `${state.native.reservationid}#${expected.confirmation}#${expected.propertyCode}` }));
         if (!exactDocumentParams(params, target)) return;
         if (refresh || refreshInvalid) { refreshInvalid = true; return; }
         refresh = { request, body: target };
@@ -364,19 +366,19 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     if (!refresh || refreshInvalid || refreshResponse !== 200 || stopped || docs.documents.some((d) => d.name === file.name || d.documentCode === file.documentCode)) {
       throw new Error('DOCUMENT_BASELINE_UNVERIFIED');
     }
-    fence = await bounded(installPageRequestFence(page, [CHECK, UPLOAD])); scope = fence.open();
+    fence = await bounded(installPageRequestFence(page, [OPEN, CHECK, UPLOAD, REFRESH])); scope = fence.open();
     await bounded(context.routeWebSocket('**/*', (socket) => socket.close()));
     const init = new Map(Object.entries({ SYSTEM_FUNCTION_NAME: 'BSUPLD', USER_FUNCTION_NAME: 'BSUPLD', daeRentity: 'RESV',
-      daeCode: `${state.native.reservationid}#${expected.confirmation}#HRCEN` }));
+      daeCode: `${state.native.reservationid}#${expected.confirmation}#${expected.propertyCode}` }));
     const sameFrame = (request) => { try { return request.frame() === frame; } catch { return false; } };
     await context.route('**/*', async (route) => {
       const request = route.request(); let url;
       try { url = new URL(request.url()); } catch { rejectRequest(); return route.abort(); }
       if (!stopped && !initAllowed && matchesForm(request, OPEN, frame, init)) {
-        initAllowed = true; return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
+        initAllowed = true; return strictNetwork && !cloudGuarded ? fulfillGuestLookupRequest(route) : route.fallback();
       }
       if (!stopped && request === checkCandidate && armed && matchesForm(request, CHECK, frame, checkFields, expectedFields)) {
-        return strictNetwork ? fulfillGuestLookupRequest(route) : route.fallback();
+        return strictNetwork && !cloudGuarded ? fulfillGuestLookupRequest(route) : route.fallback();
       }
       if (!stopped && uploadGate) {
         const release = uploadGate(route, { candidate: uploadCandidate, armed, checkStatus, blocked });
@@ -393,13 +395,14 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     await page.route('**/*', async (route) => {
       const request = route.request(); let path;
       try { path = new URL(request.url()).pathname; } catch { rejectRequest(); return route.abort(); }
-      if ([CHECK.toLowerCase(), UPLOAD.toLowerCase()].includes(path.toLowerCase())) {
-        const match = !stopped && armed && (path === CHECK
-          ? !checkCandidate && matchesForm(request, CHECK, frame, checkFields, expectedFields)
-          : !uploadCandidate && checkStatus === 200 && matchesDocumentUpload(request, frame, expectedFields, file, token));
+      if ([OPEN, CHECK, UPLOAD, REFRESH].some(value => value.toLowerCase() === path.toLowerCase())) {
+        const match = !stopped && (path === OPEN ? !initAllowed && matchesForm(request, OPEN, frame, init) :
+          path === REFRESH ? dispatched && !refreshCandidate && sameFrame(request) && matchesForm(request, REFRESH, frame, refresh.body) :
+          armed && (path === CHECK ? !checkCandidate && matchesForm(request, CHECK, frame, checkFields, expectedFields) :
+            !uploadCandidate && checkStatus === 200 && matchesDocumentUpload(request, frame, expectedFields, file, token)));
         if (match && scope.allow(request)) {
-          if (path === CHECK) checkCandidate = request; else uploadCandidate = request;
-        } else rejectRequest();
+          if (path === CHECK) checkCandidate = request; else if (path === UPLOAD) uploadCandidate = request;
+        } else { rejectRequest(); return route.abort(); }
       }
       return route.fallback();
     });
@@ -429,8 +432,8 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
     expectedFields = documentValidationFields(staged);
     checkFields = selectedFields(expectedFields, [...DOCUMENT_FIELDS, 'callerorg', 'SYSTEM_FUNCTION_NAME', 'USER_FUNCTION_NAME']);
     if (!checkFields || expectedFields.get('documentcode') !== file.documentCode || expectedFields.get('description') !== file.description ||
-        expectedFields.get('filename') !== `C:\\fakepath\\${file.name}` || expectedFields.get('organization') !== 'HRCEN' ||
-        expectedFields.get('callerorg') !== 'HRCEN' || expectedFields.get('daeRentity') !== 'RESV' ||
+        expectedFields.get('filename') !== `C:\\fakepath\\${file.name}` || expectedFields.get('organization') !== expected.propertyCode ||
+        expectedFields.get('callerorg') !== expected.propertyCode || expectedFields.get('daeRentity') !== 'RESV' ||
         expectedFields.get('daeCode') !== init.get('daeCode') || expectedFields.get('uploaddoc') !== 'U' ||
         expectedFields.get('typecode') !== 'U' || expectedFields.get('uploadorcreatedoc') !== 'U' || stopped || blocked) {
       throw new Error('DOCUMENT_DRAFT_UNVERIFIED');
@@ -444,7 +447,7 @@ export async function attachLabtestDocument(page, expected, file, { evidenceRoot
         !token.get('requestToken') || !token.get('browserTabID')) throw new Error('DOCUMENT_SESSION_TOKEN_UNVERIFIED');
     uploadGate = createDocumentUploadGate({ frame, fields: expectedFields, file, token, evidenceDir,
       confirmation: expected.confirmation, deadline,
-      ...(strictNetwork ? { dispatchRequest: fulfillGuestLookupRequest } : {}),
+      ...(cloudGuarded ? { dispatchRequest: route => route.fallback() } : strictNetwork ? { dispatchRequest: fulfillGuestLookupRequest } : {}),
       ...(dispatchWithAuthority ? { dispatchWithAuthority } : {}),
       ...(continuationAllowed ? { continuationAllowed } : {}),
       onDispatch: () => { possible = true; dispatched = true; armed = false; onDispatched?.(); },

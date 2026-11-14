@@ -10,6 +10,7 @@ import {
   writeStatusOf,
   type HmsApprovalClient,
   type HmsApproved,
+  type HmsPreparedReceipt,
   type HmsReviewed,
   type HmsWriteView,
 } from '../lib/quote-workflow/hms-write';
@@ -25,9 +26,9 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 // The pane block binds its write card off the shared tRPC client. Only the hmsApproval routes answer here.
 const paneWrite = vi.hoisted(() => ({ view: null as unknown, calls: [] as unknown[],
-  voucherProps: null as null | { approvalAvailable?: boolean; onPrepared?: (digest?: string) => void } }));
+  voucherProps: null as null | { approvalAvailable?: boolean; onPrepared?: (digest?: string, receipt?: HmsPreparedReceipt) => void } }));
 vi.mock('@/components/quote-workflow/voucher-find-card', () => ({
-  VoucherFindCard: (props: { approvalAvailable?: boolean; onPrepared?: (digest?: string) => void }) => {
+  VoucherFindCard: (props: { approvalAvailable?: boolean; onPrepared?: (digest?: string, receipt?: HmsPreparedReceipt) => void }) => {
     paneWrite.voucherProps = props;
     return null;
   },
@@ -57,6 +58,8 @@ const CONFIRMATION = 'LAB-40417';
 const READ_AT = '2026-10-10T09:00:00.000Z';
 const EVENT_ID = '7b1e2d3c-4f5a-4b6c-8d7e-9f0a1b2c3d4e';
 const DIGEST = 'd'.repeat(64);
+const RECEIPT: HmsPreparedReceipt = { preparedRef: 'e3d99bf0-9076-4b85-a5cb-dc69791245ab', expectedRevision: 4,
+  generationId: 'generation-1', expiresAtIso: '2099-01-01T00:00:00.000Z', warnings: [] };
 
 const APPROVED: HmsApproved = {
   grantId: 'grant-1',
@@ -131,15 +134,19 @@ describe('ApproveCard approval', () => {
       confirmation: '123456-1', lastName: 'Labtest', arrival: '2027-09-14',
       sourceMessageId: 'internal-source-id', pdfSha256: 'a'.repeat(64) },
       before: { confirmation: '123456-1', lastName: 'Labtest', arrival: '2027-09-14' }, filingAvailable: true }));
-    renderCard(client, { writesEnabled: false });
+    const card = renderCard(client, { writesEnabled: false, filingApprovalDigest: DIGEST, filingPrepared: null });
     const list = await screen.findByRole('list', { name: 'Values to write' });
     expect(list.textContent).toContain('voucher.pdf');
     expect(list.textContent).toContain('123456-1');
     expect(list.textContent).toContain('Labtest');
     expect(list.textContent).not.toContain('internal-source-id');
     expect(list.textContent).not.toContain('a'.repeat(64));
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
+    card.rerender(<ApproveCard client={client} workItemId={WORK_ITEM} writesEnabled={false} confirmation={CONFIRMATION}
+      filingApprovalDigest={DIGEST} filingPrepared={RECEIPT} />);
     fireEvent.click(screen.getByRole('button', { name: 'Approve these values' }));
-    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST }));
+    await waitFor(() => expect(client.approve).toHaveBeenCalledWith({ workItemId: WORK_ITEM, formDigest: DIGEST,
+      preparedRef: RECEIPT.preparedRef, expectedRevision: RECEIPT.expectedRevision }));
   });
 
   it('reports a verified listing while keeping an unresolved upload blocked', async () => {
@@ -446,7 +453,7 @@ describe('BookingVoucherCard write card', () => {
       mailboxScope="actor:session:mailbox-a" propertyCode="HRCEN" />);
     expect(paneWrite.voucherProps?.approvalAvailable).toBe(true);
     paneWrite.view = viewWith({ form: attachForm, filingAvailable: true });
-    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST, RECEIPT); });
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
     expect(paneWrite.calls.length).toBe(2);
 
@@ -478,10 +485,10 @@ describe('BookingVoucherCard write card', () => {
     await waitFor(() => expect(paneWrite.calls.length).toBe(1));
     expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
     paneWrite.view = viewWith({ form: attachForm, filingAvailable: true });
-    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST, RECEIPT); });
     expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
     paneWrite.view = viewWith({ form: { action: 'amend', confirmation: '57291630-1' }, filingAvailable: true });
-    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST); });
+    await act(async () => { paneWrite.voucherProps?.onPrepared?.(DIGEST, RECEIPT); });
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull());
   });
 
@@ -547,7 +554,8 @@ describe('BookingVoucherCard write card', () => {
         writesEnabled
       />,
     );
-    expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+    expect(await screen.findByText('Voucher.pdf')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeTruthy();
   });
 
@@ -648,7 +656,8 @@ describe('BookingVoucherCard write card', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(HMS_WRITE_IDLE_POLL_MS);
       });
-      expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+      expect(await screen.findByText('Voucher.pdf')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -684,7 +693,8 @@ describe('BookingVoucherCard write card', () => {
         document.dispatchEvent(new Event('visibilitychange'));
         await vi.advanceTimersByTimeAsync(HMS_WRITE_IDLE_POLL_MS);
       });
-      expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+      expect(await screen.findByText('Voucher.pdf')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
     } finally {
       hidden.mockRestore();
       vi.useRealTimers();
@@ -708,7 +718,8 @@ describe('BookingVoucherCard write card', () => {
     expect(await screen.findByText('Nava could not load this write.')).toBeTruthy();
     paneWrite.view = viewWith({ form: attachForm, before: null });
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByRole('button', { name: 'Approve these values' })).toBeTruthy();
+    expect(await screen.findByText('Voucher.pdf')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve these values' })).toBeNull();
   });
 
   describe('the HMS copy on an amendment', () => {
@@ -833,10 +844,11 @@ describe('hmsApprovalFromTrpc and refusals', () => {
     expect(hmsApprovalFromTrpc(trpc, null, '<selected@example.test>')).toBeNull();
     expect(hmsApprovalFromTrpc(trpc, 'mailbox-a', null)).toBeNull();
     const selectedSource = { threadId: 'thread-1', messageId: 'source-1', sourceHash: 'a'.repeat(64) };
-    const client = hmsApprovalFromTrpc(trpc, 'mailbox-a', '<selected@example.test>', selectedSource);
+    const client = hmsApprovalFromTrpc(trpc, 'mailbox-a', '<selected@example.test>', selectedSource, 'HRDAVS');
     expect(client).not.toBeNull();
     await client?.writeState({ workItemId: WORK_ITEM });
-    await client?.approve({ workItemId: WORK_ITEM, formDigest: DIGEST });
+    await client?.approve({ workItemId: WORK_ITEM, formDigest: DIGEST,
+      preparedRef: RECEIPT.preparedRef, expectedRevision: RECEIPT.expectedRevision });
     await client?.review({ workItemId: WORK_ITEM, runId: 'run-1', decision: 'ok' });
     await client?.resolveNeedsCheck({ workItemId: WORK_ITEM, note: 'checked' });
     await client?.reread({ workItemId: WORK_ITEM });
@@ -848,6 +860,9 @@ describe('hmsApprovalFromTrpc and refusals', () => {
     for (const call of [state, approve, review, resolve, reread, evidence]) {
       expect(call).toHaveBeenCalledWith(expect.objectContaining({ selectedSource }), mailbox);
     }
+    expect(state).toHaveBeenCalledWith(expect.objectContaining({ propertySwitch: 'HRDAVS' }), mailbox);
+    expect(approve).toHaveBeenCalledWith(expect.objectContaining({ propertySwitch: 'HRDAVS',
+      preparedRef: RECEIPT.preparedRef, expectedRevision: RECEIPT.expectedRevision }), mailbox);
   });
 
   it('turns a refusal name into words, and an unknown one into a generic line', () => {

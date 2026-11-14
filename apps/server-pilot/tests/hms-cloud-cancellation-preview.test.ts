@@ -54,6 +54,7 @@ describe('Cloud cancellation preview projection', () => {
     const result = await runCloudCancellationPreview({
       request: { confirmation: '123456-1' },
       target: { ...CENTURION_HMS_READ_TARGET, browserSlot: 'davinci' },
+      transportId: 'transport-centurion',
     });
     expect(result).toEqual({ outcome: 'target_unverified', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' });
   });

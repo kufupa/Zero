@@ -538,7 +538,7 @@ describe('main', () => {
         rows: null,
         class: 'SHELL_OR_BLANK',
         outcome: 'observed',
-        evidence: '.private/playwright-quote/deeplink-probe/x',
+        evidence: '.private/hms-cloud/deeplink-probe/x',
         ms: 9,
       },
       {
@@ -550,7 +550,7 @@ describe('main', () => {
         rows: null,
         class: 'SHELL_OR_BLANK',
         outcome: 'navigation_error',
-        evidence: '.private/playwright-quote/deeplink-probe/x',
+        evidence: '.private/hms-cloud/deeplink-probe/x',
         ms: 11,
       },
     ]

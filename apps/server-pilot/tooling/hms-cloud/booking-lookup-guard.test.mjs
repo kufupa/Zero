@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs';
 

@@ -20,8 +20,7 @@ async function setup({ authorizeCandidate, dispatchCandidate, continueRequest } 
     matches: () => true, authorizeCandidate, dispatchCandidate });
   const visit = () => pageHandler({ request: () => request, fallback: () => contextHandler({
     request: () => request, abort: async () => { events.push('abort'); },
-    fallback: async () => { events.push('fallback'); },
-    continue: async () => { events.push('continue'); await continueRequest?.(); },
+    fallback: async () => { events.push('continue'); await continueRequest?.(); },
   }), abort: async () => { events.push('page-abort'); } });
   return { chain, visit, events, request };
 }

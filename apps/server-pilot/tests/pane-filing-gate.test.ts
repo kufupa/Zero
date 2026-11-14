@@ -32,7 +32,11 @@ describe('HRCEN filing hold', () => {
   it('refuses approval and note-only resolution before making any event or run', async () => {
     const f = approvalDb();
     for (const transportId of [request.transportId, 'unknown-transport']) {
-      await expect(approveHmsWrite({ ...request, transportId, db: f.db })).rejects.toMatchObject({ refusal: 'filing_unavailable' });
+      if (transportId === 'unknown-transport') {
+        await expect(approveHmsWrite({ ...request, transportId, db: f.db })).rejects.toThrow('hms_property_transport_unauthorized');
+      } else {
+        await expect(approveHmsWrite({ ...request, transportId, db: f.db })).rejects.toMatchObject({ refusal: 'filing_unavailable' });
+      }
       await expect(resolveHmsNeedsCheck({ ...request, transportId, db: f.db, note: 'checked HMS' }))
         .rejects.toMatchObject({ refusal: 'filing_unavailable' });
     }
@@ -118,7 +122,7 @@ describe('HRCEN filing hold', () => {
       const db = { transaction: async (fn: (value: unknown) => unknown) => fn(tx) } as unknown as DB;
       await expect(approveHmsWrite({ ...request, db, selectedSource, selectedInternetMessageId: '<voucher@example.test>',
         sessionId: 'session-1', sessionProfile: 'remote' }))
-        .rejects.toMatchObject({ refusal: kind === 'valid' ? 'snapshot_missing' : 'needs_check_open' });
+        .rejects.toMatchObject({ refusal: 'filing_unavailable' });
       expect(insert).not.toHaveBeenCalled();
     }
   });
@@ -202,10 +206,10 @@ describe('HRCEN filing hold', () => {
     const fence = { runId: 'run-1', claimOwner: 'owner-1', claimToken: 'token-1', deadlineAt: new Date(Date.now() + 60_000) };
     try {
       await expect(runPaneHmsWriteOnce({ db, runId: fence.runId, fence, env: { PANE_WRITE_ATTACH: 'lab' } }))
-        .resolves.toEqual({ status: 'ended', failureClass: 'POLICY_BLOCK', reason: 'refused_cloud_upload_unavailable' });
+        .resolves.toEqual({ status: 'ended', failureClass: 'NEEDS_CHECK', reason: 'fresh_preparation_required' });
       expect(read).not.toHaveBeenCalled();
       expect(spawn).not.toHaveBeenCalled();
-      expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'POLICY_BLOCK' }));
+      expect(stubs.end).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'NEEDS_CHECK' }));
     } finally {
       paneHmsWriteLoaders.readAttachment = null;
       paneHmsWriteLoaders.spawnAttach = null;

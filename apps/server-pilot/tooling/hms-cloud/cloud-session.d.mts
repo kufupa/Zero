@@ -1,4 +1,4 @@
-import type { BrowserContext, Page } from 'playwright';
+import type { BrowserContext, Page, Request } from 'playwright';
 import type { PropertyCode } from './property-registry.mjs';
 
 export type CloudPropertyIdentity = Readonly<{
@@ -24,9 +24,12 @@ export type CloudSessionOptions = {
   signal?: AbortSignal;
   headless?: boolean;
   prepareContext?: (context: BrowserContext) => void | Promise<void>;
+  readRequestPolicy?: (request: Request) => boolean;
   startScreen?: 'BSSTRT' | 'OSRESV' | 'OSRESS';
   loadSecret?: CloudSecretLoader;
   credentialLease?: CloudCredentialLease;
+  cloudTargetKey?: string;
+  cloudTargetKeys?: readonly string[];
 };
 export declare function cloudCredentialLeaseKey(propertyCode: string): string;
 export declare function verifyCloudCredentialVersion(input: {
@@ -34,6 +37,7 @@ export declare function verifyCloudCredentialVersion(input: {
   transportId?: string;
   loadedSecret: unknown;
   signal?: AbortSignal;
+  requireBoundVersion?: boolean;
 }): Promise<string | null>;
 export declare function acquireCloudCredentialLease(propertyCode: string, options?: {
   signal?: AbortSignal;
@@ -51,3 +55,16 @@ export declare function switchCloudProperty(page: Page, input: {
 }): Promise<CloudPropertyIdentity>;
 export declare function withCloudReadSession<T>(operation: (page: Page, identity: CloudSessionIdentity) => T | Promise<T>,
   options: CloudSessionOptions): Promise<T>;
+export declare function withCloudWriterSession<T>(operation: (page: Page, identity: CloudSessionIdentity) => T | Promise<T>,
+  options: CloudSessionOptions): Promise<T>;
+export type CloudWriterIdentity = Readonly<{
+  host: string; bootId: string; pidNamespace: string;
+  node: Readonly<{ pid: number; started: string }>;
+  browser: Readonly<{ pid: number; started: string }>;
+}>;
+export declare function cloudWriterIdentity(page: Page): CloudWriterIdentity | null;
+export declare function cloudSessionIdentity(page: Page): CloudSessionIdentity | null;
+export declare function cloudWriterCurrent(identity: unknown): boolean;
+export declare function cloudWriterQuiesced(identity: unknown): boolean;
+export declare function cloudHoldPath(propertyCode: string, alias: string, home?: string): string;
+export declare function assertNoCloudHold(propertyCode: string, alias: string): void;

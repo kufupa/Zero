@@ -2,17 +2,17 @@ import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 import { quotePaneConfigForProperty } from '../src/hms/rate-catalogue.js';
 import { buildQuoteProposalPdf } from '../src/quote-proposal/proposal-pdf.js';
-import { validateProfile } from '../tooling/playwright-quote/property-profile.mjs';
+import { validateProfile } from '../tooling/hms-cloud/property-profile.mjs';
 
 const fixture = JSON.parse(
   readFileSync(new URL('./fixtures/property-registry-hrfake.json', import.meta.url), 'utf8'),
 );
 
 it('isolates an injected HRFAKE target and refuses unknown or unsupported outputs', async () => {
-  const registryPath = '../tooling/playwright-quote/property-registry.mjs';
+  const registryPath = '../tooling/hms-cloud/property-registry.mjs';
   vi.resetModules();
   const registryModule = await vi.importActual<
-    typeof import('../tooling/playwright-quote/property-registry.mjs')
+    typeof import('../tooling/hms-cloud/property-registry.mjs')
   >(registryPath);
   const registry = {
     ...registryModule.PROPERTY_REGISTRY,

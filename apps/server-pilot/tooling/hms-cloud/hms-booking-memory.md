@@ -1,8 +1,7 @@
 # HMS booking memory
 
 `hms-booking-memory.mjs` exports `buildHmsBookingMemory`, `loadHmsBookingMemory`,
-and `queryHmsBookingMemory`. The former `playwright-quote/hms-booking-memory.mjs`
-path re-exports the same functions. Node 22 is required.
+and `queryHmsBookingMemory`. Node 22 is required.
 
 Inputs, the returned memory, and detailed query results are private: they can
 contain guest, address, booking, and message identifiers. Do not log them or

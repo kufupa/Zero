@@ -43,6 +43,7 @@ export const WORK_EVENT_TYPES = [
   'approval.consumed',
   'hms.prepared',
   'hms.dispatch.started',
+  'hms.dispatch.reviewed',
   'create.fence.started',
   'write.evidence',
   'review.ok',

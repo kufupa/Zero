@@ -46,6 +46,7 @@ import {
 } from '../../hms/mailbox-hms-origin-bind.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { TRPCError } from '@trpc/server';
+import { propertySwitchSchema, type PropertySwitch } from '../../hms/property-registry.js';
 import { z } from 'zod';
 
 const confirmation = z.string().regex(/^\d+-\d+$/);
@@ -77,6 +78,7 @@ const findStayInput = z
   .object({
     confirmation,
     arrival: arrival.optional(),
+    propertySwitch: propertySwitchSchema.optional(),
     threadId: threadIdInput.optional(),
     messageId: messageIdInput.optional(),
     sourceHash: sourceHashInput.optional(),
@@ -89,6 +91,7 @@ const searchGuestInput = z
     lastName: z.string().min(2).max(40).regex(GUEST_SURNAME_PATTERN),
     arrival,
     departure: arrival.optional(),
+    propertySwitch: propertySwitchSchema.optional(),
     threadId: threadIdInput.optional(),
     messageId: messageIdInput.optional(),
     sourceHash: sourceHashInput.optional(),
@@ -101,6 +104,7 @@ const queueFindInput = z
     threadId: threadIdInput,
     messageId: messageIdInput.optional(),
     sourceHash: sourceHashInput.optional(),
+    propertySwitch: propertySwitchSchema.optional(),
     confirmation,
     arrival: arrival.optional(),
     autoStart: z.literal(true).optional(),
@@ -112,6 +116,7 @@ const queueSearchGuestInput = z
     threadId: threadIdInput,
     messageId: messageIdInput.optional(),
     sourceHash: sourceHashInput.optional(),
+    propertySwitch: propertySwitchSchema.optional(),
     lastName: searchGuestInput.shape.lastName,
     arrival,
     departure: arrival.optional(),
@@ -145,7 +150,7 @@ const hmsBatchQueueInput = z
 // Poll by run id, or resume the latest job of one kind on a thread after a remount.
 const jobStatusInput = z.union([
   z.object({ runId: z.string().uuid(), threadId: threadIdInput.optional(), messageId: messageIdInput.optional(),
-    sourceHash: sourceHashInput.optional() }).strict().refine((input) =>
+    sourceHash: sourceHashInput.optional(), propertySwitch: propertySwitchSchema.optional() }).strict().refine((input) =>
       Boolean(input.threadId) === Boolean(input.messageId) && (!input.sourceHash || Boolean(input.messageId))),
   z
     .object({
@@ -153,6 +158,7 @@ const jobStatusInput = z.union([
       messageId: messageIdInput.optional(),
       sourceHash: sourceHashInput.optional(),
       kind: z.enum(['find', 'search_guest', 'party', 'availability']),
+      propertySwitch: propertySwitchSchema.optional(),
       confirmation: confirmation.optional(),
       // A guest search is picked by its surname too: one thread can carry vouchers for different guests.
       lastName: searchGuestInput.shape.lastName.optional(),
@@ -174,8 +180,8 @@ const paneStayLookupScreenshotInput = z
   })
   .strict();
 
-function paneStayRouteTarget(transportId: string) {
-  const fromTransport = paneStayHmsTargetForTransport(transportId);
+function paneStayRouteTarget(transportId: string, propertySwitch?: PropertySwitch) {
+  const fromTransport = paneStayHmsTargetForTransport(transportId, propertySwitch);
   if (!fromTransport.ok) {
     throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Unknown mailbox cannot use HMS.' });
   }
@@ -205,14 +211,8 @@ export const paneStayLookupRouter = router({
     .mutation(async ({ input, ctx }) => {
       await assertSelectedMessage(input, ctx.activeTransportId);
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      const target = input.threadId
-        ? await assertHmsReadOriginAllowed(
-            originGuardInput(
-              { threadId: input.threadId, messageId: input.messageId },
-              ctx.activeTransportId,
-            ),
-          )
-        : paneStayRouteTarget(ctx.activeTransportId);
+      if (input.threadId) await assertHmsReadOriginAllowed(originGuardInput({ ...input, threadId: input.threadId }, ctx.activeTransportId));
+      const target = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
       const result = await findStay(
         input.arrival
           ? { confirmation: input.confirmation, arrival: input.arrival }
@@ -245,14 +245,8 @@ export const paneStayLookupRouter = router({
     .mutation(async ({ input, ctx }) => {
       await assertSelectedMessage(input, ctx.activeTransportId);
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      const target = input.threadId
-        ? await assertHmsReadOriginAllowed(
-            originGuardInput(
-              { threadId: input.threadId, messageId: input.messageId },
-              ctx.activeTransportId,
-            ),
-          )
-        : paneStayRouteTarget(ctx.activeTransportId);
+      if (input.threadId) await assertHmsReadOriginAllowed(originGuardInput({ ...input, threadId: input.threadId }, ctx.activeTransportId));
+      const target = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
       const result = await searchGuest(
         input.departure
           ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
@@ -270,7 +264,8 @@ export const paneStayLookupRouter = router({
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
     await assertSelectedMessage(input, ctx.activeTransportId);
-    const target = await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+    await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+    const target = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
     if (!hmsJobQueueEnabled()) return { runId: null };
     const run = await queueUserHmsJob({
       transportId: ctx.activeTransportId,
@@ -283,7 +278,7 @@ export const paneStayLookupRouter = router({
       ...(input.devEval ? { devEval: true } : {}),
       // A dev/eval find never takes the live auto-start key, so it cannot stand in for staff's own read.
       ...(input.autoStart && !input.devEval
-        ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation) }
+        ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation, undefined, target.propertyCode) }
         : {}),
     });
     if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'thread has no inbound mail' });
@@ -293,7 +288,8 @@ export const paneStayLookupRouter = router({
     .input(queueSearchGuestInput)
     .mutation(async ({ input, ctx }) => {
       await assertSelectedMessage(input, ctx.activeTransportId);
-      const target = await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+      await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+      const target = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
       if (!hmsJobQueueEnabled()) return { runId: null };
       const run = await queueUserHmsJob({
         transportId: ctx.activeTransportId,
@@ -315,6 +311,7 @@ export const paneStayLookupRouter = router({
                 input.threadId,
                 input.lastName,
                 input.arrival,
+                target.propertyCode,
               ),
             }
           : {}),
@@ -403,10 +400,12 @@ export const paneStayLookupRouter = router({
   jobStatus: mailboxProcedure.input(jobStatusInput).query(async ({ input, ctx }) => {
     if (!hmsJobQueueEnabled()) return null;
     await assertSelectedMessage(input, ctx.activeTransportId);
+    const selectedTarget = paneStayRouteTarget(ctx.activeTransportId, input.propertySwitch);
     const jobInput =
       'runId' in input
         ? {
             transportId: ctx.activeTransportId,
+            propertyCode: selectedTarget.propertyCode,
             runId: input.runId,
             ...(input.threadId && input.messageId ? {
               threadId: input.threadId, messageId: input.messageId, selectedActorId: ctx.sessionUser.id,
@@ -414,7 +413,7 @@ export const paneStayLookupRouter = router({
             } : {}),
             staffQuoteOwnerId: ctx.sessionUser.id,
           }
-        : { transportId: ctx.activeTransportId, ...input,
+        : { transportId: ctx.activeTransportId, ...input, propertyCode: selectedTarget.propertyCode,
             ...(input.messageId ? { selectedActorId: ctx.sessionUser.id } : {}) };
     return readHmsJobView(jobInput);
   }),

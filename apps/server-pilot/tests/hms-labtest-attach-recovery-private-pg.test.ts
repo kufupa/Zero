@@ -20,9 +20,9 @@ import { createDocumentUploadGate, documentUploadRequestDigest } from '../toolin
 
 const f = vi.hoisted(() => ({ quiesced: true, failRead: false, mismatch: false, loseQuiescence: false, reads: 0,
   entered: null as null | (() => void), release: null as null | Promise<void> }));
-vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
-  ...(await original<typeof import('../tooling/playwright-quote/centurion-stay360.mjs')>()),
-  centurionWriterQuiesced: () => f.quiesced,
+vi.mock('../tooling/hms-cloud/cloud-session.mjs', async (original) => ({
+  ...(await original<typeof import('../tooling/hms-cloud/cloud-session.mjs')>()),
+  cloudWriterQuiesced: () => f.quiesced,
 }));
 vi.mock('../src/ai/pane-stay-save.js', async (original) => ({
   ...(await original<typeof import('../src/ai/pane-stay-save.js')>()),

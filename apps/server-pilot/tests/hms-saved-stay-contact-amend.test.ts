@@ -19,13 +19,13 @@ import {
   unchangedLabtestRecord,
 } from '../tooling/hms-cloud/labtest-record.mjs';
 import { blankSavedPartyFields } from '../tooling/hms-cloud/labtest-party-fields.mjs';
-import { installReadOnlyGuard } from '../tooling/playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from '../tooling/hms-cloud/hms-read-only-guard.mjs';
 
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
 const requestFrame = {};
 const expected = {
-  confirmation: '20270000001-1', guestId: '77', arrival: '2027-01-15', departure: '2027-01-16',
+  propertyCode: 'HRCEN', confirmation: '20270000001-1', guestId: '77', arrival: '2027-01-15', departure: '2027-01-16',
   roomType: 'DLX', ratePlan: 'BAR', note: 'synthetic test note',
 };
 const state = {
@@ -40,6 +40,7 @@ const data = {
   track: state.track, reservationnote: expected.note, udfchkbox04: '0', udfchar13: '', emailaddress: '',
   guaranteetype: 'NGI', pagemode: 'view', savecctoprofile: '0', savesettlementcctoprofile: '0',
   caller: 'Synthetic Booker', udfchar06: 'Synthetic contact', child1: '0', child2: '1', child3: '0',
+  child1status: 'ACTIVE', child2status: 'ACTIVE', child3status: 'ACTIVE',
   udfchar02: '0.00', grandtotal: '100.00', extId: 'ignored',
 };
 const baseline = { values: { ...data }, data: { ...data } };

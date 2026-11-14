@@ -1,5 +1,5 @@
 import { hmsDavinciReadsEnabled, hmsReadTargetForProperty, ownerRefBelongsToProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
-import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import { parsePartyIndexProperty } from './party-index.js';
 import {
   isDaVinciMailboxOrigin,
@@ -30,7 +30,7 @@ import { tmpdir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
 const PARTY_LOOKUP = fileURLToPath(
-  new URL('../../tooling/playwright-quote/party-lookup.mjs', import.meta.url),
+  new URL('../../tooling/hms-cloud/party-lookup.mjs', import.meta.url),
 );
 // One spawn (one or many searches) is bounded here. Extra searches add 40 s each, capped in spawnTimeoutMs.
 const PARTY_LOOKUP_KIND_TIMEOUT_MS = 150_000;
@@ -273,12 +273,12 @@ function partyLookupRequestBody(input: PanePartySpawnInput): unknown {
   const propertyCode = spawnPropertyCode(input.target);
   if (planned.length === 1 && !input.stopOnFirstHit) {
     const one = planned[0];
-    return { kind: one.kind, query: hmsQueryForKind(one.kind, one.name), propertyCode };
+    return { kind: one.kind, query: hmsQueryForKind(one.kind, one.name), propertyCode, transportId: input.transportId };
   }
   return {
     searches: planned.map((item) => ({ kind: item.kind, name: item.name })),
     ...(input.stopOnFirstHit ? { stopOnFirstHit: true } : {}),
-    propertyCode,
+    propertyCode, transportId: input.transportId,
   };
 }
 
@@ -385,12 +385,12 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
       ({ stdout } = await execFileAsync(
         process.execPath,
         [PARTY_LOOKUP, '--request', requestPath],
-        // The same borrowed browser and credential file the stay lookups use.
+        // A fresh scoped Cloud session uses the process credential lease.
         // SIGKILL: a runner stuck on HMS is stopped outright, not asked politely. Its temp request goes in the finally.
         {
           timeout: spawnTimeoutMs(plannedSearchesOf(input).length),
           killSignal: 'SIGKILL',
-          env: paneStaySpawnEnv(process.env, undefined, target),
+          env: paneStaySpawnEnv(process.env, target),
           maxBuffer: 1024 * 1024,
           signal: input.signal,
         },

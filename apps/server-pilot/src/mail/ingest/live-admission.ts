@@ -31,7 +31,7 @@ import { getSenderPreference } from '../sender-preference.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
-import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../../tooling/hms-cloud/property-registry.mjs';
 
 export type AdmissionProjection = {
   id: string;

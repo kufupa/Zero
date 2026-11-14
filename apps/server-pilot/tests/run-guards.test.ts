@@ -14,6 +14,8 @@ import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { hmsWriterDependencyDigest } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const jobScript = join(here, '..', 'deploy', 'hms-job.sh');
 const opsScript = join(here, '..', 'deploy', 'ops-deploy.sh');
@@ -182,6 +184,7 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     quoteOn: boolean;
     existingOn?: boolean;
     createDispatch?: string;
+    writerReady?: boolean;
   }): SpawnSyncReturns<string> {
     const root = scratch('u12-canary-');
     const repoRoot = join(root, 'repo');
@@ -194,6 +197,11 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
       join(serverPilot, '.env.production'),
       [
         ...(opts.attachWorkerOn ? ["PANE_HMS_LAB_ATTACH_WORKER='on'", "PANE_WRITE_ATTACH='lab'"] : []),
+        ...(opts.writerReady ? [
+          "HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRCEN='" + '1'.repeat(64) + "'",
+          "HMS_WRITER_CREDENTIAL_IDENTITY_HRCEN='nava-zero/server-pilot/infor-hms-read'",
+          "HMS_WRITER_DEPENDENCY_DIGEST_CREATE='" + hmsWriterDependencyDigest('create') + "'",
+        ] : []),
         "NODE_ENV='production'",
         "DATABASE_URL='postgres://example.invalid/zero'",
         "AWS_REGION='af-south-1'",
@@ -218,6 +226,12 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     }
     const canary = join(root, 'CANARY.txt');
     if (opts.canaryLine !== null) writeFileSync(canary, `${opts.canaryLine}\n`);
+    if (opts.writerReady) writeFileSync(`${canary}.writers.json`, JSON.stringify({ version: 2, writers: [{
+      propertyCode: 'HRCEN', workflow: 'create', tenantId: 'THECENTURION_PRD',
+      credentialIdentity: 'nava-zero/server-pilot/infor-hms-read', credentialVersionHmacSha256: '1'.repeat(64),
+      writerDependencyDigest: hmsWriterDependencyDigest('create'), sourceRevision: opts.liveSha,
+      readbackDigest: '2'.repeat(64), confirmation: '12345678-1', observedAt: new Date().toISOString(),
+    }] }), { mode: 0o600 });
     writeFileSync(join(stubDir, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', {
       mode: 0o755,
     });
@@ -294,7 +308,7 @@ printf '%s' '{"BETTER_AUTH_SECRET":"remote-signing-secret"}'
       expect(refused.stderr).toMatch(/create HRCEN/);
     }
     const passed = runWriter({ liveSha: sha, canaryLine: `CANARY PASS create HRCEN ${sha}`,
-      quoteOn: false, createDispatch: 'on' });
+      quoteOn: false, createDispatch: 'on', writerReady: true });
     expect(passed.status, passed.stderr).toBe(0);
     const off = runWriter({ liveSha: sha, canaryLine: null, quoteOn: false, createDispatch: 'off' });
     expect(off.status, off.stderr).toBe(0);

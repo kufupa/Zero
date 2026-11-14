@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { labtestCombinedAmendPreimageBinding as bind } from './saved-stay-combined-preimage.mjs';
 import { expectedLabtestAmendRecord } from './pane-amend-session.mjs';
 
 function fixture() {
-  const expected = { confirmation:'12345678-1', guestId:'123', arrival:'2027-10-12', departure:'2027-10-13',
+  const expected = { propertyCode:'HRCEN', confirmation:'12345678-1', guestId:'123', arrival:'2027-10-12', departure:'2027-10-13',
     roomType:'STQN', ratePlan:'BAR', note:'', adults:1, childCount:1, childAges:[8] };
   const native = { PKID:'10', bookingsessionid:'100', reservationid:'20', reservationstayid:'30', recordid:'40' };
   const parties = Object.fromEntries(blankSavedPartyFields.map((name) => [name, '']));
@@ -27,7 +29,7 @@ function fixture() {
 }
 const binding = ({expected, state, snapshot, changes}) => bind(expected, state, snapshot, changes);
 
-test('binds business preimage and changes, not unrelated native fields or session identifiers', () => {
+test('binds business preimage and changes, not unrelated native fields or session identifiers', async () => {
   const f = fixture(), first = binding(f);
   assert.match(first?.digest || '', /^[a-f0-9]{64}$/);
   f.state.native.bookingsessionid = f.snapshot.data.bookingsessionid = 'different';
@@ -37,6 +39,33 @@ test('binds business preimage and changes, not unrelated native fields or sessio
   assert.deepEqual(binding(f), first);
   f.snapshot.data.unrelated = 'kept'; f.changes.retainRates = 'no';
   assert.notDeepEqual(binding(f), first);
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    let current = true, enabled = true, step;
+    const writer = { node: { pid: 10, started: '1' }, browser: { pid: 11, started: '2' } };
+    const cloud = await import('./tooling/hms-cloud/cloud-session.mjs');
+    mock.module('./tooling/hms-cloud/cloud-session.mjs', { namedExports: { ...cloud,
+      cloudWriterIdentity: () => writer, cloudWriterCurrent: candidate => current && candidate.browser.pid === 11 } });
+    const { bindCloudAmendWriter } = await import('./tooling/hms-cloud/pane-amend-session.mjs');
+    const bound = bindCloudAmendWriter({}, { isEnabled: () => enabled,
+      authorizeFirst: async value => { step = value; return { ok: true }; } });
+    assert.equal(bound.isEnabled(), true);
+    assert.deepEqual(await bound.authorizeFirst({ phase: 'amend.save' }), { ok: true });
+    assert.deepEqual(step.writer, writer);
+    step.writer.browser.pid = 99;
+    assert.equal(bound.isEnabled(), true);
+    enabled = false;
+    await assert.rejects(bound.authorizeFirst({ phase: 'amend.save' }), /AMEND_WRITER_NOT_CURRENT/);
+    enabled = true;
+    const losesWriter = bindCloudAmendWriter({}, { authorizeFirst: async () => { current = false; return { ok: true }; } });
+    await assert.rejects(losesWriter.authorizeFirst({ phase: 'amend.save' }), /AMEND_WRITER_NOT_CURRENT/);
+    assert.equal(losesWriter.isEnabled(), false);
+    assert.throws(() => bindCloudAmendWriter({}, { authorizeFirst: async () => ({}) }), /AMEND_AUTHORITY_INVALID/);
+  `;
+  await promisify(execFile)(process.execPath,
+    ['--experimental-test-module-mocks', '--import', 'tsx', '--input-type=module', '-e', script],
+    { cwd: new URL('../../', import.meta.url), timeout: 30000, maxBuffer: 1024 * 1024 });
 });
 
 test('refuses stale edits, wrong identity and changed native targets', () => {

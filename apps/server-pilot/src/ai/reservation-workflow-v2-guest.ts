@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { canonicalJson } from './draft-approval.js';
 import { paneWriteMode } from './pane-stay-save.js';
-import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { bindHmsMailboxProperty, guardCenturionHmsMailboxOrigin, loadThreadMailboxHmsOriginScan }
+  from '../hms/mailbox-hms-origin-bind.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { hmsGuestProfileTargetKeys } from './hms-dispatch-target.js';
+import { acquisitionWithin, createPostgresTargetAliasLock, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import { effectiveSubtree, reviewed, type ReservationWorkflowV2ServerContext } from './reservation-workflow-v2-tools.js';
 import {
   appendReservationWorkflowV2Observation, claimReservationWorkflowV2GuestProfile,
@@ -27,7 +31,8 @@ type Runner = { prepareGuestProfile: (input: Record<string, unknown>) => Promise
   readGuestProfile: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult>;
   listGuestProfileCreationOptions: (input: Record<string, unknown>) => Promise<ReservationWorkflowV2GuestNativeResult> };
 const stateContext = (ctx: ReservationWorkflowV2ServerContext) => ({ db: ctx.db, transportId: ctx.transport.id,
-  userId: ctx.user.id, propertyCode: ctx.property.propertyCode, recovery: ctx.recovery });
+  userId: ctx.user.id, propertyCode: ctx.property.propertyCode, recovery: ctx.recovery,
+  writeRunFence: ctx.writeRunFence, signal: ctx.signal });
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : null;
 const record = (value: unknown): Record<string, any> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : null;
@@ -66,7 +71,7 @@ function compile(draft: ReservationWorkflowV2Draft, input: PrepareInput) {
       if (['firstName', 'lastName', 'mobile'].includes(field)) missing.push(fieldPath);
       continue;
     }
-    if (typeof raw !== 'string' || value.length > 200 || /[\x00-\x1f\x7f]/.test(value)) { missing.push(fieldPath); continue; }
+    if (typeof raw !== 'string' || value.length > 200 || /[\p{Cc}]/u.test(value)) { missing.push(fieldPath); continue; }
     businessGuest[field] = value;
     const review = reviewed(draft, fieldPath, value);
     if (review) pending.push(review);
@@ -82,7 +87,7 @@ function compile(draft: ReservationWorkflowV2Draft, input: PrepareInput) {
   return { business, path, semanticDigest: digest(business) } as const;
 }
 
-function prepared(draft: ReservationWorkflowV2Draft, input: CreateInput) {
+function prepared(draft: ReservationWorkflowV2Draft, input: PrepareInput & { prepareRef: string }) {
   const observation = draft.observations.find((row) => row.ref === input.prepareRef && row.kind === 'guest_candidate' &&
     row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
     row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId &&
@@ -102,9 +107,9 @@ async function validGuestPreview(preview: NonNullable<ReturnType<typeof prepared
   const native = await import(new URL('../../tooling/hms-cloud/guest-profile-create.mjs', import.meta.url).href) as {
     profileBusinessFields: (input: Record<string, unknown>) => Record<string, unknown> | null;
     hasExtendedProfileFields: (fields: Record<string, unknown>) => boolean;
-    matchesProfileReview: (review: unknown, fields: Record<string, unknown>, confirm: boolean) => boolean;
+    matchesProfileReview: (review: unknown, fields: Record<string, unknown>, confirm: boolean, propertyCode: string) => boolean;
     profileReviewDigest: (review: unknown) => string;
-    profilePreviewDigest: (fields: Record<string, unknown>, confirm: boolean) => string;
+    profilePreviewDigest: (fields: Record<string, unknown>, confirm: boolean, propertyCode: string) => string;
   };
   const business = { ...preview.business, expectedPreviewDigest: preview.previewDigest,
     ...(preview.review ? { expectedReview: preview.review } : {}) };
@@ -112,8 +117,9 @@ async function validGuestPreview(preview: NonNullable<ReturnType<typeof prepared
   if (!fields) return false;
   const confirmed = preview.business.confirmDuplicateName === true;
   const extended = native.hasExtendedProfileFields(fields);
-  if (extended && !native.matchesProfileReview(preview.review, fields, confirmed)) return false;
-  return preview.previewDigest === (extended ? native.profileReviewDigest(preview.review) : native.profilePreviewDigest(fields, confirmed));
+  const propertyCode = text(preview.business.propertyCode);
+  if (!propertyCode || (extended && !native.matchesProfileReview(preview.review, fields, confirmed, propertyCode))) return false;
+  return preview.previewDigest === (extended ? native.profileReviewDigest(preview.review) : native.profilePreviewDigest(fields, confirmed, propertyCode));
 }
 
 function writeAllowed(business: Record<string, any>): boolean {
@@ -140,7 +146,7 @@ export async function reservationWorkflowV2GuestOptions(ctx: ReservationWorkflow
   if (current.revision !== input.expectedRevision || current.seq !== input.expectedSeq) return { status: 'stale_revision' as const };
   const request = current.draft.proposal.content.requests.find((row) => row.id === input.requestId);
   if (request?.kind !== 'create' || !request.body.allocations.some((row) => row.id === input.allocationId)) return { status: 'not_found' as const };
-  return (await runner()).listGuestProfileCreationOptions({ propertyCode: ctx.property.propertyCode, field: input.field });
+  return (await runner({ propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.signal })).listGuestProfileCreationOptions({ propertyCode: ctx.property.propertyCode, field: input.field });
 }
 
 export async function reservationWorkflowV2PrepareGuestProfile(ctx: ReservationWorkflowV2ServerContext, input: PrepareInput) {
@@ -155,7 +161,7 @@ export async function reservationWorkflowV2PrepareGuestProfile(ctx: ReservationW
   if ('issue' in compiled) return { status: 'needsReview' in compiled ? 'needs_review' as const : 'needs_input' as const,
     issue: compiled.issue, fields: 'fields' in compiled ? compiled.fields : [] };
   let native: ReservationWorkflowV2GuestNativeResult;
-  try { native = await (await runner()).prepareGuestProfile(compiled.business); }
+  try { native = await (await runner({ propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.signal })).prepareGuestProfile(compiled.business); }
   catch { return { status: 'failed' as const, issue: 'guest_profile_prepare_failed' }; }
   if (native.outcome !== 'ready' || !native.previewDigest) return { status: 'needs_input' as const,
     issue: native.issue ?? 'guest_profile_prepare_incomplete', native };
@@ -173,10 +179,33 @@ export async function reservationWorkflowV2PrepareGuestProfile(ctx: ReservationW
     businessFields: native.businessFields ?? null, draft: saved.draft, revision: saved.revision, seq: saved.seq };
 }
 
+/** Bind profile approval to the exact server-prepared native profile and both duplicate aliases. */
+export async function reservationWorkflowV2GuestProfilePreparation(ctx: ReservationWorkflowV2ServerContext,
+  input: PrepareInput, prepareRef: string) {
+  const current = await getReservationWorkflowV2Draft(stateContext(ctx), input);
+  if (current.status !== 'ok' || current.revision !== input.expectedRevision || current.seq !== input.expectedSeq) return null;
+  const scopedInput = { ...input, prepareRef };
+  const preview = prepared(current.draft, scopedInput), compiled = compile(current.draft, input);
+  if (!preview || 'issue' in compiled || compiled.semanticDigest !== preview.observation.criteria.semanticDigest ||
+      !await validGuestPreview(preview)) return null;
+  const guest = record(preview.business.guest), property = getPropertyRegistration(ctx.property.propertyCode);
+  if (!guest || !property || typeof guest.firstName !== 'string' || typeof guest.lastName !== 'string' ||
+      (guest.email !== undefined && typeof guest.email !== 'string')) return null;
+  let targetAliases: string[];
+  try { targetAliases = hmsGuestProfileTargetKeys({ propertyCode: property.propertyCode, firstName: guest.firstName,
+    lastName: guest.lastName, ...(guest.email ? { email: guest.email } : {}) }); }
+  catch { return null; }
+  return { operation: 'create_guest_profile' as const, targetAliases,
+    nativeObservation: { beforeDigest: preview.previewDigest, capturedAt: preview.observation.observedAt,
+      price: null, warnings: preview.observation.coverage.notes },
+    workflowContext: { endpoint: 'createGuestProfile' as const, input: scopedInput } };
+}
+
 export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWorkflowV2ServerContext, input: CreateInput,
   inspectOnly = false) {
   const { sessionId, sessionProfile } = ctx.user;
   if (!sessionId || !sessionProfile) return { status: 'refused' as const, issue: 'authenticated_staff_session_required' };
+  if (!inspectOnly && !ctx.writeRunFence) return { status: 'refused' as const, issue: 'staff_go_required' };
   const initial = await getReservationWorkflowV2Draft(stateContext(ctx), input);
   if (initial.status !== 'ok') return initial;
   const prior = initial.draft.operationResults.find((row) => row.id === input.idempotencyKey);
@@ -190,6 +219,18 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
   if (prior?.status === 'failed') return { status: 'failed' as const, operationId: prior.id, issue: prior.summary };
   if (!prior && !await validGuestPreview(preview)) return { status: 'needs_prepare' as const, issue: 'guest_profile_prepare_stale' };
   if (!prior && !writeAllowed(preview.business)) return { status: 'refused' as const, issue: 'guest_profile_write_flag_off' };
+  const guest = record(preview.business.guest), property = getPropertyRegistration(ctx.property.propertyCode);
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!guest || !property || !property.active || !databaseUrl || typeof guest.firstName !== 'string' ||
+      typeof guest.lastName !== 'string' || (guest.email !== undefined && typeof guest.email !== 'string')) {
+    return { status: 'refused' as const, issue: 'guest_profile_target_lock_unavailable' };
+  }
+  let targetAliases: string[];
+  try { targetAliases = hmsGuestProfileTargetKeys({ propertyCode: property.propertyCode, firstName: guest.firstName,
+    lastName: guest.lastName, ...(guest.email ? { email: guest.email } : {}) }); }
+  catch { return { status: 'refused' as const, issue: 'guest_profile_target_lock_unavailable' }; }
+  const targetLock = createPostgresTargetAliasLock({ tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+    targetAliases, databaseUrl });
   const claim = prior ? { ...initial, alreadyClaimed: true } :
     await claimReservationWorkflowV2GuestProfile(stateContext(ctx), input, (draft) => {
       const now = compile(draft, input);
@@ -205,23 +246,40 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
     return Boolean(writeAllowed(preview.business) && operation && !('issue' in current) &&
       current.semanticDigest === preview.observation.criteria.semanticDigest);
   };
+  let activeSignal = ctx.signal;
   const callback = async () => {
-    if (!writeAllowed(preview.business)) return false;
-    const origin = await guardCenturionHmsMailboxOrigin({ transportId: ctx.transport.id,
-      threadId: input.source.threadId, messageId: input.source.messageId });
-    if (!origin.ok) return false;
+    if (activeSignal?.aborted || !writeAllowed(preview.business)) return false;
+    const source = { transportId: ctx.transport.id, threadId: input.source.threadId, messageId: input.source.messageId };
+    if (property.group === 'centurion') {
+      if (!(await guardCenturionHmsMailboxOrigin(source)).ok) return false;
+    } else {
+      const scan = await loadThreadMailboxHmsOriginScan(source);
+      if (!scan.selectedFound || !scan.selected || !bindHmsMailboxProperty({ transportId: ctx.transport.id,
+        propertyCode: property.propertyCode, origin: scan.selected }).ok) return false;
+    }
     const live = await getReservationWorkflowV2Draft(stateContext(ctx), input);
     if (live.status !== 'ok' || live.revision !== input.expectedRevision || live.seq !== input.expectedSeq) return false;
     return validate(live.draft);
   };
-  let native: ReservationWorkflowV2GuestNativeResult;
+  let native: ReservationWorkflowV2GuestNativeResult = { outcome: 'reconciliation_required', dispatched: null };
   let noDispatchBeforeJournal = false;
   try {
+    await targetLock.withLock(async (_connection, lockSignal) => {
+      activeSignal = ctx.signal ? AbortSignal.any([lockSignal, ctx.signal]) : lockSignal;
+      const { withCloudCredentialLease } = await import('../../tooling/hms-cloud/cloud-session.mjs');
+      await withCloudCredentialLease(property.propertyCode, async (credentialLease) => {
     let retryOfAttemptId: string | undefined;
-    const nativeRunner = await runner({ authorizeStaffWrite: callback,
-      dispatchStaffWrite: (_context: unknown, proceed: () => Promise<unknown>) =>
-        dispatchReservationWorkflowV2GuestProfile({ ...stateContext(ctx), userId: ctx.user.id, sessionId, sessionProfile },
-          input, validate, proceed),
+    const nativeRunner = await runner({ propertyCode: property.propertyCode, transportId: ctx.transport.id,
+      signal: activeSignal, credentialLease, authorizeStaffWrite: callback,
+      dispatchStaffWrite: (context: unknown, proceed: () => Promise<unknown>) => {
+        const dispatch = z.object({ propertyCode: z.literal(property.propertyCode),
+          phase: z.enum(['initial', 'confirm_distinct']), writer: z.unknown() }).passthrough().parse(context);
+        if (!dispatch.writer || (dispatch.phase === 'confirm_distinct' && preview.business.confirmDuplicateName !== true)) {
+          throw new Error('guest_profile_dispatch_scope_invalid');
+        }
+        return dispatchReservationWorkflowV2GuestProfile({ ...stateContext(ctx), signal: activeSignal, userId: ctx.user.id, sessionId, sessionProfile },
+          input, validate, proceed, dispatch.phase);
+      },
       verifyNoCreate: async (proof: { attemptId: string; nextAttemptId: string; nextPreviewDigest: string;
         noDispatchRecorded: boolean; duplicateDeclined: boolean; result: ReservationWorkflowV2GuestNativeResult }) => {
         const noDispatch = proof.noDispatchRecorded &&
@@ -274,6 +332,8 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
         nativeId: native.nativeId, attemptId: input.idempotencyKey });
       if (read.reconciliation?.outcome === 'created') native = read.reconciliation;
     }
+      }, { signal: activeSignal });
+    }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.signal });
   } catch {
     noDispatchBeforeJournal = false;
     native = { outcome: 'reconciliation_required', issue: 'guest_profile_execution_unknown', dispatched: null };
@@ -313,7 +373,9 @@ export async function reservationWorkflowV2CreateGuestProfile(ctx: ReservationWo
     nativeId: native.nativeId ?? null, issue: 'guest_profile_result_persist_failed' };
   const persistedStatus = saved.draft.operationResults.find((row) => row.id === input.idempotencyKey)?.status ?? 'unknown';
   return { status: persistedStatus === 'unknown' ? 'needs_reconcile' as const : persistedStatus, operationId: input.idempotencyKey,
-    nativeId: native.nativeId ?? null, issue: native.issue ?? null, draft: saved.draft, revision: saved.revision, seq: saved.seq };
+    nativeId: native.nativeId ?? null, issue: native.issue ?? null,
+    ...(persistedStatus === 'succeeded' && observation ? { observationRef: observation.ref } : {}),
+    draft: saved.draft, revision: saved.revision, seq: saved.seq };
 }
 
 /** Reconcile an existing attempt using only the private journal and an exact-ID read. */

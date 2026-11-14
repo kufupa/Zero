@@ -1,12 +1,15 @@
-// Staff-approved cancellation on an owned HRCEN Cloud session.
+// Staff-approved cancellation on an owned Cloud session.
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { withCloudCredentialLease, withCloudReadSession, withCloudWriterSession } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
+import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
 import { verifySingleCancellationScope } from './cancel-association-scope.mjs';
+
+const phaseSignal = (signal, timeout) => signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
 
 const digits = (value) => typeof value === 'string' && /^\d{1,100}$/.test(value);
 const day = (value) => {
@@ -23,12 +26,26 @@ const lookupOptions = (firstName, lastName, arrival) => {
   const guestName = firstName && lastName ? `${firstName} ${lastName}` : '';
   return { ...(guestName && guestName.length <= 256 ? { guestName } : {}), arrivalDate: arrival };
 };
+const validScope = (propertyCode, transportId) => {
+  const property = getPropertyRegistration(propertyCode);
+  return Boolean(property?.active && typeof transportId === 'string' && property.transportIds.includes(transportId));
+};
+function savedTargetKeys(propertyCode, confirmation, nativeStayId) {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active || !/^\d+-\d+$/.test(confirmation || '')) return [];
+  const normalize = value => value.replace(/^0+(?=\d)/, '');
+  const [base, suffix] = confirmation.split('-');
+  const tenant = propertyCode === 'HRCEN' ? [] : [property.expectedTenant];
+  const keys = [JSON.stringify([propertyCode, 'saved', `${normalize(base)}-${normalize(suffix)}`, ...tenant])];
+  if (digits(nativeStayId)) keys.push(JSON.stringify([propertyCode, 'saved_native', normalize(nativeStayId), ...tenant]));
+  return keys;
+}
 
 /** A one-use no-dispatch proof is scoped to the exact V2 cancel run and saved stay. */
 export function consumeNeverDispatchedCancelProof(proof, intent) {
   const binding = proof && typeof proof === 'object' ? neverDispatchedCancelProofs.get(proof) : null;
   const target = intent?.target, recovery = intent?.recovery;
-  if (!binding || intent?.operation !== 'cancel' || intent?.propertyCode !== 'HRCEN' ||
+  if (!binding || intent?.operation !== 'cancel' || intent?.propertyCode !== binding.propertyCode ||
       target?.propertyCode !== binding.propertyCode || target?.kind !== 'saved' ||
       target?.confirmation !== binding.confirmation || target?.nativeStayId !== binding.nativeStayId ||
       recovery?.confirmation !== binding.confirmation || recovery?.nativeStayId !== binding.nativeStayId ||
@@ -40,7 +57,7 @@ export function consumeNeverDispatchedCancelProof(proof, intent) {
 function neverDispatchedCancelProof(input) {
   const expected = input?.expected;
   if (input?.mode !== 'commit' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.runId || '') ||
-      input.target?.propertyCode !== 'HRCEN' || !/^\d+-\d+$/.test(input.confirmation || '') ||
+      !getPropertyRegistration(input.target?.propertyCode)?.active || !/^\d+-\d+$/.test(input.confirmation || '') ||
       expected?.confirmation !== input.confirmation || !digits(expected?.nativeStayId) ||
       typeof input.cloudTargetKey !== 'string' || !input.cloudTargetKey) return null;
   const proof = Object.freeze({});
@@ -57,17 +74,17 @@ const field = (record, key) => {
   return typeof value === 'string' ? value : null;
 };
 const observedGuarantee = (value) => typeof value === 'string' && value.length <= 200 && !/[\p{Cc}]/u.test(value) ? value : '';
-const cancelBusinessPreimage = (value) => ['confirmation', 'guestId', 'nativeStayId', 'firstName', 'lastName',
+const cancelBusinessPreimage = (value) => ['propertyCode', 'confirmation', 'guestId', 'nativeStayId', 'firstName', 'lastName',
   'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'cmsSend', 'allowRealGuest'].map((key) => value?.[key]);
 
 /** Names and native IDs come only from the independently verified Record View. */
-export function cancellationNativePreimage(record, { allowRealGuest = false } = {}) {
+export function cancellationNativePreimage(record, { allowRealGuest = false, propertyCode = 'HRCEN' } = {}) {
   const native = record?.nativePreimage;
   const note = field(record, 'reservationnote'), guarantee = field(record, 'guaranteetype');
   const deposit = field(record, 'depositreceived');
   const send = record?.details?.fields?.filter((item) => item?.name === 'udfchkbox04');
   const isLabtest = native?.firstName === 'Proof' && native?.lastName === 'Labtest' && native?.arrival >= '2027-01-01';
-  if (!native || native.source !== 'record_view_ext_model' || native.propertyCode !== 'HRCEN' ||
+  if (!getPropertyRegistration(propertyCode)?.active || !native || native.source !== 'record_view_ext_model' || native.propertyCode !== propertyCode ||
       !/^\d+-\d+$/.test(native.confirmation || '') || !digits(native.guestId) || !digits(native.reservationStayId) ||
       native.status !== 'Reserved' || !name(native.firstName) || !name(native.lastName) ||
       !day(native.arrival) || !day(native.departure) || native.departure <= native.arrival ||
@@ -76,7 +93,7 @@ export function cancellationNativePreimage(record, { allowRealGuest = false } = 
       typeof note !== 'string' || note.length > 2_000 ||
       !Array.isArray(send) || send.length !== 1 || typeof send[0].value !== 'boolean' ||
       (isLabtest && send[0].value !== false)) return null;
-  return { confirmation: native.confirmation, guestId: native.guestId, nativeStayId: native.reservationStayId,
+  return { propertyCode: native.propertyCode, confirmation: native.confirmation, guestId: native.guestId, nativeStayId: native.reservationStayId,
     firstName: native.firstName, lastName: native.lastName, arrival: native.arrival, departure: native.departure,
     roomType: native.roomType, ratePlan: native.ratePlan, note, depositReceived: deposit,
     expectedGuarantee: { code: observedGuarantee(native.guaranteeCode), display: observedGuarantee(guarantee) }, cmsSend: send[0].value,
@@ -87,9 +104,9 @@ export function cancellationNativePreimage(record, { allowRealGuest = false } = 
 async function cancellationReadback(page, input, { shallow, read }) {
   await shallow(page, input.expected.confirmation,
     lookupOptions(input.expected.firstName, input.expected.lastName, input.expected.arrival));
-  const record = await read(page, input.expected.confirmation, { nativePropertyCode: 'HRCEN' });
+  const record = await read(page, input.expected.confirmation, { nativePropertyCode: input.target.propertyCode });
   const native = record?.nativePreimage, expected = input.expected;
-  if (!native || native.source !== 'record_view_ext_model' || native.propertyCode !== 'HRCEN' ||
+  if (!native || native.source !== 'record_view_ext_model' || native.propertyCode !== input.target.propertyCode ||
       native.confirmation !== expected.confirmation || native.reservationStayId !== expected.nativeStayId ||
       native.guestId !== expected.guestId || native.firstName !== expected.firstName || native.lastName !== expected.lastName ||
       native.arrival !== expected.arrival || native.departure !== expected.departure ||
@@ -124,11 +141,12 @@ async function cancellationReadback(page, input, { shallow, read }) {
 }
 
 /** Read-only identity evidence cannot by itself resolve an uncertain penalty state. */
-export async function provePositiveCancelRecovery(intent, { openSession = withCenturionStay360Page,
-  shallow = readShallow, read = readRecord, freshRead = cancellationReadback } = {}) {
+export async function provePositiveCancelRecovery(intent, { openSession = withCloudReadSession,
+  shallow = readShallow, read = readRecord, freshRead = cancellationReadback, signal, credentialLease } = {}) {
   try {
-    const recovery = intent?.recovery, expected = recovery?.preimage;
-    if (intent?.operation !== 'cancel' || intent.propertyCode !== 'HRCEN' || !expected ||
+    const recovery = intent?.recovery, expected = recovery?.preimage && { ...recovery.preimage,
+      propertyCode: recovery.preimage.propertyCode ?? (intent.propertyCode === 'HRCEN' ? 'HRCEN' : undefined) };
+    if (intent?.operation !== 'cancel' || !validScope(intent.propertyCode, intent.transportId) || expected?.propertyCode !== intent.propertyCode || !expected ||
         !/^\d+-\d+$/.test(recovery.confirmation || '') || recovery.confirmation !== expected.confirmation ||
         !digits(recovery.nativeStayId) || recovery.nativeStayId !== expected.nativeStayId ||
         intent.nativeGuestId !== expected.guestId || intent.firstName !== expected.firstName ||
@@ -136,11 +154,13 @@ export async function provePositiveCancelRecovery(intent, { openSession = withCe
         expected.departure <= expected.arrival || typeof recovery.reasonCode !== 'string' ||
         !/^[A-Za-z0-9_-]{1,40}$/.test(recovery.reasonCode) || typeof recovery.cancellationNote !== 'string' ||
         recovery.cancellationNote.length > 200) return { outcome: 'unconfirmed' };
-    const input = { expected, reasonCode: recovery.reasonCode, cancellationNote: recovery.cancellationNote };
-    const options = { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(5 * 60_000),
+    const input = { target: { propertyCode: intent.propertyCode }, expected, reasonCode: recovery.reasonCode, cancellationNote: recovery.cancellationNote };
+    const options = { propertyCode: intent.propertyCode, transportId: intent.transportId, credentialLease, startScreen: 'OSRESS',
+      signal: phaseSignal(signal, 5 * 60_000),
+      cloudTargetKeys: savedTargetKeys(intent.propertyCode, expected.confirmation, expected.nativeStayId),
+      prepareContext: context => installSavedStayReadGuard(context, { propertyCode: intent.propertyCode, confirmation: expected.confirmation }),
       ...(recovery.cloudTargetKey ? { cloudTargetKey: recovery.cloudTargetKey } : {}) };
     return await openSession(async (page) => {
-      await installReadOnlyGuard(page.context());
       const readback = await freshRead(page, input, { shallow, read });
       if (!readback || readback.confirmation !== expected.confirmation || readback.nativeStayId !== expected.nativeStayId ||
           readback.nativeGuestId !== expected.guestId || readback.reasonCode !== recovery.reasonCode ||
@@ -155,10 +175,18 @@ export async function provePositiveCancelRecovery(intent, { openSession = withCe
 }
 
 /** Read/preview never confirms. Commit delegates its one exact Save to the server's claim callback. */
-export async function runCloudPaneCancel(input, { openSession = withCenturionStay360Page, shallow = readShallow,
+export async function runCloudPaneCancel(input, dependencies = {}) {
+  const propertyCode = input?.target?.propertyCode;
+  if (!validScope(propertyCode, input?.transportId)) return { outcome: 'refused_input', requestDispatched: false };
+  const execute = credentialLease => runCloudPaneCancelWithLease(input, { ...dependencies, credentialLease });
+  return input.credentialLease ? execute(input.credentialLease) : withCloudCredentialLease(propertyCode, execute, { signal: input.signal });
+}
+
+async function runCloudPaneCancelWithLease(input, { openSession = withCloudWriterSession, openReadSession = withCloudReadSession,
+  credentialLease, shallow = readShallow,
   read = readRecord, open = openLabtestCancellation, confirm = confirmLabtestCancellation,
   scope = verifySingleCancellationScope, freshRead = cancellationReadback, now = () => performance.now() } = {}) {
-  if (input?.target?.propertyCode !== 'HRCEN' || !['read', 'preview', 'commit'].includes(input.mode) ||
+  if (!validScope(input?.target?.propertyCode, input.transportId) || !['read', 'preview', 'commit'].includes(input.mode) ||
       !/^\d+-\d+$/.test(input.confirmation || '') || !day(input.arrival) || typeof input.allowRealGuest !== 'boolean' ||
       (input.mode === 'commit' && (!input.expected || typeof input.beforeDispatch !== 'function' ||
         typeof input.dispatchWithAuthority !== 'function' || typeof input.continuationAllowed !== 'function' ||
@@ -168,8 +196,19 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
   const started = now();
   const root = await mkdtemp(join(tmpdir(), 'pane-cloud-cancel-'));
   const sessionBudget = input.mode === 'commit' ? COMMIT_BUDGET_MS : READ_BUDGET_MS;
-  const options = { headless: true, blockServiceWorkers: true, signal: AbortSignal.timeout(sessionBudget),
+  const signal = phaseSignal(credentialLease?.signal ? AbortSignal.any([input.signal, credentialLease.signal].filter(Boolean)) : input.signal, sessionBudget);
+  const continuationAllowed = () => !signal.aborted && input.continuationAllowed() === true;
+  const writerPage = { current: null };
+  const options = { propertyCode: input.target.propertyCode, transportId: input.transportId, credentialLease, startScreen: 'OSRESS', signal,
+    cloudTargetKeys: savedTargetKeys(input.target.propertyCode, input.confirmation, input.expected?.nativeStayId),
     ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}) };
+  const writerOptions = { ...options, prepareContext: context => installSavedStayReadGuard(context, {
+    propertyCode: input.target.propertyCode, confirmation: input.confirmation,
+    getOwnedPage: () => writerPage.current, forwardToCloud: true,
+  }) };
+  const readerOptions = { ...options, prepareContext: context => installSavedStayReadGuard(context, {
+    propertyCode: input.target.propertyCode, confirmation: input.confirmation,
+  }) };
   let writerSessionClosed = false, dispatched = false, confirmAttempted = false, result;
   let chargeAuthorityAttempted = false, chargeDecisionRequested = false, chargeDispatchAttempted = false, pendingChargeAuthority = 0;
   const awaitCharge = typeof input.awaitChargeApproval === 'function' ? async (...args) => {
@@ -188,11 +227,11 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
   } : undefined;
   try {
     result = await openSession(async (page) => {
-      await installReadOnlyGuard(page.context());
+      writerPage.current = page;
       await shallow(page, input.confirmation,
         lookupOptions(input.expected?.firstName, input.expected?.lastName, input.arrival));
-      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
-      const expected = cancellationNativePreimage(record, { allowRealGuest: input.allowRealGuest });
+      const record = await read(page, input.confirmation, { nativePropertyCode: input.target.propertyCode });
+      const expected = cancellationNativePreimage(record, { allowRealGuest: input.allowRealGuest, propertyCode: input.target.propertyCode });
       if (!expected || expected.confirmation !== input.confirmation || expected.arrival !== input.arrival ||
           (input.expected && JSON.stringify(cancelBusinessPreimage(expected)) !== JSON.stringify(cancelBusinessPreimage(input.expected))) ||
           (input.bindDepositReceived === true && input.expected && expected.depositReceived !== input.expected.depositReceived)) {
@@ -202,11 +241,11 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       if (input.mode === 'read') return { outcome: 'read', expected, requestDispatched: false };
       await writeFile(join(root, 'before.png'), await page.screenshot({ fullPage: true }), { mode: 0o600 });
       const remaining = Math.floor(Math.min(sessionBudget, input.commitBudgetMs ?? sessionBudget) - (now() - started));
-      if (input.mode === 'commit' && (remaining < 1 || input.continuationAllowed() !== true)) {
+      if (input.mode === 'commit' && (remaining < 1 || !continuationAllowed())) {
         return { outcome: 'not_dispatched', requestDispatched: false, dispatchCallbacksDrained: true };
       }
       const opened = await open(page, expected, input.mode === 'commit' ? {
-        timeoutMs: remaining, continuationAllowed: input.continuationAllowed, awaitChargeApproval: awaitCharge,
+        timeoutMs: remaining, continuationAllowed, awaitChargeApproval: awaitCharge,
         prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true,
       } : {});
       if (input.mode === 'preview' && opened.outcome === 'fee_dialog_pending' && opened.reasons?.length) {
@@ -224,13 +263,13 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       // The deadline covers the fresh read and authorization inside the paused request, not just the click.
       // Both the session and the worker's dispatch authority began before opening the reason dialog.
       const timeoutMs = Math.floor(Math.min(sessionBudget, input.commitBudgetMs) - (now() - started));
-      if (timeoutMs < 1 || input.continuationAllowed() !== true) {
+      if (timeoutMs < 1 || !continuationAllowed()) {
         return { outcome: 'not_dispatched', requestDispatched: false, dispatchCallbacksDrained: true };
       }
       confirmAttempted = true;
       const saved = await confirm(page, expected, { reasonCode: input.reasonCode, reasonLabel: input.reasonLabel,
         cancellationNote: input.cancellationNote, timeoutMs, beforeDispatch: input.beforeDispatch,
-        continuationAllowed: input.continuationAllowed, awaitChargeApproval: awaitCharge,
+        continuationAllowed, awaitChargeApproval: awaitCharge,
         bindDepositReceived: input.bindDepositReceived === true,
         prepareChargeWithAuthority: prepareCharge,
         dispatchChargeWithAuthority: dispatchCharge,
@@ -239,7 +278,7 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
       return { ...saved, ...(opened.chargeApproved ? { outcome: 'fee_accepted_unconfirmed',
         penaltyText: opened.penaltyText ?? saved.penaltyText } : {}),
       requestDispatched: dispatched || saved.requestDispatched === true };
-    }, options);
+    }, writerOptions);
     writerSessionClosed = true;
   } catch {
     result = { outcome: dispatched ? 'uncertain' : 'execution_failure', requestDispatched: dispatched };
@@ -257,12 +296,12 @@ export async function runCloudPaneCancel(input, { openSession = withCenturionSta
   }
   let nativeReadback = null;
   try {
-    nativeReadback = await openSession(async (page) => {
-      await installReadOnlyGuard(page.context());
+    if (!writerSessionClosed) throw new Error('HMS_WRITER_CLOSE_UNCONFIRMED');
+    nativeReadback = await openReadSession(async (page) => {
       const proof = await freshRead(page, input, { shallow, read });
       if (proof) await writeFile(join(root, 'after.png'), await page.screenshot({ fullPage: true }), { mode: 0o600 });
       return proof;
-    }, options);
+    }, readerOptions);
   } catch { /* A possible effect remains UNKNOWN. */ }
   if (nativeReadback) screenshots.push(join(root, 'after.png'));
   const complete = nativeReadback && nativeReadback.confirmation === input.expected?.confirmation &&

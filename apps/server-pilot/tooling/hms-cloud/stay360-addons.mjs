@@ -1,14 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
 import { parseAssociationResponse } from './cancel-association-scope.mjs';
 import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
-import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
-const TARGET = { propertyCode: 'HRCEN', origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' };
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PATH = '/web/base/OSENEX';
-const states = new WeakMap(), contextApprovals = new WeakMap();
+const states = new WeakMap(), contextApprovals = new WeakMap(), properties = new WeakMap();
+
+export function bindStay360AddOnProperty(page, propertyCode) {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active || property.origin !== ORIGIN) throw new Error('ADDONS_PROPERTY_INVALID');
+  if (properties.has(page) && properties.get(page) !== propertyCode) throw new Error('ADDONS_PROPERTY_CHANGED');
+  properties.set(page, propertyCode);
+}
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const FIELDS = {
   code: 'itemorbundlecode', quantity: 'quantity', startDate: 'startdate', endDate: 'enddate',
@@ -72,10 +79,10 @@ function nativeResponse(text) {
   }
 }
 
-async function target(page, confirmation) {
+async function target(page, confirmation, propertyCode) {
   if (!/^\d+-\d+$/.test(confirmation || '')) fail('INVALID_CONFIRMATION', 'needs_input');
-  if (new URL(page.url()).origin !== TARGET.origin) fail('HMS_ORIGIN_MISMATCH');
-  const result = await page.evaluate(wanted => {
+  if (new URL(page.url()).origin !== ORIGIN) fail('HMS_ORIGIN_MISMATCH');
+  const result = await page.evaluate(({ wanted, propertyCode }) => {
     const shown = el => { const box = el.getBoundingClientRect(); return box.width > 0 && box.height > 0 && getComputedStyle(el).visibility !== 'hidden'; };
     const headers = [...document.querySelectorAll('h1.recordcode')].filter(shown);
     const properties = [...document.querySelectorAll('[data-qtip="Property"]')].filter(shown);
@@ -84,10 +91,10 @@ async function target(page, confirmation) {
       return fields.length === 1 ? String(fields[0].value ?? fields[0].innerText ?? '').trim() : null;
     };
     if (headers.length !== 1 || headers[0].innerText.trim() !== wanted || properties.length !== 1 ||
-        properties[0].innerText.trim() !== 'HRCEN') return null;
-    return { confirmation: wanted, propertyCode: 'HRCEN', guestName: value('guestfullname'),
+        properties[0].innerText.trim() !== propertyCode) return null;
+    return { confirmation: wanted, propertyCode, guestName: value('guestfullname'),
       arrival: value('arrivaldate'), departure: value('departuredate'), status: value('status') };
-  }, confirmation);
+  }, { wanted: confirmation, propertyCode });
   if (!result) fail('CONFIRMATION_OR_PROPERTY_MISMATCH');
   return { ...result, arrival: day(result.arrival), departure: day(result.departure) };
 }
@@ -116,7 +123,7 @@ const noConfirmation = body => ![...body].some(([key, value]) => /^confirm/i.tes
 
 function matches(request, state, pending) {
   const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
-  if (request.method() !== 'POST' || url.origin !== TARGET.origin || url.hash || !pending) return false;
+  if (request.method() !== 'POST' || url.origin !== ORIGIN || url.hash || !pending) return false;
   if (url.search) {
     // Native Submit carries SAVE in both the URL and the form. Check the
     // action and conflicting business values rather than pinning a URL shape.
@@ -130,11 +137,11 @@ function matches(request, state, pending) {
     if (!['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) ||
         body.get('GRID_NAME') !== 'LVENHANCEDEXPERIENCE' || body.get('LOV_TAGNAME') !== 'itemorbundlecode') return false;
     const a = aliases(body);
-    return a?.get('param.propertycode') === 'HRCEN' && a.get('param.itemtype') === (pending.itemType || 'ITEM') &&
+    return a?.get('param.propertycode') === state.propertyCode && a.get('param.itemtype') === (pending.itemType || 'ITEM') &&
       a.get('param.reservationstayid') === state.native.stayId && a.get('param.account') === state.native.account &&
       !body.has('pageaction') && !body.has('action');
   }
-  if (!exact(body, 'propertycode', 'HRCEN') || !exact(body, 'SYSTEM_FUNCTION_NAME', 'OSENEX') ||
+  if (!exact(body, 'propertycode', state.propertyCode) || !exact(body, 'SYSTEM_FUNCTION_NAME', 'OSENEX') ||
       !exact(body, 'USER_FUNCTION_NAME', 'OSENEX') || !noConfirmation(body)) return false;
   if (pending.kind === 'open' || pending.kind === 'open_unsaved') {
     const identity = pending.kind === 'open_unsaved'
@@ -160,7 +167,7 @@ function matches(request, state, pending) {
       !exact(body, 'itemid', pending.itemId)) return false;
   if (pending.nativeId) {
     if (!exact(body, 'enhexpsequencekey', pending.nativeId) ||
-        !exact(body, 'PKID', `${pending.nativeId}#HRCEN#ITEM`) ||
+        !exact(body, 'PKID', `${pending.nativeId}#${state.propertyCode}#ITEM`) ||
         body.getAll('recordid').length > 1 || (body.has('recordid') && !exact(body, 'recordid', pending.recordId))) return false;
   } else if (['recordid', 'enhexpsequencekey'].some(key => body.getAll(key).length > 1 || clean(body.get(key)))) return false;
   if (pending.kind === 'calculate') {
@@ -172,7 +179,7 @@ function matches(request, state, pending) {
   // A primary key for an existing item must never turn an approved insert into
   // an update, even if the visible fields still look like a new record.
   if (pending.kind === 'save' && (body.getAll('PKID').length > 1 || (clean(body.get('PKID')) &&
-      !exact(body, 'PKID', '@[EMPTY]#HRCEN#ITEM')))) return false;
+      !exact(body, 'PKID', `@[EMPTY]#${state.propertyCode}#ITEM`)))) return false;
   const item = pending.item;
   return ['quantity', 'unitprice', 'totalcost'].every((key, i) => body.getAll(key).length === 1 && decimal(body.get(key)) ===
     [item.quantity, item.unitPrice, item.totalCost][i]) &&
@@ -185,32 +192,36 @@ function matches(request, state, pending) {
 function stateFor(page) {
   let initialization = states.get(page);
   if (!initialization) {
-    initialization = initializeState(page);
+    const propertyCode = properties.get(page);
+    if (!propertyCode) throw new Error('ADDONS_PROPERTY_REQUIRED');
+    initialization = initializeState(page, propertyCode);
     states.set(page, initialization);
   }
   return initialization;
 }
 
-async function initializeState(page) {
+async function initializeState(page, propertyCode) {
   let approvals = contextApprovals.get(page.context());
   if (!approvals) { approvals = new WeakSet(); contextApprovals.set(page.context(), approvals); }
   await installReadOnlyGuard(page.context(), { approvedAddOnSaveRequests: approvals });
-  const state = { busy: false, quarantined: false, pending: null, native: null, values: null,
+  const fence = await installPageRequestFence(page, [PATH, `${PATH}.itemtypechange`, `${PATH}.getenhancedexperiencecalculations`]);
+  const state = { propertyCode, fence, busy: false, quarantined: false, pending: null, native: null, values: null,
     target: null, prepared: new Map(), approvals, dispatched: false, nativeDialog: null, callbacks: new Set(), attempts: [], grid: null, rowDirty: false };
   page.on('dialog', dialog => { state.nativeDialog = { type: dialog.type(), message: dialog.message() };
-    state.quarantined = true; state.prepared.clear(); });
+    state.quarantined = true; state.prepared.clear(); state.fence.quarantine(); void dialog.dismiss().catch(() => {}); });
   await page.route('**/*', async route => {
     const request = route.request(), url = new URL(request.url());
     const body = new URLSearchParams(request.postData() || '');
-    const addon = url.origin === TARGET.origin && url.pathname.toLowerCase().startsWith('/web/base/osenex');
-    const lookup = url.origin === TARGET.origin && ['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) &&
+    const addon = url.origin === ORIGIN && url.pathname.toLowerCase().startsWith('/web/base/osenex');
+    const lookup = url.origin === ORIGIN && ['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) &&
       (body.get('LOV_TAGNAME') === 'itemorbundlecode' || body.get('GRID_NAME') === 'LVENHANCEDEXPERIENCE');
     if (!addon && !lookup) return route.fallback();
     if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) return route.fallback();
     const pending = state.pending;
-    if (state.quarantined || pending?.request || !matches(request, state, pending)) {
+    if (state.quarantined || pending?.signal?.aborted || pending?.request || !matches(request, state, pending)) {
       return route.abort();
     }
+    if (addon && !pending.scope.allow(request)) return route.abort();
     pending.request = request;
     if (pending.kind === 'open' || pending.kind === 'open_unsaved') {
       state.native = { stayId: body.get('reservationstayid'), account: body.get('account') };
@@ -224,7 +235,7 @@ async function initializeState(page) {
           try { approved = await callback; } finally { state.callbacks.delete(callback); }
           if (approved !== true) { pending.rejected = true; return route.abort(); }
         }
-        if (state.quarantined) return route.abort();
+        if (state.quarantined || pending.signal?.aborted) return route.abort();
         state.dispatched = true;
         state.attempts.push(pending.kind === 'save'
           ? { index: pending.dispatch.index, item: structuredClone(pending.dispatch.item), itemId: pending.itemId, nativeId: null }
@@ -262,7 +273,8 @@ async function assertNoUnexpectedWindows(page, state) {
 
 async function step(page, state, spec, action) {
   if (state.quarantined || state.pending) fail('ADDONS_FRESH_SESSION_REQUIRED');
-  const pending = { ...spec, request: null };
+  const scope = state.fence.open();
+  const pending = { ...spec, scope, request: null };
   state.pending = pending;
   const received = page.waitForResponse(response => response.request() === pending.request, { timeout: 25000 }).catch(() => null);
   try {
@@ -276,7 +288,7 @@ async function step(page, state, spec, action) {
     if (grid?.METADATA?.GRIDNAME === 'OSENEX') state.grid = structuredClone(grid);
     if (data.values) {
       const v = data.values;
-      if (clean(v.propertycode) !== 'HRCEN' || clean(v.reservationstayid) !== state.native.stayId ||
+      if (clean(v.propertycode) !== state.propertyCode || clean(v.reservationstayid) !== state.native.stayId ||
           clean(v.account) !== state.native.account) fail('ADDONS_NATIVE_TARGET_MISMATCH');
       state.values = v;
     }
@@ -288,7 +300,7 @@ async function step(page, state, spec, action) {
     state.quarantined = true; state.prepared.clear();
     error.extra = { ...error.extra, stage: spec.kind };
     throw error;
-  } finally { state.pending = null; }
+  } finally { state.pending = null; scope.close(); }
 }
 
 async function button(page, name) {
@@ -298,7 +310,7 @@ async function button(page, name) {
 }
 
 async function ensureOpen(page, state, confirmation) {
-  const current = await target(page, confirmation);
+  const current = await target(page, confirmation, state.propertyCode);
   if (state.target && JSON.stringify(state.target) !== JSON.stringify(current)) fail('ADDONS_TARGET_CHANGED');
   if (await popup(page).count()) {
     if (!state.native || !state.target) fail('ADDONS_UNOWNED_POPUP');
@@ -339,14 +351,14 @@ async function bindUnsavedCreate(page, state, expected, expectedGuest, readForm)
   const averageRate = uniqueFormValue(fields, 'averagerate'), totalRate = uniqueFormValue(fields, 'totalrate');
   const property = await page.evaluate(() => document.documentElement.dataset.propertyCode ??
     /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1] ?? null);
-  if (property !== 'HRCEN' || confirmation !== '' || guestId !== String(expected?.guest?.profileId ?? '') ||
+  if (property !== state.propertyCode || expected?.propertyCode !== state.propertyCode || confirmation !== '' || guestId !== String(expected?.guest?.profileId ?? '') ||
       firstName !== expectedGuest.firstName || lastName !== expectedGuest.lastName ||
       arrival !== expected?.stay?.arrival || departure !== expected?.stay?.departure ||
       adults !== String(expected?.stay?.adults ?? '') || !childrenMatch ||
       roomType !== expected?.room?.roomType || ratePlan !== expected?.room?.ratePlan || !averageRate || !totalRate) {
     fail('ADDONS_CREATE_CONTEXT_MISMATCH', 'needs_input');
   }
-  const target = { kind: 'unsaved_create', propertyCode: 'HRCEN', guest: {
+  const target = { kind: 'unsaved_create', propertyCode: state.propertyCode, guest: {
     nativeId: guestId, firstName, lastName,
   }, stay: { arrival, departure, adults: Number(adults), childAges: structuredClone(expected.stay.childAges) },
   room: { roomType, ratePlan }, createRateReadback: { averageRate, totalRate } };
@@ -402,7 +414,7 @@ async function catalogue(page, state, itemType = 'ITEM') {
   const footer = /Records:\s*(\d+)\s+of\s+(\d+)/i.exec(loaded.text);
   const total = footer ? Number(footer[2]) : Number(grid.METADATA?.RECORDS);
   const more = grid.MORERECORDS ?? grid.METADATA?.MORERECORDS;
-  return { outcome: 'ok', propertyCode: 'HRCEN', candidates, columns: loaded.columns,
+  return { outcome: 'ok', propertyCode: state.propertyCode, candidates, columns: loaded.columns,
     coverage: { loaded: candidates.length, reportedTotal: Number.isFinite(total) ? total : loaded.reportedTotal,
       complete: (grid.METADATA?.MORERECORDPRESENT === '-' && total === candidates.length) ||
         (footer && Number(footer[1]) === candidates.length && total === candidates.length) ? true :
@@ -575,7 +587,7 @@ export async function readStay360AddOns(page, confirmation, { detailIds = [] } =
     const loaded = await loadedRows(page, 'listdetailgrid', popup(page));
     const details = [];
     for (const nativeId of detailIds) details.push(await inspectRow(page, state, nativeId));
-    return { outcome: 'ok', confirmation, propertyCode: 'HRCEN', target: structuredClone(state.target),
+    return { outcome: 'ok', confirmation, propertyCode: state.propertyCode, nativeStayId: state.native.stayId, target: structuredClone(state.target),
       rows: loaded.rows, columns: loaded.columns, details,
       items: loaded.rows.map(row => ({ nativeId: clean(row.enhexpsequencekey), code: clean(row.itemorbundlecode) || null,
         name: clean(row.itemdesc), itemId: clean(row.itemid), quantity: decimal(row.quantity),
@@ -652,7 +664,7 @@ export async function prepareStay360AddOns(page, confirmation, items) {
       native: structuredClone(state.native), items: structuredClone(previews), requestedItems: structuredClone(items),
       baseline: baseline.rows, baselineCoverage: coverage(state, baseline.rows) };
     state.prepared.set(preparedId, prepared);
-    return { outcome: 'prepared', preparedId, confirmation, propertyCode: 'HRCEN', items: previews,
+    return { outcome: 'prepared', preparedId, confirmation, propertyCode: state.propertyCode, items: previews,
       baselineCoverage: prepared.baselineCoverage, availabilityVerified: false, saved: false };
   });
 }
@@ -663,6 +675,7 @@ export async function prepareStay360AddOns(page, confirmation, items) {
  */
 export async function previewUnsavedStay360AddOns(page, { expectedCreate, expectedGuest, readForm, items } = {}) {
   try { items = structuredClone(items); } catch { return { outcome: 'needs_input', issue: 'ADDONS_ITEM_INVALID' }; }
+  try { bindStay360AddOnProperty(page, expectedCreate?.propertyCode); } catch (error) { return problem(error); }
   return run(page, async state => {
     validateItems(items);
     const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, expectedGuest, readForm);
@@ -681,18 +694,19 @@ export async function previewUnsavedStay360AddOns(page, { expectedCreate, expect
       }
     }
     const complete = previews.length === items.length && previews.every(preview => preview.outcome === 'prepared');
-    return { outcome: complete ? 'prepared' : 'partial', propertyCode: 'HRCEN', unsaved: true, saved: false,
+    return { outcome: complete ? 'prepared' : 'partial', propertyCode: state.propertyCode, unsaved: true, saved: false,
       target, items: previews };
   });
 }
 
 /** Read the current native ITEM catalogue from the same verified unsaved New Guest Stay. */
 export async function listUnsavedStay360AddOnItems(page, { expectedCreate, expectedGuest, readForm } = {}) {
+  try { bindStay360AddOnProperty(page, expectedCreate?.propertyCode); } catch (error) { return problem(error); }
   return run(page, async state => {
     const target = await ensureUnsavedCreateOpen(page, state, expectedCreate, expectedGuest, readForm);
     const found = await catalogue(page, state, 'ITEM');
     await closePicker(page);
-    return { outcome: 'ok', propertyCode: 'HRCEN', unsaved: true, target,
+    return { outcome: 'ok', propertyCode: state.propertyCode, unsaved: true, target,
       candidates: found.candidates.map(({ code, name, itemId }) => ({ code, name, itemId })),
       coverage: found.coverage };
   });
@@ -700,33 +714,29 @@ export async function listUnsavedStay360AddOnItems(page, { expectedCreate, expec
 
 const approvedValues = item => Object.fromEntries([...Object.keys(FIELDS), 'currency', 'totalCost'].map(key => [key, item[key]]));
 
-async function freshBaseline(prepared) {
-  return withCenturionStay360Page(async page => {
-    await readConfirmationFromStay360(page, prepared.confirmation, {
-      guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival,
-    });
-    const listing = await readStay360AddOns(page, prepared.confirmation);
-    if (listing.outcome !== 'ok' || !prepared.changes) return listing;
-    const present = new Set(listing.rows.map(row => clean(row.enhexpsequencekey)));
-    const detailIds = prepared.changes.map(change => change.nativeId).filter(id => present.has(id));
-    return detailIds.length ? readStay360AddOns(page, prepared.confirmation, { detailIds }) : listing;
-  }, { headless: true, blockServiceWorkers: true });
-}
 
 export async function saveStay360AddOns(page, confirmation, preparedId, options = {}) {
   return run(page, async state => {
+    options.signal?.throwIfAborted();
     const prepared = state.prepared.get(preparedId);
     if (!prepared || prepared.kind !== 'add' || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
     if (typeof options.authorize !== 'function') fail('ADDONS_SAVE_AUTHORIZATION_REQUIRED');
+    if (typeof options.readBaseline !== 'function') fail('ADDONS_FRESH_BASELINE_REQUIRED');
     await ensureOpen(page, state, confirmation);
     if (JSON.stringify(state.target) !== JSON.stringify(prepared.target) || JSON.stringify(state.native) !== JSON.stringify(prepared.native)) fail('ADDONS_TARGET_CHANGED');
     if (await options.authorize(structuredClone(prepared)) !== true) fail('ADDONS_SAVE_NOT_AUTHORIZED');
-    const baseline = await (options.readBaseline || freshBaseline)(structuredClone(prepared));
+    options.signal?.throwIfAborted();
+    const baseline = await options.readBaseline(structuredClone(prepared));
     if (baseline?.outcome !== 'ok' || baseline.coverage?.complete !== true || !Array.isArray(baseline.rows)) {
       fail('ADDONS_BASELINE_INCOMPLETE', 'needs_input');
     }
     if (JSON.stringify(baseline.target) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
-    if (JSON.stringify(await target(page, confirmation)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
+    const currentRows = (await loadedRows(page, 'listdetailgrid', popup(page))).rows;
+    const ids = rows => rows.map(row => clean(row.enhexpsequencekey)).sort();
+    if (coverage(state, currentRows).complete !== true || ids(currentRows).some(id => !id) ||
+        new Set(ids(currentRows)).size !== currentRows.length || new Set(ids(baseline.rows)).size !== baseline.rows.length ||
+        JSON.stringify(ids(currentRows)) !== JSON.stringify(ids(baseline.rows))) fail('ADDONS_BASELINE_CHANGED', 'needs_input');
+    if (JSON.stringify(await target(page, confirmation, state.propertyCode)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
     state.prepared.delete(preparedId);
     const receipts = [];
     state.attempts = [];
@@ -742,7 +752,8 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
         const dispatch = { operation: 'addOns', preparedId, confirmation, index, item: approvedValues(approved), target: prepared.target,
           baselineIds: baseline.rows.map(row => clean(row.enhexpsequencekey)).filter(Boolean), baselineCoverage: baseline.coverage };
         const previousIds = new Set([...dispatch.baselineIds, ...receipts.map(receipt => receipt.nativeId).filter(Boolean)]);
-        const data = await step(page, state, { kind: 'save', code: approved.code, itemId: approved.itemId,
+        options.signal?.throwIfAborted();
+        const data = await step(page, state, { kind: 'save', code: approved.code, itemId: approved.itemId, signal: options.signal,
           item: approved, beforeDispatch: options.beforeDispatch, dispatch }, () => button(page, 'submit'));
         // Submit resets the form; its values need not retain the inserted ID.
         // Resolve the new native grid row, then require full fresh readback.
@@ -759,13 +770,13 @@ export async function saveStay360AddOns(page, confirmation, preparedId, options 
         if (options.afterDispatch) await options.afterDispatch(structuredClone(receipt));
       }
       state.quarantined = true;
-      return { outcome: 'awaiting_readback', confirmation, preparedId, receipts,
+      return { outcome: 'awaiting_readback', confirmation, nativeStayId: state.native.stayId, preparedId, receipts,
         attempts: structuredClone(state.attempts), requestedCount: prepared.items.length, baseline: baseline.rows,
         baselineCoverage: baseline.coverage };
     } catch (error) {
       state.quarantined = true; state.prepared.clear();
       return { ...problem(error), outcome: state.dispatched || state.callbacks.size ? 'uncertain' : problem(error).outcome,
-        confirmation, preparedId, receipts, requestedCount: prepared.items.length,
+        confirmation, nativeStayId: state.native.stayId, preparedId, receipts, requestedCount: prepared.items.length,
         attempts: structuredClone(state.attempts), baseline: baseline.rows, baselineCoverage: baseline.coverage, next: 'fresh_readback' };
     } finally {
       // Quarantine prevents a late callback from sending its paused request.
@@ -855,7 +866,7 @@ export async function prepareStay360AddOnChanges(page, confirmation, changes) {
     const preparedId = randomUUID();
     state.prepared.set(preparedId, { kind: 'changes', preparedId, confirmation, target: structuredClone(state.target),
       native: structuredClone(state.native), changes: structuredClone(preparedChanges) });
-    return { outcome: 'prepared', preparedId, confirmation, propertyCode: 'HRCEN', saved: false,
+    return { outcome: 'prepared', preparedId, confirmation, propertyCode: state.propertyCode, saved: false,
       changes: preparedChanges.map(({ index, operation, nativeId, before, after }) => ({ index, operation, nativeId, before, after,
         changedFields: after ? Object.keys(recordValues(after.fields)).filter(key => recordValues(before.fields)[key] !== recordValues(after.fields)[key]) : [],
         warnings: [], financialEffect: 'unknown' })) };
@@ -865,28 +876,31 @@ export async function prepareStay360AddOnChanges(page, confirmation, changes) {
 /** Sequential corrections; trusted authorization is required, journal/lock callbacks are optional. */
 export async function saveStay360AddOnChanges(page, confirmation, preparedId, options = {}) {
   return run(page, async state => {
+    options.signal?.throwIfAborted();
     const prepared = state.prepared.get(preparedId);
     if (!prepared || prepared.kind !== 'changes' || prepared.confirmation !== confirmation) fail('ADDONS_PREPARED_ID_REQUIRED');
     if (typeof options.authorize !== 'function') fail('ADDONS_SAVE_AUTHORIZATION_REQUIRED');
+    if (typeof options.readBaseline !== 'function') fail('ADDONS_FRESH_BASELINE_REQUIRED');
     await ensureOpen(page, state, confirmation);
     if (JSON.stringify(state.target) !== JSON.stringify(prepared.target) || JSON.stringify(state.native) !== JSON.stringify(prepared.native)) fail('ADDONS_TARGET_CHANGED');
     if (await options.authorize(structuredClone(prepared)) !== true) fail('ADDONS_SAVE_NOT_AUTHORIZED');
+    options.signal?.throwIfAborted();
     state.prepared.delete(preparedId);
     const attempts = [], receipts = [];
     state.attempts = attempts;
     state.dispatched = false;
     let baseline = null;
-    const result = outcome => ({ outcome, kind: 'changes', confirmation, preparedId, requestedCount: prepared.changes.length,
+    const result = outcome => ({ outcome, kind: 'changes', confirmation, nativeStayId: state.native.stayId, preparedId, requestedCount: prepared.changes.length,
       changes: prepared.changes.map(({ index, operation, nativeId, before, after }) => ({ index, operation, nativeId, before, after })),
       attempts: structuredClone(attempts), receipts: structuredClone(receipts), baseline: baseline?.rows || [], baselineCoverage: baseline?.coverage,
       target: prepared.target });
     try {
       for (const approved of prepared.changes) {
-        const fresh = await (options.readBaseline || freshBaseline)({ ...structuredClone(prepared), changes: [structuredClone(approved)] });
+        const fresh = await options.readBaseline({ ...structuredClone(prepared), changes: [structuredClone(approved)] });
         if (fresh?.outcome !== 'ok' || !Array.isArray(fresh.rows) ||
             (approved.operation === 'remove' && fresh.coverage?.complete !== true)) fail('ADDONS_BASELINE_INCOMPLETE', 'needs_input');
         if (JSON.stringify(fresh.target) !== JSON.stringify(prepared.target) ||
-            JSON.stringify(await target(page, confirmation)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
+            JSON.stringify(await target(page, confirmation, state.propertyCode)) !== JSON.stringify(prepared.target)) fail('ADDONS_TARGET_CHANGED');
         baseline ||= fresh;
         const records = fresh.details?.filter(detail => detail.nativeId === approved.nativeId) || [];
         if (records.length !== 1 || !sameRecord(records[0].fields, approved.before.fields)) {
@@ -905,7 +919,8 @@ export async function saveStay360AddOnChanges(page, confirmation, preparedId, op
         const dispatch = { index: approved.index, operation: approved.operation, nativeId: approved.nativeId, confirmation, preparedId, target: prepared.target,
           before: approved.before, after: approved.after, baselineCoverage: fresh.coverage, baselineIds: fresh.rows.map(row => clean(row.enhexpsequencekey)).filter(Boolean) };
         const item = approved.after?.fields || approved.before.fields;
-        await step(page, state, { kind: approved.operation, ...staged.identity, item, dispatch,
+        options.signal?.throwIfAborted();
+        await step(page, state, { kind: approved.operation, ...staged.identity, item, dispatch, signal: options.signal,
           beforeDispatch: options.beforeDispatch }, () => button(page, approved.operation === 'edit' ? 'submit' : 'removerecord'));
         const receipt = { ...dispatch, dispatched: true, status: 'awaiting_readback' };
         receipts.push(receipt);

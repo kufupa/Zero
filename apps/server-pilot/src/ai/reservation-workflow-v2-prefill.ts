@@ -1,7 +1,7 @@
 import { normalizeRequestedMealPlan, quoteLunchHintScope } from './reservation-workflow-v2-meal-plan.js';
 import { extractionRefsForRequest, extractionRequestForProposal, requestTextKey } from './reservation-workflow-v2-source-match.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { profileCms, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { profileCms, profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { and, desc, eq, ilike, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';

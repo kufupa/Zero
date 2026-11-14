@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 
 export const HMS_SHOT_NAMES = ['before.png', 'filled.png', 'saved.png'] as const;
 const DEFAULT_ROOT = '/var/lib/nava/hms-shots';

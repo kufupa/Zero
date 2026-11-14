@@ -1,6 +1,9 @@
 import { RESERVATION_EVIDENCE_TTL_MS } from '../hms/adapter.js';
 import { createPostgresPropertyReadLock, propertyReadLockKey } from '../hms/property-read-lock.js';
-import { assertHmsReadOriginAllowed } from '../hms/hms-read-target.js';
+import { assertHmsReadOriginAllowed, hmsReadTargetForProperty } from '../hms/hms-read-target.js';
+import { bindHmsMailboxProperty, loadThreadMailboxHmsOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { propertyCodeSchema, resolvePropertyScope } from '../hms/property-registry.js';
+import { nativeReadCapabilityAvailable } from '../hms/hms-service.js';
 import { confirmationMatches, confirmationSearchValues } from '../hms/confirmation-match.js';
 import { isDocxMimeType } from '../mail/artifacts/read-artifact.js';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
@@ -11,7 +14,7 @@ import type { ReservationistProvider } from './draft-route-factory.js';
 import { createReservationistDependencies, currentAuthoredGuestRequest, deriveRequestedArrivalAcknowledgement, type ReservationistExecutionServices } from './reservationist-execution.js';
 import type { ReservationistCancellationReview, ReservationistPendingActionEvidence } from './reservationist-pending-action.js';
 import type { ReservationistRuntimeInput, RuntimeSourceRecovery } from './reservationist-runtime.js';
-import { paneStayPropertyLock, paneStayTenantId } from './pane-stay-save.js';
+import { paneStayPropertyLock } from './pane-stay-save.js';
 import { getInstalledStaffQuoteServices, readInstalledStaffQuoteConfiguration } from './staff-quote-installation.js';
 
 type CancellationToolRequest =
@@ -37,15 +40,16 @@ type CancellationToolResult = {
 type SavedStaySession = {
   runTool(request: CancellationToolRequest): Promise<CancellationToolResult>;
 };
-type SavedStaySessionOptions = { signal?: AbortSignal };
+type SavedStaySessionOptions = { signal?: AbortSignal; readOnly: true; readOnlyConfirmation: string;
+  propertyCode: string; transportId: string };
 type SavedStaySessionModule = {
-  withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>, options?: SavedStaySessionOptions): Promise<T>;
+  withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>, options: SavedStaySessionOptions): Promise<T>;
 };
 type CancellationPreflightModule = { parseDateDisplay(value: string): string | null };
 const savedStaySessionUrl = new URL('../../tooling/hms-cloud/saved-stay-agent-session.mjs', import.meta.url);
 const cancellationPreflightUrl = new URL('../../tooling/hms-cloud/guest-stay-cancel-preflight.mjs', import.meta.url);
 
-async function withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>, options?: SavedStaySessionOptions): Promise<T> {
+async function withSavedStayAgentSession<T>(operation: (session: SavedStaySession) => Promise<T>, options: SavedStaySessionOptions): Promise<T> {
   const module = await import(pathToFileURL(fileURLToPath(savedStaySessionUrl)).href) as SavedStaySessionModule;
   return module.withSavedStayAgentSession(operation, options);
 }
@@ -85,7 +89,10 @@ export function createInstalledReservationistProvider(
       return quoteDigest({ ...input, clock });
     };
     const originalIdentity = inputIdentity(context.input);
-    if (context.input.propertyCode !== 'HRCEN' ||
+    const propertyCode = propertyCodeSchema.parse(context.input.propertyCode);
+    const scope = resolvePropertyScope({ transportId: context.transportId,
+      ...(propertyCode === 'HRCEN' ? {} : { propertySwitch: propertyCode }) });
+    if (scope.propertyCode !== propertyCode ||
         context.input.authorizationScope?.ownerRef !== context.transportId ||
         context.input.authorizationScope.threadId !== context.threadId ||
         context.input.clock.sourceMode !== 'current_read' ||
@@ -177,12 +184,23 @@ export function createInstalledReservationistProvider(
           let config: ReturnType<typeof readInstalledStaffQuoteConfiguration> | undefined;
           try { config = readInstalledStaffQuoteConfiguration(input.propertyCode); }
           catch { /* cancellation reads have their own property-lock authority */ }
-          const quoteConfigReady = config?.owner.propertyCode === input.propertyCode;
+          const quoteConfigReady = config?.owner.propertyCode === input.propertyCode && config.tenantId === scope.tenantId;
           const databaseUrl = process.env.DATABASE_URL;
           if (!databaseUrl || needsQuote && !quoteConfigReady && !needsCancellationRead) return run();
           const assertOrigin = async () => {
             await fresh(input);
-            const target = await assertHmsReadOriginAllowed({ transportId: context.transportId, threadId: context.threadId, messageId: input.trigger.id });
+            const target = hmsReadTargetForProperty(scope.propertyCode);
+            if (scope.propertyCode === 'HRCEN') {
+              const bound = await assertHmsReadOriginAllowed({ transportId: context.transportId, threadId: context.threadId, messageId: input.trigger.id });
+              if (bound.propertyCode !== scope.propertyCode) throw new Error('reservationist_property_origin_invalid');
+            } else {
+              const origin = await loadThreadMailboxHmsOrigin({ transportId: context.transportId, threadId: context.threadId, messageId: input.trigger.id });
+              const bound = origin && bindHmsMailboxProperty({ transportId: context.transportId, propertyCode: scope.propertyCode, origin });
+              if (!bound || !bound.ok || bound.propertyCode !== scope.propertyCode ||
+                  !await nativeReadCapabilityAvailable({ propertyCode: scope.propertyCode, transportId: context.transportId })) {
+                throw new Error('reservationist_property_origin_invalid');
+              }
+            }
             if (target.propertyCode !== input.propertyCode) throw new Error('reservationist_property_origin_invalid');
             await fresh(input);
             return target;
@@ -194,8 +212,7 @@ export function createInstalledReservationistProvider(
             lock = createPostgresPropertyReadLock({ tenantId, propertyCode: input.propertyCode, databaseUrl });
           } else if (needsCancellationRead) {
             const target = await assertOrigin();
-            tenantId = paneStayTenantId();
-            if (target.propertyCode !== 'HRCEN' || tenantId === 'legacy') return run();
+            tenantId = scope.tenantId;
             lock = paneStayPropertyLock(target);
           } else return run();
           if (!lock) return run();
@@ -207,7 +224,7 @@ export function createInstalledReservationistProvider(
             if (needsQuote && quoteConfigReady) Object.assign(installedServices, getInstalledStaffQuoteServices({
               authorizationId: context.generationId,
               authorizeContext: async (ctx) => { await fresh(ctx.input); await assertOrigin(); return true; },
-              signer: { signerName: '', signerEmail: '' }, propertyCode: input.propertyCode,
+              signer: { signerName: '', signerEmail: '' }, propertyCode: input.propertyCode, transportId: context.transportId,
               childEnv: { ...process.env, HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(tenantId, input.propertyCode), PANE_STAY_TENANT_ID: tenantId },
               onTraceFinish: (finished) => { traces.push(finished); },
             }));
@@ -237,32 +254,42 @@ export function createInstalledReservationistProvider(
               await fresh(ctx.input);
               await assertOrigin();
               let resolvedConfirmation: string | null = null;
-              const session = savedStaySession(async ({ runTool }) => {
-                const attempts = confirmationSearchValues(ref.value);
-                for (const [index, attempt] of attempts.entries()) {
+              let preflight: CancellationToolResult | null = null;
+              const attempts = confirmationSearchValues(ref.value);
+              for (const [index, attempt] of attempts.entries()) {
+                const owned = savedStaySession(async ({ runTool }): Promise<
+                  { kind: 'read_failed'; read: CancellationToolResult } |
+                  { kind: 'prepared'; confirmation: string; preflight: CancellationToolResult }> => {
                   const read = await runTool({ tool: 'read', confirmation: attempt.searchValue });
-                  if (read.outcome === 'ok') {
-                    const selected = read.shallow?.confirmation;
-                    if (typeof selected !== 'string' || !confirmationMatches(ref.value, selected))
-                      throw new Error('reservation_read_target_unavailable');
-                    resolvedConfirmation = selected;
-                    break;
+                  if (read.outcome !== 'ok') return { kind: 'read_failed', read };
+                  const selected = read.shallow?.confirmation;
+                  if (typeof selected !== 'string' || !confirmationMatches(ref.value, selected)) {
+                    throw new Error('reservation_read_target_unavailable');
                   }
-                  const next = attempts[index + 1];
-                  const resultCount = read.searchResults?.total;
-                  if (!next || attempt.matchedBy !== 'confirmation' || next.matchedBy !== 'confirmation_leg_retry' ||
-                      read.outcome !== 'read_failed' || read.issue !== 'CONFIRMATION_NOT_FOUND' ||
-                      read.searchResults?.complete !== true || (resultCount !== 0 && resultCount !== 1))
-                    throw new Error('reservation_read_unavailable');
+                  return { kind: 'prepared', confirmation: selected,
+                    preflight: await runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' }) };
+                }, { signal: ctx.signal, readOnly: true, readOnlyConfirmation: attempt.searchValue,
+                  propertyCode: scope.propertyCode, transportId: context.transportId });
+                activeCancellationSessions.add(owned);
+                let attemptResult: Awaited<typeof owned>;
+                try { attemptResult = await owned; }
+                finally { activeCancellationSessions.delete(owned); }
+                if (attemptResult.kind === 'prepared') {
+                  preflight = attemptResult.preflight;
+                  resolvedConfirmation = attemptResult.confirmation;
+                  break;
                 }
-                if (!resolvedConfirmation) throw new Error('reservation_read_unavailable');
-                // Retain the guest-supplied reference; the selected HMS confirmation is bound separately.
-                return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
-              }, { signal: ctx.signal });
-              activeCancellationSessions.add(session);
-              let preflight: CancellationToolResult;
-              try { preflight = await session; }
-              finally { activeCancellationSessions.delete(session); }
+                const next = attempts[index + 1];
+                const failed = attemptResult.read;
+                if (!next || attempt.matchedBy !== 'confirmation' || next.matchedBy !== 'confirmation_leg_retry' ||
+                    failed.outcome !== 'read_failed' || failed.issue !== 'CONFIRMATION_NOT_FOUND' ||
+                    failed.searchResults?.complete !== true || (failed.searchResults.total !== 0 && failed.searchResults.total !== 1)) {
+                  throw new Error('reservation_read_unavailable');
+                }
+                await fresh(ctx.input);
+                await assertOrigin();
+              }
+              if (!preflight) throw new Error('cancellation_preflight_unavailable');
               if (!resolvedConfirmation) throw new Error('cancellation_preflight_unavailable');
               ctx.signal.throwIfAborted();
               await fresh(ctx.input);

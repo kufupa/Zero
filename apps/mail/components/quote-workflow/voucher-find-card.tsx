@@ -31,6 +31,8 @@ import {
 import { fetchAttachmentBlob, triggerBlobDownload, type AttachmentAccessInput } from '@/lib/attachment-access';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type { MailSourceSelection } from '@/lib/quote-workflow/backend-bind';
+import type { HmsPreparedReceipt } from '@/lib/quote-workflow/hms-write';
+import type { PropertySwitch } from '@/lib/reservation-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Notice, PrimaryButton, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
@@ -98,6 +100,8 @@ type VoucherAttachClient = {
   bind?: (input: VoucherAttachBindInput) => Promise<VoucherAttachBindReply>;
   preview?: (input: VoucherPreviewInput) => Promise<VoucherPreviewReply>;
   writeState?: (input: { workItemId: string }) => Promise<VoucherAttachWriteView | null>;
+  prepare?: (input: { workItemId: string; confirmation: string; arrival: string; formDigest: string;
+    selectedSource: SelectedSource }) => Promise<HmsPreparedReceipt | null>;
 };
 
 type MailboxOptions = { context: { activeTransportId: string } };
@@ -108,9 +112,14 @@ type TrpcAttachRoutes = {
   };
   quoteWorkflow?: { bindVoucherAttach?: { mutate: (input: Omit<VoucherAttachBindInput, 'sourceMessageId' | 'selectedSource'>, options: MailboxOptions) => Promise<VoucherAttachBindReply> } };
   hmsApproval?: {
-    bindAttach?: { mutate: (input: VoucherAttachBindInput & { internetMessageId: string }, options: MailboxOptions) => Promise<VoucherAttachBindReply> };
-    previewAttach?: { mutate: (input: VoucherPreviewInput, options: MailboxOptions) => Promise<VoucherPreviewReply> };
-    writeState?: { query: (input: { workItemId: string; internetMessageId: string; selectedSource?: SelectedSource }, options: MailboxOptions) => Promise<VoucherAttachWriteView | null> };
+    bindAttach?: { mutate: (input: VoucherAttachBindInput & { internetMessageId: string; propertySwitch?: PropertySwitch }, options: MailboxOptions) => Promise<VoucherAttachBindReply> };
+    previewAttach?: { mutate: (input: VoucherPreviewInput & { propertySwitch?: PropertySwitch }, options: MailboxOptions) => Promise<VoucherPreviewReply> };
+    writeState?: { query: (input: { workItemId: string; internetMessageId: string; selectedSource?: SelectedSource; propertySwitch?: PropertySwitch }, options: MailboxOptions) => Promise<VoucherAttachWriteView | null> };
+    prepare?: { mutate: (input: { workItemId: string; internetMessageId: string; confirmation: string; arrival: string;
+      formDigest: string; selectedSource: SelectedSource; propertySwitch?: PropertySwitch }, options: MailboxOptions) => Promise<
+        | { status: 'prepared'; preparedRef: string; propertyCode: string; businessDigest: string; revision: number;
+            generationId: string; expiresAtIso: string; warnings: string[] }
+        | { status: 'refused'; reason: string }> };
   };
 };
 
@@ -121,21 +130,34 @@ function voucherAttachClientFromTrpc(trpc: unknown, transportId: string | null, 
   if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const routes = trpc as TrpcAttachRoutes;
   const cloud = propertyCode === 'HRCEN' || propertyCode === 'HRDAV' || propertyCode === 'HRDAVS';
+  const propertySwitch = propertyCode === 'HRDAV' || propertyCode === 'HRDAVS' ? propertyCode : undefined;
+  const selectedProperty: { propertySwitch?: 'HRDAV' | 'HRDAVS' } = propertySwitch ? { propertySwitch } : {};
   const canPrepare = propertyCode === 'HRCEN' && filingCapability === undefined ||
     Boolean(filingCapability && ['prepare-only', 'lab', 'staff-enabled'].includes(filingCapability.status));
   const bindCloud = cloud && canPrepare ? routes.hmsApproval?.bindAttach?.mutate : undefined;
   const bindLegacy = cloud ? undefined : routes.quoteWorkflow?.bindVoucherAttach?.mutate;
-  // Retain status reads for earlier HRDAV filings; HRDAVS needs a property-scoped endpoint in P3.
-  const writeState = propertyCode === 'HRDAVS' ? undefined : routes.hmsApproval?.writeState?.query;
+  const writeState = routes.hmsApproval?.writeState?.query;
   const preview = canPrepare ? routes.hmsApproval?.previewAttach?.mutate : undefined;
+  const prepare = cloud && canPrepare ? routes.hmsApproval?.prepare?.mutate : undefined;
   if (!bindCloud && !bindLegacy && !writeState && !preview) return null;
   return {
-    ...(bindCloud ? { bind: (input: VoucherAttachBindInput) => bindCloud({ ...input, internetMessageId }, mailbox) }
+    ...(bindCloud ? { bind: (input: VoucherAttachBindInput) => bindCloud({ ...input, internetMessageId, ...selectedProperty }, mailbox) }
       : bindLegacy ? { bind: ({ sourceMessageId: _source, selectedSource: _selection,
         documentSource: _document, revisionSeq: _revision, expectedStay: _stay, ...input }: VoucherAttachBindInput) => bindLegacy(input, mailbox) } : {}),
-    ...(preview ? { preview: (input: VoucherPreviewInput) => preview(input, mailbox) } : {}),
+    ...(preview ? { preview: (input: VoucherPreviewInput) => preview({ ...input, ...selectedProperty }, mailbox) } : {}),
+    ...(prepare ? { prepare: async (input: { workItemId: string; confirmation: string; arrival: string;
+      formDigest: string; selectedSource: SelectedSource }) => {
+      const result = await prepare({ ...input, internetMessageId, ...selectedProperty }, mailbox);
+      if (result.status !== 'prepared' || result.propertyCode !== propertyCode || result.businessDigest !== input.formDigest ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.preparedRef) ||
+          !Number.isSafeInteger(result.revision) || result.revision < 0 || !result.generationId ||
+          !Number.isFinite(Date.parse(result.expiresAtIso)) || Date.parse(result.expiresAtIso) <= Date.now() ||
+          !Array.isArray(result.warnings) || !result.warnings.every(warning => typeof warning === 'string')) return null;
+      return { preparedRef: result.preparedRef, expectedRevision: result.revision, generationId: result.generationId,
+        expiresAtIso: result.expiresAtIso, warnings: result.warnings };
+    } } : {}),
     ...(writeState ? { writeState: (input: { workItemId: string }) => writeState({ ...input, internetMessageId,
-      ...(selectedSource ? { selectedSource } : {}) }, mailbox) } : {}),
+      ...(selectedSource ? { selectedSource } : {}), ...selectedProperty }, mailbox) } : {}),
   };
 }
 
@@ -176,7 +198,7 @@ type VoucherFindCardProps = {
   /** An approval card for this same selected work item is mounted. */
   approvalAvailable?: boolean;
   /** Refresh the sibling approval card only after the reviewed form and snapshot are stored. */
-  onPrepared?: (formDigest?: string) => void;
+  onPrepared?: (formDigest?: string, receipt?: HmsPreparedReceipt) => void;
   /** Registry-backed property for the active mailbox; unknown disables filing actions. */
   propertyCode?: string | null;
   filingCapability?: import('@/lib/reservation-workflow/types').PropertyConfiguration['capabilities']['attach'] | null;
@@ -277,6 +299,7 @@ function VoucherFindCardBody({
   const [searchRevision, setSearchRevision] = useState(0);
   const [picked, setPicked] = useState<{ searchKey: string; row: GuestSearchRow } | null>(null);
   const seededReply = useRef<string | null>(null);
+  const editedSearch = useRef(false);
   const targetChanged = useRef(onTargetChanged);
   targetChanged.current = onTargetChanged;
   const mounted = useRef(false);
@@ -311,10 +334,12 @@ function VoucherFindCardBody({
   const sourceMatches = fileReady && emailMatches && (!cloudFiling || validDocumentSource);
   // Payment-only views have no filing source; their reads still use the exact checked message.
   const lookupSourceMatches = lookupReady && (emailMatches || (selectedSource === undefined && selectionCurrent));
+  const propertySwitch = propertyCode === 'HRDAV' || propertyCode === 'HRDAVS' ? propertyCode : undefined;
   const transport = useMemo(
-    () => lookupSourceMatches ? hmsJobTransport(jobClient, replyThread, replyMessageId,
-      { exactSource: true, ...(selectedSource?.sourceHash ? { sourceHash: selectedSource.sourceHash } : {}) }) : null,
-    [jobClient, replyThread, replyMessageId, lookupSourceMatches, selectedSource?.sourceHash],
+    () => lookupSourceMatches && propertyCode ? hmsJobTransport(jobClient, replyThread, replyMessageId,
+      { exactSource: true, ...(selectedSource?.sourceHash ? { sourceHash: selectedSource.sourceHash } : {}),
+        ...(propertySwitch ? { propertySwitch } : {}) }) : null,
+    [jobClient, replyThread, replyMessageId, lookupSourceMatches, selectedSource?.sourceHash, propertyCode, propertySwitch],
   );
   // Read back only a search for this voucher's guest: one thread can carry vouchers for different guests.
   const voucherSearch =
@@ -416,6 +441,10 @@ function VoucherFindCardBody({
   useEffect(() => {
     if (!replySeed || reply?.status !== 'voucher' || seededReply.current === replySeed) return;
     seededReply.current = replySeed;
+    if (editedSearch.current) {
+      targetChanged.current?.();
+      return;
+    }
     const form = failedFile ? { confirmation: '', lastName: '', arrival: '', departure: '' }
       : { confirmation: reply.guest.confirmationNumber ?? '', lastName: reply.guest.lastName ?? '',
         arrival: reply.guest.arrival ?? '', departure: '' };
@@ -678,9 +707,11 @@ function VoucherFindCardBody({
     setPreview(null);
     setSave('idle');
     seededReply.current = null;
+    editedSearch.current = false;
   };
   const editSearch = (field: keyof VoucherSearchForm, value: string) => {
     if (searchFrozen || bindingRequest.current) return;
+    editedSearch.current = true;
     setSearchForm((current) => ({ ...current, [field]: value }));
     setSubmittedSearch(null);
     setSubmittedDirect(null);
@@ -748,7 +779,7 @@ function VoucherFindCardBody({
     sendableArrival(arrivalForMatch));
   const canAttach = Boolean(propertyCode && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId && attachClient?.bind &&
     filingEnabled && attachStatusKnown && !searchFrozen && attach !== 'bound' &&
-    (!cloudFiling || (previewStatus === 'ready' && expectedStay)));
+    (!cloudFiling || (previewStatus === 'ready' && expectedStay && attachClient.prepare)));
   const canPreview = Boolean(cloudFiling && propertyCanPrepare && sourceMatches && targetVerified && attachPdf && workItemId && reply.messageId &&
     attachClient?.preview && !searchFrozen && attach !== 'bound');
   const reviewAttach = async () => {
@@ -804,10 +835,18 @@ function VoucherFindCardBody({
         form.attachmentId === file.id && (form.sourceDocumentName ?? form.documentName) === file.filename &&
         form.sourceMessageId === reply.messageId && form.sourceThreadId === selectedSource.threadId &&
         form.sourceHash === selectedSource.sourceHash);
-      // A refused snapshot may already have stored the form; do not pretend it was unbound.
-      setAttach({ key, workItemId: item, status: current && result.status === 'bound' && matchesSelection ? 'bound'
-        : current && result.status === 'refused' && result.retryable ? 'refused' : 'unknown' });
-      if (current && result.status === 'bound' && matchesSelection) onPrepared?.(result.formDigest);
+      if (current && result.status === 'bound' && matchesSelection) {
+        const receipt = cloudFiling && selectedSource && result.formDigest && attachClient.prepare
+          ? await attachClient.prepare({ workItemId: item, confirmation: selectedMatch.confirmation,
+              arrival: arrivalForMatch, formDigest: result.formDigest, selectedSource }) : null;
+        if (!mounted.current || previewKeyRef.current !== key) return;
+        if (cloudFiling && !receipt) { setAttach({ key, workItemId: item, status: 'unknown' }); return; }
+        setAttach({ key, workItemId: item, status: 'bound' });
+        onPrepared?.(result.formDigest, receipt ?? undefined);
+      } else {
+        // A refused snapshot may already have stored the form; do not pretend it was unbound.
+        setAttach({ key, workItemId: item, status: current && result.status === 'refused' && result.retryable ? 'refused' : 'unknown' });
+      }
     } catch {
       if (mounted.current) setAttach({ key, workItemId: item, status: 'unknown' });
     } finally {
@@ -892,6 +931,7 @@ function VoucherFindCardBody({
         </Notice>
       ) : null}
       {lookupReady && !lookupSourceMatches ? <Notice tone="warn">Nava cannot verify this email and document. Reopen the email.</Notice> : null}
+      {lookupReady && !propertyCode ? <Notice tone="warn">The hotel is not available for this lookup yet. Try again.</Notice> : null}
       {bindingFrozen && attachState?.status === 'unknown' ? (
         <Notice tone="warn">Nava could not confirm preparation. Reopen this email and check the filing status.</Notice>
       ) : null}

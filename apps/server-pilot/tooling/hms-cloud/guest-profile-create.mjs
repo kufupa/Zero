@@ -1,9 +1,11 @@
 // Guest-master preparation and guarded creation on a dedicated HRCEN session.
 import { createHash } from 'node:crypto';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
-import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { cloudWriterIdentity, withCloudCredentialLease, withCloudWriterSession } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { hasPageRequestAuthorization, installPageRequestFence } from './page-request-fence.mjs';
+import { shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 import { prepareGuardedContext, isGuardedPage } from './pre-navigation-context-guard.mjs';
-import { guestLookupMayRequest, fulfillGuestLookupRequest } from './pane-guest-search.mjs';
+import { guestLookupMayRequest } from './pane-guest-search.mjs';
 import { parseAssociationResponse } from './cancel-association-scope.mjs';
 import { openNewGuestStay } from './lookup.mjs';
 import { collectHmsStorageStateSecretValues } from '../../src/hms/trace-privacy.ts';
@@ -24,6 +26,16 @@ const hash = value => createHash('sha256').update(JSON.stringify(canon(value))).
 const same = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 /** Shared with the runner so authorize ignores JSONB/transport key order. */
 export const profileValuesEqual = same;
+
+function profileTargetKeys(input) {
+  const property = getPropertyRegistration(input?.propertyCode), guest = input?.guest;
+  const normalize = value => String(value ?? '').normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  if (!property?.active || !normalize(guest?.firstName) || !normalize(guest?.lastName)) throw new Error('PROFILE_PROPERTY_SCOPE_REQUIRED');
+  const aliases = [JSON.stringify([property.propertyCode, 'guest_profile', normalize(guest.firstName), normalize(guest.lastName), property.expectedTenant])];
+  if (normalize(guest.email)) aliases.push(JSON.stringify([property.propertyCode, 'guest_profile_email', normalize(guest.email), property.expectedTenant]));
+  return aliases;
+}
+
 const EXTRA_FIELDS = ['titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
 const OPTION_FIELDS = Object.freeze({ title: 'nametitle', phoneType: 'phonenumbertypecode', emailType: 'emailtypecode' });
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(String(error?.message || ''))
@@ -45,7 +57,7 @@ export function profileBusinessFields(input) {
   const guest = input?.guest;
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       Object.keys(input).some(key => !['propertyCode', 'guest', 'confirmDuplicateName', 'expectedPreviewDigest', 'expectedReview'].includes(key)) ||
-      (input.propertyCode != null && input.propertyCode !== PROPERTY) ||
+      (input.propertyCode != null && !getPropertyRegistration(input.propertyCode)?.active) ||
       (input.confirmDuplicateName != null && typeof input.confirmDuplicateName !== 'boolean') ||
       !guest || typeof guest !== 'object' || Array.isArray(guest) ||
       Object.keys(guest).some(key => !['firstName', 'lastName', 'mobile', 'email', ...EXTRA_FIELDS].includes(key))) return null;
@@ -65,18 +77,19 @@ export function profileBusinessFields(input) {
   return { ...fields, status: 'ACTIVE', consent: false };
 }
 
-export function profilePreviewDigest(fields, confirmDuplicateName) {
-  return hash({ property: PROPERTY, fields, confirmDuplicateName: confirmDuplicateName === true });
+export function profilePreviewDigest(fields, confirmDuplicateName, propertyCode = PROPERTY) {
+  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROFILE_PROPERTY_INVALID');
+  return hash({ property: propertyCode, fields, confirmDuplicateName: confirmDuplicateName === true });
 }
 
 export const hasExtendedProfileFields = fields => EXTRA_FIELDS.some(key => Object.hasOwn(fields ?? {}, key));
 export const profileReviewDigest = review => hash(review);
 
-export function matchesProfileReview(review, fields, confirmDuplicateName) {
+export function matchesProfileReview(review, fields, confirmDuplicateName, propertyCode = PROPERTY) {
   const effective = review?.effective;
   if (!hasExtendedProfileFields(fields) || !review || typeof review !== 'object' || Array.isArray(review) ||
       !same(Object.keys(review).sort(), ['confirmDuplicateName', 'effective', 'fields', 'propertyCode', 'version'].sort()) ||
-      review.version !== 2 || review.propertyCode !== PROPERTY || review.confirmDuplicateName !== (confirmDuplicateName === true) ||
+      review.version !== 2 || !getPropertyRegistration(propertyCode)?.active || review.propertyCode !== propertyCode || review.confirmDuplicateName !== (confirmDuplicateName === true) ||
       !same(review.fields, fields) || !effective || typeof effective !== 'object' || Array.isArray(effective) ||
       !same(Object.keys(effective).sort(), ['title', 'phoneNumber', 'phoneType', 'emailType'].sort()) ||
       typeof effective.phoneNumber !== 'string') return false;
@@ -97,7 +110,7 @@ function unique(params) {
   return new Set(keys).size === keys.length;
 }
 
-function profileSaveMatches(request, fields, confirmed, review) {
+function profileSaveMatches(request, fields, confirmed, review, propertyCode) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     const required = { SYSTEM_FUNCTION_NAME: 'FSGSPF', USER_FUNCTION_NAME: 'FSGSPF', CURRENT_TAB_NAME: 'HDR',
@@ -105,7 +118,7 @@ function profileSaveMatches(request, fields, confirmed, review) {
       profilestatuscode: 'ACTIVE', profileid: '', recordid: '',
       confirmnewguestprofile: confirmed ? 'confirmed' : '', confirminactiveguestprofile: '' };
     if (hasExtendedProfileFields(fields)) {
-      if (!matchesProfileReview(review, fields, review?.confirmDuplicateName)) return false;
+      if (!matchesProfileReview(review, fields, review?.confirmDuplicateName, propertyCode)) return false;
       Object.assign(required, { nametitle: review.effective.title.code, phonenumber: review.effective.phoneNumber,
         phonenumbertypecode: review.effective.phoneType.code, emailtypecode: review.effective.emailType.code });
     }
@@ -122,6 +135,7 @@ function profileSaveMatches(request, fields, confirmed, review) {
       url.pathname === '/web/base/FSGSPF.HDR' && matches(url.searchParams, 'pageaction', 'SAVE') &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
       Object.entries(required).every(([key, value]) => matches(body, key, value) && compatible(url.searchParams, key, value)) &&
+      compatible(body, 'propertycode', propertyCode) && compatible(url.searchParams, 'propertycode', propertyCode) &&
       compatible(body, 'pageaction', 'SAVE') && compatible(body, 'action', 'SAVE') && compatible(url.searchParams, 'action', 'SAVE') &&
       [1, 2, 3, 4].every(index => {
         const entries = [...body].filter(([key]) => key.toLowerCase() === `guestoptin${index}`);
@@ -186,7 +200,7 @@ function profileParseFailureDiagnostics(text, response, error) {
     const sample = text.slice(0, 8192);
     const bodyKind = !sample.trim() ? 'empty'
       : /<\s*(?:!doctype\s+html|html|head|body|form)(?:\s|>)/i.test(sample) ? 'html'
-        : /^\s*[\[{]/.test(sample) ? 'json_like'
+        : /^\s*[[{]/.test(sample) ? 'json_like'
           : /^\s*(?:var\s|let\s|const\s|function\s|(?:Ext|window|EAM)\.)/i.test(sample) ? 'javascript_like' : 'other';
     const message = error instanceof SyntaxError && typeof error.message === 'string' ? error.message : '';
     const match = /(?:^| )at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
@@ -197,12 +211,12 @@ function profileParseFailureDiagnostics(text, response, error) {
     // These V8 messages have fixed text and a position, without a source preview.
     const safeMessage = /^(?:Unexpected end of JSON input|Unexpected non-whitespace character after JSON at position \d+(?: \(line \d+ column \d+\))?|(?:Expected property name or '}'|Expected double-quoted property name|Expected ':' after property name|Expected ',' or '}' after property value|Expected ',' or '\]' after array element|Unterminated string|Bad control character in string literal|Bad escaped character|Bad Unicode escape) in JSON at position \d+(?: \(line \d+ column \d+\))?)$/.test(message);
     const token = /^Unexpected token '(.)'/s.exec(message)?.[1];
-    const safeToken = token != null && /[{}\[\],:;'\"<>\/\\=]/.test(token) ? token : null;
+    const safeToken = token != null && "{}[],:;'\"<>/\\=".includes(token) ? token : null;
     const exception = safeMessage ? message : safeToken ? `Unexpected token '${safeToken}'` : null;
     const tokenCategory = token == null ? null : token === "'" ? 'single_quote' : token === '"' ? 'double_quote'
       : /[<>]/.test(token) ? 'angle_bracket' : /[A-Za-z]/.test(token) ? 'letter' : /[0-9]/.test(token) ? 'digit'
-        : /\s/.test(token) ? 'whitespace' : /[{}]/.test(token) ? 'brace' : /[\[\]]/.test(token) ? 'bracket'
-          : /[,;:]/.test(token) ? 'delimiter' : /[\/\\]/.test(token) ? 'slash' : token === '=' ? 'equals' : 'other';
+        : /\s/.test(token) ? 'whitespace' : /[{}]/.test(token) ? 'brace' : (token === '[' || token === ']') ? 'bracket'
+          : /[,;:]/.test(token) ? 'delimiter' : (token === '/' || token === '\\') ? 'slash' : token === '=' ? 'equals' : 'other';
     return { byteCount: Math.min(byteLength, limit), byteCountCapped: byteLength > limit, contentType, bodyKind,
       exception,
       exceptionOmitted: safeMessage ? null : 'parser_message_may_include_source',
@@ -363,34 +377,39 @@ async function boundedResponseText(response, timeout = 15000) {
   } finally { clearTimeout(timer); }
 }
 
-async function handleProfileSave(route, state) {
+async function handleProfileSave(route, state, writer) {
   const write = state.write, request = route.request();
   const confirmed = write.phase === 'confirm';
   let forwarded = false, pending;
   try {
     if (state.blocked || state.dialog || !['initial', 'confirm'].includes(write.phase) || !isGuardedPage(request.frame().page()) ||
-        !profileSaveMatches(request, write.fields, confirmed, write.review)) throw new Error('PROFILE_SAVE_REQUEST_MISMATCH');
+        !profileSaveMatches(request, write.fields, confirmed, write.review, state.propertyCode)) throw new Error('PROFILE_SAVE_REQUEST_MISMATCH');
     const phase = confirmed ? 'confirm_distinct' : 'initial';
     write.lastPhase = phase;
     write.phase = 'authorizing';
     write.callbackDrained = false;
-    const context = Object.freeze({ phase, previewDigest: write.previewDigest,
+    if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+    write.signal?.throwIfAborted();
+    const context = Object.freeze({ phase, propertyCode: state.propertyCode, writer, previewDigest: write.previewDigest,
       confirmDuplicateName: write.confirmDuplicateName, fields: Object.freeze({ ...write.fields }),
       ...(write.review && { review: structuredClone(write.review) }) });
-    if (await write.authorizeCandidate(context) !== true || state.blocked || state.dialog || write.phase !== 'authorizing') {
+    if (await write.authorizeCandidate(context) !== true || write.signal?.aborted || state.blocked || state.dialog || write.phase !== 'authorizing') {
       throw new Error('PROFILE_SAVE_NOT_AUTHORIZED');
     }
     let used = false;
     const proceed = () => {
-      if (used || state.blocked || state.dialog || write.phase !== 'authorizing' || !isGuardedPage(request.frame().page()) ||
-          !profileSaveMatches(request, write.fields, confirmed, write.review)) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
+      if (used || write.signal?.aborted || state.blocked || state.dialog || write.phase !== 'authorizing' || !isGuardedPage(request.frame().page()) ||
+          !profileSaveMatches(request, write.fields, confirmed, write.review, state.propertyCode)) throw new Error('PROFILE_SAVE_AUTHORITY_STALE');
       used = true;
       write.phase = 'waiting';
       write.dispatched = true;
       write.dispatchedPhases.push(phase);
       forwarded = true;
+      const responsePromise = request.frame().page().waitForResponse(value => value.request() === request, { timeout: 30_000 });
+      void responsePromise.catch(() => {});
       pending = (async () => {
-        const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
+        await route.fallback();
+        const response = await responsePromise;
         const text = await boundedResponseText(response);
         let data, parseError, parseStatus = 'parse_failed';
         try {
@@ -405,7 +424,6 @@ async function handleProfileSave(route, state) {
         const id = String(data?.values?.profileid ?? '').trim();
         write.response = { status: response.status(), success: response.status() === 200 && data?.success === true,
           nativeId: /^\d+$/.test(id) ? id : null, question };
-        // Persist the response and any native ID before the browser receives it.
         // Journal bounded parse/message evidence for any failed Save so native
         // validation (e.g. missing email type) is visible outside Proof Labtest.
         const needsDiagnostics = (!write.response.success || !write.response.nativeId);
@@ -425,7 +443,6 @@ async function handleProfileSave(route, state) {
         // Retain only in memory, after the original response has been journaled.
         if (write.diagnosticFailure && typeof write.recordFailureDiagnostics === 'function') write.diagnosticSource = text;
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
-        await route.fulfill({ response });
         return true;
       })();
       return pending;
@@ -456,7 +473,7 @@ function profileCreateReadMayRequest(request, state = {}) {
       /^(?:confirmnewguestprofile|confirminactiveguestprofile|newprofileclick|createinactiveprofileflag|savecctoprofile|savesettlementcctoprofile)$/i.test(key) &&
         !['', '0', 'false', '-'].includes(value.trim().toLowerCase()));
     if (hasWrite(url.searchParams) || hasWrite(body)) return false;
-    if (guestLookupMayRequest({ method, url: request.url(), postData,
+    if (guestLookupMayRequest({ method, url: request.url(), postData, propertyCode: state.propertyCode,
       contentType: request.headers()['content-type'] })) return true;
     // Native form initialization needs the static vault scripts (vcei). The
     // lookup predicate admits vetted asset GETs; vault/card actions still fail.
@@ -487,7 +504,7 @@ function profileCreateReadMayRequest(request, state = {}) {
     if (url.pathname === '/web/base/OSRESV.HDR' && !url.search && system === 'OSRESV' && user === 'OSRESV' && tab === 'HDR' &&
         body.get('ONLY_DATA_REQUIRED') === 'true' && body.get('SCROLLROW') === 'YES' &&
         ['confirmationnumber', 'reservationstayid', 'guestid', 'guestfullname', 'account', 'firstname', 'lastname'].every(key => body.get(key) === '') &&
-        ['', PROPERTY].includes(body.get('propertycode'))) return true;
+        ['', state.propertyCode].includes(body.get('propertycode'))) return true;
     if (url.search || system !== 'FSGSPF' || user !== 'FSGSPF') return false;
     if (url.pathname === '/web/base/FSGSPF') return body.get('startUpView') === 'left' && body.get('removescreenflows') === 'yes';
     if (url.pathname === '/web/base/FSGSPF.LST') return tab === 'LST' && body.get('COMPONENT_INFO_TYPE') === 'HEAD_DATA';
@@ -505,6 +522,7 @@ async function guardedSession(openSession, state, operation, options) {
     // Keep tracking until the owned session finishes closing, including cleanup.
     page.on('dialog', dialog => {
       state.dialog = true;
+      void dialog.dismiss().catch(() => {});
       if (state.write?.diagnosticFailure && state.write.lastPhase === 'confirm_distinct') {
         try { state.write.nativeDialog = { type: diagnosticMessageText(dialog.type(), state.write.diagnosticSecrets),
           message: diagnosticMessageText(dialog.message(), state.write.diagnosticSecrets) }; }
@@ -517,31 +535,62 @@ async function guardedSession(openSession, state, operation, options) {
   return result;
 }
 
-async function withReadSession(operation, state, { openSession = withCenturionStay360Page, signal } = {}) {
-  return guardedSession(openSession, state, async page => {
+async function withReadSession(operation, state, options = {}) {
+  const propertyCode = options.propertyCode;
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active || typeof options.transportId !== 'string' || !property.transportIds.includes(options.transportId)) {
+    throw new Error('PROFILE_PROPERTY_SCOPE_REQUIRED');
+  }
+  state.propertyCode = propertyCode;
+  const signal = AbortSignal.any([options.signal, options.credentialLease?.signal, AbortSignal.timeout(120000)].filter(Boolean));
+  state.signal = signal;
+  return guardedSession(withCloudWriterSession, state, async page => {
     if (!isGuardedPage(page)) throw new Error('PROFILE_CONTEXT_UNSAFE');
-    const valid = await page.evaluate(() => ({ origin: location.origin, title: document.title,
-      property: [...document.querySelectorAll('[data-qtip="Property"]')].filter(e => e.getClientRects().length).map(e => e.textContent.trim()) }));
-    if (valid.origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(valid.title) ||
-        valid.property.length !== 1 || valid.property[0] !== PROPERTY) throw new Error('PROFILE_PROPERTY_UNVERIFIED');
-    await openNewGuestStay(page);
-    return operation(page, state);
-  }, { headless: true, blockServiceWorkers: true, signal: signal || AbortSignal.timeout(120000),
+    state.profileGuardActive = true;
+    const paths = ['/web/base/FSGSPF', '/web/base/FSGSPF.LST', '/web/base/FSGSPF.HDR',
+      '/web/base/FSGSPF.HDR.ATTRIBUTEREFRESH', '/web/base/FSGSPF.HDR.getPhoneTypeDetails',
+      '/web/base/FSGSPF.HDR.getEmailTypeDetails'];
+    const fence = await installPageRequestFence(page, paths);
+    const scope = fence.open();
+    await page.route('**/*', async route => {
+      const request = route.request();
+      let url;
+      try { url = new URL(request.url()); } catch { return route.abort(); }
+      if (!paths.some(path => path.toLowerCase() === url.pathname.toLowerCase())) return route.fallback();
+      const write = state.write;
+      const isSave = write && ['initial', 'confirm'].includes(write.phase) &&
+        profileSaveMatches(request, write.fields, write.phase === 'confirm', write.review, propertyCode);
+      if (signal.aborted || state.blocked || state.dialog || !(isSave || profileCreateReadMayRequest(request, state)) ||
+          !scope.allow(request)) return route.abort();
+      return route.fallback();
+    });
+    try {
+      const valid = await page.evaluate(() => ({ origin: location.origin, title: document.title,
+        property: [...document.querySelectorAll('[data-qtip="Property"]')].filter(e => e.getClientRects().length).map(e => e.textContent.trim()) }));
+      if (valid.origin !== ORIGIN || /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(valid.title)?.[1]?.toUpperCase() !== propertyCode ||
+          valid.property.length !== 1 || valid.property[0] !== propertyCode) throw new Error('PROFILE_PROPERTY_UNVERIFIED');
+      await openNewGuestStay(page, { propertyCode });
+      return await operation(page, state);
+    } finally { scope.close(); fence.quarantine(); }
+  }, { propertyCode, transportId: options.transportId, credentialLease: options.credentialLease,
+    cloudTargetKeys: options.cloudTargetKeys, signal, startScreen: 'BSSTRT',
     prepareContext: async context => {
       await prepareGuardedContext(context);
       await context.route('**/*', async route => {
+        if (!state.profileGuardActive) return route.fallback();
         const request = route.request();
         const url = new URL(request.url());
         const profileSave = request.method() === 'POST' && url.origin === ORIGIN &&
           url.pathname === '/web/base/FSGSPF.HDR' && url.searchParams.get('pageaction')?.toUpperCase() === 'SAVE';
         if (state.write && profileSave) {
-          const handler = handleProfileSave(route, state);
+          let page;
+          try { page = request.frame().page(); } catch { return route.abort('blockedbyclient'); }
+          if (!hasPageRequestAuthorization(request, page)) return route.abort('blockedbyclient');
+          const handler = handleProfileSave(route, state, cloudWriterIdentity(page));
           state.write.handlers.add(handler);
           try { return await handler; } finally { state.write.handlers.delete(handler); }
         }
         if (!profileCreateReadMayRequest(request, state)) {
-          // Blank Guest Stay initializes its card frame automatically. Always
-          // refuse that known request without treating it as a profile action.
           const cardInit = request.method() === 'POST' && url.origin === 'https://hmsvault.hms.eu1.inforcloudsuite.com' &&
             url.pathname === '/Vault/servlets/showCardEntryHandler';
           if (request.method() !== 'GET' && !cardInit) state.blocked = true;
@@ -555,12 +604,12 @@ async function withReadSession(operation, state, { openSession = withCenturionSt
           state.profileOptionGate.request = request;
           state.profileOptionGate = null;
         }
-        return fulfillGuestLookupRequest(route);
+        return route.fallback();
       });
     } });
 }
 
-async function openProfileFrame(page) {
+async function openProfileFrame(page, state) {
   const ids = await page.evaluate(() => (globalThis.Ext?.ComponentQuery?.query('button[name=guestprofile]') || [])
     .filter(c => c.el?.dom?.getClientRects().length && !c.disabled && (c.formPanel?.tabName || c.up?.('uxform')?.tabName) === 'HDR').map(c => c.id));
   if (ids.length !== 1) throw new Error('PROFILE_CONTROL_UNAVAILABLE');
@@ -580,14 +629,14 @@ async function openProfileFrame(page) {
     return { origin: location.origin, title: document.title, function: screen?.systemFunction,
       dirty: !!form?.isDirty?.(), tabDirty: !!screen?.getCurrentTab?.()?.isDirty?.() };
   });
-  if (before.origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(before.title) || before.function !== 'FSGSPF' || before.dirty || before.tabDirty) {
+  if (before.origin !== ORIGIN || /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(before.title)?.[1]?.toUpperCase() !== state.propertyCode || before.function !== 'FSGSPF' || before.dirty || before.tabDirty) {
     throw new Error('PROFILE_CLEAN_SCREEN_UNVERIFIED');
   }
   return frame;
 }
 
 async function openNewProfile(page, state) {
-  const frame = await openProfileFrame(page);
+  const frame = await openProfileFrame(page, state);
   const button = frame.locator('[data-qtip="New Record (Ctrl+N)"]:visible');
   if (await button.count() !== 1) throw new Error('PROFILE_NEW_CONTROL_UNAVAILABLE');
   state.newProfileFrame = frame;
@@ -657,15 +706,16 @@ async function profileOptions(frame, name) {
 export async function listGuestProfileCreationOptions(input, options = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       Object.keys(input).some(key => !['propertyCode', 'field'].includes(key)) ||
-      (input.propertyCode != null && input.propertyCode !== PROPERTY) || !Object.hasOwn(OPTION_FIELDS, input.field)) {
+      !getPropertyRegistration(input.propertyCode)?.active || !Object.hasOwn(OPTION_FIELDS, input.field)) {
     return { outcome: 'input_gap', issue: 'PROFILE_OPTION_FIELD_REQUIRED' };
   }
   const state = { blocked: false, dialog: false };
+  options = { ...options, propertyCode: input.propertyCode };
   try {
     return await withReadSession(async page => {
       const frame = await openNewProfile(page, state);
       const result = await profileOptions(frame, OPTION_FIELDS[input.field]);
-      return { outcome: 'ok', propertyCode: PROPERTY, field: input.field, ...result, observedAt: new Date().toISOString() };
+      return { outcome: 'ok', propertyCode: state.propertyCode, field: input.field, ...result, observedAt: new Date().toISOString() };
     }, state, options);
   } catch (error) { return { outcome: 'unavailable', issue: issue(error) }; }
 }
@@ -754,7 +804,7 @@ async function effectiveProfileExtras(frame, form) {
 async function stageProfile(page, state, fields, input) {
   const confirmDuplicateName = input.confirmDuplicateName === true;
   const extended = hasExtendedProfileFields(fields);
-  const legacyDigest = extended ? null : profilePreviewDigest(fields, confirmDuplicateName);
+  const legacyDigest = extended ? null : profilePreviewDigest(fields, confirmDuplicateName, state.propertyCode);
   if (!extended && input.expectedPreviewDigest != null && input.expectedPreviewDigest !== legacyDigest) {
     return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED' };
   }
@@ -780,9 +830,9 @@ async function stageProfile(page, state, fields, input) {
   if (state.dialog || state.blocked || !isGuardedPage(page) || !validProfileForm(staged, fields)) {
     throw new Error('PROFILE_STAGING_UNVERIFIED');
   }
-  const review = extended ? { version: 2, propertyCode: PROPERTY, fields, confirmDuplicateName,
+  const review = extended ? { version: 2, propertyCode: state.propertyCode, fields, confirmDuplicateName,
     effective: await effectiveProfileExtras(frame, staged) } : null;
-  if (extended && !matchesProfileReview(review, fields, confirmDuplicateName)) throw new Error('PROFILE_STAGING_UNVERIFIED');
+  if (extended && !matchesProfileReview(review, fields, confirmDuplicateName, state.propertyCode)) throw new Error('PROFILE_STAGING_UNVERIFIED');
   const previewDigest = extended ? profileReviewDigest(review) : legacyDigest;
   if (input.expectedPreviewDigest != null && input.expectedPreviewDigest !== previewDigest ||
       input.expectedReview != null && !same(input.expectedReview, review)) {
@@ -801,7 +851,8 @@ async function stageProfile(page, state, fields, input) {
 
 async function runStaged(input, options, operation) {
   const fields = profileBusinessFields(input);
-  if (!fields) return { outcome: 'needs_input', issue: profileInputIssue(input) };
+  if (!fields || !getPropertyRegistration(input?.propertyCode)?.active) return { outcome: 'needs_input', issue: profileInputIssue(input) };
+  options = { ...options, propertyCode: input.propertyCode };
   const state = { blocked: false, dialog: false };
   try {
     const result = await withReadSession(async page => {
@@ -901,7 +952,7 @@ async function visibleProfileFailure(page, write) {
 
 async function savePreparedProfile(page, state, staged, commit) {
   const { frame, save, fields, previewDigest, confirmDuplicateName, review } = staged;
-  const write = { ...commit, fields, previewDigest, confirmDuplicateName, review, phase: 'initial', lastPhase: null,
+  const write = { ...commit, signal: state.signal, fields, previewDigest, confirmDuplicateName, review, phase: 'initial', lastPhase: null,
     dispatched: false, dispatchedPhases: [], response: null, issue: null, callbackDrained: false, handlers: new Set() };
   state.write = write;
   try {
@@ -962,15 +1013,19 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
   }
   const requested = profileBusinessFields(input);
   if (requested && hasExtendedProfileFields(requested) &&
-      (!matchesProfileReview(input.expectedReview, requested, input.confirmDuplicateName) ||
+      (!matchesProfileReview(input.expectedReview, requested, input.confirmDuplicateName, input.propertyCode) ||
        profileReviewDigest(input.expectedReview) !== input.expectedPreviewDigest)) {
     return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId: attemptId ?? null, dispatched: false };
   }
+  let dispatchedResult = null;
+  const run = async credentialLease => {
+  options = { ...options, credentialLease, propertyCode: input.propertyCode, cloudTargetKeys: profileTargetKeys(input) };
   const result = await runStaged(input, options, (page, state, staged) =>
     savePreparedProfile(page, state, staged, { authorizeCandidate, dispatchCandidate, recordResponse, recordFailureDiagnostics, attemptId }));
+  if (result.dispatched === true) dispatchedResult = result;
   if (result.outcome !== 'awaiting_readback') return result;
   let readback;
-  try { readback = await readGuestProfile({ nativeId: result.nativeId }, options); }
+  try { readback = await readGuestProfile({ nativeId: result.nativeId, propertyCode: input.propertyCode }, options); }
   catch { readback = null; }
   const fields = result.businessFields;
   if (!matchesProfileReadback(readback, fields, result.nativeId, result.review)) {
@@ -979,6 +1034,12 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
   }
   return { outcome: 'created', attemptId: result.attemptId, phase: result.phase,
     dispatched: true, dispatchedPhases: result.dispatchedPhases, nativeId: result.nativeId, readback };
+  };
+  if (!getPropertyRegistration(input?.propertyCode)?.active) return { outcome: 'not_dispatched', issue: 'PROFILE_PROPERTY_SCOPE_REQUIRED', dispatched: false };
+  try { return options.credentialLease ? await run(options.credentialLease) :
+    await withCloudCredentialLease(input.propertyCode, run, { signal: options.signal }); }
+  catch (error) { return dispatchedResult ? { ...dispatchedResult, outcome: 'uncertain', issue: issue(error), dispatched: true } :
+    { outcome: 'not_dispatched', issue: issue(error), attemptId: attemptId ?? null, dispatched: false }; }
 }
 
 // Unknown consent never counts as off.
@@ -988,7 +1049,7 @@ export function matchesProfileReadback(readback, fields, expectedNativeId, revie
     (expectedNativeId === undefined || readback.nativeId === expectedNativeId) &&
     Array.isArray(readback.consent) && readback.consent.length === 4 && readback.consent.every(value => value === false);
   if (!core || !hasExtendedProfileFields(fields)) return core;
-  if (!matchesProfileReview(review, fields, review?.confirmDuplicateName) || !Array.isArray(readback.fields)) return false;
+  if (!matchesProfileReview(review, fields, review?.confirmDuplicateName, readback.propertyCode) || !Array.isArray(readback.fields)) return false;
   for (const [name, expected] of [['nametitle', review.effective.title.code], ['phonenumber', review.effective.phoneNumber],
     ['phonenumbertypecode', review.effective.phoneType.code], ['emailtypecode', review.effective.emailType.code]]) {
     const matches = readback.fields.filter(field => field.name === name);
@@ -1002,7 +1063,7 @@ function profileReadInput(input) {
   const nativeId = clean(input?.nativeId);
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       Object.keys(input).some(key => !['nativeId', 'propertyCode'].includes(key)) ||
-      (input.propertyCode != null && input.propertyCode !== PROPERTY) || !/^\d+$/.test(nativeId)) return null;
+      !getPropertyRegistration(input.propertyCode)?.active || !/^\d+$/.test(nativeId)) return null;
   return nativeId;
 }
 
@@ -1069,7 +1130,7 @@ async function readProfileMaster(page, frame, nativeId, state, metadata) {
     if ([true, 1, '1', 'true'].includes(value)) return true;
     return null;
   });
-  return { outcome: 'read', nativeId, propertyCode: PROPERTY, observedAt: new Date().toISOString(),
+  return { outcome: 'read', nativeId, propertyCode: state.propertyCode, observedAt: new Date().toISOString(),
     firstName: textValue('firstname'), lastName: textValue('lastname'), mobile: textValue('mobilenumber'),
     email, status, consent,
     consentCoverage: consent.every(value => value !== null) ? 'complete' : 'incomplete', fields,
@@ -1090,11 +1151,16 @@ export async function readGuestProfiles(inputs, { onResult, ...options } = {}) {
       (onResult !== undefined && typeof onResult !== 'function')) {
     return { outcome: 'input_gap', issue: 'UNIQUE_PROFILE_IDS_REQUIRED', profiles: [] };
   }
+  if (new Set(inputs.map(input => input.propertyCode)).size !== 1 ||
+      (options.propertyCode !== undefined && options.propertyCode !== inputs[0].propertyCode)) {
+    return { outcome: 'input_gap', issue: 'PROFILE_PROPERTY_SCOPE_REQUIRED', profiles: [] };
+  }
+  options = { ...options, propertyCode: inputs[0].propertyCode };
   const nativeIds = inputs.map(profileReadInput);
   const state = { blocked: false, masterId: null }, profiles = [];
   try {
     await withReadSession(async page => {
-      const frame = await openProfileFrame(page), metadata = await profileFieldMetadata(frame);
+      const frame = await openProfileFrame(page, state), metadata = await profileFieldMetadata(frame);
       if (!metadata.length) throw new Error('PROFILE_FORM_METADATA_UNAVAILABLE');
       for (const nativeId of nativeIds) {
         options.signal?.throwIfAborted();

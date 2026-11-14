@@ -96,41 +96,51 @@ function textValue(value: unknown): string {
 }
 
 /** Search labels locally; only an explicit code selection becomes the booking rate. */
-function CloudRatePicker({ value, plans, disabled, onChange }: {
+function CloudRatePicker({ value, plans, disabled, onChange, label = 'Rate plan', maxLength = 12, hint = 'HMS checks price and eligibility during review.' }: {
   value: string; plans: { code: string; name: string }[]; disabled: boolean; onChange: (code: string) => void;
+  label?: string; maxLength?: number; hint?: string;
 }) {
   const id = useId();
   const [search, setSearch] = useState(value);
   const [open, setOpen] = useState(false);
-  useEffect(() => { if (!open) setSearch(value); }, [value, open]);
+  const openRef = useRef(open);
+  openRef.current = open;
+  useEffect(() => { if (!openRef.current) setSearch(value); }, [value]);
   const input = search.trim();
   const code = input.toUpperCase();
+  const validCode = /^[A-Z0-9]+$/.test(code) && code.length <= maxLength;
   const exact = plans.find((plan) => plan.code.toUpperCase() === code);
   const matches = plans.filter((plan) => `${plan.code} ${plan.name}`.toLocaleLowerCase().includes(input.toLocaleLowerCase()));
   const select = (selected: string) => { setSearch(selected); setOpen(false); onChange(selected); };
   return <div className="flex flex-col gap-1" onBlur={(event) => {
-    if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      const byName = plans.filter(plan => plan.name.toLocaleLowerCase() === input.toLocaleLowerCase());
+      if (exact) select(exact.code);
+      else if (byName.length === 1) select(byName[0]!.code);
+      else if (validCode) select(code);
+      else setOpen(false);
+    }
   }}>
-    <label htmlFor={id} className="text-xs font-semibold text-[#475569]">Rate plan</label>
-    <input id={id} aria-label="Rate plan" aria-expanded={open} aria-controls={`${id}-rates`}
+    <label htmlFor={id} className="text-xs font-semibold text-[#475569]">{label}</label>
+    <input id={id} aria-label={label} aria-expanded={open} aria-controls={`${id}-rates`}
       className={paneFieldClass} disabled={disabled} value={search} placeholder="Search code or name"
       onFocus={() => setOpen(true)} onChange={(event) => {
         const next = event.target.value;
         const found = plans.find((plan) => plan.code.toUpperCase() === next.trim().toUpperCase());
         setSearch(next); setOpen(true); onChange(found?.code ?? '');
       }} onKeyDown={(event) => {
-        if (event.key === 'Enter' && /^[A-Z0-9]{1,12}$/.test(code)) {
+        if (event.key === 'Enter' && validCode) {
           event.preventDefault(); select(exact?.code ?? code);
         }
       }} />
-    {open ? <ul id={`${id}-rates`} aria-label="Matching rate plans" className="max-h-36 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
+    {open ? <ul id={`${id}-rates`} aria-label={label === 'Rate plan' ? 'Matching rate plans' : `Matching ${label.toLowerCase()} choices`} className="max-h-36 overflow-y-auto rounded-sm border border-[#cbd5e1] bg-white">
       {matches.map((plan) => <li key={plan.code}><button type="button" className="w-full px-2 py-1 text-left text-xs hover:bg-[#f1f5f9]"
         onClick={() => select(plan.code)}>{plan.code}{plan.name && plan.name !== plan.code ? ` · ${plan.name}` : ''}</button></li>)}
-      {!exact && /^[A-Z0-9]{1,12}$/.test(code) ? <li><button type="button"
+      {!exact && validCode ? <li><button type="button"
         className="w-full px-2 py-1 text-left text-xs hover:bg-[#f1f5f9]" onClick={() => select(code)}>Use {code} as a code</button></li> : null}
-      {!matches.length && !/^[A-Z0-9]{1,12}$/.test(code) ? <li className="px-2 py-1 text-xs text-[#64748b]">No matching rate plans</li> : null}
+      {!matches.length && !validCode ? <li className="px-2 py-1 text-xs text-[#64748b]">No matching {label.toLowerCase()} choices</li> : null}
     </ul> : null}
-    <span className="text-[11px] text-[#64748b]">{!open && exact && exact.name !== exact.code ? `${exact.name} · ` : ''}HMS checks price and eligibility during review.</span>
+    <span className="text-[11px] text-[#64748b]">{!open && exact && exact.name !== exact.code ? `${exact.name} · ` : ''}{hint}</span>
   </div>;
 }
 
@@ -1157,7 +1167,8 @@ export function BookingCards({
   const client = paneSave;
   const contactRef = useRef(contact);
   contactRef.current = contact;
-  const requiredCreateFields = draft.options.requiredCreateFields ?? [];
+  const requiredCreateFields = [...(draft.options.requiredCreateFields ?? []),
+    ...(configuration?.formPolicy?.guestOptIn === 'required' ? ['guestoptin4'] : [])];
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const reportedMode = client?.mode?.() ?? null;
   const mode: PaneSaveMode = client ? (reportedMode ?? 'lab') : 'off';
@@ -1173,6 +1184,10 @@ export function BookingCards({
   const cloudPreview = Boolean(client?.canPreview?.() && prepareAllowed);
   const cloudCreate = cloudPreview || propertyCode === 'HRCEN';
   const createScope = { propertyCode, tenantId: configuration?.tenantId };
+  const scopedPreviewInputKey = (stay: PaneStayInput) => JSON.stringify([
+    configuration?.transportId ?? session?.binding?.transportId ?? null, createScope.tenantId ?? null,
+    propertyCode ?? null, session?.binding?.scopeEpoch ?? null, session?.binding?.selectionEpoch ?? null, paneStayKey(stay),
+  ]);
   const requireDurableCreate = cloudCreate && workItemPane !== undefined;
   const rateReadProperty = configuration
     ? configuration.propertyCode === propertyCode && configuration.transportId === workItemPane?.rateDraft?.transportId
@@ -1581,7 +1596,7 @@ export function BookingCards({
 
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
     if (savedOutcomeBlocksRoom(roomKey)) return;
-    const inputKey = paneStayKey(stay);
+    const inputKey = scopedPreviewInputKey(stay);
     const input = previewInputsRef.current[roomKey];
     if (!input?.key || input.inputKey !== inputKey) return;
     const { stayId } = input;
@@ -1773,7 +1788,11 @@ export function BookingCards({
     if (roomChoice.confirmationSendMail && !recipient.ok) missing.push('confirmation recipient');
     if (!cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
     const selectedRoom = roomChoice.roomType ?? '';
-    if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
+    if (selectedRoom && !/^[A-Z0-9]{1,12}$/.test(selectedRoom)) missing.push('room type');
+    if (configuration?.catalogue?.coverage.roomTypes === 'complete' &&
+        selectedRoom && !configuration.roomTypes.some(room => room.code === selectedRoom)) missing.push('room type');
+    if (choice.guestoptin4 && configuration?.formPolicy &&
+        !['optional', 'required'].includes(configuration.formPolicy.guestOptIn)) missing.push('Terms choice');
     if (!cloudPreview) {
       if (propertyCode === 'HRDAV' || propertyCode === 'HRDAVS') missing.push('Create is not available for this hotel');
       return { stay: missing.length ? null : built.stay, missing: [...new Set(missing)] };
@@ -1798,7 +1817,7 @@ export function BookingCards({
     stay: PaneStayInput | null,
   ): string | null {
     return stay
-      ? paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(stay))
+      ? paneStayPreviewKey(workItemId, allocationIdForRoom(room), scopedPreviewInputKey(stay))
       : null;
   }
 
@@ -1806,7 +1825,7 @@ export function BookingCards({
     draft.draft.rooms.map((room) => {
       const stayId = allocationIdForRoom(room);
       const built = roomBuilt(room);
-      const inputKey = built.stay ? paneStayKey(built.stay) : null;
+      const inputKey = built.stay ? scopedPreviewInputKey(built.stay) : null;
       return [
         roomKeyOf(room),
         {
@@ -1856,7 +1875,7 @@ export function BookingCards({
     const built = roomBuilt(room);
     if (!built.stay) return null;
     const preview = saves[roomKeyOf(room)]?.preview;
-    const key = paneStayPreviewKey(workItemId, allocationIdForRoom(room), paneStayKey(built.stay));
+    const key = paneStayPreviewKey(workItemId, allocationIdForRoom(room), scopedPreviewInputKey(built.stay));
     return preview?.status === 'ready' && preview.key === key && cloudPreviewIsFresh(room, key) &&
       durablePreviewCurrent(preview)
       ? { stay: built.stay, digest: preview.digest }
@@ -2036,7 +2055,7 @@ export function BookingCards({
         if (!room) return;
         const currentStay = roomBuilt(room, contactRef.current).stay;
         if (!currentStay || paneStayKey(currentStay) !== paneStayKey(item.stay) ||
-            previewInputsRef.current[item.roomKey]?.inputKey !== paneStayKey(item.stay)) return;
+            previewInputsRef.current[item.roomKey]?.inputKey !== scopedPreviewInputKey(item.stay)) return;
         const batch = batchStart ? (index === 0 ? batchStart : { kind: 'continue' as const, id: batchStart.id, index }) : undefined;
         const commit = await bookRoom(item.roomKey, pane, item.stay, item.digest, batch);
         if (commit?.status === 'booked' && !commit.unverified) continue;
@@ -2406,8 +2425,7 @@ export function BookingCards({
         const nights = Number.isInteger(nightsValue) && nightsValue > 0 ? nightsValue : null;
         const selectedRoom = choice.roomType ?? roomTypeFor(room, group);
         const selectedRate = choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(request.ratePlan));
-        const propertyRooms = [...draft.options.roomType];
-        if ((!propertyCode || propertyCode === 'HRCEN') && selectedRoom && !propertyRooms.includes(selectedRoom)) propertyRooms.push(selectedRoom);
+        const propertyRooms = configuration ? configuration.roomTypes : draft.options.roomType.map(code => ({ code, label: code }));
         const rateCodes = [...new Set([
           ...(options.ratePlans ?? []),
           ...(session?.rateOptions ?? []).filter((rate) => rate.groupId === room.groupId && rate.roomCode === selectedRoom).map((rate) => rate.rateCode),
@@ -2543,12 +2561,15 @@ export function BookingCards({
         const roomTypeField = (<>
             <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
               Room type
-              <select aria-label="Room type" className={paneFieldClass} disabled={locked}
-                value={propertyRooms.includes(selectedRoom) ? selectedRoom : ''}
-                onChange={(event) => setChoice({ roomType: event.target.value, ratePlan: '' })}>
-                <option value="">Select room type</option>
-                {propertyRooms.map((code) => <option key={code} value={code}>{code}</option>)}
-              </select>
+              <input aria-label="Room type" className={paneFieldClass} disabled={locked} list={`booking-rooms-${key}`}
+                value={selectedRoom} placeholder="Code or choose a room type"
+                onChange={(event) => setChoice({ roomType: event.target.value.toUpperCase(), ratePlan: '' })} />
+              <datalist id={`booking-rooms-${key}`}>
+                {propertyRooms.map((room) => <option key={room.code} value={room.code} label={room.label} />)}
+              </datalist>
+              <span className="text-[11px] font-normal text-[#64748b]">
+                {propertyRooms.find(room => room.code === selectedRoom)?.label || 'Infor checks the room type during review.'}
+              </span>
             </label>
         </>);
         const occupancyFields = (<>
@@ -2577,6 +2598,9 @@ export function BookingCards({
                   onChange={(event) => setChoice({ childAges: ages.map((item, i) => i === index ? event.target.value : item) })} />
               </label>
             ))}
+            {configuration?.formPolicy?.childCategories?.length ? <p className="text-[11px] text-[#64748b]">
+              Infor child categories: {configuration.formPolicy.childCategories.map(category => category.label).join(', ')}.
+            </p> : null}
         </>);
         const agencyField = (<>
             <div className="flex items-end gap-2">
@@ -2739,15 +2763,16 @@ export function BookingCards({
               <CopyButton label="Track" roomLabel={roomLabel} value={choice.track} />
             </div>
             {cloudCreate ? guaranteeField : null}
-            {cloudCreate ? <p className="text-[11px] text-[#64748b]">HMS Create derives market segment from track and cannot set guest opt-in yet.</p> : null}
-              <RoomTextField
+            {configuration?.formPolicy?.marketSegmentChoices?.length ? <CloudRatePicker label="Market Segment"
+              value={choice.marketSegment} plans={configuration.formPolicy.marketSegmentChoices.map(({ code, meaning }) => ({ code, name: meaning }))}
+              disabled={locked} maxLength={20} hint="Infor verifies the market segment during review." onChange={value => setChoice({ marketSegment: value })} /> : <RoomTextField
                 roomLabel={roomLabel}
                 label="Market Segment"
                 value={choice.marketSegment}
                 disabled={locked}
                 onChange={(value) => setChoice({ marketSegment: value })}
-              />
-              <div className="flex flex-col gap-1">
+              />}
+              {(!configuration?.formPolicy || ['optional', 'required'].includes(configuration.formPolicy.guestOptIn)) ? <div className="flex flex-col gap-1">
                 <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
                   <input
                     type="checkbox"
@@ -2759,7 +2784,9 @@ export function BookingCards({
                   <span>Terms</span>
                 </label>
                 <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
-              </div>
+              </div> : choice.guestoptin4 ? <p className="text-[11px] text-amber-800">Terms cannot be applied for this hotel.{' '}
+                <button type="button" disabled={locked} onClick={() => setChoice({ guestoptin4: false })}>Clear choice</button>
+              </p> : null}
             <RoomTextField
               multiline
               roomLabel={roomLabel}

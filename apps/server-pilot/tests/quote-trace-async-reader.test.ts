@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os';
 // Repository root, and the private output root the reader insists on.
 const repo = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
 const privateRoot = join(repo, '.private', 'playwright-quote');
-const requestFile = join(repo, 'apps/server-pilot/tooling/playwright-quote/examples/v2-broad.json');
-const quoteContract = join(repo, 'apps/server-pilot/tooling/playwright-quote/quote-contract.mjs');
+const requestFile = join(repo, 'apps/server-pilot/tooling/hms-cloud/examples/v2-broad.json');
+const quoteContract = join(repo, 'apps/server-pilot/tooling/hms-cloud/quote-contract.mjs');
 
 const cleanup: string[] = [];
 afterEach(async () => {

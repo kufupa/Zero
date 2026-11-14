@@ -4,6 +4,7 @@ import { verifiedLabtestProfileToken, isVerifiedLabtestProfileCurrent } from './
 import { isLabtestAmendStageContext } from './labtest-amend-save.mjs';
 import { snapshotLabtestRecord } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SAVE_PATH = '/web/base/OSRESV.HDR';
@@ -140,7 +141,8 @@ async function inspect(surface, expected, target, edit) {
       }
       return String(data[name] ?? '').trim();
     };
-    if (!exact('propertycode', 'HRCEN') || !exact('taid1', expected.agencyId) || !read('ta1') ||
+    const propertyCode = expected.propertyCode ?? expected.identity?.propertycode;
+    if (!propertyCode || !exact('propertycode', propertyCode) || !exact('taid1', expected.agencyId) || !read('ta1') ||
         agency.value.trim() !== read('ta1') || String(agencyCmp?.getValue?.() ?? '').trim() !== read('ta1') ||
         !read('guestid') || guest.value.trim() !== read('guestid') ||
         String(guestCmp?.getValue?.() ?? '').trim() !== read('guestid')) throw new Error('COMMISSION_IDENTITY_UNVERIFIED');
@@ -152,7 +154,7 @@ async function inspect(surface, expected, target, edit) {
           String(identityValues[name] ?? '').trim() !== read(name)))) throw new Error('COMMISSION_IDENTITY_UNVERIFIED');
     }
     if (expected.mode === 'new') {
-      if (!exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+      if (!exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) || !exact('status', 'New') ||
           !exact('confirmationnumber', '') || !exact('reservationid', '') || !exact('reservationstayid', '') || !exact('recordid', '') ||
           !read('bookingsessionid') || !exact('guestid', expected.guestId) ||
           !exact('firstname', expected.firstName) || !exact('lastname', expected.lastName)) throw new Error('COMMISSION_IDENTITY_UNVERIFIED');
@@ -201,7 +203,9 @@ async function inspect(surface, expected, target, edit) {
           field.getAttribute('aria-invalid') === 'true' || (Array.isArray(errors) && errors.length)) {
         throw new Error('COMMISSION_CONTROL_NOT_EDITABLE');
       }
-      const names = new Set(business.map((name) => name.toLowerCase()));
+      const dynamic = [...new Set([...Object.keys(data), ...Object.keys(values)].filter(name => /^child[1-9]\d*$/i.test(name)))].sort();
+      const allBusiness = [...new Set([...business, ...dynamic])];
+      const names = new Set(allBusiness.map((name) => name.toLowerCase()));
       const controls = {};
       for (const el of panel.el.dom.querySelectorAll('input,textarea,select')) {
         const name = el.name?.toLowerCase();
@@ -211,7 +215,7 @@ async function inspect(surface, expected, target, edit) {
       const orderedControls = Object.fromEntries(Object.keys(controls).sort().map((name) => [name, controls[name]]));
       const model = {};
       const otherValues = {};
-      for (const name of business) {
+      for (const name of allBusiness) {
         const found = Object.keys(data).filter((key) => key.toLowerCase() === name.toLowerCase());
         if (found.length > 1) throw new Error('COMMISSION_MODEL_AMBIGUOUS');
         if (found.length) {
@@ -254,7 +258,9 @@ function sameOtherFields(left, right, allowModelSync = false) {
 function sameSnapshot(proof, snapshot) {
   if (!proof || !snapshot?.values || !snapshot.data) return false;
   const values = {}, model = {};
-  for (const name of BUSINESS) {
+  const dynamic = [...new Set([...Object.keys(snapshot.values), ...Object.keys(snapshot.data)]
+    .filter(name => /^child[1-9]\d*$/i.test(name)))].sort();
+  for (const name of new Set([...BUSINESS, ...dynamic])) {
     const keys = Object.keys(snapshot.values).filter((key) => key.toLowerCase() === name.toLowerCase());
     if (keys.length > 1) return false;
     if (keys.length) values[name.toLowerCase()] = snapshot.values[keys[0]];
@@ -278,7 +284,7 @@ async function stage(page, frame, expected, percent, stopOwner) {
     if (stopOwner) stopOwner(reason);
     else { try { void page.close({ runBeforeUnload: false }).catch(() => {}); } catch { /* The page is unusable. */ } }
   };
-  onDialog = () => stop('COMMISSION_UNEXPECTED_DIALOG');
+  onDialog = dialog => { stop('COMMISSION_UNEXPECTED_DIALOG'); void dialog.dismiss().catch(() => {}); };
   page.on('dialog', onDialog);
   const timeoutMs = Math.max(1, Math.min(expected.remaining?.() ?? 25000, 25000));
   const timer = setTimeout(() => stop('COMMISSION_STAGE_TIMEOUT'), timeoutMs);
@@ -343,10 +349,10 @@ async function stage(page, frame, expected, percent, stopOwner) {
 export async function stageNewStayCommission(page, input) {
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       Object.keys(input).some((key) => !['propertyCode', 'expectedGuest', 'expectedGuestId', 'expectedAgencyId', 'percent'].includes(key)) ||
-      input.propertyCode !== 'HRCEN' || !validCreateGuest(input.expectedGuest) || !id(input.expectedGuestId) ||
+      !getPropertyRegistration(input.propertyCode)?.active || !validCreateGuest(input.expectedGuest) || !id(input.expectedGuestId) ||
       !id(input.expectedAgencyId) || !validPercent(input.percent)) throw new Error('COMMISSION_INPUT_INVALID');
   if (!page || typeof page.mainFrame !== 'function') throw new Error('COMMISSION_CONTEXT_UNSAFE');
-  const expected = { mode: 'new', agencyId: input.expectedAgencyId, guestId: input.expectedGuestId,
+  const expected = { mode: 'new', propertyCode: input.propertyCode, agencyId: input.expectedAgencyId, guestId: input.expectedGuestId,
     firstName: input.expectedGuest.firstName, lastName: input.expectedGuest.lastName };
   const result = await stage(page, page.mainFrame(), expected, input.percent);
   return { outcome: result.changed ? 'updated_unsaved' : 'unchanged_unsaved', actual: result.actual };
@@ -365,7 +371,7 @@ export async function stageSavedStayCommission(context, input) {
         !String(baseline[name] ?? '').trim()) throw new Error('COMMISSION_BASELINE_UNAVAILABLE');
     identity[name] = String(baseline[name]).trim();
   }
-  if (identity.propertycode !== 'HRCEN') throw new Error('COMMISSION_BASELINE_UNAVAILABLE');
+  if (!getPropertyRegistration(identity.propertycode)?.active) throw new Error('COMMISSION_BASELINE_UNAVAILABLE');
   const expected = { mode: 'saved', agencyId: input.expectedAgencyId, identity,
     active: context.isActive, remaining: context.remainingMs };
   try {

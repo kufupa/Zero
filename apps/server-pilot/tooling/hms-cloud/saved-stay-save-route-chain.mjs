@@ -1,10 +1,13 @@
 // One exact saved-record Save may pass; keep every other context request fenced.
-import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 import { isSavedChildStageRequestGate, SAVED_CHILD_STAGE_PATHS } from './saved-stay-child-request-gate.mjs';
 import { isSavedRoomStageRequestGate, SAVED_ROOM_STAGE_PATHS } from './saved-stay-room-stage-gate.mjs';
 import { isSavedRateStageRequestGate, SAVED_RATE_STAGE_PATHS } from './saved-stay-rate-stage-gate.mjs';
 import { isSavedGuaranteeRequestGate, SAVED_GUARANTEE_PATH } from './saved-stay-guarantee-request-gate.mjs';
 import { isSavedPartyStageRequestGate, SAVED_PARTY_STAGE_PATHS } from './saved-stay-party-request-gate.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { consumePageRequestAuthorization } from './page-request-fence.mjs';
+import { cloudSessionIdentity } from './cloud-session.mjs';
 
 const SAVE_PATH = '/web/base/OSRESV.HDR';
 const AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
@@ -13,20 +16,21 @@ const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const neverDispatchedCreateProofs = new WeakMap();
 const rateReadCapabilities = new WeakMap();
 const RATE_DETAILS_PATH = '/web/base/OSRATD';
-const RATE_DATA_PATH = '/api/internalBooking/HRCEN/rateshop/rateDetails';
-const SELECTED_RATE_DATA_PATH = '/api/internalBooking/HRCEN/rateshop/selectedRates';
+const ratePath = (propertyCode, selected = false) =>
+  `/api/internalBooking/${propertyCode}/rateshop/${selected ? 'selectedRates' : 'rateDetails'}`;
+const rateDataPath = /^\/api\/internalBooking\/[^/]+\/rateshop\/(?:rateDetails|selectedRates)$/i;
 
 /** A native Rate Details read is a one-use exception, never a generic POST allowance. */
-export function createSavedStayRateReadCapability(page, { frame, nativeStayId, bookingSessionId,
+export function createSavedStayRateReadCapability(page, { frame, propertyCode, nativeStayId, bookingSessionId,
   mode = 'saved', timeoutMs = 30_000 } = {}) {
-  if (!page || typeof page.context !== 'function' || !frame ||
+  if (!page || typeof page.context !== 'function' || !frame || !getPropertyRegistration(propertyCode)?.active || cloudSessionIdentity(page)?.propertyCode !== propertyCode ||
       !/^\d{1,100}$/.test(nativeStayId || '') || typeof bookingSessionId !== 'string' ||
       !bookingSessionId.trim() || bookingSessionId.length > 256 || /[\p{Cc}]/u.test(bookingSessionId) ||
       !['saved', 'saved_direct', 'staged', 'selected'].includes(mode) || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60_000) {
     throw new Error('RATE_READ_CAPABILITY_INVALID');
   }
   const capability = Object.freeze({});
-  rateReadCapabilities.set(capability, { page, context: page.context(), frame, nativeStayId,
+  rateReadCapabilities.set(capability, { page, context: page.context(), frame, propertyCode, nativeStayId,
     bookingSessionId, mode, deadline: performance.now() + timeoutMs, opened: false, read: false, active: true });
   return capability;
 }
@@ -40,21 +44,21 @@ export function closeSavedStayRateReadCapability(capability) {
 export function consumeSavedStayRateReadCapability(capability, request, page) {
   const state = rateReadCapabilities.get(capability);
   try {
-    if (!state?.active || state.read || state.page !== page || page.context() !== state.context ||
+    if (!state?.active || state.read || state.page !== page || cloudSessionIdentity(page)?.propertyCode !== state.propertyCode || page.context() !== state.context ||
         request.frame() !== state.frame || performance.now() >= state.deadline) return false;
     const url = new URL(request.url()), method = request.method(), headers = request.headers();
     if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password || url.hash) return false;
     if (method === 'POST' && state.mode === 'saved' && !state.opened && url.pathname === RATE_DETAILS_PATH && !url.search) {
       const pairs = [...new URLSearchParams(request.postData() || '')], body = new Map(pairs.map(([k, v]) => [k.toLowerCase(), v]));
-      const expected = { property: 'HRCEN', reservationstayid: state.nativeStayId, bookingsessionid: state.bookingSessionId,
+      const expected = { property: state.propertyCode, reservationstayid: state.nativeStayId, bookingsessionid: state.bookingSessionId,
         system_function_name: 'OSRATD', user_function_name: 'OSRATD' };
       if (!/^application\/x-www-form-urlencoded(?:;|$)/i.test(headers['content-type'] || '') ||
-          pairs.length !== 5 || body.size !== 5 || !Object.entries(expected).every(([k, v]) => body.get(k) === v)) return false;
+          !Object.entries(expected).every(([k, v]) => pairs.filter(([name]) => name.toLowerCase() === k).length === 1 && body.get(k) === v)) return false;
       state.opened = true;
       return true;
     }
     const pairs = [...url.searchParams], query = new Map(pairs);
-    const dataPath = state.mode === 'selected' ? SELECTED_RATE_DATA_PATH : RATE_DATA_PATH;
+    const dataPath = ratePath(state.propertyCode, state.mode === 'selected');
     if (method !== 'GET' || url.pathname !== dataPath || request.postData?.() ||
         pairs.length !== query.size || headers.bookingclientsessionid !== state.bookingSessionId ||
         !/^\d{10,16}$/.test(query.get('_dc') || '')) return false;
@@ -78,7 +82,7 @@ export async function installSavedStayRateReadRouteChain(page, { frame, fence, s
     if (!active || !state.active || fence.isQuarantined() || !candidates.has(request) || continued.has(request)) return route.fallback();
     if (request.frame() !== frame || page.context() !== context || performance.now() >= state.deadline) return route.abort();
     continued.add(request);
-    const operation = route.continue();
+    const operation = route.fallback();
     pending.add(operation);
     try { return await operation; } finally { pending.delete(operation); }
   };
@@ -86,7 +90,7 @@ export async function installSavedStayRateReadRouteChain(page, { frame, fence, s
     const request = route.request();
     let path;
     try { path = new URL(request.url()).pathname; } catch { return route.abort(); }
-    if (![RATE_DETAILS_PATH, RATE_DATA_PATH, SELECTED_RATE_DATA_PATH].some((p) => p.toLowerCase() === path.toLowerCase())) return route.fallback();
+    if (path.toLowerCase() !== RATE_DETAILS_PATH.toLowerCase() && !rateDataPath.test(path)) return route.fallback();
     if (!active || fence.isQuarantined() || !consumeSavedStayRateReadCapability(capability, request, page) || !scope.allow(request)) return route.abort();
     candidates.add(request);
     return route.fallback();
@@ -259,7 +263,7 @@ export async function installLabtestSaveRouteChain(page, {
           else continuedRequest = request;
           phase.onDispatch?.(request);
           try {
-            const result = await route.continue();
+            const result = await route.fallback();
             continuationSucceeded = true;
             return result;
           } finally { continuationSettled = true; }
@@ -272,7 +276,7 @@ export async function installLabtestSaveRouteChain(page, {
       let noDispatchProved = false;
       continueOnce.proveNeverDispatched = () => {
         // Create has no effectful child route. Once disarmed, this exact Save
-        // and any pending continuation are unable to reach route.continue().
+        // and any pending continuation are unable to reach route.fallback().
         if (isAvailability || isSecond || isThird || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate || partyStageGate ||
             wrapperFinished || attempted || continuedRequest || noDispatchProved) return null;
         active = false;
@@ -310,7 +314,7 @@ export async function installLabtestSaveRouteChain(page, {
     if (active && partyStageGate && partyReads.has(request) && !continuedParties.has(request) &&
         isSameFrame(request) && isPartyStageActive() && partyStageGate.isActive() && !fence.isQuarantined()) {
       continuedParties.add(request);
-      return route.continue();
+      return route.fallback();
     }
     if (active && partyStageGate && partyCandidates.has(request) && !continuedParties.has(request) &&
         isSameFrame(request) && isPartyStageActive() && canDispatchParty() && partyStageGate.isActive() && !fence.isQuarantined()) {
@@ -322,7 +326,7 @@ export async function installLabtestSaveRouteChain(page, {
         const dispatched = await partyStageGate.dispatchCandidate(request, () => {
           if (!active || !isPartyStageActive() || !canDispatchParty() || !partyStageGate.isActive() ||
               fence.isQuarantined()) throw new Error('PARTY_DISPATCH_UNAUTHORIZED');
-          return route.continue();
+          return route.fallback();
         });
         if (dispatched === false) throw new Error('PARTY_DISPATCH_UNAUTHORIZED');
         return dispatched;
@@ -333,13 +337,13 @@ export async function installLabtestSaveRouteChain(page, {
       continuedGuarantees.add(request);
       try {
         onGuaranteeCandidate?.(request);
-        return await guaranteeStageGate.dispatch(request, () => route.continue());
+        return await guaranteeStageGate.dispatch(request, () => route.fallback());
       } catch { observeBlocked(request); return route.abort().catch(() => {}); }
     }
     if (active && childStageGate && childCandidates.has(request) && !continuedChildren.has(request) &&
         isSameFrame(request) && isChildStageActive() && childStageGate.isActive() && !fence.isQuarantined()) {
       continuedChildren.add(request);
-      if (!childStageGate.isValidationRequest(request)) return route.continue();
+      if (!childStageGate.isValidationRequest(request)) return route.fallback();
       if (!canDispatchChild() || typeof dispatchChildCandidate !== 'function') {
         observeBlocked(request); return route.abort();
       }
@@ -350,7 +354,7 @@ export async function installLabtestSaveRouteChain(page, {
           if (closed || started || !active || !isChildStageActive() || !canDispatchChild() ||
               !childStageGate.isActive() || fence.isQuarantined()) throw new Error('CHILD_DISPATCH_UNAUTHORIZED');
           started = true;
-          try { return await route.continue(); } finally { settled = true; }
+          try { return await route.fallback(); } finally { settled = true; }
         });
         closed = true;
         if (!started || !settled) throw new Error('CHILD_DISPATCH_UNCERTAIN');
@@ -360,19 +364,28 @@ export async function installLabtestSaveRouteChain(page, {
     if (active && roomStageGate && roomCandidates.has(request) && !continuedRooms.has(request) &&
         isSameFrame(request) && isChildStageActive() && roomStageGate.isActive() && !fence.isQuarantined()) {
       continuedRooms.add(request);
-      return route.continue();
+      return route.fallback();
     }
     if (active && rateStageGate && rateCandidates.has(request) && !continuedRates.has(request) &&
         isSameFrame(request) && isChildStageActive() && rateStageGate.isActive() && !fence.isQuarantined()) {
       continuedRates.add(request);
-      if (!rateStageGate.isRequest('validation', request)) return route.continue();
+      if (!rateStageGate.isRequest('validation', request)) return route.fallback();
       try {
         // Validate the read before releasing it: the native rate change is a synchronous XHR.
+        const identity = cloudSessionIdentity(page), url = new URL(request.url());
+        const input = new URLSearchParams(request.postData() || '');
+        if (!identity || request.method() !== 'POST' || url.origin !== identity.origin || url.search || url.hash ||
+            url.pathname !== SAVED_RATE_STAGE_PATHS[0] || input.getAll('LOV_ALIAS_NAME_1').length !== 1 ||
+            input.get('LOV_ALIAS_NAME_1') !== 'param.propertycode' || input.getAll('LOV_ALIAS_VALUE_1').length !== 1 ||
+            input.get('LOV_ALIAS_VALUE_1') !== identity.propertyCode ||
+            [...input].some(([name, value]) => /^(?:pageaction|action|operation)$/i.test(name) && /save|delete|cancel|insert|update|commit|create|send/i.test(value)) ||
+            !consumePageRequestAuthorization(request, page)) throw new Error('RATE_VALIDATION_UNVERIFIED');
         const response = await route.fetch({ maxRedirects: 0 }), body = await response.text();
         if (!active || !isChildStageActive() || fence.isQuarantined() ||
             !rateStageGate.verifyValidation(response.status(), body)) throw new Error('RATE_VALIDATION_UNVERIFIED');
         return route.fulfill({ response, body });
       } catch {
+        fence.quarantine();
         observeBlocked(request);
         return route.abort();
       }
@@ -535,8 +548,8 @@ export async function installLabtestSaveRouteChain(page, {
   let contextInstalled = false;
   let pageInstalled = false;
   try {
-    // Registered after installReadOnlyGuard(context): only the exact candidate
-    // may continue; unapproved mutations/send paths are denied context-wide.
+    // The exact candidate falls through to the Cloud context guard only after
+    // the owning page fence has authorized the intercepted Request object.
     await context.route('**/*', trackedContextRoute);
     contextInstalled = true;
     await page.route('**/*', trackedPageRoute);

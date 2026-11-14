@@ -10,11 +10,93 @@ import { createCloudLookupReadTools } from './hms-lookup-read-session.mjs';
 import { matchesGuestProfileReadRequest } from './guest-profile.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { searchGuestInCloud } from './pane-guest-search.mjs';
+import { matchesRatePlanPickerRequest } from './guest-stay-room-rate.mjs';
+
+test('target browser quarantine clears under the credential lease only after its exact owner is quiescent', async () => {
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    import * as os from 'node:os';
+    import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+    import { join } from 'node:path';
+    import { createHash } from 'node:crypto';
+    import { spawn } from 'node:child_process';
+    import { once } from 'node:events';
+    const home = mkdtempSync(join(os.tmpdir(), 'zero-cloud-hold-'));
+    mock.module('node:os', { namedExports: { ...os, homedir: () => home } });
+    let held = false, credentialReads = 0;
+    mock.module('postgres', { defaultExport: () => ({
+      reserve: async () => ({ unsafe: async (sql) => {
+        if (sql.includes('pg_try_advisory_lock')) { held = true; return [{ acquired: true }]; }
+        if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
+        return [{ pid: 42 }];
+      } }), end: async () => { held = false; },
+    }) });
+    const cloud = await import('./tooling/hms-cloud/cloud-session.mjs');
+    process.env.DATABASE_URL = 'postgres://mock.invalid/never-connect';
+    const owner = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    const browser = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    await Promise.all([once(owner, 'spawn'), once(browser, 'spawn')]);
+    const processIdentity = child => ({ pid: child.pid,
+      started: readFileSync('/proc/' + child.pid + '/stat', 'utf8').split(')').at(-1).trim().split(/\s+/)[19] });
+    const identity = {
+      host: createHash('sha256').update(readFileSync('/etc/machine-id', 'utf8').trim()).update('\0').update(os.hostname()).digest('hex'),
+      bootId: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      pidNamespace: (await import('node:fs')).readlinkSync('/proc/self/ns/pid'),
+      node: processIdentity(owner), browser: processIdentity(browser),
+    };
+    const alias = JSON.stringify(['HRCEN', 'create', 'quarantine', 'test', '2027-12-01']);
+    const path = cloud.cloudHoldPath('HRCEN', alias);
+    const hold = { version: 2, propertyCode: 'HRCEN', alias, identity };
+    const write = value => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
+    const options = { propertyCode: 'HRCEN', cloudTargetKey: alias, loadSecret: async () => {
+      assert.equal(held, true); credentialReads += 1; throw new Error('STOP_BEFORE_BROWSER');
+    } };
+    const run = () => cloud.withCloudReadSession(async () => assert.fail('operation reached'), options);
+    const stop = async child => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const exited = once(child, 'exit'); process.kill(-child.pid, 'SIGKILL'); await exited;
+    };
+    try {
+      write(hold);
+      await assert.rejects(run(), /HMS_BROWSER_HOLD/);
+      assert.equal(credentialReads, 0); assert.equal(held, false); assert.equal(existsSync(path), true);
+      await Promise.all([stop(owner), stop(browser)]);
+      assert.equal(cloud.cloudWriterQuiesced(identity), true);
+      for (const untrusted of [{ propertyCode: 'HRCEN', identity }, { ...hold, alias: alias + ' ' },
+        { ...hold, identity: { ...identity, host: 'unattested' } }]) {
+        write(untrusted); await assert.rejects(run(), /HMS_BROWSER_HOLD/);
+        assert.equal(existsSync(path), true); assert.equal(credentialReads, 0); assert.equal(held, false);
+      }
+      write(hold);
+      await assert.rejects(run(), /HMS_CREDENTIALS_UNAVAILABLE/);
+      assert.equal(existsSync(path), false); assert.equal(credentialReads, 1); assert.equal(held, false);
+      const lease = await cloud.acquireCloudCredentialLease('HRCEN');
+      write(hold);
+      await assert.rejects(cloud.withCloudReadSession(async () => {}, { ...options, credentialLease: lease }), /HMS_CREDENTIALS_UNAVAILABLE/);
+      assert.equal(existsSync(path), false); assert.equal(held, true);
+      await lease.release(); assert.equal(held, false);
+      process.stdout.write('quarantine recovery verified');
+    } finally {
+      await Promise.all([stop(owner), stop(browser)]); rmSync(home, { recursive: true, force: true });
+    }
+  `;
+  const { stdout } = await promisify(execFile)(process.execPath,
+    ['--experimental-test-module-mocks', '--input-type=module', '-e', script],
+    { cwd: new URL('../../', import.meta.url), timeout: 30000, maxBuffer: 1024 * 1024 });
+  assert.equal(stdout, 'quarantine recovery verified');
+});
 
 test('fresh credential versions and evidence key metadata are checked under the lease before browser launch', async () => {
   const script = String.raw`
     import assert from 'node:assert/strict';
     import { mock } from 'node:test';
+    import * as os from 'node:os';
+    import { mkdtempSync, rmSync } from 'node:fs';
+    import { join } from 'node:path';
+    const home = mkdtempSync(join(os.tmpdir(), 'zero-cloud-credential-'));
+    mock.module('node:os', { namedExports: { ...os, homedir: () => home } });
+    process.on('exit', () => rmSync(home, { recursive: true, force: true }));
     let held = false, launches = 0, keyReads = 0, mode = '', controller;
     const key = Buffer.alloc(32, 83), encodedKey = key.toString('base64');
     mock.module('postgres', { defaultExport: () => ({
@@ -101,6 +183,16 @@ test('fresh credential versions and evidence key metadata are checked under the 
     launches = 0;
     await assert.rejects(withCloudReadSession(async () => {}, { propertyCode: 'HRCEN', transportId: 'transport-centurion' }), /BROWSER_BOUNDARY_REACHED/);
     assert.equal(launches, 1); assert.equal(keyReads, 0);
+    launches = 0;
+    await assert.rejects(withCloudReadSession(async () => {}, {
+      propertyCode: 'HRCEN', transportId: 'transport-centurion', loadSecret: async () => ({
+        loginUrl: 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD',
+        username: 'NAVAAI', password: 'test-only', expectedTenant: 'THECENTURION_PRD',
+        expectedPropertyCode: 'HRCEN', expectedPropertyName: 'Centurion Hotel', credentialMode: 'view_only',
+        mailboxTransportId: 'transport-davinci',
+      }),
+    }), /hms_property_credential_mismatch/);
+    assert.equal(launches, 0);
     Buffer.from = from;
     process.stdout.write(JSON.stringify({ tested: cases.length, parity: true }));
   `;
@@ -117,9 +209,125 @@ test('Cloud lookup exposes only property-scoped read operations', async () => {
   for (const tool of ['selectGuestProfile', 'selectOrganization', 'saveNewLabtestStay']) {
     assert.deepEqual(await runTool({ tool }), { id: undefined, tool, outcome: 'input_gap', issue: 'unknown_tool' });
   }
-  assert.equal((await runTool({ tool: 'searchRatePlans' })).issue, 'NATIVE_ROOM_RATE_LOOKUP_UNVERIFIED');
-  assert.equal((await runTool({ tool: 'closeRoomRatePicker' })).outcome, 'not_open');
+  assert.equal((await runTool({ tool: 'searchRatePlans' })).issue, 'unknown_tool');
+  assert.equal((await runTool({ tool: 'closeRoomRatePicker' })).issue, 'unknown_tool');
   assert.throws(() => createCloudLookupReadTools({}, 'UNKNOWN'), /HMS_PROPERTY_REQUIRED/);
+
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    let releaseClose, enteredClose, retained, closeFails = false;
+    let closeStarted = new Promise(resolve => { enteredClose = resolve; });
+    let mayClose = new Promise(resolve => { releaseClose = resolve; });
+    const page = {};
+    const cloud = await import('./tooling/hms-cloud/cloud-session.mjs');
+    mock.module('./tooling/hms-cloud/cloud-session.mjs', { namedExports: { ...cloud,
+      withCloudReadSession: async (operation, options) => {
+        assert.equal(options.propertyCode, 'HRDAVS');
+        assert.equal(options.transportId, 'transport-davinci');
+        assert.equal(options.startScreen, 'OSRESV');
+        const result = await operation(page, { propertyCode: 'HRDAVS', tenantId: 'DAVINCI_PRD',
+          landingPropertyCode: 'HRDAV', origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' });
+        enteredClose(); await mayClose;
+        if (closeFails) throw new Error('CLOSE_UNCONFIRMED');
+        return result;
+      },
+    } });
+    const lookup = await import('./tooling/hms-cloud/lookup.mjs');
+    mock.module('./tooling/hms-cloud/lookup.mjs', { namedExports: { ...lookup,
+      openNewGuestStay: async (received, options) => {
+        assert.equal(received, page); assert.equal(options.propertyCode, 'HRDAVS');
+      },
+    } });
+    const rates = await import('./tooling/hms-cloud/guest-stay-room-rate.mjs');
+    mock.module('./tooling/hms-cloud/guest-stay-room-rate.mjs', { namedExports: { ...rates,
+      searchRatePlans: async (received, request) => {
+        assert.equal(received, page); return { outcome: 'matches', candidates: [{ code: request.query }] };
+      },
+    } });
+    const { withCloudRoomRateReadSession } = await import('./tooling/hms-cloud/hms-lookup-read-session.mjs');
+    let published = false;
+    const pending = withCloudRoomRateReadSession('searchRatePlans', async ({ runTool }) => {
+      retained = runTool;
+      assert.equal((await runTool({ tool: 'searchRoomTypes' })).issue, 'unknown_tool');
+      assert.equal((await runTool({ tool: 'searchRatePlans', propertyCode: 'HRDAV' })).issue, 'PROPERTY_MISMATCH');
+      return runTool({ tool: 'searchRatePlans', query: 'BAR' });
+    }, { propertyCode: 'HRDAVS', transportId: 'transport-davinci' }).then(value => { published = true; return value; });
+    await closeStarted;
+    assert.equal(published, false);
+    assert.equal((await retained({ tool: 'searchRatePlans' })).issue, 'SESSION_CLOSED');
+    releaseClose();
+    assert.deepEqual((await pending).candidates, [{ code: 'BAR' }]);
+    closeFails = true;
+    closeStarted = new Promise(resolve => { enteredClose = resolve; });
+    mayClose = new Promise(resolve => { releaseClose = resolve; });
+    const failed = withCloudRoomRateReadSession('searchRatePlans', async ({ runTool }) =>
+      runTool({ tool: 'searchRatePlans', query: 'BAR' }), { propertyCode: 'HRDAVS', transportId: 'transport-davinci' });
+    await closeStarted; releaseClose();
+    await assert.rejects(failed, /CLOSE_UNCONFIRMED/);
+  `;
+  await promisify(execFile)(process.execPath,
+    ['--experimental-test-module-mocks', '--import', 'tsx', '--input-type=module', '-e', script],
+    { cwd: new URL('../../', import.meta.url), timeout: 30000, maxBuffer: 1024 * 1024 });
+});
+
+test('source lookup passes property in options without adding a source filter', async () => {
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    const received = [];
+    mock.module('./tooling/hms-cloud/guest-stay-source-business.mjs', { namedExports: {
+      inspectGuestStaySourceBusiness: async () => {},
+      selectGuestStaySourceBusiness: async () => {},
+      closeGuestStaySourceBusinessPicker: async () => {},
+      searchGuestStaySourceBusiness: async (page, input, options) => {
+        received.push({ input, options });
+        if (Object.keys(input).some(key => !['field', 'query'].includes(key))) {
+          return { outcome: 'unsupported', issue: 'SOURCE_FILTER_UNSUPPORTED' };
+        }
+        return { outcome: 'matches', candidates: [] };
+      },
+    } });
+    const { runBookingLookupTool } = await import('./tooling/hms-cloud/booking-lookup-session.mjs');
+    const context = { page: {}, createAuthority: { propertyCode: 'HRDAVS' } };
+    const request = { id: 'source', tool: 'searchGuestStaySourceBusiness', propertyCode: 'HRDAVS',
+      field: 'description', query: 'GDS', options: { timeoutMs: 5000 } };
+    assert.equal((await runBookingLookupTool(context, request)).outcome, 'matches');
+    assert.deepEqual(received[0], { input: { field: 'description', query: 'GDS' },
+      options: { timeoutMs: 5000, propertyCode: 'HRDAVS' } });
+    assert.equal((await runBookingLookupTool(context, { ...request, extraFilter: 'x' })).issue, 'SOURCE_FILTER_UNSUPPORTED');
+    assert.equal((await runBookingLookupTool(context, { ...request, propertyCode: 'HRDAV' })).issue, 'PROPERTY_MISMATCH');
+    assert.equal(received.length, 2);
+  `;
+  await promisify(execFile)(process.execPath,
+    ['--experimental-test-module-mocks', '--import', 'tsx', '--input-type=module', '-e', script],
+    { cwd: new URL('../../', import.meta.url), timeout: 30000, maxBuffer: 1024 * 1024 });
+});
+
+test('rate picker read is tied to the verified rate-shop session and property', () => {
+  const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+  const rateShop = { kind: 'ratePlan', propertyCode: 'HRCEN', bookingSessionId: 'session-1' };
+  const fields = { GRID_NAME: 'LVMULTIRATEPLANS3', GRID_TYPE: 'LIST',
+    LOV_ALIAS_NAME_1: 'control.property', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text',
+    LOV_ALIAS_NAME_2: 'param.arrivaldate', LOV_ALIAS_VALUE_2: '11/23/2026', LOV_ALIAS_TYPE_2: 'text' };
+  const request = (params = fields, url = `${origin}/web/base/BSMSLV`, method = 'POST') => ({
+    method: () => method, url: () => url, postData: () => new URLSearchParams(params).toString(),
+  });
+  const allowed = (params, session = rateShop, url, method) =>
+    matchesRatePlanPickerRequest(request(params, url, method), origin, 'HRCEN', session);
+  assert.equal(allowed(fields), true);
+  assert.equal(allowed({ ...fields, harmlessNativeField: 'new' }), true);
+  assert.equal(allowed({ ...fields, LOV_ALIAS_VALUE_1: 'HRDAV' }), false);
+  assert.equal(allowed({ ...fields, GRID_NAME: 'OTHER' }), false);
+  assert.equal(allowed({ ...fields, LOV_ALIAS_TYPE_1: 'integer' }), false);
+  assert.equal(allowed({ ...fields, LOV_ALIAS_NAME_3: 'param.propertycode', LOV_ALIAS_VALUE_3: 'HRDAV' }), false);
+  assert.equal(allowed({ ...fields, grid_name: 'OTHER' }), false);
+  assert.equal(allowed({ ...fields, action: 'SAVE' }), false);
+  assert.equal(allowed(fields, { ...rateShop, bookingSessionId: '' }), false);
+  assert.equal(allowed(fields, { ...rateShop, propertyCode: 'HRDAV' }), false);
+  assert.equal(allowed(fields, rateShop, `${origin}/web/base/BSMSLV?x=1`), false);
+  assert.equal(allowed(fields, rateShop, 'https://example.invalid/web/base/BSMSLV'), false);
+  assert.equal(allowed(fields, rateShop, `${origin}/web/base/BSMSLV`, 'GET'), false);
 });
 
 test('guest profile inquiry binds the native response to selected property and query', () => {
@@ -159,20 +367,7 @@ test('Cloud credentials must include the authenticated transport before browser 
   assert.throws(() => validateHmsPropertySecret({ ...davinci, transportId: 'transport-faith' }, davinciSecret),
     /hms_property_credential_mismatch/);
 
-  const launch = chromium.launch;
-  let launched = false;
-  chromium.launch = async () => { launched = true; throw new Error('UNEXPECTED_BROWSER_LAUNCH'); };
-  try {
-    await assert.rejects(withCloudReadSession(async () => {}, {
-      propertyCode: 'HRCEN', transportId: 'transport-centurion', loadSecret: async () => ({
-        loginUrl: 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD',
-        username: 'NAVAAI', password: 'test-only', expectedTenant: 'THECENTURION_PRD',
-        expectedPropertyCode: 'HRCEN', expectedPropertyName: 'Centurion Hotel', credentialMode: 'view_only',
-        mailboxTransportId: 'transport-davinci',
-      }),
-    }), /hms_property_credential_mismatch/);
-    assert.equal(launched, false);
-  } finally { chromium.launch = launch; }
+
 });
 
 test('guest search forwards the authenticated transport to its Cloud session', async () => {
@@ -241,36 +436,24 @@ test('session and legacy alias require the current clear Labtest preimage', asyn
 });
 
 
-test('booking session installs its read guard before the first page and preserves service-worker choice', async () => {
-  const defaultOptions = bookingSessionPageOptions();
-  const guardedOptions = bookingSessionPageOptions({ headless: false, blockServiceWorkers: true });
-  assert.equal(defaultOptions.headless, true);
-  assert.equal(defaultOptions.blockServiceWorkers, false);
-  assert.equal(guardedOptions.headless, false);
-  assert.equal(guardedOptions.blockServiceWorkers, true);
-  assert.equal(typeof guardedOptions.prepareContext, 'function');
-  assert.equal(guardedOptions.prepareContext, defaultOptions.prepareContext);
-  assert.equal(bookingSessionPageOptions({ cloudTargetKey: 'target' }).cloudTargetKey, 'target');
-  let handler;
-  await guardedOptions.prepareContext({ route: async (_pattern, installed) => { handler = installed; } });
-  let aborted = false;
-  await handler({ request: () => ({ method: () => 'POST',
-    url: () => 'https://example.test/web/base/OSRESV.HDR?pageaction=SAVE', postData: () => '' }),
-  abort: async () => { aborted = true; }, fallback: async () => {} });
-  assert.equal(aborted, true);
+test('booking session forwards scoped Cloud options', () => {
+  const signal = new AbortController().signal, credentialLease = {};
+  const options = bookingSessionPageOptions({ propertyCode: 'HRDAVS', transportId: 'transport-davinci',
+    signal, credentialLease, headless: false, cloudTargetKey: 'target' });
+  assert.deepEqual(options, { propertyCode: 'HRDAVS', transportId: 'transport-davinci', signal,
+    credentialLease, headless: false, cloudTargetKey: 'target' });
   for (const invalid of [null, 'block', 1]) assert.throws(
     () => bookingSessionPageOptions({ blockServiceWorkers: invalid }), /SERVICE_WORKER_OPTION_INVALID/);
 });
-
 
 test('real session queue clones requests while keeping screenshot callback in session context', async () => {
   const arSelection = { outcome: 'selected_unsaved', searchId: 's', nativeId: '75', displayedArAccount: 'Account',
     nativeIdEvidence: 'form_change_response', selectedField: { name: 'araccountname', value: 'Account' },
     nativeReadback: { araccountid: '75', araccountname: 'Account' } };
   const request = { tool: 'saveNewLabtestStay', preimageId: 'p', arrival: '2027-12-29', departure: '2027-12-31',
-    guestId: '123', roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'NGI', note: 'synthetic', arSelection,
+    guestId: '123', roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'NGI', note: 'synthetic', arSelection, expectedArProfileId: '501',
     billingReference: ' PO ', options: { beforeSaveScreenshot: 'not-a-function' } };
-  const queue = createBookingToolQueue({ page: { context: () => null }, labtestPreimage: { outcome: 'clear', preimageId: 'p' },
+  const queue = createBookingToolQueue({ createAuthority: { propertyCode: 'HRCEN' }, page: { context: () => null }, labtestPreimage: { outcome: 'clear', preimageId: 'p' },
     beforeSaveScreenshot: () => {} });
   // Getting as far as the writer's context gate demonstrates that the cloned,
   // serializable request was dispatched and the in-process callback replaced
@@ -283,7 +466,7 @@ test('real session queue clones requests while keeping screenshot callback in se
 
 test('save guard authority stays in session context and wire options cannot supply it', async () => {
   const callback = async () => true;
-  const context = { page: { context: () => null }, labtestPreimage: { outcome: 'clear', preimageId: 'p' },
+  const context = { createAuthority: { propertyCode: 'HRCEN' }, page: { context: () => null }, labtestPreimage: { outcome: 'clear', preimageId: 'p' },
     authorizeCandidate: callback, dispatchCandidate: callback };
   const request = { tool: 'saveNewLabtestStay', preimageId: 'p', arrival: '2027-12-29', departure: '2027-12-31',
     guestId: '123', roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'NGI', note: 'synthetic' };

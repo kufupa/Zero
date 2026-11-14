@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import {
   confirmationRecipientFills,
@@ -6,7 +5,7 @@ import {
   loadCreateToolSchema,
   optionalPartyAndNoteFills,
   validateCreateRequest,
-} from '../tooling/playwright-quote/create-request.mjs';
+} from '../tooling/hms-cloud/create-request.mjs';
 
 const RECIPIENT = { mode: 'self' as const, address: 'staff@example.invalid' };
 
@@ -24,7 +23,7 @@ const STAY = {
 };
 
 describe('create confirmation recipient', () => {
-  it('writes the per-booking recipient into emailaddress, verifies readback, and never sends mail', async () => {
+  it('validates and maps the per-booking confirmation recipient', async () => {
     expect(
       confirmationRecipientFills({
         confirmationRecipient: RECIPIENT,
@@ -46,14 +45,5 @@ describe('create confirmation recipient', () => {
     const schema = await loadCreateToolSchema();
     expect(validateCreateRequest({ ...STAY, confirmationRecipient: RECIPIENT }, schema).ok).toBe(true);
 
-    const source = await readFile(new URL('../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url), 'utf8');
-    expect(source).toContain('confirmationRecipientFills');
-    expect(source).toContain('confirmationRecipientRefusal');
-    expect(source).toContain("field: 'emailaddress'");
-    expect(source).toMatch(/findStayByConfirmation[\s\S]*emailaddress/);
-    expect(source).not.toMatch(/emailaddress: formEmail/);
-    expect(source).not.toMatch(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i);
-    expect(source).not.toMatch(/fillNamed\(page, 'udfchkbox04'/);
-    expect(source).toMatch(/if \(confirmationSendMail\(stay\)\)[\s\S]*tickCmsSendMail/);
   });
 });

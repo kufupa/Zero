@@ -10,8 +10,8 @@ const fixtures = vi.hoisted(() => ({
   readRecord: vi.fn(async () => ({ details: { fields: [{ name: 'status', value: 'Reserved' }] } })),
 }));
 
-vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
-  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => {
+vi.mock('../tooling/hms-cloud/cloud-session.mjs', () => ({
+  withCloudReadSession: async (operation: (page: unknown, identity: unknown) => Promise<unknown>, options: Record<string, unknown>) => {
     fixtures.options = options;
     const context = {};
     if (typeof options.prepareContext === 'function') {
@@ -19,10 +19,11 @@ vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
       await (options.prepareContext as (context: unknown) => Promise<void>)(context);
     }
     fixtures.order.push('page');
-    return operation({ context: () => context, on: () => {}, screenshot: fixtures.screenshot });
+    return operation({ on: () => {}, off: () => {}, screenshot: fixtures.screenshot },
+      { propertyCode: 'HRCEN', tenantId: 'THECENTURION_PRD', landingPropertyCode: 'HRCEN',
+        origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com' });
   },
 }));
-vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', () => ({ installReadOnlyGuard: fixtures.genericGuard }));
 vi.mock('../tooling/hms-cloud/saved-stay-read-guard.mjs', () => ({ installSavedStayReadGuard: fixtures.strictGuard }));
 vi.mock('../tooling/hms-cloud/hms-readers.mjs', () => ({ readShallow: fixtures.readShallow, readRecord: fixtures.readRecord }));
 
@@ -41,13 +42,13 @@ describe('strict saved-stay read session', () => {
       expect(await runTool({ tool: 'read', confirmation: '123-1' })).toMatchObject({ outcome: 'ok' });
       expect(await runTool({ tool: 'read', confirmation: '999-1' })).toMatchObject({
         outcome: 'refused', issue: 'READ_ONLY_CONFIRMATION_MISMATCH' });
-      for (const tool of ['prepareCancellation', 'prepareFinance', 'amendNote', 'amendContact',
+      for (const tool of ['prepareFinance', 'amendNote', 'amendContact',
         'openCancel', 'confirmCancel', 'readAmendmentAvailability', 'searchHotelAvailabilityParty',
         'selectHotelAvailabilityParty', 'cancelHotelAvailabilityParty']) {
         expect(await runTool({ tool })).toMatchObject({ outcome: 'refused', issue: 'READ_ONLY_SESSION' });
       }
-    }, { readOnly: true, readOnlyConfirmation: '123-1' });
-    expect(fixtures.options).toMatchObject({ headless: true, blockServiceWorkers: true });
+    }, { readOnly: true, readOnlyConfirmation: '123-1', propertyCode: 'HRCEN' });
+    expect(fixtures.options).toMatchObject({ propertyCode: 'HRCEN', startScreen: 'OSRESS' });
     expect(fixtures.order).toEqual(['preparing', 'guard', 'page']);
     expect(fixtures.strictGuard).toHaveBeenCalledOnce();
     expect(fixtures.genericGuard).not.toHaveBeenCalled();
@@ -55,12 +56,9 @@ describe('strict saved-stay read session', () => {
     expect(fixtures.readRecord).toHaveBeenCalledOnce();
   });
 
-  it('leaves the existing writable-session setup unchanged', async () => {
-    await withSavedStayAgentSession(async () => undefined);
-    expect(fixtures.order).toEqual(['page']);
-    expect(fixtures.options).not.toHaveProperty('prepareContext');
-    expect(fixtures.genericGuard).toHaveBeenCalledOnce();
-    expect(fixtures.strictGuard).not.toHaveBeenCalled();
+  it('rejects a writable saved-stay session', async () => {
+    await expect(withSavedStayAgentSession(async () => undefined)).rejects.toThrow('READ_ONLY_SESSION_REQUIRED');
+    expect(fixtures.order).toEqual([]);
   });
 
   it('captures a record image only after a guarded read opens that record', async () => {
@@ -69,9 +67,9 @@ describe('strict saved-stay read session', () => {
       await runTool({ tool: 'read', confirmation: '123-1' });
       await expect(screenshotRecord()).resolves.toEqual(Buffer.from('synthetic'));
       expect(fixtures.screenshot).toHaveBeenCalledWith({ fullPage: true });
-    }, { readOnly: true, readOnlyConfirmation: '123-1' });
+    }, { readOnly: true, readOnlyConfirmation: '123-1', propertyCode: 'HRCEN' });
     await withSavedStayAgentSession(async ({ screenshotRecord }) => {
       await expect(screenshotRecord()).rejects.toThrow('RECORD_SCREENSHOT_UNAVAILABLE');
-    });
+    }, { readOnly: true, readOnlyConfirmation: '123-1', propertyCode: 'HRCEN' });
   });
 });

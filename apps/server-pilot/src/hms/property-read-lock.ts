@@ -361,3 +361,114 @@ export function createPostgresPropertyReadLock(input: {
     },
   });
 }
+
+const targetAliasOwnership = Symbol('hms-target-alias-ownership');
+export type HeldTargetAliasLock = Readonly<{
+  [targetAliasOwnership]: true;
+  tenantId: string;
+  propertyCode: string;
+  aliases: readonly string[];
+  signal: AbortSignal;
+}>;
+const activeTargetLocks = new WeakSet<HeldTargetAliasLock>();
+
+export function assertTargetAliasesHeld(held: HeldTargetAliasLock | undefined, input: {
+  tenantId: string; propertyCode: string; targetAliases: readonly string[];
+}): asserts held is HeldTargetAliasLock {
+  if (!held || !activeTargetLocks.has(held) || held.tenantId !== input.tenantId ||
+      held.propertyCode !== input.propertyCode || input.targetAliases.some(alias => !held.aliases.includes(alias))) {
+    throw new Error('HMS_TARGET_LOCK_NOT_HELD');
+  }
+  held.signal.throwIfAborted();
+}
+
+/** All aliases of a write share one dedicated PostgreSQL session through readback. */
+export function createPostgresTargetAliasLock(input: {
+  tenantId: string;
+  propertyCode: string;
+  targetAliases: readonly string[];
+  databaseUrl: string;
+}) {
+  if (!input.targetAliases.length || input.targetAliases.some((alias) => !alias)) {
+    throw new Error('HMS_TARGET_ALIASES_REQUIRED');
+  }
+  const aliases = [...new Set(input.targetAliases)].sort();
+  const keys = [...new Set(aliases.map((alias) => createHash('sha256')
+    .update('zero/hms-target-lock/v2\0').update(input.tenantId).update('\0')
+    .update(input.propertyCode).update('\0').update(alias).digest().readBigInt64BE(0).toString()))].sort();
+  return {
+    aliases,
+    async withLock<T>(
+      callback: (connection: PropertyReadConnection, signal: AbortSignal, held: HeldTargetAliasLock) => Promise<T>,
+      options: PropertyReadLockAcquisitionOptions = {},
+    ): Promise<T> {
+      const loss = new AbortController();
+      let closing = false;
+      const fail = () => {
+        if (!closing && !loss.signal.aborted) loss.abort(new Error('HMS_TARGET_LOCK_LOST'));
+      };
+      const client = postgres(input.databaseUrl, {
+        max: 1, idle_timeout: 0, connect_timeout: 10, onclose: fail,
+      });
+      const signal = AbortSignal.any([loss.signal, ...(options.signal ? [options.signal] : [])]);
+      const bounds = { ...options, signal };
+      let timer: ReturnType<typeof setInterval> | undefined;
+      let heartbeat: Promise<void> | undefined;
+      let held = false;
+      let ownership: HeldTargetAliasLock | undefined;
+      let result: T | undefined;
+      let failure: unknown;
+      let failed = false;
+      try {
+        const reserved = await withAcquisitionBounds(() => client.reserve(), bounds);
+        const connection: PropertyReadConnection = {
+          query: async <R = unknown>(statement: string) => (await reserved.unsafe(statement)) as unknown as R,
+          close: async () => { await client.end({ timeout: 5 }); },
+        };
+        for (const key of keys) {
+          await acquireAdvisoryLock(connection, key, bounds);
+        }
+        const rows = await withAcquisitionBounds(() => reserved.unsafe('SELECT pg_backend_pid() AS pid'), bounds);
+        const pid = rows[0]?.pid;
+        if (!Number.isInteger(pid)) throw new Error('HMS_TARGET_LOCK_LOST');
+        held = true;
+        timer = setInterval(() => {
+          if (heartbeat || closing) return;
+          heartbeat = withAcquisitionBounds(() => reserved.unsafe('SELECT pg_backend_pid() AS pid'),
+            { signal: loss.signal, deadlineAt: Date.now() + 10_000 })
+            .then((current) => { if (current[0]?.pid !== pid) fail(); }, fail)
+            .finally(() => { heartbeat = undefined; });
+        }, 5_000);
+        timer.unref();
+        signal.throwIfAborted();
+        ownership = Object.freeze({ [targetAliasOwnership]: true as const, tenantId: input.tenantId,
+          propertyCode: input.propertyCode, aliases: Object.freeze([...aliases]), signal });
+        activeTargetLocks.add(ownership);
+        result = await callback(connection, signal, ownership);
+        signal.throwIfAborted();
+        const releaseBounds = { signal: loss.signal, deadlineAt: Date.now() + 10_000 };
+        const current = await withAcquisitionBounds(() => reserved.unsafe('SELECT pg_backend_pid() AS pid'), releaseBounds);
+        if (current[0]?.pid !== pid) throw new Error('HMS_TARGET_LOCK_LOST');
+        for (const key of [...keys].reverse()) {
+          const released = await withAcquisitionBounds(() => reserved.unsafe(
+            'SELECT pg_advisory_unlock($1::bigint) AS released', [key]), releaseBounds);
+          if (released[0]?.released !== true) throw new Error('HMS_TARGET_LOCK_RELEASE_FAILED');
+        }
+        held = false;
+      } catch (cause) {
+        failure = cause;
+        failed = true;
+      } finally {
+        if (ownership) activeTargetLocks.delete(ownership);
+        closing = true;
+        if (timer) clearInterval(timer);
+        // Closing the dedicated connection also releases a partially acquired lock set.
+        try { await client.end({ timeout: 5 }); } catch (cause) { failure = cause; failed = true; }
+        if (heartbeat) await heartbeat;
+        if (held && loss.signal.aborted) { failure = new Error('HMS_TARGET_LOCK_LOST'); failed = true; }
+      }
+      if (failed) throw failure;
+      return result as T;
+    },
+  };
+}

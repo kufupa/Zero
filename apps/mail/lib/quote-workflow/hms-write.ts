@@ -1,6 +1,7 @@
 import { formatStayDate } from './amend-find';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { cancelChargeClientFromTrpc, type CancelChargeClient, type CancelRun } from './amend-cancel';
+import type { PropertySwitch } from '@/lib/reservation-workflow/types';
 
 /**
  * The HMS write as the approve and review cards see it (U18). The wire types mirror hmsWriteStateOf and the hmsApproval
@@ -36,6 +37,8 @@ export type HmsWriteView = {
 };
 
 export type HmsApproved = { grantId: string; runId: string; hmsReadAt: string; expiresAt: string };
+export type HmsPreparedReceipt = { preparedRef: string; expectedRevision: number; generationId: string;
+  expiresAtIso: string; warnings: string[] };
 
 export type HmsReviewed = { runId: string; status: 'done' | 'needs_you' };
 
@@ -59,7 +62,7 @@ type CancelSource = { threadId: string; messageId: string; sourceHash: string };
 
 export type HmsApprovalClient = {
   writeState: (input: { workItemId: string }) => Promise<HmsWriteView>;
-  approve: (input: { workItemId: string; formDigest: string }) => Promise<HmsApproved>;
+  approve: (input: { workItemId: string; formDigest: string; preparedRef?: string; expectedRevision?: number }) => Promise<HmsApproved>;
   review: (input: HmsReviewInput) => Promise<HmsReviewed>;
   resolveNeedsCheck: (input: { workItemId: string; note: string }) => Promise<unknown>;
   reread: (input: { workItemId: string }) => Promise<HmsReread>;
@@ -77,10 +80,10 @@ type MailboxCall<T> = T extends (input: infer Input) => infer Result
 type TrpcHmsApprovalRoutes = {
   hmsApproval?: {
     writeState?: { query: (input: { workItemId: string; internetMessageId: string;
-      selectedSource?: CancelSource; cancelSource?: CancelSource },
+      selectedSource?: CancelSource; cancelSource?: CancelSource; propertySwitch?: PropertySwitch },
       options: MailboxOptions) => Promise<HmsWriteView> };
     approve?: { mutate: (input: { workItemId: string; formDigest: string; internetMessageId: string;
-      selectedSource?: CancelSource;
+      selectedSource?: CancelSource; propertySwitch?: PropertySwitch; preparedRef?: string; expectedRevision?: number;
       cancel?: Omit<HmsCancelGoInput, 'workItemId' | 'formDigest'> & { source: CancelSource } },
       options: MailboxOptions) => Promise<HmsApproved | CancelRun> };
     previewCancel?: { mutate: (input: HmsCancelPreviewInput & { source: CancelSource; internetMessageId: string },
@@ -95,6 +98,7 @@ type TrpcHmsApprovalRoutes = {
 /** Pin every request to the mailbox and selected email the card belongs to. */
 export function hmsApprovalFromTrpc(
   trpc: unknown, transportId: string | null, internetMessageId: string | null, source: CancelSource | null = null,
+  propertySwitch?: PropertySwitch,
 ): HmsApprovalClient | null {
   const mailbox = inMailbox(transportId);
   if (!mailbox || !internetMessageId?.trim() || !trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
@@ -110,16 +114,17 @@ export function hmsApprovalFromTrpc(
   const selectedSource = source && source.threadId.trim() && source.messageId.trim() && /^[a-f0-9]{64}$/.test(source.sourceHash)
     ? { threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash } : null;
   const selection = selectedSource ? { selectedSource } : {};
+  const property = propertySwitch ? { propertySwitch } : {};
   const charge = cancelChargeClientFromTrpc(trpc, transportId, selectedSource ?? undefined, internetMessageId);
   return {
     writeState: async (input) => {
-      const view = await writeState.query({ ...input, internetMessageId, ...selection }, mailbox);
+      const view = await writeState.query({ ...input, internetMessageId, ...selection, ...property }, mailbox);
       if (view.form.action !== 'cancel' || view.cancelAvailable === undefined) return view;
       if (!selectedSource) throw new Error('cancel_source_unavailable');
-      return writeState.query({ ...input, internetMessageId, ...selection, cancelSource: selectedSource }, mailbox);
+      return writeState.query({ ...input, internetMessageId, ...selection, cancelSource: selectedSource, ...property }, mailbox);
     },
     approve: (input) => approve.mutate({ ...input, internetMessageId,
-      ...(selectedSource ? { selectedSource } : {}) }, mailbox) as Promise<HmsApproved>,
+      ...(selectedSource ? { selectedSource } : {}), ...property }, mailbox) as Promise<HmsApproved>,
     review: (input) => review.mutate({ ...input, internetMessageId, ...selection }, mailbox),
     resolveNeedsCheck: (input) => resolve.mutate({ ...input, internetMessageId, ...selection }, mailbox),
     reread: (input) => reread.mutate({ ...input, internetMessageId, ...selection }, mailbox),
@@ -413,7 +418,7 @@ function valueText(key: string, value: unknown): string {
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (Array.isArray(value)) return value.length > 0 ? value.map(scalarText).join(', ') : NONE;
   const text = scalarText(value);
-  if (leafName(key) === 'mealPlan') return BOARD_LABELS[text] ?? text;
+  if (leafName(key) === 'mealPlan' || leafName(key) === 'board') return BOARD_LABELS[text] ?? text;
   if (leafName(key) === 'retainRates' && (text === 'yes' || text === 'no')) return text === 'yes' ? 'Yes' : 'No';
   return ISO_DAY.test(text) ? formatStayDate(text) : text;
 }

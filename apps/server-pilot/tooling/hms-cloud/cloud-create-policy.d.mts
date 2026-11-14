@@ -4,7 +4,7 @@ export function validCreateGuest(guest: unknown): boolean;
 export function isLabtestGuest(guest: unknown): boolean;
 export function createNameKey(value: unknown): string;
 export function sameCreateGuest(left: unknown, right: unknown): boolean;
-export function createCloudTargetKey(guest: unknown, arrival: unknown): string | null;
+export function createCloudTargetKey(guest: unknown, arrival: unknown, propertyCode?: string): string | null;
 export function isCreateDate(value: unknown): boolean;
 export function hrcenToday(now?: Date): string;
 export function validCreateDates(arrival: unknown, departure: unknown, allowRealGuest?: boolean, allowPast?: boolean): boolean;

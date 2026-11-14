@@ -108,7 +108,7 @@ import { canonicalMessageId } from '../mail/ingest/message-id.js';
 import {
   getPropertyTransportIds,
   resolvePropertyTransport,
-} from '../../tooling/playwright-quote/property-registry.mjs';
+} from '../../tooling/hms-cloud/property-registry.mjs';
 import { extractVoucherGuest, surnameFrom } from './voucher-find.js';
 import { isStaffSender, knownSenders, NEEDS_YOU_KINDS } from './work-items.js';
 import {
@@ -4689,7 +4689,7 @@ function staffQuoteRunFreshness(now: Date) {
  */
 export async function readHmsJobView(
   input:
-    | { transportId: string; runId: string; threadId?: string; messageId?: string; sourceHash?: string; selectedActorId?: string; userId?: string; staffQuoteOwnerId?: string }
+    | { transportId: string; runId: string; propertyCode?: string; threadId?: string; messageId?: string; sourceHash?: string; selectedActorId?: string; userId?: string; staffQuoteOwnerId?: string }
     | {
         transportId: string;
         userId: string;
@@ -4704,6 +4704,7 @@ export async function readHmsJobView(
         sourceHash?: string;
         selectedActorId?: string;
         kind: 'find' | 'search_guest' | 'party' | 'availability';
+        propertyCode?: string;
         confirmation?: string;
         /** A guest search's surname, compared case- and space-insensitively: one thread can carry two guests' searches. */
         lastName?: string;
@@ -4748,6 +4749,9 @@ export async function readHmsJobView(
     ),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    ...('propertyCode' in input && input.propertyCode ? [input.propertyCode === 'HRCEN'
+      ? sql`coalesce(${aiWorkflowRun.metrics}->>'propertyCode', 'HRCEN') = ${input.propertyCode}`
+      : sql`${aiWorkflowRun.metrics}->>'propertyCode' = ${input.propertyCode}`] : []),
     ...(selectedSource ? [
       eq(aiWorkflowRun.transportId, input.transportId),
       eq(aiWorkflowRun.threadId, selectedSource.threadId),

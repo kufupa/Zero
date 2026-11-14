@@ -6,10 +6,12 @@ export interface EffectiveWorkflowPolicy {
   property: HmsPolicyProperty;
   workflow: HmsWorkflow;
   mode: HmsWorkflowMode;
+  admittedMode: HmsWorkflowMode;
   readEnabled: boolean;
   capability: HmsWorkflowCapability;
   credentialIdentity: string;
   writerDependencyDigest: string | null;
+  writerReady: boolean;
 }
 export const HMS_PROPERTIES: readonly HmsPolicyProperty[];
 export const HMS_WORKFLOWS: readonly HmsWorkflow[];
@@ -22,5 +24,7 @@ export const SCOPED_RUNTIME_CONTROL_KEYS: readonly string[];
 export function parseDavinciEnabledProperties(value: string | undefined): ('HRDAV' | 'HRDAVS')[];
 export function validateRuntimeControl(key: string, value: string | undefined): void;
 export function effectiveWorkflowPolicy(env: Readonly<Record<string, string | undefined>>, property: HmsPolicyProperty, workflow: HmsWorkflow): EffectiveWorkflowPolicy;
+export function hmsWriterDependencyDigest(workflow: Exclude<HmsWorkflow, 'reads' | 'quote'>): string;
+export function hmsWriterReady(env: Readonly<Record<string, string | undefined>>, property: HmsPolicyProperty, workflow: HmsWorkflow, expectedSourceRevision?: string): boolean;
 
 export const CATALOG_CREDENTIAL_DIGEST_KEYS: readonly string[];

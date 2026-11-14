@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { effectiveWorkflowPolicy, hmsWriterDependencyDigest } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { captureCloudReadRoleProof, cloudReadRoleObservationSchema } from '../src/hms/read-role-proof-capture.js';
 import portfolioCases from '../evals/hms/portfolio-cases.v3.json';
 import {
@@ -33,6 +34,34 @@ import {
   validateRoleProofV2ForTool,
   validateRoleProofV2ForSession,
 } from '../src/hms/release-kernel.js';
+
+describe('persistent property writer readiness', () => {
+  it('allows a narrow Labtest bootstrap while an on flag requires compatible property evidence', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hms-writer-readiness-test-'));
+    const path = join(root, 'canaries.txt'), digest = hmsWriterDependencyDigest('create');
+    const credentialIdentity = 'nava-zero/server-pilot/infor-hms-read-davinci';
+    const env = { HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAV,HRDAVS', HMS_DAVINCI_READS: 'on', HMS_DAVINCI_CREATE: 'lab',
+      HMS_WRITER_CREDENTIAL_IDENTITY_HRDAV: credentialIdentity, HMS_WRITER_DEPENDENCY_DIGEST_CREATE: digest,
+      HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAV: 'a'.repeat(64), NAVA_CANARY_PASS_FILE: path };
+    try {
+      expect(effectiveWorkflowPolicy(env, 'HRDAV', 'create')).toMatchObject({ admittedMode: 'lab', capability: 'lab' });
+      const on = { ...env, HMS_DAVINCI_CREATE: 'on' };
+      expect(effectiveWorkflowPolicy(on, 'HRDAV', 'create')).toMatchObject({ admittedMode: 'off', capability: 'prepare-only' });
+      const sourceRevision = 'b'.repeat(40);
+      await writeFile(path, `CANARY PASS create HRDAV ${sourceRevision}\n`, { mode: 0o600 });
+      await writeFile(`${path}.writers.json`, JSON.stringify({ version: 2, writers: [{ propertyCode: 'HRDAV', workflow: 'create',
+        tenantId: 'DAVINCI_PRD', credentialIdentity, credentialVersionHmacSha256: 'a'.repeat(64), writerDependencyDigest: digest,
+        sourceRevision, readbackDigest: 'c'.repeat(64), confirmation: '77945494-1', observedAt: new Date().toISOString() }] }), { mode: 0o600 });
+      expect(effectiveWorkflowPolicy(on, 'HRDAV', 'create')).toMatchObject({ admittedMode: 'on', writerReady: true });
+      expect(effectiveWorkflowPolicy({ ...on, NAVA_BUILD_COMMIT: 'd'.repeat(40) }, 'HRDAV', 'create').admittedMode).toBe('on');
+      expect(effectiveWorkflowPolicy(on, 'HRDAVS', 'create').admittedMode).toBe('off');
+      expect(effectiveWorkflowPolicy({ ...on, HMS_WRITER_DEPENDENCY_DIGEST_CREATE: 'e'.repeat(64) }, 'HRDAV', 'create').admittedMode).toBe('off');
+      expect(effectiveWorkflowPolicy({ ...on, HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAV: 'f'.repeat(64) }, 'HRDAV', 'create').admittedMode).toBe('off');
+      await writeFile(path, `CANARY PASS create HRDAV ${'d'.repeat(40)}\n`);
+      expect(effectiveWorkflowPolicy(on, 'HRDAV', 'create').admittedMode).toBe('off');
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('property-scoped native read role capture', () => {
   const now = new Date('2026-11-14T09:00:00.000Z');

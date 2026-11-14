@@ -60,7 +60,8 @@ export async function previewAddOns(args: AddOnObservationInput): Promise<AddOnO
 
 
 async function createThenAddon(compiled: Extract<ReturnType<typeof compileReservationWorkflowV2Create>, { outcome: 'ok' }>,
-  operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>, signal?: AbortSignal) {
+  operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>,
+  scope: { propertyCode: string; transportId: string }, signal?: AbortSignal) {
   signal?.throwIfAborted();
   if (compiled.nativeInput.mode !== 'prepare') throw new Error('create_prepare_required');
   const createTool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
@@ -76,13 +77,13 @@ async function createThenAddon(compiled: Extract<ReturnType<typeof compileReserv
       signal?.throwIfAborted();
       await callback(session);
       signal?.throwIfAborted();
-      const readForm = () => session.runTool({ tool: 'readGuestStayForm', propertyCode: 'HRCEN' });
+      const readForm = () => session.runTool({ tool: 'readGuestStayForm', propertyCode: scope.propertyCode });
       addon = await operation(session.page, readForm);
       signal?.throwIfAborted();
-    }, { ...options, memory: null, blockServiceWorkers: true, signal });
+    }, { ...options, ...scope, memory: null, signal });
   const native = await createTool.createReservation(compiled.nativeInput, { allowRealGuest: true,
     expectedGuest: compiled.expectedGuest, requireExplicitGuestSelection: true, allowCommitOnlyBillingReference: true,
-    withSession });
+    ...scope, signal, withSession });
   signal?.throwIfAborted();
   return { native, addon };
 }
@@ -104,7 +105,7 @@ async function lookupUnsaved(draft: ReservationWorkflowV2Draft, input: Reservati
     };
     const { native, addon } = await createThenAddon(compiled, (page, readForm) =>
       addonTool.listUnsavedStay360AddOnItems(page, { expectedCreate: compiled.nativeInput,
-        expectedGuest: compiled.expectedGuest, readForm }), signal);
+        expectedGuest: compiled.expectedGuest, readForm }), { propertyCode: draft.propertyCode, transportId: draft.transportId }, signal);
     const listing = record(addon);
     const candidates = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter(Boolean) : [];
     const coverage = record(listing?.coverage);
@@ -167,7 +168,7 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
     const items = plans.map(plan => plan.items);
     const { native, addon } = await createThenAddon(compiledCreate, (page, readForm) =>
       addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: compiledCreate.nativeInput,
-        expectedGuest: compiledCreate.expectedGuest, readForm, items }), signal);
+        expectedGuest: compiledCreate.expectedGuest, readForm, items }), { propertyCode: draft.propertyCode, transportId: draft.transportId }, signal);
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
     const createBound = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
@@ -273,7 +274,6 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
         options?: Record<string, unknown>) => Promise<unknown>;
     };
     const guestName = `${stay.firstName} ${stay.lastName}`;
-    const browser = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as { withCenturionStay360Page: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => Promise<unknown> };
     const native = record(await addon.withStay360AddOnSession(async session => {
       const runTool = async (request: Record<string, unknown>) => {
         signal.throwIfAborted();
@@ -305,7 +305,7 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
       if (detailed?.outcome !== 'ok' || record(detailed.coverage)?.complete !== true || details.length !== ids.length ||
           ids.some(id => !details.some(row => record(row)?.nativeId === id))) return null;
       return { details, candidates: Array.isArray(listing?.candidates) ? listing.candidates : [] };
-    }, { headless: true, blockServiceWorkers: true, withPage: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => browser.withCenturionStay360Page(callback, { ...options, signal }) }));
+    }, { headless: true, propertyCode: draft.propertyCode, transportId: draft.transportId, signal }));
     signal.throwIfAborted();
     if (!native) return { status: nativeFailure.outcome === 'execution_failure' ? 'failed' : nativeFailure.outcome === 'unsupported' ? 'unsupported' : 'needs_input',
       issue: nativeFailure.issue ?? 'saved_addon_read_incomplete', observations };
@@ -343,7 +343,6 @@ async function previewSaved(draft: ReservationWorkflowV2Draft, input: Reservatio
         options?: Record<string, unknown>) => Promise<unknown>;
     };
     const stay = selected.stay, guestName = `${stay.firstName} ${stay.lastName}`;
-    const browser = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as { withCenturionStay360Page: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => Promise<unknown> };
     const staged = record(await addon.withStay360AddOnSession(async session => {
       const runTool = async (request: Record<string, unknown>) => {
         signal.throwIfAborted();
@@ -383,11 +382,11 @@ async function previewSaved(draft: ReservationWorkflowV2Draft, input: Reservatio
       const controls = operation === 'edit' && text(afterFields?.code) && text(afterFields?.itemId) &&
         afterFields?.code === prior?.code && afterFields?.itemId === prior?.itemId ? nativeServiceControls(afterFields) : undefined;
       return { before, after: operation === 'remove' ? null : after, ...(controls ? { nativeControls: controls } : {}) };
-    }, { headless: true, blockServiceWorkers: true, withPage: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => browser.withCenturionStay360Page(callback, { ...options, signal }) }));
+    }, { headless: true, propertyCode: draft.propertyCode, transportId: draft.transportId, signal }));
     signal.throwIfAborted();
     if (!staged) return { status: nativeFailure.outcome === 'execution_failure' ? 'failed' : nativeFailure.outcome === 'unsupported' ? 'unsupported' : 'needs_input',
       issue: nativeFailure.issue ?? 'saved_addon_prepare_unverified', observations: [] };
-    const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay, signal);
+    const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay, { propertyCode: draft.propertyCode, transportId: draft.transportId }, signal);
     signal.throwIfAborted();
     const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',
       status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,

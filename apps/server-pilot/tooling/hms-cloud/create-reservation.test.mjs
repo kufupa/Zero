@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { rm, stat } from 'node:fs/promises';
 import { createReservation, REAL_GUEST_CREATE_AUTHORIZATION_HOLD } from './create-reservation.mjs';
 import { selectGuestStayRatePlan } from './guest-stay-rate-plan.mjs';
-import { normalizeCreateTrack } from '../playwright-quote/create-request.mjs';
+import { normalizeCreateTrack } from './create-request.mjs';
 
 const input = {
   mode: 'commit', propertyCode: 'HRCEN', guest: { profileId: '123' },
@@ -21,6 +21,7 @@ const values = { guestid: '123', status: 'Reserved', firstname: 'Proof', lastnam
   roomtype: 'DLXKNG', rateplan: 'BAR', averagerate: '1450.00', sourceofbusinessdesc: 'E-Mail', company: 'Example Company',
   guaranteetype: 'Non-Guaranteed Individual', reservationnote: 'Synthetic proof', udfchkbox04: false, udfchar13: '', emailaddress: '' };
 const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123',
+  reservationStayId: '456', childBands: { child1: 0, child2: 2, child3: 0 }, childAges: [8, 12],
   status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: input.stay.arrival, departure: input.stay.departure,
   roomType: input.room.roomType, ratePlan: input.room.ratePlan, adults: 2, children: 2, guaranteeCode: 'NGI' };
 const fields = (pairs) => Object.entries(pairs).map(([name, value]) => ({ name, value, ...(name === 'reservationnote' ? { rawValue: value } : {}) }));
@@ -47,7 +48,7 @@ function harness(options = {}) {
       ...(kind === 'agency' ? { agencyIataNumber: null, agencyReferenceNumberType: 'IATA',
         agencyReferenceEvidence: { iataNumber: 'response_grid_correlated', referenceNumberType: 'response_grid_correlated' } } : {}),
       ...(kind === 'arAccount' ? { nativeReadback: { araccountid: request.nativeId, araccountname: row?.name,
-        arstatuscodedesc: 'Active' } } : {}),
+        arstatuscodedesc: 'Active', arprofileid: options.arProfileId ?? '501' } } : {}),
       profileProofToken: 'token', ...options.partySelections?.[kind] };
   };
   const runTool = async (request) => {
@@ -60,6 +61,8 @@ function harness(options = {}) {
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: options.selectedGuestId ?? request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', actual: request.date, displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
       case 'selectGuestStayDropdown':
+        if (request.field === 'marketSegment') { partyFields.marketsegment = 'Corporate'; return { outcome: 'updated_unsaved',
+          field: 'marketSegment', requested: request.value, actual: { value: request.value, submitted: request.value, display: 'Corporate' } }; }
         if (request.field === 'reasonForStay') { partyFields.reasonforstay = 'Business'; return { outcome: 'updated_unsaved', field: request.field,
           requested: request.value, actual: { value: request.value, display: 'Business' } }; }
         return request.field === 'guaranteeType' && options.guaranteeResult ? options.guaranteeResult : { outcome: 'updated_unsaved', field: request.field, requested: request.value,
@@ -88,15 +91,21 @@ function harness(options = {}) {
       case 'closeCmsMessageIdPicker': return { outcome: 'closed_unsaved' };
       case 'selectCmsMessageId': partyFields.udfchar09 = request.code; return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: request.code, actual: request.code };
       case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
+      case 'setGuestOptInCheckbox': partyFields.guestoptin4 = request.checked; return { outcome: 'updated_unsaved', actual: request.checked };
       case 'setGuestStayText':
         if (request.field === 'reservationNote') partyFields.reservationnote = request.value;
         if (request.field === 'bookerName') partyFields.caller = request.value;
         if (request.field === 'bookerContact') partyFields.udfchar06 = request.value;
         if (request.field === 'cmsRecipient') partyFields.udfchar13 = request.value;
         return { outcome: 'updated_unsaved', actual: request.value };
-      case 'readGuestStayForm': return { outcome: 'ok', fields: fields(options.draft
-        ? { ...options.draft, ...(partyFields.track !== undefined ? { track: partyFields.track } : {}) }
-        : { ...values, ...partyFields }) };
+      case 'readGuestStayForm': return { outcome: 'ok', fields: [...fields(options.draft
+        ? { ...options.draft, ...(partyFields.track !== undefined ? { track: partyFields.track } : {}),
+          ...(partyFields.guestoptin4 !== undefined ? { guestoptin4: partyFields.guestoptin4 } : {}),
+          ...(partyFields.marketsegment !== undefined ? { marketsegment: partyFields.marketsegment } : {}) }
+        : { ...values, ...partyFields,
+          ...(options.trackRequired !== undefined ? { track: partyFields.track ?? options.trackInitial ?? '' } : {}) })
+        .map(field => field.name === 'track' && options.trackRequired !== undefined
+          ? { ...field, required: options.trackRequired } : field), ...(options.extraFormFields || [])] };
       case 'saveNewLabtestStay':
         if (request.billingReference != null && sessionOptions?.beforeSaveScreenshot) await sessionOptions.beforeSaveScreenshot();
         return options.save || { outcome: 'saved_same_form', confirmation: '123456-1', requestSeen: true, arProfileId: '501',
@@ -121,7 +130,7 @@ function harness(options = {}) {
       labtestPreimage: { preimageId: 'p' } }); },
     withSavedSession: async (operation) => {
       freshReads += 1;
-      return operation({ runTool: async () => ({ outcome: 'ok', record: { nativePreimage: options.nativePreimage ?? nativePreimage,
+      return operation({ runTool: async () => ({ outcome: 'ok', record: { nativePreimage: Object.hasOwn(options, 'nativePreimage') ? options.nativePreimage : nativePreimage,
         details: { fields: fields(options.record || values), captureScope: 'test' } } }) });
     },
     partyReadback: async (request) => options.partyReadback?.(request) ?? { outcome: 'verified' },
@@ -223,7 +232,8 @@ test('staff-bound create requires drained callbacks, owned-session close, and an
     run.options.withSavedSession = async (operation, options) => { readOptions = options; return freshSession(operation, options); };
     const result = await createReservation(input, { ...run.options, ...guards });
     if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
-    assert.deepEqual(readOptions, { readOnly: true, readOnlyConfirmation: '123456-1' });
+    assert.deepEqual(readOptions, { readOnly: true, readOnlyConfirmation: '123456-1', propertyCode: 'HRCEN',
+      transportId: undefined, signal: undefined, credentialLease: undefined });
     assert.equal(result.writerSessionClosed, true);
     assert.equal(result.outcome, drain === true ? 'saved' : 'uncertain');
     if (drain !== true) assert.equal(result.issue, 'save_callback_drain_unconfirmed');
@@ -267,6 +277,34 @@ test('staff preview stores its approved screenshot privately', async (t) => {
   assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
 });
 
+test('native required track needs a staff choice before prepare or save', async () => {
+  for (const propertyCode of ['HRCEN', 'HRDAV', 'HRDAVS']) {
+    const run = harness({ trackRequired: true });
+    const result = await createReservation({ ...input, propertyCode, mode: 'prepare', room: { roomType: 'DLXKNG' } }, run.options);
+    assert.equal(result.outcome, 'needs_input');
+    assert.deepEqual(result.missing, ['room.ratePlan', 'track']);
+    assert.equal(run.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  }
+
+  const baseline = await createReservation({ ...input, mode: 'prepare' }, harness().options);
+  const commit = harness({ trackRequired: true, trackInitial: 'Native default' });
+  const refused = await createReservation(input, { ...commit.options, expectedRequestDigest: baseline.requestBinding.digest,
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() });
+  assert.equal(refused.outcome, 'needs_input');
+  assert.equal(refused.issue, 'track_required');
+  assert.equal(commit.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const optional = await createReservation({ ...input, mode: 'prepare' }, harness({ trackRequired: false }).options);
+  assert.equal(optional.outcome, 'prepared');
+  const chosen = await createReservation({ ...input, mode: 'prepare', track: 'BAR' }, harness({ trackRequired: true }).options);
+  assert.equal(chosen.outcome, 'prepared');
+  assert.equal(chosen.applied.track, 'Best Available');
+  const ambiguous = await createReservation({ ...input, mode: 'prepare' }, harness({ trackRequired: true,
+    extraFormFields: [{ name: 'track', value: '', required: true }] }).options);
+  assert.equal(ambiguous.outcome, 'uncertain');
+  assert.equal(ambiguous.issue, 'draft_field_not_unique');
+});
+
 test('track and false guest opt-in match preview, native Save and fresh readback', async (t) => {
   const requested = { ...input, track: 'BAR', guestoptin4: false };
   const seen = { ...values, track: 'Best Available', guestoptin4: false };
@@ -291,16 +329,34 @@ test('track and false guest opt-in match preview, native Save and fresh readback
   const refused = await createReservation(requested, changedTrack.options);
   assert.equal(refused.issue, 'requested_track_not_staged');
   assert.equal(changedTrack.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
-  const selectedOptIn = harness();
-  const unsupported = await createReservation({ ...requested, guestoptin4: true }, selectedOptIn.options);
-  assert.equal(unsupported.issue, 'requested_fields_not_supported');
-  assert.equal(selectedOptIn.calls.length, 0);
+  const selectedOptIn = harness({ draft: { ...seen, guestoptin4: true } });
+  const optedIn = await createReservation({ ...requested, mode: 'prepare', guestoptin4: true }, selectedOptIn.options);
+  assert.equal(optedIn.outcome, 'prepared');
+  assert.equal(optedIn.requestBinding.request.guestOptIn, true);
 
   const changedReadback = harness({ draft: seen, record: { ...seen, guestoptin4: true } });
   const uncertain = await createReservation(requested, changedReadback.options);
   if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
   assert.equal(uncertain.outcome, 'uncertain');
   assert.ok(uncertain.readback.mismatches.some(({ field }) => field === 'guestOptIn'));
+
+  const market = { ...requested, marketSegment: 'COR' };
+  const marketFields = { ...seen, marketsegment: 'Corporate' };
+  const marketOptions = { draft: marketFields, record: marketFields,
+    nativePreimage: { ...nativePreimage, marketSegmentCode: 'COR' } };
+  const marketPreview = await createReservation({ ...market, mode: 'prepare' }, harness(marketOptions).options);
+  assert.deepEqual(marketPreview.requestBinding.request.marketSegment, { value: 'COR', display: 'Corporate' });
+  const marketRun = harness(marketOptions);
+  const marketSaved = await createReservation(market, marketRun.options);
+  if (marketSaved.screenshots?.before) t.after(() => rm(dirname(marketSaved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(marketSaved.outcome, 'saved');
+  assert.deepEqual(marketRun.calls.find(({ tool }) => tool === 'saveNewLabtestStay').marketSegment,
+    { value: 'COR', display: 'Corporate' });
+  const changedMarket = harness({ ...marketOptions, nativePreimage: { ...nativePreimage, marketSegmentCode: 'OTHER' } });
+  const marketUncertain = await createReservation(market, changedMarket.options);
+  if (marketUncertain.screenshots?.before) t.after(() => rm(dirname(marketUncertain.screenshots.before), { recursive: true, force: true }));
+  assert.equal(marketUncertain.outcome, 'uncertain');
+  assert.ok(marketUncertain.readback.mismatches.some(({ field }) => field === 'marketSegmentCode'));
 });
 
 test('stages the reviewed track when the rate supplied a different default', async (t) => {
@@ -370,10 +426,10 @@ test('guarded Labtest commit saves once, verifies fresh readback and reconciles 
   assert.equal(withoutMetadata.outcome, 'saved');
   assert.equal(noMetadata.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
   assert.equal(result.outcome, 'saved');
-  assert.equal(result.warnings.filter(({ field, issue }) => field === 'stay.childAges' && issue === 'saved_record_exposes_age_bands_not_exact_ages').length, 1);
+  assert.equal(result.warnings.filter(({ field, issue }) => field === 'stay.childAges' && issue === 'saved_record_exposes_age_bands_not_exact_ages').length, 0);
   assert.equal(result.approvalReady, false);
   assert.equal(result.confirmation, '123456-1');
-  assert.deepEqual(result.appliedVerification, { visibleFields: true, childAges: 'at_selection_only', organizationId: 'at_selection_only' });
+  assert.deepEqual(result.appliedVerification, { visibleFields: true, childAges: 'fresh_readback', organizationId: 'at_selection_only' });
   assert.deepEqual(result.readback.mismatches, []);
   assert.equal(result.readback.partyProof.outcome, 'verified');
   assert.equal(fake.freshReads, 1);
@@ -414,6 +470,7 @@ test('agent guarantee is selected, bound, saved once and independently read back
     actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
   const agentValues = { ...values, guaranteetype: 'Guaranteed By Agent' };
   const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123',
+    reservationStayId: '456', childBands: { child1: 0, child2: 2, child3: 0 }, childAges: [8, 12],
     status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: input.stay.arrival, departure: input.stay.departure,
     roomType: input.room.roomType, ratePlan: input.room.ratePlan, adults: 2, children: 2, guaranteeCode: 'GTDAGT' };
   const options = { guaranteeResult: selection, draft: agentValues, record: agentValues, nativePreimage };
@@ -455,7 +512,11 @@ test('agent guarantee is selected, bound, saved once and independently read back
       const uncertain = await createReservation({ ...input, guaranteeType: 'GTDAGT', parties }, fake.options);
       if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
       assert.equal(uncertain.outcome, 'uncertain');
-      assert.ok(uncertain.readback?.mismatches?.some(({ field }) => field === 'guaranteeTypeCode'));
+      if (proof && proof.guestId === nativePreimage.guestId) {
+        assert.ok(uncertain.readback?.mismatches?.some(({ field }) => field === 'guaranteeTypeCode'));
+      } else {
+        assert.equal(uncertain.readback?.issue, 'readback_identity_unverified');
+      }
       assert.equal(fake.calls.filter(({ tool }) => tool === 'saveNewLabtestStay').length, 1);
     }
   }
@@ -528,9 +589,9 @@ test('supported inputs stage without claiming approval readiness', async () => {
     adults: 2, childCount: 2, roomType: 'DLXKNG', guaranteeType: 'NGI', source: null };
   const authority = { requireM1CreateAvailability: true, authorizeM1CreateAvailabilityRequest: () => true };
   const rate = (draft) => selectGuestStayRatePlan(null, { code: 'BAR', guestProfileId: '123', createDraft: draft }, authority);
-  assert.equal((await rate(createDraft)).issue, 'PAGE_REQUIRED');
-  assert.equal((await rate({ ...createDraft, source: { nativeCode: 'EMA', description: 'E-Mail' } })).issue, 'PAGE_REQUIRED');
-  assert.equal((await rate({ ...createDraft, source: { nativeCode: '', description: 'E-Mail' } })).issue, 'CREATE_AVAILABILITY_INPUT_INCOMPLETE');
+  assert.equal((await rate(createDraft)).issue, 'PROPERTY_MISMATCH');
+  assert.equal((await rate({ ...createDraft, source: { nativeCode: 'EMA', description: 'E-Mail' } })).issue, 'PROPERTY_MISMATCH');
+  assert.equal((await rate({ ...createDraft, source: { nativeCode: '', description: 'E-Mail' } })).issue, 'PROPERTY_MISMATCH');
 });
 
 test('prepare binds a billing reference after staging and verifying it on the selected A/R account', async () => {
@@ -750,7 +811,7 @@ test('prepare stages explicit agency, organization and A/R from the same picker 
   assert.equal(result.partySearches.arAccount.candidates[0].accountNumber, 'AR-75');
   assert.equal(result.partySearches.arAccount.coverage.possiblyTruncated, false);
   assert.deepEqual(result.partySearches.arAccount.selection.nativeReadback,
-    { araccountid: '75', araccountname: 'Example Account', arstatuscodedesc: 'Active' });
+    { araccountid: '75', araccountname: 'Example Account', arstatuscodedesc: 'Active', arprofileid: '501' });
   assert.equal(result.partySearches.agency.selection.agencyIataNumber, null);
   assert.equal(result.partySearches.agency.selection.agencyReferenceEvidence.iataNumber, 'response_grid_correlated');
   assert.equal(result.appliedVerification.agencyId, 'at_selection_only');
@@ -862,7 +923,8 @@ test('commit independently passes selected parties and requires fresh native ide
     let checked;
     const fake = harness({ record: { ...values, company: parties.organizationId ? 'Example Company' : '' },
       partyReadback: (request) => { checked = request; return { outcome: 'verified' }; } });
-    const result = await createReservation({ ...input, parties }, fake.options);
+    const result = await createReservation({ ...input, parties },
+      { ...fake.options, ...(parties.arAccountId ? { expectedArProfileId: '501' } : {}) });
     if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
     assert.equal(result.outcome, 'saved');
     const save = fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay');
@@ -956,11 +1018,38 @@ test('guarded create and unsaved prepare block service workers before opening th
   assert.equal(prepare.sessionOptions.blockServiceWorkers, true);
 });
 
+test('A/R profile is bound to the reviewed selection through Save and fresh readback', async (t) => {
+  const request = { ...input, parties: { arAccountId: '75', arAccountName: 'Example' } };
+  const prepared = await createReservation({ ...request, mode: 'prepare' }, harness().options);
+  assert.equal(prepared.requestBinding.arAccountProfileId, '501');
+  const guards = { expectedRequestDigest: prepared.requestBinding.digest, expectedArProfileId: '501',
+    authorizeCandidate: async () => true, dispatchCandidate: async (_request, next) => next() };
+  const changed = harness({ arProfileId: '502' });
+  const refused = await createReservation(request, { ...changed.options, ...guards });
+  assert.equal(refused.issue, 'approved_ar_profile_changed');
+  assert.equal(changed.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+  const missing = harness();
+  assert.equal((await createReservation(request, missing.options)).issue, 'approved_ar_profile_required');
+  assert.equal(missing.calls.length, 0);
+  let readback;
+  const savedRun = harness({ record: { ...values, company: '' }, partyReadback: (value) => { readback = value; return { outcome: 'verified' }; } });
+  const saved = await createReservation(request, { ...savedRun.options, ...guards });
+  if (saved.screenshots?.before) t.after(() => rm(dirname(saved.screenshots.before), { recursive: true, force: true }));
+  assert.equal(saved.outcome, 'saved');
+  assert.equal(savedRun.calls.find(({ tool }) => tool === 'saveNewLabtestStay').expectedArProfileId, '501');
+  assert.equal(readback.arAccount.profileId, '501');
+  const unexpected = harness({ record: { ...values, company: '' }, save: { outcome: 'saved_same_form', confirmation: '123456-1', arProfileId: '502', dispatchCallbacksDrained: true } });
+  const uncertain = await createReservation(request, { ...unexpected.options, ...guards });
+  if (uncertain.screenshots?.before) t.after(() => rm(dirname(uncertain.screenshots.before), { recursive: true, force: true }));
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.equal(uncertain.issue, 'saved_ar_profile_unverified');
+});
+
 test('explicit billing reference with selected A/R is passed exactly to the guarded writer and fresh readback', async (t) => {
   let checked;
   const fake = harness({ partyReadback: (request) => { checked = request; return { outcome: 'verified' }; } });
   const reference = '  PO 123  ';
-  const result = await createReservation({ ...input, parties: { organizationId: '41', arAccountId: '75', arAccountName: 'Example' }, billingReference: reference }, fake.options);
+  const result = await createReservation({ ...input, parties: { organizationId: '41', arAccountId: '75', arAccountName: 'Example' }, billingReference: reference }, { ...fake.options, expectedArProfileId: '501' });
   if (result.screenshots?.before) t.after(() => rm(dirname(result.screenshots.before), { recursive: true, force: true }));
   assert.equal(result.outcome, 'saved');
   assert.equal(fake.calls.find(({ tool }) => tool === 'saveNewLabtestStay').billingReference, reference);
@@ -987,12 +1076,12 @@ test('billing create cannot report saved without staged screenshot and fresh exa
   const dirs = new Set(); t.after(async () => { for (const dir of dirs) await rm(dir, { recursive: true, force: true }); });
   for (const options of [{ partyReadback: () => ({ outcome: 'unverified' }) },
     { save: { outcome: 'saved_same_form', confirmation: '123456-1', arProfileId: '501' } }]) {
-    const result = await createReservation(request, harness(options).options);
+    const result = await createReservation(request, { ...harness(options).options, expectedArProfileId: '501' });
     if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
     assert.equal(result.outcome, 'uncertain');
   }
   const unknown = harness({ save: { outcome: 'uncertain', confirmation: null } });
-  const result = await createReservation(request, unknown.options);
+  const result = await createReservation(request, { ...unknown.options, expectedArProfileId: '501' });
   if (result.screenshots?.before) dirs.add(dirname(result.screenshots.before));
   assert.equal(result.outcome, 'uncertain');
   assert.equal(result.reconciliation.billingReferenceVerification, 'not_checked');

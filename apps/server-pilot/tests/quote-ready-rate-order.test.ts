@@ -10,7 +10,7 @@ import {
   type LoggedStaffRatePick,
 } from '../src/ai/staff-rate-pick-history.js';
 import { quoteSalesStrategiesFromRegistry } from '../src/hms/rate-catalogue.js';
-import { PROPERTY_REGISTRY } from '../tooling/playwright-quote/property-registry.mjs';
+import { PROPERTY_REGISTRY } from '../tooling/hms-cloud/property-registry.mjs';
 
 const messageId = 'quote-rate-order-1';
 const sourceHash = 'a'.repeat(64);

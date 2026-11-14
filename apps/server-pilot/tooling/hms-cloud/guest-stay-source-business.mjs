@@ -26,8 +26,8 @@ const timeout = (options) => Number.isInteger(options?.timeoutMs) && options.tim
 function exactParams(body, expected, numeric = []) {
   const keys = [...body.keys()];
   const wanted = [...Object.keys(expected), ...numeric];
-  return keys.length === wanted.length && new Set(keys.map((key) => key.toLowerCase())).size === keys.length &&
-    wanted.every((key) => body.getAll(key).length === 1) &&
+  return wanted.every((key) => body.getAll(key).length === 1 &&
+      keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1) &&
     Object.entries(expected).every(([key, value]) => body.get(key) === value) &&
     numeric.every((key) => /^\d+$/.test(body.get(key) || ''));
 }
@@ -93,7 +93,7 @@ async function guardPage(page, propertyCode = PROPERTY) {
     else { scope.blockedWrites += 1; invalidate(scope); }
     return route.abort();
   };
-  scope.onDialog = () => { scope.nativeDialog = true; };
+  scope.onDialog = dialog => { scope.nativeDialog = true; invalidate(scope); void dialog.dismiss().catch(() => {}); };
   scope.onRequest = (request) => {
     try {
       if (request.method() === 'POST' && ['/web/base/GRIDDATA', '/web/base/LOVPOP'].includes(new URL(request.url()).pathname)) {
@@ -398,7 +398,7 @@ export async function selectGuestStaySourceBusiness(page, { searchId, nativeCode
   const scope = scopes.get(page);
   let attempted = false, observed = null;
   try {
-    if (scope?.propertyCode !== PROPERTY) throw new Error('SOURCE_SELECTION_PROPERTY_UNSUPPORTED');
+    if (!getPropertyRegistration(scope?.propertyCode)?.active) throw new Error('SOURCE_SELECTION_PROPERTY_UNSUPPORTED');
     const { state, win, form: before, grid } = await requireCurrent(page, scope || {}, searchId);
     const matches = state.result.candidates.filter((item) => item.nativeCode === code);
     if (matches.length !== 1 || !matches[0].description || grid.records.filter((row) => clean(row.codevalue) === code).length !== 1) {

@@ -1,6 +1,6 @@
 // Read document names from the already-open stay; never download or change them.
 import { openStay360RecordTab } from './stay360-record-tabs.mjs';
-import { dismissNotesOrThrow, takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
+import { dismissNotesOrThrow, takeHandledNotes } from './stay360-notes.mjs';
 
 export async function readDocumentsFromStay360(page, confirmation) {
   const { frame, notes } = await openStay360RecordTab(page, confirmation, 'Documents');

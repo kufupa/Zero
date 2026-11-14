@@ -52,3 +52,16 @@ export function hmsDispatchTargetKey(input: HmsDispatchTarget): string {
 export function hmsDispatchWorkItemKey(workItemId: string): string {
   return JSON.stringify(['HRCEN', 'work_item', workItemId.toLowerCase()]);
 }
+
+/** Name and contact aliases serialize explicit profile creation without weakening duplicate checks. */
+export function hmsGuestProfileTargetKeys(input: {
+  propertyCode: z.infer<typeof propertyCodeSchema>; firstName: string; lastName: string; email?: string;
+}): string[] {
+  const property = getPropertyRegistration(input.propertyCode);
+  if (!property) throw new Error('hms_dispatch_property_invalid');
+  const firstName = guestName.parse(input.firstName), lastName = guestName.parse(input.lastName);
+  const keys = [JSON.stringify([input.propertyCode, 'guest_profile', nameKey(firstName), nameKey(lastName), property.expectedTenant])];
+  if (input.email) keys.push(JSON.stringify([input.propertyCode, 'guest_profile_email',
+    z.string().trim().email().parse(input.email).toLowerCase(), property.expectedTenant]));
+  return keys.sort();
+}

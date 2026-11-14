@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { installLabtestSaveRouteChain } from './saved-stay-save-route-chain.mjs';
-import { finishLabtestCreateFence, matchesFullCreateBody } from './guest-stay-save.mjs';
+import { finishLabtestCreateFence } from './guest-stay-save.mjs';
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 const { chromium } = require('playwright');
@@ -82,7 +82,8 @@ test('unarmed billing staging permits no POST; quarantine blocks delayed and exa
     let armed = false, blocked = 0, dispatched = 0, chain;
     const expected = { billingreference: ' PO 123 ', roomtype: 'STQN' };
     chain = await installLabtestSaveRouteChain(page, { frame: page.mainFrame(), fence, scope,
-      isArmed: () => armed, matches: (request) => matchesFullCreateBody(new URLSearchParams(request.postData()), expected),
+      isArmed: () => armed, matches: (request) => ['billingreference', 'roomtype'].every(key => { const body = new URLSearchParams(request.postData());
+        return body.getAll(key).length === 1 && body.get(key) === expected[key]; }),
       onDispatch: () => { dispatched += 1; }, onBlocked: () => { blocked += 1; armed = false; fence.quarantine(); chain.disarm(); },
     });
     await page.locator('input[name="billingreference"]').fill(' PO 123 ');
@@ -104,7 +105,7 @@ test('unarmed billing staging permits no POST; quarantine blocks delayed and exa
   }
 });
 
-test('only one exact approved native-body save passes the retained fence', { timeout: 30000 }, async () => {
+test('only one approved business-field save passes the retained fence', { timeout: 30000 }, async () => {
   const received = [];
   const server = createServer((req, res) => { received.push({ method: req.method, url: req.url });
     res.writeHead(200, { 'content-type': 'text/html' }); res.end('<input name="billingreference">'); });
@@ -120,7 +121,8 @@ test('only one exact approved native-body save passes the retained fence', { tim
     let armed = false, dispatched = 0, authorizations = 0, attempts = 0;
     const expected = { billingreference: ' PO 123 ', roomtype: 'STQN' };
     const chain = await installLabtestSaveRouteChain(page, { frame: page.mainFrame(), fence, scope,
-      isArmed: () => armed, matches: (request) => matchesFullCreateBody(new URLSearchParams(request.postData()), expected),
+      isArmed: () => armed, matches: (request) => ['billingreference', 'roomtype'].every(key => { const body = new URLSearchParams(request.postData());
+        return body.getAll(key).length === 1 && body.get(key) === expected[key]; }),
       authorizeCandidate: async () => {
         authorizations += 1;
         if (authorizations === 2) throw new Error('authorization unavailable');

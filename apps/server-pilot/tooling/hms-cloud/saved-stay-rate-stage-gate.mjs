@@ -1,6 +1,7 @@
 // Validate one HMS-listed rate before allowing its unsaved saved-stay change.
 import { matchesSavedStageRequest } from './saved-stay-room-stage-gate.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 export const SAVED_RATE_STAGE_PATHS = Object.freeze([
   '/web/base/fieldvalidate', '/web/base/OSRESV.HDR.rateplanchange', '/web/base/OSRESV.HDR.attributerefresh',
@@ -10,7 +11,7 @@ const issued = new WeakSet();
 export const isSavedRateStageRequestGate = (gate) => Boolean(gate && issued.has(gate));
 
 export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } = {}) {
-  if (!frame || selected?.propertyCode !== 'HRCEN' || selected.status !== 'Reserved' ||
+  if (!frame || !getPropertyRegistration(selected?.propertyCode)?.active || selected.status !== 'Reserved' ||
       !/^\d{6,}-\d+$/.test(selected.confirmation || '') || !/^\d+$/.test(selected.guestId || '') ||
       !/^\d+$/.test(selected.reservationStayId || '') || !/^\d+$/.test(selected.reservationId || '') ||
       !/^\d+$/.test(selected.recordId || '') || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
@@ -25,7 +26,7 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
   const armTrack = (snapshot, next, readOnly = false) => {
     const data = snapshot?.data, display = snapshot?.values?.track;
     if (!active() || state !== 'ready' || !data || typeof display !== 'string' || String(data.track ?? '') !== display ||
-        data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
+        data.propertycode !== selected.propertyCode || data.status !== 'Reserved' ||
         String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
         String(data.reservationstayid ?? '') !== selected.reservationStayId || String(data.reservationid ?? '') !== selected.reservationId ||
         String(data.recordid ?? '') !== selected.recordId ||
@@ -37,7 +38,7 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
   const trackRequestKind = (request) => {
     const base = { GRID_NAME:'LVTRACKCODE', GRID_TYPE:'LOV', LOV_TAGNAME:'track',
       USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
-      LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
+      LOV_ALIAS_VALUE_1:selected.propertyCode, LOV_ALIAS_TYPE_1:'text' };
     if (state === 'track_popup_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[3], {
       ...base, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'tcddesc',
       filteroperator:'CONTAINS', filtervalue:native.track })) return 'track_popup';
@@ -78,7 +79,7 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
       const data = snapshot?.data;
       if (!active() || state !== 'ready' || !data || !/^(?:[A-Z0-9]{1,12})?$/.test(current || '') ||
           !/^(?:[A-Z0-9]{1,12})?$/.test(next || '') || current === next || String(data.roomtypecharge ?? '') !== current ||
-          data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
+          data.propertycode !== selected.propertyCode || data.status !== 'Reserved' ||
           String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
           String(data.reservationstayid ?? '') !== selected.reservationStayId ||
           String(data.reservationid ?? '') !== selected.reservationId || String(data.recordid ?? '') !== selected.recordId ||
@@ -105,7 +106,7 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
       const data = snapshot?.data;
       if (!active() || state !== 'ready' || !data || !/^(?:[A-Z0-9]{1,12})?$/.test(current || '') ||
           !/^[A-Z0-9]{1,12}$/.test(next || '') || current === next || String(data.rateplan ?? '') !== current ||
-          data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
+          data.propertycode !== selected.propertyCode || data.status !== 'Reserved' ||
           String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
           String(data.reservationstayid ?? '') !== selected.reservationStayId ||
           String(data.reservationid ?? '') !== selected.reservationId || String(data.recordid ?? '') !== selected.recordId ||
@@ -126,10 +127,10 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
       if (!kind && state === 'charge_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[0], {
         GRID_NAME:'LVROOMTYPE2', GRID_TYPE:'LOV', REQUEST_TYPE:'LOV.HEAD_DATA.STORED', LOV_TAGNAME:'roomtypecharge',
         USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
-        LOV_ALIAS_VALUE_1:'HRCEN', filterfields:'roomtypecode', filteroperator:'=', filtervalue:target })) kind = 'validation';
+        LOV_ALIAS_VALUE_1:selected.propertyCode, filterfields:'roomtypecode', filteroperator:'=', filtervalue:target })) kind = 'validation';
       else if (state === 'validation_armed' && matchesSavedStageRequest(request, frame, SAVED_RATE_STAGE_PATHS[0], {
         GRID_NAME:'LVRATEPLANS2', GRID_TYPE:'LOV', REQUEST_TYPE:'LOV.HEAD_DATA.STORED', LOV_TAGNAME:'rateplan',
-        USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode', LOV_ALIAS_VALUE_1:'HRCEN',
+        USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode', LOV_ALIAS_VALUE_1:selected.propertyCode,
         LOV_ALIAS_NAME_2:'param.arrivaldate', LOV_ALIAS_VALUE_2:native.arrivaldate,
         LOV_ALIAS_NAME_3:'param.departuredate', LOV_ALIAS_VALUE_3:native.departuredate,
         filterfields:'rateplancode', filteroperator:'=', filtervalue:target })) kind = 'validation';

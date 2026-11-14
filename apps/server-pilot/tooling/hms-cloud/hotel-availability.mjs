@@ -1,7 +1,7 @@
 // Read prices and inventory from cloud Hotel Availability on the caller's page.
 import { randomUUID } from 'node:crypto';
 import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness.mjs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { captureAvailabilityDisplay } from './availability-display.mjs';
 
 const busyPages = new WeakSet();

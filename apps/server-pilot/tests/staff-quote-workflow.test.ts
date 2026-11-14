@@ -87,7 +87,7 @@ async function fixture(confirmed = input()) {
     signer: { signerName: 'Staff', signerEmail: 'staff@example.test' },
     readQuote: async (request: any) => {
       calls.push(structuredClone(request));
-      const normalize = await import('../tooling/playwright-quote/quote-contract.mjs' as string),
+      const normalize = await import('../tooling/hms-cloud/quote-contract.mjs' as string),
         normalized = normalize.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
       return {
         ref: 'source:' + calls.length,

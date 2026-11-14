@@ -42,7 +42,7 @@ import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test
 const reachable = await probeTestDb();
 const TENANT = 'tenant-centurion';
 const LANE_OWNER = 'hms-ai-worker-111';
-const normalizer = (await import('../tooling/playwright-quote/quote-contract.mjs' as string)) as {
+const normalizer = (await import('../tooling/hms-cloud/quote-contract.mjs' as string)) as {
   normalizeQuoteRequest: (input: unknown) => { ok: boolean; issues: unknown[] };
 };
 type ReaderRequest = {
@@ -67,7 +67,7 @@ type ReaderOption = {
   eligibility?: string;
   nightly: ReaderNight[];
 };
-const quoteFixtureTool = (await import('../tooling/playwright-quote/fetch-quote.mjs' as string)) as {
+const quoteFixtureTool = (await import('../tooling/hms-cloud/fetch-quote.mjs' as string)) as {
   extractOptions: (
     request: ReaderRequest,
     room: ReaderRequest['rooms'][number],
@@ -78,7 +78,7 @@ const quoteFixtureTool = (await import('../tooling/playwright-quote/fetch-quote.
     max: number,
   ) => { options: unknown[]; truncated: boolean; matchingRowsUnseen: boolean };
 };
-const quoteFixtures = (await import('../tooling/playwright-quote/fetch-quote-fixtures.mjs' as string)) as {
+const quoteFixtures = (await import('../tooling/hms-cloud/fetch-quote-fixtures.mjs' as string)) as {
   manyRoomSource: (additionalRoomCount: number) => { data: unknown; calendar: unknown };
 };
 

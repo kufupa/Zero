@@ -1,10 +1,10 @@
 import { expect, it, vi } from 'vitest';
 
 it('keeps Centurion routes loadable and refuses an inactive Da Vinci property', async () => {
-  const registryPath = '../tooling/playwright-quote/property-registry.mjs';
+  const registryPath = '../tooling/hms-cloud/property-registry.mjs';
   vi.resetModules();
   const registryModule = await vi.importActual<
-    typeof import('../tooling/playwright-quote/property-registry.mjs')
+    typeof import('../tooling/hms-cloud/property-registry.mjs')
   >(registryPath);
   const inactiveRegistry = {
     ...registryModule.PROPERTY_REGISTRY,

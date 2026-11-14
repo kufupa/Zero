@@ -14,7 +14,7 @@ import {
   purgeExpiredHmsShots,
   purgeExpiredPlaywrightQuoteZips,
 } from '../src/ops/playwright-quote-purge.js';
-import { createAudit } from '../tooling/playwright-quote/audit.mjs';
+import { createAudit } from '../tooling/hms-cloud/fetch-quote.mjs';
 
 const { zipSync } = createRequire(new URL('../package.json', import.meta.url))('fflate') as typeof import('fflate');
 const testsDir = dirname(fileURLToPath(import.meta.url));

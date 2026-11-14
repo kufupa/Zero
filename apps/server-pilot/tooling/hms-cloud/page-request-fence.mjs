@@ -1,6 +1,22 @@
 // Keep protected paths blocked for the page lifetime unless an active caller
 // has approved this exact request after checking its payload and context.
 const pages = new WeakMap();
+const authorizations = new WeakMap();
+
+// A writer context may forward only a request which passed the owning page's
+// lifetime fence. Closing or quarantining the scope revokes its authorization.
+export function hasPageRequestAuthorization(request, page) {
+  const authorization = authorizations.get(request);
+  if (!authorization || authorization.page !== page) return false;
+  const { state, scope } = authorization;
+  return !state.quarantined && state.active === scope;
+}
+
+export function consumePageRequestAuthorization(request, page) {
+  const authorized = hasPageRequestAuthorization(request, page);
+  authorizations.delete(request);
+  return authorized;
+}
 
 export async function installPageRequestFence(page, paths) {
   if (!Array.isArray(paths) || !paths.length || paths.some(path => typeof path !== 'string' || !path.startsWith('/') || /[?#]/.test(path))) {
@@ -32,6 +48,7 @@ export async function installPageRequestFence(page, paths) {
       if (!current.paths.has(pathname.toLowerCase())) return route.fallback();
       if (current.quarantined || !current.active?.has(request)) return route.abort();
       current.active.delete(request);
+      authorizations.set(request, { page, state: current, scope: current.active });
       return route.fallback();
     }));
   }

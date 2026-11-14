@@ -1,6 +1,6 @@
 // Navigate between tabs in the already-open Guest Stay record.
 import { dismissNotesOrThrow, installStay360NotesHandler } from './stay360-notes.mjs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 
 /** Verify the open stay and activate a record tab; the caller reads its contents. */
 export async function openStay360RecordTab(page, confirmation, title) {

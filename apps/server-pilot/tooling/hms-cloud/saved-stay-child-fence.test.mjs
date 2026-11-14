@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { createSavedChildStageRequestGate } from './saved-stay-child-request-gate.mjs';
 import { runLabtestAmendSave } from './labtest-amend-save.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
@@ -10,7 +10,7 @@ const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const READ = '/web/base/OSRESV.HDR.getChildAges';
 const VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const frame = {};
-const target = () => ({ frame, stayId: '5', adults: 2, priorAges: [8, 12],
+const target = () => ({ propertyCode: 'HRCEN', frame, stayId: '5', adults: 2, priorAges: [8, 12],
   priorBands: { child1: 0, child2: 2, child3: 0 }, nextAges: [8, 12, 5], deadlineAt: performance.now() + 10000 });
 const makeRequest = (path, params, requestFrame = frame) => ({
   url: () => `${ORIGIN}${path}`, method: () => 'POST', frame: () => requestFrame,
@@ -31,6 +31,7 @@ function mockPage({ paused = null } = {}) {
   const page = { context: () => context, route: async (_pattern, handler) => { pageRoutes.push(handler); },
     unroute: async () => {}, on: () => {}, off: () => {}, locator: () => ({}),
     waitForTimeout: async () => {}, waitForResponse: async () => null };
+  frame.page = () => page;
   const visit = async (request) => {
     const callContext = async (index) => {
       if (index < 0) { calls.push('continue'); return; }

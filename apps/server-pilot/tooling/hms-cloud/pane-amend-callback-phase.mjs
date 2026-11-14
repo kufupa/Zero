@@ -9,6 +9,7 @@ import { savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposi
 import { isSavedChildStageRequestGate } from './saved-stay-child-request-gate.mjs';
 import { isSavedGuaranteeRequestGate, matchesSavedGuaranteeBefore, sameSavedGuaranteePreimage } from './saved-stay-guarantee-request-gate.mjs';
 import { isSavedPartyStageRequestGate, savedPartyBeforeImage, savedPartySpec } from './saved-stay-party-request-gate.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const usedPages = new WeakSet();
 const order = ['organization', 'bookingAgency', 'arAccount'];
@@ -28,7 +29,8 @@ const commission = value => value && typeof value === 'object' && !Array.isArray
 const issue = error => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CALLBACK_PHASE_UNVERIFIED';
 
 function validatePlan({ selected, expected, guarantee, parties, children, beforeImage }, { allowEmpty = false } = {}) {
-  if (!selected || !expected || selected.source !== 'record_view_ext_model' || selected.propertyCode !== 'HRCEN' ||
+  if (!selected || !expected || selected.source !== 'record_view_ext_model' ||
+      !getPropertyRegistration(selected.propertyCode)?.active || expected.propertyCode !== selected.propertyCode ||
       selected.status !== 'Reserved' || !/^\d{6,}-\d+$/.test(selected.confirmation || '') ||
       !['guestId', 'reservationId', 'reservationStayId', 'recordId'].every(key => id(selected[key])) ||
       !['firstName', 'lastName'].every(key => text(selected[key])) ||
@@ -141,7 +143,7 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
     active();
     snapshot = await snapshotLabtestRecord(context.frame);
     active();
-    const guaranteeExpected = { ...expected, reservationStayId: selected.reservationStayId,
+    const guaranteeExpected = { ...expected, propertyCode: selected.propertyCode, reservationStayId: selected.reservationStayId,
       reservationId: selected.reservationId, recordId: selected.recordId,
       guaranteeCode: expected.expectedGuarantee.code, guaranteeDisplay: expected.expectedGuarantee.display };
     if (!Array.isArray(snapshot?.dirtyFields) || !Array.isArray(snapshot?.modifiedFields) ||
@@ -247,7 +249,8 @@ export async function runCloudPaneAmendCallbacks(input, authority) {
         childCount: children.beforeAges.length, childAges: children.beforeAges }, children.nextAges);
       pending.partialEffect = 'possible';
       const occupancy = savedChildOccupancy(next);
-      const exempt = ['children', 'child1', 'child2', 'child3', 'childages'];
+      const exempt = ['children', 'childages', ...new Set(['data', 'values'].flatMap(part =>
+        [...Object.keys(snapshot?.[part] ?? {}), ...Object.keys(next?.[part] ?? {})].filter(key => /^child\d+$/i.test(key))))];
       if (!occupancy.valid || occupancy.count !== children.nextAges.length ||
           !preserved(snapshot, next, exempt, true) || !partyImagePreserved(snapshot, next, exempt, true) || !possible()) {
         throw new Error('CALLBACK_CHILD_UNVERIFIED');

@@ -7,7 +7,7 @@ import {
   groupOutcomeFromOptions,
   stayDates,
   unreadDetails,
-} from '../tooling/playwright-quote/fetch-quote.mjs';
+} from '../tooling/hms-cloud/fetch-quote.mjs';
 
 it('keeps a 17-row wholesale full read as quote when unread leftover rows stay in evidence', () => {
   expect(detailReadBudgetMs({})).toBe(90_000);
@@ -38,7 +38,7 @@ it('keeps a 17-row wholesale full read as quote when unread leftover rows stay i
     details: 'full',
     rooms: [{ quantity: 1, adults: 1, children: 0, childAges: [] }],
     search: { salesStrategy: 'Wholesale' },
-    rateContext: { agency: { name: 'Example Agency' } },
+    rateContext: { bookingAgency: { name: 'Example Agency' } },
   };
   const data = {
     datesList: ['02/16/2027', '02/17/2027'],
@@ -73,7 +73,7 @@ it('keeps a 17-row wholesale full read as quote when unread leftover rows stay i
     options: wsPlans.map((code) => ({
       room: { code: 'STKNG', inventory: ['84', '84'] },
       rate: `${code}: Wholesale ${code}`,
-      board: 'Bed & Breakfast NR',
+      mealPlan: 'Bed & Breakfast NR',
       prices: ['R2,500.00', 'R2,500.00'],
     })),
   };
@@ -81,7 +81,7 @@ it('keeps a 17-row wholesale full read as quote when unread leftover rows stay i
     stay,
     stay.rooms[0],
     [{ data, calendar, criteria: { salesStrategy: 'WS', travelAgencyID: '23' } }],
-    { agency: { id: '23' } },
+    { bookingAgency: { id: '23' } },
   );
   expect(result.options).toHaveLength(17);
   const nights = stayDates(stay);
@@ -94,7 +94,7 @@ it('keeps a 17-row wholesale full read as quote when unread leftover rows stay i
   expect(grouped.outcome).toBe('quote');
   expect(grouped.requiredFacts).toBe('complete');
   expect(grouped.eligible).toHaveLength(3);
-  expect(result.options.filter((option: { details: { status: string } }) => option.details.status === 'not_read')).toHaveLength(14);
+  expect(result.options.filter((option) => option.details?.status === 'not_read')).toHaveLength(14);
 });
 
 it('finishes one option across stay dates before starting the next', () => {

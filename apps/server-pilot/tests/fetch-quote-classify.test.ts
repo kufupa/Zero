@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
-import { extractOptions, groupOutcomeFromOptions } from '../tooling/playwright-quote/fetch-quote.mjs';
-import { multipleSource } from '../tooling/playwright-quote/fetch-quote-fixtures.mjs';
+import { extractOptions, groupOutcomeFromOptions } from '../tooling/hms-cloud/fetch-quote.mjs';
+import { multipleSource } from '../tooling/hms-cloud/fetch-quote-fixtures.mjs';
 
 const hrcenRequest = {
   propertyCode: 'HRCEN',
@@ -45,7 +45,7 @@ it('classifies an HRDAV wholesale BWS1B row with agency context as contextual an
     departureDate: '2027-02-17',
     rooms: [{ quantity: 1, adults: 1, children: 0, childAges: [] }],
     search: { salesStrategy: 'Wholesale' },
-    rateContext: { agency: { name: 'Example Agency' } },
+    rateContext: { bookingAgency: { name: 'Example Agency' } },
   };
   const data = {
     datesList: ['02/16/2027', '02/17/2027'],
@@ -80,7 +80,7 @@ it('classifies an HRDAV wholesale BWS1B row with agency context as contextual an
     options: [{
       room: { code: 'STKNG', inventory: ['84', '84'] },
       rate: 'BWS1B: Wholesale Best Available Rate 1',
-      board: 'Bed & Breakfast NR',
+      mealPlan: 'Bed & Breakfast NR',
       prices: ['R2,500.00', 'R2,500.00'],
     }],
   };
@@ -88,7 +88,7 @@ it('classifies an HRDAV wholesale BWS1B row with agency context as contextual an
     stay,
     stay.rooms[0],
     [{ data, calendar, criteria: { salesStrategy: 'WS', travelAgencyID: '23' } }],
-    { agency: { id: '23' } },
+    { bookingAgency: { id: '23' } },
   );
   const option = result.options.find((row) => row.rate.code === 'BWS1B');
   expect(option?.rateScope).toBe('contextual');
@@ -152,7 +152,7 @@ it('does not verify an HRDAV wholesale row from company context alone', () => {
     options: [{
       room: { code: 'STKNG', inventory: ['84', '84'] },
       rate: 'BWS1B: Wholesale Best Available Rate 1',
-      board: 'Bed & Breakfast NR',
+      mealPlan: 'Bed & Breakfast NR',
       prices: ['R2,500.00', 'R2,500.00'],
     }],
   };
@@ -217,7 +217,7 @@ it('verifies public BAR/PROMO rows on a two-group shop and keeps unbound WS cond
       options: rates.map((row) => ({
         room: { code: room, inventory: ['84', '84'] },
         rate: `${row.code}: ${row.desc}`,
-        board: 'Bed & Breakfast NR',
+        mealPlan: 'Bed & Breakfast NR',
         prices: ['R2,500.00', 'R2,500.00'],
       })),
     },
@@ -241,7 +241,7 @@ it('verifies public BAR/PROMO rows on a two-group shop and keeps unbound WS cond
       childAges: [],
     })),
     search: { salesStrategy: 'Wholesale' },
-    rateContext: { agency: { name: 'Example Agency' } },
+    rateContext: { bookingAgency: { name: 'Example Agency' } },
   };
   for (const group of groups) {
     const result = extractOptions(
@@ -286,7 +286,7 @@ it('verifies public BAR/PROMO rows on a two-group shop and keeps unbound WS cond
 
 it('labels an unverified-party public BAR as public, never the party contract', () => {
   const fixture = multipleSource();
-  const scoped = { ...hrcenRequest, rateContext: { agency: { name: 'CWT JNB' } } };
+  const scoped = { ...hrcenRequest, rateContext: { bookingAgency: { name: 'CWT JNB' } } };
   const unverified = extractOptions(
     scoped,
     scoped.rooms[0],
@@ -310,7 +310,7 @@ it('labels an unverified-party public BAR as public, never the party contract', 
     scoped,
     scoped.rooms[0],
     [{ data: fixture.data, calendar: fixture.calendar, criteria: { travelAgencyID: '290' } }],
-    { agency: { id: '290' } },
+    { bookingAgency: { id: '290' } },
   );
   const noSpecial = verified.issues.find((row) => row.code === 'NO_SPECIAL_RATES');
   expect(noSpecial).toBeDefined();
@@ -367,7 +367,7 @@ it('classifies unlisted non-negotiated PROMO rows public and leaves NC/negotiate
       options: [{
         room: { code: 'STKNG', inventory: ['84', '84'] },
         rate: 'PMO1B: Promotion Breakfast',
-        board: 'Bed & Breakfast NR',
+        mealPlan: 'Bed & Breakfast NR',
         prices: ['R2,500.00', 'R2,500.00'],
       }],
     },
@@ -442,7 +442,7 @@ it('keeps WS contract rows conditional without a verified agency', () => {
     details: 'summary' as const,
     rooms: [{ id: 'g1', quantity: 1, adults: 2, children: 0, childAges: [] }],
     search: { salesStrategy: 'Wholesale' },
-    rateContext: { agency: { name: 'Example Agency' } },
+    rateContext: { bookingAgency: { name: 'Example Agency' } },
   };
   const result = extractOptions(
     stay,
@@ -481,7 +481,7 @@ it('keeps WS contract rows conditional without a verified agency', () => {
         options: [{
           room: { code: 'STKNG', inventory: ['84', '84'] },
           rate: 'BWS1B: Wholesale Best Available Rate 1',
-          board: 'Bed & Breakfast NR',
+          mealPlan: 'Bed & Breakfast NR',
           prices: ['R2,500.00', 'R2,500.00'],
         }],
       },

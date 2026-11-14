@@ -4,12 +4,12 @@ import { setGuestStayText } from './guest-stay-form.mjs';
 import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { validCreateGuest } from './cloud-create-policy.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { cloudSessionIdentity } from './cloud-session.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const FIELDS = Object.freeze({ bookerName: 'caller', bookerContact: 'udfchar06', billingReference: 'billingreference' });
-const BLANK_IDS = ['reservationshareid', 'reservationstayid', 'guaranteecardprofileid',
-  'guestnameinfoid', 'externalprofileid', 'guestfoliocomptempresstayid', 'gueststaycouponids',
-  'additionalprofileids', 'reservationid', 'addlplayerprofileid', 'sourceprofileid', 'recordid'];
+const BLANK_IDS = ['reservationstayid', 'reservationid', 'recordid'];
 const busy = new WeakSet();
 const quarantined = new WeakSet();
 const pageFences = new WeakMap();
@@ -22,7 +22,7 @@ export function planBookerBilling(input) {
       Object.keys(input).some((key) => !['propertyCode', 'serviceWorkersBlocked', ...Object.keys(FIELDS)].includes(key))) {
     return { outcome: 'input_gap', issue: 'STAGING_INPUT_INVALID' };
   }
-  if (input.propertyCode !== 'HRCEN') return { outcome: 'input_gap', issue: 'PROPERTY_UNSUPPORTED' };
+  if (!getPropertyRegistration(input.propertyCode)?.active) return { outcome: 'input_gap', issue: 'PROPERTY_UNSUPPORTED' };
   if (input.serviceWorkersBlocked !== true) return { outcome: 'input_gap', issue: 'SERVICE_WORKER_BLOCK_REQUIRED' };
   const changes = {};
   for (const [key, nativeName] of Object.entries(FIELDS)) {
@@ -78,7 +78,9 @@ function labDate(value, allowRealGuest = false) {
 
 // Capture scalar record values to identify model changes without exposing their values in the result.
 async function inspectDraft(page, expectedGuest = { firstName: 'Proof', lastName: 'Labtest' }) {
-  return page.evaluate(({ origin, fields, blankIds, expectedGuest }) => {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) throw new Error('PROPERTY_MISMATCH');
+  return page.evaluate(({ origin, fields, blankIds, expectedGuest, propertyCode }) => {
     if (location.origin !== origin) throw new Error('HMS_ORIGIN_MISMATCH');
     const visible = (element) => Boolean((element.offsetWidth || element.offsetHeight) &&
       getComputedStyle(element).visibility !== 'hidden' && !element.closest('.x-window'));
@@ -98,12 +100,10 @@ async function inspectDraft(page, expectedGuest = { firstName: 'Proof', lastName
     const value = (key) => unique(key) ? String(data[key] ?? '').trim() : null;
     const exact = (key, expected) => value(key) === expected;
     const accountKeys = keys?.filter((key) => key.toLowerCase() === 'araccountid') || [];
-    if (!data || !exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') ||
+    if (!data || !exact('propertycode', propertyCode) || !exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) ||
         !exact('status', 'New') || !exact('confirmationnumber', '') || !unique('bookingsessionid') || !value('bookingsessionid') ||
         !unique('guestid') || !unique('arprofileid') || accountKeys.length > 1 ||
-        !blankIds.every((key) => exact(key, '')) ||
-        keys.some((key) => /(?:guest|profile|reservation|record|stay).*id/i.test(key) && !/^is/i.test(key) &&
-          !['guestid', 'arprofileid'].includes(key) && String(data[key] ?? '').trim())) throw new Error('DRAFT_ID_UNVERIFIED');
+        !blankIds.every((key) => exact(key, ''))) throw new Error('DRAFT_ID_UNVERIFIED');
     const guestValue = typeof anchor?.getValue === 'function' ? String(anchor.getValue() ?? '').trim() : null;
     const nameMatches = (element, key, expected) => element.value === expected &&
       typeof component(element)?.getValue === 'function' && String(component(element).getValue() ?? '') === expected &&
@@ -158,7 +158,7 @@ async function inspectDraft(page, expectedGuest = { firstName: 'Proof', lastName
       }));
     return { identity: { session: value('bookingsessionid'), guestId: value('guestid'), accountId, profileId,
       arrival: arrival.value, departure: departure.value }, controls, scalar, omitted, visibleFields };
-  }, { origin: ORIGIN, fields: FIELDS, blankIds: BLANK_IDS, expectedGuest });
+  }, { origin: ORIGIN, fields: FIELDS, blankIds: BLANK_IDS, expectedGuest, propertyCode });
 }
 
 async function verifyIdentity(page, snapshot, ensureActive, allowRealGuest = false) {
@@ -190,7 +190,7 @@ function identityCurrent(page, proof) {
 
 function safeName(value) { return typeof value === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(value) ? value : '<unidentified>'; }
 const BUSINESS_FIELDS = new Set(['guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate', 'adults', 'children',
-  'childages', 'child1', 'child2', 'child3', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'track', 'guaranteetype', 'ta1commission',
+  'childages', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan', 'track', 'guaranteetype', 'ta1commission',
   'sourceofbus', 'sourceofbusinessdesc', 'taid1', 'ta1', 'companyid', 'company', 'araccountid', 'araccountname',
   'arprofileid', 'reservationnote', 'emailaddress', 'caller', 'udfchar06', 'billingreference', 'guestoptin4',
   'udfchkbox04', 'udfchar09', 'udfchar13', 'averagerate', 'averagenightly', 'totalrate', 'grandtotal',
@@ -199,12 +199,15 @@ function diffs(before, after, targetNames) {
   const values = (snapshot, name) => snapshot.visibleFields
     .filter((field) => String(field.name ?? '').toLowerCase() === name)
     .map((field) => field.value);
-  const visible = [...BUSINESS_FIELDS].flatMap((name) => {
+  const childNames = [...Object.keys(before.scalar), ...Object.keys(after.scalar),
+    ...before.visibleFields.map(field => field.name), ...after.visibleFields.map(field => field.name)]
+    .filter(name => /^child[1-9]\d*$/.test(String(name ?? '').toLowerCase())).map(name => name.toLowerCase());
+  const visible = [...new Set([...BUSINESS_FIELDS, ...childNames])].flatMap((name) => {
     if (JSON.stringify(values(before, name)) === JSON.stringify(values(after, name))) return [];
     return [{ name: safeName(name), requested: targetNames.has(name) }];
   });
   const model = [...new Set([...Object.keys(before.scalar), ...Object.keys(after.scalar)])].flatMap((name) => {
-    if (!BUSINESS_FIELDS.has(name.toLowerCase())) return [];
+    if (!BUSINESS_FIELDS.has(name.toLowerCase()) && !/^child[1-9]\d*$/.test(name.toLowerCase())) return [];
     if (Object.hasOwn(before.scalar, name) && Object.hasOwn(after.scalar, name) &&
         Object.is(before.scalar[name], after.scalar[name])) return [];
     return [{ name: safeName(name), requested: targetNames.has(name) }];
@@ -299,6 +302,7 @@ export async function stageGuestStayBookerBilling(page, input, { timeoutMs = 300
   expectedGuest, expectedGuestId, expectedArId } = {}) {
   const plan = planBookerBilling(input);
   if (plan.outcome !== 'planned') return plan;
+  if (cloudSessionIdentity(page)?.propertyCode !== input.propertyCode) return { outcome: 'input_gap', issue: 'PROPERTY_MISMATCH' };
   if (typeof allowRealGuest !== 'boolean' || (allowRealGuest && (!validCreateGuest(expectedGuest) ||
       !/^\d{1,30}$/.test(String(expectedGuestId ?? '')) || !/^\d{1,30}$/.test(String(expectedArId ?? ''))))) {
     return { outcome: 'input_gap', issue: 'STAGING_IDENTITY_INVALID' };

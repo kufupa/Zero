@@ -1,3 +1,5 @@
+import { getPropertyRegistration } from './property-registry.mjs';
+
 // HRCEN's native selector was read in a guarded, unsaved draft. Values here
 // are code/display pairs, not aliases inferred from their descriptions.
 export const CREATE_GUARANTEES = Object.freeze({
@@ -32,9 +34,11 @@ export const sameCreateGuest = (left, right) => validCreateGuest(left) && validC
   createNameKey(left.firstName) === createNameKey(right.firstName) &&
   createNameKey(left.lastName) === createNameKey(right.lastName);
 
-export function createCloudTargetKey(guest, arrival) {
-  if (!validCreateGuest(guest) || !isCreateDate(arrival)) return null;
-  return JSON.stringify(['HRCEN', 'create', createNameKey(guest.firstName), createNameKey(guest.lastName), arrival]);
+export function createCloudTargetKey(guest, arrival, propertyCode = 'HRCEN') {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active || !validCreateGuest(guest) || !isCreateDate(arrival)) return null;
+  return JSON.stringify([propertyCode, 'create', createNameKey(guest.firstName), createNameKey(guest.lastName), arrival,
+    ...(propertyCode === 'HRCEN' ? [] : [property.expectedTenant])]);
 }
 
 export function isCreateDate(value) {

@@ -39,9 +39,13 @@ const AS_OF = '2026-10-09T08:05:00.000Z';
 const MAILBOX = { context: { activeTransportId: 'transport-1' } };
 const DOCUMENT_SOURCE = { sha256: 'a'.repeat(64), snapshotDigest: 'b'.repeat(64) };
 const SELECTED_SOURCE = { threadId: 'thread-1', messageId: 'm1', sourceHash: 'c'.repeat(64) };
+const PREPARED = { status: 'prepared' as const, preparedRef: 'e3d99bf0-9076-4b85-a5cb-dc69791245ab',
+  propertyCode: 'HRCEN', businessDigest: 'd'.repeat(64), revision: 4, generationId: 'generation-1',
+  expiresAtIso: '2099-01-01T00:00:00.000Z', warnings: [] as string[] };
 
 function VoucherFindCard(props: ComponentProps<typeof ScopedVoucherFindCard>) {
   return <ScopedVoucherFindCard transportId="transport-1" mailboxScope="user-1:session-1:transport-1"
+    propertyCode="LEGACY"
     {...(props.propertyCode === 'HRCEN' ? { selectedSource: SELECTED_SOURCE } : {})} {...props} />;
 }
 
@@ -612,10 +616,11 @@ describe('voucher find card: the existing search', () => {
 
   it('shows multiple matches without choosing one for the attachment row', async () => {
     const secondRow = { ...SMITH_ROW, confirmation: '57291630-2', firstName: 'James' };
-    const { trpc } = fakeTrpc({
+    const { trpc, queueSearchGuest } = fakeTrpc({
       reply: VOUCHER,
       search: { outcome: 'ok', rows: [SMITH_ROW, secondRow], screenshots: [], runId: null },
     });
+    const status = vi.spyOn(trpc.paneStayLookup.jobStatus, 'query');
     render(
       <VoucherFindCard
         internetMessageId="abc@host"
@@ -633,6 +638,8 @@ describe('voucher find card: the existing search', () => {
     expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+    expect(queueSearchGuest).toHaveBeenCalledWith(expect.objectContaining({ propertySwitch: 'HRDAV' }), MAILBOX);
+    expect(status).toHaveBeenCalledWith(expect.objectContaining({ propertySwitch: 'HRDAV' }), MAILBOX);
   });
 
   it('checks an entered confirmation in HMS and requires an explicit booking selection', async () => {
@@ -1029,11 +1036,12 @@ describe('voucher find card: attach to HMS', () => {
         sourceSnapshotDigest: DOCUMENT_SOURCE.snapshotDigest, sourceMessageId: 'm1',
         sourceThreadId: 'thread-1', sourceHash: SELECTED_SOURCE.sourceHash } }));
     const onPrepared = vi.fn();
+    const prepare = vi.fn(async () => PREPARED);
     const state = vi.fn(async () => ({ form: { action: 'amend' }, grant: { fingerprintMatches: true },
       run: { state: 'succeeded', lastError: null, evidence: [] }, needsCheck: false, filingConfigured: true }));
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview },
-      bindAttach: { mutate: bind }, writeState: { query: state } };
+      bindAttach: { mutate: bind }, prepare: { mutate: prepare }, writeState: { query: state } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRCEN"
       approvalAvailable onPrepared={onPrepared} />);
     await waitFor(() => expect(state).toHaveBeenCalled());
@@ -1045,7 +1053,13 @@ describe('voucher find card: attach to HMS', () => {
       lastName: SMITH_ROW.lastName, internetMessageId: 'abc@host', selectedSource: SELECTED_SOURCE,
       documentSource: DOCUMENT_SOURCE, revisionSeq: 0,
       expectedStay: { firstName: SMITH_ROW.firstName, status: SMITH_ROW.status, departure: SMITH_ROW.departure } }, MAILBOX));
-    expect(onPrepared).toHaveBeenCalledOnce();
+    await waitFor(() => expect(onPrepared).toHaveBeenCalledWith(PREPARED.businessDigest, {
+      preparedRef: PREPARED.preparedRef, expectedRevision: PREPARED.revision, generationId: PREPARED.generationId,
+      expiresAtIso: PREPARED.expiresAtIso, warnings: PREPARED.warnings,
+    }));
+    expect(prepare).toHaveBeenCalledWith({ workItemId: WORK_ITEM, internetMessageId: 'abc@host',
+      selectedSource: SELECTED_SOURCE, confirmation: SMITH_ROW.confirmation, arrival: SMITH_ROW.arrival,
+      formDigest: PREPARED.businessDigest }, MAILBOX);
   });
 
   it('does not prepare HRCEN filing when no matching approval card is mounted', async () => {
@@ -1076,9 +1090,10 @@ describe('voucher find card: attach to HMS', () => {
     const preview = vi.fn(async () => ({ status: 'ready' as const, confirmation: SMITH_ROW.confirmation,
       arrival: SMITH_ROW.arrival, documentName: 'Smith_VCH_1879000.pdf', documentSource: DOCUMENT_SOURCE, revisionSeq: 0 }));
     const bind = vi.fn(() => new Promise<Parameters<typeof resolveBind>[0]>((done) => { resolveBind = done; }));
+    const prepare = vi.fn(async () => PREPARED);
     const onPrepared = vi.fn();
     const { trpc } = fakeTrpc({ reply: VOUCHER });
-    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, bindAttach: { mutate: bind },
+    (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: preview }, bindAttach: { mutate: bind }, prepare: { mutate: prepare },
       writeState: { query: vi.fn(async () => ({ form: { action: 'attach_document' },
         grant: { fingerprintMatches: false }, run: { state: 'succeeded', lastError: null, evidence: [] },
         needsCheck: false, filingConfigured: true })) } };
@@ -1252,10 +1267,11 @@ describe('voucher find card: attach to HMS', () => {
   });
 
   it('offers no filing action until the active property is verified', async () => {
-    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    const { trpc, queueSearchGuest } = fakeTrpc({ reply: VOUCHER });
     (trpc as { hmsApproval?: unknown }).hmsApproval = { previewAttach: { mutate: vi.fn() } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode={null} writesEnabled />);
-    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(await screen.findByText('The hotel is not available for this lookup yet. Try again.')).toBeTruthy();
+    expect(queueSearchGuest).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Check document and booking' })).toBeNull();
   });
@@ -1303,7 +1319,7 @@ describe('voucher find card: attach to HMS', () => {
     (trpc as { hmsApproval?: unknown }).hmsApproval = { writeState: { query: writeState } };
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} workItemId={WORK_ITEM} propertyCode="HRDAV" writesEnabled />);
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
-    expect(writeState).toHaveBeenCalledWith({ workItemId: WORK_ITEM, internetMessageId: 'abc@host' }, MAILBOX);
+    expect(writeState).toHaveBeenCalledWith({ workItemId: WORK_ITEM, internetMessageId: 'abc@host', propertySwitch: 'HRDAV' }, MAILBOX);
     expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 

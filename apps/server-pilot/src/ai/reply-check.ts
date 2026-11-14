@@ -1,5 +1,5 @@
 import { and, eq } from 'drizzle-orm';
-import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { resolveModelAdapter } from './bedrock/factory.js';
 import { enqueueAiRun, markAiRunSucceeded, type AiRunFence } from './run-ledger.js';

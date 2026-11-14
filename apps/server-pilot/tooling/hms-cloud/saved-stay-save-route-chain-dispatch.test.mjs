@@ -25,6 +25,7 @@ async function harness(dispatchCandidate) {
     abort: async () => { order.push('abort'); return 'abort'; },
     continue: async () => { order.push('continue'); return 'continue'; } };
   await pageHandler(route);
+  route.fallback = async () => { order.push('continue'); return 'continue'; };
   return { chain, request, route, contextHandler, order,
     disarm: () => { armed = false; }, quarantine: () => { quarantined = true; } };
 }
@@ -45,8 +46,8 @@ test('dispatch wrapper can hold its guard through exact continuation', async () 
     await proceed();
     order.push('unlock');
   });
-  const original = h.route.continue;
-  h.route.continue = async () => { order.push('continue'); return original(); };
+  const original = h.route.fallback;
+  h.route.fallback = async () => { order.push('continue'); return original(); };
   await h.contextHandler(h.route);
   assert.deepEqual(order, ['lock', 'continue', 'unlock']);
   assert.deepEqual(h.order, ['dispatch', 'continue']);
@@ -101,7 +102,7 @@ test('post-dispatch wrapper failure is propagated as an uncertain outcome', asyn
 test('a wrapper that fails to await continuation reports an uncertain outcome', async () => {
   const h = await harness(async (_request, proceed) => { void proceed(); });
   const pending = deferred();
-  h.route.continue = async () => { h.order.push('continue'); await pending.promise; };
+  h.route.fallback = async () => { h.order.push('continue'); await pending.promise; };
   await assert.rejects(h.contextHandler(h.route), /SAVE_DISPATCH_NOT_AWAITED/);
   assert.equal(h.chain.continued(), h.request);
   assert.deepEqual(h.order, ['dispatch', 'continue']);
@@ -158,7 +159,7 @@ test('refusal before native continuation reports failed completion', async () =>
 
 test('a wrapper cannot hide a failed native continuation', async () => {
   const h = await harness(async (_request, proceed) => { try { await proceed(); } catch { /* Swallowed by caller. */ } });
-  h.route.continue = async () => { throw new Error('network_failed'); };
+  h.route.fallback = async () => { throw new Error('network_failed'); };
   await assert.rejects(h.contextHandler(h.route), /SAVE_DISPATCH_UNCERTAIN/);
   assert.equal(await h.chain.waitForDispatch(), false);
   assert.equal(h.chain.continued(), h.request);
@@ -180,8 +181,11 @@ test('availability and second Save each require their exact guarded phase and pr
   const route = (tag, availability = false) => {
     const request = { tag, frame: () => frame, method: () => 'POST',
       url: () => `https://example.invalid/web/base/OSRESV.HDR${availability ? '.getcheckavailability' : '?pageaction=SAVE'}` };
-    return { request: () => request, fallback: async () => 'fallback', abort: async () => 'abort',
-      continue: async () => { continued.push(tag); return 'continued'; } };
+    let pagePass = true;
+    return { request: () => request, fallback: async () => {
+      if (pagePass) { pagePass = false; return 'fallback'; }
+      continued.push(tag); return 'continued';
+    }, abort: async () => 'abort' };
   };
   const earlySecond = route('second');
   assert.equal(await pageHandler(earlySecond), 'fallback');

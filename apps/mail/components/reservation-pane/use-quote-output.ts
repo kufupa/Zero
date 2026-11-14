@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
@@ -21,7 +21,7 @@ const MAX_OUTLOOK_ATTACHMENT_BYTES = 1_400_000;
 
 function sourceKey(source: ReservationSourceContext): string {
   return JSON.stringify([source.mailboxId, source.propertyId, source.messageId, source.threadId,
-    source.sourceHash, source.selectionEpoch]);
+    source.sourceHash, source.propertySelectionEpoch, source.selectionEpoch]);
 }
 
 async function verifyAttachments(artifacts: QuoteOutputArtifact[]): Promise<void> {
@@ -74,31 +74,32 @@ type Pending = {
 };
 
 /** Source and mailbox remain host-owned. The caller supplies a live selection guard and reviewed HTML. */
-export function useQuoteOutput({ source, bridge, isCurrentSource }: {
+export function useQuoteOutput({ source, configuration, bridge, isCurrentSource }: {
   source: ReservationSourceContext; bridge?: PaneBridge;
+  configuration: PropertyConfiguration | null;
   isCurrentSource: (source: ReservationSourceContext) => boolean;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false), pending = useRef<Pending | null>(null), mounted = useRef(false);
-  const live = useRef({ source, bridge, isCurrentSource });
-  live.current = { source, bridge, isCurrentSource };
+  const live = useRef({ source, configuration, bridge, isCurrentSource });
+  live.current = { source, configuration, bridge, isCurrentSource };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const key = sourceKey(source);
   const current = () => mounted.current && sourceKey(live.current.source) === key && live.current.isCurrentSource(source);
-  const outputFor = (snapshot: ReservationPaneSnapshot | null, requestId: string) => getQuoteOutput(source, snapshot, requestId);
+  const outputFor = (snapshot: ReservationPaneSnapshot | null, requestId: string) => getQuoteOutput(source, snapshot, requestId, configuration);
   const report = (status: QuoteOutputResult['status'], message: string): QuoteOutputResult => {
     if (mounted.current && sourceKey(live.current.source) === key) setError(status === 'error' || status === 'unknown' ? message : null);
     return { status, message };
   };
   const getReady = async (requestId: string, html: string, snapshot: ReservationPaneSnapshot, isCurrentSnapshot?: () => boolean) => {
     if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
-    const output = getQuoteOutput(source, snapshot, requestId);
+    const output = getQuoteOutput(source, snapshot, requestId, configuration);
     if (!output || output.issues.length || !output.cover) throw new Error(output?.issues[0] ?? 'Generate the quote and cover reply first.');
     if (!html.trim()) throw new Error('Review the cover reply before creating a draft.');
     await verifyAttachments(output.artifacts);
     if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
-    const latest = getQuoteOutput(source, snapshot, requestId);
+    const latest = getQuoteOutput(source, snapshot, requestId, live.current.configuration);
     if (!latest || latest.operationId !== output.operationId || latest.issues.length) throw new Error('The quote changed. Review the latest output.');
     return output;
   };
@@ -122,7 +123,7 @@ export function useQuoteOutput({ source, bridge, isCurrentSource }: {
         if (!confirmReplace) return report('error', 'This thread has another draft. Confirm replacement before saving.');
         if (!await confirmReplace()) return report('cancelled', 'The existing draft was kept.');
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. The existing draft was kept.');
-        const latest = getQuoteOutput(source, snapshot, requestId);
+        const latest = getQuoteOutput(source, snapshot, requestId, live.current.configuration);
         if (!latest || latest.operationId !== output.operationId || latest.issues.length) throw new Error('The quote changed. Review the latest output.');
         await trpcClient.drafts.saveReply.mutate({ ...payload, replaceDraft: token }, inMailbox(source.mailboxId));
       }

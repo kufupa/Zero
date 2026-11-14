@@ -2,7 +2,7 @@ import { normalizeEmailAddress } from '../ai/never-spam.js';
 import { getDb } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
-import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { propertyCodeSchema, propertySwitchSchema, resolvePropertyScope } from './property-registry.js';
 import { TRPCError } from '@trpc/server';
@@ -264,7 +264,7 @@ async function loadThreadMailboxHmsOriginScanFromDb(
   };
 }
 
-async function loadThreadMailboxHmsOriginScan(
+export async function loadThreadMailboxHmsOriginScan(
   input: MailboxHmsOriginLoadInput,
 ): Promise<MailboxHmsOriginScan> {
   if (mailboxHmsOriginBindLoaders.loadThreadOriginScan) {

@@ -27,7 +27,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
   const refreshCount = useRef(0);
   const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot>; prefill: Promise<ReservationPaneSnapshot> | null } | null>(null);
   const key = JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId,
-    source.sourceHash, source.arrivedAt, source.selectionEpoch]);
+    source.sourceHash, source.arrivedAt, source.propertySelectionEpoch, source.selectionEpoch]);
   const snapshot = boundSnapshot?.key === key ? boundSnapshot.value : null;
   const [confirmation, setConfirmation] = useState<{ message: string; label: string } | null>(null);
   const confirmResolve = useRef<((accepted: boolean) => void) | null>(null);
@@ -37,7 +37,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
   });
   useEffect(() => { setConfirmation(null); return () => { confirmResolve.current?.(false); confirmResolve.current = null; }; }, [key]);
 
-  const quoteOutput = useQuoteOutput({ source, bridge, isCurrentSource: candidate => activeSource.current === key && candidate.messageId === source.messageId && candidate.sourceHash === source.sourceHash && candidate.selectionEpoch === source.selectionEpoch });
+  const quoteOutput = useQuoteOutput({ source, configuration, bridge, isCurrentSource: candidate => activeSource.current === key && candidate.messageId === source.messageId && candidate.sourceHash === source.sourceHash && candidate.selectionEpoch === source.selectionEpoch });
   const saveQuoteOutput: SaveQuoteOutput = input => hostType === 'outlook'
     ? quoteOutput.createOutlookReply({ ...input, confirmUnknown: () => confirm('A previous reply may exist. Check Outlook Drafts first. Continue only if you verified there is no duplicate.', 'I checked Drafts · continue') })
     : quoteOutput.saveWebReply({ ...input, confirmReplace: () => confirm('This thread has an existing unsent draft. Replace it with the reviewed quotation?', 'Replace unsent draft') });
@@ -129,6 +129,28 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
       }).catch(() => {
         if (live && activeSource.current === key) {
           setLoadError('Could not refresh the email prefill. Retrying; your draft is retained.');
+          poll();
+        }
+      });
+    }, 2000); };
+    poll();
+    return () => { live = false; clearTimeout(timer); };
+  }, [client, key, snapshot, source]);
+
+  useEffect(() => {
+    if (!snapshot || (!snapshot.preparationViews.some(view => view.dispatch && view.dispatch.status !== 'needs_reconcile') &&
+      !snapshot.session.workflowDispatches?.some(dispatch => dispatch.status !== 'needs_reconcile' && dispatch.status !== 'needs_review' && dispatch.status !== 'succeeded' && dispatch.status !== 'failed'))) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = () => { timer = setTimeout(() => {
+      void client.get({ source, snapshot, backgroundPoll: true }).then(next => {
+        if (!live || activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
+        setLoadError(null);
+        setBoundSnapshot(bound => bound?.key === key && bound.value === snapshot && next.session.seq >= snapshot.session.seq
+          ? { key, value: next } : bound);
+      }).catch(() => {
+        if (live && activeSource.current === key) {
+          setLoadError('Could not refresh the Infor save. Retrying; wait for the outcome before trying again.');
           poll();
         }
       });

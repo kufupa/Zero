@@ -34,7 +34,7 @@ import {
 import { deriveAuthorizedExtraLines, deriveQuoteLines, extraDisplayDescription,
   type AuthorizedProposalFacts, type RowPrice } from '../quote-proposal/quote-lines.js';
 import { occupiedDates, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
-import { getProfileBoards, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { getProfileBoards, profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
 
 /** Kept structurally aligned with reservationWorkflowV2ServerContext in the native tools module. */
 export type ReservationWorkflowV2QuoteContext = {

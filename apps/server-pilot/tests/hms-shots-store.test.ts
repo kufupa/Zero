@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROPERTY_REGISTRY } from '../tooling/playwright-quote/property-registry.mjs';
+import { PROPERTY_REGISTRY } from '../tooling/hms-cloud/property-registry.mjs';
 import { hmsShotsRoot, persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from '../src/ai/hms-shots-store.js';
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);

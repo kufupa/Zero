@@ -1836,7 +1836,7 @@ function CloudAmendAction({ request, transportId, trpc, onAvailable, onBound, gu
         .finally(() => { if (liveRef.current) setBusy(false); });
     }}>{busy ? 'Preparing in HMS… this may take a few minutes.' : 'Prepare in HMS'}</button> : null}
     {failed ? <p role="alert" className={warnNoteClass}>Nava could not prepare this change. Check it in HMS.</p> : null}
-    {bound ? <ApproveCard client={client.approval} workItemId={selected.workItemId} confirmation={selected.confirmation}
+    {bound ? <ApproveCard client={client.approval} preparedReceipt={client.preparedReceipt()} workItemId={selected.workItemId} confirmation={selected.confirmation}
       arrival={selected.arrival} guestSurname={guestSurname} writesEnabled manualResolve={false} /> : null}
   </>;
 }

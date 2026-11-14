@@ -2,14 +2,14 @@
  * v8 read-only live-check pack. One JSON line per check, PII redacted.
  *
  * Every check takes the session hotel's property lock the way the pane routes do, and runs its HMS CLI with
- * paneStaySpawnEnv. Nothing is saved, booked, cancelled or clicked. Only the operator runs it, on EC2.
+ * the selected Cloud credential lease. Nothing is saved, booked or cancelled. Only the operator runs it, on EC2.
  *
  *   party <name> [--kind company|agency|both]            party-lookup.mjs (organization / bookingAgency search)
- *   deeplink --conf <labtest conf> [--stay-id <id>]      hms-deeplink-probe.mjs (GET navigations, new tabs)
+ *   deeplink --conf <labtest conf> [--stay-id <id>]      scoped saved Record View (exact native target)
  *   rateshop (--org <nativeId> | --agency <nativeId> --name <party name>)
  *            [--arrival YYYY-MM-DD] [--nights 1-30] [--adults 1-9]
  *                                                        fetch-quote.mjs search only: no details, no rate click
- *   stay --conf <labtest conf>                           stay-lookup.mjs find (the pane's find CLI)
+ *   stay --conf <labtest conf>                           scoped saved Record View (the pane projection)
  *   quote --arrival YYYY-MM-DD --nights 1-30 --adults 1-9 --room <code>
  *         [--org <nativeId> --org-name <name>] [--agency <nativeId> --agency-name <name>]
  *                                                        the server's staff quote path after approval (installed
@@ -21,14 +21,15 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildStayLookupArgs, paneStayLookupEnabled } from '../src/ai/pane-stay-lookup.js';
-import { PANE_STAY_PROPERTY_CODE, paneStayPropertyLock, type PaneStayLock } from '../src/ai/pane-stay-save.js';
-import { paneStaySpawnEnv } from '../src/ai/pane-stay-spawn-env.js';
-import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { paneStayLookupEnabled } from '../src/ai/pane-stay-lookup.js';
+import { paneStayPropertyLock, type PaneStayLock } from '../src/ai/pane-stay-save.js';
+import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
+import { resolvePropertyScope, propertySwitchSchema } from '../src/hms/property-registry.js';
+import { nativeReadCapabilityAvailable } from '../src/hms/hms-service.js';
+import { projectCloudStayFind, readCloudStayForPane } from '../src/ai/hms-cloud-saved-stay-find.js';
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
@@ -48,12 +49,11 @@ import {
 } from '../src/hms/property-read-lock.js';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../../', import.meta.url)));
-const TOOLING = resolve(fileURLToPath(new URL('../tooling/playwright-quote/', import.meta.url)));
+const TOOLING = resolve(fileURLToPath(new URL('../tooling/hms-cloud/', import.meta.url)));
 const PARTY_CLI = join(TOOLING, 'party-lookup.mjs');
 const RATE_CLI = join(TOOLING, 'fetch-quote.mjs');
-const PROBE_CLI = join(TOOLING, 'hms-deeplink-probe.mjs');
 const RUN_ROOT = join(REPO_ROOT, '.private', 'pms-pipeline', 'v8-live-checks');
-const RATE_OUTPUT = join(REPO_ROOT, '.private', 'playwright-quote', 'runs');
+const RATE_OUTPUT = join(REPO_ROOT, '.private', 'hms-cloud', 'v8-quotes');
 // party-lookup.mjs reads at most 80 grid rows. Reaching that many means the list may be incomplete.
 const PARTY_ROW_CAP = 80;
 // quote-contract.mjs MAX_NIGHTS. The adult cap keeps a rate shop to ordinary occupancy.
@@ -64,9 +64,7 @@ const CHILD_TIMEOUT_MS = { party: 5 * 60_000, deeplink: 10 * 60_000, rateshop: 1
 const CONFIRMATION = /^\d+-\d+$/;
 const STAY_ID = /^\d{1,12}$/;
 const NATIVE_ID = /^[A-Za-z0-9_-]{1,40}$/;
-const LOOPBACK_CDP = /^(http|ws):\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/;
 const PARTY_OK = new Set(['resolved', 'ambiguous', 'no_match']);
-const DEEPLINK_OK = new Set(['observed']);
 // stay-lookup.mjs exits 0 only for found and not_found; every other outcome exits 1.
 const STAY_OK = new Set(['found', 'not_found']);
 const RATE_OK = new Set(['quote', 'no_match', 'unavailable']);
@@ -88,7 +86,7 @@ const FLAGS_BY_COMMAND: Record<CommandName, readonly string[]> = {
 };
 
 export const USAGE = [
-  'usage: scripts/v8-live-checks.ts <command> [flags] [--dry-run]',
+  'usage: scripts/v8-live-checks.ts <command> --property <code> --transport <id> [flags] [--dry-run]',
   '  party <name> [--kind company|agency|both]',
   '  deeplink --conf <labtest confirmation> [--stay-id <id>]',
   '  rateshop (--org <nativeId> | --agency <nativeId> --name <party name>) [--arrival YYYY-MM-DD] [--nights 1-30] [--adults 1-9]',
@@ -106,7 +104,8 @@ export type LiveCheck =
   | { check: 'stay'; conf: string }
   | { check: 'quote'; arrival: string; nights: number; adults: number; room: string; org: PartyPick | null; agency: PartyPick | null };
 export type PartyPick = { nativeId: string; name: string };
-export type ParsedLiveCheck = { check: LiveCheck; dryRun: boolean };
+type NativeScope = { propertyCode: string; transportId: string };
+export type ParsedLiveCheck = { check: LiveCheck; dryRun: boolean; scope?: NativeScope };
 export type ParseOutcome = { ok: true; value: ParsedLiveCheck } | { ok: false; error: string };
 
 export type CliRun = { code: number | null; stdout: string };
@@ -138,11 +137,12 @@ export type RateRow = {
 
 export type LiveCheckDeps = {
   env: NodeJS.ProcessEnv;
+  scope?: NativeScope;
   today: () => string;
   writeLine: (line: string) => void;
   lock: () => PaneStayLock | null;
   spawnEnv: () => NodeJS.ProcessEnv;
-  runCli: (file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number) => Promise<CliRun>;
+  runCli: (file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signal?: AbortSignal) => Promise<CliRun>;
   newRunId: () => string;
 };
 
@@ -240,8 +240,19 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
   if (!tokens.ok) return fail(tokens.error);
   const { flags, positional, dryRun } = tokens;
   for (const flag of flags.keys()) {
-    if (!FLAGS_BY_COMMAND[name].includes(flag)) return fail(`unknown_flag:${flag}`);
+    if (!['property', 'transport'].includes(flag) && !FLAGS_BY_COMMAND[name].includes(flag)) return fail(`unknown_flag:${flag}`);
   }
+
+  const propertyCode = flags.get('property'), transportId = flags.get('transport');
+  let scope: NativeScope | undefined;
+  if (propertyCode !== undefined || transportId !== undefined) {
+    if (!propertyCode || !transportId) return fail('explicit_property_and_transport_required');
+    try { const selected = resolvePropertyScope({ transportId, ...(propertyCode === 'HRCEN' ? {} : { propertySwitch: propertySwitchSchema.parse(propertyCode) }) });
+      if (selected.propertyCode !== propertyCode) return fail('property_transport_mismatch');
+      scope = { propertyCode, transportId };
+    } catch { return fail('property_transport_mismatch'); }
+  }
+  const scopedOk = (value: ParsedLiveCheck) => ok({ ...value, ...(scope ? { scope } : {}) });
 
   if (name === 'party') {
     if (positional.length !== 1) return fail('party_needs_one_name');
@@ -251,7 +262,7 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
     const kinds: PartyKind[] | null =
       kindFlag === 'company' ? ['company'] : kindFlag === 'agency' ? ['agency'] : kindFlag === 'both' ? ['company', 'agency'] : null;
     if (kinds === null) return fail('kind_invalid');
-    return ok({ check: { check: 'party', name: partyName, kinds }, dryRun });
+    return scopedOk({ check: { check: 'party', name: partyName, kinds }, dryRun });
   }
 
   if (name === 'deeplink') {
@@ -260,7 +271,7 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
     if (conf === null) return fail('conf_required_or_invalid');
     const stayId = flags.get('stay-id') ?? null;
     if (stayId !== null && !STAY_ID.test(stayId)) return fail('stay_id_invalid');
-    return ok({ check: { check: 'deeplink', conf, stayId }, dryRun });
+    return scopedOk({ check: { check: 'deeplink', conf, stayId }, dryRun });
   }
 
   if (name === 'quote') {
@@ -279,7 +290,7 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
     if (!org.ok) return fail(org.error);
     const agency = partyPickFlag(flags, 'agency', 'agency-name');
     if (!agency.ok) return fail(agency.error);
-    return ok({ check: { check: 'quote', arrival, nights, adults, room, org: org.pick, agency: agency.pick }, dryRun });
+    return scopedOk({ check: { check: 'quote', arrival, nights, adults, room, org: org.pick, agency: agency.pick }, dryRun });
   }
 
   if (name === 'rateshop') {
@@ -301,7 +312,7 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
     if (nights === null) return fail('nights_invalid');
     const adults = integerFlag(flags.get('adults'), 2, 1, MAX_ADULTS);
     if (adults === null) return fail('adults_invalid');
-    return ok({
+    return scopedOk({
       check: { check: 'rateshop', source: { contextKey, nativeId, name: partyName }, arrival, nights, adults },
       dryRun,
     });
@@ -310,7 +321,7 @@ export function parseLiveCheckArgs(argv: readonly string[], today: string): Pars
   if (positional.length !== 0) return fail('unexpected_argument');
   const conf = confirmationFlag(flags.get('conf'));
   if (conf === null) return fail('conf_required_or_invalid');
-  return ok({ check: { check: 'stay', conf }, dryRun });
+  return scopedOk({ check: { check: 'stay', conf }, dryRun });
 }
 
 /** Text redaction for every printed string: URLs, emails and phone-like runs. Confirmation numbers pass through. */
@@ -450,6 +461,7 @@ export function rateRows(result: QuoteResult): RateRow[] {
 
 export function rateshopCheckLine(input: {
   source: RateSource;
+  propertyCode?: string;
   arrival: string;
   nights: number;
   adults: number;
@@ -463,7 +475,7 @@ export function rateshopCheckLine(input: {
   return {
     check: 'rateshop',
     contextKey: input.source.contextKey,
-    propertyCode: PANE_STAY_PROPERTY_CODE,
+    propertyCode: input.propertyCode ?? null,
     arrival: input.arrival,
     nights: input.nights,
     adults: input.adults,
@@ -479,15 +491,15 @@ export function rateshopCheckLine(input: {
 }
 
 /** The fetch-quote request for a contextual search. Summary details only, so no rate cell is ever clicked. */
-export function quoteRequestFor(source: RateSource, arrival: string, nights: number, adults: number) {
+export function quoteRequestFor(source: RateSource, arrival: string, nights: number, adults: number, propertyCode: string) {
   const contextRef = source.name === null ? { nativeId: source.nativeId } : { nativeId: source.nativeId, name: source.name };
   return {
     schemaVersion: 2,
-    propertyCode: PANE_STAY_PROPERTY_CODE,
+    propertyCode,
     arrivalDate: arrival,
     departureDate: addDays(arrival, nights),
     rooms: [{ id: 'live-check-1', quantity: 1, adults, children: 0, childAges: [] }],
-    rateContext: { [source.contextKey]: contextRef },
+    rateContext: { [source.contextKey === 'agency' ? 'bookingAgency' : source.contextKey]: contextRef },
     // The pane builder uses Preset whenever a rate context is set (reservationist-business-services).
     search: { salesStrategy: 'Preset' },
     details: 'summary',
@@ -499,7 +511,7 @@ function planFor(check: LiveCheck): Record<string, unknown> {
     case 'party':
       return { kinds: check.kinds, spawn: 'party-lookup.mjs', lock: 'property' };
     case 'deeplink':
-      return { stayIdGiven: check.stayId !== null, spawn: 'hms-deeplink-probe.mjs', lock: 'property' };
+      return { stayIdGiven: check.stayId !== null, reader: 'scoped saved Record View', lock: 'property' };
     case 'rateshop':
       return {
         contextKey: check.source.contextKey,
@@ -512,7 +524,7 @@ function planFor(check: LiveCheck): Record<string, unknown> {
         lock: 'property',
       };
     case 'stay':
-      return { spawn: 'stay-lookup.mjs (find)', lock: 'property' };
+      return { reader: 'scoped saved Record View', lock: 'property' };
     case 'quote':
       return {
         arrival: check.arrival,
@@ -527,28 +539,16 @@ function planFor(check: LiveCheck): Record<string, unknown> {
 }
 
 /** Checks the environment a real run needs, by name and by boolean. No value that could be a secret is printed. */
-export function dryRunReport(check: LiveCheck, env: NodeJS.ProcessEnv, spawnEnv: NodeJS.ProcessEnv) {
-  const problems: string[] = [];
-  const databaseUrlSet = Boolean(env.DATABASE_URL);
-  const quoteInputProblem = check.check === 'quote' ? staffQuoteInputProblem(check) : null;
+export function dryRunReport(check: LiveCheck, env: NodeJS.ProcessEnv, _spawnEnv: NodeJS.ProcessEnv, scope?: NativeScope) {
+  const problems: string[] = [], databaseUrlSet = Boolean(env.DATABASE_URL);
   if (!databaseUrlSet) problems.push('property_lock_unavailable');
-  const cdpLoopback = LOOPBACK_CDP.test(spawnEnv.HMS_STAGEHAND_CDP_URL ?? '');
-  if (!cdpLoopback) problems.push('cdp_not_loopback_or_unset');
-  const borrowedOwnership = spawnEnv.HMS_STAGEHAND_BROWSER_OWNERSHIP === 'borrowed';
-  if (!borrowedOwnership) problems.push('browser_ownership_not_borrowed');
-  const secretPath = spawnEnv.HMS_QUOTE_SECRET_PATH ?? '';
-  const credentialFileFound = (secretPath !== '' && existsSync(secretPath)) || Boolean(spawnEnv.HMS_READ_SECRET_ARN);
-  if (!credentialFileFound) problems.push('credential_source_missing');
+  const registration = scope ? hmsReadTargetForProperty(scope.propertyCode) : null;
+  if (!registration) problems.push('explicit_property_and_transport_required');
   if (check.check === 'quote' && !env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION) problems.push('staff_quote_configuration_missing');
-  if (quoteInputProblem) problems.push(quoteInputProblem);
-  return {
-    check: check.check,
-    dryRun: true,
-    ok: problems.length === 0,
-    problems,
-    plan: planFor(check),
-    env: { databaseUrlSet, cdpLoopback, borrowedOwnership, credentialFileFound },
-  };
+  const inputProblem = check.check === 'quote' ? staffQuoteInputProblem(check) : null;
+  if (inputProblem) problems.push(inputProblem);
+  return { check: check.check, dryRun: true, ok: problems.length === 0, problems, plan: planFor(check),
+    scope: scope ?? null, env: { databaseUrlSet, registeredCredentialReference: Boolean(registration?.secretId), ownedCloudBrowser: true } };
 }
 
 type Locked<T> =
@@ -556,7 +556,7 @@ type Locked<T> =
   | { ok: false; outcome: 'refused_lock_unavailable' | 'refused_lock_busy' | 'execution_failure' };
 
 // The same acquisition the pane routes use: a bounded wait, and a deadline reads as a busy lock.
-async function withPropertyLock<T>(lock: PaneStayLock | null, work: () => Promise<T>): Promise<Locked<T>> {
+async function withPropertyLock<T>(lock: PaneStayLock | null, work: (signal?: AbortSignal) => Promise<T>): Promise<Locked<T>> {
   if (!lock) return { ok: false, outcome: 'refused_lock_unavailable' };
   try {
     return { ok: true, value: await lock.withLock(work, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS)) };
@@ -565,12 +565,12 @@ async function withPropertyLock<T>(lock: PaneStayLock | null, work: () => Promis
   }
 }
 
-function runNodeCli(file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number): Promise<CliRun> {
+function runNodeCli(file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, signal?: AbortSignal): Promise<CliRun> {
   return new Promise((resolvePromise) => {
     execFile(
       process.execPath,
       [file, ...args],
-      { env, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
+      { env, signal, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 },
       (error, stdout) => {
         const code = error === null ? 0 : typeof error.code === 'number' ? error.code : null;
         resolvePromise({ code, stdout: String(stdout ?? '') });
@@ -614,27 +614,26 @@ type QuoteRun = {
   rows: RateRow[];
   evidence: string | null;
 };
-type StayResult = { outcome?: unknown; reason?: unknown; arrivalMismatch?: unknown; stay?: unknown };
 
-async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps): Promise<PartyRun> {
+async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps, signal?: AbortSignal): Promise<PartyRun> {
   const dir = newRunDir(deps);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const requestPath = join(dir, 'party-request.json');
   const request =
     kind === 'company'
       ? {
-        propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
+        ...scopeOf(deps),
         kind: 'organization',
         query: { organizationName: name },
       }
       : {
-        propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
+        ...scopeOf(deps),
         kind: 'bookingAgency',
         query: { bookingAgencyName: name },
       };
   try {
     await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
-    const run = await deps.runCli(PARTY_CLI, ['--request', requestPath], deps.spawnEnv(), CHILD_TIMEOUT_MS.party);
+    const run = await deps.runCli(PARTY_CLI, ['--request', requestPath], deps.spawnEnv(), CHILD_TIMEOUT_MS.party, signal);
     const envelope = jsonLines(run.stdout).at(-1) ?? null;
     const resultOutcome = textOf(envelope?.outcome);
     const rawCandidates = envelope?.candidates;
@@ -652,7 +651,7 @@ async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps): 
 
 async function partyCheck(kind: PartyKind, name: string, deps: LiveCheckDeps) {
   const started = Date.now();
-  const locked = await withPropertyLock(deps.lock(), () => partyLookup(kind, name, deps));
+  const locked = await withPropertyLock(deps.lock(), (signal) => partyLookup(kind, name, deps, signal));
   if (!locked.ok) {
     return partyCheckLine({
       kind,
@@ -675,66 +674,47 @@ async function partyCheck(kind: PartyKind, name: string, deps: LiveCheckDeps) {
   });
 }
 
-async function deeplinkCheck(check: { conf: string; stayId: string | null }, deps: LiveCheckDeps) {
-  const started = Date.now();
-  const args = ['--property', CENTURION_HMS_READ_TARGET.propertyCode, '--conf', check.conf];
-  if (check.stayId !== null) args.push('--stay-id', check.stayId);
-  const locked = await withPropertyLock(deps.lock(), () =>
-    deps.runCli(PROBE_CLI, args, deps.spawnEnv(), CHILD_TIMEOUT_MS.deeplink),
-  );
-  if (!locked.ok) return [refusedLine('deeplink', locked.outcome, elapsed(started))];
-  const { code, stdout } = locked.value;
-  const records = jsonLines(stdout);
-  // A probe line is written once its own observation is complete. A child that exits non-zero did not finish cleanly,
-  // so none of its lines is reported ok.
-  const lines: Array<Record<string, unknown>> = records.map((record) => {
-    const probeOutcome = textOf(record.outcome);
-    return {
-      check: 'deeplink',
-      ...record,
-      outcome: code === 0 ? probeOutcome : 'failed',
-      resultOutcome: probeOutcome,
-      exitCode: code,
-      ok: code === 0 && probeOutcome !== null && DEEPLINK_OK.has(probeOutcome),
-    };
-  });
-  if (code !== 0) {
-    lines.push({
-      check: 'deeplink',
-      outcome: 'failed',
-      exitCode: code,
-      resultOutcome: null,
-      probesRecorded: records.length,
-      ok: false,
-      ms: elapsed(started),
-    });
-  } else if (records.length === 0) {
-    lines.push({
-      check: 'deeplink',
-      outcome: 'execution_failure',
-      exitCode: code,
-      resultOutcome: null,
-      probesRecorded: 0,
-      ok: false,
-      ms: elapsed(started),
-    });
-  }
-  return lines;
+function scopeOf(deps: LiveCheckDeps): NativeScope {
+  if (!deps.scope) throw new Error('explicit_property_and_transport_required');
+  const selected = resolvePropertyScope({ transportId: deps.scope.transportId, ...(deps.scope.propertyCode === 'HRCEN' ? {} : { propertySwitch: propertySwitchSchema.parse(deps.scope.propertyCode) }) });
+  if (selected.propertyCode !== deps.scope.propertyCode) throw new Error('property_transport_mismatch');
+  return deps.scope;
 }
 
-async function runQuoteSearch(check: RateshopCheck, deps: LiveCheckDeps): Promise<QuoteRun> {
+async function readSaved(check: { conf: string }, deps: LiveCheckDeps, signal?: AbortSignal): Promise<unknown> {
+  const scope = scopeOf(deps);
+  const native = await import('../tooling/hms-cloud/saved-stay-agent-session.mjs' as string) as {
+    withSavedStayAgentSession<T>(action: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options: Record<string, unknown>): Promise<T>;
+  };
+  return native.withSavedStayAgentSession(session => readCloudStayForPane(session, { confirmation: check.conf }, true, scope.propertyCode),
+    { ...scope, signal, readOnly: true, readOnlyConfirmation: check.conf });
+}
+
+async function deeplinkCheck(check: { conf: string; stayId: string | null }, deps: LiveCheckDeps) {
+  const started = Date.now(), scope = scopeOf(deps);
+  const locked = await withPropertyLock(deps.lock(), (signal) => readSaved(check, deps, signal));
+  if (!locked.ok) return [refusedLine('deeplink', locked.outcome, elapsed(started))];
+  const raw = objectOrNull(locked.value), record = objectOrNull(raw?.record), native = objectOrNull(record?.nativePreimage);
+  const observed = raw?.outcome === 'ok' && native?.propertyCode === scope.propertyCode && native?.confirmation === check.conf &&
+    typeof native?.reservationStayId === 'string' && (check.stayId === null || native.reservationStayId === check.stayId);
+  return [{ check: 'deeplink', observation: 'saved_record_view', propertyCode: scope.propertyCode, outcome: observed ? 'observed' : 'target_unverified',
+    exactConfirmation: native?.confirmation === check.conf, exactNativeStay: check.stayId === null ? null : native?.reservationStayId === check.stayId,
+    ok: observed, ms: elapsed(started) }];
+}
+
+async function runQuoteSearch(check: RateshopCheck, deps: LiveCheckDeps, signal?: AbortSignal): Promise<QuoteRun> {
   const dir = newRunDir(deps);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const requestPath = join(dir, 'quote-request.json');
   try {
-    await writeFile(requestPath, JSON.stringify(quoteRequestFor(check.source, check.arrival, check.nights, check.adults)), {
+    await writeFile(requestPath, JSON.stringify(quoteRequestFor(check.source, check.arrival, check.nights, check.adults, scopeOf(deps).propertyCode)), {
       mode: 0o600,
     });
     const run = await deps.runCli(
       RATE_CLI,
-      ['--request', requestPath, '--output', RATE_OUTPUT],
+      ['--request', requestPath, '--output', RATE_OUTPUT, '--property', scopeOf(deps).propertyCode, '--transport', scopeOf(deps).transportId],
       deps.spawnEnv(),
-      CHILD_TIMEOUT_MS.rateshop,
+      CHILD_TIMEOUT_MS.rateshop, signal,
     );
     const evidenceDir = /^Evidence: (.+)$/m.exec(run.stdout)?.[1]?.trim() ?? null;
     // fetch-quote writes result.json before it can exit 2, so the file's own outcome is read for a failed run too.
@@ -755,9 +735,10 @@ async function runQuoteSearch(check: RateshopCheck, deps: LiveCheckDeps): Promis
 
 async function rateshopCheck(check: RateshopCheck, deps: LiveCheckDeps) {
   const started = Date.now();
-  const locked = await withPropertyLock(deps.lock(), () => runQuoteSearch(check, deps));
+  const locked = await withPropertyLock(deps.lock(), (signal) => runQuoteSearch(check, deps, signal));
   const common = {
     source: check.source,
+    propertyCode: scopeOf(deps).propertyCode,
     arrival: check.arrival,
     nights: check.nights,
     adults: check.adults,
@@ -779,53 +760,21 @@ async function rateshopCheck(check: RateshopCheck, deps: LiveCheckDeps) {
 async function stayCheck(check: { conf: string }, deps: LiveCheckDeps) {
   const started = Date.now();
   if (!paneStayLookupEnabled(deps.env)) return refusedLine('stay', 'refused_flag_off', elapsed(started));
-  // The pane's find CLI and arguments, run directly so its exit code is read. The pane's own path ignores the code.
-  const outDir = newRunDir(deps);
-  try {
-    await mkdir(outDir, { recursive: true, mode: 0o700 });
-    const locked = await withPropertyLock(deps.lock(), async () => {
-      const [script = '', ...args] = buildStayLookupArgs(
-        { mode: 'find', confirmation: check.conf, arrival: null },
-        outDir,
-        CENTURION_HMS_READ_TARGET.propertyCode,
-      );
-      const run = await deps.runCli(script, args, deps.spawnEnv(), CHILD_TIMEOUT_MS.stay);
-      return { run, result: await readJsonFile<StayResult>(join(outDir, 'result.json')) };
-    });
-    const ms = elapsed(started);
-    if (!locked.ok) return refusedLine('stay', locked.outcome, ms);
-    const { run, result } = locked.value;
-    const resultOutcome = textOf(result?.outcome);
-    if (run.code !== 0) {
-      return { check: 'stay', outcome: 'failed', exitCode: run.code, resultOutcome, reason: textOf(result?.reason), ok: false, ms };
-    }
-    if (result === null || resultOutcome === null) {
-      return { check: 'stay', outcome: 'execution_failure', exitCode: run.code, resultOutcome: null, reason: null, ok: false, ms };
-    }
-    const stay = objectOrNull(result.stay);
-    return stayCheckLine({
-      outcome: resultOutcome,
-      reason: textOf(result.reason),
-      exitCode: run.code,
-      arrivalMismatch: result.arrivalMismatch === true,
-      stay,
-      reservationNote: textOf(stay?.reservationNote) !== null,
-      ms,
-    });
-  } catch {
-    return { check: 'stay', outcome: 'execution_failure', exitCode: null, resultOutcome: null, reason: null, ok: false, ms: elapsed(started) };
-  } finally {
-    // The lookup writes record screenshots and the guest's form values here. Only booleans leave this process.
-    await rm(outDir, { recursive: true, force: true }).catch(() => undefined);
-  }
+  const locked = await withPropertyLock(deps.lock(), (signal) => readSaved(check, deps, signal));
+  if (!locked.ok) return refusedLine('stay', locked.outcome, elapsed(started));
+  const result = projectCloudStayFind({ confirmation: check.conf }, locked.value, scopeOf(deps).propertyCode);
+  return stayCheckLine({ outcome: result.outcome, reason: result.reason,
+    exitCode: STAY_OK.has(result.outcome) ? 0 : 1, arrivalMismatch: result.arrivalMismatch === true,
+    stay: result.stay ? result.stay as unknown as Record<string, unknown> : null,
+    reservationNote: result.reservationObservations?.reservationNote.state === 'observed', ms: elapsed(started) });
 }
 
 type QuoteCheck = Extract<LiveCheck, { check: 'quote' }>;
 
 /** The staff quote input the pane would send for this check: one group for the room, and the picked parties. */
 export function staffQuoteInputFor(check: QuoteCheck, messageId: string, sourceHash: string): StaffQuoteInput {
-  const company = check.org ? { kind: 'company' as const, nativeId: check.org.nativeId, name: check.org.name } : null;
-  const agency = check.agency ? { kind: 'agency' as const, nativeId: check.agency.nativeId, name: check.agency.name } : null;
+  const company = check.org ? { kind: 'organization' as const, nativeId: check.org.nativeId, name: check.org.name } : null;
+  const agency = check.agency ? { kind: 'bookingAgency' as const, nativeId: check.agency.nativeId, name: check.agency.name } : null;
   return staffQuoteInput.parse({
     messageId,
     sourceHash,
@@ -839,11 +788,11 @@ export function staffQuoteInputFor(check: QuoteCheck, messageId: string, sourceH
         quantity: 1,
         adults: check.adults,
         childrenAges: [],
-        board: 'room_only',
+        mealPlan: 'room_only',
         roomCodes: [check.room],
       },
     ],
-    ...(company || agency ? { parties: { ...(company ? { company } : {}), ...(agency ? { agency } : {}) } } : {}),
+    ...(company || agency ? { parties: { ...(company ? { organization: company } : {}), ...(agency ? { bookingAgency: agency } : {}) } } : {}),
   });
 }
 
@@ -916,7 +865,9 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
     });
   let propertyCode: string;
   try {
-    propertyCode = readInstalledStaffQuoteConfiguration().owner.propertyCode;
+    const configuration = readInstalledStaffQuoteConfiguration();
+    propertyCode = scopeOf(deps).propertyCode;
+    if (configuration.owner.propertyCode !== propertyCode || configuration.owner.transportId !== scopeOf(deps).transportId) throw new Error('installed_quote_scope_mismatch');
   } catch (error) {
     return failed('refused_configuration_unavailable', quoteFailure('configuration', error));
   }
@@ -925,7 +876,7 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
   const input = staffQuoteInputFor(check, messageId, sourceHash);
   const scope = {
     // The route's transport. A live run with another transport is refused by the policy scope.
-    transportId: 'transport-centurion',
+    transportId: scopeOf(deps).transportId,
     userId: 'v8-live-check',
     threadId: messageId,
     messageId,
@@ -1008,6 +959,10 @@ async function quoteCheck(check: QuoteCheck, deps: LiveCheckDeps): Promise<Recor
 }
 
 async function runCheck(check: LiveCheck, deps: LiveCheckDeps): Promise<number> {
+  const scope = scopeOf(deps);
+  if (!await nativeReadCapabilityAvailable({ ...scope, ...(check.check === 'quote' || check.check === 'rateshop' ? { capability: 'quote' as const } : {}) })) {
+    deps.writeLine(JSON.stringify(refusedLine(check.check, 'native_read_capability_unavailable', 0))); return 1;
+  }
   let failed = false;
   const emit = (record: Record<string, unknown>) => {
     if (record.ok !== true) failed = true;
@@ -1035,16 +990,17 @@ async function runCheck(check: LiveCheck, deps: LiveCheckDeps): Promise<number> 
 
 function defaultDeps(overrides: Partial<LiveCheckDeps>): LiveCheckDeps {
   const env = overrides.env ?? process.env;
-  return {
+  const deps: LiveCheckDeps = {
     env,
     today: () => new Date().toISOString().slice(0, 10),
     writeLine: (line) => console.log(line),
-    lock: () => paneStayPropertyLock(CENTURION_HMS_READ_TARGET),
-    spawnEnv: () => paneStaySpawnEnv(env, undefined, CENTURION_HMS_READ_TARGET),
+    lock: () => { const scope = scopeOf(deps); return paneStayPropertyLock(hmsReadTargetForProperty(scope.propertyCode)); },
+    spawnEnv: () => env,
     runCli: runNodeCli,
     newRunId: () => `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`,
     ...overrides,
   };
+  return deps;
 }
 
 export async function main(argv: readonly string[], overrides: Partial<LiveCheckDeps> = {}): Promise<number> {
@@ -1062,8 +1018,10 @@ export async function main(argv: readonly string[], overrides: Partial<LiveCheck
     deps.writeLine(JSON.stringify({ check: 'args', ok: false, error: parsed.error }));
     return 2;
   }
+  deps.scope = parsed.value.scope ?? overrides.scope;
+  if (!deps.scope) { deps.writeLine(JSON.stringify({ check: 'args', ok: false, error: 'explicit_property_and_transport_required' })); return 2; }
   if (parsed.value.dryRun) {
-    const report = dryRunReport(parsed.value.check, deps.env, deps.spawnEnv());
+    const report = dryRunReport(parsed.value.check, deps.env, deps.spawnEnv(), deps.scope);
     deps.writeLine(JSON.stringify(redactDeep(report)));
     return report.ok ? 0 : 1;
   }

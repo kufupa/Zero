@@ -19,6 +19,8 @@ import type {
   ReservationSourceContext,
   ReservationWorkflowClient,
   ReservationWorkflowV2Session,
+  ReservationWorkflowDispatch,
+  ReservationWorkflowPreparation,
   PropertyConfiguration,
   PropertySwitch,
 } from './types';
@@ -60,16 +62,16 @@ export type ReservationWorkflowV2TrpcClient = {
     guestProfileOptions: MutationProcedure<ItemInput & { requestId: string; allocationId: string; field: ReservationGuestProfileOptionField }>;
     prepareGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean }>;
     createGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean;
-      go: true; prepareRef: string; idempotencyKey: string }>;
+      go: true; prepareRef: string; preparedRef: string; idempotencyKey: string }>;
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
-    execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string }>;
+    execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string; preparedRef?: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
     configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string };
       kind: 'voucher' | 'payment_proof' }>;
     lookupServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
-    prepareServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
+    prepareServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string; reviewedPrepareRef?: string }>;
     executeServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId: string; go: true;
-      idempotencyKey: string; reviewedPrepareRef?: string }>;
+      idempotencyKey: string; preparedRef?: string; reviewedPrepareRef?: string }>;
     reconcileServices: MutationProcedure<ItemInput & { operationId: string }>;
   };
 };
@@ -77,6 +79,7 @@ export type ReservationWorkflowV2TrpcClient = {
 type RecordValue = Record<string, unknown>;
 const isRecord = (value: unknown): value is RecordValue => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const isString = (value: unknown): value is string => typeof value === 'string';
+const isUuid = (value: unknown): value is string => isString(value) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 function apiSource(source: ReservationSourceContext): ReservationWorkflowV2Source {
   if (!source.threadId || !source.messageId || !source.sourceHash || !source.arrivedAt) {
@@ -154,15 +157,55 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
     ? result.preparationViews.flatMap((value): ReservationPreparationView[] => {
       if (!isRecord(value) || !isString(value.requestId) || !isString(value.allocationId) || typeof value.current !== 'boolean') return [];
       const price = isRecord(value.price) ? value.price : undefined;
+      const receipt = value.current && isUuid(value.preparedRef) && value.expectedRevision === revision &&
+        isString(value.generationId) && value.generationId === draft.generationId
+        ? { preparedRef: value.preparedRef, expectedRevision: revision, generationId: value.generationId } : undefined;
+      const rawDispatch = isRecord(value.dispatch) ? value.dispatch : null;
+      const status = rawDispatch?.status;
+      const dispatch: ReservationPreparationView['dispatch'] = rawDispatch && (status === 'queued' || status === 'claimed' || status === 'running' || status === 'retry_wait' || status === 'needs_reconcile') &&
+        rawDispatch.requestId === value.requestId && rawDispatch.allocationId === value.allocationId &&
+        (isUuid(rawDispatch.runId) || status === 'needs_reconcile' && rawDispatch.runId === null) &&
+        isUuid(rawDispatch.grantId) && isUuid(rawDispatch.operationId)
+        ? { status, runId: rawDispatch.runId, grantId: rawDispatch.grantId, operationId: rawDispatch.operationId } : undefined;
       return [{ requestId: value.requestId, allocationId: value.allocationId, current: value.current,
         ...(isString(value.issue) ? { issue: value.issue } : {}),
         fields: Array.isArray(value.fields) ? value.fields.filter(isString) : [],
         details: Array.isArray(value.details) ? value.details.flatMap(item => isRecord(item) && isString(item.path) && isString(item.code) ? [{ path: item.path, code: item.code, ...(typeof item.expected === 'number' ? { expected: item.expected } : {}), ...(typeof item.actual === 'number' ? { actual: item.actual } : {}) }] : []) : [],
         ...(price ? { price } : {}),
         ...(isRecord(value.priceComparison) ? { priceComparison: value.priceComparison } : {}),
-        ...(isString(value.observedAt) ? { observedAt: value.observedAt } : {}) }];
+        ...(isString(value.observedAt) ? { observedAt: value.observedAt } : {}),
+        ...(receipt ? { receipt } : {}), ...(dispatch ? { dispatch } : {}) }];
     }) : [];
-  return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews,
+  const workflowDispatches: ReservationWorkflowDispatch[] = Array.isArray(result.workflowDispatches)
+    ? result.workflowDispatches.flatMap((value): ReservationWorkflowDispatch[] => {
+      if (!isRecord(value)) return [];
+      const endpoint = value.endpoint, status = value.status;
+      if ((endpoint !== 'execute' && endpoint !== 'createGuestProfile' && endpoint !== 'executeServices' && endpoint !== 'executeSavedServices') ||
+          (status !== 'queued' && status !== 'claimed' && status !== 'running' && status !== 'retry_wait' && status !== 'needs_reconcile' && status !== 'needs_review' && status !== 'succeeded' && status !== 'failed') ||
+          !isString(value.requestId) || !isUuid(value.grantId) || value.operationId !== value.grantId ||
+          !(isUuid(value.runId) || (status === 'needs_reconcile' || status === 'needs_review' || status === 'succeeded' || status === 'failed') && value.runId === null)) return [];
+      return [{ endpoint, status, requestId: value.requestId, runId: value.runId, grantId: value.grantId, operationId: value.grantId,
+        ...(isString(value.allocationId) ? { allocationId: value.allocationId } : {}),
+        ...(isString(value.serviceId) ? { serviceId: value.serviceId } : {}) }];
+    }) : [];
+  const workflowPreparations: ReservationWorkflowPreparation[] = Array.isArray(result.workflowPreparations)
+    ? result.workflowPreparations.flatMap((value): ReservationWorkflowPreparation[] => {
+      if (!isRecord(value)) return [];
+      const endpoint = value.endpoint;
+      if ((endpoint !== 'execute' && endpoint !== 'createGuestProfile' && endpoint !== 'executeServices' && endpoint !== 'executeSavedServices') ||
+          !isString(value.requestId) || !isUuid(value.preparedRef) || value.expectedRevision !== revision || value.generationId !== draft.generationId ||
+          ['allocationId', 'serviceId', 'prepareRef', 'reviewedPrepareRef'].some(key => value[key] !== undefined && !isString(value[key]))) return [];
+      const target = isRecord(value.targetRef) ? value.targetRef : null;
+      if (value.targetRef !== undefined && (!target || target.kind !== 'saved_target' || !isString(target.requestId) || !isString(target.hintId))) return [];
+      return [{ endpoint, requestId: value.requestId, preparedRef: value.preparedRef, expectedRevision: revision, generationId: draft.generationId,
+        ...(isString(value.allocationId) ? { allocationId: value.allocationId } : {}),
+        ...(isString(value.serviceId) ? { serviceId: value.serviceId } : {}),
+        ...(target && target.kind === 'saved_target' && isString(target.requestId) && isString(target.hintId)
+          ? { targetRef: { kind: 'saved_target' as const, requestId: target.requestId, hintId: target.hintId } } : {}),
+        ...(isString(value.prepareRef) ? { prepareRef: value.prepareRef } : {}),
+        ...(isString(value.reviewedPrepareRef) ? { reviewedPrepareRef: value.reviewedPrepareRef } : {}) }];
+    }) : [];
+  return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews, workflowDispatches, workflowPreparations,
     ...(result.sourceChanged === true ? { sourceChanged: true } : {}) };
 }
 
@@ -484,7 +527,7 @@ export function inputFieldLabel(value: string): string {
     bookingAgency_selection_required: 'select the Primary Booking Agency in Infor', organization_selection_required: 'select the Organization in Infor',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
     roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'Meal Plan request', guaranteeType: 'guarantee',
-    sourceOfBusiness: 'source of business', firstName: 'guest first name', lastName: 'guest last name',
+    sourceOfBusiness: 'source of business', marketSegment: 'market segment', firstName: 'guest first name', lastName: 'guest last name',
     guestOptIn: 'Terms and Conditions', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
     staffAllowanceType: 'extra charge handling', cmsRecipient: 'confirmation recipient',
@@ -822,7 +865,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     return { snapshot, requestIds: snapshot.session.draft.proposal.content.requests.filter(row => row.kind === 'quote' &&
       (row.id === request.id || !previousIds.has(row.id))).map(row => row.id) };
   };
-  const guestResult = async (command: ReservationCommandContext, input: ItemInput & { idempotencyKey?: string }, raw: unknown, creating: boolean) => {
+  const guestResult = async (command: ReservationCommandContext, input: ItemInput & { idempotencyKey?: string; preparedRef?: string }, raw: unknown, creating: boolean) => {
     const result = isRecord(raw) && isString(raw.status) ? raw : {
       status: creating ? 'needs_reconcile' : 'failed',
       issue: creating ? 'guest_profile_execution_unknown' : 'guest_profile_prepare_failed',
@@ -830,9 +873,12 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     };
     await refreshAfterStale(input, command.source, result);
     const uncertain = creating && ['unknown', 'needs_reconcile'].includes(result.status as string);
+    const queued = creating && result.status === 'queued' && isUuid(result.grantId) && isUuid(result.runId) &&
+      result.operationId === result.grantId && result.preparedRef === input.preparedRef && result.expectedRevision === input.expectedRevision;
     const notice = uncertain
       ? 'Creation outcome is uncertain. Check the saved profile or contact Nava support before creating another profile.'
-      : serviceOperationNotice(result, creating ? ['succeeded', 'already_succeeded'] : ['prepared']);
+      : result.status === 'queued' && !queued ? 'The profile save response could not be verified. Check the outcome before trying again.'
+      : serviceOperationNotice(result, creating ? ['succeeded', 'already_succeeded', ...(queued ? ['queued'] : [])] : ['prepared']);
     try {
       const snapshot = await load(input, command.source);
       return { ...snapshot, workflowReply: result, ...(notice ? { serviceNotice: `Guest profile: ${notice}` } : {}) };
@@ -852,7 +898,9 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       };
       const raw = await api.ensure.mutate(queryInput, mailboxOptions(source));
       try {
-        return projectReservationSession(decodeDraft(raw), configuration);
+        const session = decodeDraft(raw);
+        return await load({ workItemId: session.draft.workItemId, source: wire,
+          expectedRevision: session.revision, expectedSeq: session.seq }, source);
       } catch (error) {
         const rawWorkItemId = isRecord(raw) && isRecord(raw.draft) && typeof raw.draft.workItemId === 'string'
           ? raw.draft.workItemId
@@ -959,7 +1007,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     async createGuestProfile(command) {
       const input = { ...itemInput(command), requestId: command.requestId, allocationId: command.allocationId,
         ...(typeof command.confirmDuplicateName === 'boolean' ? { confirmDuplicateName: command.confirmDuplicateName } : {}),
-        go: true as const, prepareRef: command.prepareRef, idempotencyKey: command.idempotencyKey };
+        go: true as const, prepareRef: command.prepareRef, preparedRef: command.preparedRef, idempotencyKey: command.idempotencyKey };
       const options = mailboxOptions(command.source);
       const result = await api.createGuestProfile.mutate(input, options).catch(() => ({
         status: 'needs_reconcile', issue: 'guest_profile_execution_unknown', operationId: command.idempotencyKey,
@@ -996,15 +1044,55 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       return { ...snapshot, ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async execute(command) {
+      const kind = command.snapshot.requests.find((request) => request.id === command.requestId)?.kind;
+      const isQuote = kind === 'quote';
+      const rooms = kind === 'create' ? effectiveAt(command.snapshot, `${requestPath(command.requestId)}/body/allocations`) : null;
+      const ids = Array.isArray(rooms) ? rooms.flatMap(room => isRecord(room) && isString(room.id) ? [room.id] : []) : [];
+      const views = kind === 'create' ? ids.map(id => command.snapshot.preparationViews.find(view =>
+        view.requestId === command.requestId && view.allocationId === id)) : [];
+      const receipt = kind === 'create' ? views[0]?.receipt : command.snapshot.session.workflowPreparations?.find(preparation =>
+        preparation.endpoint === 'execute' && preparation.requestId === command.requestId && preparation.allocationId === command.allocationId);
+      if (!isQuote && (kind === 'create' && (command.allocationId !== undefined || !Array.isArray(rooms) || !ids.length || ids.length !== rooms.length || ids.length !== new Set(ids).size) ||
+          !receipt || receipt.expectedRevision !== command.snapshot.session.revision || receipt.generationId !== command.snapshot.session.draft.generationId ||
+          views.some(view => !view?.current || view.dispatch || !view.receipt ||
+            view.receipt.preparedRef !== receipt.preparedRef || view.receipt.expectedRevision !== command.snapshot.session.revision ||
+            view.receipt.generationId !== command.snapshot.session.draft.generationId))) {
+        throw new Error(views.some(view => view?.dispatch) ? 'This save is still being checked. Wait for its outcome before continuing.' :
+          'Check the current details in Infor before saving.');
+      }
       const input = { ...itemInput(command), requestId: command.requestId,
         ...(command.allocationId ? { allocationId: command.allocationId } : {}),
-        go: true as const, idempotencyKey: command.idempotencyKey };
+        go: true as const, idempotencyKey: command.idempotencyKey, ...(receipt && !isQuote ? { preparedRef: receipt.preparedRef } : {}) };
       const result = await api.execute.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
-      const snapshot = await load(input, command.source);
-      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
+      const queued = !isQuote && isRecord(result) && result.status === 'queued' &&
+        result.preparedRef === receipt?.preparedRef && result.expectedRevision === input.expectedRevision &&
+        isUuid(result.runId) && isUuid(result.grantId) && result.operationId === result.grantId
+        ? { status: 'queued' as const, runId: result.runId, grantId: result.grantId, operationId: result.grantId } : undefined;
+      let snapshot: ReservationPaneSnapshot;
+      try { snapshot = await load(input, command.source); }
+      catch (error) {
+        if (!queued) throw error;
+        snapshot = { ...command.snapshot, loadError: 'The save was queued, but its status could not be refreshed. Wait for confirmation before trying again.' };
+      }
+      if (queued && kind === 'create' && ids.length && !ids.every(id => snapshot.operationResults.some(row =>
+        row.workflow === 'create' && row.requestId === command.requestId && row.allocationId === id && row.status === 'succeeded'))) {
+        const preparationViews = snapshot.preparationViews.map(view => view.requestId === command.requestId && ids.includes(view.allocationId) &&
+          !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === command.requestId &&
+            row.allocationId === view.allocationId && row.status === 'succeeded')
+          ? { ...view, current: false, receipt: undefined, dispatch: view.dispatch ?? queued } : view);
+        snapshot = { ...snapshot, preparationViews, session: { ...snapshot.session, preparationViews } };
+      }
+      if (queued && kind !== 'create' && !snapshot.operationResults.some(row => row.id === queued.operationId) &&
+          !snapshot.session.workflowDispatches?.some(row => row.grantId === queued.grantId)) {
+        const dispatch = { ...queued, endpoint: 'execute' as const, requestId: command.requestId,
+          ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
+        snapshot = { ...snapshot, session: { ...snapshot.session, workflowDispatches: [...snapshot.session.workflowDispatches ?? [], dispatch] } };
+      }
       const notice = isQuote ? quoteOperationNotice(result, ['succeeded', 'already_succeeded'], 'Unsent quote generation')
-        : operationNotice(result, ['succeeded', 'already_succeeded']);
+        : isRecord(result) && result.status === 'queued' && !queued
+          ? 'The save response could not be verified. Reopen this email and check the Infor outcome before trying again.'
+          : operationNotice(result, ['queued', 'succeeded', 'already_succeeded']);
       const displayNotice = notice ? isQuote ? `${notice} No email was sent and no reservation was saved.` : notice : null;
       return { ...snapshot, ...(displayNotice ? { serviceNotice: displayNotice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
@@ -1043,13 +1131,51 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async executeServices(command) {
-      const input = { ...itemInput(command), requestId: command.requestId, ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),
-        serviceId: command.serviceId, go: true as const, idempotencyKey: command.idempotencyKey,
+      const endpoint: 'executeSavedServices' | 'executeServices' = command.targetRef ? 'executeSavedServices' : 'executeServices';
+      const findPreparation = (snapshot: ReservationPaneSnapshot) => snapshot.session.workflowPreparations?.find(preparation =>
+        preparation.endpoint === endpoint && preparation.requestId === command.requestId && preparation.serviceId === command.serviceId &&
+        preparation.allocationId === command.allocationId && preparation.reviewedPrepareRef === command.reviewedPrepareRef &&
+        (command.targetRef ? preparation.targetRef?.kind === command.targetRef.kind &&
+          preparation.targetRef.requestId === command.targetRef.requestId && preparation.targetRef.hintId === command.targetRef.hintId
+          : !preparation.targetRef));
+      let snapshot = command.snapshot;
+      let receipt = findPreparation(snapshot);
+      if (!receipt) {
+        const prepareInput = { ...itemInput(command), requestId: command.requestId,
+          ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),
+          serviceId: command.serviceId, ...(command.reviewedPrepareRef ? { reviewedPrepareRef: command.reviewedPrepareRef } : {}) };
+        const prepared = await api.prepareServices.mutate(prepareInput, mailboxOptions(command.source));
+        await refreshAfterStale(prepareInput, command.source, prepared);
+        const notice = serviceOperationNotice(prepared, ['prepared']);
+        if (notice) throw new Error(`Add-On preparation: ${notice}`);
+        snapshot = await load(prepareInput, command.source);
+        receipt = findPreparation(snapshot);
+      }
+      if (!receipt || receipt.expectedRevision !== snapshot.session.revision || receipt.generationId !== snapshot.session.draft.generationId)
+        throw new Error('Review and check this Add-On again before saving.');
+      const input = { ...itemInput({ ...command, snapshot }), requestId: command.requestId,
+        ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),
+        serviceId: command.serviceId, go: true as const, idempotencyKey: command.idempotencyKey, preparedRef: receipt.preparedRef,
         ...(command.reviewedPrepareRef ? { reviewedPrepareRef: command.reviewedPrepareRef } : {}) };
       const result = await api.executeServices.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
-      const snapshot = await load(input, command.source);
-      const notice = serviceOperationNotice(result, ['succeeded', 'already_succeeded']);
+      const queued = isRecord(result) && result.status === 'queued' && isUuid(result.runId) && isUuid(result.grantId) &&
+        result.operationId === result.grantId && result.preparedRef === receipt.preparedRef && result.expectedRevision === input.expectedRevision
+        ? { status: 'queued' as const, runId: result.runId, grantId: result.grantId, operationId: result.grantId } : undefined;
+      try { snapshot = await load(input, command.source); }
+      catch (error) {
+        if (!queued) throw error;
+        snapshot = { ...snapshot, loadError: 'The Add-On save was queued, but its status could not be refreshed. Wait for confirmation.' };
+      }
+      if (queued && !snapshot.operationResults.some(row => row.id === queued.operationId) &&
+          !snapshot.session.workflowDispatches?.some(row => row.grantId === queued.grantId)) {
+        const dispatch: ReservationWorkflowDispatch = { ...queued, endpoint, requestId: command.requestId, serviceId: command.serviceId,
+          ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
+        snapshot = { ...snapshot, session: { ...snapshot.session, workflowDispatches: [...snapshot.session.workflowDispatches ?? [], dispatch] } };
+      }
+      const notice = isRecord(result) && result.status === 'queued' && !queued
+        ? 'The save response could not be verified. Check the Infor outcome before trying again.'
+        : serviceOperationNotice(result, ['queued', 'succeeded', 'already_succeeded']);
       return { ...snapshot, ...(notice ? { serviceNotice: `Add-On save: ${notice}` } : {}),
         ...(isRecord(result) ? { workflowReply: result } : {}) };
     },

@@ -13,17 +13,17 @@ import {
 } from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
+import { propertySwitchSchema, resolvePropertyScope } from '../../hms/property-registry.js';
 
 const confirmation = z.string().regex(/^\d+-\d+$/);
 const arrival = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const source = z.object({ threadId: z.string().trim().min(1).max(200), messageId: z.string().trim().min(1).max(200),
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 
-// strict(): no propertyCode or other key reaches the module. The lock is always the session hotel.
 const previewCancelInput = z.object({ confirmation, arrival, workItemId: z.string().uuid().optional(),
-  source: source.optional(), ...cancelRequestBindingFields }).strict().refine(completeCancelRequestBinding);
+  source: source.optional(), propertySwitch: propertySwitchSchema.optional(), ...cancelRequestBindingFields }).strict().refine(completeCancelRequestBinding);
 const chargeInput = z.object({ workItemId: z.string().uuid(), runId: z.string().uuid(), source, confirmation, arrival,
-  internetMessageId: z.string().min(1).max(998).optional() }).strict();
+  internetMessageId: z.string().min(1).max(998).optional(), propertySwitch: propertySwitchSchema.optional() }).strict();
 const acceptChargeInput = chargeInput.extend({ challengeId: z.string().uuid(),
   dialogDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict();
 
@@ -34,6 +34,7 @@ const commitCancelInput = z
     arrival,
     workItemId: z.string().uuid().optional(),
     source: source.optional(),
+    propertySwitch: propertySwitchSchema.optional(),
     ...cancelRequestBindingFields,
     reason: z
       .string()
@@ -73,7 +74,8 @@ export const paneStayCancelRouter = router({
     .mutation(({ input, ctx }) =>
       recordedToolRun(
         { kind: 'cancel_preview', transportId: ctx.activeTransportId, messageId: null, userId: ctx.sessionUser.id, inputDigest: paneCancelDigest(input) },
-        () => previewCancel({ ...input, owner: paneOwner(ctx), transportId: ctx.activeTransportId,
+        () => previewCancel({ ...input, propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId,
+          propertySwitch: input.propertySwitch }).propertyCode, owner: paneOwner(ctx), transportId: ctx.activeTransportId,
           actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile }),
         (value) => classifyCancelPreview(value, paneCancelDigest(input)),
       ),
@@ -83,7 +85,8 @@ export const paneStayCancelRouter = router({
     .mutation(({ input, ctx }) =>
       recordedToolRun(
         { kind: 'cancel_commit', transportId: ctx.activeTransportId, messageId: null, userId: ctx.sessionUser.id, inputDigest: paneCancelDigest(input) },
-        () => commitCancel({ ...input, owner: paneOwner(ctx), transportId: ctx.activeTransportId,
+        () => commitCancel({ ...input, propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId,
+          propertySwitch: input.propertySwitch }).propertyCode, owner: paneOwner(ctx), transportId: ctx.activeTransportId,
           actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile }),
         (value) => value.outcome === 'cancel_queued'
           ? { status: 'ok', inputDigest: paneCancelDigest(input), result: { outcome: 'cancel_queued' } }

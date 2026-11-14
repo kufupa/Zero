@@ -7,9 +7,11 @@ import { formDigest } from '../ai/hms-approval.js';
 import { lockCreateActorAccess, lockCreateActorSession } from '../ai/pane-create-actor-lock.js';
 import type { AiRunFence } from '../ai/run-ledger.js';
 import { staffQuoteSourceHash } from '../ai/staff-quote-workflow.js';
-import { hmsWriteGrantV2Schema, loadHmsPreparation, preparationDigest,
-  type HmsPreparation, type HmsWriteGrantV2 } from './hms-preparation.js';
+import { hmsWriteGrantV2Schema, loadHmsPreparation, preparationDigest, hmsConfigurationIdentities,
+  hmsWorkflowForOperation, type HmsPreparation, type HmsWriteGrantV2 } from './hms-preparation.js';
 import { resolvePropertyScope } from './property-registry.js';
+import { reservationWorkflowV2DraftSchema } from '../ai/reservation-workflow-v2-contract.js';
+import { propertyConfigurationForScope } from './rate-catalogue.js';
 
 const verifiedStaffGo = Symbol('verified-staff-go');
 export type VerifiedStaffGo = Readonly<{
@@ -45,14 +47,24 @@ export async function verifyStaffGoForRun(db: CreateFenceTransaction, fence: AiR
   const grant = parsed.data;
   const prepared = await loadHmsPreparation(db, grant.preparedRef, run.workItemId);
   const [item] = await db.select().from(workItem).where(eq(workItem.id, run.workItemId)).limit(1).for('update');
+  const draft = prepared.workflowContext ? reservationWorkflowV2DraftSchema.parse(item?.state.reservationWorkflowV2) : undefined;
   const scope = resolvePropertyScope({ transportId: grant.transportId,
     ...(grant.propertyCode === 'HRCEN' ? {} : { propertySwitch: grant.propertyCode }) });
+  const configuration = await propertyConfigurationForScope(scope);
+  const current = hmsConfigurationIdentities(scope, configuration, prepared.operation);
+  if (current.policyIdentity !== prepared.policyIdentity || current.catalogueIdentity !== prepared.catalogueIdentity ||
+      !['lab', 'staff-enabled'].includes(configuration.capabilities[hmsWorkflowForOperation(prepared.operation)].status)) {
+    throw new Error('hms_staff_go_configuration_changed');
+  }
   if (!item || item.status === 'done' || item.status === 'dismissed' ||
       grant.grantId !== grantId || grant.workItemId !== item.id || grant.transportId !== run.transportId ||
       item.transportId !== run.transportId || grant.threadId !== item.threadId || grant.threadId !== run.threadId ||
       grant.sourceMessageId !== item.sourceMessageId || grant.sourceMessageId !== run.triggerMessageId ||
-      grant.expectedRevision !== item.revisionSeq || prepared.revision !== grant.expectedRevision ||
+      grant.expectedRevision !== (draft ? item.revision : item.revisionSeq) || prepared.revision !== grant.expectedRevision ||
       prepared.generationId !== grant.generationId ||
+      (draft && (draft.generationId !== grant.generationId || draft.propertyCode !== grant.propertyCode ||
+        draft.transportId !== grant.transportId || draft.workItemId !== item.id ||
+        prepared.workflowContext?.input.expectedSeq !== item.revisionSeq)) ||
       (typeof item.state.generationId === 'string' && item.state.generationId !== grant.generationId) ||
       (typeof item.state.propertyCode === 'string' && item.state.propertyCode !== grant.propertyCode) ||
       canonicalJson(scope) !== canonicalJson(prepared.scope) || grant.propertyCode !== scope.propertyCode ||

@@ -1,18 +1,15 @@
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import { aggregateFieldParity, buildNavaPrefill, linkConfirmationCandidates, normalizeSurname, scoreFieldParity, type ConfirmationTruthCandidate, type FieldParityField, type FieldParityValues, type ParityCause } from '../src/ai/field-parity.js';
 
-const exec = promisify(execFile), APP = fileURLToPath(new URL('../', import.meta.url));
+const APP = fileURLToPath(new URL('../', import.meta.url));
 const PRIVATE = join(APP, '.private/hrdav-parity'), PAIRS = join(PRIVATE, 'pairs.json'), TRUTH = join(PRIVATE, 'truth.json');
-const READER = join(APP, 'tooling/playwright-quote/read-reservation-fields.mjs');
 const REPORT = resolve(APP, '../../docs/research/2026-10-28-hrdav-field-parity.md');
 const MAILBOXES = "ARRAY['davinci','epick','fkhumalo','kmgidi','adladla']";
-const CONFIRMATION = /\b\d{6,10}-\d{1,2}\b/g, CONTROL = '59898948-1', SERVICE_USER = 'NAVAAI';
+const CONFIRMATION = /\b\d{6,10}-\d{1,2}\b/g, SERVICE_USER = 'NAVAAI';
 type R = Record<string, any>;
 type Pair = { id: string; messageId: string; threadId: string; receivedAt: string; email: string; subject: string | null; textBody: string | null; payload: R; action: string; surname: string | null; arrival: string | null; candidates: Array<{ confirmationNumber: string; messageId: string; threadId: string; receivedAt: string; sameThread: boolean }>; partyMatch: unknown; rateRun: unknown };
 type PairFile = { schemaVersion: 1; generatedAt: string; rows: Pair[] };
@@ -89,26 +86,37 @@ async function truthStage(): Promise<{ confirmations: number; cached: number; re
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; cache = { schemaVersion: 1, generatedAt: new Date().toISOString(), byConfirmation: {} }; }
   const numbers = [...new Set(source.rows.flatMap((row) => row.candidates.map((c) => c.confirmationNumber)))], cachedAtStart = numbers.filter((n) => cache.byConfirmation[n]).length;
   let read = 0;
-  // The reader resolves its HMS secret from the transport; inherited secret overrides would bind the wrong property.
-  const readerEnv = { ...process.env, HMS_PROPERTY_TRANSPORT_ID: 'transport-davinci' };
-  delete readerEnv.HMS_READ_SECRET_ARN; delete readerEnv.HMS_QUOTE_SECRET_PATH;
-  for (let i = 0; i < numbers.length; i += 9) {
-    const pending = numbers.slice(i, i + 9).filter((n) => !cache.byConfirmation[n]); if (!pending.length) continue;
-    const dir = await mkdtemp(join(PRIVATE, '.reader-')), input = join(dir, 'input.json'), out = join(dir, 'truth.jsonl');
-    try {
-      await writeFile(input, JSON.stringify(pending), { mode: 0o600 });
-      let failed = false;
-      try { await exec(process.execPath, [READER, '--property', 'HRDAV', '--input', input, '--out', out, '--cap', '10'], { cwd: APP, env: readerEnv, maxBuffer: 2_000_000 }); }
-      catch { failed = true; }
-      let lines: Reader[] = [];
-      try { lines = (await readFile(out, 'utf8')).split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line) as Reader); } catch { /* reader failed before output */ }
-      for (const row of lines) if (row.conf !== CONTROL || pending.includes(CONTROL)) { cache.byConfirmation[row.conf] = row; read++; }
-      cache.generatedAt = new Date().toISOString(); await writePrivate(TRUTH, cache);
-      if (failed) throw new Error('hrdav_reader_failed_check_ec2_runner_logs');
-      for (const n of pending) if (!cache.byConfirmation[n]) cache.byConfirmation[n] = { conf: n, outcome: 'not_read' };
+  const { withCloudCredentialLease } = await import('../tooling/hms-cloud/cloud-session.mjs');
+  const savedReader = await import('../tooling/hms-cloud/saved-stay-agent-session.mjs' as string) as {
+    withSavedStayAgentSession<T>(operation: (session: { runTool(request: Record<string, unknown>): Promise<Record<string, unknown>> }) => Promise<T>,
+      options: Record<string, unknown>): Promise<T>;
+  };
+  await withCloudCredentialLease('HRDAV', async credentialLease => {
+    for (const confirmation of numbers) {
+      if (cache.byConfirmation[confirmation]) continue;
+      const capture = await savedReader.withSavedStayAgentSession(session => session.runTool({ tool: 'read',
+        confirmation, view: 'record', includeNativePreimage: true }), {
+        propertyCode: 'HRDAV', transportId: 'transport-davinci', readOnly: true,
+        readOnlyConfirmation: confirmation, credentialLease,
+      });
+      const record = rec(capture.record), native = rec(record.nativePreimage), detail = rec(record.details);
+      const exact = capture.outcome === 'ok' && native.propertyCode === 'HRDAV' && native.confirmation === confirmation;
+      const fields: R = {};
+      if (exact && Array.isArray(detail.fields)) for (const entry of detail.fields) {
+        const field = rec(entry);
+        if (typeof field.name === 'string' && !Object.hasOwn(fields, field.name)) {
+          fields[field.name] = Object.hasOwn(field, 'rawValue') ? field.rawValue : field.value;
+        }
+      }
+      cache.byConfirmation[confirmation] = { conf: confirmation,
+        outcome: exact ? 'read' : typeof capture.outcome === 'string' ? capture.outcome : 'read_failed',
+        ...(exact ? { fields, envelope: record } : {}) };
+      read++;
+      cache.generatedAt = new Date().toISOString();
       await writePrivate(TRUTH, cache);
-    } finally { await rm(dir, { recursive: true, force: true }); }
-  }
+      if (!exact) throw new Error('hrdav_scoped_cloud_record_read_failed');
+    }
+  });
   await writePrivate(TRUTH, cache);
   return { confirmations: numbers.length, cached: cachedAtStart, read };
 }

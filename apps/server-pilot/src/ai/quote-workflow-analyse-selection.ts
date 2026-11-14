@@ -44,7 +44,7 @@ import {
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
-import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound

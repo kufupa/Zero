@@ -58,17 +58,18 @@ test('real organization readback binds the trusted guest and target-scoped brows
   assert.equal(result.outcome, 'read_back_verified');
 });
 
-test('organization readback blocks service workers and guards before the first page', async () => {
+test('organization readback selects the property and guards before the first page', async () => {
   const target = buildLabtestOrganizationReadbackTarget(saved, request, organization);
   let blocked = false, installed = false;
   const result = await readSavedOrganizationCreate({ savedOrganizationCreate: target }, { confirmation: saved.confirmation }, {
     openSession: async (_operation, options) => {
-      assert.equal(options.blockServiceWorkers, true);
-      await options.prepareContext({ route: async (_pattern, handler) => {
+      assert.equal(options.propertyCode, 'HRCEN');
+      assert.equal(options.startScreen, 'OSRESS');
+      await options.prepareContext({ routeWebSocket: async () => {}, route: async (_pattern, handler) => {
         installed = true;
         await handler({ request: () => ({ method: () => 'POST',
           url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
-          postData: () => null }), abort: async () => { blocked = true; }, fallback: async () => {} });
+          postData: () => null, headers: () => ({}) }), abort: async () => { blocked = true; }, fallback: async () => {} });
       } });
       return { outcome: 'read_back_verified' };
     },

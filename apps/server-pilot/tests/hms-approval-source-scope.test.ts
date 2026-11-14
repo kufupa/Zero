@@ -193,6 +193,36 @@ describe('durable HMS preparation and v2 Go receipt', () => {
     expect(hmsPreparationSchema.safeParse({ ...prepared, businessFields: { storageState: {} } }).success).toBe(false);
   });
 
+  it('binds queued workflow input to the exact prepared source and revision without accepting caller Go', () => {
+    const prepared = preparedFixture();
+    const input = { workItemId, expectedRevision: prepared.revision, expectedSeq: 4, requestId: 'cancel-1',
+      source: { propertyId: 'HRCEN', threadId: prepared.source.threadId, messageId: prepared.source.sourceMessageId,
+        sourceHash: prepared.source.sourceHash, arrivedAt: prepared.capturedAt } };
+    const receipt = { ...prepared, workflowContext: { endpoint: 'execute', input } };
+    expect(hmsPreparationSchema.safeParse(receipt).success).toBe(true);
+    for (const changed of [
+      { ...input, expectedRevision: prepared.revision + 1 },
+      { ...input, source: { ...input.source, messageId: 'other-message' } },
+      { ...input, source: { ...input.source, propertyId: 'HRDAV' } },
+      { ...input, go: true, idempotencyKey: prepared.preparedRef },
+    ]) expect(hmsPreparationSchema.safeParse({ ...receipt, workflowContext: { endpoint: 'execute', input: changed } }).success).toBe(false);
+  });
+
+  it('requires unique ordered Create allocations with native observation references', () => {
+    const prepared = preparedFixture();
+    const receipt = { ...prepared, operation: 'create', allocations: [
+      { allocationId: 'room-1', businessDigest: '1'.repeat(64), observationRef: 'preview-room-1' },
+      { allocationId: 'room-2', businessDigest: '2'.repeat(64), observationRef: 'preview-room-2' },
+    ], workflowContext: { endpoint: 'execute', input: { workItemId, expectedRevision: prepared.revision,
+      expectedSeq: 4, requestId: 'create-1', source: { threadId: prepared.source.threadId,
+        messageId: prepared.source.sourceMessageId, sourceHash: prepared.source.sourceHash, arrivedAt: prepared.capturedAt } } } };
+    expect(hmsPreparationSchema.safeParse(receipt).success).toBe(true);
+    expect(hmsPreparationSchema.safeParse({ ...receipt, allocations: [receipt.allocations[0], receipt.allocations[0]] }).success).toBe(false);
+    expect(hmsPreparationSchema.safeParse({ ...receipt, allocations: [{ allocationId: 'room-1', businessDigest: '1'.repeat(64) }] }).success).toBe(false);
+    expect(hmsPreparationSchema.safeParse({ ...receipt, allocations: Array.from({ length: 9 }, (_, index) => ({
+      allocationId: `room-${index}`, businessDigest: '1'.repeat(64), observationRef: `preview-${index}` })) }).success).toBe(false);
+  });
+
   it('requires session, preparation, property and all business/source bindings on new receipts', () => {
     const p = preparedFixture();
     const grant = { version: 2, grantId: 'abf42ce1-17dc-4b87-9ac9-fd4a96f6425a', preparedRef: p.preparedRef,
@@ -223,4 +253,25 @@ it('uses the pane privacy projection for the durable preparation summary', () =>
   expect(JSON.stringify(summary)).not.toContain('4111111111111111');
   expect(JSON.stringify(summary)).not.toContain('privateNativeField');
   expect(summary).not.toHaveProperty('scope');
+});
+
+
+it('keeps V2 filing staff fields and source identity bound while native adapter mirrors change', () => {
+  const draft = { revision: 3, seq: 4, generationId: workItemId, propertyCode: 'HRDAVS',
+    source: { messageId: 'message-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+    proposal: { content: { requests: [{ id: 'filing-1', kind: 'filing', body: {
+      documents: [{ requestedName: 'approved.pdf', requestedDescription: 'Approved description' }] } }] } } };
+  const before = { propertyCode: 'HRDAVS', reservationWorkflowV2: draft };
+  const staged = { ...before, action: 'attach_document', confirmation: '123-1', arrival: '2027-09-14',
+    documentName: 'approved.pdf', documentDescription: 'Approved description', pdfSha256: 'b'.repeat(64),
+    sourceMessageId: 'message-1', filingStateDigest: 'c'.repeat(64) };
+  expect(formDigest(staged)).toBe(formDigest(before));
+  for (const changed of [
+    { ...draft, revision: 4 }, { ...draft, source: { ...draft.source, sourceHash: 'd'.repeat(64) } },
+    { ...draft, proposal: { content: { requests: [{ id: 'filing-1', kind: 'filing', body: {
+      documents: [{ requestedName: 'changed.pdf', requestedDescription: 'Approved description' }] } }] } } },
+  ]) expect(formDigest({ ...staged, reservationWorkflowV2: changed })).not.toBe(formDigest(before));
+  expect(formDigest({ ...staged, propertyCode: 'HRDAV' })).not.toBe(formDigest(before));
+  expect(formDigest({ action: 'attach_document', documentName: 'a.pdf' }))
+    .not.toBe(formDigest({ action: 'attach_document', documentName: 'b.pdf' }));
 });

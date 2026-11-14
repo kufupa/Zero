@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,7 @@ import { paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
 import { paneStayCommitsOf, stayCommitsOf, withStayActionResult, withStayCommit } from '../src/ai/work-items.js';
 import { readResolvedHmsLabtestCreates, recoverHmsLabtestCreate } from '../src/ai/hms-labtest-dispatch.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { canonicalJson } from '../src/ai/draft-approval.js';
 import { RESERVATION_WORKFLOW_V2_STATE_KEY } from '../src/ai/reservation-workflow-v2-state.js';
 import { digestCloudCreateRequest } from '../tooling/hms-cloud/create-request-binding.mjs';
 import { CREATE_GUARANTEES, hrcenToday } from '../tooling/hms-cloud/cloud-create-policy.mjs';
@@ -38,9 +39,9 @@ const h = vi.hoisted(() => ({
   tx: {} as any,
   db: {} as any,
 }));
-vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
-  ...await original<typeof import('../tooling/playwright-quote/centurion-stay360.mjs')>(),
-  centurionWriterCurrent: () => h.writerCurrent,
+vi.mock('../tooling/hms-cloud/cloud-session.mjs', async (original) => ({
+  ...await original<typeof import('../tooling/hms-cloud/cloud-session.mjs')>(),
+  cloudWriterCurrent: () => h.writerCurrent,
 }));
 vi.mock('../src/db/client.js', async (original) => ({
   ...await original<typeof import('../src/db/client.js')>(), getDb: () => h.db,
@@ -933,11 +934,27 @@ describe('mounted Cloud create route', () => {
       expect(digests[index]).toMatch(/^[a-f0-9]{64}$/);
     }
     const originalId = randomUUID();
-    proof = structuredClone(nativeRequest);
-    outcome = 'uncertain';
-    expect(await caller().quoteWorkflow.commitStay({ ...rooms[0]!, previewDigest: digests[0]!, batch: {
-      kind: 'start', id: originalId, rooms: rooms.map((room, index) => ({ ...room, previewDigest: digests[index]! })),
-    } })).toMatchObject({ status: 'refused', reason: 'pane_save_unconfirmed' });
+    // Model an already persisted V1 in-flight batch. No new legacy Go is issued:
+    // recovery must still reconcile the append-only intent left by the old runner.
+    const previews = h.state.cloudCreatePreviews as Record<string, any>;
+    const manifest = { version: 'pane-cloud-batch/v1', id: originalId,
+      rooms: rooms.map(room => ({ stayId: room.stayId, grant: structuredClone(previews[room.stayId]) })) };
+    const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+    const target = { propertyCode: 'HRCEN', kind: 'create', firstName: 'Proof', lastName: 'Labtest', arrival: stay.arrival };
+    const firstGrant = previews.s1_1;
+    const holdId = randomUUID();
+    h.sharedHold = { version: 1, kind: 'intent', holdId, ownerDigest: 'a'.repeat(64), workItemId,
+      transportId: 'transport-centurion', actorUserId: 'staff-1', grantId: firstGrant.grantId,
+      propertyCode: 'HRCEN', firstName: 'Proof', lastName: 'Labtest', nativeGuestId: '123',
+      operation: 'create', stayId: 's1_1', sourceDigest: firstGrant.sourceDigest,
+      approvedDigest: firstGrant.requestDigest, requestDigest: 'c'.repeat(64),
+      recovery: { request: firstGrant.approvedRequest }, target };
+    h.events.push({ id: holdId, itemId: workItemId, type: 'write.evidence', actorKind: 'system',
+      fieldPath: 'nava.hms.labtest.dispatch.v1', value: structuredClone(h.sharedHold) });
+    h.state = { ...h.state, cloudCreateBatch: { ...manifest, digest: digest(manifest) },
+      cloudCreateBatchHolds: { [originalId]: firstGrant.grantId },
+      stays: { ...(h.state.stays as Record<string, unknown>), s1_1: { ...firstGrant.stay, status: 'unknown',
+        confirmationNumber: null, screenshotRef: null, cloudCreateGrantId: firstGrant.grantId, cloudCreateTarget: target } } };
     const beforeRecovery = await paneStayCommitsOf(h.state);
     const originalHold = beforeRecovery.s1_1?.cloudCreateHold;
     expect(originalHold).toMatchObject({ batch: { id: originalId, rooms: [
@@ -949,8 +966,9 @@ describe('mounted Cloud create route', () => {
 
     // Exercise the actual operator recovery and ledger path; only the native
     // positive readback is replaced with a synthetic proof in this local test.
+    const nativeReadback = { confirmation: '123456-1', nativeStayId: '12345' };
     const prove = vi.spyOn(cloudCreateDriver, 'proveCreateRecovery').mockResolvedValue({
-      confirmation: '123456-1', readbackDigest: 'a'.repeat(64),
+      confirmation: '123456-1', nativeStayId: '12345', nativeReadback, readbackDigest: digest(nativeReadback),
       savedShot: { runId: randomUUID(), sha256: 'b'.repeat(64) }, shots: [],
     });
     h.tx.insert = () => ({ values: async (value: any) => {
@@ -990,14 +1008,14 @@ describe('mounted Cloud create route', () => {
     } })).toMatchObject({ status: 'refused' });
     expect(await caller().quoteWorkflow.commitStay({ ...rooms[2]!, previewDigest: digests[2]! }))
       .toMatchObject({ status: 'refused' });
-    expect(dispatches).toBe(1);
-    expect((h.state.stays as Record<string, unknown>).s1_3).toBeUndefined();
+    expect(dispatches).toBe(0);
+    expect((h.state.stays as Record<string, any>).s1_3?.status).toBeUndefined();
 
     const previousCalls = calls.length;
     expect(await caller().quoteWorkflow.commitStay({ ...rooms[1]!, previewDigest: digests[1]!,
       batch: { kind: 'continue', id: originalId, index: 1 } })).toMatchObject({ status: 'refused' });
     expect(calls).toHaveLength(previousCalls);
-    expect(dispatches).toBe(1);
+    expect(dispatches).toBe(0);
 
     // Newly previewed rooms for an unrelated guest start a different batch;
     // moving the original manifest to history does not lose its stop.
@@ -1005,10 +1023,7 @@ describe('mounted Cloud create route', () => {
     proof = { ...nativeRequest, guest: { nativeId: '123', firstName: 'Ada', lastName: 'Moyo' } };
     const fresh = [];
     for (const room of rooms.slice(2)) fresh.push(await caller().quoteWorkflow.previewStay(room));
-    const newId = randomUUID();
-    expect(await caller().quoteWorkflow.commitStay({ ...rooms[2]!, previewDigest: fresh[0]!.previewDigest!, batch: {
-      kind: 'start', id: newId, rooms: rooms.slice(2).map((room, index) => ({ ...room, previewDigest: fresh[index]!.previewDigest! })),
-    } })).toMatchObject({ status: 'ok', outcome: 'committed' });
+    expect(fresh.every(entry => entry.status === 'ok' && entry.outcome === 'previewed')).toBe(true);
     expect((await paneStayCommitsOf(h.state)).s1_1?.cloudCreateHold).toEqual(originalHold);
     expect((h.state.cloudCreateBatchHolds as Record<string, string>)[originalId]).toBeDefined();
   });

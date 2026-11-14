@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import type { QuoteSalesStrategy, QuoteSalesStrategyCode } from '../hms/rate-catalogue.js';
-import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
+import { getPropertyTransportIds } from '../../tooling/hms-cloud/property-registry.mjs';
 import type { StaffQuoteParties } from './staff-quote-workflow.js';
 
 const STRATEGY_CODES = new Set<string>(['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER']);

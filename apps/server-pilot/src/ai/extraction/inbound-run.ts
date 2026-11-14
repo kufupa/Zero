@@ -32,7 +32,7 @@ import { hashSyncedQuoteSelection, resolveAdapter } from '../quote-workflow-anal
 import { loadSyncedQuoteSelectionFromMailbox, type SyncedQuoteSelection } from '../quote-workflow-synced-selection.js';
 import { lockCanonicalMailbox } from '../../mail/ingest/canonical-identity.js';
 import { hotelRulesForProperty } from '../reservationist-decision.js';
-import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../../tooling/hms-cloud/property-registry.mjs';
 import {
   extractionPromptMaxChars,
   extractionReasoningEffort,

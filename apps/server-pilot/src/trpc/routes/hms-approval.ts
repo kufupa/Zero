@@ -17,7 +17,7 @@ import { cancelRequestBindingFields, cancelSelectionSchema, commitCloudCancel, c
   previewCloudCancel } from '../../ai/pane-cloud-cancel.js';
 import { bindCloudAmendForm, bindCloudAmendInput, cloudAmendSelectionSchema, cloudAmendWriteState } from '../../ai/pane-cloud-amend.js';
 import { labtestAmendWorkerEnabled } from '../../ai/pane-cloud-amend-readiness.js';
-import { CENTURION_HMS_READ_TARGET } from '../../hms/hms-read-target.js';
+import { effectiveWorkflowPolicy } from '../../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import { propertySwitchSchema, resolvePropertyScope } from '../../hms/property-registry.js';
 import { mailboxProcedure, router } from '../trpc.js';
@@ -32,16 +32,18 @@ const cancelTarget = z.object({ confirmation: z.string().regex(/^\d+-\d+$/).max(
 const cancelCommit = cancelTarget.extend({ reason: z.string().trim().min(1).max(120).refine((value) => !value.startsWith('-')),
   previewDigest: formDigestInput, cancellationNote: z.string().max(200).optional() }).strict().refine(completeCancelRequestBinding);
 const cancelPreviewInput = cancelTarget.extend({ workItemId: uuid, internetMessageId: selectedEmail,
-  formDigest: formDigestInput }).strict().refine(completeCancelRequestBinding);
-const cloudStateInput = z.object({ workItemId: uuid, source: cloudAmendSelectionSchema }).strict();
+  formDigest: formDigestInput, propertySwitch: propertySwitchSchema.optional() }).strict().refine(completeCancelRequestBinding);
+const cloudStateInput = z.object({ workItemId: uuid, source: cloudAmendSelectionSchema,
+  propertySwitch: propertySwitchSchema.optional() }).strict();
 const cloudApproveInput = cloudStateInput.extend({ formDigest: formDigestInput,
   preparedRef: uuid.optional(), expectedRevision: z.number().int().nonnegative().safe().optional(),
   propertySwitch: propertySwitchSchema.optional() }).strict();
 const cloudEvidenceInput = cloudStateInput.extend({ eventId: uuid }).strict();
 const cloudReviewInput = z.discriminatedUnion('decision', [
-  z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema, decision: z.literal('ok') }).strict(),
   z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema,
-    decision: z.literal('flag'), note: z.string().trim().min(3).max(500) }).strict(),
+    propertySwitch: propertySwitchSchema.optional(), decision: z.literal('ok') }).strict(),
+  z.object({ workItemId: uuid, runId: uuid, source: cloudAmendSelectionSchema,
+    propertySwitch: propertySwitchSchema.optional(), decision: z.literal('flag'), note: z.string().trim().min(3).max(500) }).strict(),
 ]);
 
 // strict(): the client names the work item and the form digest it showed. Grant, HMS digest and snapshot are server-made.
@@ -54,13 +56,13 @@ const approveInput = z.object({ workItemId: uuid, internetMessageId: selectedEma
 const evidenceInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, eventId: uuid,
   selectedSource: selectedSource.optional() }).strict();
 const stateInput = z.object({ workItemId: uuid, internetMessageId: selectedEmail, selectedSource: selectedSource.optional(),
-  cancelSource: cancelSelectionSchema.optional() }).strict();
+  cancelSource: cancelSelectionSchema.optional(), propertySwitch: propertySwitchSchema.optional() }).strict();
 const filingDocumentSource = z.object({ sha256: z.string().regex(/^[a-f0-9]{64}$/),
   snapshotDigest: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const filingPreviewInput = z.object({ workItemId: uuid, sourceMessageId: z.string().min(1).max(512),
   attachmentId: z.string().min(1).max(200), confirmation: z.string().regex(/^\d+-\d+$/).max(100),
   arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), lastName: z.string().trim().min(1).max(200),
-  selectedSource, documentSource: filingDocumentSource }).strict();
+  selectedSource, documentSource: filingDocumentSource, propertySwitch: propertySwitchSchema.optional() }).strict();
 const bindAttachInput = filingPreviewInput.extend({ internetMessageId: selectedEmail,
   revisionSeq: z.number().int().nonnegative().safe(),
   expectedStay: z.object({ firstName: z.string().trim().min(1).max(200), status: z.string().trim().min(1).max(200),
@@ -99,12 +101,11 @@ export const hmsApprovalRouter = router({
     confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     propertySwitch: propertySwitchSchema.optional() }).strict()).mutation(async ({ input, ctx }) => {
     try {
-      if (resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode !== 'HRCEN') {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'write_unavailable' });
-      }
+      const scope = resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch });
       const view = await hmsWriteStateOf({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource });
-      if (!view || view.formDigest !== input.formDigest || view.form.confirmation !== input.confirmation ||
+      if (!view || (view.form.propertyCode ?? 'HRCEN') !== scope.propertyCode ||
+          view.formDigest !== input.formDigest || view.form.confirmation !== input.confirmation ||
           view.form.arrival !== input.arrival) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'state_changed' });
       const canonicalCloudPreview = Object.hasOwn(view.form, 'cloudAmend') || Object.hasOwn(view.form, 'cloudCancel');
       if (view.form.action === 'cancel' && !canonicalCloudPreview) {
@@ -113,7 +114,8 @@ export const hmsApprovalRouter = router({
       if (!canonicalCloudPreview) {
         const snapshot = await prepareHmsWriteSnapshot({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
           selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource,
-          expectedFormDigest: input.formDigest, confirmation: input.confirmation, arrival: input.arrival });
+          expectedFormDigest: input.formDigest, confirmation: input.confirmation, arrival: input.arrival,
+          propertyCode: scope.propertyCode });
         if (snapshot.status !== 'stored') return snapshot;
       }
       const prepared = await prepareHmsWrite({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
@@ -125,8 +127,8 @@ export const hmsApprovalRouter = router({
     } catch (err) { return refusal(err); }
   }),
   previewCancel: mailboxProcedure.input(cancelPreviewInput).mutation(async ({ input, ctx }) => {
-    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
-    if (!target.ok || target.target.propertyCode !== 'HRCEN') {
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId, input.propertySwitch);
+    if (!target.ok) {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'cancel_unavailable' });
     }
     return previewCloudCancel({ transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id,
@@ -136,12 +138,11 @@ export const hmsApprovalRouter = router({
       arrival: input.arrival, target: target.target, requestId: input.requestId,
       expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId });
   }),
-  cloudAmendReady: mailboxProcedure.query(({ ctx }) => {
-    const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
-    const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-    const selected = target.ok ? target.target : null;
-    return { ready: labtestAmendWorkerEnabled() && selected !== null &&
-      targetKeys.every((key) => selected[key] === CENTURION_HMS_READ_TARGET[key]) };
+  cloudAmendReady: mailboxProcedure.input(z.object({ propertySwitch: propertySwitchSchema.optional() }).optional()).query(({ input, ctx }) => {
+    const scope = resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input?.propertySwitch });
+    const target = paneStayHmsTargetForTransport(ctx.activeTransportId, scope.propertyCode);
+    const policy = effectiveWorkflowPolicy(process.env, scope.propertyCode, 'amend');
+    return { ready: target.ok && policy.readEnabled && (scope.propertyCode !== 'HRCEN' || labtestAmendWorkerEnabled()) };
   }),
   bindCloudAmend: mailboxProcedure.input(bindCloudAmendInput).mutation(({ input, ctx }) =>
     bindCloudAmendForm({ ...input, transportId: ctx.activeTransportId })),
@@ -149,6 +150,24 @@ export const hmsApprovalRouter = router({
     const view = await cloudAmendWriteState({ ...input, transportId: ctx.activeTransportId });
     if (!view) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'state_changed' });
     return view;
+  }),
+  prepareCloudAmend: mailboxProcedure.input(cloudStateInput.extend({ formDigest: formDigestInput,
+    confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    propertySwitch: propertySwitchSchema.optional() }).strict()).mutation(async ({ input, ctx }) => {
+    try {
+      const target = paneStayHmsTargetForTransport(ctx.activeTransportId, input.propertySwitch);
+      if (!target.ok) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'amend_save_unavailable' });
+      }
+      const view = await cloudAmendWriteState({ workItemId: input.workItemId, source: input.source,
+        propertySwitch: input.propertySwitch, transportId: ctx.activeTransportId });
+      if (!view || view.formDigest !== input.formDigest || view.form.confirmation !== input.confirmation ||
+          view.form.arrival !== input.arrival) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'state_changed' });
+      const prepared = await prepareHmsWrite({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
+        actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+        propertySwitch: input.propertySwitch, selectedSource: input.source, expectedFormDigest: input.formDigest });
+      return { status: 'prepared' as const, ...publicHmsPreparedSummary(prepared) };
+    } catch (err) { return refusal(err); }
   }),
   approveCloudAmend: mailboxProcedure.input(cloudApproveInput).mutation(async ({ input, ctx }) => {
     try {
@@ -160,13 +179,16 @@ export const hmsApprovalRouter = router({
   }),
   reviewCloudAmend: mailboxProcedure.input(cloudReviewInput).mutation(async ({ input, ctx }) => {
     try {
+      const view = await cloudAmendWriteState({ ...input, transportId: ctx.activeTransportId });
+      if (view?.run?.runId !== input.runId) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'state_changed' });
       return await reviewHmsWrite({ transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id,
         workItemId: input.workItemId, runId: input.runId, cloudSelection: input.source,
         decision: input.decision, note: input.decision === 'flag' ? input.note : undefined });
     } catch (err) { return refusal(err); }
   }),
   cloudAmendEvidence: mailboxProcedure.input(cloudEvidenceInput).query(async ({ input, ctx }) => {
-    const selected = { transportId: ctx.activeTransportId, workItemId: input.workItemId, source: input.source };
+    const selected = { transportId: ctx.activeTransportId, workItemId: input.workItemId, source: input.source,
+      propertySwitch: input.propertySwitch };
     const before = await cloudAmendWriteState(selected);
     if (!before?.run?.evidence.some((row) => row.eventId === input.eventId)) {
       return { status: 'unavailable' as const, reason: 'evidence_unavailable' };
@@ -188,26 +210,25 @@ export const hmsApprovalRouter = router({
   /** Binding prepares the reviewed PDF and booking; it never approves or sends the upload. */
   bindAttach: mailboxProcedure.input(bindAttachInput).mutation(async ({ input, ctx }) => {
     try {
-      const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
-      if (!target.ok || target.target.propertyCode !== 'HRCEN') return { status: 'refused' as const, reason: 'filing_unavailable' };
-      const bound = await bindAttachDocumentForm({ ...input, transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id });
+      const target = paneStayHmsTargetForTransport(ctx.activeTransportId, input.propertySwitch);
+      if (!target.ok) return { status: 'refused' as const, reason: 'filing_unavailable' };
+      const bound = await bindAttachDocumentForm({ ...input, propertyCode: target.target.propertyCode,
+        transportId: ctx.activeTransportId, actorUserId: ctx.sessionUser.id });
       // A bind refusal happens before storing the form; a later snapshot refusal may not.
       if (bound.status !== 'bound') return { ...bound, retryable: true as const };
       if (!bound.formDigest) return bound;
       const snapshot = await prepareHmsWriteSnapshot({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource, expectedFormDigest: bound.formDigest,
-        confirmation: bound.form.confirmation, arrival: bound.form.arrival });
+        confirmation: bound.form.confirmation, arrival: bound.form.arrival, propertyCode: target.target.propertyCode });
       return snapshot.status === 'stored' ? bound : snapshot.reason === 'filing_target_changed'
         ? { ...snapshot, retryable: true as const } : snapshot;
     } catch (err) { return refusal(err); }
   }),
   approve: mailboxProcedure.input(approveInput).mutation(async ({ input, ctx }) => {
     try {
-      const scope = resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch });
-      if (scope.propertyCode !== 'HRCEN') throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'write_unavailable' });
       if (input.cancel) {
-        const target = paneStayHmsTargetForTransport(ctx.activeTransportId);
-        if (!target.ok || target.target.propertyCode !== 'HRCEN') {
+        const target = paneStayHmsTargetForTransport(ctx.activeTransportId, input.propertySwitch);
+        if (!target.ok) {
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'cancel_unavailable' });
         }
         if (input.selectedSource && (input.selectedSource.threadId !== input.cancel.source.threadId ||
@@ -290,6 +311,7 @@ export const hmsApprovalRouter = router({
         expectedFormDigest: view.formDigest,
         confirmation: form.confirmation,
         arrival: form.arrival,
+        propertyCode: resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch }).propertyCode,
       });
       return read.status === 'stored' ? { status: 'stored' as const, readAt: read.readAt } : read;
     } catch (err) {
@@ -298,6 +320,10 @@ export const hmsApprovalRouter = router({
   }),
   writeState: mailboxProcedure.input(stateInput).query(async ({ input, ctx }) => {
     try {
+      const target = paneStayHmsTargetForTransport(ctx.activeTransportId, input.propertySwitch);
+      if (!target.ok) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'write_unavailable' });
+      }
       const view = await hmsWriteStateOf({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
@@ -305,7 +331,9 @@ export const hmsApprovalRouter = router({
         selectedSource: input.selectedSource,
         cancelSource: input.cancelSource,
       });
-      if (!view) throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
+      if (!view || (view.form.propertyCode ?? 'HRCEN') !== target.target.propertyCode) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'not_found' });
+      }
       return view;
     } catch (err) {
       return refusal(err);

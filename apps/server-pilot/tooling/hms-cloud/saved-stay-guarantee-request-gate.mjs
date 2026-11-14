@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { cleanLabtestRecord, matchesLabtestBody } from './labtest-record.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 export const SAVED_GUARANTEE_PATH = '/web/base/OSRESV.HDR.changeguaranteemethod';
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -24,7 +25,7 @@ export const SAVED_GUARANTEE_MUTABLE_AMOUNTS = Object.freeze([
 const mutableAmounts = new Set(SAVED_GUARANTEE_MUTABLE_AMOUNTS);
 const price = /(?:price|tax|total|amount|averagenightly|averagerate|currency|curr)$/i;
 const own = (value) => value && typeof value === 'object' && !Array.isArray(value);
-const relevant = (name) => business.has(name.toLowerCase()) || mutableAmounts.has(name.toLowerCase()) ||
+const relevant = (name) => business.has(name.toLowerCase()) || /^child\d+$/i.test(name) || mutableAmounts.has(name.toLowerCase()) ||
   price.test(name) || /commission/i.test(name);
 const scalar = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
 const nativeAmount = value => value === null || (typeof value === 'number' && Number.isFinite(value)) ||
@@ -92,10 +93,10 @@ export function matchesSavedGuaranteeBefore(snapshot, baseline, expected, before
   if (!Array.isArray(snapshot?.dirtyFields) || !Array.isArray(snapshot?.modifiedFields) ||
       !Array.isArray(baseline?.dirtyFields) || !Array.isArray(baseline?.modifiedFields) ||
       !cleanLabtestRecord(snapshot) || !cleanLabtestRecord(baseline) || !sameSavedGuaranteePreimage(baseline, snapshot) ||
-      !own(expected) || !own(before) || !validCode(before.code) || !validDisplay(before.display) ||
+      !own(expected) || !getPropertyRegistration(expected.propertyCode)?.active || !own(before) || !validCode(before.code) || !validDisplay(before.display) ||
       expected.guaranteeCode !== before.code || expected.guaranteeDisplay !== before.display) return false;
   const data = snapshot.data;
-  const required = { propertycode: 'HRCEN', confirmationnumber: expected.confirmation, guestid: expected.guestId,
+  const required = { propertycode: expected.propertyCode, confirmationnumber: expected.confirmation, guestid: expected.guestId,
     reservationid: expected.reservationId, reservationstayid: expected.reservationStayId, recordid: expected.recordId,
     firstname: expected.firstName, lastname: expected.lastName, status: 'Reserved',
     arrivaldate: wireDate(expected.arrival), departuredate: wireDate(expected.departure), guaranteetype: before.code };
@@ -115,7 +116,7 @@ function matchesRequest(request, frame, snapshot, expectedCode) {
         url.pathname !== SAVED_GUARANTEE_PATH || url.search || url.hash ||
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
     const body = new URLSearchParams(request.postData() || ''), data = snapshot.data;
-    const fixed = { propertycode: 'HRCEN', guaranteetype: expectedCode, pagemode: 'view', isafterreservationsave: '',
+    const fixed = { propertycode: data.propertycode, guaranteetype: expectedCode, pagemode: 'view', isafterreservationsave: '',
       ONLY_DATA_REQUIRED: 'true', REFRESH_GRID: 'false', USER_FUNCTION_NAME: 'OSRESV',
       SYSTEM_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR', newprofileclick: '',
       createinactiveprofileflag: '0', reqguestprofilelookup: '', savecctoprofile: '0', savesettlementcctoprofile: '0' };

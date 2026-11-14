@@ -4,13 +4,15 @@ import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { readLabtestCreate } from './labtest-create-readback.mjs';
 import { readCreateParties } from './create-party-readback.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { cloudWriterQuiesced, withCloudReadSession, withCloudCredentialLease } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 
-const censusDefault = (stay, guest, cloudTargetKey) => withCenturionStay360Page((page) => searchLabtestPreimage(page,
-  { ...stay, firstName: guest.firstName, lastName: guest.lastName }, { allowRealGuest: true, allowPast: true }), {
-  headless: true, blockServiceWorkers: true, prepareContext: installReadOnlyGuard, cloudTargetKey,
+const censusDefault = (stay, guest, cloudTargetKey, options) => withCloudReadSession((page) => searchLabtestPreimage(page,
+  { ...stay, propertyCode: options.propertyCode, firstName: guest.firstName, lastName: guest.lastName }, { allowRealGuest: true, allowPast: true }), {
+  propertyCode: options.propertyCode, transportId: options.transportId, signal: options.signal, credentialLease: options.credentialLease,
+  startScreen: 'OSRESS', prepareContext: installReadOnlyGuard, cloudTargetKey,
 });
 const uniqueField = (fields, name) => {
   const found = fields.filter((field) => field.name === name);
@@ -39,14 +41,18 @@ const samePrice = (actual, expected) => Boolean(actual && expected &&
 const blocked = (issue) => ({ outcome: 'unconfirmed', issue });
 
 /** This reader never writes. Its optional dependencies exist for offline tests only. */
-export async function provePositiveCreateRecovery(intent, { census = censusDefault,
-  withSavedSession = withSavedStayAgentSession, partyReadback = readCreateParties } = {}) {
+export async function provePositiveCreateRecovery(intent, options = {}) {
+  const { census = censusDefault, withSavedSession = withSavedStayAgentSession, partyReadback = readCreateParties,
+    signal, credentialLease, writerQuiesced = cloudWriterQuiesced } = options;
   try {
     const recovery = intent?.recovery, parsed = digestCloudCreateRequest(recovery?.request);
-    if (intent?.operation !== 'create' || intent.propertyCode !== 'HRCEN' || !validCreateGuest(intent) || parsed.outcome !== 'ok' ||
+    if (intent?.operation !== 'create' || !getPropertyRegistration(intent.propertyCode)?.active || !validCreateGuest(intent) || parsed.outcome !== 'ok' ||
         parsed.normalizedRequestDigest !== intent.approvedDigest) return blocked('intent_unverified');
+    if (!writerQuiesced(recovery.writer)) return blocked('writer_not_quiesced');
+    if (!credentialLease && census === censusDefault) return await withCloudCredentialLease(intent.propertyCode, lease =>
+      provePositiveCreateRecovery(intent, { ...options, credentialLease: lease }), { signal });
     const request = parsed.request, { stay, guest, room } = request;
-    if (request.propertyCode !== 'HRCEN' || guest.firstName !== intent.firstName || guest.lastName !== intent.lastName ||
+    if (request.propertyCode !== intent.propertyCode || guest.firstName !== intent.firstName || guest.lastName !== intent.lastName ||
         guest.nativeId !== intent.nativeGuestId || !validCreateDates(stay.arrival, stay.departure, true, true) ||
         !CREATE_GUARANTEES[request.guaranteeType] ||
         (request.sendHmsConfirmation.kind === 'send' && (isLabtestGuest(guest) ||
@@ -88,9 +94,10 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
         return blocked('preimage_unverified');
       }
     }
-    const cloudTargetKey = createCloudTargetKey(guest, stay.arrival);
+    const cloudTargetKey = createCloudTargetKey(guest, stay.arrival, intent.propertyCode);
     if (!cloudTargetKey) return blocked('intent_unverified');
-    const listing = await census(stay, guest, cloudTargetKey);
+    const sessionOptions = { propertyCode: intent.propertyCode, transportId: intent.transportId, signal, credentialLease };
+    const listing = await census(stay, guest, cloudTargetKey, sessionOptions);
     if (listing?.outcome !== 'existing_matches' || listing.arrival !== stay.arrival || listing.departure !== stay.departure ||
         listing.coverage?.complete !== true || !Number.isSafeInteger(listing.coverage.displayed) ||
         listing.coverage.displayed < 0 || listing.coverage.displayed !== listing.coverage.total ||
@@ -108,8 +115,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
         candidate.status !== 'Reserved') return blocked('candidate_unverified');
     const ages = stay.childAges;
     const expected = { arrival: stay.arrival, departure: stay.departure, adults: stay.adults, children: ages.length,
-      childBands: { child1: ages.filter((age) => age <= 2).length,
-        child2: ages.filter((age) => age >= 3 && age <= 12).length, child3: ages.filter((age) => age >= 13).length },
+      childAges: ages,
       roomType: room.roomType, ratePlan: room.ratePlan, note: request.note, guestId: guest.nativeId,
       ...(room.mealPlan ? { mealPlan: room.mealPlan } : {}),
       firstName: guest.firstName, lastName: guest.lastName, allowRealGuest: true,
@@ -119,8 +125,9 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
       cmsSend: request.sendHmsConfirmation.kind === 'send',
       ...(request.cmsMessageId !== undefined ? { cmsMessageId: request.cmsMessageId } : {}),
       ...(request.track ? { track: request.track.display } : {}),
+      ...(request.marketSegment ? { marketSegment: request.marketSegment } : {}),
     ...(request.nativeCommissionPercent !== undefined ? { nativeCommissionPercent: request.nativeCommissionPercent } : {}),
-      ...(request.guestOptIn === false ? { guestOptIn: false } : {}),
+      ...(request.guestOptIn !== undefined ? { guestOptIn: request.guestOptIn } : {}),
       ...(request.booker ? { booker: request.booker } : {}),
       ...(request.cmsRecipient !== undefined ? { cmsRecipient: request.cmsRecipient } : {}) };
     let screenshot;
@@ -130,7 +137,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
       return value;
     }, options);
     const readback = await readLabtestCreate({ confirmation: candidate.confirmation, stay, expected },
-      { withSavedSession: captureSession, cloudTargetKey });
+      { withSavedSession: captureSession, cloudTargetKey, ...sessionOptions });
     if (!Array.isArray(readback?.fields) || !Array.isArray(readback.mismatches) || readback.mismatches.length ||
         !Buffer.isBuffer(screenshot) || !screenshot.length ||
         (recovery.ratePlanAvailability !== undefined && !samePrice(savedPrice(readback.fields), recovery.ratePlanAvailability)) ||
@@ -143,7 +150,7 @@ export async function provePositiveCreateRecovery(intent, { census = censusDefau
       agency: request.parties?.bookingAgency ?? null,
       organization: request.parties?.organization ?? null,
       arAccount: request.parties?.arAccount ? { ...request.parties.arAccount, profileId: recovery.arAccountProfileId } : null,
-      ...(request.billingReference !== undefined ? { billingReference: request.billingReference } : {}) }, { cloudTargetKey });
+      ...(request.billingReference !== undefined ? { billingReference: request.billingReference } : {}) }, { cloudTargetKey, ...sessionOptions });
     if (partyProof?.outcome !== 'verified') return blocked('party_readback_unverified');
     return { outcome: 'verified', confirmation: candidate.confirmation, readback: { ...readback, partyProof }, screenshot };
   } catch { return blocked('readback_unavailable'); }

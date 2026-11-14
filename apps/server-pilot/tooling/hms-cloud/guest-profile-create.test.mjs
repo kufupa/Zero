@@ -78,6 +78,9 @@ async function guardedPage() {
     routeWebSocket: async () => {} };
   await prepareGuardedContext(context);
   const page = { context: () => context }; pages.push(page);
+  page.waitForResponse = predicate => new Promise(resolve => {
+    page.deliverResponse = response => { if (predicate(response)) resolve(response); };
+  });
   return page;
 }
 
@@ -86,7 +89,7 @@ test('a guard failure during session shutdown prevents a successful result', asy
     const page = new EventEmitter(), state = { blocked: false, dialog: false };
     const openSession = async operation => {
       const result = await operation(page);
-      if (flag === 'dialog') page.emit('dialog');
+      if (flag === 'dialog') page.emit('dialog', { dismiss: async () => {} });
       else state.blocked = true;
       return result;
     };
@@ -103,17 +106,18 @@ test('only the recognized duplicate prompt can dispatch a reviewed confirmation'
       msg: scenario === 'unexpected' ? 'A different question' : 'Profile name already exists. Continue?' };
     const route = (confirmed, data) => {
       const req = request({}, confirmed); req.frame = () => ({ page: () => page });
-      return { request: () => req, fetch: async () => { fetches++; return { status: () => 200,
-        text: async () => JSON.stringify({ pageData: data }) }; }, fulfill: async () => {}, abort: async () => {} };
+      return { request: () => req, fallback: async () => { fetches++;
+        page.deliverResponse({ request: () => req, status: () => 200, text: async () => JSON.stringify({ pageData: data }) });
+      }, abort: async () => {} };
     };
     const initial = route(false, { success: false, messages: [question] });
     const confirmed = route(true, { success: true, values: { profileid: '123' } });
     const yes = { count: async () => 1, isEnabled: async () => true, click: async () => {
-      yesClicks++; await hooks.handleProfileSave(confirmed, state);
+      yesClicks++; await hooks.handleProfileSave(confirmed, state, { fixture: true });
     } };
     const windows = { count: async () => 1, first: () => ({ locator: () => ({ filter: () => yes }) }) };
     page.frames = () => [{ locator: () => ({ filter: () => windows }) }];
-    const save = { click: async () => hooks.handleProfileSave(initial, state) };
+    const save = { click: async () => hooks.handleProfileSave(initial, state, { fixture: true }) };
     const staged = { save, fields, previewDigest: 'digest', confirmDuplicateName: scenario !== 'declined' };
     const result = await hooks.savePreparedProfile(page, state, staged, { attemptId: scenario,
       authorizeCandidate: async () => true, dispatchCandidate: async (_context, proceed) => proceed(),
@@ -137,19 +141,20 @@ test('only the recognized duplicate prompt can dispatch a reviewed confirmation'
 test('delayed response persists its ID before browser fulfillment and completion', async () => {
   const page = await guardedPage(), events = [];
   const req = request(); req.frame = () => ({ page: () => page });
-  const route = { request: () => req, fetch: async () => {
+  const route = { request: () => req, fallback: async () => {
     await new Promise(resolve => setTimeout(resolve, 1700));
     events.push('fetched');
-    return { status: () => 200, text: async () => '{"pageData":{"success":true,"values":{"profileid":"123"}}}' };
-  }, fulfill: async () => events.push('fulfilled'), abort: async () => events.push('aborted') };
+    page.deliverResponse({ request: () => req, status: () => 200,
+      text: async () => '{"pageData":{"success":true,"values":{"profileid":"123"}}}' });
+  }, abort: async () => events.push('aborted') };
   const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
     dispatchedPhases: [], callbackDrained: false, authorizeCandidate: async () => true,
     dispatchCandidate: async (_context, proceed) => proceed(),
     recordResponse: async (_context, response) => { assert.equal(response.nativeId, '123'); events.push('recorded'); } };
-  const handler = hooks.handleProfileSave(route, { write });
+  const handler = hooks.handleProfileSave(route, { write }, { fixture: true });
   await hooks.waitForDispatch(write, 3000);
   await handler;
-  assert.deepEqual(events, ['fetched', 'recorded', 'fulfilled']);
+  assert.deepEqual(events, ['fetched', 'recorded']);
   assert.equal(write.dispatched, true);
 });
 
@@ -157,11 +162,11 @@ test('late authorization cannot dispatch after the operation closes', async () =
   const page = await guardedPage();
   const req = request(); req.frame = () => ({ page: () => page });
   let resolveAuthorization, fetches = 0;
-  const route = { request: () => req, fetch: async () => { fetches++; }, abort: async () => {} };
+  const route = { request: () => req, fallback: async () => { fetches++; }, abort: async () => {} };
   const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
     dispatchedPhases: [], authorizeCandidate: () => new Promise(resolve => { resolveAuthorization = resolve; }),
     dispatchCandidate: async (_context, proceed) => proceed(), recordResponse: async () => {} };
-  const handler = hooks.handleProfileSave(route, { write });
+  const handler = hooks.handleProfileSave(route, { write }, { fixture: true });
   await assert.rejects(hooks.waitForDispatch(write, 20), /PROFILE_SAVE_TIMED_OUT/);
   write.phase = 'closed'; resolveAuthorization(true);
   await handler;
@@ -175,14 +180,14 @@ test('a blocked request or unexpected dialog during authorization prevents Save'
       const page = await guardedPage();
       const req = request(); req.frame = () => ({ page: () => page });
       let fetches = 0;
-      const route = { request: () => req, fetch: async () => { fetches++; }, abort: async () => {} };
+      const route = { request: () => req, fallback: async () => { fetches++; }, abort: async () => {} };
       const state = { blocked: false, dialog: false };
       const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
         dispatchedPhases: [], authorizeCandidate: async () => { if (moment === 'authorize') state[flag] = true; return true; },
         dispatchCandidate: async (_context, proceed) => { if (moment === 'before_proceed') state[flag] = true; return proceed(); },
         recordResponse: async () => {} };
       state.write = write;
-      await hooks.handleProfileSave(route, state);
+      await hooks.handleProfileSave(route, state, { fixture: true });
       assert.equal(fetches, 0, `${flag} at ${moment}`);
       assert.equal(write.dispatched, false);
     }
@@ -192,13 +197,13 @@ test('a blocked request or unexpected dialog during authorization prevents Save'
 test('response persistence failure retains the known ID and does not fulfill the browser', async () => {
   const page = await guardedPage(), events = [];
   const req = request(); req.frame = () => ({ page: () => page });
-  const route = { request: () => req, fetch: async () => ({ status: () => 200,
+  const route = { request: () => req, fallback: async () => page.deliverResponse({ request: () => req, status: () => 200,
     text: async () => '{"pageData":{"success":true,"values":{"profileid":"123"}}}' }),
-  fulfill: async () => events.push('fulfilled'), abort: async () => events.push('aborted') };
+  abort: async () => events.push('aborted') };
   const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
     dispatchedPhases: [], authorizeCandidate: async () => true,
     dispatchCandidate: async (_context, proceed) => proceed(), recordResponse: async () => { throw new Error('DISK_FAILED'); } };
-  await hooks.handleProfileSave(route, { write });
+  await hooks.handleProfileSave(route, { write }, { fixture: true });
   assert.equal(write.dispatched, true);
   assert.equal(write.response.nativeId, '123');
   assert.equal(write.issue, 'PROFILE_SAVE_UNCERTAIN');

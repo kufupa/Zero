@@ -383,7 +383,7 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
   const hotelAvailabilityUrl = new URL('../../tooling/hms-cloud/hotel-availability.mjs', import.meta.url);
   const quoteReadUrl = new URL('../../tooling/hms-cloud/quote-read.mjs', import.meta.url);
   const quoteViewUrl = new URL('../../tooling/hms-cloud/quote-view.mjs', import.meta.url);
-  const guardUrl = new URL('../../tooling/playwright-quote/hms-read-only-guard.mjs', import.meta.url);
+  const guardUrl = new URL('../../tooling/hms-cloud/hms-read-only-guard.mjs', import.meta.url);
   const [quoteRead, quoteView, partyPicker, guard] = await Promise.all([
     import(quoteReadUrl.href) as Promise<{ readQuote: (page: unknown, input: Record<string, unknown>) => Promise<RecordValue> }> ,
     import(quoteViewUrl.href) as Promise<{ getQuoteView: (snapshot: unknown, filters: Record<string, unknown>) => RecordValue }> ,

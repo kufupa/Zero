@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
-import { parseStayProperty, profileFor } from '../tooling/playwright-quote/property-profile.mjs';
-import { normalizeQuoteRequest } from '../tooling/playwright-quote/quote-contract.mjs';
+import { parseStayProperty, profileFor } from '../tooling/hms-cloud/property-profile.mjs';
+import { normalizeQuoteRequest } from '../tooling/hms-cloud/quote-contract.mjs';
 import {
   PROPERTY_REGISTRY,
   getHmsPropertyRegistration,
@@ -10,7 +10,7 @@ import {
   resolveSecretSource,
   validatePropertyRegistry,
   validateHmsPropertySecret,
-} from '../tooling/playwright-quote/property-registry.mjs';
+} from '../tooling/hms-cloud/property-registry.mjs';
 
 const DAVINCI_SECRET = {
   loginUrl: 'https://hms.example.invalid',
@@ -222,7 +222,7 @@ describe('read-only HMS property registry', () => {
 
   it('provides one valid HRDAV availability request for the coordinator proof command', () => {
     const request = JSON.parse(
-      readFileSync(new URL('../tooling/playwright-quote/examples/davinci-availability.json', import.meta.url), 'utf8'),
+      readFileSync(new URL('../tooling/hms-cloud/examples/davinci-availability.json', import.meta.url), 'utf8'),
     ) as unknown;
     const normalized = normalizeQuoteRequest(request);
     expect(normalized).toMatchObject({

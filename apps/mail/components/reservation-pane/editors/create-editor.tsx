@@ -26,6 +26,7 @@ const partyFields: BookingField[] = [
 const stayFields: BookingField[] = [
   { key: 'reasonForStay', label: 'Reason for Stay', picker: 'reason_for_stay' },
   { key: 'sourceOfBusiness', label: 'Source of Business', picker: 'source_of_business' },
+  { key: 'marketSegment', label: 'Market Segment', picker: 'market_segment' },
   { key: 'guaranteeType', label: 'Guarantee Type', picker: 'guarantee' },
 ];
 const trackField: BookingField = { key: 'track', label: 'Track / Sub Segment', picker: 'track' };
@@ -207,6 +208,9 @@ export function ChildAges({ editor, path, max = 12 }: { editor: Editor; path: st
         }} onBlur={() => void commit('ages').catch(() => {})} />
       </label>)}
     </div>}
+    {editor.configuration?.formPolicy.childCategories?.length ? <p className={styles.note}>
+      Infor child categories: {editor.configuration.formPolicy.childCategories.map(category => category.label).join(', ')}.
+    </p> : null}
   </>;
 }
 

@@ -6,9 +6,13 @@ import { basename, dirname, join } from 'node:path';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
+import type { AiRunFence } from './run-ledger.js';
+import { consumeStaffGoAtDispatch } from './hms-approval.js';
 import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { canonicalJson } from './draft-approval.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
@@ -19,7 +23,7 @@ import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-f
 import { savedTargetExclusionIssue } from './reservation-workflow-v2-services.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetKeys, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError,
   consumeNeverDispatchedCancelProof, resolveHmsLabtestDispatch, resolveNeverDispatchedCancel,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
@@ -46,12 +50,14 @@ import {
   type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
 
-/** V2 cancellation is source-bound to one authenticated HRCEN mailbox and one explicit saved-stay target. */
+/** V2 cancellation is source-bound to one authenticated property and one saved-stay target. */
 export type ReservationWorkflowV2CancelContext = {
   db: DB;
   transport: { id: string };
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
+  writeRunFence?: AiRunFence;
+  signal?: AbortSignal;
   nativeBatch?: ReservationNativeCheckBatch;
   recovery?: ReservationWorkflowV2Context['recovery'];
 };
@@ -94,6 +100,7 @@ const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 });
 const cancelPreimageSchema = z.object({
+  propertyCode: z.enum(['HRCEN', 'HRDAV', 'HRDAVS']).optional(),
   confirmation: z.string().regex(/^\d+-\d+$/), guestId: z.string().regex(/^\d{1,30}$/),
   nativeStayId: z.string().regex(/^\d{1,100}$/),
   firstName: z.string().trim().min(1).max(200).refine((name) => !/[\p{Cc}]/u.test(name)),
@@ -118,9 +125,8 @@ function stateContext(ctx: ReadContext): StateContext {
 }
 
 function currentTarget(ctx: ReadContext): HmsReadTarget | null {
-  if (ctx.property.propertyCode !== 'HRCEN') return null;
-  const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
-  return resolved.ok && resolved.target.propertyCode === 'HRCEN' && resolved.target.browserSlot === 'centurion'
+  const resolved = paneStayHmsTargetForTransport(ctx.transport.id, ctx.property.propertyCode);
+  return resolved.ok && resolved.target.propertyCode === ctx.property.propertyCode
     ? resolved.target : null;
 }
 
@@ -362,19 +368,21 @@ export function cancellationFinancialHandling(money: unknown, folio: unknown): {
 }
 
 /** Run only the existing restricted read → prepareCancellation native sequence, then close its browser. */
-async function cancellationPreflight(target: HmsReadTarget, confirmation: string, arrival?: string, signal?: AbortSignal): Promise<PreflightResult> {
+async function cancellationPreflight(target: HmsReadTarget, transportId: string, confirmation: string,
+  arrival?: string, signal?: AbortSignal, cloudTargetKey?: string): Promise<PreflightResult> {
   try {
     const module = await import(new URL('../../tooling/hms-cloud/cancellation-preflight-session.mjs', import.meta.url).href) as {
       withCancellationPreflightSession: <T>(
         operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>,
-        options?: { signal?: AbortSignal },
+        options: { propertyCode: string; transportId: string; confirmation: string; signal?: AbortSignal; cloudTargetKey?: string },
       ) => Promise<T>;
     };
     const raw = record(await module.withCancellationPreflightSession(async ({ runTool }) => {
       const read = await runTool({ tool: 'read', confirmation, ...(arrival ? { arrivalDate: arrival } : {}), view: 'record' });
       if (record(read)?.outcome !== 'ok') return { outcome: 'read_failed', issue: 'CANCELLATION_PREFLIGHT_READ_FAILED' };
       return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
-    }, { signal: signal ?? AbortSignal.timeout(15 * 60_000) }));
+    }, { propertyCode: target.propertyCode, transportId, confirmation, cloudTargetKey,
+      signal: signal ?? AbortSignal.timeout(15 * 60_000) }));
     const projected = projectCloudCancellationPreview({ confirmation, ...(arrival ? { arrival } : {}) }, raw);
     if (!raw || projected.outcome !== 'prepared_for_human_review' || raw.outcome !== 'prepared_for_human_review') {
       return { outcome: 'failed', issue: projected.reason ?? (typeof raw?.issue === 'string' ? raw.issue : 'CANCELLATION_PREFLIGHT_UNAVAILABLE') };
@@ -402,12 +410,13 @@ async function cancellationPreflight(target: HmsReadTarget, confirmation: string
   } catch { return { outcome: 'failed', issue: 'CANCELLATION_PREFLIGHT_UNAVAILABLE' }; }
 }
 
-async function nativeCancelRead(target: HmsReadTarget, confirmation: string, arrival: string): Promise<CancelPreimage | null> {
+async function nativeCancelRead(target: HmsReadTarget, confirmation: string, arrival: string, transportId: string,
+  signal?: AbortSignal): Promise<CancelPreimage | null> {
   let native: NativeCancelResult | null = null;
   try {
-    native = await runCloudCancellation({ mode: 'read', target, confirmation, arrival, allowRealGuest: true }) as NativeCancelResult;
+    native = await runCloudCancellation({ mode: 'read', target, transportId, signal, confirmation, arrival, allowRealGuest: true }) as NativeCancelResult;
     const expected = cancelPreimageSchema.safeParse(native.expected);
-    return native.outcome === 'read' && expected.success && expected.data.confirmation === confirmation &&
+    return native.outcome === 'read' && expected.success && expected.data.propertyCode === target.propertyCode && expected.data.confirmation === confirmation &&
       expected.data.arrival === arrival ? expected.data : null;
   } catch { return null; }
   finally { await removeNativeRunDir(native?.runDir); }
@@ -433,9 +442,10 @@ type FreshPreview = {
 } | { outcome: 'failed'; issue: string; runDir?: string | null };
 
 async function freshPreview(target: HmsReadTarget, confirmation: string, hint: CancelHint, allowPreviewCharge = true,
-  cloudTargetKey?: string, signal?: AbortSignal, allowReviewedSourceMismatch = false): Promise<FreshPreview> {
-  const initial = await cancellationPreflight(target, confirmation,
-    allowReviewedSourceMismatch ? undefined : hint.bookedArrival, signal);
+  cloudTargetKey?: string, signal?: AbortSignal, allowReviewedSourceMismatch = false, transportId?: string): Promise<FreshPreview> {
+  if (!transportId) return { outcome: 'failed', issue: 'cancel_transport_unavailable' };
+  const initial = await cancellationPreflight(target, transportId, confirmation,
+    allowReviewedSourceMismatch ? undefined : hint.bookedArrival, signal, cloudTargetKey);
   if (initial.outcome !== 'ok') return initial;
   const stay = record(initial.facts.stay), arrivalFact = record(stay?.arrivalDate), departureFact = record(stay?.departureDate);
   const arrival = text(arrivalFact?.value), departure = text(departureFact?.value);
@@ -444,14 +454,14 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
   }
   let native: NativeCancelResult | null = null;
   try {
-    native = await runCloudCancellation({ mode: 'preview', target, confirmation, arrival, allowRealGuest: true,
+    native = await runCloudCancellation({ mode: 'preview', target, transportId, confirmation, arrival, allowRealGuest: true,
       ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(signal ? { signal } : {}) }) as NativeCancelResult;
     const expected = cancelPreimageSchema.safeParse(native.expected), reasons = reasonOptionsSchema.safeParse(native.reasons),
       policyFacts = z.array(z.string().trim().min(1).max(260)).max(12).safeParse(native.policyFacts ?? []),
       penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(native.penaltyText ?? null);
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
         !expected.success || !reasons.success || !policyFacts.success || !penaltyText.success ||
-        expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
+        expected.data.propertyCode !== target.propertyCode || expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
         (!expected.data.allowRealGuest && (expected.data.firstName !== 'Proof' || expected.data.lastName !== 'Labtest' ||
           expected.data.arrival < '2027-01-01' || expected.data.cmsSend !== false))) {
       return { outcome: 'failed', issue: native.outcome === 'refused_scope_unverified' ? 'CANCELLATION_SCOPE_UNVERIFIED' :
@@ -528,6 +538,7 @@ function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string,
   if (!selected || !criteria || criteria.workflow !== 'cancel' || criteria.stage !== 'lookup' ||
       criteria.requestId !== requestId || criteria.hintId !== hint.id || criteria.fieldPath !== path ||
       criteria.propertyCode !== draft.propertyCode || !preimage.success ||
+      (preimage.data.propertyCode ?? 'HRCEN') !== draft.propertyCode ||
       (!matchesHint(preimage.data, hint) && !reviewedMismatch)) {
     return { issue: 'cancel_native_target_selection_stale' };
   }
@@ -539,7 +550,9 @@ function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string,
 
 function compileCancel(draft: ReservationWorkflowV2Draft, requestId: string, hintId: string | undefined,
   propertyCode: string): CancelCompile {
-  if (propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'cancel_property_not_supported' };
+  if (!getPropertyRegistration(propertyCode)?.active || draft.propertyCode !== propertyCode) {
+    return { outcome: 'unsupported', issue: 'cancel_property_not_supported' };
+  }
   const loaded = effectiveBody(draft, requestId);
   if (!loaded || !loaded.body) return { outcome: 'needs_input', issue: 'cancel_request_not_found' };
   if (Object.keys(loaded.body).some((key) => !['targets', 'reason', 'cancellationNote', 'previewObservationRefs'].includes(key))) {
@@ -725,7 +738,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
         ? auditTargetExclusions(current, targetExclusions, exclusionPath) : null;
       if (exclusionIssue) {
         const item = observation(loaded.draft, input, request.id, hint.id, 'lookup', 'partial',
-          { fieldPath, propertyCode: 'HRCEN', query: { confirmation, guestName: hint.guestName ?? null,
+          { fieldPath, propertyCode: ctx.property.propertyCode, query: { confirmation, guestName: hint.guestName ?? null,
             arrival: arrival ?? null, departure: hint.bookedDeparture ?? null } },
           { outcome: 'needs_input', issue: exclusionIssue.issue, fields: exclusionIssue.fields,
             ...(exclusionIssue.hintId ? { excludedHintId: exclusionIssue.hintId } : {}),
@@ -745,14 +758,14 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
       if (exactCurrent && current?.status === 'Reserved') {
         const nativeArrival = text(current.arrival);
         const preflight = nativeArrival
-          ? await cancellationPreflight(target, confirmation, nativeArrival, ctx.nativeBatch?.signal)
+          ? await cancellationPreflight(target, ctx.transport.id, confirmation, nativeArrival, ctx.nativeBatch?.signal)
           : { outcome: 'failed' as const, issue: 'cancel_current_arrival_unavailable' };
         if (preflight.outcome === 'ok') {
           preflightFacts = preflight.facts;
           preflightObservedAt = preflight.observedAt;
           const preflightStay = record(preflight.facts.stay);
           const observedArrival = text(record(preflightStay?.arrivalDate)?.value);
-          preimage = observedArrival ? await nativeCancelRead(target, confirmation, observedArrival) : null;
+          preimage = observedArrival ? await nativeCancelRead(target, confirmation, observedArrival, ctx.transport.id, ctx.nativeBatch?.signal) : null;
           if (!preimage) reason ??= 'native_cancel_target_unavailable';
           else if (preimage.confirmation !== confirmation || preimage.arrival !== observedArrival ||
               preimage.departure !== text(record(preflightStay?.departureDate)?.value)) reason = 'cancel_preflight_identity_mismatch';
@@ -766,7 +779,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
         // Warm options with the same no-Save preview used by staff Prepare. This lookup evidence
         // grants no review, preview admission, write claim or Go; a failed preview leaves the
         // independently verified Reserved target available for staff to Prepare again.
-        const warm = await freshPreview(target, confirmation, hint, true, undefined, ctx.nativeBatch.signal);
+        const warm = await freshPreview(target, confirmation, hint, true, undefined, ctx.nativeBatch.signal, false, ctx.transport.id);
         if (warm.outcome === 'ok') {
           preimage = warm.preimage; preflightFacts = warm.preflight; preflightObservedAt = warm.observedAt;
           warmCancellationCheck = { status: 'ready', observedAt: warm.observedAt, reasons: warm.reasons,
@@ -780,7 +793,7 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
       }
       const complete = Boolean(preimage && preflightFacts && exactCurrent && current?.status === 'Reserved');
       const item = observation(loaded.draft, input, request.id, hint.id, 'lookup', complete ? 'complete' : 'partial',
-        { fieldPath, propertyCode: 'HRCEN', query: { confirmation, guestName: hint.guestName ?? null,
+        { fieldPath, propertyCode: ctx.property.propertyCode, query: { confirmation, guestName: hint.guestName ?? null,
           arrival: arrival ?? null, departure: hint.bookedDeparture ?? null } },
         { outcome: complete ? (currentMismatchFields.length || reason ? 'needs_review' : 'found') : 'needs_review',
           ...(reason ? { issue: reason } : {}), ...(currentStay ? { currentStay } : {}),
@@ -848,7 +861,7 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   const compiled = compileCancel(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
   const fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
-    hmsDispatchTargetKey(dispatchTarget(compiled.preimage)), undefined, compiled.sourceHintMismatchFields.length > 0);
+    hmsDispatchTargetKey(dispatchTarget(compiled.preimage)), ctx.signal, compiled.sourceHintMismatchFields.length > 0, ctx.transport.id);
   if (fresh.outcome !== 'ok') {
     await removeNativeRunDir(fresh.runDir);
     return { status: 'needs_review', issue: fresh.issue };
@@ -892,7 +905,7 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
 const CANCEL_DISPATCH_FIELD = 'nava.hms.labtest.dispatch.v1';
 
 function dispatchTarget(preimage: CancelPreimage): HmsDispatchTarget {
-  return hmsDispatchTargetSchema.parse({ propertyCode: 'HRCEN', kind: 'saved',
+  return hmsDispatchTargetSchema.parse({ propertyCode: preimage.propertyCode ?? 'HRCEN', kind: 'saved',
     confirmation: preimage.confirmation, nativeStayId: preimage.nativeStayId });
 }
 
@@ -910,7 +923,7 @@ async function assertCurrentCancel(tx: Tx, ctx: ReservationWorkflowV2CancelConte
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
   if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
       item.sourceMessageId !== input.source.messageId || item.threadId !== input.source.threadId ||
-      draft.revision !== input.expectedRevision || draft.propertyCode !== 'HRCEN' || draft.transportId !== ctx.transport.id ||
+      draft.revision !== input.expectedRevision || draft.propertyCode !== ctx.property.propertyCode || draft.transportId !== ctx.transport.id ||
       draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
       draft.source.messageId !== input.source.messageId || draft.source.threadId !== input.source.threadId) {
     throw new Error('reservation_workflow_v2_cancel_stale');
@@ -970,7 +983,7 @@ async function persistCancelResolution(tx: Tx, ctx: ReservationWorkflowV2CancelC
   if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
       item.sourceMessageId !== input.source.messageId || item.threadId !== input.source.threadId ||
       draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
-      draft.transportId !== ctx.transport.id || draft.propertyCode !== 'HRCEN' ||
+      draft.transportId !== ctx.transport.id || draft.propertyCode !== ctx.property.propertyCode ||
       operationById(draft, input.idempotencyKey)?.status !== 'unknown' ||
       result.generationId !== draft.generationId || result.sourceMessageId !== draft.source.messageId ||
       result.sourceRefs.some((ref) => !draft.observations.some((entry) => entry.ref === ref))) {
@@ -1004,7 +1017,7 @@ async function persistCancelNotDispatched(tx: Tx, ctx: ReservationWorkflowV2Canc
   if (!item || !draft || !operation || draft.workItemId !== input.workItemId ||
       draft.source.messageId !== input.source.messageId || draft.source.threadId !== input.source.threadId ||
       draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt ||
-      draft.transportId !== ctx.transport.id || draft.propertyCode !== 'HRCEN' ||
+      draft.transportId !== ctx.transport.id || draft.propertyCode !== ctx.property.propertyCode ||
       operation.status !== 'unknown' || operation.requestId !== compiled.requestId ||
       operation.allocationId !== compiled.hintId || operation.draftRevision !== input.expectedRevision ||
       operation.generationId !== draft.generationId || result.generationId !== draft.generationId ||
@@ -1052,9 +1065,9 @@ async function storeCancelScreenshot(ctx: ReservationWorkflowV2CancelContext, wo
       if (!Buffer.isBuffer(source.bytes) || !source.bytes.length) return null;
       await writeFile(destination, source.bytes, { mode: 0o600 });
     }
-    const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId, runId, sourceDir: stage, owner, now: Date.now() });
+    const shots = await persistHmsShots({ propertyCode: ctx.property.propertyCode, workItemId, runId, sourceDir: stage, owner, now: Date.now() });
     const shot = shots?.find((item) => item.name === name);
-    if (!shot || !await verifyStoredHmsShot({ runId, name, sha256: shot.sha256, owner, propertyCode: 'HRCEN', workItemId }, name)) {
+    if (!shot || !await verifyStoredHmsShot({ runId, name, sha256: shot.sha256, owner, propertyCode: ctx.property.propertyCode, workItemId }, name)) {
       return null;
     }
     return { runId, sha256: shot.sha256 };
@@ -1086,6 +1099,26 @@ function reviewRequestFor(previewRefs: string[], reviewPath: string, item: Reser
 }
 
 /** Recheck one reviewed cancellation; a native fee prompt is accepted only when it matches that reviewed preview. */
+/** Only the cancellation preview accepted by staff can become a durable Go receipt. */
+export async function reservationWorkflowV2CancelPreparation(ctx: ReservationWorkflowV2CancelContext,
+  input: ReservationWorkflowV2PrepareInput) {
+  const loaded = await currentDraft(ctx, input);
+  if (!loaded.draft) return null;
+  const compiled = compileCancel(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
+  if (compiled.outcome !== 'ok') return null;
+  const prepared = preparedPreview(loaded.draft, compiled);
+  if (!prepared || !prepared.item.coverage.complete || prepared.item.propertyCode !== ctx.property.propertyCode ||
+      prepared.item.sourceMessageId !== input.source.messageId ||
+      !reviewBinding(loaded.draft, compiled, prepared.item, String(prepared.result.approvalDigest)).accepted) return null;
+  const preimage = record(prepared.result.preimage);
+  if (!preimage || preimage.confirmation !== compiled.preimage.confirmation ||
+      preimage.nativeStayId !== compiled.preimage.nativeStayId) return null;
+  return { operation: 'cancel' as const, targetAliases: hmsDispatchTargetKeys(dispatchTarget(compiled.preimage)),
+    nativeObservation: { beforeDigest: sha256(preimage), capturedAt: prepared.item.observedAt,
+      price: prepared.result.preflight ?? null, warnings: prepared.item.coverage.notes },
+    workflowContext: { endpoint: 'execute' as const, input } };
+}
+
 export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflowV2CancelContext,
   input: ReservationWorkflowV2ExecuteInput): Promise<CancelOutcome> {
   if (!z.string().uuid().safeParse(input.idempotencyKey).success) return { status: 'invalid_input', issue: 'cancel_idempotency_key_invalid' };
@@ -1120,7 +1153,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
   if (!targetLock) return { status: 'unsupported', issue: 'cancel_target_lock_unavailable' };
   let lockResult: CancelOutcome;
   try {
-    lockResult = await targetLock.withLock(async () => {
+    lockResult = await targetLock.withLock(async (targetSignal) => {
+      const lockSignal = targetSignal && ctx.signal ? AbortSignal.any([targetSignal, ctx.signal]) : targetSignal ?? ctx.signal;
       const labtest = !compiled.preimage.allowRealGuest && compiled.preimage.firstName === 'Proof' &&
         compiled.preimage.lastName === 'Labtest' && compiled.preimage.arrival >= '2027-01-01' && !compiled.preimage.cmsSend;
       const epoch = await captureHmsLabtestDispatchEpoch(ctx.db, expectedTarget, input.workItemId)
@@ -1128,7 +1162,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       if (!epoch) return { status: 'needs_reconcile', issue: 'cancel_dispatch_history_unavailable' };
       let fresh: FreshPreview;
       try { fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
-        hmsDispatchTargetKey(expectedTarget), undefined, compiled.sourceHintMismatchFields.length > 0); }
+        hmsDispatchTargetKey(expectedTarget), lockSignal, compiled.sourceHintMismatchFields.length > 0, ctx.transport.id); }
       catch { return { status: 'needs_review', issue: 'cancel_fresh_preview_unavailable' }; }
       if (fresh.outcome !== 'ok') {
         await removeNativeRunDir(fresh.runDir);
@@ -1174,7 +1208,9 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       // Both positively paid and unknown require the broader paid authority.
       // Reuse this same classification when the native request is dispatched.
       const moneyState = record(fresh.preflight.financialHandling)?.paymentStatus === 'paid' ? 'paid' : 'unknown';
-      const mode = paneWriteMode('cancel', moneyState);
+      const cancelMode = () => expectedTarget.propertyCode === 'HRCEN' ? paneWriteMode('cancel', moneyState)
+        : effectiveWorkflowPolicy(process.env, expectedTarget.propertyCode, 'cancel').mode;
+      const mode = cancelMode();
       if (mode !== 'on' && !(mode === 'lab' && labtest)) {
         await removeNativeRunDir(fresh.runDir);
         return { status: 'unsupported', issue: 'cancel_financial_authority_flag_off',
@@ -1188,10 +1224,11 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       let nativeRequestDigest: string | null = null, claimRequestDigest: string | null = null, claimDigest: string | null = null;
       let beforeScreenshotPath: string | null = null, acceptedPenaltyText: string | null = null;
       const continuationAllowed = () => {
-        const currentMode = paneWriteMode('cancel', moneyState);
-        return currentMode === 'on' || (currentMode === 'lab' && labtest);
+        const currentMode = cancelMode();
+        return !lockSignal?.aborted && (currentMode === 'on' || (currentMode === 'lab' && labtest));
       };
       const acquireClaim = async (requestDigest: string, beforePath: string) => {
+        lockSignal?.throwIfAborted();
         if (handle || !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
             !safeRunDir(dirname(beforePath)) || beforePath !== join(dirname(beforePath), 'before.png')) {
           throw new Error('cancel_native_dispatch_binding_invalid');
@@ -1219,18 +1256,22 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit' }, ['native_cancel_outcome_pending']);
         try {
           handle = await claimHmsLabtestDispatch(ctx.db, { workItemId: input.workItemId, transportId: ctx.transport.id,
-            actorUserId: ctx.user.id, grantId: input.idempotencyKey, propertyCode: 'HRCEN',
+            actorUserId: ctx.user.id, grantId: input.idempotencyKey, propertyCode: expectedTarget.propertyCode,
             firstName: fresh.preimage.firstName, lastName: fresh.preimage.lastName,
             nativeGuestId: fresh.preimage.guestId, operation: 'cancel', target: expectedTarget,
             sourceDigest: input.source.sourceHash, approvedDigest: approval, requestDigest, recovery },
-          async (tx) => assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref, approval, actorSession.data, attempt), epoch);
+          async (tx) => {
+            if (!ctx.writeRunFence) throw new Error('staff_go_required');
+            await consumeStaffGoAtDispatch(tx, ctx.writeRunFence, lockSignal);
+            await assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref, approval, actorSession.data, attempt);
+          }, epoch);
         } catch (error) {
           claimError = error instanceof HmsLabtestDispatchError ? `cancel_dispatch_${error.reason}` : 'cancel_dispatch_claim_failed';
           throw error;
         }
       };
       try {
-        native = await runCloudCancellation({ mode: 'commit', target, confirmation: compiled.preimage.confirmation,
+        native = await runCloudCancellation({ mode: 'commit', target, transportId: ctx.transport.id, signal: lockSignal, confirmation: compiled.preimage.confirmation,
           arrival: compiled.preimage.arrival, allowRealGuest: true, cloudTargetKey: hmsDispatchTargetKey(expectedTarget),
           expected: fresh.preimage, bindDepositReceived: true, runId, reasonCode: matchingReason.value, reasonLabel: matchingReason.display,
           cancellationNote: compiled.cancellationNote, continuationAllowed, commitBudgetMs: 15 * 60_000,
@@ -1272,6 +1313,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
                 'Exact native cancellation request bound to the reviewed target claim', input.idempotencyKey);
               if (recorded.status !== 'ok') throw new Error('reservation_workflow_v2_cancel_request_receipt_unavailable');
             }
+            lockSignal?.throwIfAborted();
             return send();
           } });
       } catch {
@@ -1326,7 +1368,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
               const recovery = record(intent.recovery), intentTarget = hmsDispatchTargetSchema.safeParse(intent.target);
               if (intent.transportId !== ctx.transport.id || intent.workItemId !== input.workItemId ||
                   intent.actorUserId !== ctx.user.id || intent.grantId !== input.idempotencyKey ||
-                  intent.operation !== 'cancel' || intent.propertyCode !== 'HRCEN' ||
+                  intent.operation !== 'cancel' || intent.propertyCode !== ctx.property.propertyCode ||
                   intent.approvedDigest !== approval || intent.sourceDigest !== input.source.sourceHash ||
                   intent.requestDigest !== claimRequestDigest || recovery?.claimDigest !== claimDigest ||
                   canonicalJson(recovery?.before) !== canonicalJson(beforeReceipt) || recovery?.runId !== runId ||
@@ -1479,7 +1521,7 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
     issue: 'cancel_dispatch_intent_scope_unverified' };
   const intent = matched.value as unknown as HmsLabtestIntent;
   if (intent.approvedDigest !== record(sourceObservation?.criteria)?.approvedDigest ||
-      intent.sourceDigest !== input.source.sourceHash || intent.propertyCode !== 'HRCEN' ||
+      intent.sourceDigest !== input.source.sourceHash || intent.propertyCode !== ctx.property.propertyCode ||
       (claimRequestDigest !== null && intent.requestDigest !== claimRequestDigest)) {
     return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
       issue: 'cancel_dispatch_intent_scope_changed' };
@@ -1489,6 +1531,7 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
   const preimage = cancelPreimageSchema.safeParse(recovery?.preimage);
   if (!recovery || !before || !target || !boundTarget.success || boundTarget.data.kind !== 'saved' ||
       !boundTarget.data.nativeStayId || !boundTarget.data.confirmation || !preimage.success ||
+      boundTarget.data.propertyCode !== ctx.property.propertyCode || (preimage.data.propertyCode ?? 'HRCEN') !== ctx.property.propertyCode ||
       recovery.runId !== before.runId || before.name !== 'before.png' ||
       recovery.confirmation !== boundTarget.data.confirmation || recovery.nativeStayId !== boundTarget.data.nativeStayId ||
       preimage.data.confirmation !== boundTarget.data.confirmation || preimage.data.nativeStayId !== boundTarget.data.nativeStayId ||
@@ -1502,14 +1545,16 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
   if (!targetLock) return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
     issue: 'cancel_target_lock_unavailable', holdReleased: false };
   try {
-    const proof = await targetLock.withLock(async () => {
+    const proof = await targetLock.withLock(async (targetSignal) => {
+      const signal = targetSignal && ctx.signal ? AbortSignal.any([targetSignal, ctx.signal]) : targetSignal ?? ctx.signal;
       if (!await verifyStoredHmsShot({ runId: String(recovery.runId), name: 'before.png', sha256: before.sha256 as string,
-        owner, propertyCode: 'HRCEN', workItemId: input.workItemId }, 'before.png')) throw new Error('cancel_before_shot_unavailable');
+        owner, propertyCode: ctx.property.propertyCode, workItemId: input.workItemId }, 'before.png')) throw new Error('cancel_before_shot_unavailable');
       const native = await import(new URL('../../tooling/hms-cloud/pane-cancel-session.mjs', import.meta.url).href) as {
-        provePositiveCancelRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; confirmation?: unknown;
+        provePositiveCancelRecovery(intent: HmsLabtestIntent, options: { signal?: AbortSignal }): Promise<{ outcome: string; confirmation?: unknown;
           readback?: unknown; screenshot?: unknown }>;
       };
-      const observed = await native.provePositiveCancelRecovery(intent);
+      const observed = await native.provePositiveCancelRecovery(intent, { signal });
+      signal?.throwIfAborted();
       const readback = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
         nativeGuestId: z.string().regex(/^\d{1,30}$/), status: z.string().regex(/^cancel(?:l)?ed$/i),
         reasonCode: z.string(), cancellationNote: z.string() }).passthrough().safeParse(observed.readback);

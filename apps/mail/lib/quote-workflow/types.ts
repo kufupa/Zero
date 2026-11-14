@@ -336,6 +336,8 @@ export type QuotePaneConfig = {
   tenantId?: string;
   catalogue?: import('../../../server-pilot/src/hms/property-configuration.js').PropertyConfiguration['catalogue'];
   capabilities?: import('../../../server-pilot/src/hms/property-configuration.js').PropertyConfiguration['capabilities'];
+  formPolicy?: import('../../../server-pilot/src/hms/property-configuration.js').PropertyConfiguration['formPolicy'];
+  nativeMealMappings?: import('../../../server-pilot/src/hms/property-configuration.js').PropertyConfiguration['nativeMealMappings'];
   roomTypes: QuotePaneRoomType[];
   ratePlans: RatePlanCatalogueEntry[];
   mealPlans: QuotePaneBoard[];

@@ -21,7 +21,8 @@ test('fresh party session blocks service workers and installs the read guard bef
   };
   const result = await readCreateParties({ confirmation: '123456-1', arrival: '2028-09-19', guestId: '123' }, {
     openSession: async (_operation, options) => {
-      assert.equal(options.blockServiceWorkers, true);
+      assert.equal(options.propertyCode, 'HRCEN');
+      assert.equal(options.startScreen, 'OSRESS');
       await options.prepareContext(context);
       let closed = false;
       context.socketHandler({ close: () => { closed = true; } });

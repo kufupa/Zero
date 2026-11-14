@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { shouldAbortReadOnlyRequest } from '../playwright-quote/hms-read-only-guard.mjs';
+import { shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentLabtestRecord } from './labtest-record.mjs';
 import { attachLabtestDocument, consumeNeverDispatchedAttachProof, createDocumentUploadGate, documentUploadRequestDigest, documentValidationFields, exactDocumentParams, matchesDocumentMultipart,
@@ -461,7 +461,7 @@ test('multipart fields cannot diverge from the validated form or repeat a field'
 
 test('explicit blank note can be verified but an omitted note is refused', async () => {
   const page = { url: () => 'https://invalid.example', title: async () => '' };
-  const expected = { confirmation: '123456-1', guestId: '123', arrival: '2027-10-12', departure: '2027-10-13',
+  const expected = { propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123', arrival: '2027-10-12', departure: '2027-10-13',
     roomType: 'STQN', ratePlan: 'BAR', note: '' };
   await assert.rejects(currentLabtestRecord(page, expected, { allowBlankNote: true }), /PROPERTY_OR_ORIGIN_MISMATCH/);
   await assert.rejects(currentLabtestRecord(page, { ...expected, note: undefined }, { allowBlankNote: true }),
@@ -470,18 +470,18 @@ test('explicit blank note can be verified but an omitted note is refused', async
 });
 
 test('refuses invalid files and contexts before any browser action', async () => {
-  assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name: '../guest.txt' }, { evidenceRoot: '/tmp' }),
+  assert.deepEqual(await attachLabtestDocument(null, { propertyCode: 'HRCEN' }, { ...file, name: '../guest.txt' }, { evidenceRoot: '/tmp' }),
     { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
   for (const name of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
-    assert.deepEqual(await attachLabtestDocument(null, {}, { ...file, name }, { evidenceRoot: '/tmp' }),
+    assert.deepEqual(await attachLabtestDocument(null, { propertyCode: 'HRCEN' }, { ...file, name }, { evidenceRoot: '/tmp' }),
       { outcome: 'input_gap', issue: 'DOCUMENT_INPUT_INVALID' });
   }
-  assert.deepEqual(await attachLabtestDocument(null, {}, file, { evidenceRoot: '/tmp' }),
+  assert.deepEqual(await attachLabtestDocument(null, { propertyCode: 'HRCEN' }, file, { evidenceRoot: '/tmp' }),
     { outcome: 'refused', issue: 'DOCUMENT_PAGE_UNAVAILABLE' });
   const page = { context: () => ({ _options: { serviceWorkers: 'allow' } }) };
-  assert.deepEqual(await attachLabtestDocument(page, {}, file, { evidenceRoot: '/tmp' }),
+  assert.deepEqual(await attachLabtestDocument(page, { propertyCode: 'HRCEN' }, file, { evidenceRoot: '/tmp' }),
     { outcome: 'refused', issue: 'DOCUMENT_CONTEXT_UNSAFE' });
   const incomplete = { context: () => ({ _options: { serviceWorkers: 'block' } }) };
-  assert.deepEqual(await attachLabtestDocument(incomplete, {}, file, { evidenceRoot: '/tmp' }),
+  assert.deepEqual(await attachLabtestDocument(incomplete, { propertyCode: 'HRCEN' }, file, { evidenceRoot: '/tmp' }),
     { outcome: 'refused', issue: 'DOCUMENT_CONTEXT_UNSAFE' });
 });

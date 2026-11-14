@@ -1,5 +1,6 @@
 import { readGuestStayForm } from './guest-stay-form.mjs';
 import { parseResponse as parsePickerResponse } from './guest-stay-room-rate.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
@@ -29,12 +30,13 @@ async function responseGrid(response) {
 }
 
 /** Read the native Track / Sub Segment picker without selecting a row or saving. */
-export async function listTrackSubSegments(page, { propertyCode } = {}) {
-  if (!page || propertyCode !== 'HRCEN') return { outcome: 'input_gap', issue: 'TRACK_PROPERTY_REQUIRED' };
+export async function listTrackSubSegments(page, { propertyCode, selectCode } = {}) {
+  if (!page || !getPropertyRegistration(propertyCode)?.active ||
+      (selectCode !== undefined && !/^[A-Z0-9]{1,12}$/.test(selectCode))) return { outcome: 'input_gap', issue: 'TRACK_PROPERTY_REQUIRED' };
   const before = await readGuestStayForm(page, { propertyCode });
   if (before.outcome !== 'ok' || new URL(page.url()).origin !== ORIGIN) return { outcome: 'execution_failure', issue: 'TRACK_FORM_UNAVAILABLE' };
   let gridName = null, pageMetadata = null, pageReadArmed = false, blocked = false, nativeDialog = false, opened = false, changedFieldNames = [];
-  const onDialog = () => { nativeDialog = true; };
+  const onDialog = dialog => { nativeDialog = true; void dialog.dismiss().catch(() => {}); };
   const guard = async route => {
     const request = route.request(), target = new URL(request.url());
     const body = new URLSearchParams(request.postData() || '');
@@ -172,10 +174,41 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
     const footerMatches = !footer || (footer.loaded === candidates.length && footer.total === total);
     const complete = !requestFiltered && !pickerFiltered && correlated && footerMatches && marker === '-' && total === candidates.length ? true
       : marker === '+' || (total != null && total > candidates.length) ? false : null;
-    if (!await closePicker()) throw new Error('TRACK_CANCEL_UNAVAILABLE');
+    let selected;
+    if (selectCode !== undefined) {
+      const matches = candidates.filter(candidate => candidate.code === selectCode);
+      if (complete !== true || !correlated || matches.length !== 1) throw new Error('TRACK_CHOICE_UNAVAILABLE');
+      selected = matches[0];
+      const rows = win.locator('.x-grid-view .x-grid-row,.x-grid-view .x-grid-data-row');
+      const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((el, index) => {
+        const grid = (globalThis.Ext?.ComponentQuery?.query('grid,readonlygrid') || []).find(item => item.getEl?.()?.dom?.contains(el));
+        const data = grid?.getView?.()?.getRecord?.(el)?.data;
+        return data?.trackcode === wanted.code && data?.tcddesc === wanted.description ? [index] : [];
+      }), selected);
+      if (indexes.length !== 1) throw new Error('TRACK_CHOICE_UNAVAILABLE');
+      await rows.nth(indexes[0]).click();
+      const nativeSelection = await win.evaluate(element => {
+        const grids = globalThis.Ext?.getCmp?.(element.id)?.query?.('grid,readonlygrid') || [];
+        return grids.length === 1 ? grids[0].getSelectionModel?.()?.getSelection?.().map(row => row.data) : null;
+      });
+      const ok = win.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/ });
+      if (nativeSelection?.length !== 1 || nativeSelection[0].trackcode !== selected.code ||
+          nativeSelection[0].tcddesc !== selected.description || await ok.count() !== 1) throw new Error('TRACK_SELECTION_UNVERIFIED');
+      await ok.click();
+      await win.waitFor({ state: 'hidden', timeout: 10000 });
+      opened = false;
+      const valid = await input.evaluate((element, display) => {
+        const cmp = globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''));
+        return element.value === display && cmp?.getValue?.() === display && cmp?.getSubmitData?.()?.track === display &&
+          !element.disabled && !element.readOnly && typeof cmp?.isValid === 'function' && cmp.isValid() === true;
+      }, selected.description);
+      if (!valid) throw new Error('TRACK_SELECTION_UNVERIFIED');
+    } else if (!await closePicker()) throw new Error('TRACK_CANCEL_UNAVAILABLE');
     await page.unroute('**/*', guard);
     const after = await readGuestStayForm(page, { propertyCode });
-    if (after.outcome !== 'ok' || JSON.stringify(fieldValues(after.fields)) !== JSON.stringify(fieldValues(before.fields)) || blocked || nativeDialog) {
+    const preserved = field => selectCode === undefined || /^(?:guestid|firstname|lastname|arrivaldate|departuredate|roomtype|rateplan|adults|children|child\d+|childages|guaranteetype|reservationnote|guestoptin4)$/i.test(field.name || '');
+    if (after.outcome !== 'ok' || JSON.stringify(fieldValues(after.fields.filter(preserved))) !==
+        JSON.stringify(fieldValues(before.fields.filter(preserved))) || blocked || nativeDialog) {
       if (after.outcome === 'ok') {
         const names = new Set([...before.fields, ...after.fields].map(field => field.name).filter(Boolean));
         changedFieldNames = [...names].filter(name => JSON.stringify(fieldValues(before.fields.filter(field => field.name === name))) !==
@@ -187,7 +220,8 @@ export async function listTrackSubSegments(page, { propertyCode } = {}) {
       criteria: { propertyCode, scope: requestFiltered || pickerFiltered ? 'filtered_or_unknown' : 'unfiltered' },
       coverage: { loaded: candidates.length, total: total != null && total >= candidates.length ? total
         : footer && footer.total >= candidates.length ? footer.total : null,
-        complete, possiblyTruncated: complete !== true, nativeResponseCorrelated: Boolean(correlated) }, candidates };
+        complete, possiblyTruncated: complete !== true, nativeResponseCorrelated: Boolean(correlated) }, candidates,
+      ...(selected ? { selected } : {}) };
   } catch (error) {
     const cleanup = await closePicker().catch(() => false);
     return { outcome: 'execution_failure', issue: /^[A-Z][A-Z0-9_]+$/.test(error?.message || '') ? error.message : 'TRACK_READ_FAILED',

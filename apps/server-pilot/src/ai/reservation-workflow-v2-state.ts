@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
+import type { AiRunFence } from './run-ledger.js';
+import { consumeStaffGoAtDispatch } from './hms-approval.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import { aiWorkflowRun, attachment, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { propertySwitchSchema, resolvePropertyScope } from '../hms/property-registry.js';
@@ -41,7 +43,7 @@ const PROPERTY_SWITCH_PREPARATION_KEYS = [
 
 function withoutPropertyPreparation(state: State): State {
   const next = { ...state };
-  for (const key of PROPERTY_SWITCH_PREPARATION_KEYS) delete next[key];
+  for (const key of [...PROPERTY_SWITCH_PREPARATION_KEYS, ...PROPERTY_NATIVE_ARRAY_FIELDS, ...PROPERTY_NATIVE_VALUE_FIELDS]) delete next[key];
   return next;
 }
 
@@ -101,7 +103,8 @@ export type ReservationRecoveryScope = {
   workItemId: string; operationId: string; generationId: string; currentSource: ReservationWorkflowV2Source;
 };
 export type ReservationWorkflowV2Context = { db: DB; transportId: string; userId?: string | null; propertyCode: string;
-  nativeBatch?: ReservationNativeCheckBatch; recovery?: ReservationRecoveryScope };
+  nativeBatch?: ReservationNativeCheckBatch; recovery?: ReservationRecoveryScope;
+  writeRunFence?: AiRunFence; signal?: AbortSignal };
 type Context = ReservationWorkflowV2Context;
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
@@ -329,8 +332,34 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     }
     if (!item) return { status: 'not_found' as const };
     const itemRow = { ...item, state: item.state as State };
+    const seedDraft = (evidenceHash: string, seedRevision = itemRow.revision,
+      seedGenerationId = input.seed.generationId ?? randomUUID()) => {
+      return reservationWorkflowV2DraftSchema.parse({
+        contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
+        schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
+        workItemId: itemRow.id,
+        transportId: ctx.transportId,
+        propertyCode: ctx.propertyCode,
+        source: input.source,
+        generationId: seedGenerationId,
+        revision: seedRevision,
+        status: input.seed.status,
+        ...(input.seed.extraction ? { extraction: input.seed.extraction, extractionGenerationId: seedGenerationId } : {}),
+        proposal: input.seed.proposal,
+        observations: input.seed.observations,
+        fieldReviewRequirements: input.seed.fieldReviewRequirements ?? {},
+        staffReviews: {},
+        operationResults: [],
+        fieldOverrides: {},
+        errors: input.seed.errors ?? [],
+        prefill: { ...(input.seed.prefill ?? { status: 'complete', attemptId: null, attemptCount: 0,
+          startedAt: null, finishedAt: null }), evidenceHash },
+      });
+    };
     const existing = reservationWorkflowV2DraftOf(itemRow.state);
-    if (existing && existing.propertyCode !== ctx.propertyCode) {
+    if ((existing && existing.propertyCode !== ctx.propertyCode) ||
+        (!existing && !hasReservationWorkflowV2Draft(itemRow.state) && itemRow.state.propertyCode !== undefined &&
+          itemRow.state.propertyCode !== ctx.propertyCode)) {
       // Every source item is locked in ID order. Existing dispatch holds and
       // queued/claimed runs must finish or reconcile before the scope changes.
       const ids = sourceItems.map((row) => row.id);
@@ -353,8 +382,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
       const revision = Math.max(itemRow.revision, itemRow.revisionHead) + 1;
       const switchedAt = new Date();
-      const draft = invalidatePropertyDraft(existing, { propertyCode: ctx.propertyCode,
-        source: { ...existing.source, propertyId: input.source.propertyId }, generationId: randomUUID(), revision,
+      const priorDraft = existing ?? seedDraft(evidenceHash);
+      const draft = invalidatePropertyDraft(priorDraft, { propertyCode: ctx.propertyCode,
+        source: { ...priorDraft.source, propertyId: input.source.propertyId }, generationId: randomUUID(), revision,
         at: switchedAt.toISOString() });
       const sourceChanged = draft.source.sourceHash !== input.source.sourceHash || draft.prefill?.evidenceHash !== evidenceHash;
       const selectedUpdatedAt = new Date(Math.max(switchedAt.getTime(), ...sourceItems.map((row) => row.updatedAt.getTime())) + 1);
@@ -390,34 +420,23 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
         seq: itemRow.revisionSeq + 1, ...(sourceChanged ? { sourceChanged: true } : {}) };
     }
     if (existing) {
+      if (itemRow.state.propertyCode !== undefined && itemRow.state.propertyCode !== ctx.propertyCode) {
+        return { status: 'invalid_state' as const, issue: 'The saved property does not match this reservation.' };
+      }
+      if (itemRow.state.propertyCode === undefined) {
+        itemRow.state = { ...itemRow.state, propertyCode: ctx.propertyCode };
+        await tx.update(workItem).set({ state: itemRow.state, updatedAt: new Date() }).where(eq(workItem.id, itemRow.id));
+      }
       const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
       return recoverSourceFields(tx, itemRow, current);
     }
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
     const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
-    const generationId = input.seed.generationId ?? randomUUID();
-    const draft = reservationWorkflowV2DraftSchema.parse({
-      contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
-      schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
-      workItemId: itemRow.id,
-      transportId: ctx.transportId,
-      propertyCode: ctx.propertyCode,
-      source: input.source,
-      generationId,
-      revision: itemRow.revision,
-      status: input.seed.status,
-      ...(input.seed.extraction ? { extraction: input.seed.extraction, extractionGenerationId: generationId } : {}),
-      proposal: input.seed.proposal,
-      observations: input.seed.observations,
-      fieldReviewRequirements: input.seed.fieldReviewRequirements ?? {},
-      staffReviews: {},
-      operationResults: [],
-      fieldOverrides: {},
-      errors: input.seed.errors ?? [],
-      prefill: { ...(input.seed.prefill ?? { status: 'complete', attemptId: null, attemptCount: 0,
-        startedAt: null, finishedAt: null }), evidenceHash },
-    });
-    const state = { ...itemRow.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
+    const draft = seedDraft(evidenceHash);
+    if (itemRow.state.propertyCode !== undefined && itemRow.state.propertyCode !== ctx.propertyCode) {
+      return { status: 'invalid_state' as const, issue: 'The saved property does not match this reservation.' };
+    }
+    const state = { ...itemRow.state, propertyCode: ctx.propertyCode, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft };
     // WorkItems can predate V2. Snapshot existing activity under the item lock
     // so old events do not suppress prefill, while any later event still does.
     const prefillActivityCount = await countPrefillRetryActivity(tx, itemRow.id);
@@ -2159,9 +2178,13 @@ export async function claimReservationWorkflowV2GuestProfile(ctx: Context, input
 export async function dispatchReservationWorkflowV2GuestProfile<T>(ctx: Context & {
   userId: string; sessionId: string; sessionProfile: 'legacy' | 'remote';
 }, input: MutationInput, validate: (draft: ReservationWorkflowV2Draft) => boolean,
-proceed: () => Promise<T>): Promise<T> {
+proceed: () => Promise<T>, phase: 'initial' | 'confirm_distinct'): Promise<T> {
   if (ctx.recovery) throw new Error('guest_profile_recovery_cannot_dispatch');
-  return ctx.db.transaction(async (tx) => {
+  const fence = ctx.writeRunFence;
+  if (!fence) throw new Error('staff_go_required');
+  ctx.signal?.throwIfAborted();
+  await ctx.db.transaction(async (tx) => {
+    await consumeStaffGoAtDispatch(tx, fence, ctx.signal, undefined, phase);
     await lockReservationWorkflowV2Source(tx, ctx.transportId, input.source.messageId);
     await lockCreateActorAccess(tx, { transportId: ctx.transportId, actorUserId: ctx.userId });
     await lockCreateActorSession(tx, { actorUserId: ctx.userId, sessionId: ctx.sessionId, sessionProfile: ctx.sessionProfile });
@@ -2176,8 +2199,9 @@ proceed: () => Promise<T>): Promise<T> {
     }
     const current = await buildResult(tx, ctx, item, input.source);
     if (current.status !== 'ok' || !validate(current.draft)) throw new Error('guest_profile_authority_stale');
-    return proceed();
   });
+  ctx.signal?.throwIfAborted();
+  return proceed();
 }
 
 /** Persist the ID and its selection together, independently of the editable revision cursor. */

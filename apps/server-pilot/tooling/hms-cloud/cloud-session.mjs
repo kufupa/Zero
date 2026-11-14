@@ -4,9 +4,11 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import postgres from 'postgres';
-import { login } from '../playwright-quote/session-reuse.mjs';
-import { openGuestStayScreen } from '../playwright-quote/open-guest-stay.mjs';
-import { assertNoCenturionBrowserHold } from '../playwright-quote/centurion-stay360.mjs';
+import { readFileSync, readlinkSync, lstatSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { hostname, homedir } from 'node:os';
+import { join } from 'node:path';
+import { consumePageRequestAuthorization } from './page-request-fence.mjs';
+import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { credentialVersionHmacSha256 } from './credential-version.mjs';
 
@@ -33,6 +35,205 @@ const headerFields = new Set(['system_function_name', 'user_function_name', 'cur
 const sessionState = new WeakMap();
 const credentialLeases = new WeakMap();
 const retainedLeases = new Set();
+const ownedWriterPages = new WeakMap();
+const closedWriters = new Set();
+
+/** Target holds share the old Centurion directory and survive process restarts. */
+export function cloudHoldPath(propertyCode, alias, home = homedir()) {
+  const property = registeredProperty(propertyCode);
+  let parts;
+  try { parts = JSON.parse(alias); } catch { throw new Error('HMS_BROWSER_TARGET_INVALID'); }
+  const partitioned = propertyCode !== 'HRCEN';
+  const size = partitioned ? 1 : 0;
+  const name = (value) => typeof value === 'string' && value.length > 0 && value.length <= 4608 &&
+    !/[\p{Cc}]/u.test(value) && value === value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+  const valid = Array.isArray(parts) && parts[0] === propertyCode && JSON.stringify(parts) === alias && (
+    (parts[1] === 'create' && parts.length === 5 + size && name(parts[2]) && name(parts[3]) &&
+      /^\d{4}-\d{2}-\d{2}$/.test(parts[4]) && (!partitioned || parts[5] === property.expectedTenant)) ||
+    (parts[1] === 'saved' && parts.length === 3 + size && /^(?:0|[1-9]\d{0,29})-(?:0|[1-9]\d{0,9})$/.test(parts[2]) &&
+      (!partitioned || parts[3] === property.expectedTenant)) ||
+    (parts[1] === 'saved_native' && parts.length === 3 + size && /^(?:0|[1-9]\d{0,99})$/.test(parts[2]) &&
+      (!partitioned || parts[3] === property.expectedTenant)) ||
+    (parts[1] === 'guest_profile' && parts.length === 5 && name(parts[2]) && name(parts[3]) && parts[4] === property.expectedTenant) ||
+    (parts[1] === 'guest_profile_email' && parts.length === 4 && name(parts[2]) &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parts[2]) && parts[3] === property.expectedTenant));
+  if (!valid) throw new Error('HMS_BROWSER_TARGET_INVALID');
+  const directory = cloudPrivateDirectory(home);
+  return join(directory, `${propertyCode.toLowerCase()}-browser-hold-${createHash('sha256').update(alias).digest('hex')}`);
+}
+
+function cloudPrivateDirectory(home = homedir()) {
+  const uid = process.getuid();
+  const safe = (path, mask) => {
+    const stat = lstatSync(path);
+    return stat.isDirectory() && stat.uid === uid && !(stat.mode & mask);
+  };
+  if (!safe(home, 0o022)) throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  const directory = join(home, '.nava-hms-runtime');
+  try { mkdirSync(directory, { mode: 0o700 }); }
+  catch (error) { if (error?.code !== 'EEXIST') throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+  if (!safe(directory, 0o077)) throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  return directory;
+}
+
+function assertNoCenturionBrowserHold() {
+  try { lstatSync(join(cloudPrivateDirectory(), 'hrcen-browser-hold')); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+  throw new Error('HMS_BROWSER_HOLD');
+}
+
+function credentialWriterHoldPath(propertyCode) {
+  return join(cloudPrivateDirectory(), `credential-browser-hold-${cloudCredentialLeaseKey(propertyCode)}`);
+}
+
+function readCredentialWriterHold(propertyCode) {
+  const path = credentialWriterHoldPath(propertyCode);
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) { if (error?.code === 'ENOENT') return null; throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE'); }
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > 4096) {
+    throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE');
+  }
+  let hold;
+  try { hold = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE'); }
+  if (hold.version !== 2 || hold.credentialKey !== cloudCredentialLeaseKey(propertyCode) ||
+      registeredProperty(hold.propertyCode).credentialSecretRef !== registeredProperty(propertyCode).credentialSecretRef) {
+    throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE');
+  }
+  return hold;
+}
+
+async function assertCredentialWriterQuiesced(propertyCode) {
+  const hold = readCredentialWriterHold(propertyCode);
+  if (!hold) return;
+  if (!cloudWriterQuiesced(hold.identity)) {
+    const identity = hold.identity;
+    try {
+      const host = hostIdentity();
+      let nodeGone = false;
+      try { nodeGone = processIdentity(identity.node.pid).started !== identity.node.started; }
+      catch (error) { if (['ENOENT', 'ESRCH'].includes(error?.code)) nodeGone = true; }
+      const browser = processIdentity(identity.browser.pid, true);
+      if (nodeGone && identity.host === host.host && identity.bootId === host.bootId &&
+          identity.pidNamespace === host.pidNamespace && browser.started === identity.browser.started) {
+        process.kill(-identity.browser.pid, 'SIGKILL');
+        await delay(250);
+      }
+    } catch { /* A live or unidentifiable owner remains held. */ }
+  }
+  if (!cloudWriterQuiesced(hold.identity)) throw new Error('HMS_CREDENTIAL_BROWSER_HELD');
+  unlinkSync(credentialWriterHoldPath(propertyCode));
+}
+
+function holdCredentialWriter(propertyCode, identity) {
+  writeFileSync(credentialWriterHoldPath(propertyCode), JSON.stringify({ version: 2, propertyCode,
+    credentialKey: cloudCredentialLeaseKey(propertyCode), identity }) + '\n', { flag: 'wx', mode: 0o600 });
+}
+
+function releaseCredentialWriter(propertyCode, identity) {
+  const hold = readCredentialWriterHold(propertyCode);
+  if (!hold || writerKey(hold.identity) !== writerKey(identity) || !cloudWriterQuiesced(identity)) {
+    throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE');
+  }
+  unlinkSync(credentialWriterHoldPath(propertyCode));
+}
+
+export function assertNoCloudHold(propertyCode, alias) {
+  if (propertyCode === 'HRCEN') assertNoCenturionBrowserHold();
+  const path = cloudHoldPath(propertyCode, alias);
+  try { lstatSync(path); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  }
+  throw new Error('HMS_BROWSER_HOLD');
+}
+
+function reconcileCloudBrowserHold(propertyCode, alias, lease) {
+  const state = credentialLeases.get(lease);
+  if (!state || state.released || state.ref !== registeredProperty(propertyCode).credentialSecretRef || lease.signal.aborted) {
+    throw new Error('HMS_CREDENTIAL_LEASE_INVALID');
+  }
+  const path = cloudHoldPath(propertyCode, alias);
+  let stat;
+  try { stat = lstatSync(path); }
+  catch (error) { if (error?.code === 'ENOENT') return; throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > 4096) {
+    throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE');
+  }
+  let hold;
+  try { hold = JSON.parse(readFileSync(path, 'utf8')); }
+  catch { throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+  if (hold.version !== 2 || hold.propertyCode !== propertyCode || hold.alias !== alias || !cloudWriterQuiesced(hold.identity)) {
+    throw new Error('HMS_BROWSER_HOLD');
+  }
+  unlinkSync(path);
+}
+
+function holdCloudWriter(propertyCode, alias, identity) {
+  const path = cloudHoldPath(propertyCode, alias);
+  try { writeFileSync(path, JSON.stringify({ version: 2, propertyCode, alias, identity }) + '\n', { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if (error?.code !== 'EEXIST') throw new Error('HMS_BROWSER_HOLD_UNAVAILABLE'); }
+}
+
+function processIdentity(pid, group = false) {
+  if (!Number.isSafeInteger(pid) || pid < 2) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/);
+  if (!/^\d+$/.test(fields[19] ?? '') || (group && (Number(fields[2]) !== pid || Number(fields[3]) !== pid))) {
+    throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  }
+  return { pid, started: fields[19] };
+}
+
+function hostIdentity() {
+  const machine = readFileSync('/etc/machine-id', 'utf8').trim();
+  const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+  const pidNamespace = readlinkSync('/proc/self/ns/pid');
+  if (!/^[a-f0-9]{32}$/i.test(machine) || !/^[a-f0-9-]{36}$/i.test(bootId) || !/^pid:\[\d+\]$/.test(pidNamespace)) {
+    throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+  }
+  return { host: createHash('sha256').update(machine).update('\0').update(hostname()).digest('hex'), bootId, pidNamespace };
+}
+
+function writerKey(identity) { return JSON.stringify(identity); }
+
+export function cloudWriterIdentity(page) {
+  const identity = ownedWriterPages.get(page);
+  return identity && cloudWriterCurrent(identity) ? structuredClone(identity) : null;
+}
+
+export function cloudSessionIdentity(page) {
+  const state = sessionState.get(page?.context?.());
+  return state?.verified && state.ownedPage === page && state.identity ? { ...state.identity } : null;
+}
+
+export function cloudWriterCurrent(identity) {
+  try {
+    const host = hostIdentity(), node = processIdentity(process.pid), browser = processIdentity(identity?.browser?.pid, true);
+    return identity.host === host.host && identity.bootId === host.bootId && identity.pidNamespace === host.pidNamespace &&
+      identity.node?.pid === node.pid && identity.node.started === node.started && identity.browser.started === browser.started;
+  } catch { return false; }
+}
+
+export function cloudWriterQuiesced(identity) {
+  try {
+    const host = hostIdentity();
+    if (!identity || identity.host !== host.host || !/^[a-f0-9-]{36}$/i.test(identity.bootId ?? '') ||
+        !Number.isSafeInteger(identity.node?.pid) || !Number.isSafeInteger(identity.browser?.pid) ||
+        identity.node.pid < 2 || identity.browser.pid < 2 || identity.node.pid === identity.browser.pid ||
+        !/^\d+$/.test(identity.node.started ?? '') || !/^\d+$/.test(identity.browser.started ?? '')) return false;
+    if (identity.bootId !== host.bootId) return true;
+    if (identity.pidNamespace !== host.pidNamespace) return false;
+    try { process.kill(-identity.browser.pid, 0); return false; }
+    catch (error) { if (error?.code !== 'ESRCH') return false; }
+    if (closedWriters.has(writerKey(identity))) return true;
+    try { if (processIdentity(identity.node.pid).started === identity.node.started) return false; }
+    catch (error) { if (!['ENOENT', 'ESRCH'].includes(error?.code)) return false; }
+    return true;
+  } catch { return false; }
+}
 
 function registeredProperty(code) {
   const property = typeof code === 'string' ? getPropertyRegistration(code) : null;
@@ -94,16 +295,16 @@ async function loadCloudEvidenceKey({ secretArn, keyVersion, signal }) {
   return key;
 }
 
-/** Bind authenticated DaVinci reads to freshly fetched AWSCURRENT credential metadata. */
-export async function verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret, signal } = {}) {
+/** Bind authenticated reads and every writer to freshly fetched credential metadata. */
+export async function verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret, signal, requireBoundVersion = false } = {}) {
   const property = registeredProperty(propertyCode);
-  if (property.group !== 'davinci' || transportId === undefined) return null;
+  const expected = process.env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${propertyCode}`];
+  if (!requireBoundVersion && (transportId === undefined || property.group === 'centurion' && !expected)) return null;
   if (typeof transportId !== 'string' || !property.transportIds.includes(transportId)) throw new Error('HMS_SESSION_OPTIONS_INVALID');
   const versionId = typeof loadedSecret?.versionId === 'string' ? loadedSecret.versionId.trim() : '';
   if (!versionId) throw new Error('HMS_CREDENTIAL_VERSION_MISSING');
   if (!Array.isArray(loadedSecret.versionStages) || !loadedSecret.versionStages.length) throw new Error('HMS_CREDENTIAL_VERSION_STAGES_MISSING');
   if (!loadedSecret.versionStages.includes('AWSCURRENT')) throw new Error('HMS_CREDENTIAL_VERSION_STALE');
-  const expected = process.env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${propertyCode}`];
   if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected)) throw new Error('HMS_CREDENTIAL_VERSION_DIGEST_MISSING');
   const secretArn = process.env.HMS_EVIDENCE_HMAC_SECRET_ARN?.trim();
   const keyVersion = process.env.HMS_EVIDENCE_HMAC_KEY_VERSION?.trim();
@@ -165,6 +366,13 @@ async function installCloudReadGuard(context, property, state) {
     try { url = new URL(request.url()); } catch { return route.abort(); }
     const body = request.postData() ?? '';
     const path = decoded(url.pathname);
+    if (state.writer && state.verified && state.ownedPage && url.origin === property.origin &&
+        ['GET', 'POST'].includes(method) && !url.username && !url.password &&
+        consumePageRequestAuthorization(request, state.ownedPage)) {
+      try { if (request.frame().page() !== state.ownedPage) return route.abort(); }
+      catch { return route.abort(); }
+      return route.fallback();
+    }
     if (url.username || url.password || forbiddenPath.test(path) || hasWriteIntent(request.url()) || hasWriteIntent(body) ||
         !['GET', 'HEAD', 'OPTIONS', 'POST'].includes(method)) return route.abort();
     if (request.isNavigationRequest() && url.origin !== property.origin) return route.abort();
@@ -187,6 +395,13 @@ async function installCloudReadGuard(context, property, state) {
         if (state.authenticated || params.get('tenant') !== property.expectedTenant ||
             params.get('SYSTEM_FUNCTION_NAME') !== 'LOGIN' || params.get('USER_FUNCTION_NAME') !== 'LOGIN') return route.abort();
       } else if (!readPosts.has(path) || (path === '/web/base/OSRESV.HDR' && !safeHeaderRead(url, body, property.propertyCode))) {
+        const availabilityDetail = state.verified && !state.writer &&
+          (path === '/web/base/OSCCRT' || path === `/api/booking/hotelAvail/${property.propertyCode}/availabilityDetailsInquiry`);
+        if (availabilityDetail && typeof state.readRequestPolicy === 'function') {
+          try {
+            if (request.frame().page() === state.ownedPage && state.readRequestPolicy(request) === true) return route.fallback();
+          } catch { /* An unproven availability detail remains blocked. */ }
+        }
         return route.abort();
       }
       if (path === '/api/internalBooking/rateshop/inquiryForGrid' || path === '/api/internalBooking/hotelAvail/inquiryForGrid') {
@@ -291,6 +506,45 @@ async function openStay360(page) {
   await page.locator('input[name="search"]:visible').first().waitFor();
 }
 
+async function authenticatedShellReady(page, secret) {
+  try {
+    return await page.evaluate(({ expectedTenant, expectedPropertyCode, expectedPropertyName }) => {
+      const html = document.documentElement.outerHTML;
+      const tenant = document.documentElement.dataset.tenant ?? /"tenantid"\s*:\s*"([^"]+)"/i.exec(html)?.[1] ?? new URL(location.href).searchParams.get('tenant');
+      const property = document.documentElement.dataset.propertyCode ?? /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
+      const visible = element => Boolean(element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden');
+      return ![...document.querySelectorAll('input[type="password"], input[name="password"], .x-mask, .x-mask-msg, .x-loadmask, [aria-busy="true"]')].some(visible) &&
+        tenant === expectedTenant && property === expectedPropertyCode && (document.body?.innerText ?? '').includes(expectedPropertyName);
+    }, { expectedTenant: secret.expectedTenant, expectedPropertyCode: secret.expectedPropertyCode, expectedPropertyName: secret.expectedPropertyName });
+  } catch (error) {
+    if (/execution context was destroyed|cannot find context|most likely because of a navigation/i.test(error?.message ?? '')) return false;
+    throw error;
+  }
+}
+
+async function login(page, secret, signal) {
+  const deadline = Date.now() + 120_000;
+  const budget = () => Math.max(1, deadline - Date.now());
+  signal?.throwIfAborted();
+  await page.goto(secret.loginUrl, { waitUntil: 'domcontentloaded', timeout: budget() });
+  let submitted = false;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    if (await authenticatedShellReady(page, secret)) return;
+    if (!submitted && await page.locator('input[name="password"]:visible, input[type="password"]:visible').count()) {
+      await page.locator('input[name="userid"], input[name="username"]').fill(secret.username, { timeout: budget() });
+      const password = page.locator('input[name="password"]');
+      await password.fill(secret.password, { timeout: budget() });
+      const submit = page.getByRole('button', { name: 'Sign in', exact: true });
+      if (await submit.count()) await submit.click({ timeout: budget() });
+      else await password.press('Enter', { timeout: budget() });
+      submitted = true;
+    }
+    await delay(250, undefined, { signal });
+  }
+  throw new Error('AUTHENTICATED_SHELL_TIMEOUT');
+}
+
 async function runUntilAborted(operation, signal) {
   if (!signal) return operation();
   signal.throwIfAborted();
@@ -326,7 +580,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal } = {})
   const fail = () => { if (!closing && !loss.signal.aborted) loss.abort(new Error('HMS_CREDENTIAL_LEASE_LOST')); };
   const key = cloudCredentialLeaseKey(propertyCode);
   try {
-    if (property.group === 'davinci') {
+    {
       if (!process.env.DATABASE_URL) throw new Error('HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED');
       client = postgres(process.env.DATABASE_URL, { max: 1, idle_timeout: 0, connect_timeout: 10,
         onclose: fail });
@@ -341,6 +595,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal } = {})
       const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_backend_pid() AS pid'), acquisitionSignal);
       const pid = rows[0]?.pid;
       if (!Number.isInteger(pid) || loss.signal.aborted) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
+      await assertCredentialWriterQuiesced(propertyCode);
       timer = setInterval(() => {
         if (heartbeat || closing) return;
         heartbeat = Promise.race([
@@ -394,30 +649,72 @@ export async function withCloudCredentialLease(propertyCode, operation, options 
 }
 
 /** Fresh browser/context per operation; a caller-owned lease can span sequential sessions. */
-export async function withCloudReadSession(operation, { propertyCode, transportId, signal, headless = true,
-  prepareContext, startScreen = 'BSSTRT', loadSecret = loadCloudSecret, credentialLease } = {}) {
+export function withCloudReadSession(operation, options = {}) {
+  return withCloudSession(operation, options, false);
+}
+
+/** Native actions still need their page-owned semantic request authorization. */
+export function withCloudWriterSession(operation, options = {}) {
+  return withCloudSession(operation, options, true);
+}
+
+async function withCloudSession(operation, { propertyCode, transportId, signal, headless = true,
+  prepareContext, readRequestPolicy, startScreen = 'BSSTRT', loadSecret = loadCloudSecret, credentialLease, cloudTargetKey, cloudTargetKeys } = {}, writer) {
   const property = registeredProperty(propertyCode);
   if (typeof operation !== 'function' || typeof headless !== 'boolean' ||
       (transportId !== undefined && (typeof transportId !== 'string' || !property.transportIds.includes(transportId))) ||
       !['BSSTRT', 'OSRESV', 'OSRESS'].includes(startScreen) || typeof loadSecret !== 'function' ||
-      (prepareContext !== undefined && typeof prepareContext !== 'function')) throw new Error('HMS_SESSION_OPTIONS_INVALID');
+      (prepareContext !== undefined && typeof prepareContext !== 'function') ||
+      (readRequestPolicy !== undefined && typeof readRequestPolicy !== 'function') ||
+      (cloudTargetKeys !== undefined && (!Array.isArray(cloudTargetKeys) || !cloudTargetKeys.length ||
+        cloudTargetKeys.length > 16 || cloudTargetKeys.some(key => typeof key !== 'string')))) throw new Error('HMS_SESSION_OPTIONS_INVALID');
+  const aliases = [...new Set([...(cloudTargetKeys ?? []), ...(cloudTargetKey === undefined ? [] : [cloudTargetKey])])];
   let lease = credentialLease;
   let ownedLease = false;
   let leaseState;
   let borrowed = false;
   let browser;
+  let browserServer;
+  let writerIdentity;
+  let writerGroupGone = false;
+  let credentialWriterHeld = false;
+  let callbacksDrained = true;
+  let operationTask;
   let context;
+  let state;
   let secret;
   let abortClose;
   let cleanupError;
   let result;
   let failure;
   let failed = false;
+  const closeResource = (resource) => Promise.race([
+    resource.close(), delay(15_000, undefined, { ref: false }).then(() => { throw new Error('HMS_SESSION_CLEANUP_TIMEOUT'); }),
+  ]);
   const close = async () => {
+    if (state) state.verified = false;
     const currentContext = context; context = undefined;
     const currentBrowser = browser; browser = undefined;
     for (const resource of [currentContext, currentBrowser]) {
-      if (resource) try { await resource.close(); } catch { cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED'); }
+      if (resource) try { await closeResource(resource); } catch { cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED'); }
+    }
+    if (browserServer) {
+      const server = browserServer; browserServer = undefined;
+      try { await closeResource(server); }
+      catch {
+        cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
+        if (writerIdentity && cloudWriterCurrent(writerIdentity)) {
+          try { process.kill(-writerIdentity.browser.pid, 'SIGKILL'); await delay(250); }
+          catch { /* Unconfirmed termination preserves the target hold and lease. */ }
+        }
+      }
+      if (writerIdentity) {
+        try { process.kill(-writerIdentity.browser.pid, 0); cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED'); }
+        catch (error) {
+          if (error?.code === 'ESRCH') writerGroupGone = true;
+          else if (error?.code !== 'ESRCH') cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
+        }
+      }
     }
   };
   const onAbort = () => { abortClose = close(); };
@@ -425,7 +722,7 @@ export async function withCloudReadSession(operation, { propertyCode, transportI
   try {
     signal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
-    if (!lease && property.group === 'davinci') {
+    if (!lease) {
       lease = await acquireCloudCredentialLease(propertyCode, { signal });
       ownedLease = true;
     }
@@ -439,6 +736,10 @@ export async function withCloudReadSession(operation, { propertyCode, transportI
       borrowed = true;
       sessionSignal = signal ? AbortSignal.any([signal, lease.signal]) : lease.signal;
     }
+    for (const alias of aliases) {
+      reconcileCloudBrowserHold(propertyCode, alias, lease);
+      assertNoCloudHold(propertyCode, alias);
+    }
     sessionSignal?.addEventListener('abort', onAbort, { once: true });
     sessionSignal?.throwIfAborted();
     let loaded;
@@ -448,21 +749,32 @@ export async function withCloudReadSession(operation, { propertyCode, transportI
       throw new Error('HMS_CREDENTIALS_UNAVAILABLE');
     }
     secret = validateSecret(property, loaded, transportId);
-    await verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret: loaded, signal: sessionSignal });
+    await verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret: loaded, signal: sessionSignal, requireBoundVersion: writer });
     sessionSignal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
-    browser = await chromium.launch({ headless, executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined });
+    const launch = { headless, executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined };
+    if (writer) {
+      browserServer = await chromium.launchServer(launch);
+      writerIdentity = { ...hostIdentity(), node: processIdentity(process.pid), browser: processIdentity(browserServer.process().pid, true) };
+      holdCredentialWriter(propertyCode, writerIdentity);
+      credentialWriterHeld = true;
+      browser = await chromium.connect(browserServer.wsEndpoint());
+    } else browser = await chromium.launch(launch);
     sessionSignal?.throwIfAborted();
     context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', acceptDownloads: false });
     sessionSignal?.throwIfAborted();
-    const state = { authenticated: false, switching: null, verified: false };
+    state = { authenticated: false, switching: null, verified: false, writer, ownedPage: null, identity: null,
+      readRequestPolicy };
     sessionState.set(context, state);
     await installPostRedirectGuard(context);
-    if (prepareContext) await runUntilAborted(() => prepareContext(context), sessionSignal);
+    if (!writer && prepareContext) await runUntilAborted(() => prepareContext(context), sessionSignal);
     await installCloudReadGuard(context, property, state);
+    if (writer && prepareContext) await runUntilAborted(() => prepareContext(context), sessionSignal);
     const page = await context.newPage();
-    page.on('dialog', (dialog) => { void dialog.dismiss().catch(() => {}); });
-    await login(page, secret, {});
+    state.ownedPage = page;
+    if (writerIdentity) ownedWriterPages.set(page, writerIdentity);
+    if (!writer) page.on('dialog', (dialog) => { void dialog.dismiss().catch(() => {}); });
+    await login(page, secret, sessionSignal);
     sessionSignal?.throwIfAborted();
     state.authenticated = true;
     let identity = await verifyCloudProperty(page, { propertyCode: property.landingPropertyCode, tenantId: property.expectedTenant });
@@ -472,16 +784,21 @@ export async function withCloudReadSession(operation, { propertyCode, transportI
         landingPropertyCode: property.landingPropertyCode, tenantId: property.expectedTenant });
     }
     state.verified = true;
+    state.identity = Object.freeze({ ...identity, landingPropertyCode: property.landingPropertyCode });
     sessionSignal?.throwIfAborted();
     if (startScreen !== 'BSSTRT') {
       if (startScreen === 'OSRESV') await openGuestStayScreen(page);
       else await openStay360(page);
       const current = await verifyCloudProperty(page, { propertyCode: property.propertyCode, tenantId: property.expectedTenant });
       identity = { ...current, observedName: identity.observedName ?? current.observedName };
+      state.identity = Object.freeze({ ...identity, landingPropertyCode: property.landingPropertyCode });
     }
     sessionSignal?.throwIfAborted();
-    result = await runUntilAborted(() => operation(page, Object.freeze({ ...identity,
-      landingPropertyCode: property.landingPropertyCode })), sessionSignal);
+    result = await runUntilAborted(() => {
+      operationTask = Promise.resolve().then(() => operation(page, Object.freeze({ ...identity,
+        landingPropertyCode: property.landingPropertyCode })));
+      return operationTask;
+    }, sessionSignal);
   } catch (error) {
     failed = true;
     if (sessionSignal?.aborted) failure = sessionSignal.reason;
@@ -497,6 +814,22 @@ export async function withCloudReadSession(operation, { propertyCode, transportI
     sessionSignal?.removeEventListener('abort', onAbort);
     await abortClose;
     await close();
+    if (operationTask) {
+      try {
+        await Promise.race([operationTask.catch(() => undefined), delay(30_000, undefined, { ref: false }).then(() => {
+          throw new Error('SAVE_CALLBACK_DRAIN_UNCONFIRMED');
+        })]);
+      } catch (error) { callbacksDrained = false; cleanupError ??= error; }
+    }
+    if (writerIdentity && writerGroupGone && callbacksDrained) {
+      closedWriters.add(writerKey(writerIdentity));
+      if (closedWriters.size > 4096) closedWriters.delete(closedWriters.values().next().value);
+    }
+    if (credentialWriterHeld && writerGroupGone && callbacksDrained) {
+      try { releaseCredentialWriter(propertyCode, writerIdentity); }
+      catch (error) { cleanupError ??= error; }
+    }
+    if (writerIdentity && cleanupError) for (const alias of aliases) holdCloudWriter(propertyCode, alias, writerIdentity);
     if (cleanupError) {
       if (lease) retainedLeases.add(lease);
     } else {

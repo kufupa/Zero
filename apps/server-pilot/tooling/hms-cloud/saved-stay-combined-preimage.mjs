@@ -2,8 +2,9 @@
 import { createHash } from 'node:crypto';
 import { cleanLabtestRecord, unchangedLabtestBusinessParties } from './labtest-record.mjs';
 import { planSavedChildOccupancy, savedChildOccupancy } from './guest-stay-amend-children.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
-const identityFields = ['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
+const identityFields = ['propertyCode', 'confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges'];
 const optionalIdentityFields = ['firstName', 'lastName'];
 const changeFields = ['arrival', 'departure', 'adults', 'children', 'childCount', 'childAges', 'roomType', 'ratePlan', 'retainRates',
   'firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference', 'roomTypeForCharge', 'taCommission', 'guestOptIn', 'track', 'guaranteeType', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
@@ -56,7 +57,7 @@ function validChanges(expected, changes, minimumArrival) {
         !/^(?:[A-Z0-9]{1,12})?$/.test(changes.roomTypeForCharge))) ||
       (Object.hasOwn(changes, 'billingReference') && (typeof changes.billingReference !== 'string' ||
         changes.billingReference.length > 50 || /[\p{Cc}]/u.test(changes.billingReference))) ||
-      (Object.hasOwn(changes, 'guestOptIn') && changes.guestOptIn !== false) ||
+      (Object.hasOwn(changes, 'guestOptIn') && typeof changes.guestOptIn !== 'boolean') ||
       (Object.hasOwn(changes, 'guaranteeType') && (typeof changes.guaranteeType !== 'string' ||
         !/^[A-Z0-9]{1,20}$/.test(changes.guaranteeType))) ||
       (Object.hasOwn(changes, 'taCommission') && (typeof changes.taCommission !== 'number' ||
@@ -90,6 +91,7 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
     const minimumArrival = firstName === 'Proof' && lastName === 'Labtest' ? '2027-01-01' : '0000-01-01';
     const guarantee = state?.expectedGuarantee ?? (allowRealGuest ? null : { code:'NGI' });
     if (!only(expected, [...identityFields, ...optionalIdentityFields]) || !identityFields.every((key) => Object.hasOwn(expected, key)) ||
+        !getPropertyRegistration(expected.propertyCode)?.active ||
         typeof firstName !== 'string' || !firstName.trim() || firstName !== firstName.trim() ||
         typeof lastName !== 'string' || !lastName.trim() || lastName !== lastName.trim() ||
         (allowRealGuest && (state.expectedFirstName !== firstName || state.expectedLastName !== lastName)) ||
@@ -116,7 +118,7 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
       if (formAges.present && formAges.value !== '' && formAges.value !== null) return null;
     } else if (formAges.present && !((prior.childCount === 0 && formAges.value === '') ||
         (typeof formAges.value === 'string' && formAges.value === prior.childAges.join(',')))) return null;
-    const identity = { propertycode:'HRCEN', status:'Reserved', firstname:firstName, lastname:lastName,
+    const identity = { propertycode:expected.propertyCode, status:'Reserved', firstname:firstName, lastname:lastName,
       confirmationnumber:expected.confirmation, guestid:expected.guestId, arrivaldate:date(expected.arrival),
       departuredate:date(expected.departure), roomtype:expected.roomType, rateplan:expected.ratePlan, reservationnote:expected.note };
     const formIdentity = { ...identity, arrivaldate:displayDate(expected.arrival), departuredate:displayDate(expected.departure) };
@@ -131,7 +133,7 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
       if (Object.hasOwn(snapshot.data, name) && Object.hasOwn(snapshot.values, name) &&
           String(snapshot.data[name] ?? '') !== String(snapshot.values[name] ?? '')) return null;
     }
-    const checked = (value) => [true, 1, '1', 'true', 'on', 'yes', 'Y'].includes(value);
+    const checked = (value) => [true, 1, -1, '1', '-1', 'true', 'on', 'yes', 'Y'].includes(value);
     if ((!allowRealGuest && checked(snapshot.data.udfchkbox04)) ||
         (Object.hasOwn(snapshot.values, 'udfchkbox04') && checked(snapshot.values.udfchkbox04) !== checked(snapshot.data.udfchkbox04)) ||
         (typeof state.cmsSend === 'boolean' && state.cmsSend !== checked(snapshot.data.udfchkbox04)) ||

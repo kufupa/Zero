@@ -1503,7 +1503,7 @@ export function QuoteWorkflowPanel({
                             selection={session.roomRateMealPlanSelections?.[group.id]}
                             onSelect={(selection) => {
                               onStayAction?.({ type: 'room_rate_meal_plan_selected', groupId: group.id, selection });
-                              const board = quoteBoardFromGrid(selection.mealPlan);
+                              const board = quoteBoardFromGrid(selection.mealPlan, paneConfig);
                               const match = board
                                 ? (session.rateOptions ?? []).find(
                                     (option) =>
@@ -1514,7 +1514,7 @@ export function QuoteWorkflowPanel({
                                       option.mealPlan === board,
                                   )
                                 : undefined;
-                              const picked = rateOptionForGridPick(group.id, selection, match);
+                              const picked = rateOptionForGridPick(group.id, selection, match, paneConfig);
                               if (picked) pickRate(picked);
                             }}
                           />
@@ -1739,8 +1739,13 @@ const GRID_BOARD_DINNER = new Set([
   'dinner, bed, breakfast & beverage nr',
 ]);
 
-function quoteBoardFromGrid(mealPlan: string): RateOption['mealPlan'] | null {
+function quoteBoardFromGrid(mealPlan: string, configuration?: QuotePaneConfig | null): RateOption['mealPlan'] | null {
   const key = mealPlan.trim().replace(/\s+/g, ' ').toLowerCase();
+  const observed = configuration?.nativeMealMappings?.find(row => row.label.trim().replace(/\s+/g, ' ').toLowerCase() === key);
+  if (observed) return observed.mealPlan;
+  if (configuration && configuration.propertyCode !== HRCEN_PROPERTY_CODE) {
+    return key === 'bb' || key === 'room_only' || key === 'dinner_bb' ? key : null;
+  }
   if (GRID_BOARD_BB.has(key)) return 'bb';
   if (GRID_BOARD_ROOM.has(key)) return 'room_only';
   if (GRID_BOARD_DINNER.has(key)) return 'dinner_bb';
@@ -1752,9 +1757,10 @@ function rateOptionForGridPick(
   groupId: string,
   selection: { roomCode: string; rateCode: string; mealPlan: string },
   match: RateOption | undefined,
+  configuration?: QuotePaneConfig | null,
 ): RateOption | null {
   if (match) return match;
-  const board = quoteBoardFromGrid(selection.mealPlan);
+  const board = quoteBoardFromGrid(selection.mealPlan, configuration);
   if (!board) return null;
   return {
     id: `grid:${groupId}:${selection.roomCode}:${selection.rateCode}:${board}`,

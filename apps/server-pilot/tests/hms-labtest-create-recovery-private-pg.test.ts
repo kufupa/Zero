@@ -12,13 +12,10 @@ async function claimHmsLabtestDispatch(db: DB, claim: Parameters<typeof claimWit
 }
 
 const f = vi.hoisted(() => ({ quiesced: true, proofFails: false, recordFails: false, reads: 0 }));
-vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
-  ...await original<typeof import('../tooling/playwright-quote/centurion-stay360.mjs')>(),
-  centurionWriterQuiesced: () => f.quiesced,
-}));
 vi.mock('../src/ai/pane-cloud-preview.js', () => ({
   withRecoveryLock: async (_intent: unknown, run: () => Promise<unknown>) => run(),
   proveCreateRecovery: async () => {
+    if (!f.quiesced) throw Object.assign(new Error('writer still active'), { reason: 'phase' });
     f.reads += 1;
     if (f.proofFails) throw new Error('synthetic read unavailable');
     return { confirmation: '123456-1', readbackDigest: 'd'.repeat(64),

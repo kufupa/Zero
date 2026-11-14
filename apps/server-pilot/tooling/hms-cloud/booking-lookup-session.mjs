@@ -6,12 +6,12 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { withCloudWriterSession, withCloudReadSession, cloudSessionIdentity } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
+import { readShallow, readRecord } from './hms-readers.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
-import { takeHandledNotes } from '../playwright-quote/stay360-notes.mjs';
-import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
-import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
+import { takeHandledNotes } from './stay360-notes.mjs';
 import { cleanLabtestRecord, readCreatedLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { loadHmsBookingMemory, queryHmsBookingMemory } from './hms-booking-memory.mjs';
@@ -24,7 +24,7 @@ import {
 } from './guest-profile.mjs';
 import {
   readGuestStayForm, setGuestStayText, setGuestStayDate, listGuestStayDropdown, selectGuestStayDropdown,
-  setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox,
+  setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox, setGuestOptInCheckbox,
 } from './guest-stay-form.mjs';
 import {
   searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
@@ -48,7 +48,6 @@ import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-ro
 import { compareCreatePartyRecord, extractCreatePartySnapshot } from './create-party-readback.mjs';
 import { listTrackSubSegments } from './guest-stay-track-catalog.mjs';
 
-const PROPERTY = 'HRCEN';
 const GUEST_STAY_CHECK_AVAILABILITY_PATH = '/web/base/OSRESV.HDR.getcheckavailability';
 const DEFAULT_DATA_DIR = '/home/orca/.local/share/zero/research/halloween/raw-data';
 const quoteSnapshots = new WeakMap();
@@ -100,7 +99,7 @@ export function labtestRecordOptionsForOrganizationSelection(selection) {
 }
 
 export function buildLabtestOrganizationReadbackTarget(saveResult, request, selectedOrganization,
-  { allowRealGuest = false, expectedGuest, cloudTargetKey } = {}) {
+  { allowRealGuest = false, expectedGuest, cloudTargetKey, propertyCode = request?.propertyCode ?? 'HRCEN', transportId, signal, credentialLease } = {}) {
   const recordOptions = labtestRecordOptionsForOrganizationSelection(selectedOrganization);
   const chargeRoom = request?.roomTypeForCharge !== undefined;
   const hasOrganization = request?.organizationSelection != null;
@@ -113,22 +112,23 @@ export function buildLabtestOrganizationReadbackTarget(saveResult, request, sele
   const confirmation = saveResult?.confirmation;
   const guaranteeDisplay = guaranteeDisplayForSave(request?.guaranteeType, request?.guaranteeSelection);
   const guest = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
-  if (!validCreateGuest(guest) || saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
+  if (!getPropertyRegistration(propertyCode)?.active || !validCreateGuest(guest) || saveResult?.outcome !== 'saved_same_form' || !/^\d{6,}-\d+$/.test(confirmation || '') ||
       !request || typeof request !== 'object' || !guaranteeDisplay ||
       (!chargeRoom && (request.agencySelection != null || !hasOrganization)) ||
       (hasOrganization && (!recordOptions || !sameSessionOrganizationSelection(selectedOrganization, request.organizationSelection))) ||
       !validParty(agency) || !validParty(arAccount) ||
       !/^\d+$/.test(String(request.guestId ?? '').trim()) ||
       typeof request.arrival !== 'string' || typeof request.departure !== 'string' ||
-      (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival)) ||
+      (cloudTargetKey !== undefined && cloudTargetKey !== createCloudTargetKey(guest, request.arrival, propertyCode)) ||
       !/^[A-Z0-9]{1,12}$/.test(request.roomType || '') || !/^[A-Z0-9]{1,12}$/.test(request.ratePlan || '') ||
       (request.roomTypeForCharge !== undefined && (!/^[A-Z0-9]{1,12}$/.test(request.roomTypeForCharge) ||
         !saveResult.checkedPricing)) ||
       !validCreateNote(request.note)) return null;
   return {
     confirmation,
+    sessionOptions: { propertyCode, transportId, signal, credentialLease },
     expected: {
-      confirmation, guestId: String(request.guestId).trim(), ...guest, arrival: request.arrival,
+      propertyCode, confirmation, guestId: String(request.guestId).trim(), ...guest, arrival: request.arrival,
       departure: request.departure, roomType: request.roomType, ratePlan: request.ratePlan, note: request.note,
       ...(request.roomTypeForCharge !== undefined ? { roomTypeForCharge: request.roomTypeForCharge,
         checkedPricing: structuredClone(saveResult.checkedPricing) } : {}),
@@ -152,7 +152,8 @@ function sessionState(page) {
   return state;
 }
 
-export async function readSavedOrganizationCreate(state, request, { openSession = withCenturionStay360Page } = {}) {
+export async function readSavedOrganizationCreate(state, request, { openSession = withCloudReadSession, ...sessionOptions } = {}) {
+  if (state?.page && cloudSessionIdentity(state.page)) return { outcome: 'refused', issue: 'WRITER_SESSION_MUST_CLOSE_BEFORE_READBACK' };
   const target = state?.savedOrganizationCreate;
   if (!target) return { outcome: 'input_gap', issue: 'SAVED_ORG_LABTEST_CREATE_REQUIRED' };
   if (Object.keys(request || {}).some((key) => !['id', 'tool', 'confirmation'].includes(key)) ||
@@ -161,11 +162,11 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
   }
   try {
     return await openSession(async (page) => {
-      const stay = await readConfirmationFromStay360(page, target.confirmation, {
+      const stay = await readShallow(page, target.confirmation, {
         guestName: `${target.expected.firstName} ${target.expected.lastName}`, arrivalDate: target.expected.arrival,
       });
       if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
-      const view = await readRecordViewFromStay360(page, target.confirmation);
+      const view = await readRecord(page, target.confirmation, { nativePropertyCode: target.expected.propertyCode });
       let pricing;
       if (target.expected.roomTypeForCharge !== undefined) {
         const fields = view?.details?.fields?.filter((field) => field.name === 'roomtypecharge') || [];
@@ -217,7 +218,8 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
           organizationName !== target.expectedOrganization.name)) throw new Error('LABTEST_LINKED_PARTY_UNVERIFIED');
       return {
         outcome: extraParties || !otherPartiesBlank || (criteria && Object.values(criteria).includes('UNKNOWN'))
-          ? 'partially_verified' : 'read_back_verified', confirmation: target.confirmation, property: PROPERTY,
+          ? 'partially_verified' : 'read_back_verified', confirmation: target.confirmation, property: target.expected.propertyCode,
+        nativeStayId: String(data.reservationstayid ?? '').trim(),
         stay: { arrival: target.expected.arrival, departure: target.expected.departure,
           roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
           ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
@@ -226,7 +228,8 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
         ...(extraParties ? { selectedParties: 'MATCHED', otherLinkedParties: 'UNKNOWN' } :
           otherPartiesBlank ? { otherLinkedPartiesBlank: true } : { otherLinkedParties: 'UNKNOWN' }),
       };
-    }, { blockServiceWorkers: true, prepareContext: installReadOnlyGuard,
+    }, { ...target.sessionOptions, ...sessionOptions, propertyCode: target.expected.propertyCode, startScreen: 'OSRESS',
+      prepareContext: context => installSavedStayReadGuard(context, { confirmation: target.confirmation, propertyCode: target.expected.propertyCode }),
       ...(target.cloudTargetKey ? { cloudTargetKey: target.cloudTargetKey } : {}) });
   } catch {
     return { outcome: 'execution_failure', issue: 'LABTEST_READBACK_UNVERIFIED' };
@@ -247,9 +250,13 @@ function defaultMemorySources(env) {
 }
 
 /** An absent or invalid private corpus must not prevent live tools from starting. */
-export async function loadOptionalBookingMemory(sources = defaultMemorySources(process.env)) {
+export async function loadOptionalBookingMemory(sources, { propertyCode = 'HRCEN' } = {}) {
+  if (sources === undefined && propertyCode !== 'HRCEN' && !process.env.HMS_MEMORY_PMS_PATH) {
+    return { memory: null, status: 'unavailable', issue: 'memory_property_sources_unavailable' };
+  }
+  sources ??= defaultMemorySources(process.env);
   try {
-    const memory = await loadHmsBookingMemory({ ...sources, propertyCode: PROPERTY });
+    const memory = await loadHmsBookingMemory({ ...sources, propertyCode });
     return { memory, status: 'available' };
   } catch (error) {
     return {
@@ -304,6 +311,8 @@ export async function readUnsavedGuestStay(page) {
 
 /** Close the Guest Stay availability iframe and verify the unsaved form. */
 export async function closeHotelAvailability(page) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) return { outcome: 'input_gap', issue: 'PROPERTY_MISMATCH' };
   if (!page || typeof page.frames !== 'function' || typeof page.on !== 'function') {
     return { outcome: 'input_gap', issue: 'PAGE_REQUIRED' };
   }
@@ -334,7 +343,7 @@ export async function closeHotelAvailability(page) {
       throw new Error('UNEXPECTED_DIALOG');
     }
     const property = frame.locator('input[name="propertycodes"]:visible');
-    if (await property.count() !== 1 || (await property.inputValue()).trim().toUpperCase() !== PROPERTY) {
+    if (await property.count() !== 1 || (await property.inputValue()).trim().toUpperCase() !== propertyCode) {
       throw new Error('PROPERTY_MISMATCH');
     }
     const draftMatches = await page.evaluate((expected) => {
@@ -345,7 +354,7 @@ export async function closeHotelAvailability(page) {
       const propertyCode = document.documentElement.dataset.propertyCode ?? /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
       return location.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com' && propertyCode === expected &&
         confirmation.length === 1 && !confirmation[0].value.trim() && agency.length === 1;
-    }, PROPERTY);
+    }, propertyCode);
     if (!draftMatches) throw new Error('PROPERTY_OR_BLANK_STAY_MISMATCH');
     const before = await readUnsavedGuestStay(page);
     if (before.outcome !== 'ok') throw new Error(before.issue || 'NOT_A_NEW_GUEST_STAY');
@@ -355,7 +364,7 @@ export async function closeHotelAvailability(page) {
     await close.click({ timeout: 5000 });
     await host.waitForElementState('hidden', { timeout: 10000 });
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    const verified = await readGuestStayForm(page, { propertyCode: PROPERTY });
+    const verified = await readGuestStayForm(page, { propertyCode });
     if (verified.outcome !== 'ok') throw new Error(verified.issue || 'FORM_READBACK_FAILED');
     const after = await readUnsavedGuestStay(page);
     if (after.outcome !== 'ok') throw new Error(after.issue || 'FORM_READBACK_FAILED');
@@ -436,13 +445,14 @@ async function viewQuoteSnapshot(page, request) {
 /** Execute one call; the caller retains the page and memory between calls. */
 export async function runBookingLookupTool({ page, memory, memoryIssue, labtestPreimage, beforeSaveScreenshot,
   authorizeCandidate, dispatchCandidate, createAuthority } = {}, request = {}) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode ?? createAuthority?.propertyCode;
   const id = request?.id ?? null;
   const tool = request?.tool ?? null;
   try {
     if (request?.options !== undefined && (!request.options || typeof request.options !== 'object' || Array.isArray(request.options))) {
       return { id, tool, outcome: 'input_gap', issue: 'invalid_options' };
     }
-    if (request.options && ['allowRealGuest', 'expectedGuest', 'cloudTargetKey'].some((key) => Object.hasOwn(request.options, key))) {
+    if (request.options && ['allowRealGuest', 'expectedGuest', 'cloudTargetKey', 'cloudTargetKeys', 'credentialLease', 'transportId', 'signal', 'verifiedCloud'].some((key) => Object.hasOwn(request.options, key))) {
       return { id, tool, outcome: 'input_gap', issue: 'SERVER_SAVE_GUARD_ONLY' };
     }
     if (tool === 'saveNewLabtestStay' && request.options &&
@@ -455,9 +465,11 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
          ((authorizeCandidate === undefined) !== (dispatchCandidate === undefined)))) {
       return { id, tool, outcome: 'input_gap', issue: 'SAVE_GUARD_CALLBACKS_INVALID' };
     }
+    if (request.propertyCode !== undefined && request.propertyCode !== propertyCode) return { id, tool, outcome: 'input_gap', issue: 'PROPERTY_MISMATCH' };
+    createAuthority?.signal?.throwIfAborted();
     if (tool === 'memory' || tool === 'queryBookingMemory') {
       if (!memory) return { id, tool, outcome: 'unavailable', issue: memoryIssue || 'memory_unavailable' };
-      if (page && memory.propertyCode !== PROPERTY) {
+      if (page && memory.propertyCode !== propertyCode) {
         return { id, tool, outcome: 'unavailable', issue: 'memory_property_mismatch' };
       }
       const result = queryHmsBookingMemory(memory, request.query, request.options);
@@ -467,6 +479,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       }
       return { id, tool, outcome: 'ok', result };
     }
+    request = { ...request, ...(propertyCode ? { propertyCode } : {}), options: { ...request.options, ...(propertyCode ? { propertyCode } : {}) } };
     const tools = {
       agency: searchPrimaryBookingAgency, searchPrimaryBookingAgency,
       organization: searchOrganization, searchOrganization,
@@ -475,7 +488,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       readGuestStay: readUnsavedGuestStay,
       searchGuestProfiles, inspectGuestProfileCandidates, selectGuestProfile, closeGuestProfilePicker,
       readGuestStayForm, setGuestStayText, setGuestStayDate, listGuestStayDropdown, selectGuestStayDropdown,
-      setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox,
+      setGuestStayChildAges, listCmsMessageIds, selectCmsMessageId, closeCmsMessageIdPicker, setCmsSendCheckbox, setGuestOptInCheckbox,
       searchHotelAvailabilityParty, selectHotelAvailabilityParty, cancelHotelAvailabilityParty,
       searchRoomTypes, searchRoomTypesForCharge, searchRatePlans, inspectRoomRateCandidate,
       listTrackSubSegments,
@@ -522,6 +535,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       delete input.id;
       delete input.tool;
       delete input.options;
+      delete input.propertyCode;
       result = await action(page, input, request.options);
     } else if (tool === 'readQuote') {
       if (!request.view || typeof request.view !== 'object' || Array.isArray(request.view)) {
@@ -554,7 +568,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       'readGuestStayForm', 'setGuestStayText', 'setGuestStayDate', 'listGuestStayDropdown',
       'selectGuestStayDropdown', 'setGuestStayChildAges', 'listCmsMessageIds', 'selectCmsMessageId',
       'closeGuestStayPartyPicker', 'closeCmsMessageIdPicker',
-      'setCmsSendCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
+      'setCmsSendCheckbox', 'setGuestOptInCheckbox', 'searchHotelAvailabilityParty', 'selectHotelAvailabilityParty',
       'searchRoomTypes', 'searchRoomTypesForCharge', 'searchRatePlans', 'inspectRoomRateCandidate',
       'listTrackSubSegments',
       'selectRoomType', 'selectRoomTypeForCharge', 'selectGuestStayRatePlan',
@@ -622,7 +636,7 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
     }
     if (tool === 'saveNewLabtestStay' && result?.outcome === 'saved_same_form') {
       state.savedOrganizationCreate = buildLabtestOrganizationReadbackTarget(
-        result, saveRequest, state.organizationSelection, createAuthority);
+        result, { ...saveRequest, propertyCode }, state.organizationSelection, createAuthority);
     }
     return { id, tool, ...result };
   } catch (error) {
@@ -664,14 +678,16 @@ export function createBookingToolQueue(context) {
 }
 
 /** Own one guarded page for the callback; the page is closed when it returns. */
-export function bookingSessionPageOptions({ headless = true, blockServiceWorkers = false, cloudTargetKey } = {}) {
+export function bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless = true, blockServiceWorkers = false, cloudTargetKey, cloudTargetKeys } = {}) {
   if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
-  return { headless, blockServiceWorkers, prepareContext: installReadOnlyGuard, ...(cloudTargetKey ? { cloudTargetKey } : {}) };
+  return { propertyCode, transportId, signal, credentialLease, headless,
+    ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(cloudTargetKeys ? { cloudTargetKeys } : {}) };
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
   blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate, verifyLabtestMatches,
-  allowRealGuest = false, expectedGuest, cloudTargetKey, signal } = {}) {
+  allowRealGuest = false, expectedGuest, propertyCode, transportId, credentialLease, cloudTargetKey, cloudTargetKeys, signal } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROPERTY_CODE_REQUIRED');
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
   if ((authorizeCandidate !== undefined && typeof authorizeCandidate !== 'function') ||
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
@@ -681,11 +697,10 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       (cloudTargetKey !== undefined && typeof cloudTargetKey !== 'string')) {
     throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
   }
-  const approvedCreateAvailabilityRequests = new WeakSet();
   const activeCreateRateAvailability = new WeakSet();
   const usedCreateRateAvailability = new WeakSet();
   const currentCreateRateAvailability = new WeakSet();
-  const createAuthority = { ...(allowRealGuest ? { allowRealGuest: true, expectedGuest: { ...expectedGuest } } : {}),
+  const createAuthority = { propertyCode, transportId, signal, credentialLease, ...(allowRealGuest ? { allowRealGuest: true, expectedGuest: { ...expectedGuest } } : {}),
     ...(cloudTargetKey ? { cloudTargetKey } : {}) };
   Object.defineProperties(createAuthority, {
     __m1CreateFlowAuthority: { value: true },
@@ -704,7 +719,6 @@ export async function withBookingLookupSession(operation, { memory, memorySource
             !request || typeof request !== 'object') return false;
         usedCreateRateAvailability.add(createAuthority);
         currentCreateRateAvailability.add(createAuthority);
-        approvedCreateAvailabilityRequests.add(request);
         return true;
       } };
     } },
@@ -712,18 +726,20 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       if (!currentCreateRateAvailability.has(createAuthority)) usedCreateRateAvailability.delete(createAuthority);
     } },
   });
-  const pageOptions = { ...bookingSessionPageOptions({ headless, blockServiceWorkers, cloudTargetKey }), signal,
-    prepareContext: (context) => installReadOnlyGuard(context, { approvedCreateAvailabilityRequests }) };
+  const pageOptions = bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless, blockServiceWorkers, cloudTargetKey, cloudTargetKeys });
   const loaded = memory === undefined
-    ? await loadOptionalBookingMemory(memorySources)
+    ? await loadOptionalBookingMemory(memorySources, { propertyCode })
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };
-  if (loaded.memory && loaded.memory.propertyCode !== PROPERTY) {
+  if (loaded.memory && loaded.memory.propertyCode !== propertyCode) {
     Object.assign(loaded, { memory: null, status: 'unavailable', issue: 'memory_property_mismatch' });
   }
-  return withCenturionStay360Page(async (page) => {
+  return withCloudWriterSession(async (page, verifiedCloud) => {
+    if (verifiedCloud.propertyCode !== propertyCode) throw new Error('PROPERTY_MISMATCH');
+    createAuthority.verifiedCloud = verifiedCloud;
+    sessionState(page).page = page;
     let labtestPreimage;
     if (labtestDates !== undefined) {
-      labtestPreimage = await searchLabtestPreimage(page, labtestDates ?? {},
+      labtestPreimage = await searchLabtestPreimage(page, { ...labtestDates, propertyCode },
         { verifyExisting: verifyLabtestMatches, allowRealGuest });
       if (labtestPreimage.outcome !== 'clear') {
         const error = new Error('LABTEST_PREIMAGE_NOT_CLEAR');
@@ -732,16 +748,16 @@ export async function withBookingLookupSession(operation, { memory, memorySource
         throw error;
       }
     }
-    try { await openNewGuestStay(page); }
+    try { await openNewGuestStay(page, { propertyCode }); }
     catch (error) {
       if (error && typeof error === 'object') error.phase = 'new_guest_stay';
       throw error;
     }
     // Keep a page interceptor installed when a form action removes its temporary route.
     await installPageRequestFence(page, ['/web/base/OSRESV.HDR', GUEST_STAY_CHECK_AVAILABILITY_PATH]);
-    const context = { page, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot,
+    const context = { page, verifiedCloud, propertyCode, transportId, signal, credentialLease, memory: loaded.memory, memoryIssue: loaded.issue, labtestPreimage, beforeSaveScreenshot,
       authorizeCandidate, dispatchCandidate, createAuthority };
-    const onDialog = () => { unexpectedNativeDialogs.add(page); };
+    const onDialog = dialog => { unexpectedNativeDialogs.add(page); void dialog.dismiss().catch(() => {}); };
     page.on('dialog', onDialog);
     const queue = createBookingToolQueue(context);
     try {
@@ -754,7 +770,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
   }, pageOptions);
 }
 
-const usage = 'Usage: node booking-lookup-session.mjs --jsonl [--labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD]\n' +
+const usage = 'Usage: node booking-lookup-session.mjs --jsonl --property HRCEN|HRDAV|HRDAVS [--labtest-arrival YYYY-MM-DD --labtest-departure YYYY-MM-DD]\n' +
   'Tools: queryBookingMemory, searchPrimaryBookingAgency, selectPrimaryBookingAgency, searchOrganization, ' +
   'selectOrganization, searchArAccount, selectArAccount, readGuestStay, guest/profile/form tools, ' +
   'availability-party, room/rate/source tools, readQuote, viewQuoteSnapshot, closeHotelAvailability, ' +
@@ -770,6 +786,10 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     process.stdout.write(usage);
     return;
   }
+  const propertyIndex = args.indexOf('--property');
+  const propertyCode = propertyIndex >= 0 ? args[propertyIndex + 1] : undefined;
+  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROPERTY_CODE_REQUIRED');
+  args = args.filter((_, index) => index !== propertyIndex && index !== propertyIndex + 1);
   if (args[0] !== '--jsonl' || (args.length !== 1 &&
       (args.length !== 5 || args[1] !== '--labtest-arrival' || args[3] !== '--labtest-departure'))) {
     throw new Error('EXPECTED_JSONL');
@@ -777,7 +797,7 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
   const labtestDates = args.length === 5 ? { arrival: args[2], departure: args[4] } : undefined;
   process.umask(0o077);
   await withBookingLookupSession(async ({ runTool, memoryStatus, memoryIssue, labtestPreimage }) => {
-    await writeJsonLine({ event: 'ready', property: PROPERTY, memory: { status: memoryStatus, ...(memoryIssue ? { issue: memoryIssue } : {}) },
+    await writeJsonLine({ event: 'ready', property: propertyCode, memory: { status: memoryStatus, ...(memoryIssue ? { issue: memoryIssue } : {}) },
       ...(labtestPreimage ? { labtestPreimage } : {}) });
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity, terminal: false });
     try {
@@ -793,12 +813,16 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
           await writeJsonLine({ id: request.id ?? null, tool: 'quit', outcome: 'ok' });
           break;
         }
+        if (request?.tool === 'saveNewLabtestStay') {
+          await writeJsonLine({ id: request.id ?? null, tool: request.tool, outcome: 'refused', issue: 'CLI_PREPARE_ONLY' });
+          continue;
+        }
         await writeJsonLine(await runTool(request));
       }
     } finally {
       lines.close();
     }
-  }, { labtestDates, blockServiceWorkers: true });
+  }, { propertyCode, labtestDates, blockServiceWorkers: true });
 }
 
 export function main() {
