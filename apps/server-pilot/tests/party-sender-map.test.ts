@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isOwnedHotelHost,
+  isFreemailHost,
   lookupLearnedSenderHistory,
   lookupLearnedSenderParty,
   partyHistoryBindEnabled,
@@ -20,6 +21,15 @@ afterEach(() => {
 });
 
 describe('owned hotel sender hosts', () => {
+  it.each(['GMAIL.COM.', 'person@googlemail.com', 'mail.yahoo.co.uk', 'person@hotmail.co.za',
+    'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'aol.com', 'protonmail.com',
+    'proton.me', 'mail.com', 'gmx.de', 'yandex.ru', 'mweb.co.za', 'telkomsa.net', 'webmail.co.za'])
+  ('classifies consumer host %s', host => expect(isFreemailHost(host)).toBe(true));
+
+  it('does not classify lookalike business hosts as freemail', () => {
+    expect(isFreemailHost('gmail.com.example.test')).toBe(false);
+    expect(isFreemailHost('company.test')).toBe(false);
+  });
   it.each([
     'legacyhotels.co.za',
     'centurion.legacyhotels.co.za',

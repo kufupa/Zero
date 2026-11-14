@@ -27,7 +27,7 @@ import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.
 import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-read-lock.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
+import { isExcludedRefundArAccount, loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
 import { loadAgencyCommission, loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
@@ -3561,7 +3561,13 @@ function projectCurrentExtraction(input: {
       const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
       const existingText = typeof existing === 'string' ? existing : '';
       const { fullNote, additions } = mergeSourceNote(existingText, sourceNotes, input.evidence);
-      if (fullNote.length <= limit && additions.length) {
+      const explicitlyNone = request.kind === 'create' && isRecord(existing) && existing.kind === 'none';
+      if (explicitlyNone) for (const clause of sourceNotes) {
+        if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && clause.length <= 2000 &&
+            !proposal.sourceClaims.some(claim => claim.path === path && claim.raw === clause))
+          proposal.sourceClaims.push({ path, raw: clause, sourceRefs });
+      }
+      if (!explicitlyNone && fullNote.length <= limit && additions.length) {
         if (request.kind === 'create') request.body.shared.reservationNote = fullNote;
         else request.body.notes = fullNote;
         proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
@@ -4806,7 +4812,8 @@ function applyDefaultCmsSendPolicy(
       if (normalized.lunchRequested) {
         const note = 'Lunch requested as an extra; Centurion rates do not include lunch.';
         const combined = [typeof fields.reservationNote === 'string' ? fields.reservationNote : '', note].filter(Boolean).join(' ');
-        if ((typeof fields.reservationNote !== 'string' || !fields.reservationNote.includes(note)) && combined.length <= RESERVATION_NOTE_MAX)
+        if (!(isRecord(fields.reservationNote) && fields.reservationNote.kind === 'none') &&
+            (typeof fields.reservationNote !== 'string' || !fields.reservationNote.includes(note)) && combined.length <= RESERVATION_NOTE_MAX)
           fields.reservationNote = combined;
         const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
         if (!proposal.issues.some(issue => issue.path === path && issue.kind === 'lunch_is_extra'))
@@ -5011,15 +5018,17 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
     }
     const leader = (counts: Map<string, number>) => {
       const ranked = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      return ranked[0] && ranked[0][1] / memory.denominator >= 0.8 && (!ranked[1] || ranked[0][1] > ranked[1][1])
+      return !memory.webmailDomain && ranked[0] && ranked[0][1] >= 2 && ranked[0][1] / memory.denominator >= 0.8 && (!ranked[1] || ranked[0][1] > ranked[1][1])
         ? ranked[0] : null;
     };
     const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
+    const path = `/proposal/content/requests/${request.id}/body/shared/reservationNote`;
+    const sourceOverLimit = proposal.issues.some(issue => issue.path === path && issue.kind === 'source_note_exceeds_native_limit');
     const sourcePayer = /\b(?:settle(?:ment|d)?|pay(?:ment|s|ing|able)?|bill(?:ing|ed)?|charg(?:e|ed|es|ing)|pre[-\s]?paid|pre[-\s]?pay(?:ment)?|to\s+(?:the\s+)?(?:agent|agency|company))\b/i
       .test(`${currentText}\n${existing}`);
     const payer = sourcePayer ? null : leader(payerCounts), rememberedCap = leader(capCounts);
     const guarantees = [...memory.guarantees].sort((a, b) => b.support - a.support);
-    const guarantee = guarantees[0] && guarantees[0].confidence >= 0.8 &&
+    const guarantee = !memory.webmailDomain && guarantees[0] && guarantees[0].support >= 2 && guarantees[0].confidence >= 0.8 &&
       (!guarantees[1] || guarantees[0].support > guarantees[1].support) ? guarantees[0] : null;
     const matchingGuarantees = guarantee && catalog.status === 'available' ? catalog.records.filter((row) =>
       row.code && (normalizedFact(row.code) === normalizedFact(guarantee.value) ||
@@ -5033,25 +5042,35 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
     const meal = currentMeal == null ? leader(mealCounts)?.[0] ?? '' : namedMeal;
     const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
       ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
+    const candidatePayer = [...payerCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const candidateMeal = meal || [...mealCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const candidatePresetId = candidatePayer === 'direct' ? 'settle-direct' : candidatePayer && ['bb', 'dinner_bb'].includes(candidateMeal ?? '')
+      ? `${candidateMeal === 'dinner_bb' ? 'dbb' : 'bb'}-${candidatePayer}` : null;
+    const candidatePreset = RESERVATION_NOTE_PRESETS.find(row => row.id === candidatePresetId);
     const noteExplicitlyNone = isRecord(request.body.shared.reservationNote) && request.body.shared.reservationNote.kind === 'none';
     const preset = noteExplicitlyNone ? undefined : RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
     const explicitCap = meal === 'dinner_bb' ? dinnerAmount(currentText) : null;
     const cap = !noteExplicitlyNone && meal === 'dinner_bb' ? explicitCap ?? rememberedCap?.[0] ?? null : null;
-    if (!preset && !cap && !guaranteeCode) continue;
-    const noteExisting = explicitCap ? existing.split(/([;\n!?]|\.(?!\d))/u).map((clause) => {
-      const previousCap = dinnerAmount(clause);
-      if (!previousCap || previousCap === explicitCap) return clause;
-      return clause.replace(/(\b(?:R|ZAR)\s*)(\d+(?:[.,]\d{1,2})?)\b/giu, (match, prefix: string, amount: string) =>
-        amount.replace(',', '.') === previousCap ? `${prefix}${explicitCap}` : match);
-    }).join('') : existing;
+    const existingCap = dinnerAmount(existing);
+    const candidateCap = [...capCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const capConflict = Boolean(existingCap && (explicitCap && explicitCap !== existingCap ||
+      candidateCap && candidateCap !== existingCap));
+    const sourcePayerValue = /\bto\s+(?:the\s+)?(?:agent|agency)\b/i.test(`${currentText}\n${existing}`) ? 'agent'
+      : /\bto\s+(?:the\s+)?company\b/i.test(`${currentText}\n${existing}`) ? 'organization'
+      : /\bpre[-\s]?paid\b/i.test(`${currentText}\n${existing}`) ? 'prepaid'
+      : /\bsettle\s+direct\b/i.test(`${currentText}\n${existing}`) ? 'direct' : null;
+    const payerConflict = Boolean(sourcePayerValue && candidatePayer && sourcePayerValue !== candidatePayer);
+    const conflicts = [...(capConflict ? ['Dinner allowance differs from the current note.'] : []),
+      ...(payerConflict ? ['Payer history differs from the source or current note.'] : [])];
+    const conflict = conflicts.length > 0;
+    const noteExisting = existing;
     const containsCap = cap && noteExisting.split(/[;\n!?]|\.(?!\d)/u).some((clause) => {
       const present = dinnerAmount(clause);
       return explicitCap ? present === cap : present !== null;
     });
-    const parts = [preset?.text, cap && !containsCap ? `Dinner allowance R${cap}` : null, noteExisting]
+    const parts = [preset?.text, cap && !containsCap && !conflict ? `Dinner allowance R${cap}` : null, noteExisting]
       .filter((part): part is string => Boolean(part));
     const note = parts.filter((part, index) => !parts.slice(index + 1).some((other) => normalizedFact(other).includes(normalizedFact(part)))).join('\n');
-    const path = `/proposal/content/requests/${request.id}/body/shared/reservationNote`;
     if (note.length > RESERVATION_NOTE_MAX) {
       addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
         `The composed note exceeds HMS's ${RESERVATION_NOTE_MAX}-character limit. Review and shorten it before saving.`, sourceRefs);
@@ -5061,12 +5080,21 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
       observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
       sourceRefs: [], criteria: { kind: 'historical_note_guidance', requestId: request.id, sourceCutoff: input.source.arrivedAt },
       coverage: { complete: true, notes: [] }, result: { denominator: memory.denominator,
-        payer: payer ? { value: payer[0], support: payer[1] } : null,
-        dinnerCap: rememberedCap ? { value: rememberedCap[0], support: rememberedCap[1] } : null,
-        guarantee: guaranteeCode && guarantee ? { code: guaranteeCode, support: guarantee.support,
-          denominator: guarantee.denominator, confidence: guarantee.confidence,
-          nativeCapturedAt: catalog.status === 'available' ? catalog.capturedAt : null } : null } });
-    if ((preset || cap) && note.length <= RESERVATION_NOTE_MAX) {
+        payer: (() => { const row = [...payerCounts].sort((a, b) => b[1] - a[1])[0]; return row ? {
+          value: row[0], text: candidatePreset?.text ?? '', support: row[1], denominator: memory.denominator,
+          purity: row[1] / memory.denominator, scope: memory.scope ?? 'sender_or_party', autoApplied: Boolean(preset && note !== existing && !sourceOverLimit && !conflict && note.length <= RESERVATION_NOTE_MAX),
+          blockedReason: row[1] < 2 ? 'support_below_min' : memory.webmailDomain ? 'webmail_domain' : row[1] / memory.denominator < 0.8 ? 'purity_below_threshold' :
+            noteExplicitlyNone ? 'blocked_none' : sourceOverLimit || note.length > RESERVATION_NOTE_MAX ? 'over_limit' : sourcePayer ? 'source_conflict' : conflict ? 'conflict' : preset ? null : 'no_matching_meal' } : null; })(),
+        dinnerCap: (() => { const row = [...capCounts].sort((a, b) => b[1] - a[1])[0]; return row ? {
+          value: row[0], text: `Dinner allowance R${row[0]}`, support: row[1], denominator: memory.denominator,
+          purity: row[1] / memory.denominator, scope: memory.scope ?? 'sender_or_party', autoApplied: Boolean(cap && !explicitCap && !containsCap && !sourceOverLimit && !conflict && note.length <= RESERVATION_NOTE_MAX),
+          blockedReason: row[1] < 2 ? 'support_below_min' : memory.webmailDomain ? 'webmail_domain' : row[1] / memory.denominator < 0.8 ? 'purity_below_threshold' :
+            noteExplicitlyNone ? 'blocked_none' : sourceOverLimit || note.length > RESERVATION_NOTE_MAX ? 'over_limit' : conflict ? 'conflict' : null } : null; })(),
+        guarantee: guarantees[0] ? { value: guarantees[0].value, code: guaranteeCode, support: guarantees[0].support,
+          denominator: guarantees[0].denominator, purity: guarantees[0].confidence, scope: memory.scope ?? 'sender_or_party', autoApplied: Boolean(guaranteeCode),
+          blockedReason: guarantees[0].support < 2 ? 'support_below_min' : memory.webmailDomain ? 'webmail_domain' : guarantees[0].confidence < 0.8 ? 'purity_below_threshold' :
+            guaranteeCode ? null : 'not_applicable' } : null, conflicts, proposedLength: note.length } });
+    if ((preset || cap) && !sourceOverLimit && !conflict && note.length <= RESERVATION_NOTE_MAX) {
       request.body.shared.reservationNote = note;
       proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
     }
@@ -5096,7 +5124,7 @@ async function applyRateTrackMemory(input: { proposal: ReservationWorkflowV2Prop
     const mapping = matches[0]!;
     const ranked = [...mapping.candidates].sort((a, b) => b.support - a.support);
     const leader = ranked[0];
-    if (!leader || !normalizedFact(leader.track) || leader.confidence < 0.8 ||
+    if (!leader || !normalizedFact(leader.track) || leader.support < 2 || leader.confidence < 0.8 ||
         ranked[1] && ranked[1].support >= leader.support) return;
     const native = catalog.records.filter((row) => row.code &&
       (normalizedFact(row.code) === normalizedFact(leader.track) || normalizedFact(row.meaning) === normalizedFact(leader.track)));
@@ -5269,6 +5297,66 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
   return { proposal, observations, requirements };
 }
 
+function noteCompositionObservations(input: { before: ReservationWorkflowV2Proposal; proposal: ReservationWorkflowV2Proposal;
+  observations: ReservationWorkflowV2Observation[]; source: ReservationWorkflowV2Source; generationId: string;
+  propertyCode: PropertyCode; evidence: ReservationWorkflowV2Evidence[] }): ReservationWorkflowV2Observation[] {
+  const recordForNote = (value: unknown): Record<string, unknown> => isRecord(value) ? value : {};
+  const slots = (request: ReservationWorkflowV2Proposal['content']['requests'][number]) => {
+    const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+    if (request.kind === 'create') return [
+      { path: `${root}/shared/reservationNote`, value: request.body.shared.reservationNote },
+      ...request.body.dateSections.map((row, index) => ({ path: `${root}/dateSections/${index}/defaults/reservationNote`, value: row.defaults.reservationNote })),
+      ...request.body.allocations.map((row, index) => ({ path: `${root}/allocations/${index}/overrides/reservationNote`, value: row.overrides.reservationNote })),
+    ];
+    if (request.kind === 'quote') return [{ path: `${root}/notes`, value: request.body.notes }];
+    if (request.kind !== 'amend') return [];
+    const groups = [{ path: `${root}/sharedChanges`, changes: request.body.sharedChanges },
+      ...request.body.perTarget.map((row, index) => ({ path: `${root}/perTarget/${index}/changes`, changes: row.changes }))];
+    const changes = groups.flatMap(group => group.changes.flatMap((change, index) =>
+      'field' in change && change.field === 'reservationNote' && (change.op === 'set' || change.op === 'clear')
+        ? [{ path: `${group.path}/${index}/value`, value: change.op === 'set' ? change.value : { kind: 'none' } }] : []));
+    return changes.length ? changes : [{ path: `${root}/reservationNote`, value: undefined }];
+  };
+  const currentEvidence = input.evidence.filter(row => row.relation === 'current_message');
+  return input.proposal.content.requests.flatMap(request => {
+    const beforeRequest = input.before.content.requests.find(row => row.id === request.id && row.kind === request.kind);
+    const previous = beforeRequest ? slots(beforeRequest) : [];
+    const guidance = input.observations.find(row => row.criteria.kind === 'historical_note_guidance' && row.criteria.requestId === request.id);
+    return slots(request).map(slot => {
+      const directOriginal = previous.find(row => row.path === slot.path)?.value;
+      const targetIndex = /\/perTarget\/(\d+)\/changes\//.exec(slot.path)?.[1];
+      const baseline = request.kind === 'amend' && directOriginal === undefined && targetIndex !== undefined
+        ? (request.body.perTarget[Number(targetIndex)]?.currentObservationRefs ?? []).flatMap(ref => input.observations.filter(observation => observation.ref === ref))
+        .map(row => recordForNote(row.result.reservationObservations)).map(row => recordForNote(row.reservationNote))
+        .find(row => row.state === 'observed' && typeof row.value === 'string' || row.state === 'blank') : undefined;
+      const original = directOriginal ?? (baseline?.state === 'observed' ? baseline.value : baseline?.state === 'blank' ? '' : undefined);
+      const state = isRecord(original) && original.kind === 'none' ? 'none' : typeof original === 'string' ? 'set' : 'unset';
+      const existing = { state, text: typeof original === 'string' ? original : '' };
+      const claims = input.proposal.sourceClaims.filter(claim => claim.path === slot.path ||
+        request.kind === 'amend' && claim.path === `/proposal/content/requests/${encodeURIComponent(request.id)}/body/reservationNote`);
+      const sourceClauses = claims.map(claim => ({ text: claim.raw, sourceRefs: claim.sourceRefs }));
+      if (!sourceClauses.length && existing.text) for (const clause of existing.text.split(/\r?\n/).filter(Boolean)) {
+        const refs = currentEvidence.filter(row => row.text.includes(clause)).map(row => row.ref);
+        if (refs.length) sourceClauses.push({ text: clause, sourceRefs: refs });
+      }
+      const result: Record<string, unknown> = guidance && slot.path.endsWith('/shared/reservationNote') ? guidance.result : {};
+      const memory = Object.fromEntries(['payer', 'dinnerCap', 'guarantee'].flatMap(key => isRecord(result[key]) ? [[key, result[key]]] : []));
+      const conflicts = Array.isArray(result.conflicts) ? result.conflicts.filter((row): row is string => typeof row === 'string') : [];
+      const overLimit = typeof result.proposedLength === 'number' && result.proposedLength > RESERVATION_NOTE_MAX ||
+        typeof slot.value === 'string' && slot.value.length > RESERVATION_NOTE_MAX ||
+        input.proposal.issues.some(issue => issue.kind === 'source_note_exceeds_native_limit' &&
+          (issue.path === slot.path || request.kind === 'amend' && issue.path === `/proposal/content/requests/${request.id}/body/reservationNote`));
+      return { ref: `obs_${randomUUID()}`, generationId: input.generationId, kind: 'source' as const, status: 'complete' as const,
+        observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
+        sourceRefs: [...new Set(sourceClauses.flatMap(row => row.sourceRefs))].slice(0, 500),
+        criteria: { kind: 'reservation_note_composition', workflow: request.kind, requestId: request.id, fieldPath: slot.path,
+          generationId: input.generationId, sourceHash: input.source.sourceHash, propertyCode: input.propertyCode },
+        coverage: { complete: true, notes: [] }, result: { path: slot.path, limit: RESERVATION_NOTE_MAX, existing,
+          sourceClauses, memory, conflicts, compositionStatus: state === 'none' ? 'blocked_none' : overLimit ? 'over_limit' : conflicts.length ? 'conflict' : 'clean' } };
+    });
+  });
+}
+
 function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposal; leads: ReservationWorkflowV2Observation[];
   observations: ReservationWorkflowV2Observation[]; extractionIdByProposalRequestId: Map<string, string> }): ReservationWorkflowV2Observation[] {
   return input.leads.map((lead) => {
@@ -5375,8 +5463,9 @@ async function applyHistoricalPartySuggestions(input: { proposal: ReservationWor
           typeof candidates[0].nativeId === 'string' && /^\d{1,30}$/.test(candidates[0].nativeId) &&
           normalizedFact(candidates[0].name) === normalizedFact(value.name);
       };
-      const eligible = leads.filter((lead) => typeof lead.value === 'string' && typeof lead.confidence === 'number' &&
-        lead.confidence >= 0.8 && (role === 'ar_account' ? lead.basis === 'normalized_entity' && sourceSelected(lead.sourceParty)
+      const eligible = leads.filter((lead) => typeof lead.value === 'string' && (role !== 'ar_account' || !isExcludedRefundArAccount(lead.value)) &&
+        typeof lead.support === 'number' && lead.support >= 2 && typeof lead.confidence === 'number' && lead.confidence >= 0.8 &&
+        typeof lead.purity === 'number' && lead.purity >= 0.8 && (role === 'ar_account' ? lead.basis === 'normalized_entity' && sourceSelected(lead.sourceParty)
           : lead.autoSelectable === true && (lead.basis === 'normalized_entity' ? sourceSelected(lead.sourceParty)
             : lead.basis === 'exact_sender' && lead.sourceParty === null && typeof lead.sourceSender === 'string')));
       if (!eligible.length || new Set(eligible.map((lead) => normalizedFact(lead.value))).size !== 1) continue;
@@ -6214,6 +6303,8 @@ export async function runReservationWorkflowV2Prefill(input: {
       extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map(),
       selection: input.selection, evidence, observations: finalObservations, source: input.source });
     finalObservations.push(...amendNotes.observations);
+    finalObservations.push(...noteCompositionObservations({ before: trackResult.proposal, proposal: amendNotes.proposal,
+      observations: finalObservations, source: input.source, generationId, propertyCode, evidence }));
     finalProposal = amendNotes.proposal;
     amendNoteRequirements = amendNotes.requirements;
   }
@@ -6340,6 +6431,8 @@ export async function runReservationWorkflowV2Prefill(input: {
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       selection: input.selection, evidence, observations: finalObservations, source: input.source });
     finalObservations.push(...amendNotes.observations);
+    finalObservations.push(...noteCompositionObservations({ before: trackResult.proposal, proposal: amendNotes.proposal,
+      observations: finalObservations, source: input.source, generationId, propertyCode, evidence }));
     const proposal = amendNotes.proposal;
     const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,

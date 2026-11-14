@@ -1,4 +1,8 @@
 import type { ReservationWorkflowV2Extraction } from '../src/ai/reservation-workflow-v2-contract.js';
+import { reservationWorkflowV2DraftSchema, reservationWorkflowV2ObservationSchema } from '../src/ai/reservation-workflow-v2-contract.js';
+import { randomUUID } from 'node:crypto';
+import * as memoryLeads from '../src/ai/reservation-workflow-v2-native-leads.js';
+import * as bookingCodes from '../src/ai/booking-code-rules.js';
 import { createReservationWorkflowV2CandidateReader, runReservationWorkflowV2Prefill } from '../src/ai/reservation-workflow-v2-prefill.js';
 import * as cloudStay from '../src/ai/hms-cloud-saved-stay-find.js';
 import * as paneStaySave from '../src/ai/pane-stay-save.js';
@@ -97,7 +101,94 @@ function quoteFixture(sourceRef: string): ReservationWorkflowV2Extraction['reque
   };
 }
 
+function allocatedCreate(ref: string, shared: Record<string, unknown> = {}) {
+  return { proposal: { schemaVersion: 'reservation-prefill.v0.2', content: { requests: [{ id: 'quote_request', kind: 'create',
+    requestText: 'Please book', sourceRefs: [ref], serviceRefs: [], documentRefs: [], body: { shared, dateSections: [{ id: 'section',
+      arrival: '2027-01-10', departure: '2027-01-12', requestedRooms: 1, requestedTotals: { adults: null, childCount: null, childAges: null },
+      defaults: {}, unassignedGuestNames: [] }], allocations: [{ id: 'allocation', dateSectionId: 'section', overrides: {},
+        guest: { firstName: null, lastName: null, email: null, mobile: null, profileIntent: 'existing_or_unknown', candidateRefs: [], suggestedRef: null },
+        occupancy: { adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }] } }], services: [], documents: [] },
+    annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] }, reviewRequirements: {} };
+}
+
 describe('reservation workflow host projection', () => {
+  it.each(['create', 'quote', 'amend'] as const)('emits schema-valid source-only note composition for %s', async (kind) => {
+      const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind,
+        requestText: claim('Please arrange', 'Please arrange', ref) }], issues: [] }), undefined,
+      'Please arrange. Parking requested.');
+      const observations = result.observations.filter(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.workflow === kind);
+      expect(observations.length).toBeGreaterThan(0);
+      for (const row of observations) {
+        expect(reservationWorkflowV2ObservationSchema.safeParse(row).success).toBe(true);
+        expect(row.criteria).toMatchObject({ generationId: result.generationId, sourceHash: 'a'.repeat(64), propertyCode: 'HRCEN' });
+        expect(row.result).toMatchObject({ limit: 2000, memory: {}, compositionStatus: 'clean' });
+      }
+      expect(observations.some(row => Array.isArray(row.result.sourceClauses) && row.result.sourceClauses.some((clause: unknown) =>
+        typeof clause === 'object' && clause !== null && 'text' in clause && clause.text === 'Parking requested.'))).toBe(true);
+      expect(reservationWorkflowV2DraftSchema.safeParse({ contractVersion: 2, schemaVersion: 'reservation-prefill.v0.2',
+        workItemId: randomUUID(), transportId: 'projection-transport', propertyCode: 'HRCEN',
+        source: { messageId: 'projection-message', threadId: 'projection-thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' },
+        generationId: result.generationId, revision: 0, status: result.status, proposal: result.proposal, observations: result.observations,
+        fieldReviewRequirements: result.fieldReviewRequirements, staffReviews: {}, operationResults: [], fieldOverrides: {}, errors: result.errors }).success).toBe(true);
+  }, 12_000);
+
+  it.each([[1, 1, false, false], [2, 3, false, false], [2, 2, true, false], [2, 2, false, true]])
+  ('requires two stays and 80%% purity for note and track memory (%i/%i)', async (support, denominator, applies, webmailDomain) => {
+    vi.spyOn(memoryLeads, 'loadReservationMemoryGuidance').mockResolvedValue({ status: 'available', denominator,
+      notes: [{ value: 'BB to agent', support, denominator, confidence: support / denominator }],
+      guarantees: [{ value: 'CC', support, denominator, confidence: support / denominator }], tracks: [], complete: true, multiClientDomain: false, webmailDomain });
+    vi.spyOn(memoryLeads, 'loadReservationRateTrackMapping').mockResolvedValue({ status: 'available', mappings: [{ propertyCode: 'HRCEN', ratePlan: 'BAR',
+      countingUnit: 'distinct_verified_stays', capturedThrough: '2026-01-01T00:00:00.000Z', denominator,
+      candidates: [{ track: 'COR', support, denominator, confidence: support / denominator }] }] });
+    vi.spyOn(bookingCodes, 'loadNativeBookingCodes').mockImplementation(async input => input.kind === 'trackSubsegment'
+      ? { status: 'available', records: [{ code: 'COR', meaning: 'Corporate' }], capturedAt: '2026-01-01T00:00:00.000Z' } as never
+      : input.kind === 'guaranteeTypes' ? { status: 'available', records: [{ code: 'CC', meaning: 'Card' }], capturedAt: '2026-01-01T00:00:00.000Z' } as never
+      : { status: 'unavailable', issue: 'test' });
+    vi.spyOn(nativeCatalog, 'preloadNativeCatalogLookup').mockResolvedValue({ propertyCode: 'HRCEN',
+      roomsEnvelope: () => ({ status: 'available', coverage: { scope: 'whole_catalog', complete: true } }),
+      ratesEnvelope: () => ({ status: 'available', coverage: { scope: 'whole_catalog', complete: true } }),
+      lookupVerifiedCode: (kind: string, code: string) => ({ status: kind === 'rate' && code === 'BAR' ? 'unique' : 'not_found' }),
+    } as never);
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'create',
+      requestText: claim('Please book', 'Please book', ref), rateHints: [claim('BAR', 'BAR', ref)],
+      dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref),
+        roomCount: claim('one room', 1, ref) }] }], issues: [] }),
+    ref => allocatedCreate(ref),
+    'Please book one room at rate BAR 2027-01-10 to 2027-01-12.');
+    const request = result.proposal.content.requests.find(row => row.kind === 'create');
+    if (request?.kind !== 'create') throw new Error('expected Create');
+    expect(memoryLeads.loadReservationMemoryGuidance, JSON.stringify(request.body)).toHaveBeenCalled();
+    const note = result.observations.find(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.fieldPath ===
+      `/proposal/content/requests/${request.id}/body/shared/reservationNote`);
+    expect(note?.result.memory).toMatchObject({ payer: { support, denominator, autoApplied: applies,
+      blockedReason: applies ? null : support < 2 ? 'support_below_min' : webmailDomain ? 'webmail_domain' : 'purity_below_threshold' } });
+    expect(Boolean(request.body.shared.reservationNote)).toBe(applies);
+    expect(request.body.shared.guaranteeType ?? null).toBe(applies ? 'CC' : null);
+    expect(Boolean(result.observations.find(row => row.criteria.kind === 'rate_track_memory'))).toBe(support >= 2 && support / denominator >= 0.8);
+  });
+
+  it.each(['none', 'conflict', 'over_limit'] as const)('protects note composition in the %s case', async scenario => {
+    vi.spyOn(memoryLeads, 'loadReservationMemoryGuidance').mockResolvedValue({ status: 'available', denominator: 2,
+      notes: [{ value: 'DBB to agent; Dinner allowance R350', support: 2, denominator: 2, confidence: 1 }],
+      guarantees: [], tracks: [], complete: true, multiClientDomain: false });
+    const clause = scenario === 'conflict' ? 'Dinner allowance R200' : scenario === 'over_limit' ? `Parking ${'x'.repeat(2000)}` : 'Parking requested';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'create',
+      requestText: claim('Please book', 'Please book', ref), dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref),
+        departure: claim('2027-01-12', '2027-01-12', ref) }] }], issues: [] }),
+      ref => allocatedCreate(ref, scenario === 'none' ? { reservationNote: { kind: 'none' } } : {}),
+      `Please book 2027-01-10 to 2027-01-12.\n${clause}`);
+    const request = result.proposal.content.requests.find(row => row.kind === 'create');
+    if (request?.kind !== 'create') throw new Error('expected Create');
+    const note = result.observations.find(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.fieldPath ===
+      `/proposal/content/requests/${request.id}/body/shared/reservationNote`);
+    expect(note?.result.compositionStatus).toBe(scenario === 'none' ? 'blocked_none' : scenario);
+    if (scenario === 'none') expect(request.body.shared.reservationNote).toEqual({ kind: 'none' });
+    if (scenario === 'conflict') {
+      expect(request.body.shared.reservationNote).toContain('R200');
+      expect(request.body.shared.reservationNote).not.toContain('R350');
+      expect(note?.result.conflicts).toContain('Dinner allowance differs from the current note.');
+    }
+  });
   it.each([
     ['Please book ROOMX', 'ROOMX', 'available', true],
     ['Please book no ROOMX', 'ROOMX', 'available', false],

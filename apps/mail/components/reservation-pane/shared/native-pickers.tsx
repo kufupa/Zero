@@ -5,6 +5,13 @@ import { autoTransferHistory, effectiveAt, hasCompleteNativeCatalogue, nativeCho
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
 
+const leadBlockReason: Record<string, string> = {
+  support_below_min: 'Fewer than two prior stays', purity_below_threshold: 'History is inconsistent',
+  purity_unknown: 'History is incomplete', multi_client_domain: 'Domain has multiple clients',
+  webmail_domain: 'Personal email domain', refund_account_excluded: 'Refund account excluded',
+  role_basis_not_auto: 'Requires staff selection',
+};
+
 /** Keep dropdowns inside the pane's scrolling viewport, including above the footer. */
 export function usePickerPosition(open: boolean, picker: RefObject<HTMLDivElement | null>): CSSProperties {
   const [position, setPosition] = useState<CSSProperties>({});
@@ -257,6 +264,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
           onMouseDown={event => event.preventDefault()} onClick={() => { void searchRecommendation(lead.value); }}>
           <strong>{lead.value}</strong>{lead.label !== lead.value && <span> — {lead.label}</span>}
           <small>{lead.basis === 'exact_sender' ? 'From previous bookings' : 'Matches requested name'} · Search Infor</small>
+          {lead.denominator !== undefined && <small>{lead.support}/{lead.denominator}{typeof lead.purity === 'number' ? ` · ${Math.round(lead.purity * 100)}%` : ' · purity unknown'}</small>}
+          {lead.blockedReason && <small>{leadBlockReason[lead.blockedReason] ?? lead.blockedReason.replaceAll('_', ' ')}</small>}
           {lead.stock && <small>{lead.stock.status === 'available_each_night' ? 'Per-night stock available on each night'
             : lead.stock.status === 'sold_or_restricted' ? 'Some nights sold or restricted' : 'Per-night stock unresolved'}
             {' · '}read {new Date(lead.stock.observedAt).toLocaleString()} · whole-stay availability not confirmed</small>}
