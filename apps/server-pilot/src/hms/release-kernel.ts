@@ -617,7 +617,7 @@ export function validateRoleProofV2ForSession(
   const tool = READ_TOOLS[authorization.toolId];
   validateRoleProofV2ForTool(proof, tool, now);
   assertHmsPropertyIdentity(proof, authorization.propertyCode ?? 'HRCEN');
-  const branch = tool.requestBranches.find((candidate) => candidate.id === authorization.requestBranchId);
+  const branch = tool.requestBranches?.find((candidate) => candidate.id === authorization.requestBranchId);
   if (!branch || branch.discoveryOperationId !== authorization.discoveryOperationId ||
       sha256Hex(JSON.stringify(authorization.manifest)) !== authorization.manifestSha256) {
     throw new Error('session discovery branch or manifest mismatch');
