@@ -678,9 +678,10 @@ export function createBookingToolQueue(context) {
 }
 
 /** Own one guarded page for the callback; the page is closed when it returns. */
-export function bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless = true, blockServiceWorkers = false, cloudTargetKey, cloudTargetKeys } = {}) {
+export function bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless = true, blockServiceWorkers = false, cloudTargetKey, cloudTargetKeys, labtestDates } = {}) {
   if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
   return { propertyCode, transportId, signal, credentialLease, headless,
+    ...(labtestDates !== undefined ? { startScreen: 'OSRESS' } : {}),
     ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(cloudTargetKeys ? { cloudTargetKeys } : {}) };
 }
 
@@ -726,7 +727,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       if (!currentCreateRateAvailability.has(createAuthority)) usedCreateRateAvailability.delete(createAuthority);
     } },
   });
-  const pageOptions = bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless, blockServiceWorkers, cloudTargetKey, cloudTargetKeys });
+  const pageOptions = bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless, blockServiceWorkers, cloudTargetKey, cloudTargetKeys, labtestDates });
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources, { propertyCode })
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };
