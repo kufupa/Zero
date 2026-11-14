@@ -22,3 +22,5 @@ export const SCOPED_RUNTIME_CONTROL_KEYS: readonly string[];
 export function parseDavinciEnabledProperties(value: string | undefined): ('HRDAV' | 'HRDAVS')[];
 export function validateRuntimeControl(key: string, value: string | undefined): void;
 export function effectiveWorkflowPolicy(env: Readonly<Record<string, string | undefined>>, property: HmsPolicyProperty, workflow: HmsWorkflow): EffectiveWorkflowPolicy;
+
+export const CATALOG_CREDENTIAL_DIGEST_KEYS: readonly string[];

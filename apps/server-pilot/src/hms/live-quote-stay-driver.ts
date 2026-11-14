@@ -11,6 +11,7 @@ import {
 import type { QuoteNightObservation, QuoteStayReadData } from './quote-stay-contract.js';
 import { extractOsressPageData } from './live-guest-stay-driver.js';
 import type { HmsSessionAuthorization } from './release-kernel.js';
+import { assertHmsPropertyIdentity } from './release-kernel.js';
 import { buildQuoteStayReadData } from './quote-stay-contract.js';
 import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
@@ -18,6 +19,7 @@ import { createQuoteStayFacade } from './quote-stay-facade.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
 import { PRICED_QUOTE_REUSE_MS } from '../quote-proposal/quote-revision.js';
 import { createHash, randomUUID } from 'node:crypto';
+import type { PropertyCode } from '../../tooling/hms-cloud/property-registry.mjs';
 
 export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
   'roomTypeCode',
@@ -382,7 +384,7 @@ function quoteToolResult(input: {
   sourceSeed: unknown;
   candidate: QuoteStayCandidate;
   draftReady: boolean;
-  propertyCode?: string;
+  propertyCode: PropertyCode;
 }): ToolResult<QuoteStayReadData> {
   const claimKeys = input.data.nightlyObservations.flatMap((_, index) => [
     `nightlyObservations.${index}.date`,
@@ -404,7 +406,7 @@ function quoteToolResult(input: {
       id: randomUUID(),
       toolId: 'hms_quote_stay',
       toolVersion: '2.0.0',
-      propertyCode: input.propertyCode ?? 'HRCEN',
+      propertyCode: input.propertyCode,
       observedAt: input.observedAt.toISOString(),
       expiresAt: new Date(input.observedAt.getTime() + PRICED_QUOTE_REUSE_MS).toISOString(),
       claimKeys,
@@ -412,7 +414,7 @@ function quoteToolResult(input: {
         canonicalJson({
           candidate: input.candidate,
           data: input.data,
-          propertyCode: input.propertyCode ?? 'HRCEN',
+          propertyCode: input.propertyCode,
           sourceSeed: input.sourceSeed,
           unresolvedFields: input.unresolvedFields,
         }),
@@ -426,15 +428,17 @@ async function observeQuoteWithinSession(input: {
   candidate: QuoteStayCandidate;
   signal: AbortSignal;
   observedAt: Date;
+  propertyCode: PropertyCode;
 }): Promise<ToolResult<QuoteStayReadData>> {
-  const { session, candidate, signal, observedAt } = input;
+  const { session, candidate, signal, observedAt, propertyCode } = input;
   assertNotAborted(signal);
-  const facade = createQuoteStayFacade(session);
+  const facade = createQuoteStayFacade(session, propertyCode);
   await facade.navigate();
   const chrome = await facade.collectChromeDefaults();
   const text = await facade.searchExact(candidate, chrome);
   if (session.terminal() || session.violation()) {
     return quoteToolResult({
+      propertyCode,
       candidate,
       status: 'manual_required',
       data: emptyQuoteData(candidate, ['request_policy']),
@@ -449,6 +453,7 @@ async function observeQuoteWithinSession(input: {
   const parsed = parseLiveQuoteAvailability(text, candidate, observedAt);
   if (!parsed.envelopeRecognized) {
     return quoteToolResult({
+      propertyCode,
       candidate,
       status: 'manual_required',
       data: emptyQuoteData(candidate, parsed.unresolvedFields),
@@ -468,6 +473,7 @@ async function observeQuoteWithinSession(input: {
     !parsed.unresolvedFields.includes('quote_search_error')
   ) {
     return quoteToolResult({
+      propertyCode,
       candidate,
       status: 'unverified_negative',
       data: emptyQuoteData(candidate, ['unverified_negative']),
@@ -519,6 +525,7 @@ async function observeQuoteWithinSession(input: {
     unresolvedInputs: uniqueUnresolved,
   });
   return quoteToolResult({
+    propertyCode,
     candidate,
     status: draftReady ? 'ok' : 'manual_required',
     data,
@@ -620,6 +627,9 @@ export function createLiveQuoteStayDriver(input: {
   return {
     async observeExactQuote(authorization, candidate, signal) {
       assertNotAborted(signal);
+      const propertyCode = authorization.propertyCode ?? 'HRCEN';
+      try { assertHmsPropertyIdentity(authorization, propertyCode); }
+      catch { throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'quote authorization property identity mismatch'); }
       if (authorization.toolId !== 'hms_quote_stay') {
         throw new HmsRuntimeError(
           'ROLE_SCOPE_INVALID',
@@ -638,7 +648,7 @@ export function createLiveQuoteStayDriver(input: {
           'authorization requestBranchId denied for quote stay',
         );
       }
-      if (Date.parse(authorization.expiresAt) <= Date.now()) {
+      if (!Number.isFinite(Date.parse(authorization.expiresAt)) || Date.parse(authorization.expiresAt) <= Date.now()) {
         throw new HmsRuntimeError('ROLE_PROOF_EXPIRED', 'authorization expired');
       }
 
@@ -647,6 +657,7 @@ export function createLiveQuoteStayDriver(input: {
       const nights = quoteStayNightDates(candidate);
       if (nights.length === 0) {
         return quoteToolResult({
+          propertyCode,
           candidate,
           status: 'manual_required',
           data: emptyQuoteData(candidate, ['quote_input']),
@@ -668,6 +679,7 @@ export function createLiveQuoteStayDriver(input: {
       let result: ToolResult<QuoteStayReadData>;
       try {
         result = await observeQuoteWithinSession({
+          propertyCode,
           session,
           candidate,
           signal,

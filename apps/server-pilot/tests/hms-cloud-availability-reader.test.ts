@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { projectCloudAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
-import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
+
+const session = vi.hoisted(() => ({ open: vi.fn() }));
+vi.mock('../tooling/hms-cloud/cloud-session.mjs', () => ({ withCloudReadSession: session.open }));
 import { buildCloudRateCandidates } from '../src/ai/rate-options.js';
 import type { RateContext } from '../src/ai/hms-availability.js';
 
@@ -136,6 +139,23 @@ describe('Cloud HMS read result projection', () => {
       request, target: { ...CENTURION_HMS_READ_TARGET, origin: 'https://wrong-origin.example' },
     });
     expect(result).toEqual([{ outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' }]);
+  });
+
+  it('opens the selected registered property and rejects a different observed session before reading', async () => {
+    for (const propertyCode of ['HRCEN', 'HRDAV', 'HRDAVS']) {
+      const target = hmsReadTargetForProperty(propertyCode);
+      session.open.mockImplementationOnce(async (operation) => operation({}, {
+        propertyCode: propertyCode === 'HRCEN' ? 'HRDAV' : 'HRCEN',
+        tenantId: propertyCode === 'HRCEN' ? 'THECENTURION_PRD' : 'DAVINCI_PRD',
+        landingPropertyCode: propertyCode === 'HRCEN' ? 'HRCEN' : 'HRDAV', origin: target.origin,
+      }));
+      await expect(runCloudAvailability({ request, target })).resolves.toEqual([
+        { outcome: 'execution_failure', issue: 'CLOUD_SESSION_IDENTITY_MISMATCH' },
+      ]);
+      expect(session.open).toHaveBeenLastCalledWith(expect.any(Function), expect.objectContaining({
+        propertyCode, startScreen: 'OSRESS',
+      }));
+    }
   });
 
   it('uses the oldest valid observed-group timestamp, or unknown if one is missing', () => {

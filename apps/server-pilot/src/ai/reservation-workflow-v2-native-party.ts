@@ -1,4 +1,4 @@
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import { partyMatchSearchTerms } from './party-match-v2.js';
 import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
@@ -37,7 +37,7 @@ function failure(role: NativePartyRole, name: string, status: 'unavailable' | 'f
 
 /** Read source-provided party names in a guarded blank Guest Stay. Never select a candidate. */
 export async function lookupNativeParty(input: {
-  role: NativePartyRole; name: string; target: HmsReadTarget; signal?: AbortSignal;
+  role: NativePartyRole; name: string; target: HmsReadTarget; transportId?: string; signal?: AbortSignal;
 }): Promise<ReservationWorkflowV2NativePartyRead> {
   const { role, target, signal } = input;
   if (!quoteRateContextEnabled()) {
@@ -46,7 +46,10 @@ export async function lookupNativeParty(input: {
   }
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!Object.hasOwn(specs, role)) return failure(role, name, 'unavailable', 'native_party_role_unsupported');
-  const expected = CENTURION_HMS_READ_TARGET;
+  if (!target) return failure(role, name, 'unavailable', 'native_party_target_unsupported');
+  let expected;
+  try { expected = hmsReadTargetForProperty(target.propertyCode); }
+  catch { return failure(role, name, 'unavailable', 'native_party_target_unsupported'); }
   if (!target || target.propertyCode !== expected.propertyCode || target.browserSlot !== expected.browserSlot ||
       target.secretId !== expected.secretId || target.origin !== expected.origin ||
       target.installationEnvName !== expected.installationEnvName) {
@@ -57,12 +60,12 @@ export async function lookupNativeParty(input: {
   }
   signal?.throwIfAborted();
   try {
-    const sessionUrl = new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url);
+    const sessionUrl = new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url);
     const session = await import(sessionUrl.href) as {
-      withBookingLookupSession<T>(operation: (context: { runTool: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }) => Promise<T>,
+      withCloudLookupReadSession<T>(operation: (context: { runTool: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }) => Promise<T>,
         options?: Record<string, unknown>): Promise<T>;
     };
-    const result = await session.withBookingLookupSession<ReservationWorkflowV2NativePartyRead>(async ({ runTool }) => {
+    const result = await session.withCloudLookupReadSession<ReservationWorkflowV2NativePartyRead>(async ({ runTool }) => {
       signal?.throwIfAborted();
       const spec = specs[role];
       let nativeQuery = name;
@@ -121,7 +124,7 @@ export async function lookupNativeParty(input: {
       const reason = isError ? issue(found.issue, 'native_party_search_failed') : closeOutcome !== 'closed_unsaved'
         ? issue(closed.issue, 'native_party_picker_close_unverified') : 'native_party_lookup_incomplete';
       const status = complete ? 'complete' : isError ? (outcome === 'input_gap' || outcome === 'unavailable' ? 'unavailable' : 'failed') : 'partial';
-      return { status, result: { outcome, kind: role, searchedFor: name, nativeQuery, searchesTried, nativeCriteria: criteria,
+      return { status, result: { propertyCode: target.propertyCode, outcome, kind: role, searchedFor: name, nativeQuery, searchesTried, nativeCriteria: criteria,
         candidates, truncated,
         ...(complete ? {} : { reason }),
         ...(isError ? { searchIssue: issue(found.issue, 'native_party_search_failed'),
@@ -129,7 +132,7 @@ export async function lookupNativeParty(input: {
         ...(closeOutcome !== 'closed_unsaved' ? { closeIssue: issue(closed.issue, 'native_party_picker_close_unverified') } : {}),
         nativeCoverage, correlation: { verifiedFields }, closeOutcome },
       coverage: { complete, notes: complete ? [] : [reason] } };
-    }, { memory: null, blockServiceWorkers: true, signal });
+    }, { propertyCode: target.propertyCode, transportId: input.transportId, signal });
     signal?.throwIfAborted();
     return result;
   } catch (error) {

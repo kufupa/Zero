@@ -5,6 +5,7 @@
 import { LIVE_QUOTE_STAY_SEARCH_PATH, buildExactOsrravSearchBody } from './live-read-manifest.js';
 import { HmsRuntimeError, type HmsPage, type HmsReadSession } from './runtime.js';
 import type { QuoteStayCandidate } from './quote-stay-candidate.js';
+import type { PropertyCode } from '../../tooling/hms-cloud/property-registry.mjs';
 
 export interface QuoteStayFacade {
   navigate(): Promise<void>;
@@ -81,7 +82,7 @@ async function collectChromeDefaults(page: HmsPage): Promise<Record<string, stri
   });
 }
 
-export function createQuoteStayFacade(session: HmsReadSession): QuoteStayFacade {
+export function createQuoteStayFacade(session: HmsReadSession, propertyCode: PropertyCode = 'HRCEN'): QuoteStayFacade {
   const page = session.page;
   return {
     async navigate() {
@@ -91,7 +92,7 @@ export function createQuoteStayFacade(session: HmsReadSession): QuoteStayFacade 
       return collectChromeDefaults(page);
     },
     async searchExact(candidate, chrome) {
-      const body = buildExactOsrravSearchBody(candidate, chrome);
+      const body = buildExactOsrravSearchBody(candidate, chrome, propertyCode);
       const correlation = page.waitForCorrelatedResponse
         ? page.waitForCorrelatedResponse(LIVE_QUOTE_STAY_SEARCH_PATH)
         : Promise.resolve();

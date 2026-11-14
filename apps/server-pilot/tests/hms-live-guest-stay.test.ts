@@ -38,10 +38,55 @@ import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
+import { buildLiveGuestStayReadManifest, buildExactOsressSearchThenDetailManifest } from '../src/hms/live-read-manifest.js';
+import { evaluateObservedRequest } from '../src/hms/request-policy.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fingerprintEvalPath = join(here, '../evals/hms/live-guest-stay-row-fingerprint.v1.json');
 const fingerprintEvalV2Path = join(here, '../evals/hms/live-guest-stay-row-fingerprint.v2.json');
+
+describe('property-scoped native read policy', () => {
+  const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+  it.each(['HRCEN', 'HRDAV', 'HRDAVS'] as const)('binds login and Guest Stay headers to %s', (propertyCode) => {
+    const manifest = buildLiveGuestStayReadManifest(origin, propertyCode);
+    const tenant = propertyCode === 'HRCEN' ? 'THECENTURION_PRD' : 'DAVINCI_PRD';
+    const login = (tenantId: string) => evaluateObservedRequest(manifest, {
+      url: `${origin}/web/base/logindisp?tenant=${tenantId}`,
+      method: 'GET', resourceType: 'document', headers: {}, postData: null,
+    });
+    expect(login(tenant).action).toBe('allow');
+    expect(login(tenant === 'DAVINCI_PRD' ? 'THECENTURION_PRD' : 'DAVINCI_PRD').action).toBe('block');
+    const header = manifest.rules.find((rule) => rule.id === 'live-osresv-hdr');
+    expect(header?.variableBody.propertycode?.pattern).toBe(`${propertyCode}|`);
+    const detail = buildExactOsressSearchThenDetailManifest(origin, { id: 'scope', kind: 'confirmation', value: 'NOTFOUND-CANARY' }, propertyCode);
+    expect(detail.rules.find((rule) => rule.id === 'live-osresv-hdr-detail-open')?.variableBody.propertycode?.pattern).toBe(propertyCode === 'HRCEN' ? '.{0,64}' : propertyCode);
+    expect(manifest.rules.every((rule) => rule.origin === origin)).toBe(true);
+  });
+
+  it('admits only the native Suites switch chooser, with no tenant or chooser union', () => {
+    const manifest = buildLiveGuestStayReadManifest(origin, 'HRDAVS');
+    const lookup = manifest.rules.find((rule) => rule.id === 'live-cloud-property-switch-lookup');
+    expect(lookup).toBeDefined();
+    const request = {
+      url: `${origin}/web/base/LOVPOP`, method: 'POST', resourceType: 'xhr',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      postData: new URLSearchParams(lookup?.fixedBody).toString(),
+    };
+    expect(evaluateObservedRequest(manifest, request).action).toBe('allow');
+    expect(evaluateObservedRequest(manifest, { ...request, postData: request.postData.replace('LVSORGALL', 'OTHERGRID') }).action).toBe('block');
+    const switchRequest = {
+      url: `${origin}/web/base/loadmain?initpath=BSSTRT&USER_FUNCTION_NAME=BSSTRT&MENU_MODULE_KEY=-1&fromlogin=yes&defaultproperty=HRDAVS&requestToken=verified-token`, method: 'GET', resourceType: 'document',
+    };
+    expect(evaluateObservedRequest(manifest, switchRequest).action).toBe('allow');
+    expect(evaluateObservedRequest(manifest, { ...switchRequest, url: switchRequest.url.replace('HRDAVS', 'HRDAV') }).action).toBe('block');
+    expect(evaluateObservedRequest(manifest, { ...switchRequest, url: `${switchRequest.url}&extra=1` }).action).toBe('block');
+    expect(evaluateObservedRequest(manifest, { ...switchRequest, url: switchRequest.url.replace('requestToken', 'requesttoken') }).action).toBe('block');
+    expect(evaluateObservedRequest(manifest, { ...switchRequest, url: switchRequest.url.replace('verified-token', 'x'.repeat(1025)) }).action).toBe('block');
+    expect(evaluateObservedRequest(manifest, { ...switchRequest, url: switchRequest.url.replace('verified-token', '%0A') }).action).toBe('block');
+    expect(evaluateObservedRequest(manifest, { ...switchRequest, url: switchRequest.url.replace('fromlogin=yes', 'fromlogin=no') }).action).toBe('block');
+    expect(buildLiveGuestStayReadManifest(origin, 'HRDAV').rules.some((rule) => rule.path === '/web/base/LOVPOP')).toBe(false);
+  });
+});
 
 const SYNTH = {
   guest: 'Synthetic Guest Alpha',

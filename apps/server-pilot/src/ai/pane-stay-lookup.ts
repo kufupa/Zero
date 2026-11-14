@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -158,6 +159,8 @@ export type PaneStayLookupDeps = {
   onRun?: (run: { runId: string; dir: string }) => void;
   /** HMS property/slot for the CLI env. Production callers pass the transport-resolved target. */
   target?: HmsReadTarget | null;
+  /** Authenticated mailbox transport used to validate the loaded Cloud credential. */
+  transportId?: string;
 };
 
 export const paneStayLookupLoaders: {
@@ -392,16 +395,28 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
   return Object.keys(commercial).length > 0 ? commercial : undefined;
 }
 
+function supportedCloudTarget(target: HmsReadTarget): boolean {
+  if (!target) return false;
+  const property = getPropertyRegistration(target.propertyCode);
+  if (!property?.active || target.origin !== property.origin) return false;
+  const expected = hmsReadTargetForProperty(property.propertyCode);
+  return target.propertyCode === expected.propertyCode && target.secretId === expected.secretId &&
+    target.browserSlot === expected.browserSlot && target.origin === expected.origin &&
+    target.installationEnvName === expected.installationEnvName;
+}
+
 async function defaultSpawn(
   input: PaneStayLookupSpawnInput,
   target: HmsReadTarget,
+  transportId?: string,
 ): Promise<PaneStayLookupSpawnResult> {
-  if (input.mode === 'find' && target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
+  if (!supportedCloudTarget(target)) throw new Error('CLOUD_READ_TARGET_UNSUPPORTED');
+  if (input.mode === 'find') {
     const cloud = await import('./hms-cloud-saved-stay-find.js');
     const request = { confirmation: input.confirmation, ...(input.arrival ? { arrival: input.arrival } : {}) };
     const result = cloud.projectCloudStayFind(request, await cloud.runCloudStayFind({
-      request, target, signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
-    }));
+      request, target, signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS), ...(transportId !== undefined && { transportId }),
+    }), target.propertyCode);
     // The mounted pane must not present a partial or mismatched record as a found stay.
     if (result.outcome === 'found' && (!result.nativePreimage || result.nativePreimage.confirmation !== input.confirmation)) {
       return { ...refused('execution_failure'), reason: 'SAVED_STAY_IDENTITY_UNVERIFIED', rows: [], runId: undefined };
@@ -411,18 +426,48 @@ async function defaultSpawn(
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
   await mkdir(dir, { mode: 0o700 });
-  if (input.mode === 'search-guest' && target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
+  if (input.mode === 'search-guest') {
+    try {
+      const moduleUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
+      const cloud = await import(moduleUrl.href) as { searchGuestInCloud: (request: Extract<PaneStayLookupSpawnInput,
+        { mode: 'search-guest' }> & { dir: string; propertyCode: string }, options?: { transportId?: string }) =>
+        Promise<Partial<PaneStayLookupSpawnResult> & { propertyCode?: string }> };
+      const request = { ...input, dir, propertyCode: target.propertyCode };
+      const result = transportId !== undefined
+        ? await cloud.searchGuestInCloud(request, { transportId })
+        : await cloud.searchGuestInCloud(request);
+      if (result.propertyCode !== target.propertyCode) throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
+      return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
+        rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
+    } catch (error) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
+  }
+  throw new Error('CLOUD_READ_MODE_UNSUPPORTED');
+}
+
+// The existing duplicate check is a writer dependency. Retain its established sessions until the writer cutover.
+async function legacyDuplicateSpawn(input: Extract<PaneStayLookupSpawnInput, { mode: 'search-guest' }>,
+  target: HmsReadTarget): Promise<PaneStayLookupSpawnResult> {
+  const runId = randomUUID();
+  const dir = join(tmpdir(), `pane-lookup-${runId}`);
+  await mkdir(dir, { mode: 0o700 });
+  if (target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
     const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
     if (keys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) {
       await rm(dir, { recursive: true, force: true });
       throw new Error('CLOUD_READ_TARGET_UNSUPPORTED');
     }
     try {
-      const moduleUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
-      const cloud = await import(moduleUrl.href) as { searchGuestInCloud: (request: Extract<PaneStayLookupSpawnInput,
-        { mode: 'search-guest' }> & { dir: string }) =>
-        Promise<Partial<PaneStayLookupSpawnResult>> };
-      const result = await cloud.searchGuestInCloud({ ...input, dir });
+      const cloudUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
+      const legacyUrl = new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url);
+      const [cloud, legacy] = await Promise.all([
+        import(cloudUrl.href) as Promise<{ searchGuestInCloud: (request: typeof input & { dir: string },
+          options: Record<string, unknown>) => Promise<Partial<PaneStayLookupSpawnResult>> }>,
+        import(legacyUrl.href) as Promise<{ withCenturionStay360Page: unknown }>,
+      ]);
+      const result = await cloud.searchGuestInCloud({ ...input, dir }, { openSession: legacy.withCenturionStay360Page, forceNavigate: true });
       return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
         rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
     } catch (error) {
@@ -433,39 +478,20 @@ async function defaultSpawn(
   let runError: unknown = null;
   try {
     await execFileAsync('node', buildStayLookupArgs(input, dir, target.propertyCode), {
-      timeout: LOOKUP_TIMEOUT_MS,
-      env: paneStaySpawnEnv(process.env, undefined, target),
+      timeout: LOOKUP_TIMEOUT_MS, env: paneStaySpawnEnv(process.env, undefined, target),
     });
-  } catch (error) {
-    // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
-    runError = error;
-  }
+  } catch (error) { runError = error; }
   let result: Partial<PaneStayLookupSpawnResult>;
-  try {
-    result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as Partial<PaneStayLookupSpawnResult>;
-  } catch {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-    throw runError ?? new Error('pane_lookup_no_result');
-  }
+  try { result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as Partial<PaneStayLookupSpawnResult>; }
+  catch { await rm(dir, { recursive: true, force: true }).catch(() => {}); throw runError ?? new Error('pane_lookup_no_result'); }
   if ((result.outcome ?? 'execution_failure') === 'execution_failure') {
     const cliError = (result as { error?: string }).error ?? 'pane_lookup_execution_failure';
     warnPaneStaySpawnFailed(input.mode, new Error(cliError));
   }
   const cliError = (result as { error?: string }).error;
   const loginCode = lookupLoginOutageCode(cliError) ?? lookupLoginOutageCode(result);
-  return {
-    outcome: result.outcome ?? 'execution_failure',
-    reason: result.reason ?? loginCode ?? null,
-    stay: result.stay ?? null,
-    ...(result.commercial ? { commercial: result.commercial } : {}),
-    rows: result.rows ?? [],
-    arrivalMismatch: result.arrivalMismatch,
-    requestedArrival: result.requestedArrival,
-    hmsArrival: result.hmsArrival,
-    screenshots: result.screenshots ?? [],
-    runId,
-    runDir: dir,
-  };
+  return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? loginCode ?? null, stay: result.stay ?? null,
+    rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
 }
 
 // Read-only find by confirmation, under the session hotel's property lock. A found stay carries its record fields;
@@ -478,7 +504,7 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   const lock = deps.lock();
   if (!lock) return refused('refused_lock_unavailable');
   if (!deps.target && !paneStayLookupLoaders.spawn) return refused('refused_unknown_transport');
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!));
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!, deps.transportId));
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(
@@ -572,7 +598,7 @@ export async function searchGuest(
   const lock = deps.lock();
   if (!lock) return refusedSearch('refused_lock_unavailable');
   if (!deps.target && !paneStayLookupLoaders.spawn) return refusedSearch('refused_unknown_transport');
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!));
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!, deps.transportId));
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(
@@ -607,14 +633,13 @@ export async function searchGuest(
   };
 }
 
-/** Read Centurion guest searches in at most two isolated, read-only browser sessions at a time. */
+/** Read a property's guest searches sequentially in one guarded Cloud session. */
 export async function searchGuestCloudBatch(
-  queries: readonly GuestSearchQuery[], target: HmsReadTarget, signal?: AbortSignal,
+  queries: readonly GuestSearchQuery[], target: HmsReadTarget, signal?: AbortSignal, transportId?: string,
 ): Promise<PaneStayGuestSearchResult[]> {
   const enabled = paneStayLookupLoaders.enabled ?? (() => paneStayLookupEnabled());
   if (!enabled()) return queries.map(() => refusedSearch('refused_flag_off'));
-  const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-  if (targetKeys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+  if (!supportedCloudTarget(target)) {
     return queries.map(() => refusedSearch('refused_unknown_transport'));
   }
   const results = queries.map((query) => !isGuestSurname(query.lastName) || !isRealIsoDate(query.arrival) ||
@@ -628,19 +653,33 @@ export async function searchGuestCloudBatch(
   try {
     const cloudUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
     const cloud = await import(cloudUrl.href) as {
-      searchGuestInCloud: (query: GuestSearchQuery & { dir: string }, options: Record<string, unknown>) =>
-        Promise<Partial<PaneStayLookupSpawnResult>>;
+      searchGuestInCloud: (query: GuestSearchQuery & { dir: string; propertyCode: string }, options: Record<string, unknown>) =>
+        Promise<Partial<PaneStayLookupSpawnResult> & { propertyCode?: string }>;
+      installGuestLookupGuard: (context: unknown, propertyCode: string) => Promise<void>;
+    };
+    const sessionUrl = new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url);
+    const session = await import(sessionUrl.href) as {
+      withCloudReadSession: <T>(operation: (page: unknown, identity: { propertyCode: string; tenantId: string;
+        landingPropertyCode: string; origin: string }) => Promise<T>, options: Record<string, unknown>) => Promise<T>;
     };
     const timeout = AbortSignal.timeout(90_000);
     const combinedSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
-    let next = 0;
-    const worker = async () => {
-      while (next < validIndices.length && !combinedSignal.aborted) {
-        const index = validIndices[next++]!;
+    const property = getPropertyRegistration(target.propertyCode)!;
+    await session.withCloudReadSession(async (page, identity) => {
+      if (!identity || identity.propertyCode !== target.propertyCode || identity.tenantId !== property.expectedTenant ||
+          identity.landingPropertyCode !== property.landingPropertyCode || identity.origin !== property.origin) {
+        throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
+      }
+      const openSession = async <T>(operation: (currentPage: unknown, currentIdentity: typeof identity) => Promise<T>): Promise<T> =>
+        operation(page, identity);
+      for (const index of validIndices) {
+        if (combinedSignal.aborted) break;
         const query = queries[index]!;
         const queryDir = await mkdtemp(join(dir, 'query-'));
         try {
-          const run = await cloud.searchGuestInCloud({ ...query, dir: queryDir }, { signal: combinedSignal });
+          const run = await cloud.searchGuestInCloud({ ...query, dir: queryDir, propertyCode: target.propertyCode },
+            { signal: combinedSignal, openSession });
+          if (run.propertyCode !== target.propertyCode) throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
           const outcome = toSearchOutcome(run.outcome ?? 'execution_failure');
           results[index] = { outcome, rows: outcome === 'ok' ? rowsOnRequestedDates(toPanelRows(run.rows), query) : [],
             screenshots: [], runId: null,
@@ -650,9 +689,9 @@ export async function searchGuestCloudBatch(
           if (/^[a-z0-9_:-]{1,100}$/i.test(code)) results[index] = { ...results[index]!, error: code };
         }
       }
-    };
-    // Even a filesystem failure must not delete the shared directory while another session is active.
-    await Promise.allSettled(Array.from({ length: Math.min(2, validIndices.length) }, () => worker()));
+    }, { propertyCode: target.propertyCode, startScreen: 'OSRESV', signal: combinedSignal,
+      prepareContext: (context: unknown) => cloud.installGuestLookupGuard(context, target.propertyCode),
+      ...(transportId !== undefined && { transportId }) });
   } catch {
     // Keep earlier completed searches; remaining ones stay explicitly failed.
   } finally {
@@ -698,8 +737,10 @@ export async function guestDatesDuplicateCheckViaCli(
 ): Promise<OsressDuplicateStatus> {
   if (!guestDatesQueryComplete(input)) return 'duplicate';
   if (!target && !paneStayLookupLoaders.spawn) return 'duplicate';
-  const spawn =
-    paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, target!));
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => {
+    if (spawnInput.mode !== 'search-guest') throw new Error('INVALID_DUPLICATE_MODE');
+    return legacyDuplicateSpawn(spawnInput, target!);
+  });
   let run: PaneStayLookupSpawnResult | null = null;
   try {
     run = await spawn({ mode: 'search-guest', ...input }, target);

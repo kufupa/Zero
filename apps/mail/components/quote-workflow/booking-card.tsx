@@ -1174,6 +1174,10 @@ export function BookingCards({
   const cloudCreate = cloudPreview || propertyCode === 'HRCEN';
   const createScope = { propertyCode, tenantId: configuration?.tenantId };
   const requireDurableCreate = cloudCreate && workItemPane !== undefined;
+  const rateReadProperty = configuration
+    ? configuration.propertyCode === propertyCode && configuration.transportId === workItemPane?.rateDraft?.transportId
+      ? configuration.propertyCode : null
+    : configuration === undefined && propertyCode === 'HRCEN' ? 'HRCEN' : null;
   const previewsOn = cloudPreview || savesOn;
   const selectedGuestName = useSyncExternalStore(
     subscribeStayingGuestName,
@@ -2659,8 +2663,9 @@ export function BookingCards({
             {cloudCreate ? agencyField : guestFields}
             {organizationField}
             {cloudCreate ? rateField : null}
-            {requireDurableCreate && group && session && rateEvidence && binding && queue ? <ContextualRateCheck
+            {requireDurableCreate && rateReadProperty && group && session && rateEvidence && binding && queue ? <ContextualRateCheck
               group={group} session={session} pane={workItemPane ?? null} evidence={rateEvidence} plans={rateCatalogue}
+              propertyCode={rateReadProperty}
               onChoose={(ratePlan) => setChoice({ ratePlan })} create={{ roomIndex: binding.roomIndex, rateCode: selectedRate,
                 bookingAgency: agencyValue === '__none__' ? 'none' : agencyValue === '__bound__' ? 'selected' : 'unknown',
                 organization: !choice.organization.trim() ? 'none' : boundCompany?.nativeId &&

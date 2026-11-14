@@ -1136,7 +1136,7 @@ async function lookupPartyCandidates(
     }
     if (ctx.nativeBatch) {
       const found = await lookupNativeParty({ role: role === 'organization' ? 'organization' : 'agency',
-        name, target: target.target, signal: ctx.nativeBatch.signal });
+        name, target: target.target, transportId: ctx.transport.id, signal: ctx.nativeBatch.signal });
       const rows = Array.isArray(found.result.candidates) ? found.result.candidates : [];
       const rowValues = rows.length ? rows : [null];
       for (const value of rowValues) {

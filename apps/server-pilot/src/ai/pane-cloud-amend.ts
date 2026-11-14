@@ -293,7 +293,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   }
   const readAt = new Date();
   const stayRequest = { confirmation: data.confirmation, arrival: data.arrival };
-  const raw = await runCloudStayFind({ request: stayRequest, target: target.target, signal: AbortSignal.timeout(5 * 60_000) });
+  const raw = await runCloudStayFind({ request: stayRequest, target: target.target, transportId, signal: AbortSignal.timeout(5 * 60_000) });
   // Real stays may always be staged unsaved; dispatch remains governed by the write flag.
   const allowRealGuest = true;
   const realWritesEnabled = process.env.PANE_WRITE_AMEND === 'on';

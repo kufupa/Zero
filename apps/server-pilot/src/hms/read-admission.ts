@@ -30,6 +30,7 @@ import { HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS } from './browser-artifacts.js'
 import type { QuoteRequest } from './quote-request-normalization.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { propertyCodeSchema, type PropertyCode } from './property-registry.js';
 
 /** Default Playwright/page timeout used for login and navigation budgets. */
 const DEFAULT_PAGE_TIMEOUT_MS = 15_000;
@@ -124,6 +125,7 @@ const READ_ADMISSION_ISSUER_MARKER = Symbol('hms-read-admission-issuer');
 export type ReadAdmissionIssuer = ReadAdmissionIssuerMarker & {
   readonly [READ_ADMISSION_ISSUER_MARKER]: true;
   readonly schemaVersion: 1;
+  readonly propertyCode?: PropertyCode;
   readonly issuerId: string;
   readonly userId: string;
   readonly mailboxAccessId: string;
@@ -144,6 +146,7 @@ export const persistedReadAdmissionIssuerSchema = z
   .object({
     schemaVersion: z.literal(1),
     issuerId: readIssuerRefSchema,
+    propertyCode: propertyCodeSchema.optional(),
     userId: readIssuerRefSchema,
     mailboxAccessId: readIssuerRefSchema,
     transportId: readIssuerRefSchema,
@@ -258,6 +261,7 @@ function createIssuerTicket(input: {
   const ticket = {
     schemaVersion: 1 as const,
     issuerId: randomUUID(),
+    ...(source.propertyCode === undefined ? {} : { propertyCode: propertyCodeSchema.parse(source.propertyCode) }),
     userId: requiredRef(source.userId, 'userId'),
     mailboxAccessId: requiredRef(source.mailboxAccessId, 'mailboxAccessId'),
     transportId: requiredRef(source.transportId, 'transportId'),
@@ -485,6 +489,7 @@ export function issueReadAdmission(input: IssueReadAdmissionInput): IssuedReadAd
   }
   const inputDigest = readInputDigest(closedRequest);
   const admission = readAdmissionSchema.parse({
+    ...(source.propertyCode === undefined ? {} : { propertyCode: propertyCodeSchema.parse(source.propertyCode) }),
     releaseId: source.releaseId,
     requestBranchId: source.requestBranchId,
     requesterAuthorizationId: source.mailboxAccessId,
@@ -522,6 +527,7 @@ export function persistReadAdmissionIssuer(
   return persistedReadAdmissionIssuerSchema.parse({
     schemaVersion: issuer.schemaVersion,
     issuerId: issuer.issuerId,
+    ...(issuer.propertyCode === undefined ? {} : { propertyCode: issuer.propertyCode }),
     userId: issuer.userId,
     mailboxAccessId: issuer.mailboxAccessId,
     transportId: issuer.transportId,
@@ -581,6 +587,7 @@ export function assertPersistedReadAdmissionIssuer(input: {
     (input.expectedUserId !== undefined && data.userId !== input.expectedUserId) ||
     data.mailboxAccessId !== input.expectedMailboxAccessId ||
     admission.data.requesterAuthorizationId !== input.expectedMailboxAccessId ||
+    data.propertyCode !== admission.data.propertyCode ||
     data.inputDigest !== admission.data.inputDigest ||
     data.inputDigest !== readInputDigest(closedRequest) ||
     data.manifestSha256 !== (admission.data.manifestSha256 ?? null)

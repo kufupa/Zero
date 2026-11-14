@@ -75,10 +75,10 @@ export async function authorizeFreshCloudAmend<T>(check: () => Promise<HmsPreSav
 }
 
 async function readApprovedStay(target: HmsReadTarget, form: { confirmation: string; arrival: string },
-  allowRealGuest: boolean, signal?: AbortSignal) {
+  allowRealGuest: boolean, signal?: AbortSignal, transportId?: string) {
   const request = { confirmation: form.confirmation, arrival: form.arrival };
   const deadline = AbortSignal.timeout(5 * 60_000);
-  const found = projectCloudStayFind(request, await runCloudStayFind({ request, target,
+  const found = projectCloudStayFind(request, await runCloudStayFind({ request, target, transportId,
     signal: signal ? AbortSignal.any([signal, deadline]) : deadline }));
   const preimage = cloudAmendPreimage(found, allowRealGuest);
   if (!preimage || preimage.native.confirmation !== form.confirmation || preimage.native.arrival !== form.arrival) {
@@ -102,7 +102,7 @@ async function executeClaim(input: { db: DB; fence: AiRunFence; workItemId: stri
   const form = parsed.data;
   if (input.signal?.aborted) return end(db, fence, 'NEEDS_CHECK', 'worker_stopped');
   let fresh: Awaited<ReturnType<typeof readApprovedStay>>;
-  try { fresh = await readApprovedStay(target, form, input.allowRealGuest, input.signal); }
+  try { fresh = await readApprovedStay(target, form, input.allowRealGuest, input.signal, input.transportId); }
   catch { return end(db, fence, 'NEEDS_CHECK', 'hms_preimage_unverified'); }
   if (hmsStateDigest(fresh) !== hmsStateDigest(form.cloudAmend.preimage)) {
     return end(db, fence, 'NEEDS_CHECK', 'hms_preimage_changed');
@@ -129,7 +129,7 @@ async function executeLockedClaim(input: { db: DB; fence: AiRunFence; workItemId
     input.allowRealGuest === ((input.env ?? process.env).PANE_WRITE_AMEND === 'on');
   if (!modeCurrent() || input.signal?.aborted) return end(db, fence, 'POLICY_BLOCK', 'amend_save_unavailable');
   const revalidated = await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence,
-    readHmsState: () => readApprovedStay(target, form, input.allowRealGuest, input.signal) });
+    readHmsState: () => readApprovedStay(target, form, input.allowRealGuest, input.signal, input.transportId) });
   if (revalidated.status !== 'unchanged') return end(db, fence, 'NEEDS_CHECK', 'hms_preimage_changed');
   // Revalidation and the scoped epoch both happen inside the owned target lock.
   let expectedEpoch: string;
@@ -172,7 +172,7 @@ async function executeLockedClaim(input: { db: DB; fence: AiRunFence; workItemId
     if (!modeCurrent()) throw new Error('AMEND_MODE_CHANGED');
     return authorizeFreshCloudAmend(
       () => assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence,
-        readHmsState: () => readApprovedStay(target, form, input.allowRealGuest, input.signal) }),
+        readHmsState: () => readApprovedStay(target, form, input.allowRealGuest, input.signal, input.transportId) }),
       async () => { if (!modeCurrent()) throw new Error('AMEND_MODE_CHANGED');
         const handle = await callbacks.authorizeFirst({ ...step, beforeEvidence: beforeEvidence! });
         dispatch = handle;

@@ -491,7 +491,7 @@ const target = new Set(keys);
 const memoryPaths = new Set(RUNTIME_PATH_KEYS);
 const sourceAuthoritativeReadControls = new Set([
   "LEGACY_INBOUND_TRIAGE_PIPELINE", "RESERVATION_V2_ARRIVAL_PREFILL", "PANE_STAY_LOOKUP", "QUOTE_RATE_CONTEXT",
-  ...SCOPED_RUNTIME_CONTROL_KEYS.filter(key => key.startsWith("HMS_DAVINCI_") || (key.startsWith("HMS_WRITER_DEPENDENCY_DIGEST_") || key.startsWith("HMS_WRITER_CREDENTIAL_IDENTITY_"))),
+  ...SCOPED_RUNTIME_CONTROL_KEYS.filter(key => key.startsWith("HMS_DAVINCI_") || (key.startsWith("HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_") || key.startsWith("HMS_WRITER_DEPENDENCY_DIGEST_") || key.startsWith("HMS_WRITER_CREDENTIAL_IDENTITY_"))),
 ]);
 const chunks = (text) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
 const body = (line) => line.endsWith("\n") ? line.slice(0, -1) : line;

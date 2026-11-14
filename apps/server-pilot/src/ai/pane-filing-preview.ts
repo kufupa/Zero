@@ -96,7 +96,7 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
   if (!await originAllowed()) return { status: 'refused', reason: 'property_unavailable' };
 
   const found = await findStay({ confirmation: input.confirmation, arrival: input.arrival }, {
-    target: resolved.target, lock: () => paneStayPropertyLock(resolved.target),
+    target: resolved.target, transportId: input.transportId, lock: () => paneStayPropertyLock(resolved.target),
   });
   const normalizeName = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
   if (found.outcome !== 'found' || !found.stay || found.arrivalMismatch ||

@@ -21,6 +21,7 @@ import {
   availabilityRequestsFor,
   availabilitySnapshotOf,
   availabilityBoardOf,
+  cloudAvailabilitySnapshotOf,
   probeAvailability,
   quoteRequestFor,
   type AvailabilityRequest,
@@ -28,7 +29,8 @@ import {
 } from '../src/ai/hms-availability.js';
 import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
-import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
+import * as cloudAvailability from '../src/ai/hms-cloud-availability-reader.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -81,6 +83,7 @@ const quoteFixtures = (await import('../tooling/playwright-quote/fetch-quote-fix
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   paneStayLookupLoaders.lock = null;
   availabilityProbeLoaders.spawn = null;
   vi.unstubAllEnvs();
@@ -319,6 +322,38 @@ async function runClaimedJob(db: DB, run: AiWorkflowRun) {
 }
 
 describe('U10 availability probe (pure)', () => {
+  it('uses the selected Cloud reader for initial quotes and preserves native prices without inventing totals', async () => {
+    const request: AvailabilityRequest = { kind: 'availability', arrival: '2027-01-10', departure: '2027-01-12',
+      rooms: [{ roomType: 'Superior', quantity: 2, adults: 2, childAges: [] }] };
+    const observed = cloudAvailability.projectCloudAvailability(request, [{ outcome: 'ok', view: {
+      outcome: 'ok', observedAt: '2026-11-14T10:00:00.000Z',
+      roomQuantity: { requested: 2, basis: 'one_room_type_per_night', combinedAvailability: 'unknown' },
+      coverage: { checkedCriteriaMatch: { property: true, dates: true, occupancy: true, partyContext: true, roomTypes: true, ratePlans: true },
+        page: { returned: 1, nextOffset: null }, nights: { total: 2, returned: 2, nextOffset: null, matchesAppliedCriteria: true } },
+      options: [{ room: { code: 'SUP', label: 'Superior' }, rate: { code: 'BAR', label: 'Best Available', promotioncode: 'PROMO-A' },
+        category: 'positive_stock', reasons: [], nights: [
+          { date: '2027-01-10', roomsAvailable: 3, reasons: [], price: { responseValue: '1250.00', currency: 'ZAR', displayedTextStatus: 'captured' } },
+          { date: '2027-01-11', roomsAvailable: 0, reasons: [], price: { responseValue: '1250.00', currency: 'ZAR', displayedTextStatus: 'unavailable' } },
+        ] }],
+    } }]);
+    if (observed.outcome !== 'read') throw new Error('expected native observation');
+    const reader = vi.spyOn(cloudAvailability, 'probeCloudRateAvailability').mockResolvedValue(observed);
+    const target = hmsReadTargetForProperty('HRDAVS');
+    const signal = new AbortController().signal;
+    const deps = { target, signal, lock: () => null, acquisition: {} };
+    const result = await probeAvailability(request, deps);
+    expect(reader).toHaveBeenCalledWith(request, deps);
+    expect(result).toMatchObject({ outcome: 'read', propertyCode: 'HRDAVS', source: 'hms_cloud_hotel_availability',
+      availableOptions: 0, priceEvidence: { officialTotal: 'unknown', combinedAvailability: 'unknown' } });
+    const snapshot = cloudAvailabilitySnapshotOf(observed, 'HRDAVS');
+    expect(snapshot.groups[0]?.options[0]).toMatchObject({ room: 'SUP', rate: 'BAR', promotionCode: 'PROMO-A', availability: 'unknown',
+      nightly: [
+        { availableCount: 3, requestedCount: 2, stockStatus: 'available', price: { status: 'known', amount: '1250.00', currency: 'ZAR' } },
+        { availableCount: 0, requestedCount: 2, stockStatus: 'sold', price: { status: 'unknown', amount: null, currency: null } },
+      ] });
+    expect(JSON.stringify(snapshot)).not.toContain('grandTotal');
+  });
+
   it('denied admission creates zero jobs and does not query', async () => {
     const db = { select: vi.fn(() => { throw new Error('denied admission must not query'); }) };
     await expect(

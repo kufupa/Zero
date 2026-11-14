@@ -13,6 +13,8 @@ export const WRITER_DIGEST_KEYS = Object.freeze(Object.fromEntries(HMS_WRITE_WOR
 export const WRITER_CREDENTIAL_IDENTITY_KEYS = Object.freeze(Object.fromEntries(HMS_PROPERTIES.map(property =>
   [property, `HMS_WRITER_CREDENTIAL_IDENTITY_${property}`])));
 
+export const CATALOG_CREDENTIAL_DIGEST_KEYS = Object.freeze(HMS_PROPERTIES.map(property => `HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${property}`));
+
 export const RUNTIME_PATH_KEYS = Object.freeze([
   'HMS_MEMORY_PMS_PATH', 'HMS_MEMORY_OUTBOUND_PATH', 'HMS_MEMORY_DATA_DIR', 'HMS_MEMORY_OBSERVATIONS_PATH',
   'HMS_NATIVE_CATALOG_PATH', 'HMS_NATIVE_CATALOG_PATH_HRCEN', 'HMS_NATIVE_CATALOG_PATH_HRDAV', 'HMS_NATIVE_CATALOG_PATH_HRDAVS',
@@ -34,7 +36,7 @@ const SWITCH_KEYS = Object.freeze([
 export const SCOPED_RUNTIME_CONTROL_KEYS = Object.freeze([
   ...WRITE_MODE_KEYS, ...SWITCH_KEYS, 'HMS_DAVINCI_ENABLED_PROPERTIES',
   'HMS_EXPECTED_PROPERTY_CODE', 'HMS_EXPECTED_TENANT', 'HMS_EXPECTED_TRANSPORT_ID', ...RUNTIME_PATH_KEYS,
-  ...Object.values(WRITER_DIGEST_KEYS), ...Object.values(WRITER_CREDENTIAL_IDENTITY_KEYS),
+  ...CATALOG_CREDENTIAL_DIGEST_KEYS, ...Object.values(WRITER_DIGEST_KEYS), ...Object.values(WRITER_CREDENTIAL_IDENTITY_KEYS),
 ]);
 
 export function parseDavinciEnabledProperties(value) {
@@ -57,7 +59,7 @@ export function validateRuntimeControl(key, value) {
   if (RUNTIME_PATH_KEYS.includes(key) && (!/^\/[A-Za-z0-9._/-]+$/.test(value) || value.split('/').some(part => part === '.' || part === '..'))) {
     throw new Error('hms_runtime_control_invalid');
   }
-  if (Object.values(WRITER_DIGEST_KEYS).includes(key) && !/^[a-f0-9]{64}$/.test(value)) throw new Error('hms_runtime_control_invalid');
+  if ([...CATALOG_CREDENTIAL_DIGEST_KEYS, ...Object.values(WRITER_DIGEST_KEYS)].includes(key) && !/^[a-f0-9]{64}$/.test(value)) throw new Error('hms_runtime_control_invalid');
   if (Object.values(WRITER_CREDENTIAL_IDENTITY_KEYS).includes(key) && !/^[A-Za-z0-9_./:+-]+$/.test(value)) throw new Error('hms_runtime_control_invalid');
   if (key === 'HMS_EXPECTED_PROPERTY_CODE' && !HMS_PROPERTIES.includes(value)) throw new Error('hms_runtime_control_invalid');
   if (key === 'HMS_EXPECTED_TENANT' && !/^[A-Z][A-Z0-9_]+$/.test(value)) throw new Error('hms_runtime_control_invalid');

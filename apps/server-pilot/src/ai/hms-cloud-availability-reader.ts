@@ -4,18 +4,23 @@ import type { AvailabilityRequest, RateContext } from './hms-availability.js';
 import { buildCloudRateCandidates, orderRateCandidates, rateContextKey, type RateCandidate } from './rate-options.js';
 import { isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
 import type { AvailabilityProbeDeps } from './hms-availability.js';
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { withCloudReadSession } from '../../tooling/hms-cloud/cloud-session.mjs';
 
 const PRIVATE_SNAPSHOT_PREFIX = 'nava-cloud-availability-';
 // Prior HRCEN reads returned 496 rows; cap only unusually large views and expose any remaining cursor.
 const MAX_OPTIONS_PER_GROUP = 1000;
 const PAGE_SIZE = 50;
 
-function supportedCenturionTarget(target: HmsReadTarget): boolean {
-  const expected = CENTURION_HMS_READ_TARGET;
-  return Boolean(target) && target.propertyCode === expected.propertyCode &&
-    target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
-    target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+function supportedCloudTarget(target: HmsReadTarget): boolean {
+  if (!target) return false;
+  const property = getPropertyRegistration(target.propertyCode);
+  if (!property?.active || target.origin !== property.origin) return false;
+  const expected = hmsReadTargetForProperty(property.propertyCode);
+  return target.propertyCode === expected.propertyCode && target.secretId === expected.secretId &&
+    target.browserSlot === expected.browserSlot && target.origin === expected.origin &&
+    target.installationEnvName === expected.installationEnvName;
 }
 
 type RecordValue = Record<string, unknown>;
@@ -30,6 +35,7 @@ export type CloudAvailabilityRunInput = {
   request: AvailabilityRequest;
   target: HmsReadTarget;
   signal?: AbortSignal;
+  transportId?: string;
 };
 
 export type HmsCloudAvailabilityResult = ({
@@ -357,7 +363,8 @@ export function projectCloudAvailability(
 
 /** Runs the Cloud Hotel Availability reader with private snapshots removed on exit. */
 export async function runCloudAvailability(input: CloudAvailabilityRunInput): Promise<CloudAvailabilityGroupRead[]> {
-  if (!supportedCenturionTarget(input.target)) {
+  const property = input.target ? getPropertyRegistration(input.target.propertyCode) : null;
+  if (!property || !supportedCloudTarget(input.target)) {
     return input.request.rooms.map((): CloudAvailabilityGroupRead => ({
       outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED',
     }));
@@ -370,12 +377,10 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
     return input.request.rooms.map(() => ({ outcome: 'unsupported_context', issue: 'CLOUD_RATE_CONTEXT_UNSUPPORTED' }));
   }
   const hotelAvailabilityUrl = new URL('../../tooling/hms-cloud/hotel-availability.mjs', import.meta.url);
-  const bootstrapUrl = new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url);
   const quoteReadUrl = new URL('../../tooling/hms-cloud/quote-read.mjs', import.meta.url);
   const quoteViewUrl = new URL('../../tooling/hms-cloud/quote-view.mjs', import.meta.url);
   const guardUrl = new URL('../../tooling/playwright-quote/hms-read-only-guard.mjs', import.meta.url);
-  const [bootstrap, quoteRead, quoteView, partyPicker, guard] = await Promise.all([
-    import(bootstrapUrl.href) as Promise<{ withCenturionStay360Page: <T>(operation: (page: unknown) => Promise<T>, options?: Record<string, unknown>) => Promise<T> }> ,
+  const [quoteRead, quoteView, partyPicker, guard] = await Promise.all([
     import(quoteReadUrl.href) as Promise<{ readQuote: (page: unknown, input: Record<string, unknown>) => Promise<RecordValue> }> ,
     import(quoteViewUrl.href) as Promise<{ getQuoteView: (snapshot: unknown, filters: Record<string, unknown>) => RecordValue }> ,
     import(hotelAvailabilityUrl.href) as Promise<{
@@ -387,7 +392,13 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
   // /tmp itself is a Git worktree on this host; use the proven saved-stay quote location.
   const directory = await mkdtemp(join('/var/tmp', PRIVATE_SNAPSHOT_PREFIX));
   try {
-    return await bootstrap.withCenturionStay360Page(async (page) => {
+    return await withCloudReadSession(async (page, identity) => {
+      if (identity.propertyCode !== property.propertyCode || identity.tenantId !== property.expectedTenant ||
+          identity.landingPropertyCode !== property.landingPropertyCode || identity.origin !== property.origin) {
+        return input.request.rooms.map((): CloudAvailabilityGroupRead => ({
+          outcome: 'execution_failure', issue: 'CLOUD_SESSION_IDENTITY_MISMATCH',
+        }));
+      }
       const groups: CloudAvailabilityGroupRead[] = [];
       for (const [kind, ref] of Object.entries(input.request.rateParties ?? {})) {
         if (!ref) continue;
@@ -476,8 +487,8 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
         });
       }
       return groups;
-    }, { headless: true, signal: input.signal, blockServiceWorkers: true,
-      prepareContext: guard.installReadOnlyGuard });
+    }, { propertyCode: property.propertyCode, headless: true, signal: input.signal, startScreen: 'OSRESS',
+      prepareContext: guard.installReadOnlyGuard, ...(input.transportId !== undefined && { transportId: input.transportId }) });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -488,7 +499,8 @@ export async function probeCloudRateAvailability(request: AvailabilityRequest, d
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
   try {
-    const reads = await lock.withLock(() => runCloudAvailability({ request, target: deps.target, signal: deps.signal }), deps.acquisition);
+    const reads = await lock.withLock(() => runCloudAvailability({ request, target: deps.target, signal: deps.signal,
+      ...(deps.transportId !== undefined && { transportId: deps.transportId }) }), deps.acquisition);
     return projectCloudAvailability(request, reads);
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { outcome: 'refused_lock_busy' };

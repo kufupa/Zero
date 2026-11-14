@@ -4,6 +4,7 @@ import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness
 import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const PROPERTY = 'HRCEN';
@@ -142,13 +143,13 @@ async function assertNewGuestStay(page) {
   }
 }
 
-async function assertSelectionProperty(page) {
+async function assertSelectionProperty(page, propertyCode = PROPERTY) {
   if (new URL(page.url()).origin !== ORIGIN) throw new Error('HMS_TARGET_MISMATCH');
   const property = page.locator('[data-qtip="Property"]:visible');
-  if (await property.count() !== 1 || (await property.innerText()).trim().toUpperCase() !== PROPERTY) {
+  if (await property.count() !== 1 || (await property.innerText()).trim().toUpperCase() !== propertyCode) {
     throw new Error('PROPERTY_MISMATCH');
   }
-  return PROPERTY;
+  return propertyCode;
 }
 
 /** True only for the expected data-only change on the verified blank HRCEN stay. */
@@ -173,7 +174,8 @@ export function isSafePartySelectionRequest({ method, url, postData }, { kind, n
 }
 
 /** Open a new, unsaved Guest Stay on the supplied authenticated page. */
-export async function openNewGuestStay(page) {
+export async function openNewGuestStay(page, { propertyCode = PROPERTY } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROPERTY_CODE_REQUIRED');
   let nativeDialog = false;
   const onDialog = () => { nativeDialog = true; };
   page.on('dialog', onDialog);
@@ -184,7 +186,7 @@ export async function openNewGuestStay(page) {
       const nodes = page.locator('span.x-tree-node-text:visible');
       const guestStay = nodes.filter({ hasText: /^Guest Stay$/ });
       const frontDesk = nodes.filter({ hasText: /^Front Desk$/ });
-      let opened = false;
+      let opened = await page.locator('input[name="ff_confirmationnumber"]:visible').first().isVisible().catch(() => false);
       for (let attempt = 0; attempt < 3 && !opened; attempt += 1) {
         await ensureApplicationMenuOpen(page, frontDesk);
         await ensureMenuChild(frontDesk, guestStay, () => clickTreeNode(frontDesk, () => nativeDialog));
@@ -215,23 +217,24 @@ export async function openNewGuestStay(page) {
         return Boolean(form?.el?.dom?.contains(confirmation[0]) && data?.propertycode === property &&
           data.status === 'New' && data.PKID === `@[EMPTY]#@[EMPTY]#${property}#` &&
           !String(data.confirmationnumber ?? '').trim());
-      }, PROPERTY, { timeout: 20000 });
+      }, propertyCode, { timeout: 20000 });
     } catch {
       throw new Error('GUEST_STAY_STARTUP_UNSETTLED');
     }
     await assertExpectedDialogs(page, nativeDialog);
     await assertNewGuestStay(page);
-    await assertSelectionProperty(page);
+    await assertSelectionProperty(page, propertyCode);
   } finally {
     page.off('dialog', onDialog);
   }
 }
 
-async function openLookupWindow(page, kind, hasNativeDialog) {
+async function openLookupWindow(page, kind, hasNativeDialog, propertyCode = PROPERTY) {
   await assertExpectedDialogs(page, hasNativeDialog());
   const win = lookupWindow(page, kind);
   if (await win.isVisible().catch(() => false)) {
     await assertNewGuestStay(page);
+    await assertSelectionProperty(page, propertyCode);
     return win;
   }
   for (const other of Object.keys(LOOKUPS).filter((name) => name !== kind)) {
@@ -241,7 +244,7 @@ async function openLookupWindow(page, kind, hasNativeDialog) {
       await otherWindow.waitFor({ state: 'hidden', timeout: 10000 });
     }
   }
-  await openNewGuestStay(page);
+  await openNewGuestStay(page, { propertyCode });
   const field = page.locator(`input[name="${LOOKUPS[kind].field}"]:visible`).first();
   const trigger = field.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').first();
   await trigger.click();
@@ -280,10 +283,12 @@ async function readCriteria(win) {
     })));
 }
 
-function matchesRun(request, query, alias) {
+function matchesRun(request, query, alias, propertyCode) {
   try {
     if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/web/base/GRIDDATA') return false;
     const body = new URLSearchParams(request.postData() || '');
+    const propertyAliases = [...body].filter(([key, value]) => /^LOV_ALIAS_NAME_\d+$/i.test(key) && value.toLowerCase() === 'param.propertycode');
+    if (propertyAliases.length > 1 || propertyAliases.some(([key]) => body.get(key.replace(/NAME/i, 'VALUE')) !== propertyCode)) return false;
     return query ? body.get('MADDON_FILTER_ALIAS_NAME_1') === alias &&
       body.get('MADDON_FILTER_VALUE_1')?.trim().toLocaleLowerCase() === query.toLocaleLowerCase()
       : ![...body.keys()].some((key) => key.startsWith('MADDON_FILTER_'));
@@ -387,7 +392,8 @@ function coverage(metadata, loaded) {
   return { loaded, total, reportedTotal, pageSize, serverMoreRecords, truncated, possiblyTruncated: truncated !== false };
 }
 
-async function search(page, kind, input, { timeoutMs = 20000, field = 'name', collectPages = false } = {}) {
+async function search(page, kind, input, { timeoutMs = 20000, field = 'name', collectPages = false, propertyCode = PROPERTY } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active) return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED', candidates: [] };
   if (field !== 'name' && !(kind === 'organization' && field === 'nativeId')) return { outcome: 'input_gap', issue: 'lookup_field_unsupported' };
   const spec = field === 'nativeId' ? { ...LOOKUPS[kind], filter: 'Organization ID', alias: 'companyid' } : LOOKUPS[kind];
   const query = typeof input === 'string' ? input.trim() : '';
@@ -405,7 +411,7 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name', co
   const onDialog = () => { nativeDialog = true; };
   page.on('dialog', onDialog);
   try {
-    const win = await openLookupWindow(page, kind, () => nativeDialog);
+    const win = await openLookupWindow(page, kind, () => nativeDialog, propertyCode);
     const windowId = await win.getAttribute('id');
     if (!windowId) throw new Error('LOOKUP_WINDOW_UNAVAILABLE');
     stage = 'applying_filter';
@@ -420,7 +426,7 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name', co
     if ((await inputField.inputValue()).trim() !== query) throw new Error('LOOKUP_FILTER_NOT_APPLIED');
     const controls = await readCriteria(win);
     const requests = new Set();
-    captureRequest = (request) => { if (matchesRun(request, query, spec.alias)) requests.add(request); };
+    captureRequest = (request) => { if (matchesRun(request, query, spec.alias, propertyCode)) requests.add(request); };
     page.on('request', captureRequest);
     const responsePromise = page.waitForResponse((response) => requests.has(response.request()), { timeout: timeoutMs })
       .catch(() => null);
@@ -478,6 +484,7 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name', co
     if (!rows.length && (resultCoverage.serverMoreRecords !== false || (resultCoverage.total != null && resultCoverage.total !== 0))) {
       throw new Error('LOOKUP_EMPTY_UNVERIFIED');
     }
+    await assertSelectionProperty(page, propertyCode);
     const candidates = rows.map((row) => candidate(row, grid.records, kind, spec, keys));
     const searchId = randomUUID();
     lastSearch.set(page, { kind, windowId, searchId, controls: JSON.stringify(controls), grid: JSON.stringify(grid.records),

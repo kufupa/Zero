@@ -4,12 +4,14 @@ import type {
   PaneStayFindInput,
   PaneStayFindResult,
 } from './pane-stay-lookup.js';
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 
 export type CloudStayRunInput = {
   request: PaneStayFindInput;
   target: HmsReadTarget;
   signal?: AbortSignal;
+  transportId?: string;
   /** Filing only: observe the exact target identity without requiring rate or occupancy fields. */
   nativeIdentityOnly?: boolean;
 };
@@ -264,9 +266,9 @@ function paneStayFields(confirmation: string, fields: Array<RecordValue>): PaneS
   };
 }
 
-function nativePreimage(raw: unknown, stay: PaneStayFields, fields: Array<RecordValue>): HmsCloudNativePreimage | null {
+function nativePreimage(raw: unknown, stay: PaneStayFields, fields: Array<RecordValue>, propertyCode: string): HmsCloudNativePreimage | null {
   const native = record(raw);
-  if (!native || native.source !== 'record_view_ext_model' || native.propertyCode !== CENTURION_HMS_READ_TARGET.propertyCode ||
+  if (!native || native.source !== 'record_view_ext_model' || native.propertyCode !== propertyCode ||
       native.confirmation !== stay.confirmation || native.status !== stay.status || native.firstName !== stay.firstName ||
       native.lastName !== stay.lastName || native.arrival !== stay.arrival || native.departure !== stay.departure ||
       native.roomType !== stay.roomType || native.ratePlan !== stay.ratePlan || native.adults !== stay.adults ||
@@ -306,7 +308,7 @@ function paneStayCommercial(stay: PaneStayFields, rawNative: unknown, verifiedNa
 }
 
 /** Exact-confirmation projection; raw Record View fields never enter the persisted job result. */
-export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): HmsCloudFindResult {
+export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown, propertyCode = CENTURION_HMS_READ_TARGET.propertyCode): HmsCloudFindResult {
   const root = record(raw);
   const shallow = record(root?.shallow);
   if (root?.outcome === 'ok' && shallow) {
@@ -325,7 +327,7 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown): 
     const stay = paneStayFields(confirmation, fields);
     const guestName = [stay.firstName, stay.lastName].filter((part): part is string => Boolean(part?.trim())).join(' ') ||
       fieldText(fields, ['guestfullname', 'guestname'], ['guest name', 'name']);
-    const verifiedNative = nativePreimage(details?.nativePreimage, stay, fields);
+    const verifiedNative = nativePreimage(details?.nativePreimage, stay, fields, propertyCode);
     const commercial = paneStayCommercial(stay, details?.nativePreimage, verifiedNative);
     const partyObservation = (names: string[], selected: PaneStayCommercial['organization']) => {
       const visible = fieldObservation(fields, names);
@@ -394,27 +396,31 @@ export function stampCloudStayReadResult(
   };
 }
 
-function supportedCenturionTarget(target: HmsReadTarget): boolean {
-  const expected = CENTURION_HMS_READ_TARGET;
-  return Boolean(target) && target.propertyCode === expected.propertyCode &&
-    target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
-    target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+function supportedCloudTarget(target: HmsReadTarget): boolean {
+  if (!target) return false;
+  const property = getPropertyRegistration(target.propertyCode);
+  if (!property?.active || target.origin !== property.origin) return false;
+  const expected = hmsReadTargetForProperty(property.propertyCode);
+  return target.propertyCode === expected.propertyCode && target.secretId === expected.secretId &&
+    target.browserSlot === expected.browserSlot && target.origin === expected.origin &&
+    target.installationEnvName === expected.installationEnvName;
 }
 
 export async function runCloudStayFind(input: CloudStayRunInput): Promise<unknown> {
-  if (!supportedCenturionTarget(input.target)) {
+  if (!supportedCloudTarget(input.target)) {
     return { outcome: 'execution_failure', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' };
   }
   const sessionUrl = new URL('../../tooling/hms-cloud/saved-stay-agent-session.mjs', import.meta.url);
   const module = await import(sessionUrl.href) as {
-    withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; readOnlyConfirmation?: string }) => Promise<T>;
+    withSavedStayAgentSession: <T>(operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; readOnlyConfirmation?: string; propertyCode?: string; transportId?: string }) => Promise<T>;
   };
   return module.withSavedStayAgentSession(async (session) => {
     // A fallback timestamp bounds both attempts from before the first read begins.
     const readStartedAt = new Date().toISOString();
-    const result = await readCloudStayForPane(session, input.request, input.nativeIdentityOnly === true);
+    const result = await readCloudStayForPane(session, input.request, input.nativeIdentityOnly === true, input.target.propertyCode);
     return stampCloudStayReadResult(result, readStartedAt);
-  }, { signal: input.signal, readOnly: true, readOnlyConfirmation: input.request.confirmation });
+  }, { signal: input.signal, readOnly: true, readOnlyConfirmation: input.request.confirmation, propertyCode: input.target.propertyCode,
+    ...(input.transportId !== undefined && { transportId: input.transportId }) });
 }
 
 /** A read-only retry relaxes only the arrival hint, never the shared native matching guard. */
@@ -422,6 +428,7 @@ export async function readCloudStayForPane(
   session: { runTool: (request: Record<string, unknown>) => Promise<unknown> },
   request: PaneStayFindInput,
   nativeIdentityOnly = false,
+  propertyCode = CENTURION_HMS_READ_TARGET.propertyCode,
 ): Promise<unknown> {
   const identity = nativeIdentityOnly ? { includeNativeIdentityOnly: true } : {};
   const first = await session.runTool({
@@ -434,7 +441,7 @@ export async function readCloudStayForPane(
   }
   const second = await session.runTool({ tool: 'read', confirmation: request.confirmation, view: 'record', includeNativePreimage: true, ...identity });
   if (record(second)?.outcome !== 'ok') return second;
-  const checked = projectCloudStayFind(request, second);
+  const checked = projectCloudStayFind(request, second, propertyCode);
   if (checked.outcome !== 'found' || !checked.arrivalMismatch) {
     return { outcome: 'read_failed', issue: 'CONFIRMATION_HINT_UNVERIFIED' };
   }

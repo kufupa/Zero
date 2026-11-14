@@ -51,6 +51,7 @@ import {
 } from '../hms/hms-read-target.js';
 import { PropertyRefusalCause } from '../hms/property-refusal.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { propertyCodeSchema, resolvePropertyScope } from '../hms/property-registry.js';
 import { quotePaneConfigForProperty } from '../hms/rate-catalogue.js';
 import {
   acquisitionWithin,
@@ -61,7 +62,7 @@ import { probeCloudRateAvailability } from './hms-cloud-availability-reader.js';
 import {
   availabilityJobRequestSchema,
   availabilityRequestsFor,
-  probeAvailability,
+  cloudAvailabilitySnapshotOf,
   type AvailabilityRequest,
 } from './hms-availability.js';
 import {
@@ -75,11 +76,12 @@ import {
   toolInputDigest,
 } from './hitl-tool-run.js';
 import {
-  findStay,
   GUEST_SURNAME_PATTERN,
   paneStayLookupLoaders,
+  paneStayLookupEnabled,
   searchGuest,
 } from './pane-stay-lookup.js';
+import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { findParty, findPartyJob, type PanePartyFindResult, type PanePartyKind } from './pane-party-lookup.js';
 import { suggestPartiesFor } from './party-aliases.js';
 import { QUOTE_WORKFLOW_PROMPT_VERSION, quoteWorkflowLlmEnabled } from './quote-workflow-llm.js';
@@ -1040,6 +1042,59 @@ export async function enqueueHmsJob(
   return { run: await shareHmsRunWithMailbox(db, existing, input), created: false };
 }
 
+/** Resolve a pricing property through authenticated transport membership, including Suites selection. */
+export function rateCandidateReadTarget(transportId: string, propertyCode: string): HmsReadTarget | null {
+  const parsed = propertyCodeSchema.safeParse(propertyCode);
+  if (!parsed.success) return null;
+  try {
+    const scope = resolvePropertyScope({ transportId,
+      ...(parsed.data !== 'HRCEN' ? { propertySwitch: parsed.data } : {}) });
+    return scope.propertyCode === parsed.data ? hmsReadTargetForProperty(scope.propertyCode) : null;
+  } catch { return null; }
+}
+
+/** Resolve persisted read authority before checking the selected hotel's current capability. */
+export async function resolveSelectedHmsReadJobTarget(input: {
+  transportId: string; requestedPropertyCode?: string; metrics?: unknown;
+  capability: 'reads' | 'quote'; threadId?: string | null; messageId?: string | null;
+}): Promise<{ ok: true; target: HmsReadTarget } | { ok: false; code: string }> {
+  const metrics = objectRecord(input.metrics);
+  const recordedTarget = parseHmsReadTarget(metrics.hmsReadTarget);
+  if ((metrics.hmsReadTarget != null && !recordedTarget) ||
+      (metrics.selectedPropertyCode !== undefined && typeof metrics.selectedPropertyCode !== 'string')) {
+    return { ok: false, code: 'rate_property_unauthorized' };
+  }
+  let target: HmsReadTarget | null;
+  try {
+    const selected = input.requestedPropertyCode ??
+      (typeof metrics.selectedPropertyCode === 'string' ? metrics.selectedPropertyCode : recordedTarget?.propertyCode) ??
+      hmsReadTargetForTransport(input.transportId).propertyCode;
+    target = rateCandidateReadTarget(input.transportId, selected);
+  } catch { return { ok: false, code: 'rate_property_unauthorized' }; }
+  if (!target || (recordedTarget && recordedTarget.propertyCode !== target.propertyCode) ||
+      (metrics.selectedPropertyCode !== undefined && metrics.selectedPropertyCode !== target.propertyCode)) {
+    return { ok: false, code: 'rate_property_unauthorized' };
+  }
+  if (target.browserSlot === 'centurion' && input.threadId) {
+    const origin = await resolveHmsReadJobTarget({ transportId: input.transportId,
+      threadId: input.threadId, messageId: input.messageId });
+    if (!origin.ok || origin.target.propertyCode !== target.propertyCode) {
+      return { ok: false, code: 'davinci_origin_refused' };
+    }
+  }
+  if (target.browserSlot === 'centurion') return { ok: true, target };
+  try {
+    const selected = propertyCodeSchema.parse(target.propertyCode);
+    const { createHmsService } = await import('../hms/hms-service.js');
+    const config = await createHmsService({ transportId: input.transportId,
+      ...(selected !== 'HRCEN' ? { propertySwitch: selected } : {}) }).configuration();
+    if (config.propertyCode !== target.propertyCode || config.capabilities[input.capability].status === 'unavailable') {
+      return { ok: false, code: 'hms_read_capability_unavailable' };
+    }
+  } catch { return { ok: false, code: 'hms_read_capability_unavailable' }; }
+  return { ok: true, target };
+}
+
 /** Enqueue one bound pricing observation; callers must first verify the complete party context. */
 export async function queueRateCandidatesHmsJob(input: {
   transportId: string; threadId: string; messageId: string; sourceHash: string;
@@ -1050,6 +1105,11 @@ export async function queueRateCandidatesHmsJob(input: {
   const request = availabilityJobRequestSchema.parse(input.request);
   if (!request.rateContext || !input.partyContextVerified || !/^[a-f0-9]{64}$/.test(input.sourceHash) ||
       !/^[a-f0-9]{64}$/.test(input.requestId)) throw new Error('rate_binding_incomplete');
+  const target = rateCandidateReadTarget(input.transportId, request.rateContext.propertyCode);
+  if (!target) throw new Error('rate_property_unauthorized');
+  const capability = await resolveSelectedHmsReadJobTarget({ transportId: input.transportId,
+    requestedPropertyCode: target.propertyCode, capability: 'quote' });
+  if (!capability.ok) throw new Error(capability.code);
   const key = JSON.stringify(['rate-candidates', input.transportId, input.threadId, input.messageId,
     input.sourceHash, input.workItemId, input.requestId, input.userId, input.extractionId,
     input.roomBindingKey, input.draftContextKey, request.rateContext]);
@@ -1081,7 +1141,8 @@ export async function queueRateCandidatesHmsJob(input: {
       request, priority: HMS_JOB_PRIORITY_USER, idempotencyKey: `hms-job:rate-candidates:${randomUUID()}`,
       extraMetrics: { selectedSourceHash: input.sourceHash, rateRequestId: input.requestId,
         rateExtractionId: input.extractionId, rateDraftContextKey: input.draftContextKey,
-        rateRoomBindingKey: input.roomBindingKey },
+        rateRoomBindingKey: input.roomBindingKey, selectedPropertyCode: target.propertyCode,
+        ...hmsReadTargetJobMetrics(target) },
     }, scoped);
   });
 }
@@ -3084,6 +3145,7 @@ async function executePartyMatchV2(input: {
   signal?: AbortSignal;
   deadlineAt: number;
   acquisition: ReturnType<typeof acquisitionWithin>;
+  target: HmsReadTarget;
 }): Promise<PartyMatchV2JobResult | PanePartyFindResult> {
   const [source] = await input.db
     .select({
@@ -3131,16 +3193,11 @@ async function executePartyMatchV2(input: {
     toAddresses: source.toAddresses,
     ccAddresses: source.ccAddresses,
   };
-  const resolved = await resolveHmsReadJobTarget({
-    transportId: input.run.transportId,
-    threadId: input.run.threadId,
-    messageId: input.run.triggerMessageId,
-  });
+  const resolved = await resolveSelectedHmsReadJobTarget({ transportId: input.run.transportId,
+    requestedPropertyCode: input.target.propertyCode, metrics: input.run.metrics, capability: 'reads',
+    threadId: input.run.threadId, messageId: input.run.triggerMessageId });
   if (!resolved.ok) {
-    return {
-      ...partyMatchV2NoMatch(resolved.message),
-      outcome: 'refused_origin_mismatch',
-    };
+    return { ...partyMatchV2NoMatch(resolved.code), outcome: 'refused_origin_mismatch' };
   }
   const readTarget = resolved.target;
 
@@ -3853,40 +3910,43 @@ export async function executeHmsJob(input: {
   const request = parsed.data;
   // Worker-time origin recheck: jobs queued before the enqueue guard, or whose
   // thread became mixed-origin after enqueue, must not reach Centurion HMS.
-  // Party V2 keeps its own refusal result shape below.
-  const partyV2 = request.kind === 'party' && request.matchVersion === 2;
   let jobTarget: HmsReadTarget | null = null;
-  if (!partyV2 && run.threadId) {
+  const partyV2 = request.kind === 'party' && request.matchVersion === 2 &&
+    run.priority < HMS_JOB_PRIORITY_USER && partyMatchV2Enabled();
+  if (request.kind === 'staff_quote' && run.threadId) {
     try {
-      if (request.kind === 'staff_quote') {
-        const resolved = await resolveHmsQuoteJobTarget({
-          transportId: run.transportId,
-          threadId: run.threadId,
-          messageId: run.triggerMessageId,
-        });
-        if (!resolved.ok) {
-          await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-          return 'dead_letter';
-        }
-        jobTarget = resolved.target;
-      } else {
-        const resolved = await resolveHmsReadJobTarget({
-          transportId: run.transportId,
-          threadId: run.threadId,
-          messageId: run.triggerMessageId,
-        });
-        if (!resolved.ok) {
-          await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-          return 'dead_letter';
-        }
-        jobTarget = resolved.target;
+      const resolved = await resolveHmsQuoteJobTarget({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+      });
+      if (!resolved.ok) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+        return 'dead_letter';
       }
+      jobTarget = resolved.target;
     } catch (error) {
       const cause = propertyRefusalCause(error);
       if (!cause) throw error;
       await markAiRunPolicyRefused({ ...mark, lastError: cause.code }, db);
       return 'dead_letter';
     }
+  }
+  if (partyV2) {
+    const stored = objectRecord(run.metrics);
+    const selected = typeof stored.selectedPropertyCode === 'string' ? stored.selectedPropertyCode :
+      parseHmsReadTarget(stored.hmsReadTarget)?.propertyCode ?? hmsReadTargetForTransport(run.transportId).propertyCode;
+    jobTarget = rateCandidateReadTarget(run.transportId, selected);
+  } else if (request.kind !== 'staff_quote') {
+    const resolved = await resolveSelectedHmsReadJobTarget({ transportId: run.transportId,
+      requestedPropertyCode: request.kind === 'availability' ? request.rateContext?.propertyCode : undefined,
+      metrics: run.metrics, capability: request.kind === 'availability' && request.rateContext ? 'quote' : 'reads',
+      threadId: run.threadId, messageId: run.triggerMessageId });
+    if (!resolved.ok) {
+      await markAiRunPolicyRefused({ ...mark, lastError: resolved.code }, db);
+      return 'dead_letter';
+    }
+    jobTarget = resolved.target;
   }
   const metrics = objectRecord(run.metrics) as {
     userId?: string | null;
@@ -4257,23 +4317,35 @@ export async function executeHmsJob(input: {
     inputDigest: toolInputDigest(request as Record<string, unknown>),
   };
   const result = await (request.kind === 'availability'
-    ? (request.rateContext ? probeCloudRateAvailability : probeAvailability)(request, {
-        ...(request.rateContext ? { signal: input.signal } : {}),
+    ? probeCloudRateAvailability(request, {
+        signal: input.signal,
         lock: deps.lock,
         acquisition: deps.acquisition,
         target,
-      })
+        transportId: run.transportId,
+      }).then((read) => !request.rateContext && read.outcome === 'read'
+        ? { outcome: 'read' as const, ...cloudAvailabilitySnapshotOf(read, target.propertyCode) }
+        : read)
     : request.kind === 'find'
       ? recordedToolRun(
           { kind: 'stay_lookup', ...audit },
-          () =>
-            findStay(
-              {
-                confirmation: request.confirmation,
-                ...(request.arrival ? { arrival: request.arrival } : {}),
-              },
-              deps,
-            ),
+          async () => {
+            const lookup = { confirmation: request.confirmation, ...(request.arrival ? { arrival: request.arrival } : {}) };
+            const unavailable = (outcome: 'refused_flag_off' | 'refused_lock_unavailable' | 'refused_lock_busy' | 'execution_failure') => ({
+              outcome, reason: null, stay: null, arrivalMismatch: false,
+              requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null,
+            });
+            if (!(paneStayLookupLoaders.enabled ?? paneStayLookupEnabled)()) return unavailable('refused_flag_off');
+            const lock = deps.lock();
+            if (!lock) return unavailable('refused_lock_unavailable');
+            try {
+              return await lock.withLock(async () => projectCloudStayFind(lookup,
+                await runCloudStayFind({ request: lookup, target, transportId: run.transportId, signal: input.signal }), target.propertyCode),
+              { ...deps.acquisition, signal: input.signal });
+            } catch (error) {
+              return unavailable(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure');
+            }
+          },
           classifyFind,
         )
       : request.kind === 'party' &&
@@ -4286,6 +4358,7 @@ export async function executeHmsJob(input: {
             signal: input.signal,
             deadlineAt: fence.deadlineAt.getTime(),
             acquisition: deps.acquisition,
+            target,
           })
         : request.kind === 'party'
         ? findParty(
@@ -4352,7 +4425,7 @@ export async function executeHmsJob(input: {
   const marked = await markAiRunSucceeded(
     {
       ...mark,
-      readResult: { ...result, kind: request.kind, asOf: new Date().toISOString() },
+      readResult: { ...result, propertyCode: target.propertyCode, kind: request.kind, asOf: new Date().toISOString() },
       metrics: {
         hmsJob: true,
         kind: request.kind,

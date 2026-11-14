@@ -51,6 +51,12 @@ describe('Cloud saved-stay projection', () => {
     const raw = (observed: unknown) => ({ outcome: 'ok', shallow: { confirmation: '123456-1', searchResults: { complete: true } },
       record: { details: { fields }, nativePreimage: observed } });
     expect(projectCloudStayFind({ confirmation: '123456-1' }, raw(native)).nativePreimage).toEqual(native);
+    for (const propertyCode of ['HRDAV', 'HRDAVS']) {
+      const selected = { ...native, propertyCode };
+      expect(projectCloudStayFind({ confirmation: '123456-1' }, raw(selected), propertyCode).nativePreimage).toEqual(selected);
+      expect(projectCloudStayFind({ confirmation: '123456-1' }, raw(selected)).nativePreimage).toBeNull();
+      expect(projectCloudStayFind({ confirmation: '123456-1' }, raw(native), propertyCode).nativePreimage).toBeNull();
+    }
     for (const bad of [null, { ...native, confirmation: '999999-1' }, { ...native, guestId: '44' },
       { ...native, propertyCode: 'HRDAV' }, { ...native, reservationStayId: '' },
       { ...native, childAges: [8] }, { ...native, arrival: '2027-01-11' }]) {

@@ -6,11 +6,29 @@ import {
 import { issueCurrentAppAccessProof } from '../src/hms/requester-authorization.js';
 import { createPropertyReadLock } from '../src/hms/property-read-lock.js';
 import { canonicalLookupCandidateId } from '../src/ai/thread-context.js';
-import { issueReadAdmission } from '../src/hms/read-admission.js';
+import { issueReadAdmission, persistReadAdmissionIssuer, assertPersistedReadAdmissionIssuer } from '../src/hms/read-admission.js';
 import { describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 
 type TrustedSyncInput = Parameters<typeof executeTrustedSynchronousHmsFindReservation>[0];
+
+it('preserves selected Suites scope in durable admission and rejects legacy issuer substitution', () => {
+  const source = { userId: 'user', mailboxAccessId: 'access', transportId: 'transport-davinci',
+    threadId: 'thread', triggerMessageId: 'message', releaseId: 'release', requestBranchId: 'guest_stay_search',
+    propertyCode: 'HRDAVS', manifestSha256: 'a'.repeat(64), captureBindingRef: 'capture' };
+  const issued = issueReadAdmission({ source, toolId: 'hms_find_reservation', candidateId: 'candidate' });
+  const issuer = persistReadAdmissionIssuer(issued.issuer);
+  expect(issued.admission.propertyCode).toBe('HRDAVS');
+  expect(issuer.propertyCode).toBe('HRDAVS');
+  const verify = (value: unknown) => assertPersistedReadAdmissionIssuer({ issuer: value,
+    request: issued.readRequest, run: source, expectedMailboxAccessId: source.mailboxAccessId,
+    expectedToolId: 'hms_find_reservation' });
+  expect(verify(issuer).propertyCode).toBe('HRDAVS');
+  const { propertyCode, ...legacy } = issuer;
+  expect(propertyCode).toBe('HRDAVS');
+  expect(() => verify(legacy)).toThrow(/scope/);
+  expect(() => verify({ ...issuer, propertyCode: 'HRDAV' })).toThrow(/scope/);
+});
 
 function trustedSyncFixture(
   options: {

@@ -1,7 +1,11 @@
 import type { ReservationWorkflowV2Extraction } from '../src/ai/reservation-workflow-v2-contract.js';
-import { runReservationWorkflowV2Prefill } from '../src/ai/reservation-workflow-v2-prefill.js';
+import { createReservationWorkflowV2CandidateReader, runReservationWorkflowV2Prefill } from '../src/ai/reservation-workflow-v2-prefill.js';
+import * as cloudStay from '../src/ai/hms-cloud-saved-stay-find.js';
+import * as paneStaySave from '../src/ai/pane-stay-save.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 const usage = {
   inputTokens: 1,
@@ -89,6 +93,38 @@ function quoteFixture(sourceRef: string): ReservationWorkflowV2Extraction['reque
 }
 
 describe('reservation workflow host projection', () => {
+  it.each(['HRCEN', 'HRDAV', 'HRDAVS'])('reads an exact source confirmation through the selected %s Cloud session', async (propertyCode) => {
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    const withLock = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+    vi.spyOn(paneStaySave, 'paneStayPropertyLock').mockReturnValue({ withLock } as never);
+    const native = { source: 'record_view_ext_model', propertyCode, confirmation: '123456-1',
+      guestId: '42', reservationStayId: '81', reservationId: '82', recordId: '83', status: 'Reserved',
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-01-10', departure: '2027-01-12',
+      roomType: 'SUP', ratePlan: 'BAR', adults: 2, children: 0, childAges: 'unknown' };
+    const run = vi.spyOn(cloudStay, 'runCloudStayFind').mockResolvedValue({ outcome: 'ok',
+      shallow: { confirmation: '123456-1', searchResults: { complete: true } }, record: {
+        details: { fields: [
+          { name: 'status', value: 'Reserved' }, { name: 'guestid', value: '42' },
+          { name: 'firstname', value: 'Proof' }, { name: 'lastname', value: 'Labtest' },
+          { name: 'arrivaldate', value: '10-Jan-2027' }, { name: 'departuredate', value: '12-Jan-2027' },
+          { name: 'roomtype', value: 'SUP' }, { name: 'rateplan', value: 'BAR' },
+          { name: 'adults', value: '2' }, { name: 'children', value: '0' },
+        ] }, nativePreimage: native,
+      } });
+    const projectNative = vi.spyOn(cloudStay, 'projectCloudStayFind');
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode,
+      transportId: propertyCode === 'HRCEN' ? 'transport-centurion' : 'transport-davinci',
+      source: { messageId: 'source', threadId: 'thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' } });
+    const result = await read({ id: 'confirmation', ref: 'source-confirmation', kind: 'stay_candidate', propertyCode,
+      criteria: { confirmationOrGuestText: '123456-1', dates: [{ arrival: '2027-01-10' }] }, sourceRefs: [] });
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ target: expect.objectContaining({ propertyCode }),
+      request: { confirmation: '123456-1', arrival: '2027-01-10' } }));
+    expect(projectNative).toHaveBeenCalledWith(expect.anything(), expect.anything(), propertyCode);
+    expect(result).toMatchObject({ status: 'complete', result: { propertyCode, outcome: 'found',
+      stay: { firstName: 'Proof', lastName: 'Labtest' } } });
+    expect(withLock).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a clear per-room adult claim across multiple occupancy and dated rows', async () => {
     const result = await project((sourceRef) => ({
       requests: [

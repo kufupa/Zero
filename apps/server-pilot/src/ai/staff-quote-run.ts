@@ -711,7 +711,7 @@ export async function runStaffQuote(
           const picked = input.parties[role];
           if (!picked) continue;
           const found = await lookupNativeParty({ role: role === 'organization' ? 'organization' : 'agency',
-            name: picked.name, target: quoteTarget.target, signal: options.signal });
+            name: picked.name, target: quoteTarget.target, transportId: identity.transportId, signal: options.signal });
           options.signal!.throwIfAborted();
           const candidates = Array.isArray(found.result.candidates) ? found.result.candidates : [];
           const nameKey = (value: string) => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();

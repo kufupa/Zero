@@ -46,7 +46,7 @@ import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
 import { loadNativeRatePlans } from '../hms/rate-catalogue.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
-import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
+import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
@@ -59,6 +59,8 @@ import { partyMatchSearchTerms } from './party-match-v2.js';
 import { reservationEntityKey } from './reservation-workflow-v2-native-leads.js';
 import { formatBookerContact } from './reservation-workflow-v2-booker-contact.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
+import { hmsReadTargetForProperty } from '../hms/hms-read-target.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 
 type V2StateContext = ReservationWorkflowV2Context;
 export type ReservationWorkflowV2ServerContext = {
@@ -886,14 +888,15 @@ function createCatalogueCandidate(value: unknown, kind: CreateCatalogueKind): Cr
 }
 
 async function readCreateCatalogue(runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>>,
-  tool: 'searchRoomTypes' | 'searchRoomTypesForCharge' | 'searchRatePlans', kind: CreateCatalogueKind): Promise<CreateCatalogueRead> {
+  tool: 'searchRoomTypes' | 'searchRoomTypesForCharge' | 'searchRatePlans', kind: CreateCatalogueKind,
+  propertyCode: string): Promise<CreateCatalogueRead> {
   const first = await runTool({ tool, query: '', offset: 0, limit: 100 });
   const coverage = record(first.coverage), criteria = record(first.criteria);
   const matchingLoaded = coverage?.matchingLoaded;
   const loaded = coverage?.loaded;
   const expectedScope = kind !== 'rate_plan' ? 'guest_stay_room_catalog' : 'guest_stay_rate_shop_catalog';
   const allowedOutcome = ['matches', 'no_match', 'incomplete'].includes(String(first.outcome));
-  const criteriaValid = criteria?.propertyCode === 'HRCEN' && criteria.scope === expectedScope && criteria.query === '';
+  const criteriaValid = criteria?.propertyCode === propertyCode && criteria.scope === expectedScope && criteria.query === '';
   if (!allowedOutcome || !criteriaValid || !Number.isInteger(matchingLoaded) || !Number.isInteger(loaded) ||
       (first.outcome === 'no_match' && matchingLoaded !== 0)) {
     return { kind, outcome: String(first.outcome ?? 'failed'), complete: false, candidates: [], coverage, criteria,
@@ -908,7 +911,7 @@ async function readCreateCatalogue(runTool: (request: Record<string, unknown>) =
     const pageCoverage = record(page.coverage), pageCriteria = record(page.criteria);
     const pageRows = Array.isArray(page.candidates) ? page.candidates : [];
     const expectedPageSize = Math.min(100, count - offset);
-    if (!['matches', 'incomplete'].includes(String(page.outcome)) || pageCriteria?.propertyCode !== 'HRCEN' ||
+    if (!['matches', 'incomplete'].includes(String(page.outcome)) || pageCriteria?.propertyCode !== propertyCode ||
         pageCriteria.scope !== expectedScope || pageCriteria.query !== '' || pageCoverage?.loaded !== loaded ||
         pageCoverage?.matchingLoaded !== count || pageCoverage.returned !== expectedPageSize || pageRows.length !== expectedPageSize) {
       pagesComplete = false;
@@ -973,7 +976,7 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return loaded.result;
   const request = loaded.draft.proposal.content.requests.find(row => row.id === input.requestId);
-  if (!request || !['create', 'quote', 'amend'].includes(request.kind) || ctx.property.propertyCode !== 'HRCEN')
+  if (!request || !['create', 'quote', 'amend'].includes(request.kind))
     return { status: 'unsupported', issue: 'native_choices_not_applicable' };
   const bodyPath = ptr('proposal', 'content', 'requests', request.id, 'body');
   const path = input.nativeFieldPath ?? '';
@@ -1043,11 +1046,11 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
     read = { candidates: scoped.candidates, complete: true, clean: true,
       selectedTargets: scoped.selectedTargets, nativeCoverage: scoped.nativeCoverage };
   } else try {
-    const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
-      withBookingLookupSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+    const tool = await import(new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url).href) as {
+      withCloudLookupReadSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
         Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
     };
-    read = record(await tool.withBookingLookupSession(async ({ page, runTool }) => {
+    read = record(await tool.withCloudLookupReadSession(async ({ page, runTool }) => {
       if (field === 'track') {
         const tracks = await import(new URL('../../tooling/hms-cloud/guest-stay-track-catalog.mjs', import.meta.url).href) as {
           listTrackSubSegments: (page: unknown, options: { propertyCode: string }) => Promise<Record<string, unknown>>;
@@ -1062,18 +1065,19 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
       }
       if (['room_type', 'room_type_for_charge', 'rate_plan'].includes(kind)) {
         const catalogue = await readCreateCatalogue(runTool, kind === 'room_type' ? 'searchRoomTypes' :
-          kind === 'room_type_for_charge' ? 'searchRoomTypesForCharge' : 'searchRatePlans', kind as CreateCatalogueKind);
+          kind === 'room_type_for_charge' ? 'searchRoomTypesForCharge' : 'searchRatePlans', kind as CreateCatalogueKind,
+        ctx.property.propertyCode);
         const closed = await runTool({ tool: 'closeRoomRatePicker' });
         return { candidates: catalogue.candidates, complete: catalogue.complete,
-          clean: closed.outcome === 'closed_unsaved', issue: catalogue.issue,
+          clean: closed.outcome === 'closed_unsaved' || catalogue.outcome === 'unavailable' && closed.outcome === 'not_open',
+          outcome: catalogue.outcome, issue: catalogue.issue,
           nativeCriteria: catalogue.criteria, nativeCoverage: catalogue.coverage };
       }
       if (field === 'reasonForStay' || field === 'guaranteeType') {
         const listed = await runTool({ tool: 'listGuestStayDropdown', propertyCode: ctx.property.propertyCode, field });
-        const guarantees = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
         const candidates = (Array.isArray(listed.options) ? listed.options : []).flatMap(raw => {
           const option = record(raw), code = text(option?.value), label = text(option?.label);
-          return code && label && (field === 'reasonForStay' ? /^(business|leisure(?: guest)?)$/i.test(label) : guarantees.has(code))
+          return code && label && (field !== 'reasonForStay' || /^(business|leisure(?: guest)?)$/i.test(label))
             ? [{ code, label: /^leisure/i.test(label) ? 'Leisure' : label }] : [];
         });
         return { candidates, complete: record(listed.coverage)?.complete === true, clean: listed.outcome === 'ok',
@@ -1106,7 +1110,7 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
       return { candidates, complete: coverage?.serverMoreRecords === false && coverage.possiblyTruncated === false && candidates.length === coverage.loaded,
         clean: ['matches', 'no_match'].includes(String(found.outcome)) && closed.outcome === 'closed_unchanged',
         nativeCoverage: coverage, issue: found.issue };
-    }, { memory: null, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
+    }, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
   } catch {
     read = rateCatalogueFallback();
     if (!read) return { status: 'failed', issue: 'native_choices_read_failed' };
@@ -1114,6 +1118,7 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
   if (kind === 'rate_plan' && (read?.clean !== true || !Array.isArray(read.candidates) || !read.candidates.length))
     read = rateCatalogueFallback() ?? read;
   if (read?.clean !== true) return { status: 'failed', issue: text(read?.issue) ?? 'native_choice_picker_close_unverified' };
+  if (read.outcome === 'unavailable') return { status: 'unsupported', issue: text(read.issue) ?? 'native_choices_unavailable' };
   const candidates = Array.isArray(read.candidates) ? read.candidates : [];
   if (!candidates.length && read.complete !== true) return { status: 'failed', issue: text(read.issue) ?? 'native_choices_unavailable' };
   const fresh = await currentDraft(ctx, input);
@@ -1138,7 +1143,6 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
   if (!loaded.draft) return loaded.result;
   const requests = loaded.draft.proposal.content.requests.filter((request) => !input.requestId || request.id === input.requestId);
   if (input.requestId && !requests.length) return { status: 'not_found' };
-  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'property_not_supported' };
   const createRequests = requests.filter((request) => request.kind === 'create');
   if (!createRequests.length) return { status: 'unsupported', issue: 'create_lookup_not_applicable' };
   const nativeObservations: ReservationWorkflowV2Observation[] = [];
@@ -1156,20 +1160,26 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     const sourceRefs = sourceEvidence ? [sourceEvidence.ref] : [];
     const claimIsExact = Boolean(claim && confirmation && /^\d{6,10}-\d{1,4}$/.test(confirmation) && sourceEvidence &&
       claim.sourceRefs.length > 0);
-    if (claimIsExact && confirmation && ctx.nativeBatch && !paneStayLookupEnabled()) {
+    if (claimIsExact && confirmation && !paneStayLookupEnabled()) {
       reason = 'stay_lookup_disabled';
     } else if (claimIsExact && confirmation) {
-      const targetResult = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode });
+      const targetResult = (() => {
+        const property = getPropertyRegistration(ctx.property.propertyCode);
+        if (!property?.active || !property.transportIds.includes(ctx.transport.id)) {
+          return { ok: false, reason: 'property_read_transport_mismatch' } as const;
+        }
+        return { ok: true, target: hmsReadTargetForProperty(property.propertyCode) } as const;
+      })();
       if (targetResult.ok) {
         try {
           const request = { confirmation };
           const lock = paneStayPropertyLock(targetResult.target);
-          const found = ctx.nativeBatch && lock
+          const found = lock
             ? await lock.withLock(async () => projectCloudStayFind(request,
-              await runCloudStayFind({ request, target: targetResult.target, signal: ctx.nativeBatch!.signal })),
-            { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch.signal })
-            : ctx.nativeBatch ? null : await findStay(request, { target: targetResult.target,
-              lock: () => paneStayPropertyLock(targetResult.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) });
+              await runCloudStayFind({ request, target: targetResult.target, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }),
+            targetResult.target.propertyCode),
+            { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal })
+            : null;
           if (!found) throw new Error('background_property_lock_unavailable');
           outcome = found.outcome;
           reason = found.reason ?? null;
@@ -1192,7 +1202,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
       criteria: { workflow: 'create_existing_reference_check', requestId: request.id, confirmation,
         sourceClaimPath: path, sourceClaimEvidenceRefs: claim?.sourceRefs ?? [] },
       coverage: { complete, notes: complete ? [] : [reason ?? 'native_confirmation_lookup_incomplete'] },
-      result: { outcome, confirmation, reason, stay } });
+      result: { outcome, confirmation, reason, stay, propertyCode: ctx.property.propertyCode } });
   }
   const persistedConfirmationRefs = new Set<string>();
   if (nativeObservations.some((entry) => entry.criteria.workflow === 'create_existing_reference_check')) {
@@ -1211,13 +1221,13 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     { key: 'organization', field: 'organization', role: 'organization', tool: 'searchOrganization', idField: 'companyid', nameField: 'companyname' },
     { key: 'arAccount', field: 'arAccount', role: 'ar_account', tool: 'searchArAccount', idField: 'araccountid', nameField: 'araccountname' },
   ] as const;
-  const bookingTool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href) as {
-    withBookingLookupSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
+  const bookingTool = await import(new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url).href) as {
+    withCloudLookupReadSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
       Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
   };
   let sessionResult: Record<string, unknown> | null = null;
   try {
-    sessionResult = record(await bookingTool.withBookingLookupSession(async ({ runTool }) => {
+    sessionResult = record(await bookingTool.withCloudLookupReadSession(async ({ runTool }) => {
       const perAllocation: Outcome[] = [];
       const catalogueTargets: Array<{ requestId: string; allocationId: string; allocationIndex: number }> = [];
       for (const request of createRequests) {
@@ -1415,8 +1425,13 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
           { tool: 'searchRoomTypesForCharge', kind: 'room_type_for_charge' },
           { tool: 'searchRatePlans', kind: 'rate_plan' },
         ] as const) {
-          const catalogue = await readCreateCatalogue(runTool, spec.tool, spec.kind);
+          const catalogue = await readCreateCatalogue(runTool, spec.tool, spec.kind, ctx.property.propertyCode);
           const closed = await runTool({ tool: 'closeRoomRatePicker' });
+          if (catalogue.outcome === 'unavailable' && closed.outcome === 'not_open') {
+            catalogues.push({ kind: catalogue.kind, outcome: catalogue.outcome, complete: false,
+              candidateCount: 0, coverage: catalogue.coverage, issue: catalogue.issue });
+            continue;
+          }
           if (closed.outcome !== 'closed_unsaved') {
             return { lookups: perAllocation, observations: nativeObservations, catalogues,
               sessionSafe: false, issue: 'native_catalogue_picker_close_unverified' };
@@ -1431,10 +1446,9 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
         ] as const) {
           const listed = await runTool({ tool: 'listGuestStayDropdown', propertyCode: ctx.property.propertyCode, field: spec.field });
           const options = Array.isArray(listed.options) ? listed.options.map(record).filter((item): item is Record<string, unknown> => Boolean(item)) : [];
-          const supportedGuarantees = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
           const choices = options.flatMap((item) => {
             const code = text(item.value) ?? (typeof item.value === 'number' ? String(item.value) : null), label = text(item.label);
-            return code && label && (spec.field !== 'guaranteeType' || supportedGuarantees.has(code)) ? [{ code, label }] : [];
+            return code && label ? [{ code, label }] : [];
           });
           if (listed.outcome === 'ok') for (const target of uniqueTargets) nativeObservations.push(
             createFieldChoiceObservation(loaded.draft!, target, spec.field, spec.kind, choices, false, 'closed_unsaved'));
@@ -1482,7 +1496,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
         }
       }
       return { lookups: perAllocation, observations: nativeObservations, catalogues, sessionSafe: true };
-    }, { memory: null, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
+    }, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
   } catch {
     return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null };
   }

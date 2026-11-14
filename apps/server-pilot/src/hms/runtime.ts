@@ -1,4 +1,4 @@
-import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { getPropertyRegistration, type PropertyCode } from '../../tooling/hms-cloud/property-registry.mjs';
 /**
  * HMS browser runtime — singleton Chromium, one-session semaphore, fail-closed
  * request policy, abort-first contexts, startup canary + circuit breaker.
@@ -277,6 +277,8 @@ export type HmsRuntimeOptions = {
   requireViewOnly?: boolean;
   /** Manifest origin must match secret.loginUrl origin. */
   expectedOrigin?: string;
+  /** Selected hotel is separate from the credential's login landing hotel. */
+  expectedPropertyCode?: PropertyCode;
   /** Role-proof path — revalidated before every context creation when set. */
   roleProofPath?: string;
   loadRoleProof?: HmsRoleProofLoader;
@@ -1373,7 +1375,10 @@ function createHmsRuntimeInternal(
         return loadHmsReadRoleProof(path, now);
       });
     try {
-      await loader(options.roleProofPath, new Date());
+      const proof = await loader(options.roleProofPath, new Date());
+      if (options.expectedPropertyCode && proof.propertyCode !== options.expectedPropertyCode) {
+        throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'runtime proof property mismatch');
+      }
     } catch (err) {
       if (err instanceof HmsRuntimeError) throw err;
       throw new HmsRuntimeError(
@@ -1438,6 +1443,13 @@ function createHmsRuntimeInternal(
           'HMS runtime requires view_only credentials',
         );
       }
+      if (options.expectedPropertyCode) {
+        const property = getPropertyRegistration(options.expectedPropertyCode);
+        if (!property?.active || secret.expectedPropertyCode !== property.landingPropertyCode ||
+            secret.expectedTenant !== property.expectedTenant || loginOrigin !== property.origin) {
+          throw new HmsRuntimeError('wrong_property', 'runtime credential landing identity mismatch');
+        }
+      }
       cachedSecret = secret;
       return secret;
     } catch (err) {
@@ -1497,6 +1509,9 @@ function createHmsRuntimeInternal(
     let lastNavErr: unknown;
     while (Date.now() < deadline) {
       try {
+        if (new URL(page.url()).origin !== new URL(secret.loginUrl).origin) {
+          throw new HmsRuntimeError('origin_mismatch', 'authenticated page origin mismatch');
+        }
         const binding = await page.readPropertyBinding();
         if (binding.tenant !== secret.expectedTenant) {
           throw new HmsRuntimeError('wrong_tenant', 'tenant ID mismatch');
@@ -1532,6 +1547,55 @@ function createHmsRuntimeInternal(
         ? lastNavErr.message.slice(0, 120)
         : 'property verify interrupted by navigation',
     );
+  }
+
+  async function prepareSessionProperty(
+    page: HmsPage,
+    secret: HmsSecret,
+    targetPropertyCode: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const property = getPropertyRegistration(targetPropertyCode);
+    if (property?.group === 'davinci') {
+      const nativePage = nativePlaywrightPages.get(page);
+      if (!nativePage) {
+        throw new HmsRuntimeError('wrong_property', 'Cloud property verification requires the native browser');
+      }
+      const { verifyCloudProperty, switchCloudProperty } = await import('../../tooling/hms-cloud/cloud-session.mjs');
+      assertNotAborted(signal);
+      assertDeadline(signal);
+      await verifyCloudProperty(nativePage, {
+        propertyCode: secret.expectedPropertyCode,
+        tenantId: secret.expectedTenant,
+      });
+      assertNotAborted(signal);
+      assertDeadline(signal);
+      if (targetPropertyCode !== secret.expectedPropertyCode) {
+        await switchCloudProperty(nativePage, {
+          propertyCode: targetPropertyCode,
+          landingPropertyCode: secret.expectedPropertyCode,
+          tenantId: secret.expectedTenant,
+        });
+      }
+      assertNotAborted(signal);
+      assertDeadline(signal);
+      const verified = await verifyCloudProperty(nativePage, {
+        propertyCode: targetPropertyCode,
+        tenantId: secret.expectedTenant,
+      });
+      if (verified.propertyCode !== targetPropertyCode || verified.tenantId !== property.expectedTenant ||
+          verified.origin !== property.origin || new URL(page.url()).origin !== property.origin) {
+        throw new HmsRuntimeError('wrong_property', 'Cloud target identity mismatch');
+      }
+      assertNotAborted(signal);
+      assertDeadline(signal);
+      return;
+    }
+    if ((property?.landingPropertyCode ?? targetPropertyCode) !== secret.expectedPropertyCode) {
+      throw new HmsRuntimeError('wrong_property', 'credential cannot select the requested property');
+    }
+    await waitForAuthenticatedShell(page, secret, remainingBudgetMs(signal, timeoutMs));
+    await verifyProperty(page, secret);
   }
 
   /**
@@ -1650,6 +1714,10 @@ function createHmsRuntimeInternal(
     revalidateEvidenceIfConfigured();
 
     const secret = await getSecret(input.signal);
+    const targetPropertyCode = options.expectedPropertyCode ?? input.sessionAuthorization?.propertyCode ?? secret.expectedPropertyCode;
+    if (input.sessionAuthorization && (input.sessionAuthorization.propertyCode ?? 'HRCEN') !== targetPropertyCode) {
+      throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session authorization does not match the runtime property');
+    }
     if (!secretTransportIds(secret).includes(input.transportId)) {
       throw new HmsRuntimeError(
         'transport_mismatch',
@@ -1772,6 +1840,10 @@ function createHmsRuntimeInternal(
 
     const release = await acquireSessionLock(input.signal);
     activeSessions += 1;
+    const operationSignal = input.signal;
+    let credentialLease: import('../../tooling/hms-cloud/cloud-session.mjs').CloudCredentialLease | null = null;
+    let credentialReleaseOnce: Promise<void> | null = null;
+    let credentialLeaseAcquisitionPending = false;
 
     let authContext: HmsBrowserContext | null = null;
     let authCloseOnce: Promise<void> | null = null;
@@ -1811,7 +1883,7 @@ function createHmsRuntimeInternal(
 
     let teardownStarted = false;
     let teardownFinished = false;
-    const releaseIfSafe = () => {
+    const releaseIfSafe = (): Promise<void> => {
       // A timed-out native close may still be running. Keep both the lock and
       // active-session accounting until teardown is complete and ownership is
       // proven closed, including when the native promise settles late.
@@ -1821,12 +1893,25 @@ function createHmsRuntimeInternal(
         authClosePending ||
         authContextCreationPending ||
         proofContextCreationPending ||
+        credentialLeaseAcquisitionPending ||
         context ||
         proofClosePending
       ) {
-        return;
+        return Promise.resolve();
+      }
+      if (credentialLease) {
+        if (!credentialReleaseOnce) {
+          const lease = credentialLease;
+          credentialReleaseOnce = Promise.resolve().then(() => lease.release()).then(releaseOnce);
+          void credentialReleaseOnce.catch((error: unknown) => {
+            activeTeardownError ??= error;
+            poisonAuthCleanup();
+          });
+        }
+        return credentialReleaseOnce;
       }
       releaseOnce();
+      return Promise.resolve();
     };
 
     const poisonAuthCleanup = () => {
@@ -2591,9 +2676,10 @@ function createHmsRuntimeInternal(
           }
           throw error;
         } finally {
-          input.signal.removeEventListener('abort', closeOnAbort);
+          operationSignal.removeEventListener('abort', closeOnAbort);
+          credentialLease?.signal.removeEventListener('abort', closeOnAbort);
           teardownFinished = true;
-          releaseIfSafe();
+          await releaseIfSafe();
         }
       })();
       const pendingFinalize = finalizeOnce;
@@ -2806,6 +2892,25 @@ function createHmsRuntimeInternal(
       await revalidateSessionAuthorization();
       assertNotAborted(input.signal);
       assertDeadline(input.signal);
+      if (getPropertyRegistration(targetPropertyCode)?.group === 'davinci') {
+        const { acquireCloudCredentialLease } = await import('../../tooling/hms-cloud/cloud-session.mjs');
+        assertNotAborted(input.signal);
+        credentialLeaseAcquisitionPending = true;
+        try {
+          credentialLease = await acquireCloudCredentialLease(targetPropertyCode, { signal: input.signal });
+        } finally {
+          credentialLeaseAcquisitionPending = false;
+          await releaseIfSafe();
+        }
+        credentialLease.signal.addEventListener('abort', closeOnAbort, { once: true });
+        input.signal = AbortSignal.any([operationSignal, credentialLease.signal]);
+        if ('deadlineMs' in operationSignal && typeof operationSignal.deadlineMs === 'number') {
+          Object.defineProperty(input.signal, 'deadlineMs', { value: operationSignal.deadlineMs });
+        }
+        if (input.signal.aborted) closeOnAbort();
+        assertNotAborted(input.signal);
+        assertDeadline(input.signal);
+      }
       const b = await getBrowser(input.signal, capture?.nativeTracesDir);
       assertNotAborted(input.signal);
       assertDeadline(input.signal);
@@ -2817,7 +2922,8 @@ function createHmsRuntimeInternal(
       // not restore an authenticated shell (AUTH_FAILED after COMMON/OSRESV).
       // Opt-in single-context login keeps session on one context. live_proof
       // video may include the login form; preferred over no live proof.
-      const useSingleContextLogin = process.env.HMS_SINGLE_CONTEXT_LOGIN === '1';
+      const useSingleContextLogin = getPropertyRegistration(targetPropertyCode)?.group === 'davinci' ||
+        process.env.HMS_SINGLE_CONTEXT_LOGIN === '1';
       if (useSingleContextLogin) {
         const proofOpts: HmsNewContextOptions = {
           ...contextCreationOptions(),
@@ -2856,12 +2962,7 @@ function createHmsRuntimeInternal(
         });
         await page.fillLogin(secret.username, secret.password);
         await page.submitLogin();
-        await waitForAuthenticatedShell(
-          page,
-          secret,
-          remainingBudgetMs(input.signal, timeoutMs),
-        );
-        await verifyProperty(page, secret);
+        await prepareSessionProperty(page, secret, targetPropertyCode, input.signal);
 
         if (capture) {
           const skipTrace = process.env.HMS_PROOF_SOFT_TRACE_FINALIZE === '1';
@@ -2994,12 +3095,7 @@ function createHmsRuntimeInternal(
       });
       await authPage.fillLogin(secret.username, secret.password);
       await authPage.submitLogin();
-      await waitForAuthenticatedShell(
-        authPage,
-        secret,
-        remainingBudgetMs(input.signal, timeoutMs),
-      );
-      await verifyProperty(authPage, secret);
+      await prepareSessionProperty(authPage, secret, targetPropertyCode, input.signal);
 
       const landingUrl = authPage.url();
       if (!landingUrl || new URL(landingUrl).origin !== new URL(secret.loginUrl).origin) {
@@ -3158,12 +3254,7 @@ function createHmsRuntimeInternal(
           'authenticated storage state redirected to login',
         );
       }
-      await waitForAuthenticatedShell(
-        page,
-        secret,
-        remainingBudgetMs(input.signal, timeoutMs),
-      );
-      await verifyProperty(page, secret);
+      await prepareSessionProperty(page, secret, targetPropertyCode, input.signal);
       await closeAuthContext();
 
       if (!started && input.allowUnstarted) {
@@ -3557,69 +3648,10 @@ export async function tryCreatePlaywrightBrowserFactory(): Promise<BrowserFactor
   }
 }
 
-function wrapPlaywrightPage(page: {
-  goto(url: string, options?: { waitUntil?: 'domcontentloaded'; timeout?: number }): Promise<unknown>;
-  content(): Promise<string>;
-  close(): Promise<void>;
-  setDefaultTimeout(ms: number): void;
-  setDefaultNavigationTimeout(ms: number): void;
-  setContent?(html: string): Promise<void>;
-  url(): string;
-  title(): Promise<string>;
-  locator(selector: string): {
-    fill(value: string): Promise<void>;
-    click(options?: { force?: boolean; timeout?: number }): Promise<void>;
-    press(key: string): Promise<void>;
-    count(): Promise<number>;
-    nth(index: number): {
-      isVisible(): Promise<boolean>;
-      scrollIntoViewIfNeeded(): Promise<void>;
-      click(options?: { force?: boolean; timeout?: number }): Promise<void>;
-    };
-    first(): {
-      click(options?: { force?: boolean; timeout?: number }): Promise<void>;
-    };
-  };
-  getByLabel(text: string): { fill(value: string): Promise<void> };
-  getByRole(
-    role: string,
-    opts: { name: string },
-  ): { click(): Promise<void> };
-  getByText(
-    text: string,
-    opts?: { exact?: boolean },
-  ): {
-    first(): {
-      click(options?: { force?: boolean; timeout?: number }): Promise<void>;
-    };
-  };
-  waitForResponse(
-    predicate: (res: { url(): string }) => boolean,
-    options?: { timeout?: number },
-  ): Promise<unknown>;
-  request?: {
-    post(
-      url: string,
-      options?: {
-        headers?: Record<string, string>;
-        data?: string;
-        timeout?: number;
-        maxRedirects?: number;
-      },
-    ): Promise<{ text(): Promise<string>; status(): number }>;
-  };
-  waitForURL(
-    url: RegExp | string,
-    options?: { timeout?: number },
-  ): Promise<unknown>;
-  waitForLoadState(
-    state?: 'load' | 'domcontentloaded' | 'networkidle',
-  ): Promise<void>;
-  evaluate<T>(fn: () => T | Promise<T>): Promise<T>;
-  evaluate<T, A>(fn: (arg: A) => T | Promise<T>, arg: A): Promise<T>;
-  video?(): { path(): Promise<string> } | null;
-}): HmsPage {
-  return {
+const nativePlaywrightPages = new WeakMap<HmsPage, import('playwright').Page>();
+
+function wrapPlaywrightPage(page: import('playwright').Page): HmsPage {
+  const adapter: HmsPage = {
     async goto(url, options) {
       await page.goto(url, {
         waitUntil: 'domcontentloaded',
@@ -3882,4 +3914,6 @@ function wrapPlaywrightPage(page: {
       return { path: () => v.path() };
     },
   };
+  nativePlaywrightPages.set(adapter, page);
+  return adapter;
 }

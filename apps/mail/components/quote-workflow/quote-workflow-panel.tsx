@@ -1195,8 +1195,10 @@ export function QuoteWorkflowPanel({
             ratePlan={ratePlan}
             onRatePlanChange={changeRatePlan}
           />
-          {paneConfig?.propertyCode === HRCEN_PROPERTY_CODE ? session.groups.map((group) => <ContextualRateCheck
+          {paneConfig && paneConfig.transportId === workItemPane?.rateDraft?.transportId &&
+            ['prepare-only', 'lab', 'staff-enabled'].includes(paneConfig.capabilities?.quote.status ?? '') ? session.groups.map((group) => <ContextualRateCheck
             key={group.id} group={group} session={session} pane={workItemPane} evidence={rateEvidence} plans={rateCatalogue ?? []}
+            propertyCode={paneConfig.propertyCode}
             onChoose={onPatchGroup ? (code) => onPatchGroup(group.id, { rateCode: code || undefined }) : undefined} />) : null}
           {showRates ? (
             <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>

@@ -10,6 +10,7 @@ import {
   parseStayProperty,
   profileFor,
   propertySecretRefusal,
+  stayBookFieldRefusal,
   validateProfile,
 } from './property-profile.mjs';
 import { PROPERTY_REGISTRY } from './property-registry.mjs';
@@ -32,6 +33,19 @@ test('every registry property points at its verified room profile', () => {
   for (const property of PROPERTY_REGISTRY.properties) {
     if (property.profileFile) assert.equal(profileFor(property.propertyCode).propertyCode, property.propertyCode);
   }
+});
+
+test('HRDAVS records observed choices without claiming room inventory or true consent', () => {
+  const profile = profileFor('HRDAVS');
+  assert.deepEqual(amendRoomTypes('HRDAVS'), ['1BLX', '2BLX', '3BLX', 'PENT']);
+  assert.equal(profile.publishedRooms, undefined);
+  assert.equal(profile.roomCapacity, undefined);
+  assert.equal(profile.building, undefined);
+  assert.equal(Object.keys(profile.ratePlans).length, 100);
+  assert.equal(profile.ratePlans.BAR.mealPlan, 'unknown');
+  const stay = { marketSegment: 'Airline', guestoptin4: false, reservationNote: 'note' };
+  assert.equal(stayBookFieldRefusal(stay, profile), null);
+  assert.equal(stayBookFieldRefusal({ ...stay, guestoptin4: undefined }, profile), 'pane_save_guest_opt_in_required');
 });
 
 test('capacities summing to 161 against 160 published rooms are rejected', async () => {

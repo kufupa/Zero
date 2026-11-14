@@ -830,10 +830,10 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       const lock = paneStayPropertyLock(resolved.target);
       if (!lock) return null;
       return lock.withLock(async () => projectCloudStayFind(request,
-        await runCloudStayFind({ request, target: resolved.target, signal: ctx.nativeBatch!.signal })),
+        await runCloudStayFind({ request, target: resolved.target, transportId: ctx.transport.id, signal: ctx.nativeBatch!.signal })),
       { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
     })().catch(() => null)
-    : await findStay(request, { target: resolved.target, lock: () => paneStayPropertyLock(resolved.target),
+    : await findStay(request, { target: resolved.target, transportId: ctx.transport.id, lock: () => paneStayPropertyLock(resolved.target),
       acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
   const stay = record(result?.stay), selectedStay = amendSelection?.stay;
   const sameSelected = Boolean(stay && selectedStay && stay.confirmation === selectedStay.confirmation && stay.status === 'Reserved' &&

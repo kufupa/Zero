@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { installSavedStayReadGuard, savedStayReadMayRequest } from './saved-stay-read-guard.mjs';
+import { searchGuestInCloud } from './pane-guest-search.mjs';
 
 const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const post = (path, body) => ({ method: 'POST', url: `${origin}${path}`, postData: body,
@@ -127,6 +128,49 @@ test('record navigation is confined to the selected confirmation and observed vi
   assert.equal(savedStayReadMayRequest(request(duplicate), selected), false);
   assert.equal(savedStayReadMayRequest(request(query, 'https://other.invalid'), selected), false);
   assert.equal(savedStayReadMayRequest(request(query)), false);
+});
+
+test('Da Vinci guard binds login and record header to the selected property', () => {
+  const header = new URLSearchParams({ SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR',
+    confirmationnumber: '123-1', reservationstayid: '456', propertycode: 'HRDAVS', guestfullname: 'Proof Labtest',
+    account: '789', guestid: '789', hoteldate: '2026-11-03', lastname: 'Labtest', firstname: 'Proof',
+    twitterid: '-', facebookid: '-', tripadvisorid: '-', bookingdotcomid: '-', room: '' });
+  const selected = { confirmation: '123-1', propertyCode: 'HRDAVS' };
+  assert.equal(savedStayReadMayRequest(post('/web/base/login', login.replace('THECENTURION_PRD', 'DAVINCI_PRD')), selected), true);
+  assert.equal(savedStayReadMayRequest(post('/web/base/login', login), selected), false);
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', header.toString()), selected), true);
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', header.toString()), { ...selected, propertyCode: 'HRDAV' }), false);
+  assert.equal(savedStayReadMayRequest(post('/web/base/OSRESV.HDR', header.toString()), { ...selected, propertyCode: 'OTHER' }), false);
+  const switched = new URLSearchParams({ initpath: 'BSSTRT', USER_FUNCTION_NAME: 'BSSTRT', MENU_MODULE_KEY: '-1',
+    fromlogin: 'yes', defaultproperty: 'HRDAVS', requestToken: 'abc%2B12&browserTabID=1' });
+  const navigation = { method: 'GET', url: `${origin}/web/base/loadmain?${switched}` };
+  assert.equal(savedStayReadMayRequest(navigation, selected), true);
+  assert.equal(savedStayReadMayRequest(navigation, { ...selected, propertyCode: 'HRDAV' }), false);
+  const chooser = new URLSearchParams({ SYSTEM_FUNCTION_NAME: 'SWITCHPROP', USER_FUNCTION_NAME: 'SWITCHPROP',
+    GRID_NAME: 'LVSORGALL', GRID_TYPE: 'LOV', REQUEST_TYPE: 'LOV.HEAD_DATA.STORED',
+    LOV_TAGNAME: 'propertylookup', popup: 'true', harmless_metadata: 'native' });
+  assert.equal(savedStayReadMayRequest(post('/web/base/LOVPOP', chooser.toString()), selected), true);
+  assert.equal(savedStayReadMayRequest(post('/web/base/LOVPOP', chooser.toString()), { ...selected, propertyCode: 'HRDAV' }), false);
+  chooser.set('GRID_NAME', 'OTHER');
+  assert.equal(savedStayReadMayRequest(post('/web/base/LOVPOP', chooser.toString()), selected), false);
+  chooser.set('GRID_NAME', 'LVSORGALL'); chooser.set('operation', 'SAVE');
+  assert.equal(savedStayReadMayRequest(post('/web/base/LOVPOP', chooser.toString()), selected), false);
+});
+
+test('guest search binds its session and parser result to the selected property', async () => {
+  let searched = 0;
+  const identity = { propertyCode: 'HRDAVS', tenantId: 'DAVINCI_PRD', landingPropertyCode: 'HRDAV', origin };
+  let options;
+  const deps = { openSession: async (operation, input) => { options = input; return operation({}, identity); },
+    navigate: async (_page, propertyCode) => assert.equal(propertyCode, 'HRDAVS'),
+    search: async () => { searched++; return { outcome: 'ok', rows: [] }; } };
+  const input = { propertyCode: 'HRDAVS', lastName: 'Labtest', arrival: '2027-09-14', dir: '/tmp/private' };
+  assert.deepEqual(await searchGuestInCloud(input, deps), { outcome: 'ok', rows: [], propertyCode: 'HRDAVS' });
+  assert.equal(options.propertyCode, 'HRDAVS');
+  assert.equal(options.startScreen, 'OSRESV');
+  identity.propertyCode = 'HRDAV';
+  await assert.rejects(searchGuestInCloud(input, deps), /GUEST_STAY_PROPERTY_UNVERIFIED/);
+  assert.equal(searched, 1);
 });
 
 test('record view POST is confined to the selected confirmation and observed fields', () => {

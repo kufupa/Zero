@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { withCloudReadSession } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { lookupFailure } from './stay360-lookup-cli.mjs';
@@ -64,15 +66,28 @@ function readFailure(error, stage, shallow) {
 
 /** Own guarded pages; calls submitted through runTool execute in order. */
 export async function withSavedStayAgentSession(operation, { signal, readOnly = false, readOnlyConfirmation,
-  cloudTargetKey, dispatchRateOverride } = {}) {
+  cloudTargetKey, dispatchRateOverride, propertyCode = 'HRCEN', transportId } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
   if (typeof readOnly !== 'boolean') throw new Error('READ_ONLY_OPTION_INVALID');
   if (dispatchRateOverride !== undefined && typeof dispatchRateOverride !== 'function') throw new Error('RATE_DISPATCH_INVALID');
   if (readOnly && !/^\d+-\d+$/.test(readOnlyConfirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
+  const property = readOnly ? getPropertyRegistration(propertyCode) : null;
+  if (readOnly && !property?.active) throw new Error('READ_PROPERTY_UNSUPPORTED');
   signal?.throwIfAborted();
   const installStrictGuard = readOnly ? (await import('./saved-stay-read-guard.mjs')).installSavedStayReadGuard : undefined;
-  const prepareContext = installStrictGuard && ((context) => installStrictGuard(context, { confirmation: readOnlyConfirmation }));
-  return withCenturionStay360Page(async (page) => {
+  const prepareContext = installStrictGuard && ((context) => installStrictGuard(context, { confirmation: readOnlyConfirmation, propertyCode }));
+  if (readOnly && cloudTargetKey !== undefined && propertyCode !== 'HRCEN') throw new Error('READ_PROPERTY_UNSUPPORTED');
+  const openSession = readOnly && cloudTargetKey === undefined
+    ? (callback) => withCloudReadSession(async (page, identity) => {
+      if (!identity || identity.propertyCode !== propertyCode || identity.tenantId !== property.expectedTenant ||
+          identity.landingPropertyCode !== property.landingPropertyCode || identity.origin !== property.origin) {
+        throw new Error('READ_SESSION_PROPERTY_MISMATCH');
+      }
+      return callback(page);
+    }, { propertyCode, headless: true, signal, startScreen: 'OSRESS', prepareContext, ...(transportId !== undefined && { transportId }) })
+    : (callback) => withCenturionStay360Page(callback, { headless: true, signal, blockServiceWorkers: true, cloudTargetKey,
+      ...(prepareContext && { prepareContext }) });
+  return openSession(async (page) => {
     if (!readOnly) await installReadOnlyGuard(page.context());
     let current = null, recordOpen = false, pendingCancel = null, pendingRate = null, sealed = false, nativeDialog = null;
     let accepting = true, tail = Promise.resolve();
@@ -140,7 +155,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
         }
         if (request.view === 'shallow') return { outcome: 'ok', shallow };
         try {
-          const record = await readRecord(page, shallow.confirmation, { nativePropertyCode: 'HRCEN',
+          const record = await readRecord(page, shallow.confirmation, { nativePropertyCode: readOnly ? propertyCode : 'HRCEN',
             nativeIdentityOnly: readOnly && request.includeNativeIdentityOnly === true });
           recordOpen = true;
           const statuses = record.details.fields.filter((field) => field.name === 'status');
@@ -393,8 +408,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
       releaseAvailability?.();
       await availabilityTask;
     }
-  }, { headless: true, signal, blockServiceWorkers: true, cloudTargetKey,
-    ...(prepareContext && { prepareContext }) });
+  });
 }
 
 const writeLine = (value) => new Promise((done, fail) => {

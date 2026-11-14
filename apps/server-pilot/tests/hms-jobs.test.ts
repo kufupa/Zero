@@ -3,6 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import * as hmsJobs from '../src/ai/hms-jobs.js';
+import * as hmsService from '../src/hms/hms-service.js';
 import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import {
   canClaimReadToolRun,
@@ -96,19 +97,20 @@ const STAFF_QUOTE_INPUT = {
       quantity: 1,
       adults: 2,
       childrenAges: [],
-      board: 'room_only',
+      mealPlan: 'room_only',
       roomCodes: ['SKNG'],
     },
   ],
   salesStrategy: 'BAR',
-  company: '',
-  agency: '',
+  organization: '',
+  bookingAgency: '',
   attention: '',
   clientEmail: '',
   clientTelephone: '',
 } as const;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.spawn = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
@@ -404,6 +406,83 @@ async function seedPartyMatchV2(
 }
 
 describe('U23 HMS job queue (pure)', () => {
+  it('preserves HRCEN origin admission without adding DaVinci proof gates', async () => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'off');
+    const config = vi.spyOn(hmsService, 'createHmsService').mockImplementation(() => {
+      throw new Error('HRCEN must retain its existing capability path');
+    });
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selected: { toAddresses: [TRANSPORT_EMAIL] }, selectedFound: true,
+      inbounds: [{ toAddresses: [TRANSPORT_EMAIL] }],
+    });
+    const input = { transportId: TRANSPORT_ID, capability: 'reads' as const,
+      threadId: 'centurion-source', messageId: 'selected-source' };
+    expect(await hmsJobs.resolveSelectedHmsReadJobTarget(input)).toEqual({ ok: true, target: CENTURION_HMS_READ_TARGET });
+    expect(config).not.toHaveBeenCalled();
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selected: { toAddresses: [DAVINCI_TRANSPORT_EMAIL] }, selectedFound: true,
+      inbounds: [{ toAddresses: [DAVINCI_TRANSPORT_EMAIL] }],
+    });
+    expect(await hmsJobs.resolveSelectedHmsReadJobTarget(input)).toEqual({ ok: false, code: 'davinci_origin_refused' });
+    expect(config).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { suitesEnabled: false, davinciEnabled: true, expected: false },
+    { suitesEnabled: true, davinciEnabled: false, expected: true },
+  ])('rechecks selected Suites quote authority independently of landing-property availability: $suitesEnabled/$davinciEnabled', async ({ suitesEnabled, davinciEnabled, expected }) => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    const configure = vi.fn(async (propertyCode: string) => ({ propertyCode, capabilities: {
+      reads: { status: 'staff-enabled' },
+      quote: { status: (propertyCode === 'HRDAVS' ? suitesEnabled : davinciEnabled) ? 'staff-enabled' : 'unavailable' },
+    } }));
+    const original = hmsService.createHmsService;
+    const factory = vi.spyOn(hmsService, 'createHmsService').mockImplementation((input) => ({
+      ...original(input), configuration: () => configure(input.propertySwitch ?? 'HRCEN') as never,
+    }));
+    const result = await hmsJobs.resolveSelectedHmsReadJobTarget({ transportId: FAITH_TRANSPORT_ID,
+      requestedPropertyCode: 'HRDAVS', capability: 'quote',
+      metrics: { selectedPropertyCode: 'HRDAVS' } });
+    expect(result.ok).toBe(expected);
+    expect(factory).toHaveBeenCalledWith({ transportId: FAITH_TRANSPORT_ID, propertySwitch: 'HRDAVS' });
+    expect(configure).toHaveBeenCalledTimes(1);
+    expect(configure).toHaveBeenCalledWith('HRDAVS');
+    if (result.ok) expect(result.target.propertyCode).toBe('HRDAVS');
+  });
+
+  it('revalidates lost quote evidence and selected noncontext read capability on every worker resolution', async () => {
+    let readsEnabled = true;
+    let quoteEnabled = true;
+    const original = hmsService.createHmsService;
+    vi.spyOn(hmsService, 'createHmsService').mockImplementation((input) => ({
+      ...original(input), configuration: async () => ({ propertyCode: input.propertySwitch ?? 'HRCEN', capabilities: {
+        reads: { status: readsEnabled ? 'staff-enabled' : 'unavailable' },
+        quote: { status: quoteEnabled ? 'staff-enabled' : 'unavailable' },
+      } }) as never,
+    }));
+    const pricing = { transportId: FAITH_TRANSPORT_ID, requestedPropertyCode: 'HRDAVS', capability: 'quote' as const };
+    expect((await hmsJobs.resolveSelectedHmsReadJobTarget(pricing)).ok).toBe(true);
+    quoteEnabled = false;
+    expect(await hmsJobs.resolveSelectedHmsReadJobTarget(pricing)).toEqual({ ok: false, code: 'hms_read_capability_unavailable' });
+    const selectedRead = { transportId: FAITH_TRANSPORT_ID, capability: 'reads' as const,
+      metrics: { selectedPropertyCode: 'HRDAVS' } };
+    expect((await hmsJobs.resolveSelectedHmsReadJobTarget(selectedRead)).ok).toBe(true);
+    readsEnabled = false;
+    expect(await hmsJobs.resolveSelectedHmsReadJobTarget(selectedRead)).toEqual({ ok: false, code: 'hms_read_capability_unavailable' });
+    expect(await hmsJobs.resolveSelectedHmsReadJobTarget({ ...pricing, transportId: TRANSPORT_ID })).toEqual({ ok: false, code: 'rate_property_unauthorized' });
+    expect(await hmsJobs.resolveSelectedHmsReadJobTarget({ ...pricing, metrics: { selectedPropertyCode: 'HRDAV' } })).toEqual({ ok: false, code: 'rate_property_unauthorized' });
+  });
+
+  it('binds queued pricing reads to authenticated transport membership and the selected property', () => {
+    expect(hmsJobs.rateCandidateReadTarget(TRANSPORT_ID, 'HRCEN')?.propertyCode).toBe('HRCEN');
+    expect(hmsJobs.rateCandidateReadTarget(DAVINCI_TRANSPORT_ID, 'HRDAV')?.propertyCode).toBe('HRDAV');
+    expect(hmsJobs.rateCandidateReadTarget(FAITH_TRANSPORT_ID, 'HRDAVS')?.propertyCode).toBe('HRDAVS');
+    expect(hmsJobs.rateCandidateReadTarget(TRANSPORT_ID, 'HRDAVS')).toBeNull();
+    expect(hmsJobs.rateCandidateReadTarget(DAVINCI_TRANSPORT_ID, 'HRCEN')).toBeNull();
+    expect(hmsJobs.rateCandidateReadTarget('unregistered-transport', 'HRDAV')).toBeNull();
+    expect(hmsJobs.rateCandidateReadTarget(DAVINCI_TRANSPORT_ID, 'UNKNOWN')).toBeNull();
+  });
+
   it('refuses an explicitly empty selected-source hash before consulting the database', async () => {
     const unavailable = {} as DB;
     const source = { transportId: 'mailbox-a', threadId: 'thread-a', messageId: 'message-a', sourceHash: '' };
@@ -676,7 +755,7 @@ describe('party sender history policy', () => {
   });
 
   type SenderObservation = {
-    kind: 'company' | 'agency';
+    kind: 'organization' | 'bookingAgency';
     name: string;
     nativeId: string;
     iata: string | null;
@@ -685,13 +764,13 @@ describe('party sender history policy', () => {
     selectSenderPartyForHost?: (host: string, parties: SenderObservation[]) => SenderObservation | null;
   }).selectSenderPartyForHost;
   const agency = {
-    kind: 'agency' as const,
+    kind: 'bookingAgency' as const,
     name: 'XL Nexus',
     nativeId: 'agency-1',
     iata: null,
   };
   const company = {
-    kind: 'company' as const,
+    kind: 'organization' as const,
     name: 'Momentum Metropolitan Holdings',
     nativeId: 'company-1',
     iata: null,

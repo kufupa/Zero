@@ -262,11 +262,6 @@ async function createProductionHmsRuntimeInternal(
   if (loadedProof.propertyCode !== config.expectedPropertyCode) {
     throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'role proof property does not match worker config');
   }
-  // The HRDAVS native switch is implemented in P2; never read its landing hotel as Suites.
-  if (config.expectedPropertyCode === 'HRDAVS') {
-    throw new HmsRuntimeError('PROPERTY_MISMATCH', 'property switching is not available yet');
-  }
-
   const loadSecret =
     options?.loadSecret ?? createSecretsManagerLoader(options?.region);
   const rawLoaded = await loadSecret({ secretArn: config.secretArn });
@@ -335,7 +330,7 @@ async function createProductionHmsRuntimeInternal(
     );
   }
 
-  const manifest = buildLiveGuestStayReadManifest(origin);
+  const manifest = buildLiveGuestStayReadManifest(origin, registration.propertyCode);
   for (const rule of manifest.rules) {
     if (rule.origin !== expectedOrigin) {
       throw new HmsRuntimeError(
@@ -377,6 +372,7 @@ async function createProductionHmsRuntimeInternal(
     defaultTimeoutMs: Math.min(15_000, config.runDeadlineMs),
     requireViewOnly: true,
     expectedOrigin,
+    expectedPropertyCode: registration.propertyCode,
     roleProofPath: config.roleProofPath,
     loadRoleProof: (path, now) => loadProductionRoleProof(path, { now }),
     healthHeartbeatMs: 10_000,

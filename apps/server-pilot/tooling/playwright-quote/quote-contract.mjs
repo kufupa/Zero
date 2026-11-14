@@ -623,7 +623,7 @@ const ROOM_PROFILE_OUT_OF_DATE = 'Room profile out of date: observed HMS room ty
 // Every observed row: a profiled room type, no HMS building, integer per-night inventory. HMS inventory is the truth:
 // a count above the profile's roomCapacity (a hint, not a cap) still holds; pool supply always comes from HMS nightly.
 function matchesProfile(profile, groups) {
-  if (!Array.isArray(groups)) return false;
+  if (!profile.roomCapacity || profile.building !== 'none' || !Array.isArray(groups)) return false;
   return groups.every((group) => Array.isArray(group?.options) && group.options.every((row) => {
     const code = row?.room?.code;
     if (typeof code !== 'string' || !Object.hasOwn(profile.roomCapacity, code) || row.room.buildingCode !== null) return false;

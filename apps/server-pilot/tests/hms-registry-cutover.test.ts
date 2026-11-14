@@ -42,11 +42,27 @@ import {
 import { fingerprintReadToolRegistry, productionActiveReadToolIds } from '../src/hms/read-tools.js';
 import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
-import { resolveWorkerActiveReadPaths, loadWorkerActiveReadSet } from '../src/hms/active-read-runtime.js';
+import { resolveWorkerActiveReadPaths, loadWorkerActiveReadSet, getActiveReadRuntime } from '../src/hms/active-read-runtime.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+
+it('keeps concurrent property runtime tool maps independent', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hms-read-partitions-'));
+  try {
+    const [hotel, suites] = await Promise.all(['HRDAV', 'HRDAVS'].map(propertyCode => loadWorkerActiveReadSet({
+      propertyCode: propertyCode === 'HRDAV' ? 'HRDAV' : 'HRDAVS',
+      registryPath: join(root, propertyCode, 'active-registry.v2.json'),
+      releaseRoot: join(root, propertyCode, 'releases'), runtimeFingerprintSha256: 'a'.repeat(64),
+    })));
+    expect(getActiveReadRuntime('HRDAV')).toBe(hotel);
+    expect(getActiveReadRuntime('HRDAVS')).toBe(suites);
+    expect(hotel.releases).not.toBe(suites.releases);
+    hotel.toolIds.add('hms_find_reservation');
+    expect(suites.toolIds.has('hms_find_reservation')).toBe(false);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 function hex(n: number | string): string {
   return String(n).repeat(64).slice(0, 64);

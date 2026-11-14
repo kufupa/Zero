@@ -18,9 +18,10 @@ export type ProfileStrategyScope = 'agency' | 'company' | 'public';
 
 export type PropertyProfile = {
   propertyCode: string;
-  publishedRooms: number;
-  building: string;
-  roomCapacity: Record<string, number>;
+  schemaVersion?: 'hms-property-profile/v2';
+  publishedRooms?: number;
+  building?: string;
+  roomCapacity?: Record<string, number>;
   requiredCreateFields: string[];
   salesStrategies?: Array<{ value: string; display: string; scope?: ProfileStrategyScope }>;
   rooms?: Record<string, { label: string; aliases?: string[]; autoQuote?: boolean }>;
@@ -40,6 +41,7 @@ export type PropertyProfile = {
   letter?: { hotel: string; confirmation: string };
   cancellation?: { noticeHours: number };
   createForm?: {
+    guestOptInPolicy?: 'required_boolean';
     requiredMarkers?: Record<string, { required?: boolean }>;
     options?: Record<string, {
       choices?: Array<{ value: string; display: string; marketSegment?: string }>;

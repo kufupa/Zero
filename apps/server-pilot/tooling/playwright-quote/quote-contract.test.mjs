@@ -731,6 +731,15 @@ test('composeAllocation uses proven building/room pools and invents none without
   ], 'HRCEN').status, 'unknown');
 });
 
+test('HRDAVS room choices do not prove a shared inventory pool', () => {
+  const groups = [
+    roomGroup('a', 1, '1BLX', 'BAR', null, nights(4)),
+    roomGroup('b', 1, '1BLX', 'BAR', null, nights(4)),
+  ];
+  assert.equal(profileHolds('HRDAVS', groups), false);
+  assert.equal(composeAllocation(groups, 'HRDAVS').status, 'unknown');
+});
+
 // Rows as fetch-quote leaves them: one room/rate option per group, nightly inventory per date.
 const nights = (...inventories) => inventories.map((inventory, i) => ({ date: `2026-09-${24 + i}`, inventory }));
 const roomGroup = (id, quantity, roomCode, rateCode, buildingCode, nightly, option = {}) => ({

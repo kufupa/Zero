@@ -118,7 +118,7 @@ const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 export type FilingSnapshot = { cmsSend: boolean };
 export type CloudFilingRecord = { stay: PaneStayFields; nativeGuestId: string; nativeStayId: string; filingSnapshot: FilingSnapshot };
-type FilingReadOptions = { allowRealGuest: boolean; cloudTargetKey?: string };
+type FilingReadOptions = { allowRealGuest: boolean; cloudTargetKey?: string; transportId?: string };
 
 async function currentFilingSelection(db: DB, transportId: string, source: HmsSelectedSource): Promise<boolean> {
   const { isSelectedHmsInboundMessage } = await import('./hms-jobs.js');
@@ -148,9 +148,10 @@ async function readCloudFilingRecord(request: { confirmation: string; arrival: s
         };
         return session.withSavedStayAgentSession((owned) => readCloudStayForPane(owned, request, true), {
           signal, readOnly: true, readOnlyConfirmation: request.confirmation, cloudTargetKey: options.cloudTargetKey,
+          ...(options.transportId !== undefined ? { transportId: options.transportId } : {}),
         });
       })()
-      : await runCloudStayFind({ request, target, nativeIdentityOnly: true, signal });
+      : await runCloudStayFind({ request, target, transportId: options.transportId, nativeIdentityOnly: true, signal });
     const result = projectCloudStayFind(request, raw);
     const record = raw && typeof raw === 'object' ? (raw as { record?: { nativePreimage?: unknown } }).record : null;
     const parsed = z.object({ source: z.literal('record_view_ext_model'), propertyCode: z.literal('HRCEN'),
@@ -184,9 +185,11 @@ export async function readPaneCloudFilingRecord(input: {
   target: HmsReadTarget;
   allowRealGuest: boolean;
   cloudTargetKey?: string;
+  transportId?: string;
 }): Promise<CloudFilingRecord | null> {
   return readCloudFilingRecord({ confirmation: input.confirmation, arrival: input.arrival }, input.target,
-    { allowRealGuest: input.allowRealGuest, ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}) });
+    { allowRealGuest: input.allowRealGuest, ...(input.transportId !== undefined ? { transportId: input.transportId } : {}),
+      ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}) });
 }
 
 /**
@@ -495,7 +498,7 @@ export async function bindAttachDocumentForm(input: {
     try {
       prepared = await lock.withLock(async () => {
         const cloud = await (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
-          { confirmation: form.confirmation, arrival: form.arrival }, target.target, { allowRealGuest: true });
+          { confirmation: form.confirmation, arrival: form.arrival }, target.target, { allowRealGuest: true, transportId: input.transportId });
         if (!cloud || stayRefusal(cloud.stay, form, { allowRealGuest: true }) ||
             squash(cloud.stay.firstName ?? '').toLocaleLowerCase() !== squash(expectedStay.data.firstName).toLocaleLowerCase() ||
             squash(cloud.stay.status ?? '').toLocaleLowerCase() !== squash(expectedStay.data.status).toLocaleLowerCase() ||
@@ -676,7 +679,7 @@ export async function prepareHmsWriteSnapshot(input: {
     let cloud: CloudFilingRecord | null;
     try {
       cloud = await lock.withLock(() => (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
-        { confirmation: input.confirmation, arrival: input.arrival }, target, { allowRealGuest: true }),
+        { confirmation: input.confirmation, arrival: input.arrival }, target, { allowRealGuest: true, transportId: input.transportId }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     } catch (error) {
       return { status: 'refused', reason: isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure' };
@@ -693,7 +696,7 @@ export async function prepareHmsWriteSnapshot(input: {
       { confirmation: input.confirmation, arrival: input.arrival },
       {
         lock: () => paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target),
-        onRun: ({ dir }) => lookupDirs.push(dir), target,
+        onRun: ({ dir }) => lookupDirs.push(dir), target, transportId: input.transportId,
       },
     ).finally(() => removeDirs(lookupDirs));
     if (found.outcome !== 'found' || !found.stay) return { status: 'refused', reason: found.outcome };
@@ -1017,9 +1020,8 @@ async function runPaneAmend(
   const inputRefusal = checkAmendPaneInput(input, { allowRealGuest });
   if (inputRefusal) return refusedAmend(inputRefusal);
   if (mode === 'commit' && !input.previewDigest) return refusedAmend('amend_preview_required');
-  const resolved = paneStayHmsTargetForTransport(
-    input.transportId ?? paneStayTransportIdFromOwner(input.owner),
-  );
+  const transportId = input.transportId ?? paneStayTransportIdFromOwner(input.owner);
+  const resolved = paneStayHmsTargetForTransport(transportId);
   if (!resolved.ok) return refusedAmend('refused_unknown_transport');
   const target = resolved.target;
   // Even the legacy preview edits the native form without a request fence.
@@ -1035,7 +1037,7 @@ async function runPaneAmend(
       const lookupDirs: string[] = [];
       const found = await findStay(
         { confirmation: input.confirmation, arrival: input.arrival },
-        { lock: () => HELD_LOCK, onRun: ({ dir }) => lookupDirs.push(dir), target },
+        { lock: () => HELD_LOCK, onRun: ({ dir }) => lookupDirs.push(dir), target, transportId },
       ).finally(() => removeDirs(lookupDirs));
       if (found.outcome !== 'found' || !found.stay) {
         paymentRefusal = found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
@@ -1349,7 +1351,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   const readCloud = paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord;
   const dispatchTarget = input.dispatchTarget;
   const cloudTargetKey = dispatchTarget ? hmsDispatchTargetKey(dispatchTarget) : undefined;
-  const cloudStay = isCloudAttach ? await readCloud(request, target, { allowRealGuest: input.allowRealGuest, cloudTargetKey }) : null;
+  const cloudStay = isCloudAttach ? await readCloud(request, target, { allowRealGuest: input.allowRealGuest, cloudTargetKey, transportId: input.transportId }) : null;
   if (isCloudAttach && (!cloudStay || dispatchTarget?.kind !== 'saved' ||
       cloudStay.nativeStayId !== dispatchTarget.nativeStayId || cloudStay.stay.confirmation !== dispatchTarget.confirmation)) {
     return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_changed');
@@ -1359,7 +1361,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     ? await captureHmsLabtestDispatchEpoch(db, dispatchTarget, input.workItemId).catch(() => null) : null;
   if (isCloudAttach && dispatchEpoch === null) return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
   const found = isCloudAttach ? { outcome: cloudStay ? 'found' : 'execution_failure', stay: cloudStay?.stay ?? null }
-    : await findStay(request, { lock: () => HELD_LOCK, onRun: ({ dir }) => input.runDirs.push(dir), target });
+    : await findStay(request, { lock: () => HELD_LOCK, onRun: ({ dir }) => input.runDirs.push(dir), target, transportId: input.transportId });
   if (found.outcome !== 'found' || !found.stay) {
     return endRun(db, fence, 'NEEDS_CHECK', `read_${found.outcome}`);
   }
@@ -1733,7 +1735,7 @@ async function runClaimed(
   let dispatchTarget: HmsDispatchTarget | undefined;
   if (isCloudAttach) {
     const initial = await (paneHmsWriteLoaders.readCloudFiling ?? readCloudFilingRecord)(
-      { confirmation: form.confirmation, arrival: form.arrival }, target, { allowRealGuest });
+      { confirmation: form.confirmation, arrival: form.arrival }, target, { allowRealGuest, transportId });
     if (!initial || stayRefusal(initial.stay, form, { allowRealGuest })) {
       return endRun(db, fence, 'NEEDS_CHECK', 'filing_target_unavailable');
     }

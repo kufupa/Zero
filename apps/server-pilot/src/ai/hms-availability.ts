@@ -1,24 +1,19 @@
 /**
  * Availability probe for an inbound quote's stays (U10), run as a third hms-job/1 kind.
  *
- * One read per stay on the Hotel Availability screen (fetch-quote.mjs, the view-only quote reader): the stay's dates
+ * One Cloud read per stay on the Hotel Availability screen: the stay's dates
  * and each room group's occupancy. No party lookup and no rate code. The read takes the property lock with try-lock
  * (background priority), and the job keeps the result as a dated snapshot (KTD11). Enqueued from hms-jobs.ts only
  * when HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on.
  */
-import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   isPropertyReadLockDeadline,
   type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
 import type { ExtractionRow, ExtractionStay } from './extraction/schema.js';
-import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { type PaneStayLock } from './pane-stay-save.js';
 import { type HmsReadTarget } from '../hms/hms-read-target.js';
@@ -26,13 +21,8 @@ import type { HmsCloudRateLookup } from './hms-cloud-saved-stay-find.js';
 import { canonicalJson } from './draft-approval.js';
 import { matchRoomType } from './room-types.js';
 import { occupiedDates } from '../quote-proposal/quote-revision.js';
-
-const execFileAsync = promisify(execFile);
-const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
-// The quote tool writes under the repo's .private/playwright-quote only (fetchQuote refuses any other output).
-const QUOTE_ROOT = fileURLToPath(new URL('../../../../.private/playwright-quote/', import.meta.url));
-// A summary read opens the availability screen and reads the grid. Same bound as the pane lookups.
-const PROBE_TIMEOUT_MS = 5 * 60_000;
+import type { HmsCloudAvailabilityResult } from './hms-cloud-availability-reader.js';
+import { propertyCodeSchema } from '../hms/property-registry.js';
 
 // Limits of the quote tool's v2 request (quote-contract.mjs): 8 occupancy groups, 30 nights, child ages up to 99.
 const MAX_ROOM_GROUPS = 8;
@@ -120,7 +110,8 @@ export type RatePartySelection = z.infer<typeof ratePartySelectionSchema>;
 
 /** Durable picker evidence, separate from native Prepare authority. */
 export const ratePartyBindingSchema = z.object({
-  version: z.literal(1), source: z.object({ threadId: z.string(), messageId: z.string(), sourceHash: z.string() }).strict(),
+  version: z.literal(1), propertyCode: propertyCodeSchema.optional(),
+  source: z.object({ threadId: z.string(), messageId: z.string(), sourceHash: z.string() }).strict(),
   extractionId: z.string().uuid(), requestId: z.string(), stayId: z.string(), rowId: z.string(), roomIndex: z.number().nullable(),
   workflow: z.enum(['quote', 'create']), selectedBy: z.string(), selectedAt: z.string(), selection: ratePartySelectionSchema,
 }).strict();
@@ -384,6 +375,8 @@ type QuoteOption = {
   room?: { code?: unknown; label?: unknown } | null;
   rate?: { code?: unknown; label?: unknown } | null;
   mealPlan?: unknown;
+  board?: unknown;
+  mealPlanLabel?: unknown;
   availability?: unknown;
   availabilityReason?: unknown;
   eligibility?: unknown;
@@ -426,6 +419,10 @@ export type AvailabilityNightFact = {
 };
 
 export type AvailabilitySnapshot = {
+  /** Present on fresh Cloud reads; legacy stored snapshots may omit identity. */
+  propertyCode?: string;
+  source?: 'hms_cloud_hotel_availability';
+  priceEvidence?: Extract<HmsCloudAvailabilityResult, { outcome: 'read' }>['priceEvidence'];
   /**
    * What the read covered. Room types are not mapped to HMS codes yet, so each group's search is for every room type
    * at that occupancy; the stated room type in the request is a label only. Show it as all-room availability.
@@ -446,7 +443,9 @@ export type AvailabilitySnapshot = {
     options: Array<{
       room: string | null;
       rate: string | null;
+      promotionCode?: string;
       mealPlan?: string;
+      board?: string;
       availability: string;
       roomLabel?: string;
       rateLabel?: string;
@@ -689,14 +688,14 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
         );
         const roomLabel = text(option?.room?.label);
         const eligibility = text(option?.eligibility);
-        const board = text(option?.mealPlan);
+        const board = text(option?.mealPlanLabel) ?? text(option?.mealPlan) ?? text(option?.board);
         const rateScope = rateScopeOf(option);
         const hasNightlyFacts = nightly !== undefined;
         return {
           room: text(option?.room?.code),
           rate,
           availability,
-          ...(board ? { mealPlan: board } : {}),
+          ...(board ? { mealPlan: board, board } : {}),
           ...(availabilityReason ? { availabilityReason } : {}),
           ...(hasNightlyFacts && roomLabel ? { roomLabel } : {}),
           ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
@@ -804,48 +803,53 @@ export function availabilityBoardOf(result: QuoteEnvelope, stay?: { arrivalDate:
 }
 
 /**
- * Test seam: when set, replaces the spawn of the quote tool. Production runs fetch-quote.mjs. The seam returns the same
- * result.json the tool writes.
+ * Legacy fixture seam. Production uses the common Cloud availability reader.
  */
 export const availabilityProbeLoaders: {
   spawn: ((quote: Record<string, unknown>) => Promise<QuoteEnvelope>) | null;
 } = { spawn: null };
 
-// Runs fetch-quote.mjs on one request file and reads its run folder. The folder is removed after the snapshot is read
-// (a run folder is ~24 MB with its trace, and the snapshot is what the job keeps).
-async function defaultQuoteSpawn(
-  quote: Record<string, unknown>,
-  target: HmsReadTarget,
-): Promise<QuoteEnvelope> {
-  const runId = randomUUID();
-  const requestDir = join(QUOTE_ROOT, 'availability-requests');
-  const outputDir = join(QUOTE_ROOT, 'availability-runs');
-  await mkdir(requestDir, { recursive: true, mode: 0o700 });
-  await mkdir(outputDir, { recursive: true, mode: 0o700 });
-  const requestPath = join(requestDir, `${runId}.json`);
-  await writeFile(requestPath, JSON.stringify(quote), { mode: 0o600 });
-  let stdout = '';
-  try {
-    // The tool exits non-zero on refusals and failures but still prints its Evidence line when it wrote a result.
-    const run = await execFileAsync(process.execPath, [QUOTE_TOOL, '--request', requestPath, '--output', outputDir], {
-      timeout: PROBE_TIMEOUT_MS,
-      env: paneStaySpawnEnv(process.env, undefined, target),
-    }).catch((error: unknown) => error as { stdout?: string });
-    stdout = typeof run.stdout === 'string' ? run.stdout : '';
-  } finally {
-    await rm(requestPath, { force: true }).catch(() => undefined);
-  }
-  const evidence = /^Evidence: (.+)$/m.exec(stdout)?.[1];
-  if (!evidence) throw new Error('availability_probe_no_result');
-  try {
-    const { audit: _audit, ...result } = JSON.parse(await readFile(join(evidence, 'result.json'), 'utf8')) as QuoteEnvelope & {
-      audit?: unknown;
-    };
-    return result;
-  } finally {
-    // ponytail: the run folder is removed here. Quote run folders otherwise pile up on the EC2 disk (plan: Data Handling).
-    await rm(evidence, { recursive: true, force: true }).catch(() => undefined);
-  }
+/** Preserve displayed native nightly prices and counts in the established snapshot shape. */
+export function cloudAvailabilitySnapshotOf(
+  result: Extract<HmsCloudAvailabilityResult, { outcome: 'read' }>,
+  propertyCode: string,
+): AvailabilitySnapshot {
+  return {
+    propertyCode,
+    source: result.source,
+    roomScope: 'all_room_types',
+    searchOutcome: result.searchOutcome,
+    observedAt: result.observedAt,
+    availableOptions: 0,
+    priceEvidence: result.priceEvidence,
+    ...(completeness(result.coverage) ? { searchCompleteness: completeness(result.coverage) } : {}),
+    groups: result.groups.map((group) => ({
+      id: group.id,
+      outcome: group.outcome,
+      requestedCount: group.requestedCount,
+      ...(completeness(group.coverage) ? { completeness: completeness(group.coverage) } : {}),
+      options: group.options.map((option) => ({
+        room: option.room.code,
+        rate: option.ratePlan.code,
+        ...(option.promotionCode ? { promotionCode: option.promotionCode } : {}),
+        availability: option.availability,
+        ...(option.room.label ? { roomLabel: option.room.label } : {}),
+        ...(option.ratePlan.label ? { rateLabel: option.ratePlan.label } : {}),
+        ...(option.mealPlanLabel ? { mealPlan: option.mealPlanLabel, board: option.mealPlanLabel } : {}),
+        eligibility: option.eligibility,
+        rateScope: option.rateScope,
+        nightly: option.nightly.map((night) => ({
+          date: night.date,
+          availableCount: night.availableCount,
+          requestedCount: night.requestedCount,
+          stockStatus: night.stockStatus,
+          ...(night.reasons.length ? { restrictionReason: night.reasons.join(', ') } : {}),
+          price: { ...night.price, ratePlan: option.ratePlan.code, ratePlanLabel: option.ratePlan.label },
+        })),
+      })),
+    })),
+    ...(result.coverage.truncated ? { truncated: true } : {}),
+  };
 }
 
 export type AvailabilityProbeDeps = {
@@ -853,6 +857,8 @@ export type AvailabilityProbeDeps = {
   lock: () => PaneStayLock | null;
   acquisition: PropertyReadLockAcquisitionOptions;
   target: HmsReadTarget;
+  transportId?: string;
+  signal?: AbortSignal;
 };
 
 /**
@@ -864,9 +870,16 @@ export async function probeAvailability(
   deps: AvailabilityProbeDeps,
 ): Promise<AvailabilityProbeResult> {
   if (request.rateContext) return { outcome: 'refused_input_invalid' };
+  if (!availabilityProbeLoaders.spawn) {
+    const { probeCloudRateAvailability } = await import('./hms-cloud-availability-reader.js');
+    const result = await probeCloudRateAvailability(request, deps);
+    if (result.outcome === 'read') return { outcome: 'read', ...cloudAvailabilitySnapshotOf(result, deps.target.propertyCode) };
+    if (result.outcome === 'blocked' || result.outcome === 'refused_unknown_transport') return { outcome: 'refused_input_invalid' };
+    return result;
+  }
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
-  const spawn = availabilityProbeLoaders.spawn ?? ((quote) => defaultQuoteSpawn(quote, deps.target));
+  const spawn = availabilityProbeLoaders.spawn;
   let result: QuoteEnvelope;
   try {
     result = await lock.withLock(() => spawn(quoteRequestFor(request, deps.target)), deps.acquisition);
