@@ -131,12 +131,10 @@ export async function quotePaneConfigForProperty(
 ): Promise<PropertyQuotePaneConfig | null> {
   if (propertyCode === 'HRCEN') {
     const nativeRates = await loadNativeRatePlans(propertyCode, env);
-    const ratePlans: PropertyRatePlan[] = nativeRates?.map(({ code, name }) => ({
-      code,
-      mealPlan: 'unknown',
-      ...CENTURION_RATE_CATALOGUE[code as keyof typeof CENTURION_RATE_CATALOGUE],
-      name,
-    })) ?? CENTURION_RATE_PLANS;
+    const ratePlans: PropertyRatePlan[] = nativeRates?.map(({ code, name }) => {
+      const known = CENTURION_RATE_CATALOGUE[code as keyof typeof CENTURION_RATE_CATALOGUE];
+      return known ? { code, ...known, name } : { code, mealPlan: 'unknown' as const, name };
+    }) ?? CENTURION_RATE_PLANS;
     return {
       transportId,
       propertyCode,

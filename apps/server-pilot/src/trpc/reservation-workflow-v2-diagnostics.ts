@@ -39,7 +39,9 @@ function failure(value: unknown) {
   const row = record(value);
   const status = label(row?.status ?? row?.outcome, 50);
   if (!status || nonFailures.has(status)) return undefined;
-  const fields = Array.isArray(row?.fields) ? row.fields.map((field) => pathLabel(field)).filter(Boolean).slice(0, 32) : [];
+  const fields = Array.isArray(row?.fields)
+    ? row.fields.map((field) => pathLabel(field)).filter((field): field is string => Boolean(field)).slice(0, 32)
+    : [];
   const details = Array.isArray(row?.details) ? row.details.slice(0, 32).map((value) => {
     const detail = record(value);
     return { path: pathLabel(detail?.path), code: label(detail?.code, 100),
@@ -78,7 +80,9 @@ function structuredPath(value: unknown) {
 async function writeReproBundle(input: {
   path: string; raw: Record<string, unknown> | undefined; response: Record<string, unknown>;
   outcomes: Array<{ status: string; issue?: string; fields?: string[];
-    observationRef?: string; details?: Array<{ path?: string; code?: string }> }>;
+    observationRef?: string; details?: Array<{
+      path?: string; code?: string; expected?: number; actual?: number;
+    }> }>;
   draftErrors: Array<{ stage?: string; code?: string }>;
 }) {
   const directory = process.env.NAVA_WORKFLOW_REPRO_DIR?.trim();
