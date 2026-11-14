@@ -1,6 +1,6 @@
 // Each Cloud read owns its browser and starts on the authenticated landing property.
 import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import postgres from 'postgres';
@@ -8,6 +8,7 @@ import { login } from '../playwright-quote/session-reuse.mjs';
 import { openGuestStayScreen } from '../playwright-quote/open-guest-stay.mjs';
 import { assertNoCenturionBrowserHold } from '../playwright-quote/centurion-stay360.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
+import { credentialVersionHmacSha256 } from './credential-version.mjs';
 
 const readPosts = new Set([
   '/web/base/BSSTRT', '/web/base/BSSTRT.HDR', '/web/base/OSRESS', '/web/base/OSRESS.search',
@@ -61,13 +62,60 @@ function validateSecret(property, raw, transportId) {
 async function loadCloudSecret({ secretArn, signal }) {
   const client = new SecretsManagerClient({ region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'af-south-1' });
   try {
-    const result = await client.send(new GetSecretValueCommand({ SecretId: secretArn }), { abortSignal: signal });
+    const result = await client.send(new GetSecretValueCommand({ SecretId: secretArn, VersionStage: 'AWSCURRENT' }), { abortSignal: signal });
     if (!result.SecretString) throw new Error('empty');
-    return JSON.parse(result.SecretString);
+    return { secret: JSON.parse(result.SecretString), versionId: result.VersionId, versionStages: result.VersionStages };
   } catch {
     signal?.throwIfAborted();
     throw new Error('HMS_CREDENTIALS_UNAVAILABLE');
   } finally { client.destroy(); }
+}
+
+async function loadCloudEvidenceKey({ secretArn, keyVersion, signal }) {
+  const client = new SecretsManagerClient({ region: process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'af-south-1' });
+  let result;
+  try {
+    result = await client.send(new GetSecretValueCommand({ SecretId: secretArn, VersionStage: 'AWSCURRENT' }), { abortSignal: signal });
+  } catch {
+    signal?.throwIfAborted();
+    throw new Error('HMS_EVIDENCE_KEY_UNAVAILABLE');
+  } finally { client.destroy(); }
+  if (typeof result.VersionId !== 'string' || result.VersionId.trim() !== keyVersion ||
+      !Array.isArray(result.VersionStages) || !result.VersionStages.includes('AWSCURRENT')) {
+    throw new Error('HMS_EVIDENCE_KEY_VERSION_MISMATCH');
+  }
+  const encoded = typeof result.SecretString === 'string' ? result.SecretString.trim() : '';
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error('HMS_EVIDENCE_KEY_INVALID');
+  const key = Buffer.from(encoded, 'base64');
+  if (key.byteLength < 32 || key.toString('base64').replace(/=+$/, '') !== encoded.replace(/=+$/, '')) {
+    key.fill(0);
+    throw new Error('HMS_EVIDENCE_KEY_INVALID');
+  }
+  return key;
+}
+
+/** Bind authenticated DaVinci reads to freshly fetched AWSCURRENT credential metadata. */
+export async function verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret, signal } = {}) {
+  const property = registeredProperty(propertyCode);
+  if (property.group !== 'davinci' || transportId === undefined) return null;
+  if (typeof transportId !== 'string' || !property.transportIds.includes(transportId)) throw new Error('HMS_SESSION_OPTIONS_INVALID');
+  const versionId = typeof loadedSecret?.versionId === 'string' ? loadedSecret.versionId.trim() : '';
+  if (!versionId) throw new Error('HMS_CREDENTIAL_VERSION_MISSING');
+  if (!Array.isArray(loadedSecret.versionStages) || !loadedSecret.versionStages.length) throw new Error('HMS_CREDENTIAL_VERSION_STAGES_MISSING');
+  if (!loadedSecret.versionStages.includes('AWSCURRENT')) throw new Error('HMS_CREDENTIAL_VERSION_STALE');
+  const expected = process.env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${propertyCode}`];
+  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/.test(expected)) throw new Error('HMS_CREDENTIAL_VERSION_DIGEST_MISSING');
+  const secretArn = process.env.HMS_EVIDENCE_HMAC_SECRET_ARN?.trim();
+  const keyVersion = process.env.HMS_EVIDENCE_HMAC_KEY_VERSION?.trim();
+  if (!secretArn || !keyVersion) throw new Error('HMS_EVIDENCE_KEY_METADATA_MISSING');
+  const key = await loadCloudEvidenceKey({ secretArn, keyVersion, signal });
+  try {
+    signal?.throwIfAborted();
+    const actual = credentialVersionHmacSha256({ evidenceKey: key, evidenceKeyVersion: keyVersion,
+      hmsSecretArn: property.credentialSecretRef, hmsSecretVersionId: versionId });
+    if (!timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(expected, 'hex'))) throw new Error('HMS_CREDENTIAL_VERSION_MISMATCH');
+    return actual;
+  } finally { key.fill(0); }
 }
 
 function decoded(value) {
@@ -400,6 +448,7 @@ export async function withCloudReadSession(operation, { propertyCode, transportI
       throw new Error('HMS_CREDENTIALS_UNAVAILABLE');
     }
     secret = validateSecret(property, loaded, transportId);
+    await verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret: loaded, signal: sessionSignal });
     sessionSignal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
     browser = await chromium.launch({ headless, executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined });

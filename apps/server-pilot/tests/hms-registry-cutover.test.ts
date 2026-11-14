@@ -883,6 +883,11 @@ it('keeps validated Centurion legacy paths until a partition exists and never bo
   try {
     const root = join(dir, 'proofs');
     const legacy = { legacyRegistryPath: join(dir, 'active.json'), legacyReleaseRoot: join(dir, 'releases') };
+    await expect(resolveWorkerActiveReadPaths({ ...legacy, propertyCode: 'HRDAVS' })).resolves.toEqual({
+      registryPath: '/etc/nava/hms-read-role-proofs/v2/HRDAVS/active-registry.v2.json',
+      releaseRoot: '/etc/nava/hms-read-role-proofs/v2/HRDAVS/releases' });
+    await expect(resolveWorkerActiveReadPaths({ ...legacy, propertyCode: 'HRCEN' })).resolves.toEqual({
+      registryPath: legacy.legacyRegistryPath, releaseRoot: legacy.legacyReleaseRoot });
     await expect(resolveWorkerActiveReadPaths({ ...legacy, root, propertyCode: 'HRCEN' })).resolves.toEqual({
       registryPath: legacy.legacyRegistryPath, releaseRoot: legacy.legacyReleaseRoot });
     await expect(resolveWorkerActiveReadPaths({ ...legacy, root, propertyCode: 'HRDAV' })).resolves.toEqual({

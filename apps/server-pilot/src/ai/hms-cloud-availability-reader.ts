@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import type { AvailabilityRequest, RateContext } from './hms-availability.js';
 import { buildCloudRateCandidates, orderRateCandidates, rateContextKey, type RateCandidate } from './rate-options.js';
 import { isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import type { AvailabilityProbeDeps } from './hms-availability.js';
 import { hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
@@ -267,6 +268,9 @@ export function projectCloudAvailability(
   request: AvailabilityRequest,
   reads: CloudAvailabilityGroupRead[],
 ): HmsCloudAvailabilityResult {
+  if (reads.some((read) => read.outcome === 'execution_failure' && classifyHmsLoginOutage(read.issue))) {
+    return { outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' };
+  }
   if (request.rateContext && (reads.some(read => read.outcome === 'unsupported_context' || read.outcome === 'input_gap') ||
       reads.some(read => ['ok', 'criteria_unavailable'].includes(read.outcome) &&
         (!record(read.view) || !appliedContextMatches(request, record(read.view)!, read.outcome === 'criteria_unavailable'))))) {
@@ -494,7 +498,7 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
   }
 }
 
-/** Existing queued job executor uses the same property lock; public prefetch keeps its legacy reader. */
+/** Queued and direct availability reads share the same property lock and outage classification. */
 export async function probeCloudRateAvailability(request: AvailabilityRequest, deps: AvailabilityProbeDeps & { signal?: AbortSignal }): Promise<HmsCloudAvailabilityResult> {
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
@@ -504,6 +508,7 @@ export async function probeCloudRateAvailability(request: AvailabilityRequest, d
     return projectCloudAvailability(request, reads);
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { outcome: 'refused_lock_busy' };
-    return { outcome: 'execution_failure', error: 'CLOUD_RATE_READ_FAILED' };
+    return { outcome: 'execution_failure', error: classifyHmsLoginOutage(error)
+      ? 'AUTHENTICATED_SHELL_TIMEOUT' : 'CLOUD_RATE_READ_FAILED' };
   }
 }

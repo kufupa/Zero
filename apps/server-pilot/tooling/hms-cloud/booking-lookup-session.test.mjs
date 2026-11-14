@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { bookingSessionPageOptions, createBookingToolQueue, runBookingLookupTool, runPartyTool } from './booking-lookup-session.mjs';
 import { acquireCloudCredentialLease, cloudCredentialLeaseKey, switchCloudProperty, verifyCloudProperty,
@@ -8,6 +10,105 @@ import { createCloudLookupReadTools } from './hms-lookup-read-session.mjs';
 import { matchesGuestProfileReadRequest } from './guest-profile.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { searchGuestInCloud } from './pane-guest-search.mjs';
+
+test('fresh credential versions and evidence key metadata are checked under the lease before browser launch', async () => {
+  const script = String.raw`
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    let held = false, launches = 0, keyReads = 0, mode = '', controller;
+    const key = Buffer.alloc(32, 83), encodedKey = key.toString('base64');
+    mock.module('postgres', { defaultExport: () => ({
+      reserve: async () => ({ unsafe: async (sql) => {
+        if (sql.includes('pg_try_advisory_lock')) { held = true; return [{ acquired: true }]; }
+        if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
+        return [{ pid: 42 }];
+      } }), end: async () => { held = false; },
+    }) });
+    const { getPropertyRegistration } = await import('./tooling/hms-cloud/property-registry.mjs');
+    const property = getPropertyRegistration('HRDAVS');
+    mock.module('@aws-sdk/client-secrets-manager', { namedExports: {
+      GetSecretValueCommand: class { constructor(input) { this.input = input; } },
+      SecretsManagerClient: class {
+        async send(command) {
+          assert.equal(command.input.VersionStage, 'AWSCURRENT');
+          if (command.input.SecretId === 'evidence-fixture') {
+            assert.equal(held, true); keyReads += 1;
+            if (mode === 'abort-key') controller.abort(new Error('TEST_ABORT'));
+            return { SecretString: mode === 'bad-key' ? 'not base64!' : encodedKey,
+              VersionId: mode === 'rotated-key' ? 'key-v2' : 'key-v1',
+              VersionStages: mode === 'stale-key' ? ['AWSPREVIOUS'] : ['AWSCURRENT'] };
+          }
+          const selected = command.input.SecretId === property.credentialSecretRef ? getPropertyRegistration('HRDAV') : getPropertyRegistration('HRCEN');
+          if (selected.group === 'davinci') assert.equal(held, true);
+          return { SecretString: JSON.stringify({ loginUrl: selected.origin + '/web/base/logindisp?tenant=' + selected.expectedTenant,
+            username: selected.username, password: 'synthetic-only', expectedTenant: selected.expectedTenant,
+            expectedPropertyCode: selected.landingPropertyCode, expectedPropertyName: selected.expectedPropertyName,
+            credentialMode: 'view_only', mailboxTransportIds: selected.transportIds }),
+            VersionId: mode === 'missing-version' ? undefined : mode === 'rotated-credential' ? 'credential-v2' : 'credential-v1',
+            VersionStages: mode === 'missing-stages' ? undefined : mode === 'stale-credential' ? ['AWSPREVIOUS'] : ['AWSCURRENT'] };
+        }
+        destroy() {}
+      },
+    } });
+    const { chromium } = await import('playwright');
+    chromium.launch = async () => { launches += 1; throw new Error('BROWSER_BOUNDARY_REACHED'); };
+    const { credentialVersionHmacSha256 } = await import('./tooling/hms-cloud/credential-version.mjs');
+    const { credentialVersionHmacSha256: runtimeDigest } = await import('./src/hms/evidence-runtime.ts');
+    const { hmacSha256PrivateValue } = await import('./src/hms/private-digests.ts');
+    for (const input of [
+      { evidenceKey: key, evidenceKeyVersion: 'key-v1', hmsSecretArn: property.credentialSecretRef, hmsSecretVersionId: 'credential-v1' },
+      { evidenceKey: 'x'.repeat(32), evidenceKeyVersion: ' key-v1 ', hmsSecretArn: ' arn:fixture:é ', hmsSecretVersionId: ' version-二 ' },
+    ]) {
+      const digest = credentialVersionHmacSha256(input);
+      assert.equal(digest, runtimeDigest(input));
+      assert.equal(digest, hmacSha256PrivateValue({ key: input.evidenceKey, keyVersion: input.evidenceKeyVersion,
+        purpose: 'credential_version', value: JSON.stringify({ secretArn: input.hmsSecretArn.trim(), versionId: input.hmsSecretVersionId.trim() }) }).hmacSha256);
+    }
+    const digest = credentialVersionHmacSha256({ evidenceKey: key, evidenceKeyVersion: 'key-v1',
+      hmsSecretArn: property.credentialSecretRef, hmsSecretVersionId: 'credential-v1' });
+    const { withCloudReadSession } = await import('./tooling/hms-cloud/cloud-session.mjs');
+    let loadedKey;
+    const from = Buffer.from;
+    Buffer.from = function(value, encoding, ...rest) {
+      const buffer = from(value, encoding, ...rest);
+      if (value === encodedKey && encoding === 'base64') loadedKey = buffer;
+      return buffer;
+    };
+    const cases = [
+      ['missing-version', 'HMS_CREDENTIAL_VERSION_MISSING'], ['missing-stages', 'HMS_CREDENTIAL_VERSION_STAGES_MISSING'],
+      ['stale-credential', 'HMS_CREDENTIAL_VERSION_STALE'], ['rotated-credential', 'HMS_CREDENTIAL_VERSION_MISMATCH'],
+      ['missing-digest', 'HMS_CREDENTIAL_VERSION_DIGEST_MISSING'], ['missing-key-metadata', 'HMS_EVIDENCE_KEY_METADATA_MISSING'],
+      ['rotated-key', 'HMS_EVIDENCE_KEY_VERSION_MISMATCH'], ['stale-key', 'HMS_EVIDENCE_KEY_VERSION_MISMATCH'],
+      ['bad-key', 'HMS_EVIDENCE_KEY_INVALID'], ['abort-key', 'TEST_ABORT'], ['', 'BROWSER_BOUNDARY_REACHED'],
+    ];
+    for (const [failure, expected] of cases) {
+      mode = failure; held = false; launches = 0; keyReads = 0; loadedKey = undefined;
+      controller = new AbortController();
+      process.env.DATABASE_URL = 'postgres://mock.invalid/never-connect';
+      process.env.HMS_EVIDENCE_HMAC_SECRET_ARN = mode === 'missing-key-metadata' ? '' : 'evidence-fixture';
+      process.env.HMS_EVIDENCE_HMAC_KEY_VERSION = 'key-v1';
+      delete process.env.HMS_EVIDENCE_HMAC_KEY;
+      process.env.HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAVS = mode === 'missing-digest' ? '' : digest;
+      await assert.rejects(withCloudReadSession(async () => { throw new Error('OPERATION_REACHED'); },
+        { propertyCode: 'HRDAVS', transportId: 'transport-faith', signal: controller.signal }), new RegExp(expected));
+      assert.equal(launches, mode === '' ? 1 : 0);
+      assert.equal(held, false);
+      if (loadedKey) assert.equal(loadedKey.every(byte => byte === 0), true);
+    }
+    mode = 'missing-version'; launches = 0; keyReads = 0;
+    await assert.rejects(withCloudReadSession(async () => {}, { propertyCode: 'HRDAVS' }), /BROWSER_BOUNDARY_REACHED/);
+    assert.equal(launches, 1); assert.equal(keyReads, 0); assert.equal(held, false);
+    launches = 0;
+    await assert.rejects(withCloudReadSession(async () => {}, { propertyCode: 'HRCEN', transportId: 'transport-centurion' }), /BROWSER_BOUNDARY_REACHED/);
+    assert.equal(launches, 1); assert.equal(keyReads, 0);
+    Buffer.from = from;
+    process.stdout.write(JSON.stringify({ tested: cases.length, parity: true }));
+  `;
+  const { stdout } = await promisify(execFile)(process.execPath,
+    ['--experimental-test-module-mocks', '--import', 'tsx', '--input-type=module', '-e', script],
+    { cwd: new URL('../../', import.meta.url), timeout: 30000, maxBuffer: 1024 * 1024 });
+  assert.deepEqual(JSON.parse(stdout), { tested: 11, parity: true });
+});
 
 test('Cloud lookup exposes only property-scoped read operations', async () => {
   const runTool = createCloudLookupReadTools({}, 'HRDAVS');

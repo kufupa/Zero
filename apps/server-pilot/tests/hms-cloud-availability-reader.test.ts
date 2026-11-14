@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { projectCloudAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
+import { projectCloudAvailability, probeCloudRateAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
+import { classifyHmsLoginOutage } from '../src/hms/property-outage.js';
 import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 
 const session = vi.hoisted(() => ({ open: vi.fn() }));
@@ -40,6 +41,35 @@ function readView(displayedTextStatus: string = 'captured', datesMatch = true) {
 }
 
 describe('Cloud HMS read result projection', () => {
+  it('preserves a returned native login outage instead of replacing it with incomplete availability', () => {
+    const result = projectCloudAvailability(request, [{ outcome: 'execution_failure', issue: 'AUTHENTICATED_SHELL_TIMEOUT' }]);
+    expect(result).toEqual({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+    expect(classifyHmsLoginOutage(result)).toBe(true);
+  });
+
+  it.each([
+    new Error('AUTHENTICATED_SHELL_TIMEOUT'),
+    { phase: 'login', message: 'sensitive details must not escape' },
+    new Error('wrapper failed', { cause: { code: 'AUTHENTICATED_SHELL_TIMEOUT' } }),
+  ])('keeps only the safe login outage code for queue parking', async (failure) => {
+    const result = await probeCloudRateAvailability(request, {
+      target: hmsReadTargetForProperty('HRDAVS'), transportId: 'transport-faith', acquisition: { tryOnce: true },
+      lock: () => ({ withLock: async () => { throw failure; } }),
+    });
+    expect(result).toEqual({ outcome: 'execution_failure', error: 'AUTHENTICATED_SHELL_TIMEOUT' });
+    expect(classifyHmsLoginOutage(result)).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('sensitive');
+  });
+
+  it('keeps unrelated read failures out of login outage parking', async () => {
+    const result = await probeCloudRateAvailability(request, {
+      target: hmsReadTargetForProperty('HRDAVS'), transportId: 'transport-faith', acquisition: { tryOnce: true },
+      lock: () => ({ withLock: async () => { throw new Error('native grid unavailable'); } }),
+    });
+    expect(result).toEqual({ outcome: 'execution_failure', error: 'CLOUD_RATE_READ_FAILED' });
+    expect(classifyHmsLoginOutage(result)).toBe(false);
+  });
+
   it('labels nightly observations as estimates and leaves totals and entitlements unknown', () => {
     const reads: CloudAvailabilityGroupRead[] = [{ outcome: 'ok', view: readView() }];
     const result = projectCloudAvailability(request, reads);

@@ -76,12 +76,11 @@ import {
   toolInputDigest,
 } from './hitl-tool-run.js';
 import {
+  findStay,
   GUEST_SURNAME_PATTERN,
   paneStayLookupLoaders,
-  paneStayLookupEnabled,
   searchGuest,
 } from './pane-stay-lookup.js';
-import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { findParty, findPartyJob, type PanePartyFindResult, type PanePartyKind } from './pane-party-lookup.js';
 import { suggestPartiesFor } from './party-aliases.js';
 import { QUOTE_WORKFLOW_PROMPT_VERSION, quoteWorkflowLlmEnabled } from './quote-workflow-llm.js';
@@ -3252,6 +3251,8 @@ async function executePartyMatchV2(input: {
             resultCap: PARTY_MATCH_V2_ROW_CAP,
             origin: mailboxOrigin,
             target: readTarget,
+            transportId: input.run.transportId,
+            signal: input.signal,
           },
         );
       },
@@ -3274,6 +3275,8 @@ async function executePartyMatchV2(input: {
           resultCap: PARTY_MATCH_V2_ROW_CAP,
           origin: mailboxOrigin,
           target: readTarget,
+          transportId: input.run.transportId,
+          signal: input.signal,
         },
       )
     : [];
@@ -4303,12 +4306,14 @@ export async function executeHmsJob(input: {
   const target = jobTarget ?? hmsReadTargetForTransport(run.transportId);
   const deps = {
     lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
-    acquisition: background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    acquisition: { ...(background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS)), signal: input.signal },
+    signal: input.signal,
     onRun: ({ runId, dir }: { runId: string; dir: string }) => {
       screenshotDir.value = dir;
       registerPaneRun({ runId, dir, owner: ownerKey, now: Date.now() });
     },
     target,
+    transportId: run.transportId,
   };
   const audit = {
     transportId: run.transportId,
@@ -4329,23 +4334,7 @@ export async function executeHmsJob(input: {
     : request.kind === 'find'
       ? recordedToolRun(
           { kind: 'stay_lookup', ...audit },
-          async () => {
-            const lookup = { confirmation: request.confirmation, ...(request.arrival ? { arrival: request.arrival } : {}) };
-            const unavailable = (outcome: 'refused_flag_off' | 'refused_lock_unavailable' | 'refused_lock_busy' | 'execution_failure') => ({
-              outcome, reason: null, stay: null, arrivalMismatch: false,
-              requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null,
-            });
-            if (!(paneStayLookupLoaders.enabled ?? paneStayLookupEnabled)()) return unavailable('refused_flag_off');
-            const lock = deps.lock();
-            if (!lock) return unavailable('refused_lock_unavailable');
-            try {
-              return await lock.withLock(async () => projectCloudStayFind(lookup,
-                await runCloudStayFind({ request: lookup, target, transportId: run.transportId, signal: input.signal }), target.propertyCode),
-              { ...deps.acquisition, signal: input.signal });
-            } catch (error) {
-              return unavailable(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'execution_failure');
-            }
-          },
+          () => findStay({ confirmation: request.confirmation, ...(request.arrival ? { arrival: request.arrival } : {}) }, deps),
           classifyFind,
         )
       : request.kind === 'party' &&
@@ -4363,7 +4352,7 @@ export async function executeHmsJob(input: {
         : request.kind === 'party'
         ? findParty(
             { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
-            { acquisition: deps.acquisition, target },
+            { acquisition: deps.acquisition, target, transportId: deps.transportId, signal: input.signal },
           )
         : recordedToolRun(
             { kind: 'guest_search', ...audit },
@@ -4380,6 +4369,10 @@ export async function executeHmsJob(input: {
           ));
 
   const outcome: string = result.outcome;
+  if (outcome === 'execution_failure') {
+    const parkedLogin = await parkLoginOutageFailure(db, mark, run, outagePropertyCode, result);
+    if (parkedLogin) return parkedLogin;
+  }
   // An explicit picker read runs once. Staff may explicitly refresh after a failure.
   if (request.kind === 'availability' && request.rateContext &&
       (outcome === 'refused_lock_busy' || outcome === 'execution_failure')) {
@@ -4399,14 +4392,6 @@ export async function executeHmsJob(input: {
     return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
   }
   if (outcome === 'execution_failure') {
-    const parkedLogin = await parkLoginOutageFailure(
-      db,
-      mark,
-      run,
-      outagePropertyCode,
-      result,
-    );
-    if (parkedLogin) return parkedLogin;
     return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'lookup execution failed');
   }
   if (outcome.startsWith('refused_')) {

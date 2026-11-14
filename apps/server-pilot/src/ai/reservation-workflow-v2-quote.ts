@@ -1157,7 +1157,7 @@ async function lookupPartyCandidates(
     }
     let found: Awaited<ReturnType<typeof findParty>>;
     try {
-      found = await findParty({ kind: role, name }, { target: target.target });
+      found = await findParty({ kind: role, name }, { target: target.target, transportId: ctx.transport.id });
     } catch {
       const observation: ReservationWorkflowV2Observation = {
         ref: randomUUID(), generationId: draft.generationId, kind: 'party_candidate', status: 'failed',

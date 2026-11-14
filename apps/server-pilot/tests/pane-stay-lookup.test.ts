@@ -18,7 +18,9 @@ import {
   searchGuest,
 } from '../src/ai/pane-stay-lookup.js';
 import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
-import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
+import * as rateCatalogue from '../src/hms/rate-catalogue.js';
+import * as hmsService from '../src/hms/hms-service.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import {
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
@@ -129,6 +131,8 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.doUnmock('../src/hms/hms-service.js');
   jobMocks.readHmsJobView.mockReset().mockResolvedValue(null);
   jobMocks.queueUserHmsJob.mockReset();
   jobMocks.isSelectedHmsInboundMessage.mockReset();
@@ -189,6 +193,41 @@ describe('pane stay lookup flag', () => {
 });
 
 describe('findStay', () => {
+  it.each(['HRDAV', 'HRDAVS'])('rechecks %s read proof inside the property lock and preserves HRCEN reads', async (propertyCode) => {
+    const target = hmsReadTargetForProperty(propertyCode);
+    let selectedProofAvailable = true;
+    const configuration = vi.spyOn(rateCatalogue, 'propertyConfigurationForScope').mockImplementation(async (scope) => ({
+      propertyCode: scope.propertyCode, capabilities: { reads: {
+        status: scope.propertyCode === propertyCode && !selectedProofAvailable ? 'unavailable' : 'staff-enabled',
+      } },
+    }) as never);
+    const spawn = vi.fn(async () => lookupResult({ screenshots: [] }));
+    paneStayLookupLoaders.spawn = spawn;
+    const deps = { target, transportId: 'transport-faith', lock: () => passingLock() };
+    expect((await findStay({ confirmation: STAY.confirmation! }, deps)).outcome).toBe('found');
+    expect(configuration).toHaveBeenCalledWith(expect.objectContaining({ propertyCode, transportId: 'transport-faith' }),
+      expect.anything(), expect.anything());
+    const waitingLock = { withLock: async <T>(operation: () => Promise<T>) => {
+      selectedProofAvailable = false;
+      return operation();
+    } };
+    expect((await findStay({ confirmation: STAY.confirmation! }, { ...deps, lock: () => waitingLock })).outcome).toBe('refused_flag_off');
+    expect((await searchGuest(DUP_QUERY, deps)).outcome).toBe('refused_flag_off');
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect((await findStay({ confirmation: STAY.confirmation! }, { ...deps, target: CENTURION_HMS_READ_TARGET,
+      transportId: 'transport-centurion' })).outcome).toBe('found');
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('requires an authenticated DaVinci transport even when a fixture reader is installed', async () => {
+    const spawn = vi.fn(async () => lookupResult());
+    paneStayLookupLoaders.spawn = spawn;
+    const deps = { target: hmsReadTargetForProperty('HRDAVS'), lock: () => passingLock() };
+    expect((await findStay({ confirmation: STAY.confirmation! }, deps)).outcome).toBe('refused_flag_off');
+    expect((await searchGuest(DUP_QUERY, { ...deps, transportId: 'transport-centurion' })).outcome).toBe('refused_flag_off');
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('refuses with PANE_STAY_LOOKUP=off before any lock or spawn', async () => {
     const seen: string[] = [];
     paneStayLookupLoaders.lock = passingLock(seen);
@@ -1026,15 +1065,20 @@ describe('paneStayLookup router', () => {
 
   it('a Da Vinci mailbox findStay passes HRDAV; an unknown mailbox is refused before spawn', async () => {
     vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    const admission = vi.fn(async (scope: Parameters<typeof hmsService.nativeReadCapabilityAvailable>[0]) =>
+      scope.propertyCode === 'HRDAV' && scope.transportId === 'transport-davinci');
+    vi.doMock('../src/hms/hms-service.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof hmsService>()), nativeReadCapabilityAvailable: admission,
+    }));
     const seen: unknown[] = [];
     paneStayLookupLoaders.lock = passingLock();
     paneStayLookupLoaders.spawn = async (_input, target) => {
       seen.push(target);
       return lookupResult({ runId: undefined, runDir: undefined });
     };
-    await expect(
-      mailboxCaller('transport-davinci').paneStayLookup.findStay({ confirmation: '57291630-1' }),
-    ).resolves.toMatchObject({ outcome: 'found' });
+    const result = await mailboxCaller('transport-davinci').paneStayLookup.findStay({ confirmation: '57291630-1' });
+    expect(admission).toHaveBeenCalledWith({ propertyCode: 'HRDAV', transportId: 'transport-davinci', capability: 'reads' });
+    expect(result).toMatchObject({ outcome: 'found' });
     expect(seen).toEqual([DAVINCI_HMS_READ_TARGET]);
     seen.length = 0;
     await expect(

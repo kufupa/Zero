@@ -74,6 +74,7 @@ import {
 } from '../env.js';
 import { propertyCodeSchema, resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT } from '../hms/active-read-runtime.js';
 import { bindHmsMailboxProperty, hmsPropertyReadEnabled } from '../hms/mailbox-hms-origin-bind.js';
 import {
   companyAccountContextDataSchema,
@@ -727,7 +728,7 @@ function scopedReadRuntimeConfig(scope?: { propertyCode: string; transportId?: s
   if (!property) throw new Error('unknown read runtime property');
   const transportId = scope.transportId ?? property.transportIds[0];
   if (!transportId || !property.transportIds.includes(transportId)) throw new Error('read runtime transport mismatch');
-  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || '/etc/nava/hms-read-role-proofs/v2';
+  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT;
   return requireHmsReadRuntimeConfig({ ...process.env,
     HMS_EXPECTED_PROPERTY_CODE: code,
     HMS_EXPECTED_TENANT: property.expectedTenant,
@@ -1051,7 +1052,7 @@ export function createLiveHmsCandidateSessionFactory(
     const origin = registration.origin;
     const authIdentity = { propertyCode: registration.propertyCode, tenantId: registration.expectedTenant,
       landingPropertyCode: registration.landingPropertyCode, origin };
-    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || '/etc/nava/hms-read-role-proofs/v2';
+    const proofRoot = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT;
     const { statSync } = await import('node:fs');
     const { join } = await import('node:path');
     const proofExists = (path: string) => {

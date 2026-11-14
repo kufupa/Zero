@@ -959,6 +959,13 @@ export function createReservationWorkflowV2CandidateReader(input: {
   };
   return async (candidate) => {
     if (candidate.propertyCode !== input.propertyCode) return { status: 'failed', result: { reason: 'property_mismatch' }, coverage: { complete: false } };
+    if (input.propertyCode !== 'HRCEN' && ['guest_candidate', 'party_candidate', 'stay_candidate', 'rate_availability'].includes(candidate.kind)) {
+      const { nativeReadCapabilityAvailable } = await import('../hms/hms-service.js');
+      if (!await nativeReadCapabilityAvailable({ propertyCode: input.propertyCode, transportId: input.transportId,
+        capability: candidate.kind === 'rate_availability' ? 'quote' : 'reads' })) {
+        return unavailable('The selected property read capability is unavailable.');
+      }
+    }
     if (candidate.kind === 'stay_candidate' && !paneStayLookupEnabled()) return unavailable('Stay lookup is disabled.');
     const cachedGuestProfiles = candidate.kind === 'guest_candidate' && guestProfileBatch;
     const stayText = typeof candidate.criteria.confirmationOrGuestText === 'string' ? candidate.criteria.confirmationOrGuestText.trim() : '';

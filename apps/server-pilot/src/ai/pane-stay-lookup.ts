@@ -161,6 +161,7 @@ export type PaneStayLookupDeps = {
   target?: HmsReadTarget | null;
   /** Authenticated mailbox transport used to validate the loaded Cloud credential. */
   transportId?: string;
+  signal?: AbortSignal;
 };
 
 export const paneStayLookupLoaders: {
@@ -405,17 +406,25 @@ function supportedCloudTarget(target: HmsReadTarget): boolean {
     target.installationEnvName === expected.installationEnvName;
 }
 
+async function nativeStayReadAvailable(target: HmsReadTarget | null | undefined, transportId?: string): Promise<boolean> {
+  if (!target || target.propertyCode === 'HRCEN') return true;
+  const { nativeReadCapabilityAvailable } = await import('../hms/hms-service.js');
+  return nativeReadCapabilityAvailable({ propertyCode: target.propertyCode, transportId, capability: 'reads' });
+}
+
 async function defaultSpawn(
   input: PaneStayLookupSpawnInput,
   target: HmsReadTarget,
   transportId?: string,
+  signal?: AbortSignal,
 ): Promise<PaneStayLookupSpawnResult> {
   if (!supportedCloudTarget(target)) throw new Error('CLOUD_READ_TARGET_UNSUPPORTED');
   if (input.mode === 'find') {
     const cloud = await import('./hms-cloud-saved-stay-find.js');
     const request = { confirmation: input.confirmation, ...(input.arrival ? { arrival: input.arrival } : {}) };
     const result = cloud.projectCloudStayFind(request, await cloud.runCloudStayFind({
-      request, target, signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS), ...(transportId !== undefined && { transportId }),
+      request, target, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(LOOKUP_TIMEOUT_MS)]) :
+        AbortSignal.timeout(LOOKUP_TIMEOUT_MS), ...(transportId !== undefined && { transportId }),
     }), target.propertyCode);
     // The mounted pane must not present a partial or mismatched record as a found stay.
     if (result.outcome === 'found' && (!result.nativePreimage || result.nativePreimage.confirmation !== input.confirmation)) {
@@ -430,11 +439,13 @@ async function defaultSpawn(
     try {
       const moduleUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
       const cloud = await import(moduleUrl.href) as { searchGuestInCloud: (request: Extract<PaneStayLookupSpawnInput,
-        { mode: 'search-guest' }> & { dir: string; propertyCode: string }, options?: { transportId?: string }) =>
+        { mode: 'search-guest' }> & { dir: string; propertyCode: string }, options?: { transportId?: string; signal?: AbortSignal }) =>
         Promise<Partial<PaneStayLookupSpawnResult> & { propertyCode?: string }> };
       const request = { ...input, dir, propertyCode: target.propertyCode };
-      const result = transportId !== undefined
-        ? await cloud.searchGuestInCloud(request, { transportId })
+      const result = transportId !== undefined || signal !== undefined
+        ? await cloud.searchGuestInCloud(request, {
+          ...(transportId !== undefined && { transportId }), ...(signal !== undefined && { signal }),
+        })
         : await cloud.searchGuestInCloud(request);
       if (result.propertyCode !== target.propertyCode) throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
       return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
@@ -504,16 +515,19 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   const lock = deps.lock();
   if (!lock) return refused('refused_lock_unavailable');
   if (!deps.target && !paneStayLookupLoaders.spawn) return refused('refused_unknown_transport');
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!, deps.transportId));
-  let run: PaneStayLookupSpawnResult;
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!, deps.transportId, deps.signal));
+  let run: PaneStayLookupSpawnResult | null;
   try {
     run = await lock.withLock(
-      () =>
-        spawn(
+      async () => {
+        if (!await nativeStayReadAvailable(deps.target, deps.transportId)) return null;
+        return spawn(
           { mode: 'find', confirmation: input.confirmation, arrival: input.arrival ?? null },
           deps.target,
-        ),
-      deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+        );
+      },
+      deps.signal ? { ...(deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS)), signal: deps.signal } :
+        deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return refused('refused_lock_busy');
@@ -522,6 +536,7 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
     if (loginCode) return { ...refused('execution_failure'), reason: loginCode };
     return refused('execution_failure');
   }
+  if (!run) return refused('refused_flag_off');
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toFindOutcome(run.outcome);
   const stay = outcome === 'found' ? toPaneStayFields(run.stay) : null;
@@ -598,12 +613,13 @@ export async function searchGuest(
   const lock = deps.lock();
   if (!lock) return refusedSearch('refused_lock_unavailable');
   if (!deps.target && !paneStayLookupLoaders.spawn) return refusedSearch('refused_unknown_transport');
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!, deps.transportId));
-  let run: PaneStayLookupSpawnResult;
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!, deps.transportId, deps.signal));
+  let run: PaneStayLookupSpawnResult | null;
   try {
     run = await lock.withLock(
-      () =>
-        spawn(
+      async () => {
+        if (!await nativeStayReadAvailable(deps.target, deps.transportId)) return null;
+        return spawn(
           {
             mode: 'search-guest',
             lastName: input.lastName,
@@ -611,8 +627,10 @@ export async function searchGuest(
             ...(input.departure !== undefined ? { departure: input.departure } : {}),
           },
           deps.target,
-        ),
-      deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+        );
+      },
+      deps.signal ? { ...(deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS)), signal: deps.signal } :
+        deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return refusedSearch('refused_lock_busy');
@@ -621,6 +639,7 @@ export async function searchGuest(
     if (loginCode) return { ...refusedSearch('execution_failure'), error: loginCode };
     return refusedSearch('execution_failure');
   }
+  if (!run) return refusedSearch('refused_flag_off');
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toSearchOutcome(run.outcome);
   const loginCode = lookupLoginOutageCode(run.reason) ?? lookupLoginOutageCode(run);
@@ -649,6 +668,7 @@ export async function searchGuestCloudBatch(
     isGuestSurname(query.lastName) && isRealIsoDate(query.arrival) &&
     (query.departure === undefined || isRealIsoDate(query.departure) && query.departure > query.arrival) ? [index] : []);
   if (!validIndices.length) return results;
+  if (!await nativeStayReadAvailable(target, transportId)) return queries.map(() => refusedSearch('refused_flag_off'));
   const dir = await mkdtemp(join(tmpdir(), 'pane-guest-batch-'));
   try {
     const cloudUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);

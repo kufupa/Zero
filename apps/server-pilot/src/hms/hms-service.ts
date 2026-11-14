@@ -5,7 +5,7 @@ import { getDb, type DB } from '../db/client.js';
 import { approveHmsWrite, prepareHmsWrite, publicHmsPreparedSummary } from '../ai/hms-approval.js';
 import type { AiRunFence } from '../ai/run-ledger.js';
 import { propertyConfigurationForScope } from './rate-catalogue.js';
-import { resolvePropertyScope, type PropertySwitch, type ResolvedPropertyScope } from './property-registry.js';
+import { resolvePropertyScope, propertySwitchSchema, type PropertySwitch, type ResolvedPropertyScope } from './property-registry.js';
 import { readResultSchema, readFolioDataSchema } from './read-service-contracts.js';
 import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import type { ReadRequest } from './read-service.js';
@@ -16,7 +16,7 @@ import { hmsPropertyReadEnabled } from './mailbox-hms-origin-bind.js';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { loadWorkerActiveReadSet } from './active-read-runtime.js';
+import { loadWorkerActiveReadSet, DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT } from './active-read-runtime.js';
 import { loadHmsReadRoleProofV2ForTool } from './release-kernel.js';
 import { runtimeFingerprintSha256 } from './evidence-runtime.js';
 import { READ_TOOLS } from './read-tools.js';
@@ -27,7 +27,7 @@ async function validatedReadCapabilities(scope: ResolvedPropertyScope) {
   const credentialDigest = process.env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${scope.propertyCode}`];
   const keyVersion = process.env.HMS_EVIDENCE_HMAC_KEY_VERSION?.trim();
   if (!sourceRevision || !keyVersion || !/^[a-f0-9]{64}$/.test(credentialDigest ?? '')) return unavailable;
-  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || '/etc/nava/hms-read-role-proofs/v2';
+  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT;
   const runtimeFingerprint = runtimeFingerprintSha256({ sourceRevision, playwrightRevision: '1.63.0', chromiumRevision: '1243' });
   try {
     const active = await loadWorkerActiveReadSet({ propertyCode: scope.propertyCode,
@@ -59,6 +59,19 @@ export type ReadResult<Q extends HmsReadQuery> =
 /** Native read adapters are supplied by the existing proof-authorized runtime, never RPC payloads. */
 export interface HmsReadAdapter {
   read<Q extends HmsReadQuery>(scope: ResolvedPropertyScope, query: Q, signal?: AbortSignal): Promise<ReadResult<Q>>;
+}
+
+export async function nativeReadCapabilityAvailable(input: {
+  propertyCode: string; transportId?: string; capability?: 'reads' | 'quote';
+}): Promise<boolean> {
+  if (input.propertyCode === 'HRCEN') return true;
+  if (!input.transportId) return false;
+  try {
+    const configuration = await createHmsService({ transportId: input.transportId,
+      propertySwitch: propertySwitchSchema.parse(input.propertyCode) }).configuration();
+    return configuration.propertyCode === input.propertyCode &&
+      configuration.capabilities[input.capability ?? 'reads'].status !== 'unavailable';
+  } catch { return false; }
 }
 
 /** Application entry point. The authenticated mailbox owns the scope throughout the operation. */

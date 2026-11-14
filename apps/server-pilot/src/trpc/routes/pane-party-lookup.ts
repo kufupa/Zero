@@ -30,7 +30,7 @@ export const panePartyLookupRouter = router({
       threadId: input.threadId,
       ...(input.messageId ? { messageId: input.messageId } : {}),
     });
-    return findParty({ name: input.name, kind: input.kind }, { target });
+    return findParty({ name: input.name, kind: input.kind }, { target, transportId: ctx.activeTransportId });
   }),
   // Read-only. Suggestions come from the sender's domain and the body's names; only HMS-listed ids are ever attached.
   suggest: mailboxProcedure.input(suggestInput).query(({ input, ctx }) => ({

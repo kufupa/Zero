@@ -37,7 +37,7 @@ function failure(role: NativePartyRole, name: string, status: 'unavailable' | 'f
 
 /** Read source-provided party names in a guarded blank Guest Stay. Never select a candidate. */
 export async function lookupNativeParty(input: {
-  role: NativePartyRole; name: string; target: HmsReadTarget; transportId?: string; signal?: AbortSignal;
+  role: NativePartyRole; name: string; target: HmsReadTarget; transportId?: string; signal?: AbortSignal; exactTerm?: boolean;
 }): Promise<ReservationWorkflowV2NativePartyRead> {
   const { role, target, signal } = input;
   if (!quoteRateContextEnabled()) {
@@ -58,6 +58,12 @@ export async function lookupNativeParty(input: {
   if (!name || name.length > 200 || /[\r\n]/.test(name)) {
     return failure(role, name, 'unavailable', 'native_party_name_required');
   }
+  if (target.propertyCode !== 'HRCEN') {
+    const { nativeReadCapabilityAvailable } = await import('../hms/hms-service.js');
+    if (!await nativeReadCapabilityAvailable({ propertyCode: target.propertyCode, transportId: input.transportId })) {
+      return failure(role, name, 'unavailable', 'native_party_read_capability_unavailable');
+    }
+  }
   signal?.throwIfAborted();
   try {
     const sessionUrl = new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url);
@@ -71,7 +77,7 @@ export async function lookupNativeParty(input: {
       let nativeQuery = name;
       let found = await runTool({ tool: spec.tool, query: nativeQuery });
       const searchesTried = [{ query: nativeQuery, outcome: found.outcome }];
-      if (found.outcome === 'no_match') {
+      if (found.outcome === 'no_match' && !input.exactTerm) {
         for (const term of partyMatchSearchTerms(name).filter(term => term !== name).slice(0, 2)) {
           signal?.throwIfAborted();
           nativeQuery = term;

@@ -2,6 +2,9 @@ import type { ReservationWorkflowV2Extraction } from '../src/ai/reservation-work
 import { createReservationWorkflowV2CandidateReader, runReservationWorkflowV2Prefill } from '../src/ai/reservation-workflow-v2-prefill.js';
 import * as cloudStay from '../src/ai/hms-cloud-saved-stay-find.js';
 import * as paneStaySave from '../src/ai/pane-stay-save.js';
+import * as hmsService from '../src/hms/hms-service.js';
+import { lookupNativeParty } from '../src/ai/reservation-workflow-v2-native-party.js';
+import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -95,6 +98,7 @@ function quoteFixture(sourceRef: string): ReservationWorkflowV2Extraction['reque
 describe('reservation workflow host projection', () => {
   it.each(['HRCEN', 'HRDAV', 'HRDAVS'])('reads an exact source confirmation through the selected %s Cloud session', async (propertyCode) => {
     vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    vi.spyOn(hmsService, 'nativeReadCapabilityAvailable').mockResolvedValue(true);
     const withLock = vi.fn(async <T>(operation: () => Promise<T>) => operation());
     vi.spyOn(paneStaySave, 'paneStayPropertyLock').mockReturnValue({ withLock } as never);
     const native = { source: 'record_view_ext_model', propertyCode, confirmation: '123456-1',
@@ -123,6 +127,30 @@ describe('reservation workflow host projection', () => {
     expect(result).toMatchObject({ status: 'complete', result: { propertyCode, outcome: 'found',
       stay: { firstName: 'Proof', lastName: 'Labtest' } } });
     expect(withLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses native prefill and historical parties after selected proof loss while reads remain enabled', async () => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    vi.stubEnv('HMS_DAVINCI_ENABLED_PROPERTIES', 'HRDAV,HRDAVS');
+    vi.stubEnv('NAVA_BUILD_COMMIT', 'a'.repeat(40));
+    vi.stubEnv('HMS_EVIDENCE_HMAC_KEY_VERSION', 'proof-loss-test');
+    vi.stubEnv('HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAVS', 'b'.repeat(64));
+    vi.stubEnv('HMS_READ_ROLE_PROOF_V2_ROOT', '/tmp/davinci-p2-no-installed-proofs');
+    const run = vi.spyOn(cloudStay, 'runCloudStayFind');
+    const withLock = vi.fn(async <T>(operation: () => Promise<T>) => operation());
+    vi.spyOn(paneStaySave, 'paneStayPropertyLock').mockReturnValue({ withLock } as never);
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode: 'HRDAVS',
+      transportId: 'transport-davinci', source: { messageId: 'source', threadId: 'thread',
+        sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' } });
+    for (const kind of ['stay_candidate', 'guest_candidate', 'party_candidate', 'rate_availability'] as const) {
+      expect(await read({ id: kind, ref: kind, kind, propertyCode: 'HRDAVS',
+        criteria: { confirmationOrGuestText: '123456-1' }, sourceRefs: [] })).toMatchObject({ status: 'unavailable' });
+    }
+    expect(run).not.toHaveBeenCalled();
+    expect(withLock).not.toHaveBeenCalled();
+    expect(await lookupNativeParty({ role: 'agency', name: 'Labtest Travel',
+      target: hmsReadTargetForProperty('HRDAVS'), transportId: 'transport-davinci' })).toMatchObject({
+      status: 'unavailable', result: { reason: 'native_party_read_capability_unavailable' } });
   });
 
   it('keeps a clear per-room adult claim across multiple occupancy and dated rows', async () => {

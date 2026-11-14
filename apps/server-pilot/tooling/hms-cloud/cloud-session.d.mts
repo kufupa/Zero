@@ -11,6 +11,7 @@ export type CloudSessionIdentity = CloudPropertyIdentity & Readonly<{
   landingPropertyCode: 'HRCEN' | 'HRDAV';
 }>;
 export type CloudSecretLoader = (input: { secretArn: string; signal?: AbortSignal }) => Promise<unknown>;
+export type CloudLoadedSecret = Readonly<{ secret: unknown; versionId: string; versionStages: readonly string[] }>;
 declare const cloudCredentialLeaseBrand: unique symbol;
 export type CloudCredentialLease = Readonly<{
   [cloudCredentialLeaseBrand]: never;
@@ -28,6 +29,12 @@ export type CloudSessionOptions = {
   credentialLease?: CloudCredentialLease;
 };
 export declare function cloudCredentialLeaseKey(propertyCode: string): string;
+export declare function verifyCloudCredentialVersion(input: {
+  propertyCode: string;
+  transportId?: string;
+  loadedSecret: unknown;
+  signal?: AbortSignal;
+}): Promise<string | null>;
 export declare function acquireCloudCredentialLease(propertyCode: string, options?: {
   signal?: AbortSignal;
 }): Promise<CloudCredentialLease>;
