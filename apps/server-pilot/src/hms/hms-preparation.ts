@@ -4,7 +4,26 @@ import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from '../ai/draft-approval.js';
-import { propertyCodeSchema, resolvedPropertyScopeSchema } from './property-registry.js';
+import { propertyCodeSchema, resolvedPropertyScopeSchema, type ResolvedPropertyScope } from './property-registry.js';
+import type { PropertyConfiguration } from './property-configuration.js';
+import { reservationWorkflowV2PrepareInputSchema, reservationWorkflowV2GuestPrepareInputSchema } from '../ai/reservation-workflow-v2-contract.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+
+const serviceId = z.string().min(1).max(80);
+export const hmsPreparedWorkflowContextSchema = z.discriminatedUnion('endpoint', [
+  z.object({ endpoint: z.literal('execute'), input: reservationWorkflowV2PrepareInputSchema }).strict(),
+  z.object({ endpoint: z.literal('createGuestProfile'), input: reservationWorkflowV2GuestPrepareInputSchema.extend({
+    prepareRef: z.string().min(1).max(160),
+  }).strict() }).strict(),
+  z.object({ endpoint: z.literal('executeServices'), input: reservationWorkflowV2PrepareInputSchema.extend({
+    allocationId: serviceId, serviceId, reviewedPrepareRef: z.string().min(1).max(160).optional(),
+  }).strict() }).strict(),
+  z.object({ endpoint: z.literal('executeSavedServices'), input: reservationWorkflowV2PrepareInputSchema.extend({
+    serviceId, targetRef: z.object({ kind: z.literal('saved_target'), requestId: serviceId, hintId: serviceId }).strict(),
+    allocationId: z.never().optional(), reviewedPrepareRef: z.string().min(1).max(160),
+  }).strict() }).strict(),
+]);
+export type HmsPreparedWorkflowContext = z.infer<typeof hmsPreparedWorkflowContextSchema>;
 
 const identifier = z.string().trim().min(1).max(512);
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
@@ -42,7 +61,9 @@ export const hmsPreparationSchema = z.object({
     price: z.unknown(), warnings: z.array(z.string()) }).strict(),
   policyIdentity: identifier, catalogueIdentity: identifier,
   capturedAt: z.string().datetime(), expiresAt: z.string().datetime(),
-  allocations: z.array(z.object({ allocationId: identifier, businessDigest: digest }).strict()).min(1).max(8).optional(),
+  allocations: z.array(z.object({ allocationId: identifier, businessDigest: digest,
+    observationRef: identifier.optional() }).strict()).min(1).max(8).optional(),
+  workflowContext: hmsPreparedWorkflowContextSchema.optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.scope.transportId !== value.source.transportId ||
       value.businessDigest !== preparationDigest(value.businessFields) ||
@@ -51,6 +72,21 @@ export const hmsPreparationSchema = z.object({
       Date.parse(value.expiresAt) - Date.parse(value.nativeObservation.capturedAt) > 30 * 60 * 1000 ||
       (value.operation === 'create' && !value.allocations)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hms_preparation_binding_invalid' });
+  }
+  const context = value.workflowContext;
+  if (value.allocations && new Set(value.allocations.map(allocation => allocation.allocationId)).size !== value.allocations.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hms_preparation_duplicate_allocation' });
+  }
+  if (context && value.operation === 'create' && value.allocations?.some(allocation => !allocation.observationRef)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hms_preparation_allocation_observation_required' });
+  }
+  if (context && (context.input.workItemId !== value.workItemId || context.input.expectedRevision !== value.revision ||
+      context.input.source.threadId !== value.source.threadId || context.input.source.messageId !== value.source.sourceMessageId ||
+      context.input.source.sourceHash !== value.source.sourceHash ||
+      (context.input.source.propertyId === undefined ? value.scope.propertyCode !== 'HRCEN' : context.input.source.propertyId !== value.scope.propertyCode) ||
+      (context.endpoint === 'createGuestProfile' && value.operation !== 'create_guest_profile') ||
+      (['executeServices', 'executeSavedServices'].includes(context.endpoint) && value.operation !== 'add_on'))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'hms_preparation_workflow_binding_invalid' });
   }
 });
 export type HmsPreparation = z.infer<typeof hmsPreparationSchema>;
@@ -80,6 +116,22 @@ export type HmsWriteGrantV2 = z.infer<typeof hmsWriteGrantV2Schema>;
 
 export function preparationDigest(value: unknown): string {
   return createHash('sha256').update(canonicalJson(JSON.parse(JSON.stringify(value)))).digest('hex');
+}
+
+export function hmsConfigurationIdentities(scope: ResolvedPropertyScope, configuration: PropertyConfiguration,
+  operation: HmsPreparation['operation']) {
+  const workflow = hmsWorkflowForOperation(operation);
+  return {
+    policyIdentity: preparationDigest({ scope, formPolicy: configuration.formPolicy,
+      workflowPolicy: effectiveWorkflowPolicy(process.env, scope.propertyCode, workflow) }),
+    catalogueIdentity: preparationDigest({ catalogue: configuration.catalogue, ratePlans: configuration.ratePlans,
+      roomTypes: configuration.roomTypes, nativeMealMappings: configuration.nativeMealMappings }),
+  };
+}
+
+export function hmsWorkflowForOperation(operation: HmsPreparation['operation']) {
+  return operation === 'create_guest_profile' ? 'guest_profile_create'
+    : operation === 'attach_document' ? 'attach' : operation === 'add_on' ? 'addons' : operation;
 }
 
 /** Call only from the authenticated prepare transaction after native staging has closed. */

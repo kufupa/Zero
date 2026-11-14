@@ -1,7 +1,7 @@
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import type { ReservationistSourceFreshnessProof } from '../ai/draft-approval.js';
-import { getProfileBoards, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { getProfileBoards, profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
 
 /** How long a priced staff quote may be reused, measured from the HMS observation. */
 export const PRICED_QUOTE_REUSE_MS = 24 * 60 * 60_000;
@@ -227,7 +227,7 @@ function freeze<T>(value: T): T {
   return value;
 }
 const nativeContractPath = fileURLToPath(
-  new URL('../../tooling/playwright-quote/quote-contract.mjs', import.meta.url),
+  new URL('../../tooling/hms-cloud/quote-contract.mjs', import.meta.url),
 );
 const STATIC_BOARDS: Record<string, Board> = {
   'Room Only R': 'room_only',

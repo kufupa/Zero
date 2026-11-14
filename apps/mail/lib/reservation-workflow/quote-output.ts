@@ -1,4 +1,4 @@
-import type { ReservationPaneSnapshot, ReservationSourceContext } from './types';
+import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from './types';
 import { effectiveAt, requestPath, valueAt } from './views';
 
 export type QuoteOutputArtifact = {
@@ -27,8 +27,12 @@ const NATIVE_BOARD_LABELS: Record<string, string> = {
   'dinner, bed, breakfast & beverage nr': 'dinner_bb',
 };
 
-function boardCode(value: unknown): string | null {
+function boardCode(value: unknown, source: ReservationSourceContext, configuration?: PropertyConfiguration | null): string | null {
   const label = typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ').toLowerCase() : '';
+  const mapping = configuration?.propertyCode === source.propertyId && configuration.transportId === source.mailboxId
+    ? configuration.nativeMealMappings.find(row => row.label.trim().replace(/\s+/gu, ' ').toLowerCase() === label) : undefined;
+  if (mapping) return mapping.mealPlan;
+  if (source.propertyId !== 'HRCEN') return label === 'room_only' || label === 'bb' || label === 'dinner_bb' ? label : null;
   const mapped = Object.prototype.hasOwnProperty.call(NATIVE_BOARD_LABELS, label) ? NATIVE_BOARD_LABELS[label] : null;
   if (mapped) return mapped;
   const board = label.replace(/[\s&-]+/gu, '_');
@@ -47,7 +51,7 @@ function stayNights(arrival: unknown, departure: unknown): string[] {
 }
 
 function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, source: ReservationSourceContext,
-  requestId: string, document: ReservationWorkflowV2DraftObservation): boolean {
+  requestId: string, document: ReservationWorkflowV2DraftObservation, configuration?: PropertyConfiguration | null): boolean {
   const draft = snapshot.session.draft;
   const payload = rec(document.result), marker = rec(payload.unavailableInventory);
   const documentCriteria = rec(document.criteria);
@@ -63,7 +67,7 @@ function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, 
   const nights = stayNights(group?.arrival, group?.departure);
   if (!group || roomCodes.length !== 1 || !group.ratePlan || !nights.length ||
       marker.groupId !== group.id || marker.roomCode !== roomCodes[0] || marker.rateCode !== group.ratePlan ||
-      marker.mealPlan !== boardCode(group.mealPlan) || marker.arrivalDate !== group.arrival ||
+      marker.mealPlan !== boardCode(group.mealPlan, source, configuration) || marker.arrivalDate !== group.arrival ||
       marker.departureDate !== group.departure || marker.quantity !== group.quantity) return false;
   const availability = draft.observations.find((item) => item.ref === availabilityRef);
   const native = rec(availability?.result), criteria = rec(availability?.criteria), shortfall = rec(native.shortfall);
@@ -95,7 +99,7 @@ function hasCurrentUnavailableInventoryProof(snapshot: ReservationPaneSnapshot, 
   const board: Array<Record<string, unknown>> = Array.isArray(diagnostic.availabilityBoard)
     ? diagnostic.availabilityBoard.map(rec).filter((item) => Object.keys(item).length > 0) : [];
   const rows = board.filter((item) => item.groupId === group.id && item.roomCode === marker.roomCode &&
-    item.rateCode === marker.rateCode && boardCode(item.mealPlanLabel ?? item.mealPlan) === marker.mealPlan);
+    item.rateCode === marker.rateCode && boardCode(item.mealPlanLabel ?? item.mealPlan, source, configuration) === marker.mealPlan);
   if (rows.length !== 1) return false;
   const row = rows[0]!, coverage = rec(row.coverage), nightCoverage = rec(row.nightCoverage);
   const facts: Array<Record<string, unknown>> = Array.isArray(row.nightly)
@@ -115,7 +119,7 @@ type ReservationWorkflowV2DraftObservation = ReservationPaneSnapshot['session'][
 
 /** Only durable host-generated output, attached to this source and generation, is eligible. */
 export function getQuoteOutput(source: ReservationSourceContext, snapshot: ReservationPaneSnapshot | null,
-  requestId: string): QuoteOutput | null {
+  requestId: string, configuration?: PropertyConfiguration | null): QuoteOutput | null {
   if (!snapshot) return null;
   const draft = snapshot.session.draft;
   if (!source.mailboxId || !source.threadId || draft.transportId !== source.mailboxId ||
@@ -159,7 +163,7 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   const stale = operation.draftRevision !== snapshot.session.revision;
   const inventoryDecline = result.unavailableInventory !== undefined &&
     operation.status === 'succeeded' && !stale && sameOutputChoice &&
-    hasCurrentUnavailableInventoryProof(snapshot, source, requestId, observation);
+    hasCurrentUnavailableInventoryProof(snapshot, source, requestId, observation, configuration);
   if (result.unavailableInventory !== undefined && !inventoryDecline)
     issues.push('The unavailability reply no longer matches a complete current Infor result. Refresh the search before using it.');
   const textOnly = Array.isArray(result.artifacts) && raw.length === 0 && outputKinds.length === 1 && outputKinds[0] === 'email_quote' &&

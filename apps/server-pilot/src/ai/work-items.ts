@@ -68,7 +68,7 @@ import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/
 import {
   getPropertyTransportIds,
   resolvePropertyTransport,
-} from '../../tooling/playwright-quote/property-registry.mjs';
+} from '../../tooling/hms-cloud/property-registry.mjs';
 import {
   COARSE_TO_AGENT,
   parseStoredClassifier,

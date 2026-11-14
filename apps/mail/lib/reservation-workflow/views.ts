@@ -621,6 +621,9 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
       label: entry.meaning, ...(entry.reason ? { detail: entry.reason } : {}) });
   if (scoped && kind === 'cms_message')
     for (const entry of scoped.formPolicy.cmsChoices) available.set(entry.code, { ref: `catalogue:${entry.code}`, value: entry.code, label: entry.meaning });
+  if (scoped && kind === 'market_segment')
+    for (const entry of scoped.formPolicy.marketSegmentChoices ?? []) available.set(entry.code,
+      { ref: `catalogue:${entry.code}`, value: entry.code, label: entry.meaning });
   if (kind !== 'rate_plan') {
     for (const choice of native) available.set(choice.value, choice);
     return [...available.values()];

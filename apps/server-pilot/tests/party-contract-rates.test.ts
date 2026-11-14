@@ -30,8 +30,8 @@ import {
 type RunnerSeams = {
   pickerFilter: (kind: string, reference: Record<string, unknown>) => { name: string; value: string };
 };
-const runner = (await import('../tooling/playwright-quote/fetch-quote.mjs' as string)) as RunnerSeams;
-const normalizer = (await import('../tooling/playwright-quote/quote-contract.mjs' as string)) as {
+const runner = (await import('../tooling/hms-cloud/fetch-quote.mjs' as string)) as RunnerSeams;
+const normalizer = (await import('../tooling/hms-cloud/quote-contract.mjs' as string)) as {
   normalizeQuoteRequest: (input: unknown) => { ok: boolean; request: any };
 };
 
@@ -39,7 +39,7 @@ const ARRIVAL = '2026-10-12';
 const DEPARTURE = '2026-10-15';
 const signer = { signerName: 'Staff', signerEmail: 'staff@example.test' };
 const scope = {
-  transportId: 'transport',
+  transportId: 'transport-centurion',
   userId: 'staff',
   threadId: 'thread',
   messageId: 'message',
@@ -80,7 +80,7 @@ function rateOption(rate: Rate, context: Record<string, unknown>) {
     id: `${rate.room ?? 'SKNG'}:${rate.code}`,
     room: { code: rate.room ?? 'SKNG', label: 'Standard King', buildingCode: 'MAIN' },
     rate: { code: rate.code, label: rate.label },
-    board: rate.board === 'breakfast' ? 'Bed & Breakfast R' : 'Room Only R',
+    mealPlan: rate.board === 'breakfast' ? 'Bed & Breakfast R' : 'Room Only R',
     appliedContext: context,
     rateScope: rate.rateScope,
     // Verified on purpose: the contract rule must hold by flag alone, not because some other check filtered the row.
@@ -108,7 +108,7 @@ function rateShopRows(request: any, rates: Rate[], context: Record<string, unkno
   const boardOf = (rate: Rate) => (rate.board === 'breakfast' ? 'breakfast' : 'room_only');
   return rates.map((rate) => {
     const off =
-      (ask.boardBases?.length && !ask.boardBases.includes(boardOf(rate))) ||
+      (ask.mealPlanBases?.length && !ask.mealPlanBases.includes(boardOf(rate))) ||
       (ask.roomCodes?.length && !ask.roomCodes.includes(rate.room ?? 'SKNG')) ||
       (ask.rateCodes?.length && !ask.rateCodes.includes(rate.code));
     return {
@@ -125,11 +125,11 @@ const policy = {
   sourceHashes: ['c'.repeat(64)],
   authoredDates: ['2026-09-08'],
   families: [
-    { rateCode: 'BARRO', board: 'room_only' as const },
-    { rateCode: 'BCO1B', board: 'room_only' as const },
-    { rateCode: 'WSF2B', board: 'room_only' as const },
-    { rateCode: 'NGD10B', board: 'room_only' as const },
-    ...['ACM1B', 'ACM2B', 'ALH1B', 'BLU1B', 'OBK1B', 'SIG1B', 'NOR1B'].map((rateCode) => ({ rateCode, board: 'room_only' as const })),
+    { rateCode: 'BARRO', mealPlan: 'room_only' as const },
+    { rateCode: 'BCO1B', mealPlan: 'room_only' as const },
+    { rateCode: 'WSF2B', mealPlan: 'room_only' as const },
+    { rateCode: 'NGD10B', mealPlan: 'room_only' as const },
+    ...['ACM1B', 'ACM2B', 'ALH1B', 'BLU1B', 'OBK1B', 'SIG1B', 'NOR1B'].map((rateCode) => ({ rateCode, mealPlan: 'room_only' as const })),
   ],
   vat: 'included' as const,
   levy: 'included' as const,
@@ -137,7 +137,7 @@ const policy = {
 
 function groupInput(
   parties?: StaffQuoteParties,
-  text: { company?: string; agency?: string } = {},
+  text: { organization?: string; bookingAgency?: string } = {},
   group: { pin?: string; roomCodes?: string[] } = {},
 ) {
   return staffQuoteInput.parse({
@@ -153,7 +153,7 @@ function groupInput(
         quantity: 1,
         adults: 1,
         childrenAges: [],
-        board: 'room_only',
+        mealPlan: 'room_only',
         ...(group.roomCodes ? { roomCodes: group.roomCodes } : {}),
         ...(group.pin ? { rateCode: group.pin } : {}),
       },
@@ -260,7 +260,7 @@ async function quoteWith(
   parties: StaffQuoteParties | undefined,
   rates: Rate[],
   options: {
-    header?: { company?: string; agency?: string };
+    header?: { organization?: string; bookingAgency?: string };
     readParty?: any;
     incompleteParty?: boolean;
     truncatedParty?: boolean;
@@ -293,12 +293,12 @@ async function quoteWith(
   };
 }
 
-const company = (nativeId: string, name: string) => ({ kind: 'company' as const, nativeId, name });
-const agency = (nativeId: string, name: string) => ({ kind: 'agency' as const, nativeId, name });
+const company = (nativeId: string, name: string) => ({ kind: 'organization' as const, nativeId, name });
+const agency = (nativeId: string, name: string) => ({ kind: 'bookingAgency' as const, nativeId, name });
 
 describe('contract rates from the picked company or agency', () => {
   it('a company pick sends its HMS id as the organization context, and the Rate Shop reads that id', async () => {
-    const { prepared } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR]);
+    const { prepared } = await quoteWith({ organization: company('49', 'Woolworths') }, [BAR]);
     expect(prepared.request.rateContext).toEqual({ organization: { nativeId: '49', name: 'Woolworths' } });
     expect(runner.pickerFilter('organization', { nativeId: '49', name: 'Woolworths' })).toEqual({
       name: 'ff_companyid',
@@ -307,23 +307,23 @@ describe('contract rates from the picked company or agency', () => {
   });
 
   it('an agency pick alone sends the agency id; flagged rows if any, otherwise BAR', async () => {
-    const flagged = await quoteWith({ agency: agency('569', 'Woolworths Agency') }, [BAR, AGENCY_FLAGGED]);
-    expect(flagged.prepared.request.rateContext).toEqual({ agency: { nativeId: '569', name: 'Woolworths Agency' } });
+    const flagged = await quoteWith({ bookingAgency: agency('569', 'Woolworths Agency') }, [BAR, AGENCY_FLAGGED]);
+    expect(flagged.prepared.request.rateContext).toEqual({ bookingAgency: { nativeId: '569', name: 'Woolworths Agency' } });
     expect(flagged.revision.groups[0]!.rateCode).toBe('WSF2B');
 
-    const none = await quoteWith({ agency: agency('113', '360 degrees Travel') }, [BAR]);
+    const none = await quoteWith({ bookingAgency: agency('113', '360 degrees Travel') }, [BAR]);
     expect(none.revision.groups[0]!.rateCode).toBe('BARRO');
-    expect(partyContractReviewNote({ agency: agency('113', '360 degrees Travel') }, none.revision.groups)).toBe(
+    expect(partyContractReviewNote({ bookingAgency: agency('113', '360 degrees Travel') }, none.revision.groups)).toBe(
       'No contract rate found for 360 degrees Travel; this quote uses our best available rate.',
     );
   });
 
   it('both picks send both ids, and only the flagged rows are offered as contracts', async () => {
-    const parties = { company: company('49', 'Woolworths'), agency: agency('569', 'Woolworths Agency') };
+    const parties = { organization: company('49', 'Woolworths'), bookingAgency: agency('569', 'Woolworths Agency') };
     const { prepared, revision } = await quoteWith(parties, [NAME_ONLY, WOOLWORTHS_FLAGGED, AGENCY_FLAGGED, BAR]);
     expect(prepared.request.rateContext).toEqual({
       organization: { nativeId: '49', name: 'Woolworths' },
-      agency: { nativeId: '569', name: 'Woolworths Agency' },
+      bookingAgency: { nativeId: '569', name: 'Woolworths Agency' },
     });
     // The cheapest flagged row is priced. The cheaper unflagged name match is not.
     expect(revision.groups[0]!.rateCode).toBe('BCO1B');
@@ -335,19 +335,19 @@ describe('contract rates from the picked company or agency', () => {
   });
 
   it('nothing flagged prices BAR and says so in plain copy', async () => {
-    const { revision } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR]);
+    const { revision } = await quoteWith({ organization: company('49', 'Woolworths') }, [BAR]);
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(partyNoContractNote(['Woolworths'])).toBe(
       'No contract rate found for Woolworths; this quote uses our best available rate.',
     );
-    expect(partyContractReviewNote({ company: company('49', 'Woolworths') }, revision.groups)).toBe(
+    expect(partyContractReviewNote({ organization: company('49', 'Woolworths') }, revision.groups)).toBe(
       'No contract rate found for Woolworths; this quote uses our best available rate.',
     );
-    expect(partyContractReviewNote({ company: company('49', 'Woolworths') }, [{ rateCode: 'BCO1B' }])).toBeNull();
+    expect(partyContractReviewNote({ organization: company('49', 'Woolworths') }, [{ rateCode: 'BCO1B' }])).toBeNull();
   });
 
   it('a verified party with only public rows reads the party once, then quotes BAR the public way, with the review copy', async () => {
-    const agency360 = { agency: agency('113', '360 degrees Travel') };
+    const agency360 = { bookingAgency: agency('113', '360 degrees Travel') };
     const { revision, fellBack, note, sent } = await quoteWith(agency360, [BAR]);
     expect(fellBack).toBe(true);
     expect(note).toBeNull();
@@ -371,7 +371,7 @@ describe('contract rates from the picked company or agency', () => {
       amounts: [`${500 + i * 10}.00`],
       room,
     }));
-    const { revision, fellBack, sent } = await quoteWith({ agency: agency('113', '360 degrees Travel') }, unflagged);
+    const { revision, fellBack, sent } = await quoteWith({ bookingAgency: agency('113', '360 degrees Travel') }, unflagged);
     expect(fellBack).toBe(true);
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(revision.groups[0]!.roomCode).toBe('SKNG');
@@ -386,7 +386,7 @@ describe('contract rates from the picked company or agency', () => {
   });
 
   it('an incomplete party search still falls back to public, with the honest copy, never the no-contract copy', async () => {
-    const agency360 = { agency: agency('113', '360 degrees Travel') };
+    const agency360 = { bookingAgency: agency('113', '360 degrees Travel') };
     const { revision, fellBack, note } = await quoteWith(agency360, [BAR], { incompleteParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
@@ -396,7 +396,7 @@ describe('contract rates from the picked company or agency', () => {
   });
 
   it('a verified party with a flagged row prices that contract row, not the public one', async () => {
-    const agencyWoolworths = { agency: agency('569', 'Woolworths Agency') };
+    const agencyWoolworths = { bookingAgency: agency('569', 'Woolworths Agency') };
     const { revision } = await quoteWith(agencyWoolworths, [BAR, AGENCY_FLAGGED]);
     expect(revision.groups[0]!.rateCode).toBe('WSF2B');
     expect(partyContractReviewNote(agencyWoolworths, revision.groups)).toBeNull();
@@ -405,7 +405,7 @@ describe('contract rates from the picked company or agency', () => {
   it('matches the party by HMS id, so a shorter name ("Woolworths" vs "Woolworths Holdings") still gets the contract row', async () => {
     hmsDisplayName['569'] = 'Woolworths Agency (Pty) Ltd';
     try {
-      const picked = { agency: agency('569', 'Woolworths') };
+      const picked = { bookingAgency: agency('569', 'Woolworths') };
       const { revision } = await quoteWith(picked, [BAR, AGENCY_FLAGGED]);
       expect(revision.groups[0]!.rateCode).toBe('WSF2B');
       expect(partyContractReviewNote(picked, revision.groups)).toBeNull();
@@ -415,7 +415,7 @@ describe('contract rates from the picked company or agency', () => {
   });
 
   it('a plan named after the party is not offered as a contract unless HMS flags it', async () => {
-    const { revision } = await quoteWith({ company: company('49', 'Woolworths') }, [NAME_ONLY, BAR]);
+    const { revision } = await quoteWith({ organization: company('49', 'Woolworths') }, [NAME_ONLY, BAR]);
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(revision.groups[0]!.rateCode).not.toBe('NGD10B');
   });
@@ -423,7 +423,7 @@ describe('contract rates from the picked company or agency', () => {
   it('with the switch off, no party context is sent and the request is public', async () => {
     vi.stubEnv('QUOTE_RATE_CONTEXT', 'off');
     const prepared = prepareStaffQuote(
-      groupInput({ company: company('49', 'Woolworths') }),
+      groupInput({ organization: company('49', 'Woolworths') }),
       scope,
       signer,
       new AbortController().signal,
@@ -440,14 +440,14 @@ describe('contract rates from the picked company or agency', () => {
         selectionEpoch: 3,
         inputRevision: 2,
         groups: groupInput().groups,
-        parties: { company: { kind: 'company', nativeId: null, name: 'Tourvest' } },
+        parties: { organization: { kind: 'organization', nativeId: null, name: 'Tourvest' } },
       }),
     ).toThrow();
   });
 
   it('the rate context carries the organization and agency only, so no commission or A/R account is sent', () => {
-    const context = partyRateContext({ company: company('49', 'Woolworths'), agency: agency('569', 'Agency') });
-    expect(Object.keys(context ?? {}).sort()).toEqual(['agency', 'organization']);
+    const context = partyRateContext({ organization: company('49', 'Woolworths'), bookingAgency: agency('569', 'Agency') });
+    expect(Object.keys(context ?? {}).sort()).toEqual(['bookingAgency', 'organization']);
     expect(partyRateContext(undefined)).toBeUndefined();
   });
 });
@@ -464,21 +464,21 @@ describe('availability board overlay from the existing read', () => {
               room: { code: 'STQN', label: 'Standard Queen' },
               rate: { code: 'BARRO', label: 'Room Only' },
               rateScope: 'public',
-              board: 'Room Only R',
+              mealPlan: 'Room Only R',
               availability: 'available',
             },
             {
               room: { code: 'STQN', label: 'Standard Queen' },
               rate: { code: 'BCO1B', label: 'Negotiated' },
               rateScope: 'contextual',
-              board: 'Room Only R',
+              mealPlan: 'Room Only R',
               availability: 'available',
             },
             {
               room: { code: 'STQN', label: 'Standard Queen' },
               rate: { code: 'NCORRO', label: 'Named plan' },
               rateScope: 'unknown',
-              board: 'Room Only R',
+              mealPlan: 'Room Only R',
               availability: 'available',
             },
           ],
@@ -502,7 +502,7 @@ describe('availability board overlay from the existing read', () => {
             {
               room: { code: 'STQN', label: 'Standard Queen' },
               rate: { code: 'BAR', label: 'Best available' },
-              board: 'Bed & Breakfast R',
+              mealPlan: 'Bed & Breakfast R',
               availability: 'available',
             },
           ],
@@ -515,19 +515,19 @@ describe('availability board overlay from the existing read', () => {
 
 describe('staff rate cards: the quoted option first, other boards labelled, a pin re-runs the quote', () => {
   it('(a) a room-only request with only a B&B contract quotes the public room-only rate, lists the contract second, and says so', async () => {
-    const { revision, fellBack, cards } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, BB_FLAGGED]);
+    const { revision, fellBack, cards } = await quoteWith({ organization: company('49', 'Woolworths') }, [BAR, BB_FLAGGED]);
     expect(fellBack).toBe(false);
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(cards).toHaveLength(2);
-    expect(cards[0]).toMatchObject({ rateCode: 'BARRO', board: 'room_only', contract: false, matchesRequest: true, selected: true, priced: 'full' });
-    expect(cards[1]).toMatchObject({ rateCode: 'BCO2B', board: 'bb', boardLabel: 'Bed & Breakfast R', contract: true, onlyContract: true, matchesRequest: false, selected: false, priced: 'summary' });
+    expect(cards[0]).toMatchObject({ rateCode: 'BARRO', mealPlan: 'room_only', contract: false, matchesRequest: true, selected: true, priced: 'full' });
+    expect(cards[1]).toMatchObject({ rateCode: 'BCO2B', mealPlan: 'bb', mealPlanLabel: 'Bed & Breakfast R', contract: true, onlyContract: true, matchesRequest: false, selected: false, priced: 'summary' });
     expect(otherBoardContractNotes(['Woolworths'], cards)).toEqual([
       "Woolworths's contract rate is Bed & Breakfast R only (BCO2B). Quoted room only at the public rate as asked. Pick the contract option to switch.",
     ]);
   });
 
   it('(b) a room-only contract is quoted first, with the public room-only rate listed beside it', async () => {
-    const { revision, cards } = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED]);
+    const { revision, cards } = await quoteWith({ organization: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED]);
     expect(revision.groups[0]!.rateCode).toBe('BCO1B');
     expect(cards.map((card) => card.rateCode)).toEqual(['BCO1B', 'BARRO']);
     expect(cards[0]).toMatchObject({ contract: true, matchesRequest: true, selected: true, priced: 'full' });
@@ -536,7 +536,7 @@ describe('staff rate cards: the quoted option first, other boards labelled, a pi
   });
 
   it('(c) with no flagged row on any board, the first attempt is PARTY_NO_CONTRACT and the public retry has no contract card', async () => {
-    const parties = { company: company('49', 'Woolworths') };
+    const parties = { organization: company('49', 'Woolworths') };
     const first = prepareStaffQuote(groupInput(parties), scope, signer, new AbortController().signal);
     await expect(executeStaffQuote(first, rateShopServices(first, [BAR], []), async () => true)).rejects.toMatchObject({
       code: PARTY_NO_CONTRACT_CODE,
@@ -549,7 +549,7 @@ describe('staff rate cards: the quoted option first, other boards labelled, a pi
 
   it('(d) a sold-out requested room still fails as before, and no rate cards are published for that quote', async () => {
     const first = prepareStaffQuote(
-      groupInput({ company: company('49', 'Woolworths') }, {}, { roomCodes: ['SKNG'] }),
+      groupInput({ organization: company('49', 'Woolworths') }, {}, { roomCodes: ['SKNG'] }),
       scope,
       signer,
       new AbortController().signal,
@@ -563,26 +563,26 @@ describe('staff rate cards: the quoted option first, other boards labelled, a pi
   });
 
   it('(f) a pinned rate code re-runs the quote with only that rate priced in full', async () => {
-    const pinnedBar = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED], { pin: 'BARRO' });
+    const pinnedBar = await quoteWith({ organization: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED], { pin: 'BARRO' });
     expect(pinnedBar.prepared.request.rooms[0]!.required?.rateCodes).toEqual(['BARRO']);
     expect(pinnedBar.revision.groups[0]!.rateCode).toBe('BARRO');
     expect(pinnedBar.cards.filter((card) => card.priced === 'full').map((card) => card.rateCode)).toEqual(['BARRO']);
     expect(pinnedBar.cards.find((card) => card.rateCode === 'BCO1B')).toMatchObject({ matchesRequest: false, selected: false, priced: 'summary' });
 
-    const pinnedContract = await quoteWith({ company: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED], { pin: 'BCO1B' });
+    const pinnedContract = await quoteWith({ organization: company('49', 'Woolworths') }, [BAR, WOOLWORTHS_FLAGGED], { pin: 'BCO1B' });
     expect(pinnedContract.revision.groups[0]!.rateCode).toBe('BCO1B');
     expect(pinnedContract.cards[0]).toMatchObject({ rateCode: 'BCO1B', selected: true, priced: 'full' });
   });
 
   it('the pin and the alternatives flag reach the native request, and a malformed pin is refused', () => {
     const prepared = prepareStaffQuote(
-      groupInput({ company: company('49', 'Woolworths') }, {}, { pin: 'BCO1B' }),
+      groupInput({ organization: company('49', 'Woolworths') }, {}, { pin: 'BCO1B' }),
       scope,
       signer,
       new AbortController().signal,
     );
     expect(prepared.request.search.includeAlternatives).toBe(true);
-    expect(prepared.request.rooms[0]!.required).toMatchObject({ rateCodes: ['BCO1B'], boardBases: ['room_only'] });
+    expect(prepared.request.rooms[0]!.required).toMatchObject({ rateCodes: ['BCO1B'], mealPlanBases: ['room_only'] });
     expect(() => groupInput(undefined, {}, { pin: 'bco1b!' })).toThrow();
   });
 });
@@ -595,9 +595,9 @@ describe('re-checking a picked id in HMS before it is bound', () => {
       candidates: [{ nativeId: '49', displayName: 'Woolworths Holdings', kind: 'organization', matchedOn: ['store'] }],
       truncated: false,
     });
-    await expect(verifyPartyPick({ kind: 'company', nativeId: '49', name: 'woolworths holdings' })).resolves.toEqual({
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '49', name: 'woolworths holdings' })).resolves.toEqual({
       ok: true,
-      party: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' },
+      party: { kind: 'organization', nativeId: '49', name: 'Woolworths Holdings' },
     });
   });
 
@@ -608,7 +608,7 @@ describe('re-checking a picked id in HMS before it is bound', () => {
       candidates: [{ nativeId: '49', displayName: 'Woolworths', kind: 'organization', matchedOn: ['store'] }],
       truncated: false,
     });
-    await expect(verifyPartyPick({ kind: 'company', nativeId: '999', name: 'Woolworths' })).resolves.toEqual({
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '999', name: 'Woolworths' })).resolves.toEqual({
       ok: false,
       reason: 'not_found',
     });
@@ -618,7 +618,7 @@ describe('re-checking a picked id in HMS before it is bound', () => {
     vi.stubEnv('QUOTE_RATE_CONTEXT', 'off');
     const spawn = vi.fn();
     panePartyLookupLoaders.spawn = spawn;
-    await expect(verifyPartyPick({ kind: 'company', nativeId: '49', name: 'Woolworths' })).resolves.toEqual({
+    await expect(verifyPartyPick({ kind: 'organization', nativeId: '49', name: 'Woolworths' })).resolves.toEqual({
       ok: false,
       reason: 'refused_flag_off',
     });
@@ -633,9 +633,9 @@ describe('suggestions for the picker', () => {
       body: 'Travel Agency Details: RENNIES TRAVEL (PTY) LTD\nOrganization Details: Tourvest',
     });
     expect(suggestions).toEqual([
-      { source: 'body', kind: 'agency', name: 'RENNIES TRAVEL (PTY) LTD', nativeId: null, idStatus: 'unverified' },
-      { source: 'body', kind: 'company', name: 'Tourvest', nativeId: null, idStatus: 'unverified' },
-      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
+      { source: 'body', kind: 'bookingAgency', name: 'RENNIES TRAVEL (PTY) LTD', nativeId: null, idStatus: 'unverified' },
+      { source: 'body', kind: 'organization', name: 'Tourvest', nativeId: null, idStatus: 'unverified' },
+      { source: 'sender', kind: 'bookingAgency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
     ]);
   });
 });
@@ -657,7 +657,7 @@ describe('a party-rate failure falls back to public rates, and only a typed fail
       '../src/ai/staff-quote-workflow.js'
     );
     const { PartyRateFailure } = await import('../src/ai/party-rate-failure.js');
-    const parties = { company: company('49', 'Woolworths') };
+    const parties = { organization: company('49', 'Woolworths') };
     const normalizer2 = normalizer;
     const readFor = (request: any) => {
       const normalized = normalizer2.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
@@ -731,8 +731,8 @@ describe('an unpicked company or agency is text only: it is never looked up and 
 
   it('company picked, agency typed: only the organization is sent, and the typed agency is not looked up', async () => {
     const readParty = noLookup();
-    const { prepared, sent } = await quoteWith({ company: company('49', 'Woolworths') }, [WOOLWORTHS_FLAGGED, BAR], {
-      header: { company: 'Woolworths', agency: 'Typed Agency Ltd' },
+    const { prepared, sent } = await quoteWith({ organization: company('49', 'Woolworths') }, [WOOLWORTHS_FLAGGED, BAR], {
+      header: { organization: 'Woolworths', bookingAgency: 'Typed Agency Ltd' },
       readParty,
     });
     expect(readParty).not.toHaveBeenCalled();
@@ -742,19 +742,19 @@ describe('an unpicked company or agency is text only: it is never looked up and 
 
   it('agency picked, company typed: only the agency is sent, and the typed company is not looked up', async () => {
     const readParty = noLookup();
-    const { prepared, sent } = await quoteWith({ agency: agency('569', 'Woolworths Agency') }, [AGENCY_FLAGGED, BAR], {
-      header: { company: 'Typed Company', agency: 'Woolworths Agency' },
+    const { prepared, sent } = await quoteWith({ bookingAgency: agency('569', 'Woolworths Agency') }, [AGENCY_FLAGGED, BAR], {
+      header: { organization: 'Typed Company', bookingAgency: 'Woolworths Agency' },
       readParty,
     });
     expect(readParty).not.toHaveBeenCalled();
-    expect(prepared.request.rateContext).toEqual({ agency: { nativeId: '569', name: 'Woolworths Agency' } });
-    expect(sent.at(-1)?.rateContext).toEqual({ agency: { nativeId: '569', name: 'Woolworths Agency' } });
+    expect(prepared.request.rateContext).toEqual({ bookingAgency: { nativeId: '569', name: 'Woolworths Agency' } });
+    expect(sent.at(-1)?.rateContext).toEqual({ bookingAgency: { nativeId: '569', name: 'Woolworths Agency' } });
   });
 
   it('nothing picked: both typed names are text only, with no lookup and no rate context', async () => {
     const readParty = noLookup();
     const { prepared, sent } = await quoteWith(undefined, [BAR], {
-      header: { company: 'Typed Company', agency: 'Typed Agency Ltd' },
+      header: { organization: 'Typed Company', bookingAgency: 'Typed Agency Ltd' },
       readParty,
     });
     expect(readParty).not.toHaveBeenCalled();
@@ -764,7 +764,7 @@ describe('an unpicked company or agency is text only: it is never looked up and 
 });
 
 describe('a public-only party read is no contract only when its search covered every group', () => {
-  const withContext = { agency: { nativeId: '113', name: '360 degrees Travel' } };
+  const withContext = { bookingAgency: { nativeId: '113', name: '360 degrees Travel' } };
   const row = (rateScope: string) => ({
     id: 'SKNG:BARRO',
     rateScope,
@@ -828,19 +828,19 @@ const flagged = (code: string, room?: string): Rate => ({
 // Picked names as staff type them, each with the display name HMS gives its id. The parties are made up: these cases pin the
 // matching rule (the HMS id, never the name), not any real company.
 const PARTY_CASES = [
-  { picked: 'Acme Holdings (Pty) Ltd', hms: 'ACME HOLDINGS (PTY) LTD', kind: 'company', nativeId: '201', flagged: 'ACM1B' },
-  { picked: 'Acme Holdings', hms: 'Acme Holdings (Pty) Ltd', kind: 'company', nativeId: '201', flagged: 'ACM1B' },
-  { picked: 'ACME Holdings Pty Ltd', hms: 'ACME HOLDINGS (PTY) LTD', kind: 'company', nativeId: '201', flagged: 'ACM1B' },
-  { picked: 'Acme Holdings Logistics (Pty) Ltd', hms: 'Acme Holdings Logistics', kind: 'company', nativeId: '211', flagged: 'ALH1B' },
-  { picked: 'Acme', hms: 'Acme Trading', kind: 'company', nativeId: '203', flagged: 'ACM2B' },
-  { picked: 'Bluebird Travel & Tours', hms: 'Bluebird Travel & Tours', kind: 'agency', nativeId: '204', flagged: 'BLU1B' },
-  { picked: "O'Brien-Kent Pty. Ltd.", hms: "O'Brien-Kent (Pty) Ltd", kind: 'company', nativeId: '205', flagged: 'OBK1B' },
-  { picked: 'Sigma  Trading   (Pty)  Ltd', hms: 'Sigma Trading (Pty) Ltd', kind: 'company', nativeId: '206', flagged: 'SIG1B' },
-  { picked: 'Nordic Tours & Travel (Pty) Ltd.', hms: 'NORDIC TOURS & TRAVEL', kind: 'agency', nativeId: '207', flagged: 'NOR1B' },
+  { picked: 'Acme Holdings (Pty) Ltd', hms: 'ACME HOLDINGS (PTY) LTD', kind: 'organization', nativeId: '201', flagged: 'ACM1B' },
+  { picked: 'Acme Holdings', hms: 'Acme Holdings (Pty) Ltd', kind: 'organization', nativeId: '201', flagged: 'ACM1B' },
+  { picked: 'ACME Holdings Pty Ltd', hms: 'ACME HOLDINGS (PTY) LTD', kind: 'organization', nativeId: '201', flagged: 'ACM1B' },
+  { picked: 'Acme Holdings Logistics (Pty) Ltd', hms: 'Acme Holdings Logistics', kind: 'organization', nativeId: '211', flagged: 'ALH1B' },
+  { picked: 'Acme', hms: 'Acme Trading', kind: 'organization', nativeId: '203', flagged: 'ACM2B' },
+  { picked: 'Bluebird Travel & Tours', hms: 'Bluebird Travel & Tours', kind: 'bookingAgency', nativeId: '204', flagged: 'BLU1B' },
+  { picked: "O'Brien-Kent Pty. Ltd.", hms: "O'Brien-Kent (Pty) Ltd", kind: 'organization', nativeId: '205', flagged: 'OBK1B' },
+  { picked: 'Sigma  Trading   (Pty)  Ltd', hms: 'Sigma Trading (Pty) Ltd', kind: 'organization', nativeId: '206', flagged: 'SIG1B' },
+  { picked: 'Nordic Tours & Travel (Pty) Ltd.', hms: 'NORDIC TOURS & TRAVEL', kind: 'bookingAgency', nativeId: '207', flagged: 'NOR1B' },
   // HMS holds no negotiated row for these: public rates, with the no-contract reason.
-  { picked: 'Zeta Mining (Pty) Ltd', hms: 'Zeta Mining (Pty) Ltd', kind: 'company', nativeId: '208', flagged: null },
-  { picked: 'Quill Travel Services (Pty) Ltd', hms: 'Quill Travel Services', kind: 'agency', nativeId: '209', flagged: null },
-  { picked: 'Helix Retail', hms: 'Helix Retail Holdings (Pty) Ltd', kind: 'company', nativeId: '210', flagged: null },
+  { picked: 'Zeta Mining (Pty) Ltd', hms: 'Zeta Mining (Pty) Ltd', kind: 'organization', nativeId: '208', flagged: null },
+  { picked: 'Quill Travel Services (Pty) Ltd', hms: 'Quill Travel Services', kind: 'bookingAgency', nativeId: '209', flagged: null },
+  { picked: 'Helix Retail', hms: 'Helix Retail Holdings (Pty) Ltd', kind: 'organization', nativeId: '210', flagged: null },
 ] as const;
 
 describe('a picked party is matched by its HMS id, whatever its name looks like', () => {
@@ -850,7 +850,7 @@ describe('a picked party is matched by its HMS id, whatever its name looks like'
       hmsDisplayName[c.nativeId] = c.hms;
       try {
         const parties =
-          c.kind === 'company' ? { company: company(c.nativeId, c.picked) } : { agency: agency(c.nativeId, c.picked) };
+          c.kind === 'organization' ? { organization: company(c.nativeId, c.picked) } : { bookingAgency: agency(c.nativeId, c.picked) };
         // The staff request names a room type, as a real quote does, so the room filter is in play for every case.
         const { revision, fellBack, note, sent } = await quoteWith(
           parties,
@@ -858,7 +858,7 @@ describe('a picked party is matched by its HMS id, whatever its name looks like'
           { roomCodes: ['SKNG'] },
         );
         // The party read names the party by its id, and asks HMS for every room type.
-        const field = c.kind === 'company' ? 'organization' : 'agency';
+        const field = c.kind === 'organization' ? 'organization' : 'bookingAgency';
         expect(sent[0]!.rateContext).toEqual({ [field]: { nativeId: c.nativeId, name: c.picked } });
         expect(sent[0]!.rooms[0].required).not.toHaveProperty('roomCodes');
         if (c.flagged) {
@@ -886,7 +886,7 @@ describe('a picked party is read once for every room type, and priced for the ro
     { code: 'NCOR2B', label: 'Corporate Negotiated', rateScope: 'contextual', amounts: ['1600.00'], room: 'STQN' },
     { code: 'NCORRO', label: 'Corporate Conditional', rateScope: 'unknown', amounts: ['1400.00'], room: 'STQN' },
   ];
-  const woolworths = { company: company('49', 'Woolworths') };
+  const woolworths = { organization: company('49', 'Woolworths') };
   const copy = 'No contract rate found for Woolworths; this quote uses our best available rate.';
 
   it('prices the cheapest flagged row for the requested room, read without a room-type filter, then names that room and rate', async () => {

@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  buildStayLookupArgs,
   classifyAmendPayment,
   findStay,
   guestDatesDuplicateCheckViaCli,
@@ -471,19 +470,7 @@ describe('findStay', () => {
     expect(registered).toBe(false);
   });
 
-  it('builds the find and search-guest CLI arguments, with optional arrival and departure', () => {
-    const property = 'HTLAA';
-    expect(buildStayLookupArgs({ mode: 'find', confirmation: '57291630-1', arrival: null }, '/tmp/run', property).slice(1)).toEqual([
-      '--property', property, '--mode', 'find', '--confirmation', '57291630-1', '--out', '/tmp/run',
-    ]);
-    expect(buildStayLookupArgs({ mode: 'find', confirmation: '57291630-1', arrival: '2027-09-14' }, '/tmp/run', property).slice(-2)).toEqual([
-      '--arrival', '2027-09-14',
-    ]);
-    const guest = buildStayLookupArgs({ mode: 'search-guest', ...DUP_QUERY }, '/tmp/run', property);
-    expect(guest.slice(1)).toEqual([
-      '--property', property, '--mode', 'search-guest', '--last-name', 'Labtest', '--arrival', '2027-09-14', '--out', '/tmp/run', '--departure', '2027-09-15',
-    ]);
-  });
+
 });
 
 describe('guestDatesVerdict', () => {

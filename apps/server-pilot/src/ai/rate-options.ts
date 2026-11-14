@@ -3,7 +3,7 @@ import type { RateContext } from './hms-availability.js';
 import type { HmsCloudAvailabilityResult } from './hms-cloud-availability-reader.js';
 import type { PaneRateHistory } from './pane-rate-recommendation.js';
 import {exactMinor,occupiedDates,type Board,type NativeOption,type QuoteSourceRecord,type RoomRequest} from '../quote-proposal/quote-revision.js';
-import {getProfileBoards,profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
+import {getProfileBoards,profileFor} from '../../tooling/hms-cloud/property-profile.mjs';
 
 export const boards:Record<string,Board>={'ro':'room_only','room_only':'room_only','room only':'room_only','room only r':'room_only','bb':'breakfast','b&b':'breakfast','breakfast':'breakfast','bed & breakfast':'breakfast','bed and breakfast':'breakfast','bed & breakfast r':'breakfast','dbb':'dinner_bed_breakfast','dinner_bed_breakfast':'dinner_bed_breakfast','breakfast and dinner':'dinner_bed_breakfast','breakfast & dinner':'dinner_bed_breakfast','dinner and breakfast':'dinner_bed_breakfast','dinner & breakfast':'dinner_bed_breakfast','dinner, bed & breakfast':'dinner_bed_breakfast','dinner, bed and breakfast':'dinner_bed_breakfast','dinner bed & breakfast':'dinner_bed_breakfast','dinner bed & breakfast r':'dinner_bed_breakfast','dinner, bed & breakfast r':'dinner_bed_breakfast','dinner, bed, breakfast & beverage r':'dinner_bed_breakfast'};
 export const norm=(s:string)=>s.toLowerCase().replace(/\s+/g,' ').trim();

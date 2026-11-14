@@ -11,17 +11,17 @@ function fixture() {
     parties: { organization: { nativeId: '89', name: 'Company' } }, cmsMessageId: '03',
     cmsRecipient: 'staff@example.test', sendHmsConfirmation: { kind: 'never' } };
   const requestDigest = digestCloudCreateRequest(approvedRequest).normalizedRequestDigest;
-  const sibling = { confirmation: '123456-1', approvedRequest, requestDigest };
+  const sibling = { confirmation: '123456-1', nativeStayId: '456', approvedRequest, requestDigest };
   const census = { outcome: 'existing_matches', arrival: '2027-08-01', coverage: { complete: true },
     sameArrival: [{ confirmation: sibling.confirmation, firstName: 'Proof', lastName: 'Labtest',
       arrival: '2027-08-01', departure: '2027-08-02', status: 'Reserved' }] };
   return { census, sibling };
 }
-const read = async ({ expected }) => {
-  assert.deepEqual(expected.childBands, { child1: 1, child2: 1, child3: 1 });
+const read = async ({ confirmation, expected }) => {
+  assert.deepEqual(expected.childAges, [2, 8, 15]);
   assert.equal(expected.guaranteeCode, 'NGI');
   assert.equal(expected.cmsRecipient, 'staff@example.test');
-  return { mismatches: [], fields: [{ name: 'udfchar09', value: '03' }] };
+  return { nativeStayId: confirmation === '123457-1' ? '457' : '456', mismatches: [], fields: [{ name: 'udfchar09', value: '03' }] };
 };
 const readParties = async ({ organization }) => {
   assert.deepEqual(organization, { nativeId: '89', name: 'Company' });
@@ -78,6 +78,7 @@ test('a census covers its own guest while every prior room, including another gu
   const { sibling } = fixture();
   const other = structuredClone(sibling);
   other.confirmation = '123457-1';
+  other.nativeStayId = '457';
   other.approvedRequest.guest = { nativeId: '13', firstName: 'Ada', lastName: 'Moyo' };
   other.requestDigest = digestCloudCreateRequest(other.approvedRequest).normalizedRequestDigest;
   const census = { outcome: 'existing_matches', firstName: 'Ada', lastName: 'Moyo', arrival: '2027-08-01',

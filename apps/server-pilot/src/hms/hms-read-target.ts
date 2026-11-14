@@ -4,7 +4,7 @@ import {
   getPropertyRegistration,
   getPropertyTransportIds,
   resolvePropertyTransport,
-} from '../../tooling/playwright-quote/property-registry.mjs';
+} from '../../tooling/hms-cloud/property-registry.mjs';
 import {
   guardCenturionHmsMailboxOrigin,
   isCenturionMailboxOrigin,

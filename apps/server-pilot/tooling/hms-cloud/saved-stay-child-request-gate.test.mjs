@@ -4,7 +4,7 @@ import { createSavedChildStageRequestGate } from './saved-stay-child-request-gat
 
 const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const frame = {};
-const input = () => ({ frame, stayId: '5', adults: 2, priorAges: [8, 12],
+const input = () => ({ propertyCode: 'HRCEN', frame, stayId: '5', adults: 2, priorAges: [8, 12],
   priorBands: { child1: 0, child2: 2, child3: 0 }, nextAges: [8, 12, 5], deadlineAt: performance.now() + 30_000 });
 const request = (path, params, extra = {}) => {
   const body = new URLSearchParams({ params: JSON.stringify(params), ONLY_DATA_REQUIRED: 'true' });

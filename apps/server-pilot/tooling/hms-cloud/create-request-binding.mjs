@@ -77,7 +77,7 @@ function normalizeConfirmation(input) {
 export function normalizeCloudCreateRequest(input) {
   const issue = objectKeys(input,
     ['version', 'propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sourceOfBusiness', 'reasonForStay',
-      'parties', 'note', 'billingReference', 'nativeCommissionPercent', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'guestOptIn', 'sendHmsConfirmation'],
+      'parties', 'note', 'billingReference', 'nativeCommissionPercent', 'cmsMessageId', 'cmsRecipient', 'booker', 'track', 'marketSegment', 'guestOptIn', 'sendHmsConfirmation'],
     ['propertyCode', 'guest', 'stay', 'room', 'guaranteeType', 'sendHmsConfirmation'], '');
   if (issue) return issue;
   const canonical = Object.hasOwn(input, 'version');
@@ -165,8 +165,13 @@ export function normalizeCloudCreateRequest(input) {
     if (typeof input.track.lookupCode !== 'string' || !/^[A-Z0-9]{1,12}$/.test(input.track.lookupCode) ||
         !exactText(input.track.display, { max: 200 })) return fail('CREATE_TRACK_INVALID', 'track');
   }
-  // True needs a separately verified consent-write contract.
-  if (input.guestOptIn !== undefined && input.guestOptIn !== false) return fail('CREATE_GUEST_OPT_IN_UNSUPPORTED', 'guestOptIn');
+  if (input.marketSegment !== undefined) {
+    const marketIssue = objectKeys(input.marketSegment, ['value', 'display'], ['value', 'display'], 'marketSegment');
+    if (marketIssue) return marketIssue;
+    if (typeof input.marketSegment.value !== 'string' || !/^[A-Z0-9]{1,20}$/.test(input.marketSegment.value) ||
+        !exactText(input.marketSegment.display, { max: 200 })) return fail('CREATE_MARKET_SEGMENT_INVALID', 'marketSegment');
+  }
+  if (input.guestOptIn !== undefined && typeof input.guestOptIn !== 'boolean') return fail('CREATE_GUEST_OPT_IN_UNSUPPORTED', 'guestOptIn');
   const confirmation = normalizeConfirmation(input.sendHmsConfirmation);
   if (confirmation.outcome !== 'ok') return confirmation;
 
@@ -190,7 +195,8 @@ export function normalizeCloudCreateRequest(input) {
     ...(input.cmsRecipient !== undefined ? { cmsRecipient: input.cmsRecipient } : {}),
     ...(input.booker !== undefined ? { booker: { ...input.booker } } : {}),
     ...(input.track !== undefined ? { track: { lookupCode: input.track.lookupCode, display: input.track.display } } : {}),
-    ...(input.guestOptIn !== undefined ? { guestOptIn: false } : {}),
+    ...(input.marketSegment !== undefined ? { marketSegment: { value: input.marketSegment.value, display: input.marketSegment.display } } : {}),
+    ...(input.guestOptIn !== undefined ? { guestOptIn: input.guestOptIn } : {}),
     sendHmsConfirmation: confirmation.value,
   };
   return { outcome: 'ok', request };

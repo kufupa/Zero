@@ -13,8 +13,14 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, hmsLabtestInte
   readResolvedHmsLabtestCreates, recoverHmsLabtestAddOn, resolveHmsLabtestDispatch,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import type { DB } from '../db/client.js';
-import { paneAddOnWriteMode, paneStayCloudTargetLock, paneStayCreateTarget, paneWriteMode, PANE_WRITE_CREATE } from './pane-stay-save.js';
-import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
+import { consumeStaffGoAtDispatch } from './hms-approval.js';
+import { hmsDispatchTargetKeys, hmsDispatchTargetSchema } from './hms-dispatch-target.js';
+import { paneStayCloudTargetLock } from './pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { propertyCodeSchema } from '../hms/property-registry.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { acquisitionWithin, assertTargetAliasesHeld, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import {
   appendReservationWorkflowV2Observation,
@@ -84,7 +90,7 @@ type ExecuteInput = ReservationWorkflowV2ServicesExecuteInput;
 type DispatchTx = CreateFenceTransaction;
 type StoredIntent = {
   version: 1; kind: 'intent'; operationId: string; workItemId: string; transportId: string; actorUserId: string;
-  sessionId: string; sessionProfile: 'legacy' | 'remote'; propertyCode: 'HRCEN'; sourceDigest: string;
+  sessionId: string; sessionProfile: 'legacy' | 'remote'; propertyCode: z.infer<typeof propertyCodeSchema>; sourceDigest: string;
   requestId: string; allocationId: string; serviceId: string; targetRef: { kind: 'allocation'; requestId: string; allocationId: string };
   target: { confirmation: string; nativeStayId: string; guestName: string; arrival: string; departure: string };
   generationId: string;
@@ -126,7 +132,7 @@ function normalizedItem(value: unknown): Record<string, unknown> | null {
 function previewFor(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput,
   row: ReservationWorkflowV2ServiceRow, plan: CompiledOk): ReservationWorkflowV2Observation | null {
   const observation = [...draft.observations].reverse().find((item) => item.kind === 'service_preview' &&
-    item.status === 'complete' && item.propertyCode === 'HRCEN' && item.generationId === draft.generationId &&
+    item.status === 'complete' && item.propertyCode === draft.propertyCode && item.generationId === draft.generationId &&
     item.criteria.workflow === 'services' && item.criteria.kind === 'unsaved_addon_preview' &&
     item.criteria.serviceId === plan.serviceId && item.criteria.requestId === input.requestId &&
     item.criteria.allocationId === input.allocationId && item.criteria.targetRef &&
@@ -161,7 +167,7 @@ function savedFreshPrepareFor(draft: ReservationWorkflowV2Draft, input: Reservat
   plan: CompiledOk, preview: ReservationWorkflowV2Observation, create: CreateApproval):
   { observation: ReservationWorkflowV2Observation; native: Record<string, unknown> } | null {
   const observation = [...draft.observations].reverse().find((item) => item.kind === 'service_preview' &&
-    item.propertyCode === 'HRCEN' && item.generationId === draft.generationId &&
+    item.propertyCode === draft.propertyCode && item.generationId === draft.generationId &&
     item.criteria.workflow === 'services' && item.criteria.kind === 'saved_addon_fresh_prepare' &&
     item.criteria.serviceId === plan.serviceId && item.criteria.requestId === input.requestId &&
     item.criteria.allocationId === input.allocationId && item.criteria.inputDigest === plan.inputDigest &&
@@ -191,7 +197,7 @@ function savedFreshPrepareFor(draft: ReservationWorkflowV2Draft, input: Reservat
       observation.sourceMessageId !== input.source.messageId ||
       !observation.sourceRefs.includes(preview.ref) || !observation.sourceRefs.includes(create.observation.ref) ||
       !observation.sourceRefs.includes(approvedObservationRef ?? '') ||
-      target.propertyCode !== 'HRCEN' ||
+      target.propertyCode !== draft.propertyCode ||
       !sameName(target.guestName, `${create.expectedGuest.firstName} ${create.expectedGuest.lastName}`) ||
       target.confirmation !== create.confirmation || target.arrival !== create.arrival ||
       target.departure !== create.departure || !/^\d{1,100}$/.test(String(target.nativeStayId ?? '')) ||
@@ -199,7 +205,7 @@ function savedFreshPrepareFor(draft: ReservationWorkflowV2Draft, input: Reservat
   if (parent.ref !== preview.ref) {
     const parentCriteria = parent.criteria, parentResult = object(parent.result);
     if (parent.kind !== 'service_preview' || parent.status !== 'complete' || parent.coverage.complete !== true ||
-        parent.propertyCode !== 'HRCEN' || parent.generationId !== draft.generationId ||
+        parent.propertyCode !== draft.propertyCode || parent.generationId !== draft.generationId ||
         parent.sourceMessageId !== input.source.messageId ||
         parentCriteria.workflow !== 'services' || parentCriteria.kind !== 'saved_addon_fresh_prepare' ||
         parentCriteria.serviceId !== plan.serviceId || parentCriteria.requestId !== input.requestId ||
@@ -218,13 +224,13 @@ function savedFreshPrepareFor(draft: ReservationWorkflowV2Draft, input: Reservat
 }
 
 function createApproval(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput): CreateApproval | null {
-  const compiled = compileReservationWorkflowV2Create(draft, input.requestId, input.allocationId, 'HRCEN');
+  const compiled = compileReservationWorkflowV2Create(draft, input.requestId, input.allocationId, draft.propertyCode);
   if (compiled.outcome !== 'ok') return null;
   const operation = [...draft.operationResults].reverse().find((result) => result.workflow === 'create' &&
     result.requestId === input.requestId && result.allocationId === input.allocationId && result.status === 'succeeded');
   if (!operation) return null;
   const observation = draft.observations.find((item) => item.kind === 'stay_candidate' && item.status === 'complete' &&
-    item.propertyCode === 'HRCEN' && item.generationId === draft.generationId && operation.observationRefs.includes(item.ref) &&
+    item.propertyCode === draft.propertyCode && item.generationId === draft.generationId && operation.observationRefs.includes(item.ref) &&
     item.criteria.workflow === 'create' && item.criteria.requestId === input.requestId &&
     item.criteria.allocationId === input.allocationId && item.criteria.idempotencyKey === operation.id);
   const result = object(observation?.result), confirmation = text(result?.confirmation);
@@ -241,7 +247,7 @@ function createApproval(draft: ReservationWorkflowV2Draft, input: ReservationWor
       !stay || typeof stay.arrival !== 'string' || typeof stay.departure !== 'string' ||
       !sameName(object(request.guest)?.firstName, expectedGuest.firstName) ||
       !sameName(object(request.guest)?.lastName, expectedGuest.lastName) ||
-      request.propertyCode !== 'HRCEN') return null;
+      request.propertyCode !== draft.propertyCode) return null;
   const nativePrice = object(result.savedPrice);
   if (!nativePrice || !text(nativePrice.averageRate) || !text(nativePrice.totalRate) || !text(nativePrice.currency)) return null;
   const nativeReadback = object(result.nativeReadback), nativeFields = Array.isArray(nativeReadback?.fields)
@@ -260,23 +266,36 @@ function acceptedService(draft: ReservationWorkflowV2Draft, plan: CompiledOk): b
     draft.staffReviews[path]?.status === 'accepted');
 }
 
-function supportedGuestAdmission(approval: CreateApproval): { allowed: true } | { allowed: false; issue: string } {
-  if (process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return { allowed: false, issue: 'cloud_create_dispatch_flag_off' };
-  const mode = paneWriteMode('create');
-  if (mode === 'off') return { allowed: false, issue: 'pane_write_create_flag_off' };
+function addOnMode(propertyCode: string) {
+  const property = propertyCodeSchema.safeParse(propertyCode);
+  return property.success ? effectiveWorkflowPolicy(process.env, property.data, 'addons').admittedMode : 'off';
+}
+
+async function withServicePreflightLock<T>(scope: { propertyCode: string; transportId: string }, confirmation: string,
+  signal: AbortSignal | undefined, read: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+  const target = paneStayHmsTargetForTransport(scope.transportId, scope.propertyCode);
+  const propertyCode = propertyCodeSchema.parse(scope.propertyCode);
+  if (!target.ok || target.target.propertyCode !== propertyCode) throw new Error('service_property_session_unavailable');
+  const lock = paneStayCloudTargetLock(target.target, { propertyCode, kind: 'saved', confirmation }, { kind: 'independent_cloud' });
+  if (!lock) throw new Error('service_target_lock_unavailable');
+  return lock.withLock(lockSignal => read(signal && lockSignal ? AbortSignal.any([signal, lockSignal]) : signal ?? lockSignal),
+    { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), ...(signal ? { signal } : {}) });
+}
+
+function supportedGuestAdmission(approval: CreateApproval, propertyCode: string): { allowed: true } | { allowed: false; issue: string } {
+  const mode = addOnMode(propertyCode);
+  if (mode === 'off') return { allowed: false, issue: 'saved_addon_write_flag_off' };
   const isLabtest = sameName(approval.expectedGuest.firstName, 'Proof') && sameName(approval.expectedGuest.lastName, 'Labtest');
-  if (!isLabtest && (mode !== 'on' || process.env[PANE_WRITE_CREATE] !== 'on')) {
-    return { allowed: false, issue: 'real_guest_addon_requires_write_on' };
-  }
-  if (isLabtest && (approval.arrival < '2027-01-01')) return { allowed: false, issue: 'labtest_addon_requires_2027_stay' };
+  if (!isLabtest && mode !== 'on') return { allowed: false, issue: 'real_guest_addon_requires_write_on' };
+  if (isLabtest && approval.arrival < '2027-01-01') return { allowed: false, issue: 'labtest_addon_requires_2027_stay' };
   return { allowed: true };
 }
 
-/** Inform the pane using the same Create receipt and flag admission as dispatch. */
+/** Inform the pane using the same selected-property admission as dispatch. */
 export function linkedServiceCapability(draft: ReservationWorkflowV2Draft, input: ReservationWorkflowV2ServicesInput) {
-  const writeMode = paneWriteMode('create');
+  const writeMode = addOnMode(draft.propertyCode);
   const approval = createApproval(draft, input);
-  const admission = approval ? supportedGuestAdmission(approval) : { allowed: false as const, issue: 'confirmed_create_receipt_required' };
+  const admission = approval ? supportedGuestAdmission(approval, draft.propertyCode) : { allowed: false as const, issue: 'confirmed_create_receipt_required' };
   return { writeMode, canSave: admission.allowed, issue: admission.allowed ? null : admission.issue };
 }
 
@@ -373,15 +392,16 @@ function createReceiptMatches(row: unknown, approval: CreateApproval, input: Res
   ctx: ReservationWorkflowV2ServerContext): boolean {
   const entry = object(row), intent = object(entry?.intent), resolution = object(entry?.resolution), recovery = object(intent?.recovery);
   return intent?.workItemId === input.workItemId && intent.transportId === ctx.transport.id &&
+    intent.propertyCode === ctx.property.propertyCode &&
     intent.grantId === approval.operationId && intent.operation === 'create' &&
     intent.sourceDigest === input.source.sourceHash && intent.approvedDigest === approval.requestDigest &&
     recovery?.requestId === input.requestId && recovery.allocationId === input.allocationId &&
     resolution?.confirmation === approval.confirmation && resolution.kind === 'resolved';
 }
 
-function nativeTargetMatches(actual: unknown, expected: NativeTarget): boolean {
+function nativeTargetMatches(actual: unknown, expected: NativeTarget, propertyCode: string): boolean {
   const target = object(actual);
-  return Boolean(target && target.confirmation === expected.confirmation && target.propertyCode === 'HRCEN' &&
+  return Boolean(target && target.confirmation === expected.confirmation && target.propertyCode === propertyCode &&
     target.arrival === expected.arrival && target.departure === expected.departure && target.status === 'Reserved' &&
     nativeServiceGuestNameMatches(target.guestName, expected.guestName));
 }
@@ -397,12 +417,7 @@ async function assertFreshGuard(tx: DispatchTx, ctx: ReservationWorkflowV2Server
       approved.value.approvalObservation.ref !== expected.approvalObservation.ref ||
       canonicalJson(approved.value.approvalItem) !== canonicalJson(expected.approvalItem) ||
       !acceptedService(draft, approved.value.plan)) throw new Error('reservation_workflow_v2_services_approval_changed');
-  if (process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') throw new Error('cloud_create_dispatch_flag_off');
-  const mode = paneWriteMode('create');
-  const isLabtest = sameName(expected.create.expectedGuest.firstName, 'Proof') &&
-    sameName(expected.create.expectedGuest.lastName, 'Labtest');
-  if (mode === 'off' || (!isLabtest && (mode !== 'on' || process.env[PANE_WRITE_CREATE] !== 'on')) ||
-      (isLabtest && expected.create.arrival < '2027-01-01')) throw new Error('service_write_flag_or_guest_admission_changed');
+  if (!supportedGuestAdmission(expected.create, ctx.property.propertyCode).allowed) throw new Error('service_write_flag_or_guest_admission_changed');
   const createRows = await readResolvedHmsLabtestCreates(tx, input.workItemId);
   if (createRows.filter((receipt) => createReceiptMatches(receipt, expected.create, input, ctx)).length !== 1) {
     throw new Error('confirmed_create_receipt_unavailable');
@@ -422,10 +437,11 @@ async function assertFreshGuard(tx: DispatchTx, ctx: ReservationWorkflowV2Server
   }
 }
 
-async function readSavedNativeTarget(approval: Pick<CreateApproval, 'expectedGuest' | 'guestId' | 'confirmation' | 'arrival' | 'departure'>): Promise<NativeTarget | null> {
-  const [{ withCenturionStay360Page }, confirmationTool, recordTool] = await Promise.all([
-    import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as Promise<{
-      withCenturionStay360Page: (callback: (page: unknown) => Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+async function readSavedNativeTarget(approval: Pick<CreateApproval, 'expectedGuest' | 'guestId' | 'confirmation' | 'arrival' | 'departure'>,
+  scope: { propertyCode: string; transportId: string }, signal?: AbortSignal): Promise<NativeTarget | null> {
+  const [{ withCloudReadSession }, confirmationTool, recordTool] = await Promise.all([
+    import(new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url).href) as Promise<{
+      withCloudReadSession: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => Promise<unknown>;
     }>,
     import(new URL('../../tooling/hms-cloud/stay360-confirmation.mjs', import.meta.url).href) as Promise<{
       readConfirmationFromStay360: (page: unknown, confirmation: string, options?: Record<string, unknown>) => Promise<unknown>;
@@ -437,15 +453,15 @@ async function readSavedNativeTarget(approval: Pick<CreateApproval, 'expectedGue
   const expectedName = `${approval.expectedGuest.firstName} ${approval.expectedGuest.lastName}`;
   let value: unknown;
   try {
-    value = await withCenturionStay360Page(async (page) => {
+    value = await withCloudReadSession(async (page) => {
       await confirmationTool.readConfirmationFromStay360(page, approval.confirmation, {
         guestName: expectedName, arrivalDate: approval.arrival,
       });
-      return recordTool.readRecordViewFromStay360(page, approval.confirmation, { nativePropertyCode: 'HRCEN' });
-    }, { headless: true, blockServiceWorkers: true });
-  } catch { return null; }
+      return recordTool.readRecordViewFromStay360(page, approval.confirmation, { nativePropertyCode: scope.propertyCode });
+    }, { headless: true, ...scope, signal });
+  } catch { signal?.throwIfAborted(); return null; }
   const preimage = object(object(value)?.nativePreimage);
-  if (!preimage || preimage.source !== 'record_view_ext_model' || preimage.propertyCode !== 'HRCEN' ||
+  if (!preimage || preimage.source !== 'record_view_ext_model' || preimage.propertyCode !== scope.propertyCode ||
       preimage.confirmation !== approval.confirmation || preimage.status !== 'Reserved' ||
       preimage.guestId !== approval.guestId || !sameName(preimage.firstName, approval.expectedGuest.firstName) ||
       !sameName(preimage.lastName, approval.expectedGuest.lastName) || preimage.arrival !== approval.arrival ||
@@ -473,14 +489,14 @@ function appendOperationResult(draft: ReservationWorkflowV2Draft, result: Reserv
 }
 
 async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, input: ExecuteInput,
-  approved: ApprovedService, target: NativeTarget, dispatch: Record<string, unknown>, writer: unknown, expectedEpoch: string):
+  approved: ApprovedService, target: NativeTarget, dispatch: Record<string, unknown>, writer: unknown, expectedEpoch: string, signal?: AbortSignal):
   Promise<{ intent: StoredIntent; handle: HmsLabtestWriteHandle }> {
   const operationId = input.idempotencyKey;
   const writerIdentity = object(writer);
-  const writerTool = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
-    centurionWriterCurrent: (value: unknown) => boolean;
+  const writerTool = await import(new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url).href) as {
+    cloudWriterCurrent: (value: unknown) => boolean;
   };
-  if (!writerIdentity || !writerTool.centurionWriterCurrent(writerIdentity)) throw new Error('services_writer_identity_unavailable');
+  if (!writerIdentity || !writerTool.cloudWriterCurrent(writerIdentity)) throw new Error('services_writer_identity_unavailable');
   const baselineIds = Array.isArray(dispatch.baselineIds) ? dispatch.baselineIds.filter((value): value is string =>
     typeof value === 'string' && /^\d{1,100}$/.test(value)) : [];
   const baselineCoverage = object(dispatch.baselineCoverage);
@@ -489,7 +505,7 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
   const dispatchFields = ['code', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl',
     'folio', 'comment', 'currency', 'totalCost'];
   if (dispatch.operation !== 'addOns' || dispatch.confirmation !== target.confirmation ||
-      !nativeTargetMatches(dispatch.target, target) ||
+      !nativeTargetMatches(dispatch.target, target, ctx.property.propertyCode) ||
       baselineCoverage?.complete !== true || !Array.isArray(dispatch.baselineIds) ||
       baselineIds.length !== dispatch.baselineIds.length || baselineCoverage.loaded !== baselineIds.length ||
       baselineCoverage.reportedTotal !== baselineIds.length || !item || !dispatchedItem ||
@@ -501,7 +517,7 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
     writer: writerIdentity });
   const intent: StoredIntent = { version: 1, kind: 'intent', operationId, workItemId: input.workItemId,
     transportId: ctx.transport.id, actorUserId: ctx.user.id, sessionId: ctx.user.sessionId!,
-    sessionProfile: ctx.user.sessionProfile!, propertyCode: 'HRCEN', sourceDigest: input.source.sourceHash,
+    sessionProfile: ctx.user.sessionProfile!, propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), sourceDigest: input.source.sourceHash,
     requestId: input.requestId, allocationId: input.allocationId, serviceId: input.serviceId,
     targetRef: approved.plan.targetRef, target, generationId: approved.draft.generationId,
     createOperationId: approved.create.operationId,
@@ -511,13 +527,15 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
     createdAt: new Date().toISOString() };
   const intentRef = randomUUID();
   const handle = await claimHmsLabtestDispatch(ctx.db, { workItemId: input.workItemId, transportId: ctx.transport.id,
-    actorUserId: ctx.user.id, grantId: operationId, propertyCode: 'HRCEN',
+    actorUserId: ctx.user.id, grantId: operationId, propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode),
     firstName: approved.create.expectedGuest.firstName, lastName: approved.create.expectedGuest.lastName,
     nativeGuestId: approved.create.guestId, operation: 'add_on', sourceDigest: input.source.sourceHash,
     approvedDigest: hash(item), requestDigest: dispatchDigest,
-    target: { propertyCode: 'HRCEN', kind: 'saved', confirmation: target.confirmation, nativeStayId: target.nativeStayId },
+    target: { propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), kind: 'saved', confirmation: target.confirmation, nativeStayId: target.nativeStayId },
     recovery: { confirmation: target.confirmation, nativeStayId: target.nativeStayId, serviceIntent: intent },
   }, async (tx) => {
+    if (!ctx.writeRunFence) throw new Error('staff_go_required');
+    await consumeStaffGoAtDispatch(tx, ctx.writeRunFence, signal);
     const { item: workItemRow, draft } = await currentDraftTx(tx, ctx, input, true);
     const current = approvedService(draft, input);
     if (current.outcome !== 'ok' || current.value.plan.inputDigest !== approved.plan.inputDigest ||
@@ -673,7 +691,7 @@ async function persistResolvedServiceTx(tx: DispatchTx, ctx: ReservationWorkflow
 function serviceObservationFromRef(ref: string, intent: StoredIntent, input: ReservationWorkflowV2ServicesInput,
   result: Record<string, unknown>): ReservationWorkflowV2Observation {
   return { ref, generationId: intent.generationId, kind: 'service_preview', status: 'complete', observedAt: new Date().toISOString(),
-    propertyCode: 'HRCEN', sourceMessageId: input.source.messageId,
+    propertyCode: intent.propertyCode, sourceMessageId: input.source.messageId,
     sourceRefs: [intent.createObservationRef, intent.previewObservationRef],
     criteria: { workflow: 'services', kind: 'saved_addon_receipt', requestId: input.requestId,
       allocationId: input.allocationId, serviceId: input.serviceId, targetRef: intent.targetRef,
@@ -704,12 +722,12 @@ async function appendFreshPrepare(ctx: ReservationWorkflowV2ServerContext, input
     previouslyApprovedNative: comparison.approved,
     approvedObservationRef: approved.approvalObservation.ref, matchesApprovedNative: comparison.matches,
     matchesUnsavedPreview, hostValuesRequireReview: reviewPaths,
-    target: { propertyCode: 'HRCEN', confirmation: target.confirmation, guestName: target.guestName,
+    target: { propertyCode: ctx.property.propertyCode, confirmation: target.confirmation, guestName: target.guestName,
       arrival: target.arrival, departure: target.departure, nativeStayId: target.nativeStayId },
     priceWasNativeCalculated: nativeVerified, capability: linkedServiceCapability(approved.draft, input) };
   const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: approved.draft.generationId,
     kind: 'service_preview', status: nativeVerified ? 'complete' : 'partial', observedAt: new Date().toISOString(),
-    propertyCode: 'HRCEN', sourceMessageId: input.source.messageId,
+    propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), sourceMessageId: input.source.messageId,
     sourceRefs: [...new Set([approved.preview.ref, approved.create.observation.ref, approved.approvalObservation.ref])],
     criteria: { workflow: 'services', kind: 'saved_addon_fresh_prepare', requestId: input.requestId,
       allocationId: input.allocationId, serviceId: input.serviceId, targetRef: approved.plan.targetRef,
@@ -760,8 +778,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
   const parsed = reservationWorkflowV2ServicesExecuteInputSchema.safeParse(rawInput);
   if (!parsed.success) return { status: 'invalid_input', issue: 'service_execute_input_invalid' };
   const input = parsed.data;
-  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'service_property_not_supported' };
-  if (!input.go || !ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'staff_go_and_session_required' };
+  if (!input.go || !ctx.writeRunFence || !ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'staff_go_and_session_required' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return { status: loaded.status, issue: 'service_draft_unavailable' };
   const prior = loaded.draft.operationResults.find((entry) => entry.id === input.idempotencyKey);
@@ -787,7 +804,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
       observationRefs: prior.observationRefs, idempotent: true };
     return { status: 'refused', issue: 'services_operation_id_reused' };
   }
-  const admission = supportedGuestAdmission(approved.create);
+  const admission = supportedGuestAdmission(approved.create, ctx.property.propertyCode);
   if (!admission.allowed) return { status: 'refused', issue: admission.issue ?? undefined };
   if (loaded.draft.operationResults.some((entry) => entry.workflow === 'services' && entry.requestId === input.requestId &&
       entry.allocationId === input.allocationId && entry.status === 'succeeded' && entry.observationRefs.some((ref) =>
@@ -795,22 +812,32 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
           canonicalJson(observation.criteria.targetRef) === canonicalJson(approved.plan.targetRef))))) {
     return { status: 'already_succeeded', issue: 'service_target_already_saved' };
   }
-  const target = await readSavedNativeTarget(approved.create);
+  const scope = { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id };
+  const target = await withServicePreflightLock(scope, approved.create.confirmation, ctx.signal,
+    signal => readSavedNativeTarget(approved.create, scope, signal));
   if (!target) return { status: 'needs_reconcile', issue: 'created_native_stay_identity_unavailable',
     confirmation: approved.create.confirmation };
-  const resolvedTarget = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: 'HRCEN' });
-  if (!resolvedTarget.ok || resolvedTarget.target.browserSlot !== 'centurion') return { status: 'unsupported', issue: 'service_property_session_unavailable' };
+  const resolvedTarget = paneStayHmsTargetForTransport(ctx.transport.id, ctx.property.propertyCode);
+  if (!resolvedTarget.ok) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
   const lock = paneStayCloudTargetLock(resolvedTarget.target,
-    { propertyCode: 'HRCEN', kind: 'saved', confirmation: target.confirmation, nativeStayId: target.nativeStayId },
+    { propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), kind: 'saved', confirmation: target.confirmation, nativeStayId: target.nativeStayId },
     { kind: 'independent_cloud' });
   if (!lock) return { status: 'needs_reconcile', issue: 'service_target_lock_unavailable' };
   let claimed: StoredIntent | null = null, sharedHandle: HmsLabtestWriteHandle | null = null, claimAttempted = false;
   try {
-    return await lock.withLock(async (): Promise<ReservationWorkflowV2ServicesResult> => {
-      const writeTarget = { propertyCode: 'HRCEN' as const, kind: 'saved' as const,
+    return await lock.withLock(async (targetSignal, heldTargetLock): Promise<ReservationWorkflowV2ServicesResult> => {
+      const lockSignal = targetSignal && ctx.signal ? AbortSignal.any([targetSignal, ctx.signal]) : targetSignal ?? ctx.signal;
+      const writeTarget = { propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), kind: 'saved' as const,
         confirmation: target.confirmation, nativeStayId: target.nativeStayId };
+      const assertHeld = () => {
+        lockSignal?.throwIfAborted();
+        const property = getPropertyRegistration(writeTarget.propertyCode);
+        if (!property?.active) throw new Error('service_property_session_unavailable');
+        assertTargetAliasesHeld(heldTargetLock, { tenantId: property.expectedTenant,
+          propertyCode: writeTarget.propertyCode, targetAliases: hmsDispatchTargetKeys(writeTarget) });
+      };
       const epoch = await captureHmsLabtestDispatchEpoch(ctx.db, writeTarget, input.workItemId);
-      const freshTarget = await readSavedNativeTarget(approved.create);
+      const freshTarget = await readSavedNativeTarget(approved.create, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id }, lockSignal);
       if (!freshTarget || canonicalJson(freshTarget) !== canonicalJson(target)) {
         return { status: 'needs_reconcile', issue: 'created_native_stay_identity_changed' };
       }
@@ -822,7 +849,7 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         const read = object(await runTool({ tool: 'read', confirmation: target.confirmation,
           guestName: target.guestName, arrivalDate: target.arrival }));
         const observedTarget = object(read?.target);
-        if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || !nativeTargetMatches(observedTarget, target)) {
+        if (read?.outcome !== 'ok' || read.propertyCode !== ctx.property.propertyCode || !nativeTargetMatches(observedTarget, target, ctx.property.propertyCode)) {
           return { outcome: 'needs_input', issue: 'saved_addon_target_read_unverified' };
         }
         const prepared = object(await runTool({ tool: 'prepare', confirmation: target.confirmation,
@@ -830,9 +857,9 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         const nativeItem = object(Array.isArray(prepared?.items) ? prepared.items[0] : null);
         const itemFields = nativeItem?.item ?? nativeItem;
         const compared = nativeMatchesApproval(itemFields, approved.approvalItem, approved.preview, approved.plan);
-        if (prepared?.outcome !== 'prepared' || prepared.propertyCode !== 'HRCEN' || prepared.saved !== false ||
+        if (prepared?.outcome !== 'prepared' || prepared.propertyCode !== ctx.property.propertyCode || prepared.saved !== false ||
             typeof prepared.preparedId !== 'string' || !compared.matches) {
-          const prepareVerified = prepared?.outcome === 'prepared' && prepared.propertyCode === 'HRCEN' &&
+          const prepareVerified = prepared?.outcome === 'prepared' && prepared.propertyCode === ctx.property.propertyCode &&
             prepared.saved === false && typeof prepared.preparedId === 'string';
           const fresh = await appendFreshPrepare(ctx, input, approved, target, compared, prepareVerified, itemFields);
           const reviewable = prepareVerified && Boolean(compared.native && requestedItemMatches(compared.native, approved.plan) &&
@@ -847,10 +874,12 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         const save = await runTool({ tool: 'save', confirmation: target.confirmation, preparedId: prepared.preparedId });
         return { save };
       }, {
+        signal: lockSignal, transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode,
         authorize: async (prepared: unknown) => {
+          if (lockSignal?.aborted) return false;
           const actual = object(prepared), items = Array.isArray(actual?.items) ? actual.items : [];
           if (!actual || actual.confirmation !== target.confirmation ||
-              !nativeTargetMatches(actual.target, target) ||
+              !nativeTargetMatches(actual.target, target, ctx.property.propertyCode) ||
               items.length !== 1 || !nativeMatchesApproval(items[0], approved.approvalItem,
                 approved.preview, approved.plan).matches ||
               canonicalJson(actual.requestedItems) !== canonicalJson([approved.plan.items])) return false;
@@ -861,19 +890,24 @@ export async function reservationWorkflowV2ExecuteServices(ctx: ReservationWorkf
         },
         captureWriterIdentity: true,
         beforeDispatch: async (dispatch: unknown, writer: unknown) => {
+          assertHeld();
           const raw = object(dispatch);
           if (!raw) throw new Error('services_save_dispatch_invalid');
           claimAttempted = true;
-          const claim = await claimServiceDispatch(ctx, input, approved, target, raw, writer, epoch);
+          const claim = await claimServiceDispatch(ctx, input, approved, target, raw, writer, epoch, lockSignal);
           claimed = claim.intent;
           sharedHandle = claim.handle;
+          assertHeld();
           return true;
         },
         afterDispatch: async (receipt: unknown) => {
           if (!claimed) throw new Error('services_save_claim_missing');
           await appendServiceEvent(ctx, claimed, { receipt: object(receipt) ?? {} });
         },
-        withWriteLock: async (_confirmation: string, save: () => Promise<unknown>) => save(),
+        withWriteLock: async (_confirmation: string, save: () => Promise<unknown>) => {
+          lockSignal?.throwIfAborted();
+          return save();
+        },
       });
       const closedIntent = claimed as StoredIntent | null;
       const closedHandle = sharedHandle as HmsLabtestWriteHandle | null;
@@ -953,7 +987,7 @@ function recoveryIntent(common: HmsLabtestIntent): StoredIntent {
   const intent = decodeIntent(object(common.recovery)?.serviceIntent);
   const target = hmsLabtestIntentTarget(common);
   if (!scope || !intent || common.operation !== 'add_on' || common.workItemId !== intent.workItemId ||
-      common.transportId !== intent.transportId || common.actorUserId !== intent.actorUserId ||
+      common.transportId !== intent.transportId || common.propertyCode !== intent.propertyCode || common.actorUserId !== intent.actorUserId ||
       common.grantId !== intent.operationId || common.sourceDigest !== intent.sourceDigest ||
       common.approvedDigest !== hash(intent.approvedItem) || common.requestDigest !== intent.dispatchDigest ||
       canonicalJson(intent) !== canonicalJson(scope.intent) || !target || target.kind !== 'saved' ||
@@ -970,37 +1004,38 @@ function recoveryIntent(common: HmsLabtestIntent): StoredIntent {
 }
 
 /** Only the route-owned recovery wrapper supplies this scope and performs the fresh read. */
-export async function withServiceRecoveryLock<T>(common: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
+export async function withServiceRecoveryLock<T>(common: HmsLabtestIntent, action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
   if (object(object(common.recovery)?.serviceIntent)?.variant === 'saved_target') return withSavedServiceRecoveryLock(common, action);
   const intent = recoveryIntent(common);
-  const target = paneStayCreateTarget({ transportId: intent.transportId, propertyCode: 'HRCEN' });
-  if (!target.ok || target.target.browserSlot !== 'centurion') throw new Error('service_recovery_target_unavailable');
-  const lock = paneStayCloudTargetLock(target.target, { propertyCode: 'HRCEN', kind: 'saved',
+  const target = paneStayHmsTargetForTransport(intent.transportId, intent.propertyCode);
+  if (!target.ok) throw new Error('service_recovery_target_unavailable');
+  const lock = paneStayCloudTargetLock(target.target, { propertyCode: propertyCodeSchema.parse(intent.propertyCode), kind: 'saved',
     confirmation: intent.target.confirmation, nativeStayId: intent.target.nativeStayId }, { kind: 'independent_cloud' });
   if (!lock) throw new Error('service_recovery_lock_unavailable');
   return lock.withLock(action, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
-export async function proveServiceRecovery(db: DB, common: HmsLabtestIntent) {
-  if (object(object(common.recovery)?.serviceIntent)?.variant === 'saved_target') return proveSavedServiceRecovery(db, common);
+export async function proveServiceRecovery(db: DB, common: HmsLabtestIntent, signal?: AbortSignal) {
+  if (object(object(common.recovery)?.serviceIntent)?.variant === 'saved_target') return proveSavedServiceRecovery(db, common, signal);
   const scope = serviceRecoveryContext.getStore();
   const intent = recoveryIntent(common);
   if (!scope) throw new Error('service_recovery_scope_missing');
-  const writerTool = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
-    centurionWriterQuiesced: (value: unknown) => boolean;
+  const writerTool = await import(new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url).href) as {
+    cloudWriterQuiesced: (value: unknown) => boolean;
   };
-  if (!(await hasServiceWriterClosedReceipt(db, common, intent)) && !writerTool.centurionWriterQuiesced(intent.writer)) {
+  if (!(await hasServiceWriterClosedReceipt(db, common, intent)) && !writerTool.cloudWriterQuiesced(intent.writer)) {
     throw new Error('service_writer_not_quiesced');
   }
   const target = await readSavedNativeTarget({ expectedGuest: { firstName: common.firstName, lastName: common.lastName },
     guestId: common.nativeGuestId, confirmation: intent.target.confirmation,
-    arrival: intent.target.arrival, departure: intent.target.departure });
+    arrival: intent.target.arrival, departure: intent.target.departure },
+    { propertyCode: common.propertyCode, transportId: common.transportId }, signal);
   if (!target || canonicalJson(target) !== canonicalJson(intent.target)) throw new Error('service_recovery_target_changed');
   const receipt = [...scope.events].reverse().find((entry) => entry.kind === 'receipt');
   const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
     reconcileStay360AddOns: (save: Record<string, unknown>, options?: Record<string, unknown>) => Promise<unknown>;
   };
-  const reconciliation = object(await addon.reconcileStay360AddOns(reconcileSave(intent, receipt), { target: intent.target }));
+  const reconciliation = object(await addon.reconcileStay360AddOns(reconcileSave(intent, receipt), { target: intent.target, propertyCode: common.propertyCode, transportId: common.transportId, signal }));
   const verified = Array.isArray(reconciliation?.verified) ? reconciliation.verified.map(object).filter(Boolean) : [];
   const readback = object(reconciliation?.readback);
   const details = Array.isArray(readback?.details) ? readback.details.map(object).filter(Boolean) : [];
@@ -1033,7 +1068,7 @@ export async function recordRecoveredService(tx: DispatchTx, common: HmsLabtestI
 /** Positive-only recovery for an Add-On Save whose callback/receipt was interrupted. */
 export async function reservationWorkflowV2ReconcileServices(ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2ReconcileInput): Promise<ReservationWorkflowV2ServicesResult> {
-  if (!z.string().uuid().safeParse(input.operationId).success || ctx.property.propertyCode !== 'HRCEN') {
+  if (!z.string().uuid().safeParse(input.operationId).success) {
     return { status: 'invalid_input', issue: 'service_operation_id_invalid' };
   }
   const loaded = await getReservationWorkflowV2Draft(stateContext(ctx), input);
@@ -1087,7 +1122,7 @@ type SavedIdentity = NativeTarget & { nativeGuestId: string; firstName: string; 
 type SavedIntent = {
   version: 1; kind: 'intent'; variant: 'saved_target'; operation: 'add' | 'edit' | 'remove'; operationId: string;
   workItemId: string; transportId: string; actorUserId: string; sessionId: string; sessionProfile: 'legacy' | 'remote';
-  propertyCode: 'HRCEN'; sourceDigest: string; requestId: string; allocationId: null; serviceId: string;
+  propertyCode: z.infer<typeof propertyCodeSchema>; sourceDigest: string; requestId: string; allocationId: null; serviceId: string;
   targetRef: ReservationWorkflowV2SavedServicesInput['targetRef']; target: SavedIdentity; nativeId: string | null;
   generationId: string; previewObservationRef: string; targetObservationRef: string; candidateObservationRef: string;
   inputDigest: string; approvedItem: Record<string, unknown>; beforeItem: Record<string, unknown> | null;
@@ -1099,13 +1134,13 @@ function savedReviewNote(input: ReservationWorkflowV2SavedServicesInput, preview
   return `services_saved:${input.requestId}:${input.targetRef.hintId}:${input.serviceId}:${previewRef}`;
 }
 
-function savedApproval(draft: ReservationWorkflowV2Draft, input: SavedExecuteInput):
+function savedApproval(draft: ReservationWorkflowV2Draft, input: Omit<SavedExecuteInput, 'go' | 'idempotencyKey'>):
   { status: 'ok'; value: SavedApproval } | { status: 'needs_input' | 'needs_review'; issue: string } {
   const plan = reservationWorkflowV2CompileSavedService(draft, input);
   if (plan.status !== 'ok') return { status: 'needs_input', issue: plan.issue };
   const preview = draft.observations.find(item => item.ref === input.reviewedPrepareRef && item.kind === 'service_preview'
     && item.status === 'complete' && item.coverage.complete === true && item.generationId === draft.generationId
-    && item.propertyCode === 'HRCEN' && item.sourceMessageId === draft.source.messageId
+    && item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId
     && item.criteria.workflow === 'services' && item.criteria.kind === 'saved_addon_preview'
     && item.criteria.requestId === input.requestId && item.criteria.serviceId === input.serviceId
     && canonicalJson(item.criteria.targetRef) === canonicalJson(input.targetRef) && item.criteria.inputDigest === plan.inputDigest
@@ -1135,11 +1170,54 @@ function savedApproval(draft: ReservationWorkflowV2Draft, input: SavedExecuteInp
   return { status: 'ok', value: { draft, plan, preview, beforeItem, approvedItem } };
 }
 
-async function readSavedServiceIdentity(stay: Record<string, unknown>, signal?: AbortSignal): Promise<SavedIdentity | null> {
+/** Bind the reviewed service preview and the freshly identified saved target to a staff Go. */
+export async function reservationWorkflowV2ServicePreparation(ctx: ReservationWorkflowV2ServerContext,
+  input: Omit<ReservationWorkflowV2ServicesExecuteInput, 'go' | 'idempotencyKey'> |
+    Omit<SavedExecuteInput, 'go' | 'idempotencyKey'>) {
+  const loaded = await getReservationWorkflowV2Draft(stateContext(ctx), input);
+  if (loaded.status !== 'ok' || loaded.revision !== input.expectedRevision || loaded.seq !== input.expectedSeq ||
+      !sourceContextMatches(loaded.draft, ctx, input) || loaded.draft.operationResults.some(row =>
+        row.workflow === 'services' && row.requestId === input.requestId && row.status === 'unknown')) return null;
+  if ('targetRef' in input) {
+    const selected = savedApproval(loaded.draft, input);
+    if (selected.status !== 'ok') return null;
+    const { plan, preview, beforeItem, approvedItem } = selected.value;
+    const scope = { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id };
+    const confirmation = text(plan.selected.stay.confirmation);
+    if (!confirmation) return null;
+    const target = await withServicePreflightLock(scope, confirmation, ctx.signal,
+      signal => readSavedServiceIdentity(plan.selected.stay, scope, signal));
+    if (!target || !savedAdmission(target, ctx.property.propertyCode)) return null;
+    const parsed = hmsDispatchTargetSchema.safeParse({ propertyCode: ctx.property.propertyCode, kind: 'saved',
+      confirmation: target.confirmation, nativeStayId: target.nativeStayId });
+    if (!parsed.success || parsed.data.kind !== 'saved') return null;
+    return { operation: 'add_on' as const, targetAliases: hmsDispatchTargetKeys(parsed.data),
+      nativeObservation: { beforeDigest: hash({ target, preview: preview.result, beforeItem, approvedItem }),
+        capturedAt: preview.observedAt, price: approvedItem, warnings: preview.coverage.notes },
+      workflowContext: { endpoint: 'executeSavedServices' as const, input } };
+  }
+  const selected = approvedService(loaded.draft, input);
+  if (selected.outcome !== 'ok' || !supportedGuestAdmission(selected.value.create, ctx.property.propertyCode).allowed) return null;
+  const approved = selected.value;
+  const scope = { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id };
+  const target = await withServicePreflightLock(scope, approved.create.confirmation, ctx.signal,
+    signal => readSavedNativeTarget(approved.create, scope, signal));
+  if (!target) return null;
+  const parsed = hmsDispatchTargetSchema.safeParse({ propertyCode: ctx.property.propertyCode, kind: 'saved',
+    confirmation: target.confirmation, nativeStayId: target.nativeStayId });
+  if (!parsed.success || parsed.data.kind !== 'saved') return null;
+  return { operation: 'add_on' as const, targetAliases: hmsDispatchTargetKeys(parsed.data),
+    nativeObservation: { beforeDigest: hash({ target, preview: approved.approvalObservation.result, item: approved.approvalItem }),
+      capturedAt: approved.approvalObservation.observedAt, price: approved.approvalItem,
+      warnings: approved.approvalObservation.coverage.notes },
+    workflowContext: { endpoint: 'executeServices' as const, input } };
+}
+
+async function readSavedServiceIdentity(stay: Record<string, unknown>, scope: { propertyCode: string; transportId: string }, signal?: AbortSignal): Promise<SavedIdentity | null> {
   signal?.throwIfAborted();
-  const [{ withCenturionStay360Page }, confirmationTool, recordTool] = await Promise.all([
-    import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as Promise<{
-      withCenturionStay360Page: (callback: (page: unknown) => Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+  const [{ withCloudReadSession }, confirmationTool, recordTool] = await Promise.all([
+    import(new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url).href) as Promise<{
+      withCloudReadSession: (callback: (page: unknown) => Promise<unknown>, options: Record<string, unknown>) => Promise<unknown>;
     }>,
     import(new URL('../../tooling/hms-cloud/stay360-confirmation.mjs', import.meta.url).href) as Promise<{
       readConfirmationFromStay360: (page: unknown, confirmation: string, options?: Record<string, unknown>) => Promise<unknown>;
@@ -1152,18 +1230,18 @@ async function readSavedServiceIdentity(stay: Record<string, unknown>, signal?: 
   const firstName = text(stay.firstName), lastName = text(stay.lastName);
   if (!confirmation || !arrival || !departure || !firstName || !lastName) return null;
   try {
-    const value = object(await withCenturionStay360Page(async page => {
+    const value = object(await withCloudReadSession(async page => {
       await confirmationTool.readConfirmationFromStay360(page, confirmation, { guestName: `${firstName} ${lastName}`, arrivalDate: arrival });
       signal?.throwIfAborted();
-      const result = await recordTool.readRecordViewFromStay360(page, confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
+      const result = await recordTool.readRecordViewFromStay360(page, confirmation, { nativePropertyCode: scope.propertyCode, nativeIdentityOnly: true });
       signal?.throwIfAborted();
       return result;
-    }, { headless: true, blockServiceWorkers: true, signal }));
+    }, { headless: true, ...scope, signal }));
     signal?.throwIfAborted();
     const preimage = object(value?.nativePreimage), details = object(value?.details);
     const fields = Array.isArray(details?.fields) ? details.fields.map(object).filter(Boolean) : [];
     const cms = fields.filter(row => row?.name === 'udfchkbox04');
-    if (!preimage || preimage.source !== 'record_view_ext_model' || preimage.propertyCode !== 'HRCEN' || preimage.status !== 'Reserved'
+    if (!preimage || preimage.source !== 'record_view_ext_model' || preimage.propertyCode !== scope.propertyCode || preimage.status !== 'Reserved'
       || preimage.confirmation !== confirmation || preimage.arrival !== arrival || preimage.departure !== departure
       || !sameName(preimage.firstName, firstName) || !sameName(preimage.lastName, lastName)
       || (stay.reservationStayId != null && String(stay.reservationStayId) !== String(preimage.reservationStayId))
@@ -1177,21 +1255,21 @@ async function readSavedServiceIdentity(stay: Record<string, unknown>, signal?: 
   } catch { signal?.throwIfAborted(); return null; }
 }
 
-function savedAdmission(target: SavedIdentity): boolean {
-  const mode = paneAddOnWriteMode();
+function savedAdmission(target: SavedIdentity, propertyCode: string): boolean {
+  const mode = addOnMode(propertyCode);
   const lab = sameName(target.firstName, 'Proof') && sameName(target.lastName, 'Labtest');
   return mode !== 'off' && (lab ? target.arrival >= '2027-01-01' && target.cmsSend === false : mode === 'on');
 }
 
 /** An unsaved check may display admission, but dispatch always repeats this native proof. */
-export async function savedServiceCapability(stay: Record<string, unknown>, signal?: AbortSignal) {
+export async function savedServiceCapability(stay: Record<string, unknown>, scope: { propertyCode: string; transportId: string }, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  const writeMode = paneAddOnWriteMode();
+  const writeMode = addOnMode(scope.propertyCode);
   if (writeMode === 'off') return { writeMode, canSave: false, issue: 'saved_addon_write_flag_off' };
   try {
-    const target = await readSavedServiceIdentity(stay, signal);
+    const target = await readSavedServiceIdentity(stay, scope, signal);
     signal?.throwIfAborted();
-    return { writeMode, canSave: Boolean(target && savedAdmission(target)), issue: target && savedAdmission(target) ? null : 'saved_stay_not_admitted' };
+    return { writeMode, canSave: Boolean(target && savedAdmission(target, scope.propertyCode)), issue: target && savedAdmission(target, scope.propertyCode) ? null : 'saved_stay_not_admitted' };
   } catch { signal?.throwIfAborted(); return { writeMode, canSave: false, issue: 'saved_stay_identity_unverified' }; }
 }
 
@@ -1202,7 +1280,7 @@ async function assertSavedGuard(tx: DispatchTx, ctx: ReservationWorkflowV2Server
   if (current.status !== 'ok' || current.value.preview.ref !== approved.preview.ref ||
       current.value.plan.inputDigest !== approved.plan.inputDigest ||
       canonicalJson(current.value.approvedItem) !== canonicalJson(approved.approvedItem) ||
-      canonicalJson(current.value.beforeItem) !== canonicalJson(approved.beforeItem) || !savedAdmission(target)) {
+      canonicalJson(current.value.beforeItem) !== canonicalJson(approved.beforeItem) || !savedAdmission(target, ctx.property.propertyCode)) {
     throw new Error('saved_service_approval_or_admission_changed');
   }
 }
@@ -1215,14 +1293,14 @@ function savedIntentDigest(intent: Omit<SavedIntent, 'dispatchDigest'>) {
 }
 
 async function claimSavedService(ctx: ReservationWorkflowV2ServerContext, input: SavedExecuteInput, approved: SavedApproval,
-  target: SavedIdentity, dispatch: Record<string, unknown>, writer: unknown, epoch: string) {
-  const writerIdentity = object(writer), writerTool = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
-    centurionWriterCurrent: (value: unknown) => boolean;
+  target: SavedIdentity, dispatch: Record<string, unknown>, writer: unknown, epoch: string, signal?: AbortSignal) {
+  const writerIdentity = object(writer), writerTool = await import(new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url).href) as {
+    cloudWriterCurrent: (value: unknown) => boolean;
   };
-  if (!writerIdentity || !writerTool.centurionWriterCurrent(writerIdentity)) throw new Error('saved_service_writer_unavailable');
+  if (!writerIdentity || !writerTool.cloudWriterCurrent(writerIdentity)) throw new Error('saved_service_writer_unavailable');
   const baselineIds = Array.isArray(dispatch.baselineIds) ? dispatch.baselineIds.filter((id): id is string => typeof id === 'string' && /^\d{1,100}$/.test(id)) : [];
   const coverage = object(dispatch.baselineCoverage), nativeId = approved.plan.nativeId;
-  if (dispatch.confirmation !== target.confirmation || !nativeTargetMatches(dispatch.target, target) || !Array.isArray(dispatch.baselineIds)
+  if (dispatch.confirmation !== target.confirmation || !nativeTargetMatches(dispatch.target, target, ctx.property.propertyCode) || !Array.isArray(dispatch.baselineIds)
     || baselineIds.length !== dispatch.baselineIds.length || new Set(baselineIds).size !== baselineIds.length
     || coverage?.complete !== true || coverage.loaded !== baselineIds.length || coverage.reportedTotal !== baselineIds.length) {
     throw new Error('saved_service_baseline_invalid');
@@ -1241,7 +1319,7 @@ async function claimSavedService(ctx: ReservationWorkflowV2ServerContext, input:
   }
   const partial: Omit<SavedIntent, 'dispatchDigest'> = { version: 1, kind: 'intent', variant: 'saved_target', operation: approved.plan.operation,
     operationId: input.idempotencyKey, workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
-    sessionId: ctx.user.sessionId!, sessionProfile: ctx.user.sessionProfile!, propertyCode: 'HRCEN', sourceDigest: input.source.sourceHash,
+    sessionId: ctx.user.sessionId!, sessionProfile: ctx.user.sessionProfile!, propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), sourceDigest: input.source.sourceHash,
     requestId: input.requestId, allocationId: null, serviceId: input.serviceId, targetRef: input.targetRef, target,
     nativeId: approved.plan.operation === 'add' ? null : nativeId, generationId: approved.draft.generationId,
     previewObservationRef: approved.preview.ref, targetObservationRef: approved.plan.selected.observation.ref,
@@ -1250,12 +1328,14 @@ async function claimSavedService(ctx: ReservationWorkflowV2ServerContext, input:
     change, draftRevision: input.expectedRevision, baselineIds, baselineCoverage: coverage, writer: writerIdentity, createdAt: new Date().toISOString() };
   const intent: SavedIntent = { ...partial, dispatchDigest: savedIntentDigest(partial) };
   const handle = await claimHmsLabtestDispatch(ctx.db, { workItemId: input.workItemId, transportId: ctx.transport.id,
-    actorUserId: ctx.user.id, grantId: input.idempotencyKey, propertyCode: 'HRCEN', firstName: target.firstName, lastName: target.lastName,
+    actorUserId: ctx.user.id, grantId: input.idempotencyKey, propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), firstName: target.firstName, lastName: target.lastName,
     nativeGuestId: target.nativeGuestId, operation: 'add_on', sourceDigest: input.source.sourceHash,
     approvedDigest: hash(intent.approvedItem), requestDigest: intent.dispatchDigest,
-    target: { propertyCode: 'HRCEN', kind: 'saved', confirmation: target.confirmation, nativeStayId: target.nativeStayId },
+    target: { propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), kind: 'saved', confirmation: target.confirmation, nativeStayId: target.nativeStayId },
     recovery: { confirmation: target.confirmation, nativeStayId: target.nativeStayId, serviceIntent: intent },
   }, async tx => {
+    if (!ctx.writeRunFence) throw new Error('staff_go_required');
+    await consumeStaffGoAtDispatch(tx, ctx.writeRunFence, signal);
     await assertSavedGuard(tx, ctx, input, approved, target);
     const { item, draft } = await currentDraftTx(tx, ctx, input, true);
     if (draft.operationResults.some(result => result.id === input.idempotencyKey || result.workflow === 'services' &&
@@ -1310,7 +1390,7 @@ function savedLostResponseChangeIsValid(intent: SavedIntent): boolean {
 
 function savedLostResponseReadback(intent: SavedIntent, readback: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!savedLostResponseChangeIsValid(intent) || !readback || readback.outcome !== 'ok' ||
-      !nativeTargetMatches(readback.target, intent.target) || !Array.isArray(readback.rows) || !intent.nativeId) return null;
+      !nativeTargetMatches(readback.target, intent.target, intent.propertyCode) || !Array.isArray(readback.rows) || !intent.nativeId) return null;
   const rows = readback.rows.map(object).filter(Boolean);
   const ids = rows.map(row => text(row?.enhexpsequencekey)).filter((id): id is string => Boolean(id));
   const coverage = object(readback.coverage), details = Array.isArray(readback.details) ? readback.details.map(object).filter(Boolean) : [];
@@ -1338,7 +1418,7 @@ async function persistSavedServiceTx(tx: DispatchTx, ctx: ReservationWorkflowV2S
   if (!pending || pending.status !== 'unknown' || pending.requestId !== intent.requestId || pending.allocationId !== null ||
       !pending.observationRefs.includes(intent.previewObservationRef)) throw new Error('saved_service_receipt_missing');
   const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: intent.generationId, kind: 'service_preview',
-    status: 'complete', observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: input.source.messageId,
+    status: 'complete', observedAt: new Date().toISOString(), propertyCode: intent.propertyCode, sourceMessageId: input.source.messageId,
     sourceRefs: [intent.targetObservationRef, intent.candidateObservationRef, intent.previewObservationRef],
     criteria: { workflow: 'services', kind: 'saved_addon_receipt', requestId: intent.requestId, allocationId: null,
       serviceId: intent.serviceId, targetRef: intent.targetRef, operationId: intent.operationId,
@@ -1385,7 +1465,7 @@ export async function reservationWorkflowV2ExecuteSavedServices(ctx: Reservation
   const parsed = reservationWorkflowV2SavedServicesExecuteInputSchema.safeParse(rawInput);
   if (!parsed.success || parsed.data.targetRef.requestId !== parsed.data.requestId) return { status: 'invalid_input', issue: 'saved_service_input_invalid' };
   const input = parsed.data;
-  if (ctx.property.propertyCode !== 'HRCEN' || !ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'staff_go_and_session_required' };
+  if (!input.go || !ctx.writeRunFence || !ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'staff_go_and_session_required' };
   const loaded = await getReservationWorkflowV2Draft(stateContext(ctx), input);
   if (loaded.status !== 'ok') return { status: loaded.status };
   if (loaded.revision !== input.expectedRevision || loaded.seq !== input.expectedSeq || !sourceContextMatches(loaded.draft, ctx, input)) {
@@ -1401,20 +1481,33 @@ export async function reservationWorkflowV2ExecuteSavedServices(ctx: Reservation
     && result.requestId === input.requestId && result.observationRefs.some(ref => loaded.draft.observations.some(observation =>
       observation.ref === ref && observation.criteria.serviceId === input.serviceId && canonicalJson(observation.criteria.targetRef) === canonicalJson(input.targetRef))));
   if (alreadySaved) return { status: 'already_succeeded', issue: 'service_target_already_saved' };
-  const target = await readSavedServiceIdentity(approved.plan.selected.stay);
-  if (!target || !savedAdmission(target)) return { status: 'refused', issue: 'saved_service_stay_or_write_mode_not_eligible' };
-  const resolved = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: 'HRCEN' });
-  if (!resolved.ok || resolved.target.browserSlot !== 'centurion') return { status: 'unsupported', issue: 'service_property_session_unavailable' };
-  const lock = paneStayCloudTargetLock(resolved.target, { propertyCode: 'HRCEN', kind: 'saved',
+  const scope = { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id };
+  const confirmation = text(approved.plan.selected.stay.confirmation);
+  if (!confirmation) return { status: 'refused', issue: 'saved_service_stay_or_write_mode_not_eligible' };
+  const target = await withServicePreflightLock(scope, confirmation, ctx.signal,
+    signal => readSavedServiceIdentity(approved.plan.selected.stay, scope, signal));
+  if (!target || !savedAdmission(target, ctx.property.propertyCode)) return { status: 'refused', issue: 'saved_service_stay_or_write_mode_not_eligible' };
+  const resolved = paneStayHmsTargetForTransport(ctx.transport.id, ctx.property.propertyCode);
+  if (!resolved.ok) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
+  const lock = paneStayCloudTargetLock(resolved.target, { propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), kind: 'saved',
     confirmation: target.confirmation, nativeStayId: target.nativeStayId }, { kind: 'independent_cloud' });
   if (!lock) return { status: 'refused', issue: 'service_target_lock_unavailable' };
   let claimed: SavedIntent | null = null, handle: HmsLabtestWriteHandle | null = null, attempted = false;
   try {
-    return await lock.withLock(async () => {
-      const epoch = await captureHmsLabtestDispatchEpoch(ctx.db, { propertyCode: 'HRCEN', kind: 'saved',
-        confirmation: target.confirmation, nativeStayId: target.nativeStayId }, input.workItemId);
-      const fresh = await readSavedServiceIdentity(approved.plan.selected.stay);
-      if (!fresh || canonicalJson(fresh) !== canonicalJson(target) || !savedAdmission(fresh)) return { status: 'needs_review', issue: 'saved_service_target_changed' };
+    return await lock.withLock(async (targetSignal, heldTargetLock) => {
+      const lockSignal = targetSignal && ctx.signal ? AbortSignal.any([targetSignal, ctx.signal]) : targetSignal ?? ctx.signal;
+      const writeTarget = { propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode), kind: 'saved' as const,
+        confirmation: target.confirmation, nativeStayId: target.nativeStayId };
+      const assertHeld = () => {
+        lockSignal?.throwIfAborted();
+        const property = getPropertyRegistration(writeTarget.propertyCode);
+        if (!property?.active) throw new Error('service_property_session_unavailable');
+        assertTargetAliasesHeld(heldTargetLock, { tenantId: property.expectedTenant,
+          propertyCode: writeTarget.propertyCode, targetAliases: hmsDispatchTargetKeys(writeTarget) });
+      };
+      const epoch = await captureHmsLabtestDispatchEpoch(ctx.db, writeTarget, input.workItemId);
+      const fresh = await readSavedServiceIdentity(approved.plan.selected.stay, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id }, lockSignal);
+      if (!fresh || canonicalJson(fresh) !== canonicalJson(target) || !savedAdmission(fresh, ctx.property.propertyCode)) return { status: 'needs_review', issue: 'saved_service_target_changed' };
       const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
         withStay360AddOnSession: (callback: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
           options: Record<string, unknown>) => Promise<unknown>;
@@ -1429,7 +1522,7 @@ export async function reservationWorkflowV2ExecuteSavedServices(ctx: Reservation
       };
       const result = object(await addon.withStay360AddOnSession(async ({ runTool }) => {
         const read = object(await runTool({ tool: 'read', confirmation: target.confirmation, guestName: target.guestName, arrivalDate: target.arrival }));
-        if (read?.outcome !== 'ok' || !nativeTargetMatches(read.target, target) || object(read.coverage)?.complete !== true) return { issue: 'saved_service_target_unverified' };
+        if (read?.outcome !== 'ok' || !nativeTargetMatches(read.target, target, ctx.property.propertyCode) || object(read.coverage)?.complete !== true) return { issue: 'saved_service_target_unverified' };
         const prepared = object(await runTool(operation === 'add'
           ? { tool: 'prepare', confirmation: target.confirmation, items: [approved.plan.requested] }
           : { tool: 'prepareChanges', confirmation: target.confirmation, changes: [approved.plan.requested] }));
@@ -1441,28 +1534,33 @@ export async function reservationWorkflowV2ExecuteSavedServices(ctx: Reservation
         return { save: await runTool({ tool: operation === 'add' ? 'save' : 'saveChanges', confirmation: target.confirmation,
           preparedId: prepared.preparedId }) };
       }, {
+        signal: lockSignal, transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode,
         authorize: async (raw: unknown) => {
+          if (lockSignal?.aborted) return false;
           const prepared = object(raw), items = Array.isArray(prepared?.items) ? prepared.items : [];
-          if (operation !== 'add' || prepared?.confirmation !== target.confirmation || !nativeTargetMatches(prepared.target, target) ||
+          if (operation !== 'add' || prepared?.confirmation !== target.confirmation || !nativeTargetMatches(prepared.target, target, ctx.property.propertyCode) ||
               items.length !== 1 || !matches(items[0]) || canonicalJson(prepared.requestedItems) !== canonicalJson([approved.plan.requested])) return false;
           try { await ctx.db.transaction(tx => assertSavedGuard(tx, ctx, input, approved, target)); return true; } catch { return false; }
         },
         authorizeChanges: async (raw: unknown) => {
+          if (lockSignal?.aborted) return false;
           const prepared = object(raw), changes = Array.isArray(prepared?.changes) ? prepared.changes : [];
-          if (operation === 'add' || prepared?.confirmation !== target.confirmation || !nativeTargetMatches(prepared.target, target) ||
+          if (operation === 'add' || prepared?.confirmation !== target.confirmation || !nativeTargetMatches(prepared.target, target, ctx.property.propertyCode) ||
               changes.length !== 1 || !matchesChange(changes[0])) return false;
           try { await ctx.db.transaction(tx => assertSavedGuard(tx, ctx, input, approved, target)); return true; } catch { return false; }
         },
         captureWriterIdentity: true,
         beforeDispatch: async (raw: unknown, writer: unknown) => {
+          assertHeld();
           const dispatch = object(raw); if (!dispatch) throw new Error('saved_service_dispatch_invalid');
-          attempted = true; const claim = await claimSavedService(ctx, input, approved, target, dispatch, writer, epoch);
-          claimed = claim.intent; handle = claim.handle; return true;
+          attempted = true; const claim = await claimSavedService(ctx, input, approved, target, dispatch, writer, epoch, lockSignal);
+          claimed = claim.intent; handle = claim.handle; assertHeld(); return true;
         },
         beforeChangeDispatch: async (raw: unknown, writer: unknown) => {
+          assertHeld();
           const dispatch = object(raw); if (!dispatch) throw new Error('saved_service_dispatch_invalid');
-          attempted = true; const claim = await claimSavedService(ctx, input, approved, target, dispatch, writer, epoch);
-          claimed = claim.intent; handle = claim.handle; return true;
+          attempted = true; const claim = await claimSavedService(ctx, input, approved, target, dispatch, writer, epoch, lockSignal);
+          claimed = claim.intent; handle = claim.handle; assertHeld(); return true;
         },
         afterDispatch: async (receipt: unknown) => {
           if (!claimed) throw new Error('saved_service_claim_missing');
@@ -1476,7 +1574,10 @@ export async function reservationWorkflowV2ExecuteSavedServices(ctx: Reservation
             type: 'write.evidence', fieldPath: DISPATCH_FIELD, value: { version: 1, kind: 'receipt', variant: 'saved_target',
               operationId: input.idempotencyKey, receipt }, evidence: { sourceHash: input.source.sourceHash } });
         },
-        withWriteLock: async (_confirmation: string, save: () => Promise<unknown>) => save(),
+        withWriteLock: async (_confirmation: string, save: () => Promise<unknown>) => {
+          lockSignal?.throwIfAborted();
+          return save();
+        },
       }));
       const activeIntent = claimed as SavedIntent | null, activeHandle = handle as HmsLabtestWriteHandle | null;
       if (activeIntent && activeHandle) await savedWriterClosed(ctx, activeIntent, activeHandle).catch(() => {});
@@ -1518,7 +1619,7 @@ function savedRecoveryIntent(common: HmsLabtestIntent): SavedIntent {
   if (!scope || !intent || intent.version !== 1 || intent.kind !== 'intent' || intent.variant !== 'saved_target' ||
       !['add', 'edit', 'remove'].includes(intent.operation) || common.operation !== 'add_on' ||
       intent.operationId !== common.grantId || intent.workItemId !== common.workItemId || intent.transportId !== common.transportId ||
-      intent.actorUserId !== common.actorUserId || intent.sourceDigest !== common.sourceDigest ||
+      intent.actorUserId !== common.actorUserId || intent.propertyCode !== common.propertyCode || intent.sourceDigest !== common.sourceDigest ||
       intent.dispatchDigest !== common.requestDigest || hash(intent.approvedItem) !== common.approvedDigest ||
       canonicalJson(intent) !== canonicalJson(scope.intent) || !target || target.kind !== 'saved' ||
       target.confirmation !== intent.target.confirmation || target.nativeStayId !== intent.target.nativeStayId ||
@@ -1533,20 +1634,20 @@ function savedRecoveryIntent(common: HmsLabtestIntent): SavedIntent {
   return intent;
 }
 
-async function withSavedServiceRecoveryLock<T>(common: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
+async function withSavedServiceRecoveryLock<T>(common: HmsLabtestIntent, action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
   const intent = savedRecoveryIntent(common);
-  const target = paneStayCreateTarget({ transportId: intent.transportId, propertyCode: 'HRCEN' });
-  if (!target.ok || target.target.browserSlot !== 'centurion') throw new Error('saved_service_recovery_target_unavailable');
-  const lock = paneStayCloudTargetLock(target.target, { propertyCode: 'HRCEN', kind: 'saved',
+  const target = paneStayHmsTargetForTransport(intent.transportId, intent.propertyCode);
+  if (!target.ok) throw new Error('saved_service_recovery_target_unavailable');
+  const lock = paneStayCloudTargetLock(target.target, { propertyCode: propertyCodeSchema.parse(intent.propertyCode), kind: 'saved',
     confirmation: intent.target.confirmation, nativeStayId: intent.target.nativeStayId }, { kind: 'independent_cloud' });
   if (!lock) throw new Error('saved_service_recovery_lock_unavailable');
   return lock.withLock(action, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
-async function proveSavedServiceRecovery(db: DB, common: HmsLabtestIntent) {
+async function proveSavedServiceRecovery(db: DB, common: HmsLabtestIntent, signal?: AbortSignal) {
   const intent = savedRecoveryIntent(common), scope = savedRecovery.getStore()!;
-  const writerTool = await import(new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url).href) as {
-    centurionWriterQuiesced: (value: unknown) => boolean;
+  const writerTool = await import(new URL('../../tooling/hms-cloud/cloud-session.mjs', import.meta.url).href) as {
+    cloudWriterQuiesced: (value: unknown) => boolean;
   };
   const closed = await db.select({ value: workEvent.value, actorKind: workEvent.actorKind, actorUserId: workEvent.actorUserId })
     .from(workEvent).where(and(eq(workEvent.workItemId, intent.workItemId), eq(workEvent.type, 'write.evidence'),
@@ -1554,8 +1655,8 @@ async function proveSavedServiceRecovery(db: DB, common: HmsLabtestIntent) {
   const expectedClosed = { version: 1, kind: 'writer_closed', variant: 'saved_target', holdId: common.holdId,
     operationId: intent.operationId, ownerDigest: common.ownerDigest, dispatchDigest: intent.dispatchDigest, writerDigest: hash(intent.writer) };
   if (!closed.some(row => row.actorKind === 'system' && row.actorUserId === intent.actorUserId && canonicalJson(row.value) === canonicalJson(expectedClosed)) &&
-      !writerTool.centurionWriterQuiesced(intent.writer)) throw new Error('saved_service_writer_not_quiesced');
-  const fresh = await readSavedServiceIdentity(intent.target);
+      !writerTool.cloudWriterQuiesced(intent.writer)) throw new Error('saved_service_writer_not_quiesced');
+  const fresh = await readSavedServiceIdentity(intent.target, { propertyCode: common.propertyCode, transportId: common.transportId }, signal);
   if (!fresh || canonicalJson(fresh) !== canonicalJson(intent.target)) throw new Error('saved_service_target_changed');
   const receiptEvent = [...scope.events].reverse().find(event => event.kind === 'receipt' && event.variant === 'saved_target');
   const receipt = object(receiptEvent?.receipt);
@@ -1580,11 +1681,11 @@ async function proveSavedServiceRecovery(db: DB, common: HmsLabtestIntent) {
       const readback = object(await addon.withStay360AddOnSession(async ({ runTool }) => {
         const listing = object(await runTool({ tool: 'read', confirmation: intent.target.confirmation,
           guestName: intent.target.guestName, arrivalDate: intent.target.arrival }));
-        if (!listing || listing.outcome !== 'ok' || !nativeTargetMatches(listing.target, intent.target)) return null;
+        if (!listing || listing.outcome !== 'ok' || !nativeTargetMatches(listing.target, intent.target, intent.propertyCode)) return null;
         if (intent.operation === 'remove') return listing;
         const detailed = object(await runTool({ tool: 'read', confirmation: intent.target.confirmation, detailIds: [intent.nativeId] }));
-        return detailed && detailed.outcome === 'ok' && nativeTargetMatches(detailed.target, intent.target) ? detailed : null;
-      }, { headless: true, blockServiceWorkers: true }));
+        return detailed && detailed.outcome === 'ok' && nativeTargetMatches(detailed.target, intent.target, intent.propertyCode) ? detailed : null;
+      }, { headless: true, propertyCode: common.propertyCode, transportId: common.transportId, signal }));
       const nativeReadback = savedLostResponseReadback(intent, readback);
       if (!nativeReadback) throw new Error('saved_service_positive_readback_not_proven');
       return { confirmation: intent.target.confirmation, nativeStayId: intent.target.nativeStayId, nativeReadback,
@@ -1597,7 +1698,7 @@ async function proveSavedServiceRecovery(db: DB, common: HmsLabtestIntent) {
   const addon = await import(new URL('../../tooling/hms-cloud/stay360-addons-session.mjs', import.meta.url).href) as {
     reconcileStay360AddOns: (save: Record<string, unknown>, options?: Record<string, unknown>) => Promise<unknown>;
   };
-  const reconciliation = object(await addon.reconcileStay360AddOns(save, { target: intent.target }));
+  const reconciliation = object(await addon.reconcileStay360AddOns(save, { target: intent.target, propertyCode: common.propertyCode, transportId: common.transportId, signal }));
   const nativeReadback = savedReadback(intent, { reconciliation });
   if (!nativeReadback) throw new Error('saved_service_positive_readback_not_proven');
   return { confirmation: intent.target.confirmation, nativeStayId: intent.target.nativeStayId, nativeReadback,

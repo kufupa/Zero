@@ -38,7 +38,7 @@ import { aiWorkflowRun } from '../db/schema/mail.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
-import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
+import { PROPERTY_REGISTRY } from '../../tooling/hms-cloud/property-registry.mjs';
 import { HMS_LABTEST_AMEND_PROMPT_VERSION, HMS_LABTEST_AMEND_RUN_DEADLINE_MS } from './pane-cloud-amend-readiness.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
@@ -80,6 +80,7 @@ export const READ_TOOL_RUN_KIND = 'read_tool' as const;
  * never claims them, and stale-lease reclaim never touches them: a lost lease becomes needs-check (hms-approval.ts).
  */
 export const HMS_WRITE_RUN_KIND = 'hms_write' as const;
+export const HMS_V2_WRITE_PROMPT_VERSION = 'hms-write/2' as const;
 export const MAIL_BASELINE_GENERATION_VERSION = 'mail-baseline-generation-v1';
 
 /** Stable analytics generation identity for retries and immutable restatements. */
@@ -844,7 +845,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       const requestDeadlineMs =
         candidate.runKind === 'reservation_prefill' ? RESERVATION_ARRIVAL_RUN_DEADLINE_MS
           : candidate.runKind === HMS_WRITE_RUN_KIND && candidate.executorLane === 'hms' &&
-        candidate.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION
+        (candidate.promptVersion === HMS_LABTEST_AMEND_PROMPT_VERSION || candidate.promptVersion === HMS_V2_WRITE_PROMPT_VERSION)
           ? Math.max(runDeadlineMs, HMS_LABTEST_AMEND_RUN_DEADLINE_MS)
           : candidate.runKind === HMS_WRITE_RUN_KIND &&
         (candidate.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION || candidate.promptVersion === HMS_CLOUD_CANCEL_PROMPT_VERSION)

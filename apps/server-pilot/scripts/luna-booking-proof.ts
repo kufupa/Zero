@@ -1,9 +1,8 @@
 /**
- * U9 live booking proofs. VPS-only, DB-free. Writes gitignored .private/luna-mvp/proofs/.
+ * U9 live booking proofs. VPS-only, scoped Cloud credential lease. Writes gitignored .private/luna-mvp/proofs/.
  * Stdout: ids, outcomes, codes. No names, bodies, or addresses.
  */
-import { spawn } from 'node:child_process';
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -14,16 +13,18 @@ import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import { createAzureLunaModel, LunaModelAdapter } from '../src/ai/bedrock/luna.js';
 import { requestFromQuotedRoom } from '../src/ai/booking-draft.js';
 import type { SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
+import { resolvePropertyScope, propertySwitchSchema } from '../src/hms/property-registry.js';
+import { fetchQuote } from '../tooling/hms-cloud/fetch-quote.mjs';
+import { mapPaneStayToCloudCreateInput } from '../src/ai/pane-create-cloud-input.js';
+import type { PaneStay } from '../src/ai/pane-stay-save.js';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '../../..');
-const TOOLING = path.join(REPO_ROOT, 'apps/server-pilot/tooling/playwright-quote');
 const CENSUS_ROWS = path.join(REPO_ROOT, '.private/luna-mvp/census/rows.jsonl');
 const CORPUS_A = path.join(REPO_ROOT, '../centurion-dashboard-tools/.private/reservationist-backtest/corpus/messages.jsonl');
 const PROOF_ROOT = path.join(REPO_ROOT, '.private/luna-mvp/proofs');
-const CREATE_PROOF = path.join(REPO_ROOT, '.private/create-screen/proof');
-const PARTY_OUT_ROOT = path.join(REPO_ROOT, '.private/pms-pipeline/party-lookup/out');
-const QUOTE_OUT_ROOT = path.join(REPO_ROOT, '.private/playwright-quote');
+const PARTY_OUT_ROOT = path.join(REPO_ROOT, '.private/hms-cloud/luna-parties');
+const QUOTE_OUT_ROOT = path.join(REPO_ROOT, '.private/hms-cloud/luna-quotes');
 
 /** U4 mining is all-null. Lab-only labelled defaults for schema-valid stop-before fills. */
 const LAB_DEFAULTS = {
@@ -58,32 +59,6 @@ function parseIds(argv: string[]): string[] {
     .filter(Boolean);
 }
 
-function runNode(script: string, args: string[], cwd: string): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script, ...args], {
-      cwd,
-      env: {
-        ...process.env,
-        HMS_STAGEHAND_CDP_URL: process.env.HMS_STAGEHAND_CDP_URL ?? 'http://127.0.0.1:19223',
-        HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
-        HMS_READ_SECRET_ARN: process.env.HMS_READ_SECRET_ARN ?? 'nava-zero/server-pilot/infor-hms-read',
-        AWS_REGION: process.env.AWS_REGION ?? 'af-south-1',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code: code ?? 2, stdout, stderr }));
-  });
-}
-
 async function loadSelection(id: string): Promise<SyncedQuoteSelection | null> {
   try {
     const rows = await readJsonl<{
@@ -106,44 +81,7 @@ async function loadSelection(id: string): Promise<SyncedQuoteSelection | null> {
   }
 }
 
-async function latestResultJson(root: string): Promise<string | null> {
-  const found: Array<{ path: string; mtime: number }> = [];
-  const stack = [root];
-  while (stack.length) {
-    const dir = stack.pop()!;
-    let entries;
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.name === 'result.json') {
-        found.push({ path: full, mtime: (await stat(full)).mtimeMs });
-      }
-    }
-  }
-  found.sort((a, b) => b.mtime - a.mtime);
-  return found[0]?.path ?? null;
-}
-
-async function copyProofArtifacts(dest: string): Promise<string[]> {
-  const copied: string[] = [];
-  for (const name of ['filled.png', 'result.json', 'observe.json']) {
-    const src = path.join(CREATE_PROOF, name);
-    try {
-      await copyFile(src, path.join(dest, name));
-      copied.push(name);
-    } catch {
-      // optional observe.json
-    }
-  }
-  return copied;
-}
-
-async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
+async function proveOne(row: CensusRow, scope: { propertyCode: string; transportId: string }): Promise<Record<string, unknown>> {
   const dest = path.join(PROOF_ROOT, row.id);
   await mkdir(dest, { recursive: true, mode: 0o700 });
   const summary: Record<string, unknown> = {
@@ -217,27 +155,19 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
     lookupReq,
     JSON.stringify(
       kind === 'bookingAgency'
-        ? { kind: 'bookingAgency', query: { bookingAgencyName: party.name } }
-        : { kind: 'organization', query: { organizationName: party.name } },
+        ? { ...scope, kind: 'bookingAgency', query: { bookingAgencyName: party.name } }
+        : { ...scope, kind: 'organization', query: { organizationName: party.name } },
     ),
     { mode: 0o600 },
   );
   const lookupOut = path.join(PARTY_OUT_ROOT, `luna-mvp-${row.id.slice(0, 8)}`);
   await mkdir(lookupOut, { recursive: true, mode: 0o700 });
-  const lookup = await runNode(
-    path.join(TOOLING, 'party-lookup.mjs'),
-    ['--request', lookupReq, '--output', lookupOut],
-    TOOLING,
-  );
-  let lookupResult: {
-    outcome?: string;
-    candidates?: Array<{ nativeId?: string; displayName?: string }>;
-  } = {};
-  try {
-    lookupResult = JSON.parse(lookup.stdout.trim().split('\n').at(-1) ?? '{}') as typeof lookupResult;
-  } catch {
-    lookupResult = { outcome: 'parse_error' };
-  }
+  const partyNative = await import('../tooling/hms-cloud/party-lookup.mjs' as string) as {
+    lookupParty(options: { requestPath: string; outputDir: string; transportId: string }): Promise<{
+      outcome?: string; candidates?: Array<{ nativeId?: string; displayName?: string }>;
+    }>;
+  };
+  const lookupResult = await partyNative.lookupParty({ requestPath: lookupReq, outputDir: lookupOut, transportId: scope.transportId });
   summary.party_outcome = lookupResult.outcome;
   if (lookupResult.outcome !== 'resolved' || !lookupResult.candidates?.[0]?.nativeId) {
     summary.outcome = 'party_unresolved';
@@ -255,7 +185,7 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
     quoteReq,
     JSON.stringify({
       schemaVersion: 2,
-      propertyCode: 'HRCEN',
+      propertyCode: scope.propertyCode,
       arrivalDate: proofArrival,
       departureDate: proofDeparture,
       rooms: [
@@ -268,35 +198,20 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
         },
       ],
       rateContext:
-        kind === 'bookingAgency' ? { agency: contextRef } : { organization: contextRef },
+        kind === 'bookingAgency' ? { bookingAgency: contextRef } : { organization: contextRef },
       search: { includeRestricted: false, includeAlternatives: true },
     }),
     { mode: 0o600 },
   );
   const quoteOut = path.join(QUOTE_OUT_ROOT, `luna-mvp-${row.id.slice(0, 8)}-${Date.now()}`);
   await mkdir(quoteOut, { recursive: true, mode: 0o700 });
-  const quoteStarted = Date.now();
-  const quoted = await runNode(
-    path.join(TOOLING, 'fetch-quote.mjs'),
-    ['--request', quoteReq, '--output', quoteOut],
-    TOOLING,
-  );
-  summary.quote_exit = quoted.code;
-  type QuoteOption = {
-    room?: { code?: string };
-    rate?: { code?: string };
-    roomCode?: string;
-    rateCode?: string;
+  const quoteCapture = await fetchQuote({ requestPath: quoteReq, ...scope, outputDir: quoteOut });
+  type QuoteOption = { room?: { code?: string }; rate?: { code?: string }; roomCode?: string; rateCode?: string };
+  const quoteJson = JSON.parse(await readFile(path.join(quoteCapture.evidenceDirectory, 'result.json'), 'utf8')) as {
+    outcome?: string; propertyCode?: string; audit?: { status?: string }; groups?: Array<{ options?: QuoteOption[] }>;
   };
-  let quoteJson: { outcome?: string; groups?: Array<{ options?: QuoteOption[] }> } = {};
-  const latestQuote = quoted.code === 0 ? await latestResultJson(quoteOut) : null;
-  if (latestQuote) {
-    const quoteStat = await stat(latestQuote);
-    if (quoteStat.mtimeMs >= quoteStarted - 1000) {
-      quoteJson = JSON.parse(await readFile(latestQuote, 'utf8')) as typeof quoteJson;
-      await copyFile(latestQuote, path.join(dest, 'quote-result.json'));
-    }
-  }
+  if (quoteJson.propertyCode !== scope.propertyCode || quoteJson.audit?.status !== 'complete') throw new Error('quote_capture_incomplete');
+  await copyFile(path.join(quoteCapture.evidenceDirectory, 'result.json'), path.join(dest, 'quote-result.json'));
   summary.quote_outcome = quoteJson.outcome;
   const option = quoteJson.groups?.[0]?.options?.find((row) => {
     const room = row.room?.code ?? row.roomCode;
@@ -321,7 +236,7 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
     childAges: group?.childAges ?? [],
     roomCode,
     rateCode,
-    party: party.kind === 'agency' ? { kind: 'agency', name: party.name } : { kind: 'organization', name: party.name },
+    party: party.kind === 'agency' ? { kind: 'bookingAgency', name: party.name } : { kind: 'organization', name: party.name },
     guestName,
     defaults: { ...LAB_DEFAULTS },
     roomIndex: 1,
@@ -334,47 +249,40 @@ async function proveOne(row: CensusRow): Promise<Record<string, unknown>> {
   const requestPath = path.join(dest, 'request.json');
   await writeFile(requestPath, JSON.stringify(request, null, 2), { mode: 0o600 });
 
-  const createStarted = Date.now();
-  const created = await runNode(
-    path.join(TOOLING, 'create-lab-stay.mjs'),
-    ['--request', requestPath, '--stop-before', 'availability'],
-    TOOLING,
-  );
-  summary.create_exit = created.code;
-  summary.create_stdout = created.stdout.trim().split('\n').at(-1) ?? '';
-  const createOk = (summary.create_stdout as string).includes('stopped_before_availability');
-  let copied: string[] = [];
-  if (createOk) {
-    const createResultPath = path.join(CREATE_PROOF, 'result.json');
-    try {
-      const createStat = await stat(createResultPath);
-      if (createStat.mtimeMs >= createStarted - 1000) {
-        copied = await copyProofArtifacts(dest);
-      }
-    } catch {
-      copied = [];
-    }
-  }
-  summary.copied = copied;
-  try {
-    const createResult = JSON.parse(await readFile(path.join(dest, 'result.json'), 'utf8')) as {
-      outcome?: string;
-      blankRequired?: string[];
+  const preparedStay = { ...request, propertyCode: scope.propertyCode, childAges: group?.childAges ?? [],
+    reservationNote: `Unsaved proof for census ${row.id}`, confirmationSendMail: false,
+    ...(kind === 'bookingAgency' ? { bookingAgency: { nativeId, name: displayName ?? party.name } } : { organization: { nativeId, name: displayName ?? party.name } }),
+  } as PaneStay;
+  const mapped = mapPaneStayToCloudCreateInput(preparedStay, 'prepare', undefined, { allowRealGuest: true });
+  if (mapped.outcome !== 'ok') {
+    summary.outcome = 'create_input_gap'; summary.create_issue = mapped.reason;
+  } else {
+    const native = await import('../tooling/hms-cloud/create-reservation.mjs' as string) as {
+      createReservation(input: Record<string, unknown>, options: { transportId: string; allowRealGuest: boolean; expectedGuest: { firstName: string; lastName: string }; capturePrepareScreenshot: boolean }): Promise<{ outcome: string; issue?: string; missing?: unknown[]; screenshots?: Record<string, string> }>;
     };
-    summary.create_outcome = createResult.outcome;
-    summary.blankRequired = createResult.blankRequired ?? [];
-  } catch {
-    summary.create_outcome = createOk ? 'missing_result' : 'create_failed';
+    const prepared = await native.createReservation(mapped.input, { transportId: scope.transportId, allowRealGuest: true,
+      expectedGuest: { firstName: preparedStay.firstName, lastName: preparedStay.lastName }, capturePrepareScreenshot: true });
+    await writeFile(path.join(dest, 'result.json'), JSON.stringify(prepared, null, 2), { mode: 0o600 });
+    summary.create_outcome = prepared.outcome; summary.create_issue = prepared.issue; summary.blankRequired = prepared.missing ?? [];
+    const filled = prepared.screenshots?.filled;
+    if (filled) await copyFile(filled, path.join(dest, 'filled.png'));
+    summary.outcome = prepared.outcome;
   }
-  summary.outcome = createOk ? (summary.create_outcome ?? 'stopped_before_availability') : 'create_failed';
   await writeFile(path.join(dest, 'summary.json'), JSON.stringify(summary, null, 2), { mode: 0o600 });
   return summary;
 }
 
 async function main() {
-  const ids = parseIds(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  const propertyCode = argv[argv.indexOf('--property') + 1];
+  const transportId = argv[argv.indexOf('--transport') + 1];
+  if (!argv.includes('--property') || !argv.includes('--transport')) throw new Error('explicit_property_and_transport_required');
+  const selected = resolvePropertyScope({ transportId, ...(propertyCode === 'HRCEN' ? {} : { propertySwitch: propertySwitchSchema.parse(propertyCode) }) });
+  if (selected.propertyCode !== propertyCode) throw new Error('property_transport_mismatch');
+  const scope = { propertyCode: selected.propertyCode, transportId };
+  const ids = parseIds(argv);
   if (!ids.length) {
-    process.stderr.write('Usage: luna-booking-proof.ts --ids <id,id>\n');
+    process.stderr.write('Usage: luna-booking-proof.ts --property <code> --transport <id> --ids <id,id>\n');
     process.exitCode = 2;
     return;
   }
@@ -387,7 +295,7 @@ async function main() {
   }
   await mkdir(PROOF_ROOT, { recursive: true, mode: 0o700 });
   for (const row of wanted) {
-    const summary = await proveOne(row);
+    const summary = await proveOne(row, scope);
     process.stdout.write(
       `${summary.id} outcome=${summary.outcome} party=${summary.party_outcome ?? ''} room=${summary.room_code ?? ''} rate=${summary.rate_code ?? ''} blank=${JSON.stringify(summary.blankRequired ?? [])}\n`,
     );

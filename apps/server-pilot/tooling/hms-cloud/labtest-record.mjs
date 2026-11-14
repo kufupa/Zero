@@ -1,5 +1,6 @@
 // Identify one rendered saved Labtest record before an action on its page.
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -13,7 +14,7 @@ const cancelFinancialPartyFields = new Set(['araccountname', 'arprofileid', 'ara
   'guaranteecreditcardid', 'leaseguaranteecreditcardid']);
 const savedBusinessFields = new Set([...savedIdentityFields, ...blankSavedPartyFields,
   'status', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children',
-  'child1', 'child2', 'child3', 'childages', 'track', 'guaranteetype', 'reservationnote', 'firstname', 'lastname',
+  'childages', 'track', 'guaranteetype', 'reservationnote', 'firstname', 'lastname',
   'emailaddress', 'bookername', 'bookercontact', 'caller', 'udfchar06', 'udfchkbox04', 'udfchar09', 'udfchar13',
   'cancelreason', 'cancellationnote', 'reservationstaystatus', 'cancelpolicyoverride']);
 
@@ -58,7 +59,7 @@ export async function currentLabtestDocumentRecord(page, expected, context) {
   const validName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 200 &&
     name === name.trim() && !/[\p{Cc}]/u.test(name);
   const start = date(arrival), end = date(departure);
-  if (!context || Object.keys(context).length !== 1 || typeof context.cmsSend !== 'boolean' ||
+  if (!getPropertyRegistration(expected?.propertyCode)?.active || !context || Object.keys(context).length !== 1 || typeof context.cmsSend !== 'boolean' ||
       (labtestGuest && context.cmsSend) ||
       !/^\d+-\d+$/.test(confirmation || '') || confirmation.length > 100 ||
       !/^\d{1,30}$/.test(guestId || '') || !start || !end || !validName(firstName) || !validName(lastName) || !validName(status) ||
@@ -66,7 +67,8 @@ export async function currentLabtestDocumentRecord(page, expected, context) {
       (labtestGuest && (arrival < '2027-01-01' || status !== 'Reserved')) ||
       (expected?.nativeStayId !== undefined && !/^\d{1,100}$/.test(expected.nativeStayId)) ||
       arrival >= departure) throw new Error('LABTEST_RECORD_INPUT_INVALID');
-  if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
+  if (new URL(page.url()).origin !== ORIGIN ||
+      /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(await page.title())?.[1]?.toUpperCase() !== expected.propertyCode) {
     throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
   }
   const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
@@ -88,7 +90,7 @@ export async function currentLabtestDocumentRecord(page, expected, context) {
     const unique = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const value = (name) => fields[name][0].value.trim();
-    if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
+    if (!exact('propertycode', expected.propertyCode) || !exact('confirmationnumber', expected.confirmation) ||
         !exact('guestid', expected.guestId) || !exact('status', status) || !exact('firstname', firstName) ||
         !exact('lastname', lastName) || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
         value('confirmationnumber') !== expected.confirmation || value('guestid') !== expected.guestId ||
@@ -143,7 +145,7 @@ async function readLabtestRecord(page, expected, options, expectedGuarantee) {
   const validName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 256 &&
     name === name.trim() && !/[\p{Cc}]/u.test(name);
   const start = date(arrival), end = date(departure);
-  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+  if (!getPropertyRegistration(expected?.propertyCode)?.active || !options || typeof options !== 'object' || Array.isArray(options) ||
       Object.keys(options).some((key) => ![
         'allowBlankNote', 'allowUnchangedBusinessParties', 'expectedOrganization',
         'preserveUnsentRecipient', 'allowModelOnlyPrimaryPartyIds', 'allowRealGuest', 'allowCancelFinancialChanges',
@@ -163,7 +165,8 @@ async function readLabtestRecord(page, expected, options, expectedGuarantee) {
       (!allowRealGuest && !allowBlankNote && !note) || note.length > 2_000) {
     throw new Error('LABTEST_RECORD_INPUT_INVALID');
   }
-  if (new URL(page.url()).origin !== ORIGIN || !/Infor HMS\s*-\s*HRCEN/i.test(await page.title())) {
+  if (new URL(page.url()).origin !== ORIGIN ||
+      /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(await page.title())?.[1]?.toUpperCase() !== expected.propertyCode) {
     throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
   }
   const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
@@ -190,7 +193,7 @@ async function readLabtestRecord(page, expected, options, expectedGuarantee) {
     const unique = (key) => Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const value = (name) => name === 'reservationnote' ? fields[name][0].value : fields[name][0].value.trim();
-    if (!exact('propertycode', 'HRCEN') || !exact('confirmationnumber', expected.confirmation) ||
+    if (!exact('propertycode', expected.propertyCode) || !exact('confirmationnumber', expected.confirmation) ||
         !exact('guestid', expected.guestId) || !exact('status', 'Reserved') || !exact('firstname', firstName) ||
         !exact('lastname', lastName) || !exact('arrivaldate', start.wire) || !exact('departuredate', end.wire) ||
         (!allowCancelFinancialChanges && !exact('guaranteetype', expectedGuarantee.code)) ||
@@ -406,7 +409,8 @@ export function unchangedLabtestRecord(before, after, changes) {
 export function matchesLabtestBody(body, snapshot, changes) {
   const data = snapshot?.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
-  const fields = Object.keys(data).filter((key) => savedBusinessFields.has(key));
+  const fields = Object.keys(data).filter((key) => savedBusinessFields.has(key) ||
+    (/^child\d+$/.test(key) && data[`${key}status`] === 'ACTIVE'));
   if (!changes || typeof changes !== 'object' || Array.isArray(changes) ||
       Object.keys(changes).some((key) => !Object.hasOwn(data, key))) return false;
   if (!fields.length || typeof body?.getAll !== 'function') return false;

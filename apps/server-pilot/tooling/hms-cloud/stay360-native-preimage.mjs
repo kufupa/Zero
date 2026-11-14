@@ -1,10 +1,10 @@
 // Bounded, read-only observation of the Ext model behind the selected Record View.
 // This is not an approval, a write grant, or proof that an ID is stable across sessions.
 const KEYS = ['propertycode', 'confirmationnumber', 'guestid', 'status', 'firstname', 'lastname',
-  'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3',
-  'childages', 'sourceofbus', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype', 'companyid', 'company', 'taid1', 'ta1'];
+  'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children',
+  'childages', 'sourceofbus', 'reservationstayid', 'reservationid', 'recordid', 'guaranteetype', 'marketsegment', 'companyid', 'company', 'taid1', 'ta1'];
 const FORM_KEYS = ['confirmationnumber', 'guestid', 'status', 'firstname', 'lastname', 'arrivaldate',
-  'departuredate', 'roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
+  'departuredate', 'roomtype', 'rateplan', 'adults', 'children'];
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
 const value = (source, key) => {
@@ -60,10 +60,16 @@ export function projectNativeSavedStayPreimage(snapshot, expected, { identityOnl
     guestId: field('guestid'), status: field('status'), firstName: field('firstname'), lastName: field('lastname'),
     arrival, departure };
   if (identityOnly === true) return identity;
-  const paired = ['roomtype', 'rateplan', 'adults', 'children', 'child1', 'child2', 'child3'];
+  const paired = ['roomtype', 'rateplan', 'adults', 'children'];
   if (paired.some((key) => !field(key) || field(key) !== value(form, key))) return null;
   const adults = count(field('adults'), 16), children = count(field('children'), 9);
-  const bands = ['child1', 'child2', 'child3'].map((key) => count(field(key), 9));
+  const bucketKeys = Object.keys(data).filter(key => /^child[1-9]\d*$/.test(key));
+  const statusKeys = Object.keys(data).filter(key => /^child[1-9]\d*status$/.test(key));
+  if (statusKeys.some(key => !bucketKeys.includes(key.slice(0, -6)))) return null;
+  const activeKeys = bucketKeys.filter(key => !statusKeys.length || value(data, `${key}status`) === 'ACTIVE');
+  if (statusKeys.length && bucketKeys.some(key => !['ACTIVE', 'INACTIVE'].includes(value(data, `${key}status`)))) return null;
+  if (activeKeys.some(key => value(form, key) !== null && field(key) !== value(form, key))) return null;
+  const bands = activeKeys.map(key => count(field(key), 9));
   if (adults === null || adults < 1 || children === null || bands.some((band) => band === null) ||
       bands.reduce((sum, band) => sum + band, 0) !== children) return null;
   let childAges = 'unknown';
@@ -71,24 +77,27 @@ export function projectNativeSavedStayPreimage(snapshot, expected, { identityOnl
   const rawAges = ageKeys.length === 1 && ageKeys[0] === 'childages' ? data.childages : null;
   const ages = Array.isArray(rawAges) ? rawAges : typeof rawAges === 'string' && /^(?:0|[1-9]\d?)(?:,(?:0|[1-9]\d?))*$/.test(rawAges)
     ? rawAges.split(',').map(Number) : null;
-  if (ages && Array.from(ages).every((age) => Number.isInteger(age) && age >= 0 && age <= 17) && ages.length === children &&
-      ages.filter((age) => age <= 2).length === bands[0] &&
-      ages.filter((age) => age >= 3 && age <= 12).length === bands[1] &&
-      ages.filter((age) => age >= 13).length === bands[2]) childAges = [...ages];
+  if (ages && Array.from(ages).every((age) => Number.isInteger(age) && age >= 0 && age <= 17) && ages.length === children) childAges = [...ages];
+  else if (rawAges === '' && children === 0) childAges = [];
   // Report a guarantee code only when the selected visible control and model agree.
   const guaranteeCode = field('guaranteetype');
   const controlGuarantee = value(snapshot.controls, 'guaranteetype');
   const verifiedGuarantee = guaranteeCode && /^[A-Z0-9]{1,40}$/.test(guaranteeCode) &&
     guaranteeCode === controlGuarantee ? guaranteeCode : null;
+  const marketSegmentCode = field('marketsegment');
+  const verifiedMarketSegment = marketSegmentCode && /^[A-Z0-9]{1,20}$/.test(marketSegmentCode) &&
+    marketSegmentCode === value(snapshot.controls, 'marketsegment') ? marketSegmentCode : null;
   // Party IDs are useful only when the clean model and the unique visible control name agree.
   const company = verifiedParty(data, snapshot.controls, 'companyid', 'company');
   const agency = verifiedParty(data, snapshot.controls, 'taid1', 'ta1');
   const commercial = { ...(company ? { company } : {}), ...(agency ? { agency } : {}) };
   const sourceBusinessCode = field('sourceofbus');
   return { ...identity, roomType: field('roomtype'), ratePlan: field('rateplan'), adults, children, childAges,
+    childBands: Object.fromEntries(activeKeys.map((key, index) => [key, bands[index]])),
     ...(rawAges === '' && children === 0 ? { childAgesWire: '' } : {}),
     ...(sourceBusinessCode !== null ? { sourceBusinessCode } : {}),
     ...(verifiedGuarantee ? { guaranteeCode: verifiedGuarantee } : {}),
+    ...(verifiedMarketSegment ? { marketSegmentCode: verifiedMarketSegment } : {}),
     ...(company || agency ? { commercial } : {}) };
 }
 
@@ -107,7 +116,8 @@ export async function readNativeSavedStayPreimage(frame, expected, options = {})
         fields.some((field) => typeof field.isDirty !== 'function' || !(field.getName?.() || field.name))) return null;
     const pick = (source, wanted) => {
       const result = {};
-      for (const key of wanted) {
+      const dynamic = Object.keys(source).filter(key => /^child[1-9]\d*(?:status|label)?$/.test(key));
+      for (const key of new Set([...wanted, ...dynamic])) {
         const matches = Object.keys(source).filter((name) => name.toLowerCase() === key.toLowerCase());
         if (matches.length !== 1 || matches[0] !== key) continue;
         const item = source[key];
@@ -127,6 +137,17 @@ export async function readNativeSavedStayPreimage(frame, expected, options = {})
             (typeof selected === 'string' || typeof selected === 'number')) guarantee = selected;
       }
     } catch { /* Missing or ambiguous guarantee evidence stays unknown. */ }
+    let marketSegment = null;
+    try {
+      const inputs = [...document.querySelectorAll('input,textarea,select')]
+        .filter(el => typeof el.name === 'string' && el.name.toLowerCase() === 'marketsegment' && visible(el));
+      if (inputs.length === 1 && inputs[0].name === 'marketsegment' && panel.el.dom.contains(inputs[0])) {
+        const control = globalThis.Ext?.getCmp?.(inputs[0].id.replace(/-inputEl$/, ''));
+        const selected = control?.getValue?.();
+        if (fields.includes(control) && (control.getName?.() || control.name) === 'marketsegment' &&
+            (typeof selected === 'string' || typeof selected === 'number')) marketSegment = selected;
+      }
+    } catch { /* Missing or ambiguous evidence remains unknown. */ }
     const partyControl = (name) => {
       const inputs = [...document.querySelectorAll('input,textarea,select')]
         .filter((el) => typeof el.name === 'string' && el.name.toLowerCase() === name && visible(el));
@@ -134,7 +155,7 @@ export async function readNativeSavedStayPreimage(frame, expected, options = {})
         typeof inputs[0].value === 'string' ? inputs[0].value : null;
     };
     return { data: pick(data, keys), values: pick(values, formKeys),
-      controls: { guaranteetype: guarantee, company: partyControl('company'), ta1: partyControl('ta1') },
+      controls: { guaranteetype: guarantee, marketsegment: marketSegment, company: partyControl('company'), ta1: partyControl('ta1') },
       formDirty: form.isDirty(), recordDirty: record.dirty,
       dirtyFields: fields.filter((field) => field.isDirty()).map((field) => field.getName?.() || field.name),
       modifiedFields: Object.keys(record.modified || {}) };

@@ -91,7 +91,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
-import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../../tooling/hms-cloud/property-registry.mjs';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 const DAVINCI_TRANSPORT_ID = 'transport-davinci';

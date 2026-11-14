@@ -10,24 +10,37 @@ import { message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { CREATE_GUARANTEES, createGuaranteeCode, isLabtestGuest, sameCreateGuest, validCreateDates } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
-import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
-import { acquisitionWithin, isPropertyReadLockDeadline, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
+import { cloudWriterCurrent, withCloudCredentialLease, type CloudCredentialLease } from '../../tooling/hms-cloud/cloud-session.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { bindHmsMailboxProperty, isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { acquisitionWithin, assertTargetAliasesHeld, createPostgresTargetAliasLock, isPropertyReadLockDeadline,
+  PANE_PROPERTY_LOCK_WAIT_MS, type HeldTargetAliasLock } from '../hms/property-read-lock.js';
 import { canonicalJson } from './draft-approval.js';
+import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { formStays } from './work-items.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, hmsLabtestIntentTarget, nativeCreateSaveDigest,
   readResolvedHmsLabtestCreates, resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
-import { digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { cloudCreatePolicyIssue, digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
 import { activePaneCreateIdentity, currentPaneCreateDatesMatch, legacyPaneCreateRoomId, paneCreateIdentitySchema, paneCreateRoomAliases, paneCreateRoomId,
   type PaneCreateIdentity } from './pane-create-scope.js';
 import { lockCreateSourceForCreate as lockCreateSource, withLockedCreateSourceForCreate as withLockedCreateSource,
   type LockedCreateSource } from './pane-create-source-loader.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetKeys, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { consumeStaffGoAtDispatch, formDigest, hmsAllocationOperationId, hmsStateDigest, prepareNativeHmsWrite } from './hms-approval.js';
+import { hmsConfigurationIdentities, preparationDigest } from '../hms/hms-preparation.js';
+import { propertyCodeSchema, resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
+import { propertyConfigurationForScope } from '../hms/rate-catalogue.js';
+import type { VerifiedStaffGo } from '../hms/staff-go-authority.js';
+import type { AiRunFence } from './run-ledger.js';
 import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneStayDigest, paneStayModeRefusal,
-  paneStayCloudTargetLock, paneStaySaveLoaders, paneStaySaveMode, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
+  paneStayCloudTargetLock, paneStaySaveLoaders, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
 import { lockReservationWorkflowV2Source, RESERVATION_WORKFLOW_V2_STATE_KEY,
@@ -52,10 +65,11 @@ type Native = { outcome?: unknown; issue?: unknown; guestCandidates?: unknown; a
   ratePlanAvailability?: unknown; ratePlanIssue?: { issue?: unknown };
   requestBinding?: { request?: unknown; digest?: unknown }; screenshots?: Record<string, unknown>;
   writerSessionClosed?: unknown; save?: { dispatchCallbacksDrained?: unknown };
-  confirmation?: unknown; readback?: { fields?: unknown; mismatches?: unknown } };
+  confirmation?: unknown; nativeStayId?: unknown; readback?: { fields?: unknown; mismatches?: unknown } };
 type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
 type NativeOptions = { capturePrepareScreenshot?: boolean; requireExplicitGuestSelection?: boolean; expectedRequestDigest?: string;
   allowRealGuest?: boolean; expectedGuest?: { firstName: string; lastName: string }; cloudTargetKey?: string;
+  signal?: AbortSignal; transportId?: string; credentialLease?: CloudCredentialLease;
   authorizeCandidate?: (request: unknown) => Promise<boolean>;
   dispatchCandidate?: (request: unknown, next: NativeContinuation, evidence: unknown) => Promise<unknown>;
   verifyLabtestMatches?: (census: unknown) => Promise<boolean> };
@@ -63,7 +77,7 @@ export const paneCloudPreviewLoaders: {
   runtimeReady: () => boolean;
   authorityReady: () => boolean;
   run: (input: Record<string, unknown>, options: NativeOptions) => Promise<Native>;
-  verifySiblings: (census: unknown, siblings: BatchSibling[]) => Promise<boolean>;
+  verifySiblings: (census: unknown, siblings: BatchSibling[], propertyCode: string) => Promise<boolean>;
 } = {
   // Enable only after all competing HRCEN writers are held or use the shared
   // durable claim. Preview remains available while this cutover flag is off.
@@ -80,11 +94,11 @@ export const paneCloudPreviewLoaders: {
     };
     return tool.createReservation(input, options);
   },
-  verifySiblings: async (census, siblings) => {
+  verifySiblings: async (census, siblings, propertyCode) => {
     const tool = await import(new URL('../../tooling/hms-cloud/batch-sibling-readback.mjs', import.meta.url).href) as {
-      verifyBatchSiblings: (census: unknown, siblings: BatchSibling[]) => Promise<boolean>;
+      censusMatchesApprovedSiblings: (census: unknown, siblings: BatchSibling[], options: { propertyCode: string }) => boolean;
     };
-    return tool.verifyBatchSiblings(census, siblings);
+    return tool.censusMatchesApprovedSiblings(census, siblings, { propertyCode });
   },
 };
 const refused = (reason: string): PaneStayResult => ({ status: 'refused', reason });
@@ -121,6 +135,8 @@ const grantSchema = z.object({ version: z.literal('pane-cloud-preview/v1'), gran
   accessId: z.string().min(1), source: cloudPreviewSource,
   identity: paneCreateIdentitySchema, nativeGuestId: z.string().regex(/^\d+$/), cursor: cursorSchema,
   sourceDigest: digest, stateDigest: digest, requestDigest: digest, stayDigest: digest,
+  selection: cloudPreviewSelection.optional(), stay: z.record(z.string(), z.unknown()).optional(),
+  capturedAt: z.string().datetime({ offset: true }).optional(), price: hmsPriceSchema.optional(),
   approvedRequest: z.record(z.string(), z.unknown()),
   previewShot: z.object({ runId: z.string().uuid(), sha256: digest }).strict(), expiresAt: z.number().finite() }).strict();
 type Grant = z.infer<typeof grantSchema>;
@@ -129,21 +145,35 @@ const BATCH = 'cloudCreateBatch';
 const PAST_BATCHES = 'cloudCreatePastBatches';
 const BATCH_HOLDS = 'cloudCreateBatchHolds';
 const hash = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
-const batchSchema = z.object({ version: z.literal('pane-cloud-batch/v1'), id: z.string().uuid(),
+const batchSchema = z.object({ version: z.literal('pane-cloud-batch/v1'), id: z.string().uuid(), goGrantId: z.string().uuid().optional(),
   rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/), grant: grantSchema }).strict()).min(2).max(8),
   digest }).strict();
 type StoredBatch = z.infer<typeof batchSchema>;
-type BatchSibling = { confirmation: string; approvedRequest: Record<string, unknown>; requestDigest: string };
+const batchRoomOperationId = (batch: StoredBatch, room: StoredBatch['rooms'][number]) =>
+  batch.goGrantId ? hmsAllocationOperationId(batch.goGrantId, room.stayId) : room.grant.grantId;
+type BatchSibling = { confirmation: string; nativeStayId: string; approvedRequest: Record<string, unknown>; requestDigest: string;
+  ratePlanAvailability: { averageRate: string; totalRate: string; currency: string } };
+type CreateWorkerContext = { go: VerifiedStaffGo; fence: AiRunFence; signal: AbortSignal;
+  heldTargetLock: HeldTargetAliasLock; credentialLease: CloudCredentialLease; siblings: BatchSibling[] };
 
 function createTarget(stay: PaneStay): HmsDispatchTarget | null {
-  const parsed = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
+  const parsed = hmsDispatchTargetSchema.safeParse({ propertyCode: stay.propertyCode, kind: 'create',
     firstName: stay.firstName, lastName: stay.lastName, arrival: stay.arrival });
   return parsed.success && parsed.data.kind === 'create' ? parsed.data : null;
 }
 
-// The legacy alias can report on; real guests require the dedicated flag itself.
+function createMode(stay: PaneStay) {
+  const code = propertyCodeSchema.safeParse(stay.propertyCode);
+  if (!code.success) return 'off' as const;
+  return paneStaySaveLoaders.mode?.() ?? effectiveWorkflowPolicy(process.env, code.data, 'create').admittedMode;
+}
+function createAuthorityReady(stay: PaneStay) {
+  return stay.propertyCode === 'HRCEN' ? paneCloudPreviewLoaders.authorityReady() : createMode(stay) !== 'off';
+}
+
+// The Centurion alias can report on; real guests require its dedicated flag.
 function createAdmission(mode: 'off' | 'lab' | 'on', stay: PaneStay, preview = false) {
-  const allowRealGuest = !isLabtestGuest(stay) && (preview ? mode !== 'off' : mode === 'on' && process.env.PANE_WRITE_CREATE === 'on');
+  const allowRealGuest = !isLabtestGuest(stay) && (preview ? mode !== 'off' : mode === 'on' && (stay.propertyCode !== 'HRCEN' || process.env.PANE_WRITE_CREATE === 'on'));
   if (!isLabtestGuest(stay) && !allowRealGuest) return { reason: 'cloud_preview_labtest_only', allowRealGuest: false };
   const reason = paneStayModeRefusal(preview && (allowRealGuest || mode === 'off') ? 'on' : mode, stay);
   if (reason) return { reason, allowRealGuest };
@@ -178,8 +208,11 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
     ownerHeaderValue: message.ownerHeaderValue, toAddresses: message.toAddresses, ccAddresses: message.ccAddresses })
     .from(message).where(and(eq(message.transportId, input.transportId), eq(message.threadId, input.selection.source.threadId)))
     .orderBy(message.id).limit(513).for('share');
-  if (thread.length > 512 || !thread.some((row) => row.id === mail.id) ||
-      thread.some((row) => (row.id === mail.id || row.direction === 'inbound') && isDaVinciMailboxOrigin(row))) {
+  const selected = thread.find((row) => row.id === mail.id);
+  if (thread.length > 512 || !selected || !bindHmsMailboxProperty({ transportId: input.transportId,
+    propertyCode: input.stay.propertyCode, origin: selected }).ok ||
+      (input.stay.propertyCode === 'HRCEN' &&
+        thread.some((row) => (row.id === mail.id || row.direction === 'inbound') && isDaVinciMailboxOrigin(row)))) {
     throw new Error('cloud_create_property_mismatch');
   }
   const payload = source.effectivePayload;
@@ -197,6 +230,8 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   // room identity; the native request fence checks the same values before Save.
   const state = { ...source.item.state };
   for (const key of [PREVIEWS, BATCH, PAST_BATCHES, BATCH_HOLDS, 'stayPreviews', 'stays']) delete state[key];
+  if (state.propertyCode !== undefined && state.propertyCode !== input.stay.propertyCode) throw new Error('cloud_create_property_mismatch');
+  state.propertyCode = input.stay.propertyCode;
   return { sourceDigest: source.sourceDigest, stateDigest: createHash('sha256').update(canonicalJson(state)).digest('hex'),
     accessId: actor.accessId };
 }
@@ -212,6 +247,8 @@ function sameGrant(grant: Grant, input: Input, previewDigest: string): boolean {
   return grantDigest === previewDigest && hash(draft) === grantDigest && grant.actorUserId === input.actorUserId && grant.expiresAt > Date.now() &&
     grant.sessionId === input.sessionId && grant.sessionProfile === input.sessionProfile &&
     grant.stayDigest === paneStayDigest(input.stay) && grant.nativeGuestId === input.selection.nativeGuestId &&
+    !!grant.selection && !!grant.stay && canonicalJson(grant.selection) === canonicalJson(input.selection) &&
+    canonicalJson(grant.stay) === canonicalJson(input.stay) &&
     canonicalJson(grant.source) === canonicalJson(input.selection.source) &&
     canonicalJson(grant.identity) === canonicalJson(input.selection.identity);
 }
@@ -220,13 +257,19 @@ function matchesSource(current: { sourceDigest: string; stateDigest: string; acc
 }): boolean {
   return current.sourceDigest === expected.sourceDigest && current.stateDigest === expected.stateDigest && current.accessId === expected.accessId;
 }
+function preparedStay(state: Record<string, unknown>, stayId: string, raw: Record<string, unknown>): boolean {
+  const grant = grantOf(state, stayId);
+  return raw.status === undefined && !!grant && canonicalJson(raw) === canonicalJson(grant.stay) &&
+    raw.propertyCode === grant.approvedRequest.propertyCode;
+}
 function staysClear(state: Record<string, unknown>, target?: HmsDispatchTarget): boolean {
   const stays = state.stays;
   if (stays === undefined) return true;
   if (!stays || typeof stays !== 'object' || Array.isArray(stays)) return false;
-  return Object.values(stays).every((raw) => {
+  return Object.entries(stays).every(([stayId, raw]) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
     const row = raw as Record<string, unknown>;
+    if (preparedStay(state, stayId, row)) return true;
     if (row.status === 'booked' && typeof row.confirmationNumber === 'string' && row.confirmationNumber.trim()) return true;
     const other = hmsDispatchTargetSchema.safeParse(row.cloudCreateTarget);
     return Boolean(target && row.status === 'unknown' && other.success && other.data.kind === 'create' &&
@@ -234,14 +277,18 @@ function staysClear(state: Record<string, unknown>, target?: HmsDispatchTarget):
   });
 }
 const hasStay = (state: Record<string, unknown>, stayId: string) =>
-  !!state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays) && Object.hasOwn(state.stays, stayId);
+  !!state.stays && typeof state.stays === 'object' && !Array.isArray(state.stays) &&
+    Object.hasOwn(state.stays, stayId) && (() => {
+      const raw = (state.stays as Record<string, unknown>)[stayId];
+      return !raw || typeof raw !== 'object' || Array.isArray(raw) || !preparedStay(state, stayId, raw as Record<string, unknown>);
+    })();
 const matchesRoomId = (stayId: string, identity: PaneCreateIdentity) =>
   stayId === paneCreateRoomId(identity) || stayId === legacyPaneCreateRoomId(identity);
 // A prior receipt under either key belongs to this room, or is ambiguous and must be checked in HMS.
 const hasIdentityStay = (state: Record<string, unknown>, identity: PaneCreateIdentity) =>
   paneCreateRoomAliases(identity).some((id) => hasStay(state, id));
 const previewShotValid = (grant: Grant, input: Input) => verifyStoredHmsShot({ ...grant.previewShot, name: 'filled.png',
-  owner: `${input.actorUserId}:${input.transportId}`, propertyCode: 'HRCEN', workItemId: input.workItemId });
+  owner: `${input.actorUserId}:${input.transportId}`, propertyCode: input.stay.propertyCode!, workItemId: input.workItemId });
 
 function storedBatch(state: Record<string, unknown>, id: string): StoredBatch | null {
   const current = state[BATCH];
@@ -265,7 +312,7 @@ function grantInStoppedBatch(state: Record<string, unknown>, grantId: string): b
   if (!holds) return true;
   for (const [id, heldGrantId] of Object.entries(holds)) {
     const batch = storedBatch(state, id);
-    if (!batch || !batch.rooms.some((room) => room.grant.grantId === heldGrantId) ||
+    if (!batch || !batch.rooms.some((room) => batchRoomOperationId(batch, room) === heldGrantId) ||
         batch.rooms.some((room) => room.grant.grantId === grantId)) return true;
   }
   return false;
@@ -322,20 +369,20 @@ export function cloudCreateHoldOf(state: Record<string, unknown>, stayId: string
   if (!unknown && row.cloudCreateRecovered === true && row.cloudCreateRecoveredBatchId === null &&
       z.string().uuid().safeParse(row.cloudCreateGrantId).success && target.success && target.data.kind === 'create' &&
       !Object.values(holds).includes(row.cloudCreateGrantId as string) &&
-      !batches.some((batch) => batch.rooms.some((room) => room.grant.grantId === row.cloudCreateGrantId))) {
+      !batches.some((batch) => batch.rooms.some((room) => batchRoomOperationId(batch, room) === row.cloudCreateGrantId))) {
     return { target: target.data };
   }
   // Recovery intentionally keeps the batch hold, but older recovered rows did
   // not retain their original target/grant. Reconstruct that binding only
   // from the held grant in the sealed manifest for this exact stay.
   const recovered = unknown ? [] : batches.flatMap((batch) => batch.rooms.filter((room) =>
-    room.stayId === stayId && room.grant.grantId === holds[batch.id]).map((room) => ({ batch, room })));
+    room.stayId === stayId && batchRoomOperationId(batch, room) === holds[batch.id]).map((room) => ({ batch, room })));
   if (!unknown && recovered.length !== 1) return null;
-  const grantId = unknown ? row.cloudCreateGrantId : recovered[0]!.room.grant.grantId;
+  const grantId = unknown ? row.cloudCreateGrantId : batchRoomOperationId(recovered[0]!.batch, recovered[0]!.room);
   if (!unknown && row.cloudCreateGrantId !== undefined && row.cloudCreateGrantId !== grantId) return null;
   const heldIds = Object.entries(holds).filter(([, value]) => value === grantId).map(([id]) => id);
   if (heldIds.length > 1) return null;
-  const related = batches.filter((batch) => batch.rooms.some((room) => room.grant.grantId === grantId));
+  const related = batches.filter((batch) => batch.rooms.some((room) => batchRoomOperationId(batch, room) === grantId));
   if (heldIds.length === 0) return unknown && target.success && target.data.kind === 'create' && related.length === 0
     ? { target: target.data } : null;
   if (related.length !== 1 || related[0]?.id !== heldIds[0]) return null;
@@ -344,7 +391,7 @@ export function cloudCreateHoldOf(state: Record<string, unknown>, stayId: string
   const grantIds = new Set<string>();
   for (const room of batch.rooms) {
     const { digest: grantDigest, ...grantBody } = room.grant;
-    const request = z.object({ propertyCode: z.literal('HRCEN'),
+    const request = z.object({ propertyCode: z.string(),
       guest: z.object({ nativeId: z.string().regex(/^\d+$/), firstName: z.string(), lastName: z.string() }).passthrough(),
       stay: z.object({ arrival: z.string() }).passthrough() }).passthrough().safeParse(room.grant.approvedRequest);
     if (grantIds.has(room.grant.grantId) || hash(grantBody) !== grantDigest ||
@@ -352,12 +399,12 @@ export function cloudCreateHoldOf(state: Record<string, unknown>, stayId: string
         !matchesRoomId(room.stayId, room.grant.identity) ||
         !request.success || request.data.guest.nativeId !== room.grant.nativeGuestId) return null;
     grantIds.add(room.grant.grantId);
-    const memberTarget = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
+    const memberTarget = hmsDispatchTargetSchema.safeParse({ propertyCode: request.data.propertyCode, kind: 'create',
       firstName: request.data.guest.firstName, lastName: request.data.guest.lastName, arrival: request.data.stay.arrival });
     if (!memberTarget.success || memberTarget.data.kind !== 'create') return null;
     rooms.push({ stayId: room.stayId, target: memberTarget.data });
   }
-  const held = batch.rooms.find((room) => room.stayId === stayId && room.grant.grantId === grantId);
+  const held = batch.rooms.find((room) => room.stayId === stayId && batchRoomOperationId(batch, room) === grantId);
   const heldTarget = rooms.find((room) => room.stayId === stayId)?.target;
   if (!held || !heldTarget || ((unknown || row.cloudCreateTarget !== undefined) &&
       (!target.success || target.data.kind !== 'create' || hmsDispatchTargetKey(heldTarget) !== hmsDispatchTargetKey(target.data)))) return null;
@@ -382,7 +429,7 @@ async function previousBatchComplete(tx: CreateFenceTransaction, state: Record<s
     if (row.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || confirmations.has(confirmation)) return false;
     const evidence = completed.filter(({ intent, resolution }) =>
       intent.transportId === input.transportId && intent.actorUserId === room.grant.actorUserId &&
-      intent.grantId === room.grant.grantId && intent.stayId === room.stayId &&
+      intent.grantId === batchRoomOperationId(batch, room) && intent.stayId === room.stayId &&
       intent.approvedDigest === room.grant.requestDigest && intent.sourceDigest === room.grant.sourceDigest &&
       intent.nativeGuestId === room.grant.nativeGuestId && resolution.confirmation === confirmation);
     if (evidence.length !== 1) return false;
@@ -393,7 +440,7 @@ async function previousBatchComplete(tx: CreateFenceTransaction, state: Record<s
 
 /** The first Save transaction captures every previewed room under the single Go. */
 async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSource, input: Input, grant: Grant,
-  previewDigest: string): Promise<{ batch: StoredBatch; pastBatches?: Record<string, unknown> } | null> {
+  previewDigest: string, goGrantId?: string): Promise<{ batch: StoredBatch; pastBatches?: Record<string, unknown> } | null> {
   const batch = input.batch;
   if (!batch || batch.kind !== 'start') return null;
   if (!z.string().uuid().safeParse(batch.id).success || batch.rooms.length < 2 || batch.rooms.length > 8 ||
@@ -413,7 +460,7 @@ async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSour
     const archived = source.item.state[PAST_BATCHES];
     if (!previous || (archived !== undefined && (!archived || typeof archived !== 'object' || Array.isArray(archived))) ||
         (archived && Object.hasOwn(archived, previous.id)) || !holds ||
-        !previous.rooms.some((room) => room.grant.grantId === holds[previous.id])) throw new Error('cloud_batch_stale');
+        !previous.rooms.some((room) => batchRoomOperationId(previous, room) === holds[previous.id])) throw new Error('cloud_batch_stale');
     // Preserve the prior manifest and its in-flight hold while a separate batch runs.
     pastBatches = { ...(archived as Record<string, unknown> | undefined), [previous.id]: previous };
   }
@@ -429,11 +476,11 @@ async function prepareBatch(tx: CreateFenceTransaction, source: LockedCreateSour
         canonicalJson(candidate.source) !== canonicalJson(grant.source) ||
         canonicalJson(candidate.cursor) !== canonicalJson(grant.cursor) ||
         !roomTarget || !staysClear(source.item.state, roomTarget) || hasIdentityStay(source.item.state, room.selection.identity) ||
-        createAdmission(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), room.stay).reason ||
+        createAdmission(createMode(room.stay), room.stay).reason ||
         !await previewShotValid(candidate, roomInput)) throw new Error('cloud_batch_stale');
     rooms.push({ stayId: room.stayId, grant: candidate });
   }
-  const body = { version: 'pane-cloud-batch/v1' as const, id: batch.id, rooms };
+  const body = { version: 'pane-cloud-batch/v1' as const, id: batch.id, ...(goGrantId ? { goGrantId } : {}), rooms };
   return { batch: batchSchema.parse({ ...body, digest: hash(body) }), ...(pastBatches ? { pastBatches } : {}) };
 }
 
@@ -457,14 +504,16 @@ async function checkedSiblings(tx: CreateFenceTransaction, state: Record<string,
     const confirmation = previous?.confirmationNumber;
     const evidence = completed.filter(({ intent, resolution }) =>
       intent.transportId === input.transportId && intent.actorUserId === input.actorUserId &&
-      intent.grantId === room.grant.grantId && intent.stayId === room.stayId &&
+      intent.grantId === batchRoomOperationId(batch, room) && intent.stayId === room.stayId &&
       intent.approvedDigest === room.grant.requestDigest && intent.sourceDigest === room.grant.sourceDigest &&
       intent.nativeGuestId === room.grant.nativeGuestId && resolution.confirmation === confirmation);
-    if (previous?.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() ||
+    if (previous?.status !== 'booked' || typeof confirmation !== 'string' || !confirmation.trim() || !room.grant.price?.currency ||
+        typeof previous.nativeStayId !== 'string' || !/^\d{1,100}$/.test(previous.nativeStayId) ||
         evidence.length !== 1 || evidence[0]?.resolution.recovered === true) {
       throw new Error('cloud_batch_stale');
     }
-    siblings.push({ confirmation, approvedRequest: room.grant.approvedRequest, requestDigest: room.grant.requestDigest });
+    siblings.push({ confirmation, nativeStayId: previous.nativeStayId, approvedRequest: room.grant.approvedRequest,
+      requestDigest: room.grant.requestDigest, ratePlanAvailability: { ...room.grant.price, currency: room.grant.price.currency } });
   }
   if (new Set(siblings.map((item) => item.confirmation)).size !== siblings.length) throw new Error('cloud_batch_stale');
   return siblings;
@@ -478,11 +527,11 @@ async function saveScreenshots(native: Native, input: Input, beforeSha256: strin
   const runId = match[1]!, owner = `${input.actorUserId}:${input.transportId}`;
   await copyFile(join(dir, 'after.png'), join(dir, 'saved.png'));
   registerPaneRun({ runId, dir, owner, now: Date.now() });
-  const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() }).catch(() => null);
+  const shots = await persistHmsShots({ propertyCode: input.stay.propertyCode!, workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() }).catch(() => null);
   const saved = shots?.find((shot) => shot.name === 'saved.png');
   if (!shots || !shots.some((shot) => shot.name === 'before.png' && shot.sha256 === beforeSha256) ||
       !saved || !await verifyStoredHmsShot({ runId, name: 'saved.png', sha256: saved.sha256, owner,
-        propertyCode: 'HRCEN', workItemId: input.workItemId }, 'saved.png')) return null;
+        propertyCode: input.stay.propertyCode!, workItemId: input.workItemId }, 'saved.png')) return null;
   return { runId, screenshots: ['before.png', 'saved.png'], shots };
 }
 
@@ -511,7 +560,9 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
       Date.parse(parsed.data.preimage.expiresAt) <= Date.now() ||
       parsed.data.preimage.coverage.displayed !== parsed.data.preimage.coverage.total ||
       parsed.data.preimage.coverage.displayed < parsed.data.preimage.sameArrival.length ||
-      !guarantee || parsed.data.guaranteeDisplay !== CREATE_GUARANTEES[guarantee] ||
+      !guarantee || (input.stay.propertyCode === 'HRCEN' && parsed.data.guaranteeDisplay !== CREATE_GUARANTEES[guarantee]) ||
+      (input.stay.propertyCode !== 'HRCEN' && input.stay.guaranteeType !== guarantee && parsed.data.guaranteeDisplay !== input.stay.guaranteeType) ||
+      !cloudWriterCurrent(parsed.data.writer) ||
       parsed.data.preimage.sameArrival.length !== matchingSiblings.length ||
       (siblings.length > 0 && parsed.data.preimage.verifiedExisting !== true) ||
       new Set(parsed.data.preimage.sameArrival.map((row) => row.confirmation)).size !== matchingSiblings.length ||
@@ -523,14 +574,14 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
   const match = /^hms-cloud-create-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(basename(dir));
   if (!match || before !== join('/tmp', basename(dir), 'before.png')) throw new Error('cloud_create_before_unavailable');
   const runId = match[1]!, owner = `${input.actorUserId}:${input.transportId}`;
-  const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() });
+  const shots = await persistHmsShots({ propertyCode: input.stay.propertyCode!, workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() });
   const shot = shots?.find((item) => item.name === 'before.png');
   if (!shot || !await verifyStoredHmsShot({ runId, name: 'before.png', sha256: shot.sha256, owner,
-    propertyCode: 'HRCEN', workItemId: input.workItemId }, 'before.png')) throw new Error('cloud_create_before_unavailable');
+    propertyCode: input.stay.propertyCode!, workItemId: input.workItemId }, 'before.png')) throw new Error('cloud_create_before_unavailable');
   const { firstName, lastName, arrival, departure, searchedDateRange, coverage, expiresAt, sameArrival } = parsed.data.preimage;
   return { beforeShot: { runId, sha256: shot.sha256 },
     preimage: { firstName, lastName, arrival, departure, searchedDateRange, coverage, expiresAt, sameArrival },
-    batchManifest: siblings, guaranteeDisplay: parsed.data.guaranteeDisplay };
+    batchManifest: siblings, guaranteeDisplay: parsed.data.guaranteeDisplay, writer: parsed.data.writer };
 }
 
 /** Preview the exact request; a one-use Go grant is issued only when saving is enabled. */
@@ -538,10 +589,11 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
   if (!cloudPreviewSelection.safeParse(input.selection).success ||
       !matchesRoomId(input.stayId, input.selection.identity)) return refused('pane_preview_binding_required');
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });
-  if (!target.ok || target.target.propertyCode !== 'HRCEN' || target.target.browserSlot !== 'centurion') return refused('pane_save_property_mismatch');
+  if (!target.ok) return refused('pane_save_property_mismatch');
+  input = { ...input, stay: { ...input.stay, propertyCode: target.target.propertyCode } };
   const dispatchTarget = createTarget(input.stay);
   if (!dispatchTarget) return refused('guest_name_required');
-  const initialMode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
+  const initialMode = createMode(input.stay);
   const admission = createAdmission(initialMode, input.stay, true);
   if (admission.reason) return refused(admission.reason);
   if (!paneCloudPreviewLoaders.runtimeReady()) return refused('cloud_create_runtime_unavailable');
@@ -549,6 +601,10 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
     { allowRealGuest: admission.allowRealGuest });
   if (mapped.outcome !== 'ok') return refused(mapped.reason);
   try {
+    const scope = resolvePropertyScope({ transportId: input.transportId,
+      ...(target.target.propertyCode === 'HRCEN' ? {} : { propertySwitch: target.target.propertyCode as PropertySwitch }) });
+    const policyIssue = cloudCreatePolicyIssue((await propertyConfigurationForScope(scope)).formPolicy, mapped.input);
+    if (policyIssue) return refused(policyIssue);
     const cursor = await currentCursor(db, input);
     if (input.selection.expectedSeq !== undefined &&
         (input.selection.expectedSeq !== cursor.seq || input.selection.expectedExtractionId !== cursor.extractionId)) {
@@ -560,7 +616,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       const after = await withLockedCreateSource(db, key, (tx, source) => checkSource(tx, source, input, before.accessId));
       return matchesSource(after, before);
     };
-    const native = await paneCloudPreviewLoaders.run(mapped.input, { capturePrepareScreenshot: Boolean(input.selection.nativeGuestId),
+    const native = await paneCloudPreviewLoaders.run(mapped.input, { transportId: input.transportId, capturePrepareScreenshot: Boolean(input.selection.nativeGuestId),
       requireExplicitGuestSelection: !input.selection.nativeGuestId, allowRealGuest: admission.allowRealGuest,
       expectedGuest: { firstName: input.stay.firstName, lastName: input.stay.lastName },
       cloudTargetKey: hmsDispatchTargetKey(dispatchTarget) });
@@ -596,24 +652,24 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
     if (!match || shot !== join('/tmp', basename(dir), 'filled.png')) return refused('cloud_preview_unavailable');
     const owner = `${input.actorUserId}:${input.transportId}`, runId = match[1]!;
     registerPaneRun({ runId, dir, owner, now: Date.now() });
-    const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() });
+    const shots = await persistHmsShots({ propertyCode: target.target.propertyCode, workItemId: input.workItemId, runId, sourceDir: dir, owner, now: Date.now() });
     const filled = shots?.find((item) => item.name === 'filled.png');
     if (!filled || !await verifyStoredHmsShot({ runId, name: filled.name, sha256: filled.sha256,
-      owner, propertyCode: 'HRCEN', workItemId: input.workItemId })) return refused('cloud_preview_unavailable');
+      owner, propertyCode: target.target.propertyCode, workItemId: input.workItemId })) return refused('cloud_preview_unavailable');
     return await withLockedCreateSource(db, key, async (tx, source) => {
       const after = await checkSource(tx, source, input, before.accessId);
       if (!matchesSource(after, before)) return refused('cloud_create_scope_changed');
       if (!staysClear(source.item.state, dispatchTarget)) return refused('cloud_create_recovery_required');
       if (hasIdentityStay(source.item.state, input.selection.identity)) return refused('pane_stay_already_booked');
-      const currentMode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
+      const currentMode = createMode(input.stay);
       const currentAdmission = createAdmission(currentMode, input.stay, true);
       if (currentAdmission.reason) return refused(currentAdmission.reason);
       const sessionBinding = z.object({ sessionId: z.string().min(1), sessionProfile: z.enum(['legacy', 'remote']) })
         .safeParse({ sessionId: input.sessionId, sessionProfile: input.sessionProfile });
       if (initialMode === 'off' || currentMode === 'off' ||
-          (admission.allowRealGuest && (currentMode !== 'on' || process.env.PANE_WRITE_CREATE !== 'on')) ||
+          (admission.allowRealGuest && (currentMode !== 'on' || (input.stay.propertyCode === 'HRCEN' && process.env.PANE_WRITE_CREATE !== 'on'))) ||
           currentAdmission.allowRealGuest !== admission.allowRealGuest ||
-          !paneCloudPreviewLoaders.authorityReady() || !sessionBinding.success) {
+          !createAuthorityReady(input.stay) || !sessionBinding.success) {
         return { status: 'ok' as const, outcome: 'preview_only', runId, screenshots: ['filled.png'], hmsPrice: price.data };
       }
       await lockCreateActorSession(tx, { actorUserId: input.actorUserId, ...sessionBinding.data });
@@ -621,11 +677,16 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
         ...sessionBinding.data, accessId: after.accessId, source: input.selection.source, identity: input.selection.identity,
         nativeGuestId: input.selection.nativeGuestId!, cursor, sourceDigest: after.sourceDigest, stateDigest: after.stateDigest,
         requestDigest: proof.normalizedRequestDigest, stayDigest: paneStayDigest(input.stay), approvedRequest: proof.request,
+        selection: input.selection, stay: input.stay, capturedAt: new Date().toISOString(), price: price.data,
         previewShot: { runId, sha256: filled.sha256 }, expiresAt: Date.now() + PANE_PREVIEW_TTL_MS };
       const grant = grantSchema.parse({ ...draft, digest: hash(draft) });
       const previews = source.item.state[PREVIEWS];
       if (previews !== undefined && (!previews || typeof previews !== 'object' || Array.isArray(previews))) return refused('cloud_preview_unavailable');
-      const state = { ...source.item.state, [PREVIEWS]: { ...(previews as Record<string, unknown> | undefined), [input.stayId]: grant } };
+      const stays = source.item.state.stays;
+      if (stays !== undefined && (!stays || typeof stays !== 'object' || Array.isArray(stays))) return refused('cloud_preview_unavailable');
+      const state = { ...source.item.state, propertyCode: target.target.propertyCode,
+        [PREVIEWS]: { ...(previews as Record<string, unknown> | undefined), [input.stayId]: grant },
+        stays: { ...(stays as Record<string, unknown> | undefined), [input.stayId]: input.stay } };
       await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
       return { status: 'ok' as const, outcome: 'previewed', previewDigest: grant.digest, runId, screenshots: ['filled.png'], hmsPrice: price.data };
     });
@@ -635,26 +696,113 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
   }
 }
 
+/** Seal the ordered room previews into one source- and session-bound staff receipt. */
+export async function preparePaneCloudWrite(db: DB, input: {
+  transportId: string; mailboxAddress: string; actorUserId: string; sessionId: string;
+  sessionProfile: 'legacy' | 'remote'; workItemId: string; propertySwitch?: PropertySwitch;
+  rooms: Array<{ stayId: string; previewDigest: string }>;
+}) {
+  if (!input.rooms.length || input.rooms.length > 8 || new Set(input.rooms.map(room => room.stayId)).size !== input.rooms.length) {
+    throw new Error('cloud_batch_stale');
+  }
+  const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch });
+  const configuration = await propertyConfigurationForScope(scope);
+  const [item] = await db.select().from(workItem).where(and(eq(workItem.id, input.workItemId),
+    eq(workItem.transportId, input.transportId))).limit(1);
+  if (!item || item.state.propertyCode !== scope.propertyCode) throw new Error('cloud_create_scope_changed');
+  const stays = item.state.stays;
+  if (!stays || typeof stays !== 'object' || Array.isArray(stays)) throw new Error('cloud_batch_stale');
+  const aliases = new Set<string>();
+  const grants: Grant[] = [];
+  const expectedRooms = new Set<string>();
+  const requestedRooms = new Set<string>();
+  const allocations: Array<{ allocationId: string; businessDigest: string; observationRef: string }> = [];
+  for (const room of input.rooms) {
+    const grant = grantOf(item.state, room.stayId);
+    const row = (stays as Record<string, unknown>)[room.stayId];
+    if (!grant?.stay || !grant.selection || !grant.capturedAt || !grant.price ||
+        !row || typeof row !== 'object' || Array.isArray(row) || !preparedStay(item.state, room.stayId, row as Record<string, unknown>)) {
+      throw new Error('cloud_batch_stale');
+    }
+    const roomInput: Input = { ...input, stayId: room.stayId, selection: grant.selection, stay: grant.stay as unknown as PaneStay };
+    const target = createTarget(roomInput.stay);
+    const mapped = mapPaneStayToCloudCreateInput(roomInput.stay, 'prepare', grant.nativeGuestId, { allowRealGuest: true });
+    if (!target || target.propertyCode !== scope.propertyCode || !sameGrant(grant, roomInput, room.previewDigest) ||
+        mapped.outcome !== 'ok' || cloudCreatePolicyIssue(configuration.formPolicy, mapped.input) ||
+        !await previewShotValid(grant, roomInput)) throw new Error('cloud_batch_stale');
+    const current = await withLockedCreateSource(db, sourceKey(roomInput, grant.cursor), async (tx, source) => {
+      const checked = await checkSource(tx, source, roomInput, grant.accessId);
+      const parsed = safeParseStoredMailExtraction(source.effectivePayload);
+      if (!parsed.success) throw new Error('cloud_batch_stale');
+      const groups = formStays(parsed.data, source.item.state).filter(group => group.id === grant.identity.stayId);
+      if (groups.length !== 1) throw new Error('cloud_batch_stale');
+      for (const row of groups[0]!.rows) {
+        const path = `stays[${grant.identity.stayId}].rows[${row.id}].count`;
+        const count = Object.hasOwn(source.item.state, path) ? source.item.state[path] : row.rooms;
+        if (!Number.isInteger(count) || (count as number) < 1 || (count as number) > 8) throw new Error('cloud_batch_stale');
+        for (let index = 1; index <= (count as number); index++) expectedRooms.add(`${grant.identity.stayId}:${row.id}:${index}`);
+      }
+      return checked;
+    });
+    if (!matchesSource(current, grant) || grants.some(other => canonicalJson(other.source) !== canonicalJson(grant.source) ||
+      canonicalJson(other.cursor) !== canonicalJson(grant.cursor))) throw new Error('cloud_batch_stale');
+    for (const alias of hmsDispatchTargetKeys(target)) aliases.add(alias);
+    const rowId = grant.identity.rowId === grant.identity.stayId ? `${grant.identity.stayId}_row` : grant.identity.rowId;
+    requestedRooms.add(`${grant.identity.stayId}:${rowId}:${grant.identity.roomIndex}`);
+    grants.push(grant);
+    allocations.push({ allocationId: room.stayId, businessDigest: preparationDigest(grant.stay), observationRef: grant.grantId });
+  }
+  if (expectedRooms.size !== requestedRooms.size || [...expectedRooms].some(room => !requestedRooms.has(room))) {
+    throw new Error('cloud_batch_stale');
+  }
+  const first = grants[0]!;
+  const capturedAt = grants.map(grant => grant.capturedAt!).sort()[0]!;
+  return prepareNativeHmsWrite({ db, transportId: input.transportId, workItemId: input.workItemId,
+    actorUserId: input.actorUserId, sessionId: input.sessionId, sessionProfile: input.sessionProfile,
+    propertySwitch: input.propertySwitch,
+    expectedBusinessDigest: formDigest(item.state), expectedSourceHash: first.source.sourceHash,
+    expectedRevision: item.revisionSeq, expectedSeq: item.revisionSeq,
+    native: { operation: 'create', allocations, targetAliases: [...aliases].sort(),
+      nativeObservation: { beforeDigest: hash(grants.map((grant, index) => ({ stayId: input.rooms[index]!.stayId,
+        previewDigest: grant.digest, requestDigest: grant.requestDigest, previewShot: grant.previewShot,
+        capturedAt: grant.capturedAt, price: grant.price }))), capturedAt,
+        price: grants.map(grant => grant.price), warnings: [] },
+      ...hmsConfigurationIdentities(scope, configuration, 'create') } });
+}
+
 /** Consume one reviewed grant, write one fenced stay, and require fresh readback. */
-export async function commitPaneCloud(db: DB, input: Input, previewDigest: string): Promise<PaneStayResult> {
+export async function commitPaneCloud(db: DB, input: Input, previewDigest: string,
+  worker: CreateWorkerContext): Promise<PaneStayResult & { nativeStayId?: string; observationRef?: string }> {
   if (!cloudPreviewSelection.safeParse(input.selection).success || !z.string().uuid().safeParse(input.workItemId).success ||
       !/^[A-Za-z0-9_-]{1,120}$/.test(input.stayId) || !matchesRoomId(input.stayId, input.selection.identity)) {
     return refused('pane_preview_binding_required');
   }
   const target = paneStayCreateTarget({ transportId: input.transportId, propertyCode: input.stay.propertyCode });
-  if (!target.ok || target.target.propertyCode !== 'HRCEN' || target.target.browserSlot !== 'centurion') return refused('pane_save_property_mismatch');
+  if (!target.ok) return refused('pane_save_property_mismatch');
+  input = { ...input, stay: { ...input.stay, propertyCode: target.target.propertyCode } };
   const dispatchTarget = createTarget(input.stay);
   if (!dispatchTarget) return refused('guest_name_required');
-  const admission = createAdmission(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), input.stay);
+  const admission = createAdmission(createMode(input.stay), input.stay);
   if (admission.reason) return refused(admission.reason);
-  if (!paneCloudPreviewLoaders.authorityReady()) return refused('cloud_create_authority_unavailable');
+  if (!createAuthorityReady(input.stay)) return refused('cloud_create_authority_unavailable');
   if (!paneCloudPreviewLoaders.runtimeReady()) return refused('cloud_create_runtime_unavailable');
   const mapped = mapPaneStayToCloudCreateInput(input.stay, 'commit', input.selection.nativeGuestId,
     { allowRealGuest: admission.allowRealGuest });
   if (mapped.outcome !== 'ok') return refused(mapped.reason);
   if (!digest.safeParse(previewDigest).success) return refused('pane_save_preview_required');
-  const lock = paneStaySaveLoaders.lock ?? paneStayCloudTargetLock(target.target, dispatchTarget, { kind: 'independent_cloud' });
-  if (!lock) return refused('pane_save_lock_unavailable');
+  const property = getPropertyRegistration(target.target.propertyCode);
+  const operationId = hmsAllocationOperationId(worker.go.grant.grantId, input.stayId);
+  if (!property?.active || worker.go.grant.operation !== 'create' || worker.go.grant.workItemId !== input.workItemId ||
+      worker.go.grant.propertyCode !== property.propertyCode || worker.go.grant.tenantId !== property.expectedTenant ||
+      worker.go.grant.transportId !== input.transportId || worker.go.actorUserId !== input.actorUserId ||
+      worker.go.sessionId !== input.sessionId || worker.go.sessionProfile !== input.sessionProfile ||
+      worker.go.preparation.workflowContext || !worker.go.preparation.allocations?.some(row => row.allocationId === input.stayId)) {
+    return refused('pane_save_preview_required');
+  }
+  try {
+    assertTargetAliasesHeld(worker.heldTargetLock, { tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+      targetAliases: [...new Set([...worker.go.preparation.targetAliases, ...hmsDispatchTargetKeys(dispatchTarget)])] });
+  } catch { return refused('pane_save_lock_unavailable'); }
   let claimAttempted = false;
   const dispatch: { handle: HmsLabtestWriteHandle | null } = { handle: null };
   let beforeSha256: string | null = null;
@@ -669,13 +817,13 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
     return refused(claimAttempted ? PANE_SAVE_UNCONFIRMED : 'cloud_create_unavailable');
   };
   try {
-    return await lock.withLock(async () => {
-      const currentMode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
+    return await (async (lockSignal: AbortSignal) => {
+      const currentMode = createMode(input.stay);
       const currentAdmission = createAdmission(currentMode, input.stay);
       if (currentAdmission.reason || currentAdmission.allowRealGuest !== admission.allowRealGuest) {
         return refused(currentAdmission.reason ?? 'pane_save_flag_off');
       }
-      if (!paneCloudPreviewLoaders.authorityReady()) return refused('cloud_create_authority_unavailable');
+      if (!createAuthorityReady(input.stay)) return refused('cloud_create_authority_unavailable');
       const [item] = await db.select({ state: workItem.state }).from(workItem)
         .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId))).limit(1);
       if (item && !staysClear(item.state, dispatchTarget)) return refused('cloud_create_recovery_required');
@@ -692,18 +840,21 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
           return checkedSiblings(tx, source.item.state, input, grant, previewDigest);
         });
       }
+      if (canonicalJson(siblings) !== canonicalJson(worker.siblings)) return refused('cloud_batch_stale');
       let verifiedSiblings = false;
       const native = await paneCloudPreviewLoaders.run(mapped.input, {
+        signal: lockSignal, transportId: input.transportId, credentialLease: worker.credentialLease,
         expectedRequestDigest: grant.requestDigest, allowRealGuest: admission.allowRealGuest,
         expectedGuest: { firstName: input.stay.firstName, lastName: input.stay.lastName },
         cloudTargetKey: hmsDispatchTargetKey(dispatchTarget),
-        authorizeCandidate: async () => grant.expiresAt > Date.now() && paneCloudPreviewLoaders.authorityReady() &&
-          !createAdmission(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), input.stay).reason,
+        authorizeCandidate: async () => !lockSignal?.aborted && grant.expiresAt > Date.now() && createAuthorityReady(input.stay) &&
+          !createAdmission(createMode(input.stay), input.stay).reason,
         ...(siblings.length ? { verifyLabtestMatches: async (census: unknown) => {
-          verifiedSiblings = await paneCloudPreviewLoaders.verifySiblings(census, siblings);
+          verifiedSiblings = await paneCloudPreviewLoaders.verifySiblings(census, siblings, property.propertyCode);
           return verifiedSiblings;
         } } : {}),
         dispatchCandidate: async (request, next, evidence) => {
+          lockSignal?.throwIfAborted();
           const firstRequestDigest = nativeCreateSaveDigest(request);
           if (siblings.length && !verifiedSiblings) throw new Error('cloud_batch_readback_unavailable');
           const recovery = await createRecoveryEvidence(evidence, input, siblings);
@@ -715,12 +866,19 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
           claimAttempted = true;
           try {
             dispatch.handle = await claimHmsLabtestDispatch(db, { workItemId: input.workItemId, transportId: input.transportId,
-            actorUserId: input.actorUserId, grantId: grant.grantId, propertyCode: 'HRCEN',
+            actorUserId: input.actorUserId, grantId: operationId, propertyCode: property.propertyCode,
             firstName: input.stay.firstName, lastName: input.stay.lastName, target: dispatchTarget,
             nativeGuestId: grant.nativeGuestId, operation: 'create', stayId: input.stayId, sourceDigest: grant.sourceDigest,
             approvedDigest: grant.requestDigest, requestDigest: firstRequestDigest,
             recovery: { request: grant.approvedRequest, previewShot: grant.previewShot, ...recovery } }, async (tx, claim) => {
             try {
+              const consumed = await consumeStaffGoAtDispatch(tx, worker.fence, lockSignal, input.stayId);
+              if (consumed.grant.grantId !== worker.go.grant.grantId || consumed.payloadHash !== worker.go.payloadHash ||
+                  consumed.grant.preparedRef !== worker.go.grant.preparedRef || consumed.grant.propertyCode !== property.propertyCode) {
+                throw new Error('cloud_create_dispatch_stale');
+              }
+              assertTargetAliasesHeld(worker.heldTargetLock, { tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+                targetAliases: [...new Set([...worker.go.preparation.targetAliases, ...hmsDispatchTargetKeys(dispatchTarget)])] });
               // Once v2 owns this email, an old pane cannot start a separate Create.
               // The same transaction lock serializes this check with v2 seeding/Go.
               await lockCanonicalMailbox(tx as unknown as DB, input.transportId);
@@ -733,17 +891,17 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
               await lockCreateSource(tx, key, async (lockedTx, source) => {
               const current = await checkSource(lockedTx, source, input, grant.accessId);
               const liveGrant = grantOf(source.item.state, input.stayId), stays = source.item.state.stays;
-              const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
+              const mode = createMode(input.stay);
               if (claim.stayId !== input.stayId || !liveGrant || grantInStoppedBatch(source.item.state, liveGrant.grantId) ||
                   !sameGrant(liveGrant, input, previewDigest) ||
                   !matchesSource(current, grant) || !staysClear(source.item.state, dispatchTarget) ||
                   hasIdentityStay(source.item.state, input.selection.identity) ||
                   createAdmission(mode, input.stay).reason || createAdmission(mode, input.stay).allowRealGuest !== admission.allowRealGuest ||
-                  !paneCloudPreviewLoaders.authorityReady() ||
+                  !createAuthorityReady(input.stay) ||
                   !await previewShotValid(grant, input)) throw new Error('cloud_create_dispatch_stale');
               await lockCreateActorSession(lockedTx, { actorUserId: input.actorUserId,
                 sessionId: input.sessionId, sessionProfile: input.sessionProfile });
-              const startedBatch = await prepareBatch(lockedTx, source, input, grant, previewDigest);
+              const startedBatch = await prepareBatch(lockedTx, source, input, grant, previewDigest, worker.go.grant.grantId);
               if (input.batch?.kind === 'continue' &&
                   canonicalJson(await checkedSiblings(lockedTx, source.item.state, input, grant, previewDigest)) !== canonicalJson(siblings)) {
                 throw new Error('cloud_batch_stale');
@@ -753,14 +911,12 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
               }
               const holds = batchHolds(source.item.state);
               if (!holds || (input.batch && Object.hasOwn(holds, input.batch.id))) throw new Error('cloud_batch_stale');
-              const previews = { ...(source.item.state[PREVIEWS] as Record<string, unknown>) };
-              delete previews[input.stayId];
-              const state = { ...source.item.state, [PREVIEWS]: previews,
+              const state = { ...source.item.state,
                 ...(startedBatch ? { [BATCH]: startedBatch.batch,
                   ...(startedBatch.pastBatches ? { [PAST_BATCHES]: startedBatch.pastBatches } : {}) } : {}),
-                ...(input.batch ? { [BATCH_HOLDS]: { ...holds, [input.batch.id]: grant.grantId } } : {}),
+                ...(input.batch ? { [BATCH_HOLDS]: { ...holds, [input.batch.id]: operationId } } : {}),
                 stays: { ...(stays as Record<string, unknown> | undefined), [input.stayId]: {
-                  status: 'unknown', confirmationNumber: null, screenshotRef: null, cloudCreateGrantId: grant.grantId,
+                  ...grant.stay, status: 'unknown', confirmationNumber: null, screenshotRef: null, cloudCreateGrantId: operationId,
                   cloudCreateTarget: dispatchTarget } } };
               await lockedTx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
               });
@@ -770,12 +926,13 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
           try {
             beforeSha256 = recovery.beforeShot.sha256;
             if (Date.parse(recovery.preimage.expiresAt) <= Date.now()) throw new Error('cloud_create_preimage_expired');
-            const live = createAdmission(paneStaySaveLoaders.mode?.() ?? paneStaySaveMode(), input.stay);
-            if (live.reason || live.allowRealGuest !== admission.allowRealGuest || !paneCloudPreviewLoaders.authorityReady()) {
+            const live = createAdmission(createMode(input.stay), input.stay);
+            if (live.reason || live.allowRealGuest !== admission.allowRealGuest || !createAuthorityReady(input.stay)) {
               throw new Error('cloud_create_dispatch_stale');
             }
             // Commit is the authority boundary. Source/access changes after this
             // point cannot change the captured, already-approved native request.
+            lockSignal?.throwIfAborted();
             return await next();
           } catch (error) {
             // The route permanently disarms before issuing this one-use proof.
@@ -800,24 +957,30 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
       const shots = beforeSha256 ? await saveScreenshots(native, input, beforeSha256) : null;
       const savedShot = shots?.shots.find((shot) => shot.name === 'saved.png');
       if (native.outcome !== 'saved' || native.writerSessionClosed !== true || native.save?.dispatchCallbacksDrained !== true ||
-          typeof native.confirmation !== 'string' || !native.confirmation.trim() || !Array.isArray(native.readback?.fields) ||
+          typeof native.confirmation !== 'string' || !native.confirmation.trim() ||
+          typeof native.nativeStayId !== 'string' || !/^\d{1,100}$/.test(native.nativeStayId) || !Array.isArray(native.readback?.fields) ||
           !Array.isArray(native.readback.mismatches) || native.readback.mismatches.length !== 0 || !shots || !savedShot) {
         return { ...refused(PANE_SAVE_UNCONFIRMED), ...shots };
       }
       const confirmationNumber = native.confirmation;
-      await resolveHmsLabtestDispatch(db, dispatch.handle, { operation: 'create', confirmation: confirmationNumber,
-        readbackDigest: hash(native.readback), savedShot: { runId: shots.runId, sha256: savedShot.sha256 } }, async (tx, intent) => {
+      const nativeStayId = native.nativeStayId;
+      const observationRef = randomUUID();
+      const nativeReadback = JSON.parse(JSON.stringify({ ...native.readback, confirmation: confirmationNumber, nativeStayId })) as Record<string, unknown>;
+      const readbackDigest = hmsStateDigest(nativeReadback);
+      lockSignal.throwIfAborted();
+      await resolveHmsLabtestDispatch(db, dispatch.handle, { operation: 'create', confirmation: confirmationNumber, nativeStayId,
+        nativeReadback, readbackDigest, savedShot: { runId: shots.runId, sha256: savedShot.sha256 } }, async (tx, intent) => {
         if (intent.workItemId !== input.workItemId || intent.transportId !== input.transportId ||
-            intent.actorUserId !== input.actorUserId || intent.grantId !== grant.grantId || intent.stayId !== input.stayId ||
+            intent.actorUserId !== input.actorUserId || intent.grantId !== operationId || intent.stayId !== input.stayId ||
             intent.approvedDigest !== grant.requestDigest) throw new Error('cloud_create_result_scope_changed');
-        await recordRecoveredCreate(tx, intent, { confirmation: confirmationNumber, readbackDigest: hash(native.readback),
+        await recordRecoveredCreate(tx, intent, { confirmation: confirmationNumber, readbackDigest,
           savedShot: { runId: shots.runId, sha256: savedShot.sha256 }, shots: shots.shots,
-          nativeReadback: { ...native.readback, confirmation: confirmationNumber } }, input.batch?.id, false);
+          nativeReadback, nativeStayId, observationRef }, input.batch?.id, false);
       });
       const hmsPrice = savedHmsPrice(native.readback.fields);
       return { status: 'ok', outcome: 'committed', confirmationNumber, clickedSave: true,
-        ...(hmsPrice ? { hmsPrice } : {}), ...shots };
-    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+        nativeStayId, observationRef, ...(hmsPrice ? { hmsPrice } : {}), ...shots };
+    })(worker.signal);
   } catch (error) {
     if (claimAttempted) return noClaimResult();
     if (error instanceof HmsLabtestDispatchError && error.reason === 'occupied') {
@@ -825,6 +988,85 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
     }
     return refused(isPropertyReadLockDeadline(error) ? 'refused_lock_busy' : 'cloud_create_unavailable');
   }
+}
+
+/** Execute only the ordered previews sealed in the worker's verified staff receipt. */
+export async function executePreparedPaneCreateRun({ db, go, fence, signal }: {
+  db: DB; go: VerifiedStaffGo; fence: AiRunFence; signal?: AbortSignal;
+}) {
+  const prepared = go.preparation, allocations = prepared.allocations;
+  if (prepared.workflowContext || go.grant.operation !== 'create' || !allocations?.length || allocations.length > 8) {
+    throw new Error('cloud_create_preparation_invalid');
+  }
+  const property = getPropertyRegistration(go.grant.propertyCode), databaseUrl = process.env.DATABASE_URL;
+  if (!property?.active || !databaseUrl || property.expectedTenant !== go.grant.tenantId) {
+    throw new Error('cloud_create_lock_unavailable');
+  }
+  const [item] = await db.select({ state: workItem.state }).from(workItem).where(and(
+    eq(workItem.id, go.grant.workItemId), eq(workItem.transportId, go.grant.transportId))).limit(1);
+  if (!item || formDigest(item.state) !== prepared.businessDigest) throw new Error('cloud_create_scope_changed');
+  const actor = await db.transaction(tx => lockCreateActorAccess(tx, { transportId: go.grant.transportId, actorUserId: go.actorUserId }));
+  if (!actor.mailboxAddress) throw new Error('cloud_create_scope_changed');
+  const rooms = allocations.map(allocation => {
+    const grant = grantOf(item.state, allocation.allocationId);
+    if (!grant?.stay || !grant.selection || !grant.price || (allocations.length > 1 && !grant.price.currency) || !grant.capturedAt || grant.grantId !== allocation.observationRef ||
+        preparationDigest(grant.stay) !== allocation.businessDigest) throw new Error('cloud_create_preparation_invalid');
+    const input: Input = { transportId: go.grant.transportId, mailboxAddress: actor.mailboxAddress!,
+      actorUserId: go.actorUserId, sessionId: go.sessionId, sessionProfile: go.sessionProfile,
+      workItemId: go.grant.workItemId, stayId: allocation.allocationId, selection: grant.selection,
+      stay: grant.stay as unknown as PaneStay };
+    if (!sameGrant(grant, input, grant.digest)) throw new Error('cloud_create_preparation_invalid');
+    return { grant, input };
+  });
+  const snapshotDigest = hash(rooms.map(({ grant, input }) => ({ stayId: input.stayId,
+    previewDigest: grant.digest, requestDigest: grant.requestDigest, previewShot: grant.previewShot,
+    capturedAt: grant.capturedAt, price: grant.price })));
+  const capturedAt = rooms.map(({ grant }) => grant.capturedAt!).sort()[0]!;
+  if (snapshotDigest !== prepared.nativeObservation.beforeDigest || capturedAt !== prepared.nativeObservation.capturedAt ||
+      canonicalJson(rooms.map(({ grant }) => grant.price)) !== canonicalJson(prepared.nativeObservation.price)) {
+    throw new Error('cloud_create_preparation_invalid');
+  }
+  const siblingTools = await import(new URL('../../tooling/hms-cloud/batch-sibling-readback.mjs', import.meta.url).href) as {
+    verifyApprovedBatchSiblings: (siblings: BatchSibling[], options: Record<string, unknown>) => Promise<boolean>;
+  };
+  const aliases = new Set(prepared.targetAliases), siblings: BatchSibling[] = [];
+  const results: Array<PaneStayResult & { allocationId: string; nativeStayId?: string; observationRef?: string }> = [];
+  for (const [index, room] of rooms.entries()) {
+    signal?.throwIfAborted();
+    const lock = createPostgresTargetAliasLock({ tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+      targetAliases: [...aliases], databaseUrl });
+    const result: PaneStayResult & { nativeStayId?: string; observationRef?: string } = await lock.withLock(async (_connection, targetSignal, heldTargetLock) => {
+      const currentSignal = signal ? AbortSignal.any([signal, targetSignal]) : targetSignal;
+      return withCloudCredentialLease(property.propertyCode, async credentialLease => {
+        if (siblings.length && !await siblingTools.verifyApprovedBatchSiblings(siblings, { propertyCode: property.propertyCode,
+          transportId: go.grant.transportId, signal: currentSignal, credentialLease })) return refused('cloud_batch_readback_unavailable');
+        currentSignal.throwIfAborted();
+        const batch: PaneCloudBatch | undefined = rooms.length === 1 ? undefined : index === 0
+          ? { kind: 'start', id: go.grant.grantId, rooms: rooms.map(({ grant, input }) => ({ stayId: input.stayId,
+            selection: input.selection, stay: input.stay, previewDigest: grant.digest })) }
+          : { kind: 'continue', id: go.grant.grantId, index };
+        return commitPaneCloud(db, { ...room.input, batch }, room.grant.digest,
+          { go, fence, signal: currentSignal, heldTargetLock, credentialLease, siblings });
+      }, { signal: currentSignal });
+    }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), ...(signal ? { signal } : {}) });
+    results.push({ allocationId: room.input.stayId, ...result });
+    if (result.status !== 'ok' || result.outcome !== 'committed' || !result.confirmationNumber ||
+        !result.nativeStayId || !result.observationRef) {
+      return { status: 'needs_reconcile' as const, issue: result.reason ?? 'cloud_create_batch_incomplete', results };
+    }
+    const saved = hmsDispatchTargetSchema.safeParse({ propertyCode: property.propertyCode, kind: 'saved',
+      confirmation: result.confirmationNumber, nativeStayId: result.nativeStayId });
+    if (!saved.success) return { status: 'needs_reconcile' as const, issue: 'cloud_create_target_unverified', results };
+    for (const alias of hmsDispatchTargetKeys(saved.data)) aliases.add(alias);
+    if (index + 1 < rooms.length) {
+      const price = room.grant.price;
+      if (!price?.currency) return { status: 'needs_reconcile' as const, issue: 'cloud_create_price_unverified', results };
+      siblings.push({ confirmation: result.confirmationNumber, nativeStayId: result.nativeStayId,
+        approvedRequest: room.grant.approvedRequest, requestDigest: room.grant.requestDigest,
+        ratePlanAvailability: { ...price, currency: price.currency } });
+    }
+  }
+  return { status: 'succeeded' as const, operationId: go.grant.grantId, observationRef: results.at(-1)!.observationRef!, results };
 }
 
 /** Clear only the original unknown row, atomically with its no-dispatch event. */
@@ -838,7 +1080,9 @@ async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: H
   if (!stay || stay.status !== 'unknown' || stay.cloudCreateGrantId !== intent.grantId ||
       stay.confirmationNumber !== null || stay.screenshotRef !== null) throw new Error('cloud_create_recovery_scope_changed');
   const remaining = { ...stays } as Record<string, unknown>;
-  delete remaining[intent.stayId];
+  const prepared = grantOf(current.state, intent.stayId);
+  if (prepared?.stay) remaining[intent.stayId] = prepared.stay;
+  else delete remaining[intent.stayId];
   const state: Record<string, unknown> = { ...current.state, stays: remaining };
   const holds = batchHolds(state);
   if (!holds) throw new Error('cloud_create_recovery_scope_changed');
@@ -855,8 +1099,11 @@ async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: H
   // If the first room provably never left the browser, no room in this batch
   // was saved. Discard its spent manifest so a fresh review can start again.
   // Keep partial batches when any earlier room has a durable outcome.
-  if (batch?.rooms[0]?.stayId === intent.stayId && batch.rooms[0].grant.grantId === intent.grantId &&
-      batch.rooms.every((room) => !Object.hasOwn(remaining, room.stayId))) delete state[BATCH];
+  if (batch?.rooms[0]?.stayId === intent.stayId && batchRoomOperationId(batch, batch.rooms[0]) === intent.grantId &&
+      batch.rooms.every((room) => {
+        const row = remaining[room.stayId];
+        return !row || typeof row === 'object' && !Array.isArray(row) && preparedStay(state, room.stayId, row as Record<string, unknown>);
+      })) delete state[BATCH];
   await tx.update(workItem).set({ state, updatedAt: new Date() })
     .where(eq(workItem.id, intent.workItemId));
 }
@@ -864,13 +1111,14 @@ async function recordNeverDispatchedCreate(tx: CreateFenceTransaction, intent: H
 const refs = z.object({ previewShot: grantSchema.shape.previewShot, beforeShot: grantSchema.shape.previewShot }).passthrough();
 
 export type CreateRecoveryProof = { confirmation: string; readbackDigest: string;
-  savedShot: { runId: string; sha256: string }; shots: HmsShotMeta[]; nativeReadback: Record<string, unknown> };
+  savedShot: { runId: string; sha256: string }; shots: HmsShotMeta[]; nativeReadback: Record<string, unknown>;
+  nativeStayId?: string; observationRef?: string };
 
 /** Serialize recovery with writes for the same Cloud create target. */
-export async function withRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
-  const target = paneStayCreateTarget({ transportId: intent.transportId, propertyCode: 'HRCEN' });
+export async function withRecoveryLock<T>(intent: HmsLabtestIntent, action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+  const target = paneStayHmsTargetForTransport(intent.transportId, intent.propertyCode);
   const dispatchTarget = hmsLabtestIntentTarget(intent);
-  if (!target.ok || target.target.propertyCode !== 'HRCEN' || target.target.browserSlot !== 'centurion' ||
+  if (!target.ok || target.target.propertyCode !== intent.propertyCode ||
       !dispatchTarget || dispatchTarget.kind !== 'create') {
     throw new Error('cloud_create_recovery_property_unavailable');
   }
@@ -880,21 +1128,21 @@ export async function withRecoveryLock<T>(intent: HmsLabtestIntent, action: () =
 }
 
 /** This uses the fixed read-only HMS reader, never caller-provided proof. */
-export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<CreateRecoveryProof> {
+export async function proveCreateRecovery(intent: HmsLabtestIntent, signal?: AbortSignal): Promise<CreateRecoveryProof> {
   const parsed = refs.safeParse(intent.recovery);
   if (!parsed.success) throw new Error('cloud_create_recovery_evidence_unavailable');
   const owner = `${intent.actorUserId}:${intent.transportId}`;
   for (const [name, ref] of [['filled.png', parsed.data.previewShot], ['before.png', parsed.data.beforeShot]] as const) {
-    if (!await verifyStoredHmsShot({ ...ref, name, owner, propertyCode: 'HRCEN', workItemId: intent.workItemId }, name)) {
+    if (!await verifyStoredHmsShot({ ...ref, name, owner, propertyCode: intent.propertyCode, workItemId: intent.workItemId }, name)) {
       throw new Error('cloud_create_recovery_evidence_unavailable');
     }
   }
   const reader = await import(new URL('../../tooling/hms-cloud/create-positive-recovery.mjs', import.meta.url).href) as {
-    provePositiveCreateRecovery: (intent: HmsLabtestIntent) => Promise<{
+    provePositiveCreateRecovery: (intent: HmsLabtestIntent, options: { signal?: AbortSignal }) => Promise<{
       outcome: string; confirmation?: unknown; readback?: unknown; screenshot?: unknown;
     }>;
   };
-  const observed = await reader.provePositiveCreateRecovery(intent);
+  const observed = await reader.provePositiveCreateRecovery(intent, { signal });
   if (observed.outcome !== 'verified' || typeof observed.confirmation !== 'string' ||
       !/^\d{6,10}-\d{1,2}$/.test(observed.confirmation) || !observed.readback ||
       typeof observed.readback !== 'object' || Array.isArray(observed.readback) ||
@@ -904,16 +1152,19 @@ export async function proveCreateRecovery(intent: HmsLabtestIntent): Promise<Cre
   const runId = randomUUID(), dir = await mkdtemp(join(tmpdir(), 'hms-create-recovery-'));
   try {
     await writeFile(join(dir, 'saved.png'), observed.screenshot, { flag: 'wx', mode: 0o600 });
-    const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: intent.workItemId,
+    const shots = await persistHmsShots({ propertyCode: intent.propertyCode, workItemId: intent.workItemId,
       runId, sourceDir: dir, owner, now: Date.now() });
     const saved = shots?.find((item) => item.name === 'saved.png');
     if (!shots || !saved || !await verifyStoredHmsShot({ runId, name: 'saved.png', sha256: saved.sha256,
-      owner, propertyCode: 'HRCEN', workItemId: intent.workItemId }, 'saved.png')) {
+      owner, propertyCode: intent.propertyCode, workItemId: intent.workItemId }, 'saved.png')) {
       throw new Error('cloud_create_recovery_evidence_unavailable');
     }
-    return { confirmation: observed.confirmation, readbackDigest: hash(observed.readback),
+    const nativeReadback = JSON.parse(JSON.stringify({ ...observed.readback as Record<string, unknown>, confirmation: observed.confirmation })) as Record<string, unknown>;
+    const nativeStayId = typeof nativeReadback.nativeStayId === 'string' ? nativeReadback.nativeStayId : undefined;
+    signal?.throwIfAborted();
+    return { confirmation: observed.confirmation, readbackDigest: hmsStateDigest(nativeReadback),
       savedShot: { runId, sha256: saved.sha256 }, shots,
-      nativeReadback: { ...observed.readback as Record<string, unknown>, confirmation: observed.confirmation } };
+      nativeReadback, ...(nativeStayId ? { nativeStayId } : {}) };
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
@@ -988,7 +1239,7 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
     const id = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>).id : null;
     const batch = typeof id === 'string' ? storedBatch(current.state, id) : null;
     if (!batch) throw new Error('cloud_create_recovery_scope_changed');
-    const members = batch.rooms.filter((room) => room.grant.grantId === intent.grantId);
+    const members = batch.rooms.filter((room) => batchRoomOperationId(batch, room) === intent.grantId);
     if (members.length > 1 || (members.length === 1 && (members[0]!.stayId !== intent.stayId ||
         members[0]!.grant.requestDigest !== intent.approvedDigest || members[0]!.grant.nativeGuestId !== intent.nativeGuestId))) {
       throw new Error('cloud_create_recovery_scope_changed');
@@ -1005,12 +1256,20 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
   const recoveredBatches = Object.entries(legacyHolds ?? batchHolds(current.state) ?? {})
     .filter(([, grantId]) => grantId === intent.grantId).map(([id]) => id);
   if (operatorRecovery && recoveredBatches.length > 1) throw new Error('cloud_create_recovery_scope_changed');
+  const observationRef = proof.observationRef ?? randomUUID();
+  const nativeStayId = proof.nativeStayId ?? (typeof proof.nativeReadback.nativeStayId === 'string' ? proof.nativeReadback.nativeStayId : undefined);
+  if (!operatorRecovery && (!nativeStayId || !/^\d{1,100}$/.test(nativeStayId))) throw new Error('cloud_create_recovery_scope_changed');
   const state = { ...current.state, ...(legacyHolds ? { [BATCH_HOLDS]: legacyHolds } : {}),
     ...(releasedHolds ? { [BATCH_HOLDS]: releasedHolds } : {}),
-    stays: { ...stays, [intent.stayId]: { status: 'booked',
+    stays: { ...stays, [intent.stayId]: { ...stay, status: 'booked',
     confirmationNumber: proof.confirmation, screenshotRef: { runId: proof.savedShot.runId, name: 'saved.png' },
     runId: proof.savedShot.runId, shots: proof.shots, cloudCreateVerified: true,
-    cloudCreateTarget: recoveredTarget, cloudCreateGrantId: intent.grantId,
+    cloudCreateTarget: recoveredTarget, cloudCreateGrantId: intent.grantId, readbackDigest: proof.readbackDigest,
+    observationRef, ...(nativeStayId ? { nativeStayId } : {}),
     ...(operatorRecovery ? { cloudCreateRecovered: true, cloudCreateRecoveredBatchId: recoveredBatches[0] ?? null } : {}) } } };
   await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
+  await tx.insert(workEvent).values({ id: observationRef, workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
+    fieldPath: `stays:${intent.stayId}`, value: { operation: 'create', operationId: intent.grantId,
+      propertyCode: intent.propertyCode, confirmation: proof.confirmation, nativeStayId: nativeStayId ?? null,
+      readbackDigest: proof.readbackDigest, savedShot: proof.savedShot, recovered: operatorRecovery } });
 }

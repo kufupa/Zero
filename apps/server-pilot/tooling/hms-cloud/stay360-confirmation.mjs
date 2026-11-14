@@ -1,6 +1,6 @@
 // Read-only confirmation lookup on an already-open Centurion Stay 360 page.
 import { readFileSync } from 'node:fs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
 
 export { dismissNotesOrThrow } from './stay360-notes.mjs';

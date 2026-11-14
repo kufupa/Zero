@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 import { matchesSavedStageRequest } from './saved-stay-room-stage-gate.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const SPECS = Object.freeze({
   organization: { field: 'company', label: 'Organization', title: 'Organizations', grid: 'LVCOMPANIES2',
@@ -79,7 +80,7 @@ export function savedPartyBeforeImage(snapshot) {
   if (!snapshot?.data || !snapshot?.values) return null;
   const image = {};
   const names = [...new Set([...preimageFields, ...['data', 'values'].flatMap(part =>
-    Object.keys(snapshot[part]).filter(observedPrice))])];
+    Object.keys(snapshot[part]).filter(name => observedPrice(name) || /^child\d+$/i.test(name)))])];
   for (const part of ['data', 'values']) {
     const source = snapshot[part];
     if (typeof source !== 'object' || Array.isArray(source)) return null;
@@ -95,11 +96,11 @@ export function savedPartyBeforeImage(snapshot) {
 function verifiedSnapshot(snapshot, selected) {
   const data = snapshot?.data, values = snapshot?.values;
   if (!data || !values) return false;
-  const fixed = { propertycode: 'HRCEN', status: 'Reserved', confirmationnumber: selected.confirmation,
+  const fixed = { propertycode: selected.propertyCode, status: 'Reserved', confirmationnumber: selected.confirmation,
     reservationstayid: selected.reservationStayId, reservationid: selected.reservationId,
     recordid: selected.recordId, guestid: selected.guestId, firstname: selected.firstName, lastname: selected.lastName };
   if (Object.entries(fixed).some(([key, expected]) => !validText(expected) || value(data, key) !== expected) ||
-      !validText(value(data, 'bookingsessionid')) || value(data, 'PKID') !== `${selected.confirmation}#${selected.reservationStayId}#HRCEN#` ||
+      !validText(value(data, 'bookingsessionid')) || value(data, 'PKID') !== `${selected.confirmation}#${selected.reservationStayId}#${selected.propertyCode}#` ||
       requestFields.some(key => value(data, key) === null)) return false;
   return ['company', 'ta1', 'araccountname', 'confirmationnumber', 'guestid'].every(key =>
     value(values, key) !== null && value(values, key) === value(data, key));
@@ -138,7 +139,7 @@ function filtersMatch(request, query, alias) {
 
 /** A page-owned gate: picker reads and a single exact Go callback have separate authority. */
 export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt } = {}) {
-  if (!frame || selected?.propertyCode !== 'HRCEN' || selected.status !== 'Reserved' ||
+  if (!frame || !getPropertyRegistration(selected?.propertyCode)?.active || selected.status !== 'Reserved' ||
       !/^\d{6,}-\d+$/.test(selected.confirmation || '') ||
       !['guestId', 'reservationStayId', 'reservationId', 'recordId'].every(key => validId(selected[key])) ||
       !validText(selected.firstName) || !validText(selected.lastName) ||
@@ -151,8 +152,8 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
   const base = () => {
     const aliases = spec.scope ? { LOV_ALIAS_NAME_1: spec.scope,
       LOV_ALIAS_VALUE_1: spec.scope === 'param.companyid' ? value(snapshot.data, 'companyid') : '', LOV_ALIAS_TYPE_1: 'text',
-      LOV_ALIAS_NAME_2: 'param.propertycode', LOV_ALIAS_VALUE_2: 'HRCEN', LOV_ALIAS_TYPE_2: 'text' }
-      : { LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: 'HRCEN', LOV_ALIAS_TYPE_1: 'text' };
+      LOV_ALIAS_NAME_2: 'param.propertycode', LOV_ALIAS_VALUE_2: selected.propertyCode, LOV_ALIAS_TYPE_2: 'text' }
+      : { LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: selected.propertyCode, LOV_ALIAS_TYPE_1: 'text' };
     return { GRID_NAME: spec.grid, GRID_TYPE: 'LOV', LOV_TAGNAME: spec.field,
       USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR', ...aliases };
   };
@@ -235,7 +236,7 @@ export function createSavedPartyStageRequestGate({ frame, selected, deadlineAt }
         if (url.username || url.password) return false;
         const actionCounts = [...body.keys()].filter(key => ['pageaction', 'action'].includes(key.toLowerCase()));
         if (new Set(actionCounts.map(key => key.toLowerCase())).size !== actionCounts.length) return false;
-        const guarded = new Set([...guardedIfPresent, ...[...body.keys()].filter(observedPrice)]);
+        const guarded = new Set([...guardedIfPresent, ...[...body.keys()].filter(name => observedPrice(name) || /^child\d+$/i.test(name))]);
         for (const name of guarded) {
           const matching = [...body.keys()].filter(key => key.toLowerCase() === name.toLowerCase());
           if (!matching.length) continue;

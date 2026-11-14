@@ -29,6 +29,17 @@ test('normalizes property-bound, one-room create request including independent p
     arAccount: { nativeId: '75', name: 'Example Account' },
   });
   assert.deepEqual(result.request.sendHmsConfirmation, { kind: 'never' });
+  const selected = digestCloudCreateRequest({ ...request, propertyCode: 'HRDAVS', guestOptIn: true,
+    marketSegment: { value: 'COR', display: 'Corporate' } });
+  assert.equal(selected.outcome, 'ok');
+  assert.equal(selected.request.guestOptIn, true);
+  assert.deepEqual(selected.request.marketSegment, { value: 'COR', display: 'Corporate' });
+  assert.notEqual(selected.normalizedRequestDigest, digestCloudCreateRequest({ ...request, propertyCode: 'HRDAVS',
+    guestOptIn: false, marketSegment: { value: 'COR', display: 'Corporate' } }).normalizedRequestDigest);
+  assert.notEqual(selected.normalizedRequestDigest, digestCloudCreateRequest({ ...request, propertyCode: 'HRDAVS',
+    guestOptIn: true, marketSegment: { value: 'LEI', display: 'Leisure' } }).normalizedRequestDigest);
+  assert.equal(normalizeCloudCreateRequest({ ...request, marketSegment: { value: 'cor', display: 'Corporate' } }).issue,
+    'CREATE_MARKET_SEGMENT_INVALID');
 });
 
 test('digest is deterministic across object key order and sensitive to request changes', () => {

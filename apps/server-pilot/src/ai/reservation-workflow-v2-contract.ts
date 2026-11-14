@@ -147,6 +147,7 @@ const bookingFieldsSchema = z.object({
   reasonForStay: value(z.string().max(500)).optional(),
   billingReference: value(z.string().max(50)).optional(),
   track: value(z.string().max(120)).optional(),
+  marketSegment: value(z.string().max(20)).optional(),
   guestOptIn: value(z.boolean()).optional(),
   bookerName: value(z.string().max(50)).optional(),
   bookerEmail: value(z.string().max(320)).optional(),
@@ -481,7 +482,7 @@ export type ReservationWorkflowV2Draft = z.infer<typeof reservationWorkflowV2Dra
 // Native, derived and staff-only Create fields are filled after synthesis.
 const modelBookingFieldsSchema = bookingFieldsSchema.omit({ mealPlan: true, roomType: true,
   roomTypeForCharge: true, ratePlan: true, bookingAgency: true, organization: true, arAccount: true,
-  guaranteeType: true, taCommission: true, sourceOfBusiness: true, reasonForStay: true, track: true,
+  guaranteeType: true, taCommission: true, sourceOfBusiness: true, reasonForStay: true, track: true, marketSegment: true,
   guestOptIn: true, cmsSend: true, cmsMessageId: true, cmsRecipient: true });
 const modelCreateBodySchema = createBodySchema.extend({
   shared: modelBookingFieldsSchema,

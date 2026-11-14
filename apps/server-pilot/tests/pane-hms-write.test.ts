@@ -28,8 +28,6 @@ import {
 import {
   PANE_ATTACH_MAX_BYTES,
   bindAttachDocumentForm,
-  buildAttachDocumentArgs,
-  cancelExpectStay,
   paneHmsWriteLoaders,
   paneHmsWriteMode,
   paneAmendPreviewDigest,
@@ -49,28 +47,13 @@ import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
-// The attach CLI's cap is pinned to the read path's cap. The CLI is plain .mjs, so it is imported as the rules tests do.
-const attachCli = (await import('../tooling/playwright-quote/attach-document.mjs' as string)) as {
-  ATTACH_MAX_BYTES: number;
-  parseAttachArgs: (argv: string[]) => {
-    ok: boolean;
-    args?: {
-      confirmation: string;
-      arrival: string;
-      file: string;
-      documentName: string;
-      out: string;
-      allowRealGuest: boolean;
-    };
-  };
-};
-const { identityCheck } = (await import('../tooling/playwright-quote/cancel-stay-rules.mjs' as string)) as {
+const { identityCheck } = (await import('../tooling/hms-cloud/cancel-stay-rules.mjs' as string)) as {
   identityCheck: (
     args: { confirmation: string; arrival: string; allowRealGuest?: boolean },
     record: { confirmation: string; lastName: string; arrival: string },
   ) => { ok: boolean; outcome: string | null; reason: string | null };
 };
-const amendCliRules = (await import('../tooling/playwright-quote/amend-stay-rules.mjs' as string)) as {
+const amendCliRules = (await import('../tooling/hms-cloud/amend-stay-rules.mjs' as string)) as {
   amendPreviewDigest(input: {
     confirmation: string;
     expectedLastName: string;
@@ -421,7 +404,6 @@ describe('pane HMS write (U26)', () => {
   });
 
   it('pins attach cap and keeps attach behind PANE_WRITE_ATTACH, falling back to SAVE=lab', () => {
-    expect(attachCli.ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
     expect(PANE_ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
     expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe('lab');
     expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'on' })).toBe('off');
@@ -435,41 +417,16 @@ describe('pane HMS write (U26)', () => {
     expect(paneHmsWriteMode({ PANE_WRITE_ATTACH: 'lab', RESERVATIONIST_PANE_SAVE: 'on' })).toBe('lab');
   });
 
-  it('attach CLI --allow-real-guest skips Labtest identity; without it a real guest is refused', () => {
-    const argv = [
-      '--property',
-      'HRCEN',
-      '--confirmation',
-      CONFIRMATION,
-      '--arrival',
-      ARRIVAL,
-      '--file',
-      '/tmp/attach.pdf',
-      '--document-name',
-      'Confirmation.pdf',
-      '--out',
-      '/tmp/attach-out',
-    ];
+  it('requires the Labtest identity unless a real guest is explicitly allowed', () => {
+    const off = { confirmation: CONFIRMATION, arrival: ARRIVAL, allowRealGuest: false };
+    const on = { ...off, allowRealGuest: true };
     const guest = { confirmation: CONFIRMATION, lastName: 'Smith', arrival: '14-SEP-2027' };
     const lab = { confirmation: CONFIRMATION, lastName: 'Labtest', arrival: '14-SEP-2027' };
-    const off = attachCli.parseAttachArgs(argv);
-    expect(off.ok).toBe(true);
-    expect(off.args?.allowRealGuest).toBe(false);
-    expect(identityCheck(off.args!, guest).outcome).toBe('refused_not_lab');
-    expect(identityCheck(off.args!, lab)).toEqual({ ok: true, outcome: null, reason: null });
-    const on = attachCli.parseAttachArgs([...argv, '--allow-real-guest']);
-    expect(on.ok).toBe(true);
-    expect(on.args?.allowRealGuest).toBe(true);
-    expect(identityCheck(on.args!, guest)).toEqual({ ok: true, outcome: null, reason: null });
-    expect(identityCheck(on.args!, { ...guest, confirmation: '11110906-1' }).outcome).toBe('refused_identity_mismatch');
-    const base: PaneAttachSpawnInput = {
-      confirmation: CONFIRMATION,
-      arrival: ARRIVAL,
-      file: '/tmp/attach.pdf',
-      documentName: 'Confirmation.pdf',
-    };
-    expect(buildAttachDocumentArgs(base, '/tmp/out')).not.toContain('--allow-real-guest');
-    expect(buildAttachDocumentArgs({ ...base, allowRealGuest: true }, '/tmp/out')).toContain('--allow-real-guest');
+    expect(identityCheck(off, guest).outcome).toBe('refused_not_lab');
+    expect(identityCheck(off, lab)).toEqual({ ok: true, outcome: null, reason: null });
+    expect(identityCheck(on, guest)).toEqual({ ok: true, outcome: null, reason: null });
+    expect(identityCheck(on, { ...guest, confirmation: '11110906-1' }).outcome).toBe('refused_identity_mismatch');
+
   });
 
   it('PANE_WRITE_ATTACH=on lets a real-guest stay through attach', async () => {
@@ -784,62 +741,6 @@ describe('pane HMS write (U26)', () => {
         status: 'ended', failureClass: 'NEEDS_CHECK', reason: 'refused_legacy_cancel_unavailable',
       });
       expect(cancelCalls).toEqual([]);
-    });
-  });
-
-  it('a cancel that is confirmed as cancelled succeeds and records its evidence', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM, transportId: DAVINCI_TRANSPORT_ID });
-      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
-      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
-      const run = await claimWrite(db);
-      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toMatchObject({
-        status: 'succeeded',
-        action: 'cancel',
-        outcome: 'cancelled',
-        evidence: ['before.png', 'after.png'],
-      });
-      expect(LAB_STAY.depositReceived).toBe('0');
-      expect(cancelCalls).toEqual([
-        {
-          mode: 'commit',
-          confirmation: CONFIRMATION,
-          arrival: ARRIVAL,
-          reason: 'Test Reservations',
-          allowRealGuest: false,
-          // The read that matched the approval: the cancel CLI compares its own read of the record with it before OK.
-          expectStay: cancelExpectStay(LAB_STAY),
-          target: DAVINCI_HMS_READ_TARGET,
-        },
-      ]);
-      expect(cancelCalls[0]?.expectStay).not.toHaveProperty('depositReceived');
-      expect((await runRow(db, run.runId)).state).toBe('succeeded');
-    });
-  });
-
-  it('a cancel whose record changed after the pre-Save read is refused by the CLI with no OK, and ends in needs-check', async () => {
-    await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedWriteItem(db, { state: CANCEL_FORM, transportId: DAVINCI_TRANSPORT_ID });
-      await prepare(db, workItemId, DAVINCI_TRANSPORT_ID);
-      await approve(db, workItemId, DAVINCI_TRANSPORT_ID);
-      onCancel = async () => ({
-        outcome: 'refused_stay_changed',
-        statusBefore: 'Reserved',
-        statusAfter: null,
-        reasons: [],
-        penaltyText: null,
-        screenshots: [],
-        clickedOk: false,
-      });
-      const run = await claimWrite(db);
-      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
-        status: 'ended',
-        failureClass: 'NEEDS_CHECK',
-        reason: 'refused_stay_changed',
-      });
-      expect(cancelCalls[0]?.expectStay).toEqual(cancelExpectStay(LAB_STAY));
-      // Nothing was written, so a fresh read and approval are allowed without a read-back.
-      expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
     });
   });
 

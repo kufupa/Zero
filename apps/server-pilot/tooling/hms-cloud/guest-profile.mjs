@@ -43,7 +43,8 @@ function forgetGuaranteeProfile(page) {
 }
 
 // Keep the native record, so a later draft with the same guest ID is not proof.
-async function profileDraft(page) {
+async function profileDraft(page, propertyCode) {
+  if (!getPropertyRegistration(propertyCode)?.active) return null;
   let record;
   try {
     record = await page.evaluateHandle((origin) => {
@@ -57,14 +58,14 @@ async function profileDraft(page) {
       if (!form?.el?.dom || fields.some(([el]) => !form.el.dom.contains(el) || component(el)?.up?.('form') !== form)) return null;
       return form.getRecord?.() ?? null;
     }, ORIGIN);
-    const session = await record.evaluate((item) => {
+    const session = await record.evaluate((item, property) => {
       const data = item?.data, keys = data && Object.keys(data);
       const exact = (key, value) => keys && Object.hasOwn(data, key) &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
-      if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+      if (!exact('propertycode', property) || !exact('PKID', `@[EMPTY]#@[EMPTY]#${property}#`) || !exact('status', 'New') ||
           !keys.includes('bookingsessionid') || keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length !== 1) return null;
       return String(data.bookingsessionid ?? '').trim() || null;
-    });
+    }, propertyCode);
     if (session) return { record, session };
   } catch { /* The profile can still be selected without a guarantee proof. */ }
   await record?.dispose().catch(() => {});
@@ -73,7 +74,7 @@ async function profileDraft(page) {
 
 async function profileRecordMatches(page, proof) {
   try {
-    return await page.evaluate(({ origin, record, session, nativeId, firstName, lastName }) => {
+    return await page.evaluate(({ origin, record, session, nativeId, firstName, lastName, propertyCode }) => {
       if (location.origin !== origin) return false;
       const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
       const names = ['guaranteetype', 'guestid', 'firstname', 'lastname', 'confirmationnumber'];
@@ -88,11 +89,11 @@ async function profileRecordMatches(page, proof) {
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
       const current = (name, value) => fields[name][0].value.trim() === value &&
         typeof component(name)?.getValue === 'function' && String(component(name).getValue() ?? '').trim() === value;
-      return Boolean(exact('propertycode', 'HRCEN') && exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status', 'New') &&
+      return Boolean(exact('propertycode', propertyCode) && exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) && exact('status', 'New') &&
         exact('bookingsessionid', session) && exact('guestid', nativeId) && exact('firstname', firstName) && exact('lastname', lastName) &&
         current('guestid', nativeId) && current('firstname', firstName) && current('lastname', lastName));
     }, { origin: ORIGIN, record: proof.record, session: proof.session, nativeId: proof.nativeId,
-      firstName: proof.firstName, lastName: proof.lastName });
+      firstName: proof.firstName, lastName: proof.lastName, propertyCode: proof.propertyCode });
   } catch { return false; }
 }
 
@@ -312,7 +313,7 @@ export async function searchGuestProfiles(page, input, { timeoutMs = 20000, prop
   }
   busy.add(page);
   let stage = 'opening_picker', nativeDialog = false, blocked = false;
-  const onDialog = () => { nativeDialog = true; };
+  const onDialog = dialog => { nativeDialog = true; void dialog.dismiss().catch(() => {}); };
   const guard = async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -417,7 +418,7 @@ export async function inspectGuestProfileCandidates(page, { searchId, nativeId, 
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS' };
   busy.add(page);
   let nativeDialog = false;
-  const onDialog = () => { nativeDialog = true; };
+  const onDialog = dialog => { nativeDialog = true; void dialog.dismiss().catch(() => {}); };
   page.on('dialog', onDialog);
   let state;
   try {
@@ -446,7 +447,7 @@ export async function closeGuestProfilePicker(page, { propertyCode = currentSear
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'GUEST_LOOKUP_IN_PROGRESS' };
   busy.add(page);
   let nativeDialog = false, blocked = false, attempted = false;
-  const onDialog = () => { nativeDialog = true; };
+  const onDialog = dialog => { nativeDialog = true; void dialog.dismiss().catch(() => {}); };
   const guard = async (route) => {
     if (safeRead(route.request())) return route.fallback();
     blocked = true;
@@ -478,8 +479,9 @@ export async function closeGuestProfilePicker(page, { propertyCode = currentSear
 }
 
 /** True only for the observed, data-only change on a new HRCEN stay. */
-export function isSafeGuestProfileChangeRequest({ method, url, postData }, nativeId) {
+export function isSafeGuestProfileChangeRequest({ method, url, postData }, nativeId, propertyCode = PROPERTY) {
   try {
+    if (!getPropertyRegistration(propertyCode)?.active) return false;
     const target = new URL(url);
     if (method !== 'POST' || target.origin !== ORIGIN || target.pathname !== CHANGE_PATH || target.search || !clean(nativeId)) return false;
     const body = new URLSearchParams(postData || '');
@@ -489,8 +491,8 @@ export function isSafeGuestProfileChangeRequest({ method, url, postData }, nativ
     const keys = [...body.keys()];
     if (required.some((key) => keys.filter((actual) => actual.toLowerCase() === key.toLowerCase()).length !== 1 ||
         !body.has(key))) return false;
-    return body.get('PKID') === '@[EMPTY]#@[EMPTY]#HRCEN#' && body.get('guestid') === clean(nativeId) &&
-      body.get('propertycode') === PROPERTY && body.get('ONLY_DATA_REQUIRED') === 'true' && body.get('pagemode') === 'display' &&
+    return body.get('PKID') === `@[EMPTY]#@[EMPTY]#${propertyCode}#` && body.get('guestid') === clean(nativeId) &&
+      body.get('propertycode') === propertyCode && body.get('ONLY_DATA_REQUIRED') === 'true' && body.get('pagemode') === 'display' &&
       body.get('savecctoprofile') === '0' && body.get('createinactiveprofileflag') === '0' &&
       ['confirmationnumber', 'recordid', 'reservationid', 'newprofileclick', 'linkprofileflag',
         'reqguestprofilelookup', 'isafterreservationsave'].every((key) => !clean(body.get(key)));
@@ -518,17 +520,17 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
   let attempted = false, interactionStarted = false, nativeDialog = false, blocked = false, allowedChanges = 0, observed = null;
   let draft = null, requestSessionBound = false;
   let fence, scope;
-  const onDialog = () => { nativeDialog = true; };
+  const onDialog = dialog => { nativeDialog = true; void dialog.dismiss().catch(() => {}); };
   const guard = async (route) => {
     const request = route.request();
     const method = request.method();
     if (safeRead(request)) return route.fallback();
-    const safe = attempted && allowedChanges === 0 &&
-      isSafeGuestProfileChangeRequest({ method, url: request.url(), postData: request.postData() }, id);
+    const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+    const safe = attempted && allowedChanges === 0 && draft && body.getAll('bookingsessionid').length === 1 &&
+      keys.filter(key => key.toLowerCase() === 'bookingsessionid').length === 1 && body.get('bookingsessionid') === draft.session &&
+      isSafeGuestProfileChangeRequest({ method, url: request.url(), postData: request.postData() }, id, state?.propertyCode);
     if (safe && scope?.allow(request)) {
-      const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
-      requestSessionBound = Boolean(draft && body.getAll('bookingsessionid').length === 1 &&
-        keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length === 1 && body.get('bookingsessionid') === draft.session);
+      requestSessionBound = true;
       allowedChanges += 1;
       return route.fallback();
     }
@@ -541,12 +543,12 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     fence = await installPageRequestFence(page, [CHANGE_PATH]);
     scope = fence.open();
     state = currentSearches.get(page);
-    if (state?.propertyCode !== PROPERTY) throw new Error('GUEST_SELECTION_PROPERTY_UNSUPPORTED');
+    if (!getPropertyRegistration(state?.propertyCode)?.active) throw new Error('GUEST_SELECTION_PROPERTY_UNSUPPORTED');
     const { win, form: before, grid } = await requireCurrent(page, state, searchId, () => nativeDialog);
     const candidates = state.result.candidates.filter((item) => item.nativeId === id);
     if (candidates.length !== 1 || (!candidates[0].firstName && !candidates[0].lastName) ||
         grid.records.filter((row) => clean(row.guestid) === id).length !== 1) throw new Error('GUEST_ID_NOT_UNIQUE');
-    if (validCreateGuest(candidates[0])) draft = await profileDraft(page);
+    if (validCreateGuest(candidates[0])) draft = await profileDraft(page, state.propertyCode);
     const rows = win.locator('.x-grid-view .x-grid-row, .x-grid-view .x-grid-data-row');
     const indexes = await rows.evaluateAll((elements, wanted) => elements.flatMap((element, index) => {
       const grid = Ext.ComponentQuery.query('grid,readonlygrid').find((item) => item.getEl?.()?.dom?.contains(element));
@@ -572,7 +574,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
     if (!response || response.status() !== 200 || allowedChanges !== 1 || blocked) throw new Error('GUEST_CHANGE_UNVERIFIED');
     const values = responseData(await responseText(response, timeoutMs)).values;
     if (!values || ['propertycode', 'guestid', 'confirmationnumber', 'recordid', 'reservationid', 'firstname', 'lastname']
-      .some((key) => !Object.hasOwn(values, key)) || clean(values.propertycode) !== PROPERTY || clean(values.guestid) !== id ||
+      .some((key) => !Object.hasOwn(values, key)) || clean(values.propertycode) !== state.propertyCode || clean(values.guestid) !== id ||
       ['confirmationnumber', 'recordid', 'reservationid'].some((key) => clean(values[key])) ||
       !sameText(values.firstname, candidates[0].firstName) || !sameText(values.lastname, candidates[0].lastName)) {
       throw new Error('GUEST_CHANGE_RESPONSE_MISMATCH');
@@ -584,7 +586,7 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
       await checkDialogs(page, () => nativeDialog);
       if (blocked) throw new Error('GUEST_CHANGE_REQUEST_BLOCKED');
       if (!await win.isVisible()) {
-        const form = await readForm(page);
+        const form = await readForm(page, state.propertyCode);
         observed = { form: { fields: form.fields, changedFields: changedFields(before.fields, form.fields) } };
         const snapshot = JSON.stringify(form.fields);
         if (snapshot !== last) stableSince = Date.now();
@@ -600,11 +602,11 @@ export async function selectGuestProfile(page, { searchId, nativeId } = {}, { ti
             const responseBound = Boolean(draft && exact('bookingsessionid', draft.session) && exact('guestid', id) &&
               exact('firstname', firstName) && exact('lastname', lastName));
             const bound = Boolean(draft && requestSessionBound && responseBound &&
-              await profileRecordMatches(page, { record: draft.record, session: draft.session, nativeId: id, firstName, lastName }));
+              await profileRecordMatches(page, { record: draft.record, session: draft.session, nativeId: id, firstName, lastName, propertyCode: state.propertyCode }));
             if (nativeDialog || blocked) throw new Error('GUEST_SELECTION_UNVERIFIED');
             verifiedLabtestProfiles.set(page, id);
             if (bound && profileRevisions.get(page) === revision) {
-              const proof = { nativeId: id, firstName, lastName, record: draft.record, session: draft.session, token: randomUUID() };
+              const proof = { nativeId: id, firstName, lastName, propertyCode: state.propertyCode, record: draft.record, session: draft.session, token: randomUUID() };
               proof.onRequest = (request) => {
                 try {
                   if (request.method() === 'POST' && new URL(request.url()).pathname === CHANGE_PATH &&

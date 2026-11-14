@@ -2,6 +2,7 @@
 // observed login and Stay 360 navigation posts. Unknown requests fail closed.
 import { fulfillGuestLookupRequest, guestLookupMayRequest } from './pane-guest-search.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
+import { hasPageRequestAuthorization } from './page-request-fence.mjs';
 
 const readPosts = new Set(['/web/base/login', '/web/base/BSSTRT', '/web/base/BSSTRT.HDR', '/web/base/LOVPOP']);
 const recordQuery = new Map([
@@ -43,9 +44,12 @@ function uniqueParams(params) {
   return values;
 }
 
-function isSelectedRecordNavigation(url, confirmation) {
+const validConfirmation = (value, allowBaseConfirmation = false) =>
+  /^\d+-\d+$/.test(value || '') || (allowBaseConfirmation && /^\d{6,10}$/.test(value || ''));
+
+function isSelectedRecordNavigation(url, confirmation, allowBaseConfirmation) {
   if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-      url.hash || url.pathname !== '/web/base/loadmain' || !/^\d+-\d+$/.test(confirmation || '')) return false;
+      url.hash || url.pathname !== '/web/base/loadmain' || !validConfirmation(confirmation, allowBaseConfirmation)) return false;
   const query = uniqueParams(url.searchParams);
   if (!query || query.size !== recordQuery.size + 2 ||
       [...recordQuery].some(([key, value]) => query.get(key) !== value) ||
@@ -55,9 +59,9 @@ function isSelectedRecordNavigation(url, confirmation) {
     initial.get('autotracepopupskipconfnum') === confirmation;
 }
 
-function isSelectedStaySearch(url, request, confirmation) {
+function isSelectedStaySearch(url, request, confirmation, allowBaseConfirmation) {
   if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-      url.search || url.hash || !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
+      url.search || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
       !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
   const body = uniqueParams(new URLSearchParams(request.postData));
   if (!body) return false;
@@ -79,16 +83,16 @@ function isSelectedStaySearch(url, request, confirmation) {
   return body.size === expected.size && [...expected].every((key) => body.has(key));
 }
 
-export function savedStayReadMayRequest(request, { confirmation, propertyCode = 'HRCEN' } = {}) {
+export function savedStayReadMayRequest(request, { confirmation, propertyCode = 'HRCEN', allowBaseConfirmation = false } = {}) {
   try {
     if (!getPropertyRegistration(propertyCode)?.active) return false;
     const url = new URL(request.url);
     if (String(request.method).toUpperCase() === 'GET' && url.pathname === '/web/base/loadmain') {
-      return isSelectedRecordNavigation(url, confirmation) || guestLookupMayRequest({ ...request, propertyCode });
+      return isSelectedRecordNavigation(url, confirmation, allowBaseConfirmation) || guestLookupMayRequest({ ...request, propertyCode });
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV.LST') {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-          url.search || url.hash || !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
+          url.search || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
       return body?.size === recordListFields.size + 1 && body.get('filtervalue') === confirmation &&
@@ -96,7 +100,7 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV.HDR') {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-          url.search || url.hash || !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
+          url.search || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
       if (!body) return false;
@@ -113,7 +117,7 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV' && !url.search) {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password || url.hash ||
-          !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
+          !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
       return body?.size === 6 && body.get('system_function_name') === 'OSRESV' &&
@@ -123,14 +127,14 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/jsp/7iosress_getstaydata.jsp') {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password || url.search || url.hash ||
-          !/^\d+-\d+$/.test(confirmation || '') || typeof request.postData !== 'string' ||
+          !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = [...new URLSearchParams(request.postData)];
       return body.length === 1 && body[0][0].toLowerCase() === 'confirmationnumber' && body[0][1] === confirmation;
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESS.search' &&
         typeof request.postData === 'string') {
-      if (!isSelectedStaySearch(url, request, confirmation)) return false;
+      if (!isSelectedStaySearch(url, request, confirmation, allowBaseConfirmation)) return false;
       const body = new URLSearchParams(request.postData);
       const userKeys = [...body.keys()].filter((key) => key.toLowerCase() === 'user_function_name');
       const gridKeys = [...body.keys()].filter((key) => key.toLowerCase() === 'grid_name');
@@ -154,15 +158,28 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
   catch { return false; }
 }
 
-export async function installSavedStayReadGuard(context, { confirmation, propertyCode = 'HRCEN' } = {}) {
-  if (!/^\d+-\d+$/.test(confirmation || '')) throw new Error('READ_CONFIRMATION_REQUIRED');
+export async function installSavedStayReadGuard(context, { confirmation, propertyCode = 'HRCEN',
+  getOwnedPage, forwardToCloud = false, allowAdditionalRead, allowBaseConfirmation = false } = {}) {
+  if (!validConfirmation(confirmation, allowBaseConfirmation)) throw new Error('READ_CONFIRMATION_REQUIRED');
   if (!getPropertyRegistration(propertyCode)?.active) throw new Error('READ_PROPERTY_UNSUPPORTED');
+  if (typeof allowBaseConfirmation !== 'boolean' || (allowBaseConfirmation && forwardToCloud) ||
+      typeof forwardToCloud !== 'boolean' || (forwardToCloud && typeof getOwnedPage !== 'function')) throw new Error('READ_PAGE_SCOPE_INVALID');
   if (typeof context.routeWebSocket !== 'function') throw new Error('READ_SOCKET_GUARD_UNAVAILABLE');
   await context.routeWebSocket('**/*', (socket) => socket.close());
   await context.route('**/*', async (route) => {
     const request = route.request();
-    const allowed = savedStayReadMayRequest({ method: request.method(), url: request.url(),
-      postData: request.postData?.(), contentType: request.headers()['content-type'] }, { confirmation, propertyCode });
-    return allowed ? fulfillGuestLookupRequest(route) : route.abort();
+    let page;
+    try { page = getOwnedPage?.(); } catch { return route.abort(); }
+    // Login and the registered property switch remain subject to the Cloud
+    // session guard; target reads are scoped as soon as it supplies its page.
+    if (forwardToCloud && !page) return route.fallback();
+    if (page && hasPageRequestAuthorization(request, page)) return route.fallback();
+    const descriptor = { method: request.method(), url: request.url(),
+      postData: request.postData?.(), contentType: request.headers()['content-type'] };
+    let allowed;
+    try { allowed = savedStayReadMayRequest(descriptor, { confirmation, propertyCode, allowBaseConfirmation }) ||
+      (typeof allowAdditionalRead === 'function' && allowAdditionalRead(descriptor) === true); }
+    catch { return route.abort(); }
+    return allowed ? (forwardToCloud ? route.fallback() : fulfillGuestLookupRequest(route)) : route.abort();
   });
 }

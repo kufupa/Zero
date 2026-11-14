@@ -4,8 +4,8 @@ import {
   quoteSalesStrategiesFromRegistry,
   type QuoteSalesStrategy,
 } from '../src/hms/rate-catalogue.js';
-import { profileFor } from '../tooling/playwright-quote/property-profile.mjs';
-import { PROPERTY_REGISTRY } from '../tooling/playwright-quote/property-registry.mjs';
+import { profileFor } from '../tooling/hms-cloud/property-profile.mjs';
+import { PROPERTY_REGISTRY } from '../tooling/hms-cloud/property-registry.mjs';
 
 function expectedStrategies(raw: unknown): QuoteSalesStrategy[] {
   if (!Array.isArray(raw)) return [];

@@ -1,10 +1,8 @@
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
 import { Agent } from '@mastra/core/agent';
 import type { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
@@ -14,14 +12,18 @@ import { buildQuoteProposalPdf, type ProposalPdfInput } from '../quote-proposal/
 import { createAzureLunaModel } from './bedrock/luna.js';
 import { aopQuoteInstructions } from './aop-playbook.js';
 import type { ReservationistDecision } from './reservationist-decision.js';
+import { fetchQuote } from '../../tooling/hms-cloud/fetch-quote.mjs';
+import { nativeReadCapabilityAvailable } from '../hms/hms-service.js';
+import { resolvePropertyScope, propertySwitchSchema } from '../hms/property-registry.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
-const TOOLING = fileURLToPath(new URL('../../tooling/playwright-quote/', import.meta.url));
+const TOOLING = fileURLToPath(new URL('../../tooling/hms-cloud/', import.meta.url));
 
 export const QUOTE_UNAVAILABLE = 'unavailable';
 
 export type ReservationistContext = {
   propertyCode: string;
+  transportId?: string;
   hotelRules: string;
   liveQuoteOk: boolean;
 };
@@ -121,6 +123,7 @@ export function createReservationistTools(
         return runners.quote({
           schemaVersion: 2,
           propertyCode: rc.get('propertyCode'),
+          transportId: rc.get('transportId'),
           ...input,
           search: { includeRestricted: false, includeAlternatives: true },
         });
@@ -131,7 +134,10 @@ export function createReservationistTools(
       description:
         'Find an HMS organization, booking agency, guest or AR account (read-only). Returns candidates with nativeId.',
       inputSchema: partyInput,
-      execute: async (input) => runners.party(input),
+      execute: async (input, { requestContext }) => {
+        const rc = requestContext as RequestContext<ReservationistContext>;
+        return runners.party({ ...input, propertyCode: rc.get('propertyCode'), transportId: rc.get('transportId') });
+      },
     }),
     quote_proposal_pdf: createTool({
       id: 'quote_proposal_pdf',
@@ -183,22 +189,6 @@ ${aopQuoteInstructions()}${sops ? `\n${sops}` : ''}`;
   });
 }
 
-const run = promisify(execFile);
-
-async function runNode(script: string, args: string[]) {
-  try {
-    return await run(process.execPath, [script, ...args], {
-      cwd: TOOLING,
-      env: process.env,
-      maxBuffer: 64 * 1024 * 1024,
-      timeout: 15 * 60 * 1000,
-    });
-  } catch (err) {
-    const e = err as { stdout?: string; stderr?: string };
-    return { stdout: e.stdout ?? '', stderr: e.stderr ?? String(err) };
-  }
-}
-
 async function writePrivateJson(dir: string, data: unknown) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, `${randomUUID()}.json`);
@@ -206,41 +196,41 @@ async function writePrivateJson(dir: string, data: unknown) {
   return path;
 }
 
-const lastLine = (text: string) => text.trim().split('\n').at(-1) ?? '';
-
 export function createDefaultRunners(options: {
   gotenbergUrl?: string;
   signer: { name: string; email: string };
   pdfDir: string;
+  nativeScope?: { propertyCode: string; transportId: string };
 }): ReservationistRunners {
+  const readScope = async (request: Record<string, unknown>, capability?: 'quote') => {
+    const propertyCode = request.propertyCode ?? options.nativeScope?.propertyCode;
+    const transportId = request.transportId ?? options.nativeScope?.transportId;
+    if (typeof propertyCode !== 'string' || typeof transportId !== 'string') throw new Error('native_read_scope_required');
+    const scope = resolvePropertyScope({ transportId, ...(propertyCode === 'HRCEN' ? {} : { propertySwitch: propertySwitchSchema.parse(propertyCode) }) });
+    if (scope.propertyCode !== propertyCode || (options.nativeScope && (propertyCode !== options.nativeScope.propertyCode || transportId !== options.nativeScope.transportId)) ||
+        !await nativeReadCapabilityAvailable({ propertyCode, transportId, capability })) throw new Error('native_read_capability_unavailable');
+    return { propertyCode, transportId };
+  };
   return {
     async quote(request) {
-      const root = join(REPO_ROOT, '.private/playwright-quote');
-      const requestPath = await writePrivateJson(join(root, 'reservationist-requests'), request);
-      const { stdout, stderr } = await runNode('fetch-quote.mjs', [
-        '--request',
-        requestPath,
-        '--output',
-        join(root, 'runs'),
-      ]);
-      const evidence = /^Evidence: (.+)$/m.exec(stdout)?.[1];
-      if (!evidence) return { status: 'tool_error', message: lastLine(stderr) };
-      const { audit: _audit, ...result } = JSON.parse(
-        await readFile(join(evidence, 'result.json'), 'utf8'),
-      ) as Record<string, unknown>;
-      return result;
+      const scope = await readScope(request, 'quote');
+      const { transportId: _transportId, ...wire } = request;
+      const capture = await fetchQuote({ request: { ...wire, propertyCode: scope.propertyCode }, ...scope, outputDir: join(REPO_ROOT, '.private/hms-cloud/reservationist-quotes') });
+      await readScope(request, 'quote');
+      const result = JSON.parse(await readFile(join(capture.evidenceDirectory, 'result.json'), 'utf8')) as Record<string, unknown>;
+      if (result.propertyCode !== scope.propertyCode || (result.audit as { status?: string } | undefined)?.status !== 'complete') throw new Error('native_quote_capture_invalid');
+      const { audit: _audit, ...business } = result;
+      return business;
     },
     async party(request) {
-      const requestPath = await writePrivateJson(
-        join(REPO_ROOT, '.private/pms-pipeline/party-lookup/requests'),
-        request,
-      );
-      const { stdout, stderr } = await runNode('party-lookup.mjs', ['--request', requestPath]);
-      try {
-        return JSON.parse(lastLine(stdout)) as Record<string, unknown>;
-      } catch {
-        return { status: 'tool_error', message: lastLine(stderr) };
-      }
+      const scope = await readScope(request);
+      const requestPath = await writePrivateJson(join(REPO_ROOT, '.private/hms-cloud/reservationist-parties/requests'), { ...request, ...scope });
+      const native = await import('../../tooling/hms-cloud/party-lookup.mjs' as string) as {
+        lookupParty(options: { requestPath: string; outputDir: string; transportId: string }): Promise<Record<string, unknown>>;
+      };
+      const result = await native.lookupParty({ requestPath, outputDir: join(REPO_ROOT, '.private/hms-cloud/reservationist-parties/runs', randomUUID()), transportId: scope.transportId });
+      await readScope(request);
+      return result;
     },
     async pdf(input) {
       if (!options.gotenbergUrl) throw new Error('GOTENBERG_URL missing');

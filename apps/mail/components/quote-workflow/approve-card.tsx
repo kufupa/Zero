@@ -11,6 +11,7 @@ import {
   writeRowsOf,
   writeStatusOf,
   type HmsApprovalClient,
+  type HmsPreparedReceipt,
   type HmsWriteView,
   type WriteRow,
   type WriteStatus,
@@ -47,6 +48,8 @@ export function ApproveCard({
   filingApprovalAllowed = true,
   filingReviewAllowed = true,
   filingApprovalDigest,
+  filingPrepared,
+  preparedReceipt,
 }: {
   client: HmsApprovalClient | null;
   workItemId: string;
@@ -70,6 +73,8 @@ export function ApproveCard({
   filingReviewAllowed?: boolean;
   /** When supplied, approval is limited to the filing form that was just bound. */
   filingApprovalDigest?: string | null;
+  filingPrepared?: HmsPreparedReceipt | null;
+  preparedReceipt?: HmsPreparedReceipt | null;
 }) {
   if (!client) return null;
   return (
@@ -87,6 +92,8 @@ export function ApproveCard({
       filingApprovalAllowed={filingApprovalAllowed}
       filingReviewAllowed={filingReviewAllowed}
       filingApprovalDigest={filingApprovalDigest}
+      filingPrepared={filingPrepared}
+      preparedReceipt={preparedReceipt}
     />
   );
 }
@@ -162,6 +169,8 @@ function LiveWriteCard({
   filingApprovalAllowed,
   filingReviewAllowed,
   filingApprovalDigest,
+  filingPrepared,
+  preparedReceipt,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -176,6 +185,8 @@ function LiveWriteCard({
   filingApprovalAllowed: boolean;
   filingReviewAllowed: boolean;
   filingApprovalDigest?: string | null;
+  filingPrepared?: HmsPreparedReceipt | null;
+  preparedReceipt?: HmsPreparedReceipt | null;
 }) {
   const { view, failed, refresh } = useHmsWriteState(client, workItemId, requireStoredWrite);
   if (requiredAction && (view ? view.form.action !== requiredAction : !filingApprovalAllowed)) return null;
@@ -191,8 +202,10 @@ function LiveWriteCard({
   );
   const formConfirmation = typeof view?.form.confirmation === 'string' ? view.form.confirmation : null;
   // Cloud attachment availability comes from this mailbox's server-side flags, not the create-booking switch.
-  const filingCurrent = view?.filingAvailable === undefined || (filingApprovalAllowed &&
-    (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
+  const filingCurrent = filingPrepared !== undefined
+    ? Boolean(filingPrepared && filingApprovalAllowed && filingApprovalDigest && filingApprovalDigest === view?.formDigest)
+    : view?.filingAvailable === undefined || (filingApprovalAllowed &&
+      (filingApprovalDigest === undefined || (filingApprovalDigest !== null && filingApprovalDigest === view?.formDigest)));
   const completedFilingReview = view?.form.action === 'attach_document' && view.run?.state === 'succeeded' &&
     !view.needsCheck && view.grant?.fingerprintMatches === true;
   const effectiveWritesEnabled = (view?.cancelAvailable ?? view?.filingAvailable ?? writesEnabled) &&
@@ -220,6 +233,8 @@ function LiveWriteCard({
             allowApprove={allowApprove}
             reviewWritesEnabled={reviewWritesEnabled}
             completedFilingReview={completedFilingReview}
+            filingPrepared={filingPrepared}
+            preparedReceipt={preparedReceipt}
           />
         </>
       ) : failed ? (
@@ -270,6 +285,8 @@ function WriteBody({
   allowApprove,
   reviewWritesEnabled,
   completedFilingReview,
+  filingPrepared,
+  preparedReceipt,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -280,6 +297,8 @@ function WriteBody({
   allowApprove: boolean;
   reviewWritesEnabled: boolean;
   completedFilingReview: boolean;
+  filingPrepared?: HmsPreparedReceipt | null;
+  preparedReceipt?: HmsPreparedReceipt | null;
 }) {
   const status = writeStatusOf(view);
   const rows = writeRowsOf(view);
@@ -308,6 +327,7 @@ function WriteBody({
           canApprove={rows.length > 0 && pricesReady}
           onChanged={onChanged}
           writesEnabled={writesEnabled}
+          receipt={view.form.action === 'attach_document' ? filingPrepared : preparedReceipt}
         />
       ) : null}
       {cloudCancel && view.run && client.cancelCharge &&
@@ -495,6 +515,7 @@ function ApproveSection({
   canApprove,
   onChanged,
   writesEnabled,
+  receipt,
 }: {
   client: HmsApprovalClient;
   workItemId: string;
@@ -504,6 +525,7 @@ function ApproveSection({
   canApprove: boolean;
   onChanged: () => void;
   writesEnabled: boolean;
+  receipt?: HmsPreparedReceipt | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -512,10 +534,15 @@ function ApproveSection({
 
   const approve = () => {
     if (!writesEnabled) return;
+    if (receipt && Date.parse(receipt.expiresAtIso) <= Date.now()) {
+      setError('This preparation expired. Check the document and booking again.');
+      return;
+    }
     setBusy(true);
     setError(null);
     client
-      .approve({ workItemId, formDigest })
+      .approve({ workItemId, formDigest,
+        ...(receipt ? { preparedRef: receipt.preparedRef, expectedRevision: receipt.expectedRevision } : {}) })
       .then(() => {
         toast.success(HMS_WRITE_COPY.approved);
         onChanged();
@@ -545,6 +572,7 @@ function ApproveSection({
 
   return (
     <div className={divider}>
+      {receipt?.warnings.map((warning, index) => <p key={`${index}:${warning}`} className={writeClasses.note}>{warning}</p>)}
       {status.changed ? (
         <p className="text-[12px] font-semibold text-amber-900">{HMS_WRITE_COPY.changed}</p>
       ) : null}

@@ -9,6 +9,7 @@ import { isSavedPartyStageRequestGate, SAVED_PARTY_STAGE_PATHS } from './saved-s
 import { parseNativePricingJson } from './saved-stay-nightly-rates.mjs';
 import { isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
 import { isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 /** Native loadVault only initializes the card iframe. This POST remains aborted. */
 export function isNativeCardEntryInitialization(request) {
@@ -27,7 +28,7 @@ export function isNativeTaxValuesRead(request, frame, expected) {
   try {
     const keys = ['reservationstayid', 'propertycode', 'arrivaldate', 'departuredate', 'currency'];
     if (!expected || !keys.every(key => Object.hasOwn(expected, key)) ||
-        !/^\d{1,100}$/.test(expected.reservationstayid || '') || expected.propertycode !== 'HRCEN' ||
+        !/^\d{1,100}$/.test(expected.reservationstayid || '') || !getPropertyRegistration(expected.propertycode)?.active ||
         !/^[A-Z]{3}$/.test(expected.currency || '') ||
         !['arrivaldate', 'departuredate'].every(key => /^\d{2}\/\d{2}\/\d{4} 00:00$/.test(expected[key] || ''))) return false;
     const url = new URL(request.url()), headers = request.headers(), body = new URLSearchParams(request.postData?.() || '');
@@ -48,7 +49,7 @@ export const isLabtestAmendStageContext = (value) => Boolean(value && stageConte
 
 /** Accept only unambiguous native checkbox values. */
 export function nativeCmsSendValue(value) {
-  if ([true, 1, '1', 'true', 'on', 'yes', 'Y'].includes(value)) return true;
+  if ([true, 1, -1, '1', '-1', 'true', 'on', 'yes', 'Y'].includes(value)) return true;
   if ([false, 0, '0', 'false', 'off', 'no', 'N'].includes(value)) return false;
   return null;
 }
@@ -72,8 +73,10 @@ export function matchesLabtestAvailability(request, frame, snapshot, { recipient
     const exact = (key, value) => Object.hasOwn(data, key) && String(data[key] ?? '') === String(value ?? '') &&
       fields.get(key.toLowerCase())?.length === 1 && fields.get(key.toLowerCase())[0] === String(value ?? '');
     const firstName = expected?.firstName ?? 'Proof', lastName = expected?.lastName ?? 'Labtest';
+    const propertyCode = expected?.propertyCode ?? data.propertycode;
+    if (!getPropertyRegistration(propertyCode)?.active) return false;
     if (!allowRealGuest && (firstName !== 'Proof' || lastName !== 'Labtest')) return false;
-    const fixed = { propertycode: 'HRCEN', firstname: firstName, lastname: lastName, status: 'Reserved',
+    const fixed = { propertycode: propertyCode, firstname: firstName, lastname: lastName, status: 'Reserved',
       guaranteetype: expected?.guaranteeCode ?? 'NGI', udfchar13: recipient, emailaddress: guestEmail,
       ...(expected ? { confirmationnumber: expected.confirmation, reservationstayid: expected.reservationStayId,
         reservationid: expected.reservationId, recordid: expected.recordId, guestid: expected.guestId,
@@ -373,6 +376,7 @@ export async function runLabtestAmendSave(page, {
   const onDialog = (dialog) => {
     nativeDialog = { type: dialog.type() };
     stop('UNEXPECTED_DIALOG');
+    void dialog.dismiss().catch(() => {});
   };
   page.on('dialog', onDialog);
 

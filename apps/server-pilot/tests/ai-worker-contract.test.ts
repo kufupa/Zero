@@ -401,6 +401,15 @@ describe('ai worker contract', () => {
     expect(source).toMatch(/clearInterval/);
     expect(source).toMatch(/leaseAbort\.abort\(/);
     expect(source).toMatch(/finally/);
+    const writeRunner = source.slice(source.indexOf('export async function runHmsWriteOnce('),
+      source.indexOf('const HMS_JOB_POLL_MS'));
+    expect(writeRunner).toMatch(/promptVersion: HMS_V2_WRITE_PROMPT_VERSION/);
+    expect(writeRunner).toMatch(/heartbeatAiRun\(current, db\)/);
+    expect(writeRunner).toMatch(/if \(heartbeat\) await heartbeat/);
+    expect(writeRunner).toMatch(/shutdownSignal/);
+    expect(writeRunner).toMatch(/remaining - CLEANUP_RESERVE_MS/);
+    expect(writeRunner).not.toMatch(/markAiRunRetry|shouldRetryAiFailure/);
+    expect(source).toMatch(/await hmsWrites;[\s\S]*?await closeAiWorkerResources\(\)/);
   });
 
   it('heartbeat rejection aborts the lease instead of becoming an unhandled rejection', async () => {

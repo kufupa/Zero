@@ -1,14 +1,11 @@
-import { execFile } from 'node:child_process';
 import type { HmsCloudRateLookup, HmsCloudReservationObservations } from './hms-cloud-saved-stay-find.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
-import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { hmsReadTargetForProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import {
   acquisitionWithin,
@@ -18,10 +15,6 @@ import {
 } from '../hms/property-read-lock.js';
 import type { OsressDuplicateStatus, PaneStayLock } from './pane-stay-save.js';
 
-const execFileAsync = promisify(execFile);
-const STAY_LOOKUP = fileURLToPath(
-  new URL('../../tooling/playwright-quote/stay-lookup.mjs', import.meta.url),
-);
 // A find opens one record and a search-guest reads one panel. Both finish well inside this.
 const LOOKUP_TIMEOUT_MS = 5 * 60_000;
 
@@ -273,37 +266,6 @@ export function isGuestSurname(value: string): boolean {
   return value.length >= 2 && value.length <= 40 && GUEST_SURNAME_PATTERN.test(value);
 }
 
-export function buildStayLookupArgs(
-  input: PaneStayLookupSpawnInput,
-  outDir: string,
-  propertyCode: string,
-): string[] {
-  const code = typeof propertyCode === 'string' ? propertyCode.trim() : '';
-  if (!code) throw new Error('PROPERTY_REQUIRED');
-  if (input.mode === 'find') {
-    const args = [
-      STAY_LOOKUP, '--property', code, '--mode', 'find', '--confirmation', input.confirmation, '--out', outDir,
-    ];
-    if (input.arrival) args.push('--arrival', input.arrival);
-    return args;
-  }
-  const args = [
-    STAY_LOOKUP,
-    '--property',
-    code,
-    '--mode',
-    'search-guest',
-    '--last-name',
-    input.lastName,
-    '--arrival',
-    input.arrival,
-    '--out',
-    outDir,
-  ];
-  if (input.departure) args.push('--departure', input.departure);
-  return args;
-}
-
 function refused(outcome: PaneStayFindResult['outcome']): PaneStayFindResult {
   return {
     outcome,
@@ -456,53 +418,6 @@ async function defaultSpawn(
     }
   }
   throw new Error('CLOUD_READ_MODE_UNSUPPORTED');
-}
-
-// The existing duplicate check is a writer dependency. Retain its established sessions until the writer cutover.
-async function legacyDuplicateSpawn(input: Extract<PaneStayLookupSpawnInput, { mode: 'search-guest' }>,
-  target: HmsReadTarget): Promise<PaneStayLookupSpawnResult> {
-  const runId = randomUUID();
-  const dir = join(tmpdir(), `pane-lookup-${runId}`);
-  await mkdir(dir, { mode: 0o700 });
-  if (target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode) {
-    const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-    if (keys.some((key) => target[key] !== CENTURION_HMS_READ_TARGET[key])) {
-      await rm(dir, { recursive: true, force: true });
-      throw new Error('CLOUD_READ_TARGET_UNSUPPORTED');
-    }
-    try {
-      const cloudUrl = new URL('../../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
-      const legacyUrl = new URL('../../tooling/playwright-quote/centurion-stay360.mjs', import.meta.url);
-      const [cloud, legacy] = await Promise.all([
-        import(cloudUrl.href) as Promise<{ searchGuestInCloud: (request: typeof input & { dir: string },
-          options: Record<string, unknown>) => Promise<Partial<PaneStayLookupSpawnResult>> }>,
-        import(legacyUrl.href) as Promise<{ withCenturionStay360Page: unknown }>,
-      ]);
-      const result = await cloud.searchGuestInCloud({ ...input, dir }, { openSession: legacy.withCenturionStay360Page, forceNavigate: true });
-      return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? null, stay: null,
-        rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
-    } catch (error) {
-      await rm(dir, { recursive: true, force: true }).catch(() => {});
-      throw error;
-    }
-  }
-  let runError: unknown = null;
-  try {
-    await execFileAsync('node', buildStayLookupArgs(input, dir, target.propertyCode), {
-      timeout: LOOKUP_TIMEOUT_MS, env: paneStaySpawnEnv(process.env, undefined, target),
-    });
-  } catch (error) { runError = error; }
-  let result: Partial<PaneStayLookupSpawnResult>;
-  try { result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as Partial<PaneStayLookupSpawnResult>; }
-  catch { await rm(dir, { recursive: true, force: true }).catch(() => {}); throw runError ?? new Error('pane_lookup_no_result'); }
-  if ((result.outcome ?? 'execution_failure') === 'execution_failure') {
-    const cliError = (result as { error?: string }).error ?? 'pane_lookup_execution_failure';
-    warnPaneStaySpawnFailed(input.mode, new Error(cliError));
-  }
-  const cliError = (result as { error?: string }).error;
-  const loginCode = lookupLoginOutageCode(cliError) ?? lookupLoginOutageCode(result);
-  return { outcome: result.outcome ?? 'execution_failure', reason: result.reason ?? loginCode ?? null, stay: result.stay ?? null,
-    rows: result.rows ?? [], screenshots: result.screenshots ?? [], runId, runDir: dir };
 }
 
 // Read-only find by confirmation, under the session hotel's property lock. A found stay carries its record fields;
@@ -754,12 +669,13 @@ export function guestDatesVerdict(rows: PaneStayPanelRow[], query: GuestDatesQue
 export async function guestDatesDuplicateCheckViaCli(
   input: GuestDatesQuery,
   target?: HmsReadTarget | null,
+  transportId?: string,
 ): Promise<OsressDuplicateStatus> {
   if (!guestDatesQueryComplete(input)) return 'duplicate';
-  if (!target && !paneStayLookupLoaders.spawn) return 'duplicate';
+  if ((!target || !transportId) && !paneStayLookupLoaders.spawn) return 'duplicate';
   const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => {
     if (spawnInput.mode !== 'search-guest') throw new Error('INVALID_DUPLICATE_MODE');
-    return legacyDuplicateSpawn(spawnInput, target!);
+    return defaultSpawn(spawnInput, target!, transportId);
   });
   let run: PaneStayLookupSpawnResult | null = null;
   try {

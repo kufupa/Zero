@@ -1121,6 +1121,31 @@ describe('Cloud create controls', () => {
     await expect(client.preview({} as PaneStayInput)).rejects.toThrow('pane_save_client_missing');
   });
 
+  it('passes a durable preparation into one batch Go and returns only native-confirmed room results', async () => {
+    const preparedRef = '11111111-1111-4111-8111-111111111111';
+    const runId = '22222222-2222-4222-8222-222222222222';
+    const prepare = vi.fn().mockResolvedValue({ preparedRef, revision: 3, propertyCode: 'HRDAVS' });
+    const commit = vi.fn().mockResolvedValue({ status: 'queued', runId,
+      grantId: '33333333-3333-4333-8333-333333333333', preparedRef, expectedRevision: 3 });
+    const read = vi.fn().mockResolvedValue({ status: 'succeeded', results: ['room-1', 'room-2'].map((allocationId, index) => ({
+      allocationId, status: 'ok', clickedSave: true, confirmationNumber: `77945494-${index + 1}`, observationRef: `readback-${index}` })) });
+    const client = paneStayFromTrpc({ quoteWorkflow: { prepareStay: { mutate: prepare }, commitStay: { mutate: commit }, getStayWrite: { query: read } } });
+    const stay = { firstName: 'Proof', lastName: 'Labtest', arrival: '2027-03-01', departure: '2027-03-03', adults: 1,
+      sourceOfBusiness: 'EMAIL', roomType: 'STKNG', ratePlan: 'BAR', track: 'TEST', guestoptin4: true, guaranteeType: 'NGI',
+      propertyCode: 'HRDAVS', workItemId: '44444444-4444-4444-8444-444444444444' } satisfies PaneStayInput;
+    const first = { ...stay, stayId: 'room-1' }, second = { ...stay, stayId: 'room-2' };
+    const selection = { source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+      identity: { stayId: 'stay-1', rowId: 'group-1', roomIndex: 1 } };
+    const firstRoom = { ...first, createSelection: selection }, secondRoom = { ...second, createSelection: selection };
+    expect(await client.commit(firstRoom, 'b'.repeat(64), { kind: 'start', id: 'batch-1', rooms: [
+      { ...firstRoom, previewDigest: 'b'.repeat(64) }, { ...secondRoom, previewDigest: 'c'.repeat(64) }] })).toMatchObject({ confirmationNumber: '77945494-1' });
+    expect(await client.commit(secondRoom, 'c'.repeat(64), { kind: 'continue', id: 'batch-1', index: 1 })).toMatchObject({ confirmationNumber: '77945494-2' });
+    expect(prepare.mock.calls[0]?.[0]).toEqual({ workItemId: stay.workItemId, propertySwitch: 'HRDAVS', rooms: [
+      { stayId: 'room-1', previewDigest: 'b'.repeat(64) }, { stayId: 'room-2', previewDigest: 'c'.repeat(64) }] });
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]?.[0]).toMatchObject({ preparedRef, expectedRevision: 3 });
+  });
+
   it.each([
     { mode: 'lab' as const, firstName: 'Proof', lastName: 'Labtest' },
     { mode: 'on' as const, firstName: 'Ada', lastName: 'Moyo' },
@@ -1686,8 +1711,9 @@ describe('HRDAV booking fields and CMS', () => {
     for (let i = 1; i < fields.length; i++) {
       expect(fields[i - 1]!.compareDocumentPosition(fields[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
-    const types = room.getByLabelText('Room type') as unknown as HTMLSelectElement;
-    const values = Array.from(types.options, (option) => option.getAttribute('value')).filter(Boolean);
+    const types = room.getByLabelText('Room type') as HTMLInputElement;
+    const values = Array.from(document.getElementById(types.getAttribute('list')!)!.querySelectorAll('option'),
+      option => option.getAttribute('value')).filter(Boolean);
     expect(values).toEqual(['DLXTWN', 'DLXKNG']);
     expect(values).not.toContain('STQN');
     expect(values).not.toContain('SKNG');
@@ -2173,7 +2199,7 @@ describe('booking card pane save', () => {
     const host = (session: QuoteSession) => (
       <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
     );
-    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+    const firstMount = render(host(bookingSessionForPreview(previewableDraft(), 1)));
 
     fireEvent.click(previewButton(0));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
@@ -2181,7 +2207,8 @@ describe('booking card pane save', () => {
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_1' }));
     expect(commit).not.toHaveBeenCalled();
 
-    rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
+    firstMount.unmount();
+    render(host(bookingSessionForPreview(previewableDraft(), 1)));
 
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', false);
@@ -2383,7 +2410,8 @@ describe('booking card pane save', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     const [booked, other] = Array.from(document.querySelectorAll('article'));
     const bookedSelects = Array.from(booked?.querySelectorAll('select') ?? []);
-    expect(bookedSelects).toHaveLength(6);
+    expect(within(booked!).getByLabelText('Room type')).toHaveProperty('disabled', true);
+    expect(within(other!).getByLabelText('Room type')).toHaveProperty('disabled', false);
     for (const select of bookedSelects) expect(select.disabled).toBe(true);
     for (const select of Array.from(other?.querySelectorAll('select') ?? [])) expect(select.disabled).toBe(false);
   });

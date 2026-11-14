@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { PROPERTY_REGISTRY } from '../tooling/playwright-quote/property-registry.mjs';
-import { profileFor } from '../tooling/playwright-quote/property-profile.mjs';
+import { PROPERTY_REGISTRY } from '../tooling/hms-cloud/property-registry.mjs';
+import { profileFor } from '../tooling/hms-cloud/property-profile.mjs';
 import {
   bookingCodeDefaults,
   defaultsFromCrosstabRow,
@@ -16,7 +16,7 @@ import { normalizeHmsNativeCatalog } from '../tooling/hms-cloud/hms-native-catal
 
 const schema = JSON.parse(
   readFileSync(
-    fileURLToPath(new URL('../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+    fileURLToPath(new URL('../tooling/hms-cloud/create-tool.schema.json', import.meta.url)),
     'utf8',
   ),
 ) as {

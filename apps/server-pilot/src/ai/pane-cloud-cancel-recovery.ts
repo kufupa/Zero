@@ -4,7 +4,6 @@ import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { workEvent } from '../db/schema/work.js';
-import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import { getS3Storage } from '../storage/s3.js';
 import { canonicalJson } from './draft-approval.js';
@@ -36,7 +35,8 @@ type CancelRecoveryProof = { confirmation: string; nativeStayId: string; nativeR
 function recoveryOf(intent: HmsLabtestIntent) {
   const parsed = recoverySchema.safeParse(intent.recovery);
   const target = hmsLabtestIntentTarget(intent);
-  if (!parsed.success || intent.operation !== 'cancel' || intent.propertyCode !== 'HRCEN' || target?.kind !== 'saved' ||
+  if (!parsed.success || intent.operation !== 'cancel' || target?.kind !== 'saved' || target.propertyCode !== intent.propertyCode ||
+      (parsed.data.preimage.propertyCode ?? 'HRCEN') !== intent.propertyCode ||
       !target.nativeStayId || !target.confirmation || target.nativeStayId !== parsed.data.nativeStayId ||
       target.confirmation !== parsed.data.confirmation || parsed.data.preimage.nativeStayId !== target.nativeStayId ||
       parsed.data.preimage.confirmation !== target.confirmation || parsed.data.preimage.guestId !== intent.nativeGuestId ||
@@ -46,21 +46,20 @@ function recoveryOf(intent: HmsLabtestIntent) {
 }
 
 /** Recover under the same target lock; the new session must be independently owned. */
-export async function withCancelRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
+export async function withCancelRecoveryLock<T>(intent: HmsLabtestIntent, action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
   const { target: dispatchTarget } = recoveryOf(intent);
-  const target = paneStayHmsTargetForTransport(intent.transportId);
-  const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-  if (!target.ok || keys.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+  const target = paneStayHmsTargetForTransport(intent.transportId, intent.propertyCode);
+  if (!target.ok || target.target.propertyCode !== intent.propertyCode) {
     throw new Error('cancel_recovery_property_unavailable');
   }
   const lock = paneStayCloudTargetLock(target.target, dispatchTarget, { kind: 'independent_cloud' });
   if (!lock || !dispatchTarget.nativeStayId) throw new Error('cancel_recovery_lock_unavailable');
-  return lock.withLock(() => lockedTarget.run({ holdId: intent.holdId, nativeStayId: dispatchTarget.nativeStayId! }, action),
+  return lock.withLock((signal) => lockedTarget.run({ holdId: intent.holdId, nativeStayId: dispatchTarget.nativeStayId! }, () => action(signal)),
     acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
 /** Collect identity evidence for a held cancellation; this cannot prove whether a fee appeared. */
-export async function proveCancelRecovery(db: DB, intent: HmsLabtestIntent): Promise<CancelRecoveryProof> {
+export async function proveCancelRecovery(db: DB, intent: HmsLabtestIntent, signal?: AbortSignal): Promise<CancelRecoveryProof> {
   const { recovery } = recoveryOf(intent), scope = lockedTarget.getStore();
   if (!scope || scope.holdId !== intent.holdId || scope.nativeStayId !== recovery.nativeStayId) {
     throw new Error('cancel_recovery_lock_unavailable');
@@ -80,10 +79,10 @@ export async function proveCancelRecovery(db: DB, intent: HmsLabtestIntent): Pro
   if (!beforeObject || !pngSignature.equals(beforeObject.body.subarray(0, pngSignature.length)) ||
       sha256(beforeObject.body) !== recovery.before.sha256) throw new Error('cancel_recovery_evidence_unavailable');
   const reader = await import('../../tooling/hms-cloud/pane-cancel-session.mjs' as string) as {
-    provePositiveCancelRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; confirmation?: unknown;
+    provePositiveCancelRecovery(intent: HmsLabtestIntent, options?: { signal?: AbortSignal }): Promise<{ outcome: string; confirmation?: unknown;
       readback?: unknown; screenshot?: unknown }>;
   };
-  const observed = await reader.provePositiveCancelRecovery(intent), readback = readbackSchema.safeParse(observed.readback);
+  const observed = await reader.provePositiveCancelRecovery(intent, { signal }), readback = readbackSchema.safeParse(observed.readback);
   if (observed.outcome !== 'verified' || observed.confirmation !== recovery.confirmation || !readback.success ||
       readback.data.confirmation !== recovery.confirmation || readback.data.nativeStayId !== recovery.nativeStayId ||
       readback.data.nativeGuestId !== intent.nativeGuestId || readback.data.reasonCode !== recovery.reasonCode ||

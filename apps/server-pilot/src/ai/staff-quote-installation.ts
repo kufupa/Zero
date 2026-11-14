@@ -13,19 +13,14 @@ import {
 import { createExistingOwnerNativeQuoteReader } from './reservationist-evaluation-composition.js';
 import { PartyRateFailure } from './party-rate-failure.js';
 import {
-  bindCenturionHmsMailboxProperty,
+  bindHmsMailboxProperty,
   type MailboxHmsOriginFields,
 } from '../hms/mailbox-hms-origin-bind.js';
 import {
   ownerRefBelongsToProperty,
   staffQuoteInstallationEnvName,
 } from '../hms/hms-read-target.js';
-import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
-import {
-  PROVISIONAL_QUOTE_SCRIPT,
-  quoteTraceAsyncEnabled,
-  runProvisionalQuoteChild,
-} from './staff-quote-trace-async.js';
+import { getPropertyTransportIds } from '../../tooling/hms-cloud/property-registry.mjs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
@@ -48,12 +43,9 @@ const configurationSchema = z
     tenantId: z.string().min(1),
     owner: z
       .object({
-        cdpUrl: z.string().url(),
-        browserOwnership: z.literal('borrowed'),
         propertyCode: z.string().min(1),
-        secretPath: z.string().min(1),
       })
-      .strict(),
+      .strip(),
     outputDir: z.string().min(1),
     ratePolicyConfigurationPath: z.string().min(1),
     // Multi-mailbox hotels: one policy file per registered transport. Missing key fails closed.
@@ -87,6 +79,7 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   onTraceFinish?: (finished: Promise<void>) => void;
   /** Trigger mailbox origin. Da Vinci identity must not take the Centurion HMS slot. */
   mailboxOrigin?: MailboxHmsOriginFields;
+  transportId?: string;
   /** Selects the HRDAV install when quoting Da Vinci. Omitted keeps Centurion. */
   propertyCode?: string;
   /**
@@ -111,26 +104,6 @@ export function spawnEnvWithHeldLock(
   return next;
 }
 
-/** Provisional mode: the final result must match the provisional capture the reader accepted. */
-async function verifyProvisionalQuoteFinal(evidenceDirectory: string): Promise<void> {
-  const limit = 20 * 1024 * 1024;
-  const provisional = JSON.parse(
-    checkedPrivateFile(join(evidenceDirectory, 'result.provisional.json'), limit).toString(),
-  ) as Record<string, unknown>;
-  const final = JSON.parse(
-    checkedPrivateFile(join(evidenceDirectory, 'result.json'), limit).toString(),
-  ) as Record<string, unknown>;
-  if (
-    (final.audit as { status?: unknown } | undefined)?.status !== 'complete' ||
-    final.outcome !== 'quote' ||
-    final.evidenceDirectory !== evidenceDirectory ||
-    final.observedAt !== provisional.observedAt ||
-    quoteDigest(final.requested) !== quoteDigest(provisional.requested) ||
-    quoteDigest(final.groups) !== quoteDigest(provisional.groups)
-  )
-    throw new Error('staff_quote_trace_finish_changed');
-}
-
 function inside(root: string, path: string): boolean {
   const rel = relative(root, path);
   return isAbsolute(path) && rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
@@ -153,21 +126,12 @@ function checkedPrivateFile(path: string, limit: number): Buffer {
 export function validateStaffQuoteInstallationConfiguration(
   raw: unknown,
 ): StaffQuoteInstallationConfiguration {
-  const configuration = configurationSchema.parse(raw),
-    url = new URL(configuration.owner.cdpUrl);
+  const configuration = configurationSchema.parse(raw);
   if (
-    !['http:', 'ws:'].includes(url.protocol) ||
-    !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    !isAbsolute(configuration.owner.secretPath) ||
-    !inside(join(privateRoot, 'playwright-quote'), configuration.outputDir) ||
+    !inside(join(privateRoot, 'hms-cloud'), configuration.outputDir) ||
     !inside(privateRoot, configuration.ratePolicyConfigurationPath) ||
     !ratePolicyOwnerRefMapValid(configuration)
-  )
-    throw new Error('staff_quote_installation_invalid');
+  ) throw new Error('staff_quote_installation_invalid');
   return configuration.owner.propertyCode === 'HRCEN' && !configuration.dinnerAddOn
     ? {
         ...configuration,
@@ -543,83 +507,13 @@ export function getInstalledStaffQuoteServices(
     ctx.signal.throwIfAborted();
     return allowed;
   };
-  // Provisional mode: the next capture in this lock starts only after the previous trace finished.
-  let traceFinishBefore: Promise<void> = Promise.resolve();
+  if (!options.transportId || !ownerRefBelongsToProperty(options.transportId, configuration.owner.propertyCode)) {
+    throw new Error('staff_quote_property_scope_invalid');
+  }
   const native = createExistingOwnerNativeQuoteReader({
-    owner: configuration.owner,
+    owner: { propertyCode: configuration.owner.propertyCode, transportId: options.transportId },
     outputDir: configuration.outputDir,
-    dispatch: async (request) => {
-      const resultPath = join(configuration.outputDir, `quote-dispatch-${randomUUID()}.json`);
-      if (quoteTraceAsyncEnabled()) {
-        const outcome = await runProvisionalQuoteChild({
-          executable: request.executable,
-          args: [
-            '--input-type=module',
-            '-e',
-            PROVISIONAL_QUOTE_SCRIPT,
-            resultPath,
-            request.args[0]!,
-            request.args[2]!,
-            configuration.outputDir,
-          ],
-          env: spawnEnvWithHeldLock(request.env, options.childEnv),
-          signal: request.signal,
-          timeoutMs: request.timeout,
-          resultPath,
-          previousFinish: traceFinishBefore,
-          verifyFinal: verifyProvisionalQuoteFinal,
-        });
-        if (outcome.kind === 'provisional') {
-          traceFinishBefore = outcome.finished;
-          options.onEvidenceDirectory?.(outcome.evidenceDirectory);
-          options.onTraceFinish?.(outcome.finished);
-          // Diagnostic summaries must be backed by the completed audit, even when full quotes are provisional.
-          if (request.details === 'summary') {
-            await outcome.finished;
-            return { stdout: 'Evidence: ' + outcome.evidenceDirectory + '\n' };
-          }
-          return { stdout: 'Evidence: ' + outcome.evidenceDirectory + '\n', traceFinish: 'pending' as const };
-        }
-        traceFinishBefore = Promise.resolve();
-        const settled = JSON.parse(checkedPrivateFile(resultPath, 1024 * 1024).toString()) as {
-          evidenceDirectory?: string;
-        };
-        if (!settled.evidenceDirectory) throw new Error('staff_quote_native_capture_unavailable');
-        options.onEvidenceDirectory?.(settled.evidenceDirectory);
-        return { stdout: 'Evidence: ' + settled.evidenceDirectory + '\n' };
-      }
-      const script =
-        "import {writeFileSync} from 'node:fs';const {fetchQuote}=await import(process.argv[2]);const result=await fetchQuote({requestPath:process.argv[3],outputDir:process.argv[4]});writeFileSync(process.argv[1],JSON.stringify({evidenceDirectory:result.evidenceDirectory}),{mode:0o600,flag:'wx'});process.exit(0);";
-      try {
-        await run(
-          request.executable,
-          [
-            '--input-type=module',
-            '-e',
-            script,
-            resultPath,
-            request.args[0]!,
-            request.args[2]!,
-            configuration.outputDir,
-          ],
-          {
-            env: spawnEnvWithHeldLock(request.env, options.childEnv),
-            signal: request.signal,
-            timeout: request.timeout,
-            maxBuffer: 1024 * 1024,
-          },
-        );
-      } catch {
-        request.signal.throwIfAborted();
-        throw new Error('staff_quote_native_unavailable');
-      }
-      const result = JSON.parse(checkedPrivateFile(resultPath, 1024 * 1024).toString()) as {
-        evidenceDirectory?: string;
-      };
-      if (!result.evidenceDirectory) throw new Error('staff_quote_native_capture_unavailable');
-      options.onEvidenceDirectory?.(result.evidenceDirectory);
-      return { stdout: 'Evidence: ' + result.evidenceDirectory + '\n' };
-    },
+    onEvidenceDirectory: options.onEvidenceDirectory,
   });
   const readParty = async (
     kind: 'organization' | 'bookingAgency',
@@ -628,11 +522,14 @@ export function getInstalledStaffQuoteServices(
   ): Promise<ReservationistPartyRead> => {
     guard();
     signal.throwIfAborted();
-    const bound = bindCenturionHmsMailboxProperty({
-      propertyCode: configuration.owner.propertyCode,
+    const bound = bindHmsMailboxProperty({
+      transportId: options.transportId!, propertyCode: configuration.owner.propertyCode,
       origin: options.mailboxOrigin ?? {},
     });
     if (!bound.ok) throw new PartyRateFailure(bound.code);
+    if (!options.transportId || !ownerRefBelongsToProperty(options.transportId, configuration.owner.propertyCode)) {
+      throw new PartyRateFailure('property_scope_invalid');
+    }
     await mkdir(configuration.outputDir, { recursive: true, mode: 0o700 });
     const requestPath = join(configuration.outputDir, `party-${randomUUID()}.json`),
       resultPath = requestPath + '.result.json';
@@ -640,6 +537,7 @@ export function getInstalledStaffQuoteServices(
       requestPath,
       JSON.stringify({
         propertyCode: configuration.owner.propertyCode,
+        transportId: options.transportId,
         kind,
         query: { [kind === 'organization' ? 'organizationName' : 'bookingAgencyName']: query },
       }),
@@ -655,19 +553,14 @@ export function getInstalledStaffQuoteServices(
           '-e',
           script,
           resultPath,
-          join(repo, 'apps/server-pilot/tooling/playwright-quote/party-lookup.mjs'),
+          join(repo, 'apps/server-pilot/tooling/hms-cloud/party-lookup.mjs'),
           requestPath,
         ],
         {
           signal,
           timeout: 300000,
           maxBuffer: 1024 * 1024,
-          env: {
-            ...(options.childEnv ?? process.env),
-            HMS_STAGEHAND_CDP_URL: configuration.owner.cdpUrl,
-            HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
-            HMS_QUOTE_SECRET_PATH: configuration.owner.secretPath,
-          },
+          env: options.childEnv ?? process.env,
         },
       );
     } catch {

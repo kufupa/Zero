@@ -281,7 +281,7 @@ describe('worker secret resolution by target', () => {
           propertyCode: 'HRCEN',
           secretPath: '/repo/.private/owner/secret.json',
         },
-        outputDir: '/repo/.private/playwright-quote/out',
+        outputDir: '/repo/.private/hms-cloud/out',
         ratePolicyConfigurationPath: '/repo/.private/rate-policy.json',
       }),
       CENTURION_HMS_READ_TARGET,

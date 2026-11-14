@@ -1,6 +1,7 @@
 // Saved Proof Labtest child occupancy: guarded unsaved editor and optional native Apply; never Save.
 import { isDeepStrictEqual } from 'node:util';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import {
   cleanLabtestRecord, currentLabtestRecord, snapshotLabtestRecord, unchangedLabtestBusinessParties,
 } from './labtest-record.mjs';
@@ -9,7 +10,7 @@ const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const READ = '/web/base/OSRESV.HDR.getChildAges';
 const VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const SAVE = '/web/base/OSRESV.HDR';
-const NAMES = ['children', 'child1', 'child2', 'child3'];
+const NAMES = ['children', 'child1', 'child2', 'child3']; // Legacy standalone diagnostic fields.
 const usedPages = new WeakSet();
 const agesValid = (ages) => Array.isArray(ages) && Array.from(ages).every((age) => Number.isInteger(age) && age >= 0 && age <= 17);
 const countValid = (count) => Number.isInteger(count) && count >= 0 && count <= 9;
@@ -49,13 +50,8 @@ export function planSavedChildOccupancy(input = {}) {
   const { childCount, childAges } = input;
   if (!(childCount === null || countValid(childCount)) || !(childAges === null || agesValid(childAges))) return { outcome: 'input_gap', issue: 'CHILD_OCCUPANCY_REQUIRED_OR_INVALID', ...unknowns() };
   if (childCount !== null && childAges !== null && childCount !== childAges.length) return { outcome: 'input_gap', issue: 'CHILD_COUNT_AGES_MISMATCH', ...unknowns() };
-  const bands = childAges === null ? null : {
-    child1: childAges.filter((age) => age <= 2).length,
-    child2: childAges.filter((age) => age >= 3 && age <= 12).length,
-    child3: childAges.filter((age) => age >= 13).length,
-  };
   return { outcome: 'planned', childCount, childAges: childAges === null ? null : [...childAges],
-    ageState: childAges === null ? 'unknown' : 'explicit', derivedBands: bands, ...unknowns() };
+    ageState: childAges === null ? 'unknown' : 'explicit', ...unknowns() };
 }
 
 function exactField(source, name) {
@@ -78,69 +74,84 @@ function modelAges(field) {
   return agesValid(result) ? result : null;
 }
 
+function activeChildNames(snapshot) {
+  const data = snapshot?.data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const keys = Object.keys(data).filter(key => /^child\d+status$/i.test(key));
+  if (!keys.length || new Set(keys.map(key => key.toLowerCase())).size !== keys.length ||
+      keys.some(key => key !== key.toLowerCase() || typeof data[key] !== 'string')) return null;
+  return keys.filter(key => data[key] === 'ACTIVE').map(key => key.slice(0, -6)).sort();
+}
+
 /** Keep native and form presence distinct. Blank, absent or malformed ages are unknown. */
 export function savedChildOccupancy(snapshot) {
-  const fields = Object.fromEntries([...NAMES, 'childages'].map((name) => [name, {
+  const names = activeChildNames(snapshot);
+  if (!names) return { valid: false, fields: {}, ageState: 'unknown' };
+  const fields = Object.fromEntries(['children', ...names, 'childages'].map(name => [name, {
     form: exactField(snapshot?.values, name), model: exactField(snapshot?.data, name),
   }]));
   const counts = {};
-  for (const name of NAMES) {
+  for (const name of ['children', ...names]) {
     const form = fields[name].form, model = fields[name].model;
     const value = form.present ? numeric(form.value) : null;
     if (value === null || !model.present || numeric(model.value) !== value) return { valid: false, fields, ageState: 'unknown' };
     counts[name] = value;
   }
-  if (!countValid(counts.children) || counts.child1 + counts.child2 + counts.child3 !== counts.children) return { valid: false, fields, ageState: 'unknown' };
-  const bands = { child1: counts.child1, child2: counts.child2, child3: counts.child3 };
+  if (!countValid(counts.children) || names.reduce((sum, name) => sum + counts[name], 0) !== counts.children) {
+    return { valid: false, fields, ageState: 'unknown' };
+  }
+  const bands = Object.fromEntries(names.map(name => [name, counts[name]]));
   const ages = modelAges(fields.childages.model);
-  if (ages !== null) {
-    if (ages.length !== counts.children || !currentChildCategories(snapshot, ages, bands)) return { valid: false, fields, ageState: 'conflicting' };
+  if (ages !== null && (ages.length !== counts.children || !currentChildCategories(snapshot, ages, bands))) {
+    return { valid: false, fields, ageState: 'conflicting' };
   }
   return { valid: true, fields, count: counts.children, bands,
     ages, ageState: ages === null ? 'unknown' : 'native_model' };
 }
 
 /** Match the selected stay and child values, allowing HMS to add unrelated fields. */
-export function matchesSavedChildAgeRead(request, frame, stayId, ages) {
+export function matchesSavedChildAgeRead(request, frame, stayId, ages, propertyCode) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     if (request.method() !== 'POST' || request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== READ ||
         url.search || url.hash || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') ||
         body.getAll('params').length !== 1 || typeof stayId !== 'string' || !stayId) return false;
     const params = parseUniqueJson(body.get('params'));
-    return params?.propertyCode === 'HRCEN' && params.reservationStayId === stayId && agesValid(params.childAges) &&
+    return getPropertyRegistration(propertyCode)?.active === true && params?.propertyCode === propertyCode && params.reservationStayId === stayId && agesValid(params.childAges) &&
       (ages === null || same(params.childAges, ages));
   } catch { return false; }
 }
 
 /** Check native validation against the selected stay and the requested ages. */
-export function matchesSavedChildAgeValidation(request, frame, { stayId, adults, priorBands, ages } = {}) {
+export function matchesSavedChildAgeValidation(request, frame, { propertyCode, stayId, adults, priorBands, ages } = {}) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || '');
     if (request.method() !== 'POST' || request.frame() !== frame || url.origin !== ORIGIN || url.pathname !== VALIDATE ||
         url.search || url.hash || !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') ||
         body.getAll('params').length !== 1 || typeof stayId !== 'string' || !stayId || !Number.isInteger(adults) ||
         adults < 1 || adults > 16 || !agesValid(ages) || !priorBands ||
-        NAMES.slice(1).some((name) => !countValid(priorBands[name]))) return false;
+        Object.keys(priorBands).some(name => !/^child\d+$/.test(name) || !countValid(priorBands[name]))) return false;
     const params = parseUniqueJson(body.get('params'));
-    return params?.propertyCode === 'HRCEN' && params.reservationStayId === stayId &&
+    return getPropertyRegistration(propertyCode)?.active === true && params?.propertyCode === propertyCode && params.reservationStayId === stayId &&
       numeric(params.adultCount) === adults && numeric(params.childCount) === ages.length &&
       same(params.childAges, ages) && params.updateChildCategories === true &&
-      params.activeChildCategories === 3 && params.confirmChildCategory === false &&
-      NAMES.slice(1).every((name) => Object.hasOwn(params.childCategoryCounts ?? {}, name) &&
+      params.activeChildCategories === Object.keys(priorBands).length && params.confirmChildCategory === false &&
+      Object.keys(priorBands).every((name) => Object.hasOwn(params.childCategoryCounts ?? {}, name) &&
         numeric(params.childCategoryCounts[name]) === priorBands[name]);
   } catch { return false; }
 }
 
 /** Accept only the exact HRCEN model metadata observed on opening this editor. */
 export function matchesSavedChildEditorOpen(before, after, native) {
-  if (!cleanLabtestRecord(before) || !after || native?.activeChildCategories !== 3 ||
+  const activeCount = activeChildNames(before)?.length;
+  if (!cleanLabtestRecord(before) || !after || activeCount === undefined ||
+      (native?.activeChildCategories != null && native.activeChildCategories !== activeCount) ||
       native?.updateChildCategories !== false || native?.confirmChildCategory !== false ||
       exactField(before.data, 'successmessages').value !== '' ||
       exactField(before.data, 'activechildcategories').value !== '') return false;
   const expected = structuredClone(before);
   expected.data.successmessages = true;
-  expected.data.activechildcategories = native.activeChildCategories;
+  expected.data.activechildcategories = native.activeChildCategories ?? activeCount;
   expected.recordDirty = true;
   return same(expected, after);
 }
@@ -167,10 +178,10 @@ export function savedChildDraftDelta(before, after, requested) {
       !same(before.partyControls, after.partyControls) || before.partyInputsBlank !== after.partyInputsBlank ||
       !requested || requested.outcome !== 'planned' || !agesValid(requested.childAges) ||
       requested.childCount !== requested.childAges.length) return invalid();
-  const plan = planSavedChildOccupancy({ childCount: requested.childCount, childAges: requested.childAges });
-  if (plan.outcome !== 'planned' || !same(plan.derivedBands, requested.derivedBands)) return invalid();
-  const desired = { children: requested.childCount, ...requested.derivedBands };
-  if (NAMES.some((name) => numeric(after.values[name]) !== desired[name] ||
+  const bands = bandsForAges(before, requested.childAges);
+  if (!bands) return invalid();
+  const desired = { children: requested.childCount, ...bands }, names = Object.keys(desired);
+  if (names.some((name) => numeric(after.values[name]) !== desired[name] ||
       !same(before.data[name], after.data[name])) || after.data.childages !== requested.childAges.join(',') ||
       before.data.updatechildcategories !== '' || after.data.updatechildcategories !== true ||
       before.data.enablecheckavailability !== '0' || after.data.enablecheckavailability !== '-1') return invalid();
@@ -181,7 +192,7 @@ export function savedChildDraftDelta(before, after, requested) {
       if (Object.hasOwn(a, name) && Object.hasOwn(b, name) && same(a[name], b[name])) continue;
       changed.add(name);
       if (!Object.hasOwn(a, name) || !Object.hasOwn(b, name)) { bad.add(name); continue; }
-      if (part === 'values' && NAMES.includes(name) && numeric(b[name]) === desired[name]) continue;
+      if (part === 'values' && names.includes(name) && numeric(b[name]) === desired[name]) continue;
       if (part === 'data' && name === 'childages' && b[name] === requested.childAges.join(',')) continue;
       if (part === 'data' && name === 'updatechildcategories' && a[name] === '' && b[name] === true) continue;
       if (part === 'data' && name === 'enablecheckavailability' && a[name] === '0' && b[name] === '-1') continue;
@@ -200,10 +211,9 @@ export function savedChildDraftDelta(before, after, requested) {
     priceClearedFields: cleared.sort() };
 }
 
-async function visibleChildFields(frame) {
+async function visibleChildFields(frame, names) {
   return frame.evaluate((names) => Object.fromEntries(names.map((name) => {
-    const nodes = [...document.querySelectorAll('input')].filter((el) => el.name === name &&
-      (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+    const nodes = [...document.querySelectorAll('input')].filter((el) => el.name === name && !el.closest('.x-window'));
     if (nodes.length !== 1) return [name, null];
     const el = nodes[0], cmp = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
     const guests = [...document.querySelectorAll('input[name="guestid"]')].filter((input) =>
@@ -212,7 +222,7 @@ async function visibleChildFields(frame) {
     if (!form?.el?.dom || !form.el.dom.contains(el) || cmp?.up?.('form') !== form) return [name, null];
     return [name, { visible: el.value, component: cmp?.getValue?.(), readOnly: Boolean(el.readOnly || cmp?.readOnly),
       disabled: Boolean(el.disabled || cmp?.isDisabled?.()) }];
-  })), NAMES);
+  })), names);
 }
 
 const PRESERVED_CHILD_BUSINESS_FIELDS = [
@@ -222,8 +232,7 @@ const PRESERVED_CHILD_BUSINESS_FIELDS = [
   'ta1', 'taid1', 'bookingagencycontractid', 'bacontract', 'bookingagency1iatanumber', 'company', 'companyname',
   'companyid', 'araccountname', 'arprofileid', 'araccountid', 'billingreference', 'guaranteecreditcardid',
   'leaseguaranteecreditcardid', 'reservationnote', 'emailaddress', 'caller', 'udfchar06', 'udfchkbox04',
-  'udfchar09', 'udfchar13', 'adults', 'child1label', 'child2label', 'child3label',
-  'child1status', 'child2status', 'child3status',
+  'udfchar09', 'udfchar13', 'adults',
 ];
 const READ_CHILD_BUSINESS_FIELDS = [...PRESERVED_CHILD_BUSINESS_FIELDS, ...NAMES, 'childages',
   'balance', 'averagerate', 'totalrate', 'grandtotal', 'totalratewithtax', 'averagenightly', 'total', 'tax',
@@ -232,7 +241,9 @@ const READ_CHILD_BUSINESS_FIELDS = [...PRESERVED_CHILD_BUSINESS_FIELDS, ...NAMES
 function preservedChildBusinessFields(before, after, names) {
   if (!before?.values || !before?.data || !after?.values || !after?.data ||
       !same(before.partyControls, after.partyControls)) return false;
-  return ['values', 'data'].every((part) => names.every((name) => {
+  const dynamic = [...new Set([...Object.keys(before.data), ...Object.keys(after.data)].filter(key =>
+    /^child\d+(?:label|status)$/i.test(key) || (names.includes('child1') && /^child\d+$/i.test(key))))];
+  return ['values', 'data'].every((part) => [...names, ...dynamic].every((name) => {
     const a = Object.keys(before[part]).filter((key) => key.toLowerCase() === name.toLowerCase());
     const b = Object.keys(after[part]).filter((key) => key.toLowerCase() === name.toLowerCase());
     return a.length <= 1 && b.length <= 1 && same(a, b) && (!a.length || same(before[part][a[0]], after[part][b[0]]));
@@ -244,23 +255,33 @@ function readChildEditorSnapshot(before, opened, native) {
     opened.formDirty === false && opened.recordDirty === true && Array.isArray(opened.dirtyFields) &&
     opened.dirtyFields.length === 0 && Array.isArray(opened.modifiedFields) && opened.modifiedFields.length === 0 &&
     exactField(opened.data, 'successmessages').value === true &&
-    exactField(opened.data, 'activechildcategories').value === native.activeChildCategories;
+    exactField(opened.data, 'activechildcategories').value === (native.activeChildCategories ?? activeChildNames(before)?.length);
 }
 
 // Category ranges come from this stay's current HMS model, not hotel defaults.
-function currentChildCategories(snapshot, ages, bands) {
+function bandsForAges(snapshot, ages) {
+  const names = activeChildNames(snapshot);
+  if (!names || !agesValid(ages)) return null;
   const ranges = [];
-  for (const name of NAMES.slice(1)) {
-    const label = exactField(snapshot?.data, `${name}label`), status = exactField(snapshot?.data, `${name}status`);
+  for (const name of names) {
+    const label = exactField(snapshot.data, `${name}label`);
     const match = label.present && typeof label.value === 'string' && /^Child\s+(\d{1,2})\s*-\s*(\d{1,2})$/i.exec(label.value.trim());
-    if (!match || !status.present || status.value !== 'ACTIVE') return false;
+    if (!match) return null;
     const from = Number(match[1]), to = Number(match[2]);
-    if (from > to || to > 99) return false;
+    if (from > to || to > 99) return null;
     ranges.push({ name, from, to });
   }
-  // Every supported age must identify one current category, without overlaps.
-  for (let age = 0; age <= 17; age++) if (ranges.filter(({ from, to }) => age >= from && age <= to).length !== 1) return false;
-  return ranges.every(({ name, from, to }) => ages.filter((age) => age >= from && age <= to).length === bands[name]);
+  const bands = Object.fromEntries(names.map(name => [name, 0]));
+  for (const age of ages) {
+    const matching = ranges.filter(({ from, to }) => age >= from && age <= to);
+    if (matching.length !== 1) return null;
+    bands[matching[0].name]++;
+  }
+  return bands;
+}
+function currentChildCategories(snapshot, ages, bands) {
+  const derived = bandsForAges(snapshot, ages);
+  return derived !== null && same(derived, bands);
 }
 
 /** Read the current saved ages through one fenced native response; never Apply. */
@@ -294,7 +315,7 @@ export async function readSavedChildAgesForComposition(context, expected) {
   const readAges = occupancy.ages === null ? [] : occupancy.ages;
   if (!gate.matchesPreimage({ frame, stayId: expected.reservationStayId, adults: expected.adults,
     priorAges: occupancy.ages, priorBands: occupancy.bands, readAges })) throw new Error('CHILD_READ_GATE_MISMATCH');
-  const visible = await visibleChildFields(frame);
+  const visible = await visibleChildFields(frame, ['children', ...Object.keys(occupancy.bands)]);
   if (!visibleMatches(visible, occupancy) || await frame.locator('.x-window:visible').count() !== 0) {
     throw new Error('CHILD_VISIBLE_PREIMAGE_UNVERIFIED');
   }
@@ -309,8 +330,8 @@ export async function readSavedChildAgesForComposition(context, expected) {
     if (!response?.ok()) throw new Error('AGE_READ_FAILED');
     const native = await response.json();
     active();
-    if (native?.propertyCode !== 'HRCEN' || native?.reservationStayId !== expected.reservationStayId ||
-        native.activeChildCategories !== 3 || native.updateChildCategories !== false || native.confirmChildCategory !== false ||
+    if (native?.propertyCode !== expected.propertyCode || native?.reservationStayId !== expected.reservationStayId ||
+        (native.activeChildCategories != null && native.activeChildCategories !== Object.keys(occupancy.bands).length) || native.updateChildCategories !== false || native.confirmChildCategory !== false ||
         !agesValid(native.childAges) || native.childAges.length !== occupancy.count ||
         (occupancy.ages !== null && !sameChildAgeMultiset(native.childAges, occupancy.ages)) ||
         !currentChildCategories(before, native.childAges, occupancy.bands)) throw new Error('SAVED_AGE_READBACK_UNVERIFIED');
@@ -375,7 +396,7 @@ export async function readSavedChildAgesForComposition(context, expected) {
   }
 }
 function visibleMatches(visible, occupancy) {
-  return NAMES.every((name) => visible?.[name] && numeric(visible[name].visible) === numeric(occupancy.fields[name].form.value) &&
+  return ['children', ...Object.keys(occupancy.bands)].every((name) => visible?.[name] && numeric(visible[name].visible) === numeric(occupancy.fields[name].form.value) &&
     numeric(visible[name].component) === numeric(occupancy.fields[name].form.value));
 }
 
@@ -385,7 +406,7 @@ function visibleMatches(visible, occupancy) {
  * The page is quarantined afterward; close it to discard. No Save is authorized.
  */
 export async function stageLabtestChildAmendment(page, expected = {}, options = {}) {
-  const targetKeys = new Set(['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges']);
+  const targetKeys = new Set(['propertyCode', 'confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults', 'childCount', 'childAges']);
   if (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
       Object.keys(expected).some((key) => !targetKeys.has(key))) return { outcome: 'input_gap', issue: 'UNSUPPORTED_EXPECTED_FIELD', ...unknowns() };
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
@@ -427,7 +448,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
   const requireActive = () => {
     if (!isActive() || blocked || nativeDialog) throw new Error(timedOut ? 'CHILD_STAGE_TIMEOUT' : 'CHILD_STAGE_GUARD_STOPPED');
   };
-  const onDialog = () => { nativeDialog = true; active = false; fence?.quarantine(); };
+  const onDialog = dialog => { nativeDialog = true; active = false; fence?.quarantine(); void dialog.dismiss().catch(() => {}); };
   page.on('dialog', onDialog);
   let timeout;
   const execute = async () => {
@@ -458,14 +479,14 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
       const request = route.request();
       let url;
       try { url = new URL(request.url()); } catch { blocked++; return route.abort(); }
-      if (isActive() && readArmed && !blocked && !nativeDialog && !readRequest && state && matchesSavedChildAgeRead(request, state.frame, state.native.reservationstayid, prior.childAges) &&
+      if (isActive() && readArmed && !blocked && !nativeDialog && !readRequest && state && matchesSavedChildAgeRead(request, state.frame, state.native.reservationstayid, prior.childAges, expected.propertyCode) &&
           !fence.isQuarantined() && scope?.allow(request)) {
         readRequest = request;
         return route.fallback();
       }
       if (isActive() && validationArmed && !blocked && !nativeDialog && !validationRequest && state &&
           matchesSavedChildAgeValidation(request, state.frame, { stayId: state.native.reservationstayid,
-            adults: expected.adults, priorBands: occupancy.bands, ages: requested.childAges }) &&
+            propertyCode: expected.propertyCode, adults: expected.adults, priorBands: occupancy.bands, ages: requested.childAges }) &&
           !fence.isQuarantined() && scope?.allow(request)) {
         validationRequest = request;
         return route.fallback();
@@ -492,7 +513,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
         numeric(adultModel.value) !== expected.adults) {
       throw new Error('OCCUPANCY_PREIMAGE_UNVERIFIED');
     }
-    visible = await visibleChildFields(state.frame);
+    visible = await visibleChildFields(state.frame, ['children', ...Object.keys(occupancy.bands)]);
     if (!visibleMatches(visible, occupancy)) throw new Error('CHILD_VISIBLE_PREIMAGE_UNVERIFIED');
     if (await page.locator('.x-window:visible:not(.x-menu)').count() !== 1 ||
         await state.frame.locator('.x-window:visible:not(.x-menu)').count() !== 0) throw new Error('UNEXPECTED_DIALOG');
@@ -512,7 +533,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
     readArmed = false;
     if (!response?.ok()) throw new Error('AGE_READ_FAILED');
     const native = await response.json();
-    if (!active || blocked || nativeDialog || native?.propertyCode !== 'HRCEN' ||
+    if (!active || blocked || nativeDialog || native?.propertyCode !== expected.propertyCode ||
         native?.reservationStayId !== state.native.reservationstayid || !same(native?.childAges, prior.childAges)) {
       throw new Error('SAVED_AGE_READBACK_UNVERIFIED');
     }
@@ -583,7 +604,7 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
     for (let i = 0; i < requested.childAges.length; i++) popupAges.push(await exactInput(ageInput(i), requested.childAges[i]));
     const current = await currentLabtestRecord(page, expected, { allowBlankNote: true, allowUnchangedBusinessParties: true });
     const after = await snapshotLabtestRecord(state.frame);
-    const afterVisible = await visibleChildFields(state.frame);
+    const afterVisible = await visibleChildFields(state.frame, ['children', ...Object.keys(occupancy.bands)]);
     if (!active || blocked || nativeDialog || current.frame !== state.frame || !same(current.native, state.native) ||
         current.track !== state.track || !same(current.partyPreimage, state.partyPreimage) ||
         !unchangedLabtestBusinessParties(state.partyPreimage, after) ||
@@ -611,38 +632,33 @@ export async function stageLabtestChildAmendment(page, expected = {}, options = 
       if (!validation?.ok() || !active || blocked || nativeDialog) throw new Error('AGE_VALIDATION_FAILED');
       const nativeValidation = await validation.json();
       validationResult = nativeValidation;
-      const responseKeys = ['reservationStayId', 'adultCount', 'childCount', 'propertyCode', 'activeChildCategories',
-        'updateChildCategories', 'confirmChildCategory', 'childAges', 'childCategoryCounts', 'dirtyList', 'gUserID',
-        'gFunctionName', 'gRemovePooledBean', 'gEntityName'];
       if (!nativeValidation || typeof nativeValidation !== 'object' || Array.isArray(nativeValidation) ||
-          Object.keys(nativeValidation).length !== responseKeys.length || responseKeys.some((key) => !Object.hasOwn(nativeValidation, key)) ||
-          nativeValidation.propertyCode !== 'HRCEN' || nativeValidation.reservationStayId !== state.native.reservationstayid ||
+          nativeValidation.propertyCode !== expected.propertyCode || nativeValidation.reservationStayId !== state.native.reservationstayid ||
           !sameChildAgeMultiset(nativeValidation.childAges, requested.childAges) || numeric(nativeValidation.childCount) !== requested.childCount ||
-          numeric(nativeValidation.adultCount) !== expected.adults || nativeValidation.activeChildCategories !== 3 ||
-          nativeValidation.updateChildCategories !== true || nativeValidation.confirmChildCategory !== false ||
-          !same(nativeValidation.dirtyList, []) || nativeValidation.gUserID !== '' || nativeValidation.gFunctionName !== '' ||
-          nativeValidation.gRemovePooledBean !== false || nativeValidation.gEntityName !== '') {
+          numeric(nativeValidation.adultCount) !== expected.adults ||
+          (nativeValidation.activeChildCategories != null && nativeValidation.activeChildCategories !== Object.keys(occupancy.bands).length) ||
+          nativeValidation.updateChildCategories !== true || nativeValidation.confirmChildCategory !== false) {
         throw new Error('AGE_VALIDATION_RESPONSE_UNVERIFIED');
       }
-      // One HMS response reordered the ages. Identity/order semantics remain unproved.
-      if (!same(nativeValidation.childAges, requested.childAges)) throw new Error('AGE_VALIDATION_ORDER_UNVERIFIED');
       await popup.waitFor({ state: 'hidden', timeout: timeoutMs });
       const targetAfter = await currentLabtestRecord(page, expected, { allowBlankNote: true, allowUnchangedBusinessParties: true });
-      const draft = await snapshotLabtestRecord(state.frame), draftVisible = await visibleChildFields(state.frame);
+      const draft = await snapshotLabtestRecord(state.frame), draftVisible = await visibleChildFields(state.frame, ['children', ...Object.keys(occupancy.bands)]);
       if (!active || blocked || nativeDialog || targetAfter.frame !== state.frame || !same(targetAfter.native, state.native) ||
           targetAfter.track !== state.track || !same(targetAfter.partyPreimage, state.partyPreimage) ||
           !unchangedLabtestBusinessParties(state.partyPreimage, draft)) throw new Error('DRAFT_TARGET_UNVERIFIED');
       const nativeCounts = nativeValidation.childCategoryCounts;
-      if (!nativeCounts || typeof nativeCounts !== 'object' || Array.isArray(nativeCounts) ||
-          Object.keys(nativeCounts).some((name) => !NAMES.slice(1).includes(name.toLowerCase())) ||
-          NAMES.slice(1).some((name) => Object.keys(nativeCounts).filter((key) => key.toLowerCase() === name).length > 1 ||
-            numeric(nativeCounts[name] ?? nativeCounts[name.toUpperCase()] ?? 0) !== requested.derivedBands[name]) ||
-          NAMES.some((name) => numeric(draftVisible[name]?.visible) !== (name === 'children' ? requested.childCount : requested.derivedBands[name]) ||
-            numeric(draftVisible[name]?.component) !== (name === 'children' ? requested.childCount : requested.derivedBands[name]))) {
+      const desiredBands = bandsForAges(popupBaseline, requested.childAges);
+      const names = desiredBands && Object.keys(desiredBands);
+      if (!names || (nativeCounts != null && (typeof nativeCounts !== 'object' || Array.isArray(nativeCounts))) ||
+          names.some((name) => {
+            const keys = Object.keys(nativeCounts || {}).filter(key => key.toLowerCase() === name);
+            return keys.length > 1 || numeric(keys.length ? nativeCounts[keys[0]] : draft.data[name]) !== desiredBands[name];
+          }) || ['children', ...names].some((name) => numeric(draftVisible[name]?.visible) !== (name === 'children' ? requested.childCount : desiredBands[name]) ||
+            numeric(draftVisible[name]?.component) !== (name === 'children' ? requested.childCount : desiredBands[name]))) {
         throw new Error('DRAFT_CHILD_READBACK_UNVERIFIED');
       }
       const delta = savedChildDraftDelta(popupBaseline, draft, requested);
-      const draftOccupancy = Object.fromEntries([...NAMES, 'childages'].map((name) => [name, {
+      const draftOccupancy = Object.fromEntries(['children', ...names, 'childages'].map((name) => [name, {
         form: exactField(draft.values, name), model: exactField(draft.data, name),
       }]));
       requireActive();
@@ -701,7 +717,7 @@ async function runSavedChildEditor(context, expected, childAges, preview) {
   const before = await snapshotLabtestRecord(frame), occupancy = savedChildOccupancy(before);
   if (!occupancy.valid || occupancy.count !== expected.childCount || !agesValid(expected.childAges) ||
       expected.childAges.length !== occupancy.count || !currentChildCategories(before, expected.childAges, occupancy.bands) ||
-      exactField(before.data, 'propertycode').value !== 'HRCEN' ||
+      exactField(before.data, 'propertycode').value !== expected.propertyCode ||
       String(exactField(before.data, 'guestid').value ?? '') !== expected.guestId ||
       String(before.data.reservationstayid ?? '') !== expected.reservationStayId ||
       String(before.data.confirmationnumber ?? '') !== expected.confirmation) throw new Error('CHILD_PREIMAGE_UNVERIFIED');
@@ -722,9 +738,10 @@ async function runSavedChildEditor(context, expected, childAges, preview) {
   if (!readResponse?.ok()) throw new Error('AGE_READ_FAILED');
   const native = await readResponse.json();
   active();
-  if (native?.propertyCode !== 'HRCEN' || native?.reservationStayId !== expected.reservationStayId ||
+  if (native?.propertyCode !== expected.propertyCode || native?.reservationStayId !== expected.reservationStayId ||
       !agesValid(native.childAges) || native.childAges.length !== occupancy.count ||
-      !sameChildAgeMultiset(native.childAges, expected.childAges) || native.activeChildCategories !== 3 ||
+      !sameChildAgeMultiset(native.childAges, expected.childAges) ||
+      (native.activeChildCategories != null && native.activeChildCategories !== Object.keys(occupancy.bands).length) ||
       native.updateChildCategories !== false || native.confirmChildCategory !== false) {
     throw new Error('SAVED_AGE_READBACK_UNVERIFIED');
   }
@@ -834,7 +851,7 @@ async function runSavedChildEditor(context, expected, childAges, preview) {
     if (!preservedChildBusinessFields(before, after, READ_CHILD_BUSINESS_FIELDS) ||
         before.formDirty !== after.formDirty || !same(sorted(before.dirtyFields), sorted(after.dirtyFields)) ||
         !same(modified(before.modifiedFields), modified(after.modifiedFields)) ||
-        !visibleMatches(await visibleChildFields(frame), occupancy)) throw new Error('CHILD_PREVIEW_SIDE_EFFECT_UNVERIFIED');
+        !visibleMatches(await visibleChildFields(frame, ['children', ...Object.keys(occupancy.bands)]), occupancy)) throw new Error('CHILD_PREVIEW_SIDE_EFFECT_UNVERIFIED');
     active();
     completed = true;
     return { requested: { childCount: requested.childCount, childAges: [...requested.childAges] },
@@ -848,9 +865,10 @@ async function runSavedChildEditor(context, expected, childAges, preview) {
   await apply.click({ timeout: 5000, noWaitAfter: true });
   const response = await validated, result = await response.json();
   active();
-  if (!response.ok() || result?.propertyCode !== 'HRCEN' || result?.reservationStayId !== expected.reservationStayId ||
+  if (!response.ok() || result?.propertyCode !== expected.propertyCode || result?.reservationStayId !== expected.reservationStayId ||
       numeric(result.adultCount) !== expected.adults || numeric(result.childCount) !== requested.childCount ||
-      result.activeChildCategories !== 3 || result.updateChildCategories !== true || result.confirmChildCategory !== false ||
+      (result.activeChildCategories != null && result.activeChildCategories !== Object.keys(occupancy.bands).length) ||
+      result.updateChildCategories !== true || result.confirmChildCategory !== false ||
       !sameChildAgeMultiset(result.childAges, requested.childAges)) throw new Error('AGE_VALIDATION_RESPONSE_UNVERIFIED');
   await popup.waitFor({ state: 'hidden', timeout: Math.min(context.remainingMs(), 20000) });
   const synced = await frame.evaluate(() => {
@@ -874,11 +892,11 @@ async function runSavedChildEditor(context, expected, childAges, preview) {
       !currentChildCategories(after, requested.childAges, observed.bands)) {
     throw new Error('CHILD_DRAFT_UNVERIFIED');
   }
-  const nativeCounts = result.childCategoryCounts ?? (validatedEmpty ? {} : null);
-  if (!nativeCounts || typeof nativeCounts !== 'object' || Array.isArray(nativeCounts) ||
-      NAMES.slice(1).some((name) => {
-        const keys = Object.keys(nativeCounts).filter((key) => key.toLowerCase() === name);
-        return keys.length > 1 || numeric(keys.length ? nativeCounts[keys[0]] : 0) !== observed.bands[name];
+  const nativeCounts = result.childCategoryCounts;
+  if ((nativeCounts != null && (typeof nativeCounts !== 'object' || Array.isArray(nativeCounts))) ||
+      Object.keys(observed.bands).some((name) => {
+        const keys = Object.keys(nativeCounts || {}).filter((key) => key.toLowerCase() === name);
+        return keys.length > 1 || numeric(keys.length ? nativeCounts[keys[0]] : after.data[name]) !== observed.bands[name];
       })) throw new Error('CHILD_DRAFT_UNVERIFIED');
   if (!preservedChildBusinessFields(popupBefore, after, PRESERVED_CHILD_BUSINESS_FIELDS)) {
     throw new Error('CHILD_DRAFT_SIDE_EFFECT_UNVERIFIED');

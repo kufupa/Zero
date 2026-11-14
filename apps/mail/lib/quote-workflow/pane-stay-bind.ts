@@ -3,6 +3,7 @@
 
 import type { StayGroupRequirement } from './types';
 import { stayTotalMismatch } from './stay-allocation-validation';
+import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -242,8 +243,13 @@ type PaneStayTrpc = {
   quoteWorkflow?: {
     previewStay?: { mutate: (input: PaneStayInput) => Promise<PaneStayResult> };
     commitStay?: {
-      mutate: (input: PaneStayInput & { previewDigest: string; batch?: PaneStayBatch }) => Promise<PaneStayResult>;
+      mutate: (input: PaneStayInput & { previewDigest: string; preparedRef: string; expectedRevision: number },
+        options?: ReturnType<typeof inMailbox>) => Promise<unknown>;
     };
+    prepareStay?: { mutate: (input: { workItemId: string; propertySwitch?: 'HRDAV' | 'HRDAVS';
+      rooms: Array<{ stayId: string; previewDigest: string }> }, options?: ReturnType<typeof inMailbox>) => Promise<unknown> };
+    getStayWrite?: { query: (input: { workItemId: string; preparedRef: string; runId: string },
+      options?: ReturnType<typeof inMailbox>) => Promise<unknown> };
   };
   paneStayCancel?: {
     paneStayScreenshot?: {
@@ -296,6 +302,49 @@ export function paneSaveModeOf(
 
 export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   const row = (trpc ?? {}) as PaneStayTrpc;
+  const batches = new Map<string, { rooms: Array<{ stayId: string; key: string }>; results: Promise<Map<string, PaneStayResult>> }>();
+  const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+  const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9-]{36}$/.test(value);
+  const writeRooms = async (stay: PaneStayInput, rooms: Array<PaneStayInput & { stayId: string; previewDigest: string }>) => {
+    const routes = row.quoteWorkflow;
+    if (!routes?.prepareStay || !routes.commitStay || !routes.getStayWrite || !stay.workItemId) throw new Error('pane_save_client_missing');
+    const scope = getMailCacheScope(), options = inMailbox(scope.activeTransportId);
+    const prepared = object(await routes.prepareStay.mutate({ workItemId: stay.workItemId,
+      ...(stay.propertyCode === 'HRDAV' || stay.propertyCode === 'HRDAVS' ? { propertySwitch: stay.propertyCode } : {}),
+      rooms: rooms.map(room => ({ stayId: room.stayId, previewDigest: room.previewDigest })) }, options));
+    if (!uuid(prepared.preparedRef) || !Number.isSafeInteger(prepared.revision) || Number(prepared.revision) < 0 ||
+        prepared.propertyCode !== (stay.propertyCode ?? 'HRCEN')) throw new Error('pane_preparation_changed');
+    const queued = object(await routes.commitStay.mutate({ ...stay, previewDigest: rooms[0]!.previewDigest,
+      preparedRef: prepared.preparedRef, expectedRevision: Number(prepared.revision) }, options));
+    if (queued.status !== 'queued' || !uuid(queued.runId) || !uuid(queued.grantId) ||
+        queued.preparedRef !== prepared.preparedRef || queued.expectedRevision !== prepared.revision) {
+      throw new Error('pane_save_unconfirmed');
+    }
+    const deadline = Date.now() + 27 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const currentScope = getMailCacheScope();
+      if (currentScope.userId !== scope.userId || currentScope.activeTransportId !== scope.activeTransportId) throw new Error('pane_save_unconfirmed');
+      const result = object(await routes.getStayWrite.query({ workItemId: stay.workItemId,
+        preparedRef: prepared.preparedRef, runId: queued.runId }, options));
+      if (result.status === 'succeeded') {
+        if (!Array.isArray(result.results) || result.results.length !== rooms.length) throw new Error('pane_save_unconfirmed');
+        const saved = new Map<string, PaneStayResult>();
+        for (const value of result.results) {
+          const room = object(value);
+          if (typeof room.allocationId !== 'string' || !rooms.some(input => input.stayId === room.allocationId) ||
+              saved.has(room.allocationId) || room.status !== 'ok' || room.clickedSave !== true ||
+              typeof room.confirmationNumber !== 'string' || !/^\d+-\d+$/.test(room.confirmationNumber) ||
+              typeof room.observationRef !== 'string' || !room.observationRef) throw new Error('pane_save_unconfirmed');
+          saved.set(room.allocationId, { status: 'ok', outcome: 'committed', confirmationNumber: room.confirmationNumber });
+        }
+        return saved;
+      }
+      if (result.status !== 'queued' && result.status !== 'running') throw new Error('pane_save_unconfirmed');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error('pane_save_unconfirmed');
+  };
   return {
     readAvailability: async (input) => {
       const status = row.paneStayLookup?.jobStatus;
@@ -307,9 +356,29 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
       return previewStay.mutate(stay);
     },
     commit: async (stay, previewDigest, batch) => {
-      const commitStay = row.quoteWorkflow?.commitStay;
-      if (!commitStay) throw new Error('pane_save_client_missing');
-      return commitStay.mutate({ ...stay, previewDigest, ...(batch ? { batch } : {}) });
+      if (!stay.workItemId || !stay.stayId) throw new Error('pane_preview_binding_required');
+      const scope = getMailCacheScope();
+      const batchKey = batch ? JSON.stringify([scope.userId, scope.activeTransportId, stay.propertyCode,
+        stay.workItemId, batch.id]) : null;
+      let batchWrite = batchKey ? batches.get(batchKey) : undefined;
+      if (!batchWrite) {
+        if (batch?.kind === 'continue') throw new Error('pane_save_unconfirmed');
+        const rooms = batch?.kind === 'start' ? batch.rooms : [{ ...stay, stayId: stay.stayId, previewDigest }];
+        if (!rooms.length || rooms.length > 8 || rooms[0]?.stayId !== stay.stayId ||
+            rooms.some(room => room.workItemId !== stay.workItemId || room.propertyCode !== stay.propertyCode)) {
+          throw new Error('pane_preview_binding_required');
+        }
+        batchWrite = { rooms: rooms.map(({ previewDigest: _digest, ...room }) => ({ stayId: room.stayId,
+          key: paneStayKey(room) })), results: writeRooms(stay, rooms) };
+        if (batchKey) {
+          if (batches.size >= 64) batches.delete(batches.keys().next().value!);
+          batches.set(batchKey, batchWrite);
+        }
+      }
+      if (!batchWrite.rooms.some(room => room.stayId === stay.stayId && room.key === paneStayKey(stay))) throw new Error('pane_preparation_changed');
+      const result = (await batchWrite.results).get(stay.stayId);
+      if (!result) throw new Error('pane_save_unconfirmed');
+      return result;
     },
     screenshot: async (runId, name) => {
       const screenshot = row.paneStayCancel?.paneStayScreenshot;

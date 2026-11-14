@@ -2,16 +2,21 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun, mailActionLabel } from '../db/schema/mail.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { bindHmsMailboxProperty } from '../hms/mailbox-hms-origin-bind.js';
+import { propertyCodeSchema, propertySwitchSchema, resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
+import { assertTargetAliasesHeld, type HeldTargetAliasLock } from '../hms/property-read-lock.js';
+import type { VerifiedStaffGo } from '../hms/staff-go-authority.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { canonicalJson } from './draft-approval.js';
-import { approveHmsWrite, assertHmsSelectedSource, assertHmsUnchangedBeforeSave, assertNoOpenWrite, consumeHmsWriteApproval,
+import { approveHmsWrite, prepareHmsWrite, assertHmsSelectedSource, assertHmsUnchangedBeforeSave, assertNoOpenWrite, consumeHmsWriteApproval,
   endHmsWriteRun, formDigest, hmsStateDigest, lockConsumedCloudCancelApproval, recordHmsWriteEvidence } from './hms-approval.js';
-import { hmsDispatchTargetKey, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKey, hmsDispatchTargetKeys, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError,
   resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { heartbeatAiRun, HMS_WRITE_RUN_KIND, mergeTerminalRunMetrics, type AiFailureClass, type AiRunFence } from './run-ledger.js';
@@ -19,6 +24,7 @@ import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-act
 import { assertNoCreateDispatchFence, type CreateFenceTransaction } from './pane-create-dispatch-fence.js';
 import { lockCreateSource, withLockedCreateSource, type LockedCreateSource } from './pane-create-source-loader.js';
 import { paneStayClock, paneWriteMode, registerPaneRun } from './pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import type { MailKind } from './extraction/schema.js';
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
@@ -43,7 +49,8 @@ const requestSchema = z.object({ requestId: digest, proposalDigest: digest }).st
 const cursorSchema = z.object({ extractionId: z.string().uuid(), revision: z.number().int().nonnegative().safe(),
   revisionHead: z.number().int().nonnegative().safe(), seq: z.number().int().nonnegative().safe() }).strict()
   .refine((value) => value.revision <= value.revisionHead);
-const preimageSchema = z.object({ confirmation: z.string().regex(/^\d+-\d+$/), guestId: z.string().regex(/^\d{1,30}$/),
+const preimageSchema = z.object({ propertyCode: z.enum(['HRCEN', 'HRDAV', 'HRDAVS']).optional(),
+  confirmation: z.string().regex(/^\d+-\d+$/), guestId: z.string().regex(/^\d{1,30}$/),
   nativeStayId: z.string().regex(/^\d{1,100}$/), firstName: z.string().trim().min(1).max(200).refine((name) => !/[\p{Cc}]/u.test(name)),
   lastName: z.string().trim().min(1).max(200).refine((name) => !/[\p{Cc}]/u.test(name)), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), roomType: z.string().min(1).max(12),
@@ -78,8 +85,9 @@ type NativeRunner = (input: Record<string, unknown>) => Promise<NativeResult>;
 export const cloudCancelLoaders: { run: NativeRunner | null } = { run: null };
 export async function runCloudCancellation(input: Record<string, unknown>): Promise<NativeResult> {
   const target = input.target as HmsReadTarget | undefined;
-  if (target?.propertyCode === 'HRCEN' && typeof input.confirmation === 'string' && input.cloudTargetKey === undefined) {
-    input = { ...input, cloudTargetKey: hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved',
+  const propertyCode = propertyCodeSchema.safeParse(target?.propertyCode);
+  if (propertyCode.success && typeof input.confirmation === 'string' && input.cloudTargetKey === undefined) {
+    input = { ...input, cloudTargetKey: hmsDispatchTargetKey({ propertyCode: propertyCode.data, kind: 'saved',
       confirmation: input.confirmation }) };
   }
   if (cloudCancelLoaders.run) return cloudCancelLoaders.run(input);
@@ -156,6 +164,8 @@ async function checkSource(tx: CreateFenceTransaction, locked: LockedCreateSourc
   await lockCreateActorSession(tx, { actorUserId: input.actorUserId, sessionId: input.sessionId,
     sessionProfile: input.sessionProfile });
   if (staffQuoteSourceHash(locked.snapshot.source) !== input.source.sourceHash ||
+      !bindHmsMailboxProperty({ transportId: input.transportId, propertyCode: input.target.propertyCode,
+        origin: locked.snapshot.source }).ok ||
       (sourceDigest !== undefined && sourceDigest !== locked.sourceDigest)) throw new Error('cancel_source_changed');
   return { accessId: actor.accessId, sourceDigest: locked.sourceDigest };
 }
@@ -174,8 +184,9 @@ export async function lockSelectedCloudCancel(tx: CreateFenceTransaction, input:
     threadId: bound.source.threadId, messageId: bound.source.messageId, cursor: bound.cursor }, async (lockedTx, source) => {
     const actual = cloudCancelDispatchSchema.safeParse(source.item.state.cloudCancel);
     if (!actual.success || canonicalJson(actual.data) !== canonicalJson(bound)) throw new Error('cancel_source_changed');
-    const context = { ...input, confirmation: bound.preimage.confirmation, arrival: bound.preimage.arrival,
-      target: {} as HmsReadTarget };
+    const target = paneStayHmsTargetForTransport(input.transportId, bound.preimage.propertyCode ?? 'HRCEN');
+    if (!target.ok) throw new Error('cancel_property_changed');
+    const context = { ...input, confirmation: bound.preimage.confirmation, arrival: bound.preimage.arrival, target: target.target };
     await checkSource(lockedTx, source, context, bound.accessId, bound.sourceDigest);
     if (bound.request) {
       const request = await lockedEffectiveCancel(lockedTx, source, { ...context, ...bound.request });
@@ -189,8 +200,10 @@ export async function lockSelectedCloudCancel(tx: CreateFenceTransaction, input:
 
 /** Preview opens only the native reason dialog. It persists a short-lived, source-bound preimage. */
 export async function previewCloudCancel(input: CancelContext): Promise<PaneStayCancelResult> {
-  const db = input.db ?? getDb(), mode = paneWriteMode('cancel', 'unpaid', input.env);
-  if (mode === 'off') return emptyResult('refused_flag_off');
+  const db = input.db ?? getDb(), code = propertyCodeSchema.safeParse(input.target.propertyCode);
+  if (!code.success || !effectiveWorkflowPolicy(input.env ?? process.env, code.data, 'cancel').readEnabled) {
+    return emptyResult('refused_flag_off');
+  }
   if (!cancelSelectionSchema.safeParse(input.source).success || !z.string().uuid().safeParse(input.workItemId).success ||
       !input.sessionId || !input.sessionProfile ||
       Boolean(input.selectedInternetMessageId) !== Boolean(input.expectedFormDigest) ||
@@ -210,14 +223,14 @@ export async function previewCloudCancel(input: CancelContext): Promise<PaneStay
         request: selected ? { requestId: selected.requestId, proposalDigest: selected.proposalDigest } : undefined };
     });
     // Preview is read-only, so staff can prepare a real booking while the write flag is in lab mode.
-    native = await runCloudCancellation({ mode: 'preview', target: input.target, confirmation: input.confirmation,
+    native = await runCloudCancellation({ mode: 'preview', target: input.target, transportId: input.transportId, confirmation: input.confirmation,
       arrival: input.arrival, allowRealGuest: true });
     const expected = preimageSchema.safeParse(native.expected), reasons = z.array(reasonSchema).min(1).max(100).safeParse(native.reasons);
     const policyFacts = z.array(z.string().trim().min(1).max(260)).max(12).safeParse(native.policyFacts ?? []);
     const penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(native.penaltyText ?? null);
     if (native.outcome !== 'preview_ok' || !expected.success || !reasons.success ||
         !policyFacts.success || !penaltyText.success ||
-        expected.data.confirmation !== input.confirmation || expected.data.arrival !== input.arrival) {
+        expected.data.propertyCode !== input.target.propertyCode || expected.data.confirmation !== input.confirmation || expected.data.arrival !== input.arrival) {
       return { ...emptyResult(native.outcome === 'refused_preimage' ? 'refused_target_unverified' : native.outcome),
         penaltyText: native.penaltyText ?? null, policyFacts: native.policyFacts ?? [] };
     }
@@ -259,7 +272,8 @@ export async function previewCloudCancel(input: CancelContext): Promise<PaneStay
 
 /** Staff Go binds the exact preview, source, native reason and note before enqueueing one write. */
 export async function commitCloudCancel(input: CancelContext & { reason: string; previewDigest: string; cancellationNote?: string }): Promise<PaneStayCancelResult> {
-  const db = input.db ?? getDb(), mode = paneWriteMode('cancel', 'unpaid', input.env), note = cleanNote(input.cancellationNote);
+  const db = input.db ?? getDb(), code = propertyCodeSchema.safeParse(input.target.propertyCode), note = cleanNote(input.cancellationNote);
+  const mode = code.success ? effectiveWorkflowPolicy(input.env ?? process.env, code.data, 'cancel').admittedMode : 'off';
   if (mode === 'off') return emptyResult('refused_flag_off');
   if (note === null || !input.sessionId || !input.sessionProfile || !cancelSelectionSchema.safeParse(input.source).success ||
       !digest.safeParse(input.previewDigest).success ||
@@ -276,6 +290,7 @@ export async function commitCloudCancel(input: CancelContext & { reason: string;
       if (hash(body) !== previewDigest || previewDigest !== input.previewDigest || grant.expiresAt <= Date.now() ||
           grant.actorUserId !== input.actorUserId || grant.sessionId !== input.sessionId || grant.sessionProfile !== input.sessionProfile ||
           grant.preimage.confirmation !== input.confirmation || grant.preimage.arrival !== input.arrival ||
+          grant.preimage.propertyCode !== input.target.propertyCode ||
           grant.reviewFormDigest !== input.expectedFormDigest ||
           (grant.preimage.allowRealGuest && mode !== 'on') || canonicalJson(grant.source) !== canonicalJson(input.source) ||
           canonicalJson(grant.cursor) !== canonicalJson(cursor) ||
@@ -298,17 +313,22 @@ export async function commitCloudCancel(input: CancelContext & { reason: string;
       for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
         'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash', 'documentCode', 'filingStateDigest',
         'reason', 'fields', 'previewDigest', 'cloudAmend', 'cloudCancel', 'hmsSnapshot']) delete state[key];
-      Object.assign(state, { action: 'cancel', confirmation: grant.preimage.confirmation,
+      Object.assign(state, { action: 'cancel', propertyCode: input.target.propertyCode, confirmation: grant.preimage.confirmation,
         arrival: grant.preimage.arrival, lastName: grant.preimage.lastName, reason: selected[0]!.display, cloudCancel,
         hmsSnapshot: { digest: hmsStateDigest(grant.preimage), readAt: grant.readAt } });
       await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
       return formDigest(state);
     });
     approvalAttempted = true;
+    const propertySwitch = input.target.propertyCode === 'HRCEN' ? undefined : propertySwitchSchema.parse(input.target.propertyCode);
+    const prepared = await prepareHmsWrite({ db, transportId: input.transportId, actorUserId: input.actorUserId,
+      sessionId: input.sessionId, sessionProfile: input.sessionProfile, workItemId: input.workItemId,
+      expectedFormDigest: bound, selectedSource: input.source, selectedInternetMessageId: input.selectedInternetMessageId, propertySwitch });
     const approved = await approveHmsWrite({ db, transportId: input.transportId, actorUserId: input.actorUserId,
       sessionId: input.sessionId, sessionProfile: input.sessionProfile, workItemId: input.workItemId,
       formDigest: bound, cloudCancelSelection: input.source, selectedSource: input.source,
-      selectedInternetMessageId: input.selectedInternetMessageId, env: input.env });
+      selectedInternetMessageId: input.selectedInternetMessageId, propertySwitch,
+      preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, env: input.env });
     return { ...emptyResult('cancel_queued'), statusBefore: 'Reserved', requestedArrival: input.arrival,
       hmsArrival: input.arrival, runId: approved.runId };
   } catch { return emptyResult(approvalAttempted ? 'cancel_unconfirmed' : 'cancel_preview_required'); }
@@ -329,7 +349,7 @@ type Charge = z.infer<typeof chargeSchema>;
 type ChargeSelection = { db?: DB; transportId: string; actorUserId: string; sessionId?: string;
   sessionProfile?: 'legacy' | 'remote'; workItemId: string; runId: string;
   source: z.infer<typeof cancelSelectionSchema>; confirmation: string; arrival: string;
-  selectedInternetMessageId?: string };
+  selectedInternetMessageId?: string; propertySwitch?: PropertySwitch };
 
 function chargeFrom(metrics: unknown): Charge | null {
   const object = metrics && typeof metrics === 'object' && !Array.isArray(metrics)
@@ -350,12 +370,15 @@ async function lockedCharge(input: ChargeSelection, action: (tx: CreateFenceTran
       await assertHmsSelectedSource(tx as DB, { ...input, selectedSource: input.source }, item, true);
     }
     const bound = cloudCancelDispatchSchema.parse(item.state.cloudCancel);
+    const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch });
+    if ((bound.preimage.propertyCode ?? 'HRCEN') !== scope.propertyCode) throw new Error('cancel_charge_unavailable');
     const [run] = await tx.select({ metrics: aiWorkflowRun.metrics, state: aiWorkflowRun.state,
       deadlineAt: aiWorkflowRun.deadlineAt }).from(aiWorkflowRun)
       .where(and(eq(aiWorkflowRun.id, input.runId), eq(aiWorkflowRun.workItemId, input.workItemId),
         eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND)))
       .limit(1).for('update');
     const charge = chargeFrom(run?.metrics), metrics = run?.metrics ?? {};
+    const mode = effectiveWorkflowPolicy(process.env, bound.preimage.propertyCode ?? 'HRCEN', 'cancel').admittedMode;
     const active = Boolean(run && ['claimed', 'running'].includes(run.state) && run.deadlineAt &&
       run.deadlineAt.getTime() > Date.now() && charge && charge.expiresAt > Date.now());
     if (!run || !charge || (!allowInactive && !active) ||
@@ -363,8 +386,7 @@ async function lockedCharge(input: ChargeSelection, action: (tx: CreateFenceTran
         charge.sessionProfile !== input.sessionProfile || charge.confirmation !== input.confirmation ||
         charge.confirmation !== bound.preimage.confirmation || charge.nativeStayId !== bound.preimage.nativeStayId ||
         input.arrival !== bound.preimage.arrival || charge.sourceDigest !== bound.sourceDigest ||
-        (!allowInactive && (paneWriteMode('cancel', 'unpaid') === 'off' ||
-          (bound.preimage.allowRealGuest && paneWriteMode('cancel', 'unpaid') !== 'on')))) {
+        (!allowInactive && (mode === 'off' || (bound.preimage.allowRealGuest && mode !== 'on')))) {
       throw new Error('cancel_charge_unavailable');
     }
     await action(tx, charge, metrics);
@@ -405,7 +427,9 @@ export async function approveCloudCancelCharge(input: ChargeSelection & { challe
 type CancelPreimage = z.infer<typeof preimageSchema>;
 /** Compare live identity and business fields without pinning changing financial observations. */
 export function cancelBusinessPreimage(current: CancelPreimage, approved: CancelPreimage): CancelPreimage {
-  return { ...current, depositReceived: approved.depositReceived, expectedGuarantee: approved.expectedGuarantee };
+  const { propertyCode, ...business } = current;
+  return { ...business, ...(approved.propertyCode ? { propertyCode } : {}),
+    depositReceived: approved.depositReceived, expectedGuarantee: approved.expectedGuarantee };
 }
 
 const safeRunDir = (path: string | undefined): path is string => Boolean(path && dirname(path) === tmpdir() &&
@@ -413,12 +437,12 @@ const safeRunDir = (path: string | undefined): path is string => Boolean(path &&
 
 /** A new owned read obtains the native stay identity before the target lock. */
 export async function readCloudCancelPreimage(input: { target: HmsReadTarget; confirmation: string; arrival: string;
-  allowRealGuest: boolean; cloudTargetKey?: string }): Promise<CancelPreimage | null> {
+  allowRealGuest: boolean; transportId: string; signal?: AbortSignal; cloudTargetKey?: string }): Promise<CancelPreimage | null> {
   let result: NativeResult | null = null;
   try {
     result = await runCloudCancellation({ mode: 'read', ...input });
     const parsed = preimageSchema.safeParse(result.expected);
-    return result.outcome === 'read' && parsed.success && parsed.data.confirmation === input.confirmation &&
+    return result.outcome === 'read' && parsed.success && parsed.data.propertyCode === input.target.propertyCode && parsed.data.confirmation === input.confirmation &&
       parsed.data.arrival === input.arrival && parsed.data.allowRealGuest === input.allowRealGuest ? parsed.data : null;
   } catch { return null; }
   finally { if (safeRunDir(result?.runDir)) await rm(result.runDir, { recursive: true, force: true }).catch(() => {}); }
@@ -434,24 +458,39 @@ export async function executeCloudCancel(input: {
   db: DB; fence: AiRunFence; transportId: string; workItemId: string; target: HmsReadTarget;
   dispatchTarget: HmsDispatchTarget; bound: CloudCancelDispatch;
   consumed: Awaited<ReturnType<typeof consumeHmsWriteApproval>>; env: NodeJS.Dict<string>;
-  runDirs: string[]; pendingCloudEvidence: Map<string, boolean>;
+  runDirs: string[]; pendingCloudEvidence: Map<string, boolean>; signal?: AbortSignal;
+  go?: VerifiedStaffGo; heldTargetLock?: HeldTargetAliasLock;
 }): Promise<PaneHmsWriteResult> {
   const { db, fence, bound, consumed, dispatchTarget } = input;
   const end = async (failureClass: AiFailureClass, reason: string): Promise<PaneHmsWriteResult> =>
-    await endHmsWriteRun({ db, fence, failureClass, reason })
+    input.go ? { status: 'ended', failureClass, reason } : await endHmsWriteRun({ db, fence, failureClass, reason })
       ? { status: 'ended', failureClass, reason } : { status: 'lease_lost' };
   const currentMode = () => {
-    const mode = paneWriteMode('cancel', 'unpaid', input.env);
+    const mode = input.go ? effectiveWorkflowPolicy(input.env, input.go.grant.propertyCode, 'cancel').admittedMode
+      : paneWriteMode('cancel', 'unpaid', input.env);
     return mode !== 'off' && (!bound.preimage.allowRealGuest || mode === 'on');
   };
+  const lockHeld = () => {
+    if (!input.go) return !consumed.verifiedStaffGo;
+    try {
+      assertTargetAliasesHeld(input.heldTargetLock, { tenantId: input.go.grant.tenantId,
+        propertyCode: input.go.grant.propertyCode,
+        targetAliases: [...new Set([...input.go.preparation.targetAliases, ...hmsDispatchTargetKeys(dispatchTarget)])] });
+      return true;
+    } catch { return false; }
+  };
   if (!currentMode() || !consumed.authority || dispatchTarget.kind !== 'saved' || !dispatchTarget.nativeStayId ||
-      dispatchTarget.nativeStayId !== bound.preimage.nativeStayId || dispatchTarget.confirmation !== bound.preimage.confirmation) {
+      dispatchTarget.nativeStayId !== bound.preimage.nativeStayId || dispatchTarget.confirmation !== bound.preimage.confirmation ||
+      (bound.preimage.propertyCode ?? 'HRCEN') !== input.target.propertyCode || dispatchTarget.propertyCode !== input.target.propertyCode ||
+      (input.go && (input.go.grant.operation !== 'cancel' || input.go.grant.propertyCode !== input.target.propertyCode ||
+        input.go.grant.grantId !== consumed.grantId || input.go.payloadHash !== consumed.payloadHash)) || !lockHeld()) {
     return end('POLICY_BLOCK', 'cancel_unavailable');
   }
   const authority = consumed.authority, cloudTargetKey = hmsDispatchTargetKey(dispatchTarget);
   const read = async () => {
     const current = await readCloudCancelPreimage({ target: input.target, confirmation: bound.preimage.confirmation,
-      arrival: bound.preimage.arrival, allowRealGuest: bound.preimage.allowRealGuest, cloudTargetKey });
+      arrival: bound.preimage.arrival, allowRealGuest: bound.preimage.allowRealGuest, cloudTargetKey,
+      transportId: input.transportId, signal: input.signal });
     // Keep the signed preview facts intact while rechecking current identity and business fields.
     return current && cancelBusinessPreimage(current, bound.preimage);
   };
@@ -463,7 +502,7 @@ export async function executeCloudCancel(input: {
   if (pre.status === 'lease_lost') return { status: 'lease_lost' };
   if (pre.status === 'needs_check') return { status: 'ended', failureClass: 'NEEDS_CHECK', reason: pre.reason };
   const finishCutoff = performance.now() + fence.deadlineAt.getTime() - Date.now() - 6 * 60_000;
-  const hasBudget = () => currentMode() && performance.now() <= finishCutoff &&
+  const hasBudget = () => !input.signal?.aborted && lockHeld() && currentMode() && performance.now() <= finishCutoff &&
     fence.deadlineAt.getTime() - Date.now() >= 6 * 60_000;
   const commitBudgetMs = Math.max(0, Math.min(20 * 60_000, Math.floor(finishCutoff - performance.now())));
   if (!hasBudget() || commitBudgetMs < 1) return end('NEEDS_CHECK', 'cancel_run_deadline');
@@ -571,7 +610,7 @@ export async function executeCloudCancel(input: {
     let authorizationStarted = false, authorizationRefusal: unknown = null;
     try {
       dispatch.handle = await claimHmsLabtestDispatch(db, { workItemId: input.workItemId, transportId: input.transportId,
-        actorUserId: authority.actorUserId, grantId: consumed.grantId, propertyCode: 'HRCEN',
+        actorUserId: authority.actorUserId, grantId: consumed.grantId, propertyCode: dispatchTarget.propertyCode,
         firstName: bound.preimage.firstName, lastName: bound.preimage.lastName, nativeGuestId: bound.preimage.guestId,
         operation: 'cancel', target: dispatchTarget, sourceDigest: bound.sourceDigest, approvedDigest,
         requestDigest: nativeDigest, recovery: sealedRecovery }, async (tx, claim) => {
@@ -622,13 +661,14 @@ export async function executeCloudCancel(input: {
   const beat = setInterval(() => { void heartbeatAiRun(fence, db).catch(() => false); }, 30_000);
   let saved: NativeResult;
   try {
-    saved = await runCloudCancellation({ mode: 'commit', target: input.target, confirmation: bound.preimage.confirmation,
-      arrival: bound.preimage.arrival, allowRealGuest: bound.preimage.allowRealGuest, expected: bound.preimage,
+    saved = await runCloudCancellation({ mode: 'commit', target: input.target, transportId: input.transportId, signal: input.signal, confirmation: bound.preimage.confirmation,
+      arrival: bound.preimage.arrival, allowRealGuest: bound.preimage.allowRealGuest,
+      expected: { ...bound.preimage, propertyCode: input.target.propertyCode },
       reasonCode: bound.reasonCode, reasonLabel: bound.reasonLabel, cancellationNote: bound.cancellationNote, cloudTargetKey,
       commitBudgetMs, continuationAllowed: hasBudget, awaitChargeApproval, dispatchChargeWithAuthority, prepareChargeWithAuthority,
       beforeDispatch: async () => {
         if (!hasBudget()) return false;
-        const check = await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence, readHmsState: read });
+        const check = await assertHmsUnchangedBeforeSave({ db, runId: fence.runId, fence, readHmsState: async () => current });
         return check.status === 'unchanged' && hasBudget();
       },
       dispatchWithAuthority: async (send: () => Promise<unknown>, nativeDigest: string, _request: unknown, beforeShot: string) => {
@@ -648,6 +688,7 @@ export async function executeCloudCancel(input: {
         } else {
           await claimDispatch(nativeDigest, beforeShot);
         }
+        input.signal?.throwIfAborted();
         return send();
       },
     });
@@ -707,6 +748,7 @@ export async function executeCloudCancel(input: {
   const hold = dispatch.handle, request = dispatch.requestDigest, sealedRecovery = dispatch.recovery,
     beforeReceipt = dispatch.before, afterReceipt = after;
   const readbackDigest = hash(readback.data);
+  let observationRef: string | undefined;
   try {
     await resolveHmsLabtestDispatch(db, hold, { operation: 'cancel', confirmation: readback.data.confirmation,
       nativeStayId: readback.data.nativeStayId, nativeReadback: readback.data, readbackDigest,
@@ -732,6 +774,8 @@ export async function executeCloudCancel(input: {
       if (!run?.deadlineAt || run.deadlineAt.getTime() !== fence.deadlineAt.getTime() || Date.now() >= run.deadlineAt.getTime()) {
         throw new Error('cancel_lease_lost');
       }
+      if (input.signal?.aborted || !lockHeld()) throw new Error('cancel_lock_lost');
+      if (input.go) return;
       const now = new Date();
       await tx.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: now, updatedAt: now, claimOwner: null,
         claimToken: null, metrics: mergeTerminalRunMetrics(run.metrics, { action: 'cancel', outcome: 'cancelled',
@@ -739,6 +783,19 @@ export async function executeCloudCancel(input: {
             ? { cancelNotice: saved.zeroPenaltyNotice } : {}) }) })
         .where(eq(aiWorkflowRun.id, fence.runId));
     });
+    if (input.go) {
+      const resolved = await db.select({ id: workEvent.id, value: workEvent.value }).from(workEvent).where(and(
+        eq(workEvent.workItemId, input.workItemId), eq(workEvent.type, 'write.evidence'), eq(workEvent.actorKind, 'system'),
+        eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1'), sql`${workEvent.value}->>'holdId' = ${hold.holdId}`,
+        sql`${workEvent.value}->>'kind' = 'resolved'`)).limit(2);
+      const receipt = z.object({ operation: z.literal('cancel'), readbackDigest: z.literal(readbackDigest),
+        nativeReadback: z.unknown() }).passthrough().safeParse(resolved[0]?.value);
+      if (resolved.length !== 1 || !receipt.success || hmsStateDigest(receipt.data.nativeReadback) !== readbackDigest) {
+        throw new Error('cancel_resolution_receipt_unverified');
+      }
+      observationRef = resolved[0]!.id;
+    }
   } catch { return end('UNKNOWN', 'cancel_unconfirmed'); }
-  return { status: 'succeeded', action: 'cancel', outcome: 'cancelled', evidence: ['before.png', 'after.png'] };
+  return { status: 'succeeded', action: 'cancel', outcome: 'cancelled', evidence: ['before.png', 'after.png'],
+    ...(input.go ? { observationRef, nativeReadbackDigest: readbackDigest } : {}) };
 }

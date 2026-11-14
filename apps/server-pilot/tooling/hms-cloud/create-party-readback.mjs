@@ -1,5 +1,6 @@
 // Independently reopen the just-created stay and inspect native party IDs.
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { withCloudReadSession } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { isCreateDate, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
@@ -30,7 +31,7 @@ export function compareCreatePartyRecord(snapshot, expected) {
     return { outcome: 'unverified', issue: 'PARTY_RECORD_UNVERIFIED' };
   }
   const guest = { firstName: expected.firstName ?? 'Proof', lastName: expected.lastName ?? 'Labtest' };
-  const values = { propertycode: 'HRCEN', confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
+  const values = { propertycode: expected.propertyCode ?? 'HRCEN', confirmationnumber: expected.confirmation, status: 'Reserved', guestid: expected.guestId,
     firstname: guest.firstName, lastname: guest.lastName,
     taid1: expected.agency?.nativeId ?? '', ta1: expected.agency?.name ?? '',
     companyid: expected.organization?.nativeId ?? '', company: expected.organization?.name ?? '',
@@ -52,8 +53,8 @@ export function compareCreatePartyRecord(snapshot, expected) {
 
 export async function readCreateParties({ confirmation, arrival, guestId, agency, organization, arAccount, billingReference,
   firstName = 'Proof', lastName = 'Labtest', allowRealGuest = false },
-  { openSession = withCenturionStay360Page, cloudTargetKey } = {}) {
-  if (!/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') ||
+  { openSession = withCloudReadSession, propertyCode = 'HRCEN', transportId, signal, credentialLease, cloudTargetKey } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active || !/^\d{6,}-\d+$/.test(confirmation || '') || !/^\d+$/.test(guestId || '') ||
       typeof allowRealGuest !== 'boolean' || !validCreateGuest({ firstName, lastName }) ||
       (!allowRealGuest && (!isLabtestGuest({ firstName, lastName }) || arrival < '2027-01-01')) ||
       !isCreateDate(arrival)) {
@@ -71,15 +72,15 @@ export async function readCreateParties({ confirmation, arrival, guestId, agency
     return await openSession(async (page) => {
       const shallow = await readShallow(page, confirmation, { guestName: `${firstName} ${lastName}`, arrivalDate: arrival });
       if (shallow.confirmation !== confirmation) throw new Error('CONFIRMATION_MISMATCH');
-      await readRecord(page, confirmation);
+      await readRecord(page, confirmation, { nativePropertyCode: propertyCode });
       const frames = page.locator('.x-window:visible:not(.x-menu) iframe:visible');
       if (await frames.count() !== 1) throw new Error('RECORD_FRAME_NOT_UNIQUE');
       const frame = await (await frames.elementHandle())?.contentFrame();
       if (!frame || new URL(frame.url()).origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com') throw new Error('RECORD_FRAME_UNAVAILABLE');
       const snapshot = await frame.evaluate(extractCreatePartySnapshot);
-      return compareCreatePartyRecord(snapshot, { confirmation, guestId, firstName, lastName,
+      return compareCreatePartyRecord(snapshot, { propertyCode, confirmation, guestId, firstName, lastName,
         agency, organization, arAccount, billingReference });
-    }, { headless: true, blockServiceWorkers: true, ...(cloudTargetKey ? { cloudTargetKey } : {}),
-      prepareContext: (context) => installSavedStayReadGuard(context, { confirmation }) });
+    }, { propertyCode, transportId, signal, credentialLease, startScreen: 'OSRESS', ...(cloudTargetKey ? { cloudTargetKey } : {}),
+      prepareContext: (context) => installSavedStayReadGuard(context, { confirmation, propertyCode }) });
   } catch { return { outcome: 'unverified', issue: 'PARTY_READBACK_FAILED' }; }
 }

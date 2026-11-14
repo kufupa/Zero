@@ -9,7 +9,7 @@ import {
   PROFILE_SALES_STRATEGY_CODES,
   profileFor,
   type PropertyProfile,
-} from '../../tooling/playwright-quote/property-profile.mjs';
+} from '../../tooling/hms-cloud/property-profile.mjs';
 
 import { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE_CODES, CENTURION_EVENT_RATE_CODES, type CenturionRatePlan, type CenturionRateBoard } from './centurion-rate-catalogue.js';
 export { CENTURION_RATE_CATALOGUE, CENTURION_RATE_PLANS, CENTURION_OVERRIDE_RATE_CODES, CENTURION_EVENT_RATE_CODES };
@@ -213,8 +213,7 @@ export async function propertyConfigurationForScope(
         formPolicy = { ...formPolicy, requiredFields: formFields.filter((field) => field.required).map((field) => field.name),
           guestOptIn: guestOptIn ? guestOptIn.required ? 'required' : 'optional' : 'unknown', childCategories,
           marketSegmentChoices: marketSegment?.choices ?? [],
-          guaranteeChoices: (guarantee?.choices ?? []).map(({ code, meaning }) => ({ code, meaning, ready: false,
-            reason: 'This choice is not available for this property yet.' })) };
+          guaranteeChoices: (guarantee?.choices ?? []).map(({ code, meaning }) => ({ code, meaning, ready: true, reason: null })) };
         const records = (kind: string): Array<{ code: string; meaning: string }> =>
           (data.catalogs?.[kind]?.records ?? []).flatMap((raw) => {
             if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
@@ -235,9 +234,13 @@ export async function propertyConfigurationForScope(
   const capability = (workflow: 'reads' | 'quote' | 'create' | 'amend' | 'cancel' | 'attach' | 'addons' | 'guest_profile_create') => {
     const proven = scope.group === 'centurion' ||
       (workflow === 'reads' && validatedReadCapabilities?.reads === true) ||
-      (workflow === 'quote' && validatedReadCapabilities?.quote === true && catalogue.identity !== null);
-    const status = proven ? effectiveWorkflowPolicy(env, scope.propertyCode, workflow).capability : 'unavailable';
-    return { status, reason: status === 'unavailable' ? 'This workflow is not available for this property yet.' : null };
+      (workflow === 'quote' && validatedReadCapabilities?.quote === true && catalogue.identity !== null) ||
+      (!['reads', 'quote'].includes(workflow) && catalogue.identity !== null &&
+        effectiveWorkflowPolicy(env, scope.propertyCode, workflow).readEnabled);
+    const policy = effectiveWorkflowPolicy(env, scope.propertyCode, workflow);
+    const status = proven ? policy.capability : 'unavailable';
+    return { status, reason: status === 'unavailable' ? 'This workflow is not available for this property yet.'
+      : status === 'prepare-only' && policy.mode === 'on' ? 'Saving requires a verified canary for this property and writer.' : null };
   };
   return propertyConfigurationSchema.parse({
     transportId: scope.transportId, propertyCode: scope.propertyCode, tenantId: scope.tenantId,

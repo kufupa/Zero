@@ -62,7 +62,7 @@ export async function prepareBookingPacket(input:BookingInput,deps:{resolveEvide
   }
  }
  if(r.inventoryStatus==='unproven'&&!originalInventoryUnproven)throw new Error('original_inventory_unproven');
- const mod=await import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/create-request.mjs',import.meta.url))).href) as {loadCreateToolSchema:()=>Promise<unknown>;validateCreateRequest:(request:unknown,schema:unknown)=>{ok:boolean;errors:string[]}};
+ const mod=await import(pathToFileURL(fileURLToPath(new URL('../../tooling/hms-cloud/create-request.mjs',import.meta.url))).href) as {loadCreateToolSchema:()=>Promise<unknown>;validateCreateRequest:(request:unknown,schema:unknown)=>{ok:boolean;errors:string[]}};
  const schema=await mod.loadCreateToolSchema();signal.throwIfAborted();const packets:BookingPacket['rooms']=[],used=new Set<string>();
  if(!r.groups.length||r.groups.length>24||new Set(r.groups.map(g=>g.id)).size!==r.groups.length||input.rooms.length>96||input.rooms.some(room=>!r.groups.some(g=>g.id===room.groupId)))throw new Error('invalid_room_groups');
  for(const g of r.groups){

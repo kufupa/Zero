@@ -5,7 +5,7 @@ import {
   type QuoteEnvelope,
 } from '../src/ai/hms-availability.js';
 
-const quoteReader = (await import('../tooling/playwright-quote/fetch-quote.mjs' as string)) as {
+const quoteReader = (await import('../tooling/hms-cloud/fetch-quote.mjs' as string)) as {
   extractOptions: (
     request: {
       propertyCode: string;
@@ -18,7 +18,7 @@ const quoteReader = (await import('../tooling/playwright-quote/fetch-quote.mjs' 
     windows: Array<{ data: unknown; calendar: unknown }>,
   ) => { options: Array<Record<string, unknown>> };
 };
-const quoteFixtures = (await import('../tooling/playwright-quote/fetch-quote-fixtures.mjs' as string)) as {
+const quoteFixtures = (await import('../tooling/hms-cloud/fetch-quote-fixtures.mjs' as string)) as {
   selectionFixture: () => { data: unknown; calendar: unknown; rate: Record<string, unknown> };
 };
 

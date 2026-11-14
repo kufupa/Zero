@@ -6,9 +6,9 @@ import {
   getProfileRates,
   profileFor,
   validateProfile,
-} from '../tooling/playwright-quote/property-profile.mjs';
+} from '../tooling/hms-cloud/property-profile.mjs';
 
-const hrcenUrl = new URL('../tooling/playwright-quote/property-profiles/HRCEN.json', import.meta.url);
+const hrcenUrl = new URL('../tooling/hms-cloud/property-profiles/HRCEN.json', import.meta.url);
 
 it('loads rates, boards and letter for both hotels and throws for an unknown property', () => {
   const hrcen = profileFor('HRCEN');

@@ -10,14 +10,14 @@ import {isReservationistSignatureNoise} from './reservationist-attachment-input.
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
 import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
 import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from './hms-availability.js';
-import {profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
+import {profileFor} from '../../tooling/hms-cloud/property-profile.mjs';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:boolean;salesStrategy:'Government'|'Preset'|'BAR'|'Promotions'|'Wholesale'|'Negoticated Contracted'|'Airline Crews'|'Domestic Leisure'|'Other'};details:'full';maxOptionsPerGroup:number};
 export type StaffQuoteSummaryDiagnostic={kind:'requested'|'widened';requested:QuoteSourceRecord['request'];source:QuoteSourceRecord;freshUntil:string};
 export type ReservationistPartyRead={ref:string;sha256:string;observedAt:string;kind:'organization'|'bookingAgency';query:string;outcome:'resolved'|'ambiguous'|'no_match';candidates:{nativeId:string;displayName:string;kind:string}[]};
 export type ReservationistBookingPrerequisites=Pick<BookingEvidence,'availability'|'duplicates'|'codes'|'authorizedFields'|'partyFacts'>&{guestFacts?:BookingEvidence['guestFacts'];authorizeSource:(proof:BookingSourceProof,signal:AbortSignal)=>Promise<boolean>};
 // The quote contract is an ESM tool outside src. Async callers load it here; the sync joint search takes the profile flag.
-const quoteContract=()=>import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/quote-contract.mjs',import.meta.url))).href) as Promise<{normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']};profileHolds:(propertyCode:string,groups:unknown[])=>boolean}>;
+const quoteContract=()=>import(pathToFileURL(fileURLToPath(new URL('../../tooling/hms-cloud/quote-contract.mjs',import.meta.url))).href) as Promise<{normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']};profileHolds:(propertyCode:string,groups:unknown[])=>boolean}>;
 function missing(code:string,fields:string[]):never{throw new ReservationistTaskEvidenceUnavailable(code,fields);}
 function hrdavRequestedRoomCodes(text:string):string[]|undefined{
  if(/\bjunior\s+suite\b/i.test(text))return['JNRSUI'];

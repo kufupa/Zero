@@ -1,4 +1,4 @@
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { hmsReadTargetForProperty, ownerRefBelongsToProperty, type HmsReadTarget } from '../hms/hms-read-target.js';
 import type { PaneStayFindInput } from './pane-stay-lookup.js';
 
 type RecordValue = Record<string, unknown>;
@@ -27,6 +27,7 @@ export type HmsCloudCancellationPreviewResult = (CancellationPreviewCommon & {
 export type CloudCancellationPreviewRunInput = {
   request: PaneStayFindInput;
   target: HmsReadTarget;
+  transportId: string;
   signal?: AbortSignal;
 };
 
@@ -159,25 +160,31 @@ export function projectCloudCancellationPreview(
   };
 }
 
-function supportedCenturionTarget(target: HmsReadTarget): boolean {
-  const expected = CENTURION_HMS_READ_TARGET;
-  return Boolean(target) && target.propertyCode === expected.propertyCode &&
-    target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
-    target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+function supportedTarget(target: HmsReadTarget, transportId: string): boolean {
+  try {
+    const expected = hmsReadTargetForProperty(target.propertyCode);
+    return ownerRefBelongsToProperty(transportId, target.propertyCode) &&
+      target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
+      target.origin === expected.origin && target.installationEnvName === expected.installationEnvName;
+  } catch { return false; }
 }
 
 /** Uses a runtime-restricted session; it exposes only exact read then pure cancellation preparation. */
 export async function runCloudCancellationPreview(input: CloudCancellationPreviewRunInput): Promise<unknown> {
-  if (!supportedCenturionTarget(input.target)) {
+  if (!supportedTarget(input.target, input.transportId)) {
     return { outcome: 'target_unverified', issue: 'CLOUD_READ_TARGET_UNSUPPORTED' };
   }
   const sessionUrl = new URL('../../tooling/hms-cloud/cancellation-preflight-session.mjs', import.meta.url);
   const module = await import(sessionUrl.href) as {
     withCancellationPreflightSession: <T>(
       operation: (session: { runTool: (request: Record<string, unknown>) => Promise<unknown> }) => Promise<T>,
-      options?: { signal?: AbortSignal },
+      options: { propertyCode: string; transportId: string; confirmation: string; signal?: AbortSignal },
     ) => Promise<T>;
   };
+  const confirmation = input.request.confirmation;
+  if (typeof confirmation !== 'string' || !/^\d+-\d+$/.test(confirmation)) {
+    return { outcome: 'target_unverified', issue: 'CONFIRMATION_REQUIRED' };
+  }
   return module.withCancellationPreflightSession(async ({ runTool }) => {
     const read = await runTool({
       tool: 'read',
@@ -187,5 +194,5 @@ export async function runCloudCancellationPreview(input: CloudCancellationPrevie
     });
     if (record(read)?.outcome !== 'ok') return read;
     return runTool({ tool: 'prepareCancellation', requestedScope: 'unspecified' });
-  }, { signal: input.signal });
+  }, { propertyCode: input.target.propertyCode, transportId: input.transportId, confirmation, signal: input.signal });
 }

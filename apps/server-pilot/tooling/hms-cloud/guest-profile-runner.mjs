@@ -11,6 +11,8 @@ import {
   matchesProfileReview, profileBusinessFields, profileInputIssue, profilePreviewDigest, profileReviewDigest,
   profileValuesEqual,
 } from './guest-profile-create.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
+import { cloudWriterCurrent, cloudWriterQuiesced } from './cloud-session.mjs';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const validAttempt = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
@@ -18,7 +20,7 @@ const validAttempt = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0
 const same = profileValuesEqual;
 const publicResult = ({ privateFailureDiagnostics: _private, ...result }) => result;
 const cleanIntent = value => value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
-const intentKey = fields => hash(['HRCEN', ...['firstName', 'lastName', 'mobile', 'email'].map(key => cleanIntent(fields[key]))]);
+const intentKey = (fields, propertyCode = 'HRCEN') => hash([propertyCode, ...['firstName', 'lastName', 'mobile', 'email'].map(key => cleanIntent(fields[key]))]);
 const own = (object, keys) => object && typeof object === 'object' && !Array.isArray(object) &&
   Object.keys(object).every(key => keys.includes(key));
 const MAX_JOURNAL_RECORD_BYTES = 4 * 1024 * 1024;
@@ -99,22 +101,26 @@ async function readAttempt(dir, attemptKey) {
   const names = ['claim', 'initial', 'initial-never-dispatched', 'initial-response', 'confirm', 'confirm-response', 'result', 'reconcile-claim', 'reconcile'];
   const parts = {};
   for (const name of names) parts[name] = await readRecord(dir, file(attemptKey, name));
-  const claim = parts.claim;
-  if (!claim || ![1, 2].includes(claim.version) || !validAttempt(claim.attemptId) || hash(claim.attemptId) !== attemptKey ||
-      !claim.fields || !same(profileBusinessFields({ guest: Object.fromEntries(
+  const claim = parts.claim, propertyCode = claim?.propertyCode ?? 'HRCEN';
+  if (!getPropertyRegistration(propertyCode)?.active || !claim || ![1, 2].includes(claim.version) || !validAttempt(claim.attemptId) || hash(claim.attemptId) !== attemptKey ||
+      !claim.fields || !same(profileBusinessFields({ propertyCode, guest: Object.fromEntries(
         Object.entries(claim.fields).filter(([key]) => !['status', 'consent'].includes(key))) }), claim.fields) ||
       typeof claim.previewDigest !== 'string' ||
-      (claim.version === 1 && (hasExtendedProfileFields(claim.fields) || claim.previewDigest !== profilePreviewDigest(claim.fields, claim.confirmDuplicateName))) ||
-      (claim.version === 2 && (!matchesProfileReview(claim.review, claim.fields, claim.confirmDuplicateName) ||
+      (claim.version === 1 && (hasExtendedProfileFields(claim.fields) || claim.previewDigest !== profilePreviewDigest(claim.fields, claim.confirmDuplicateName, propertyCode))) ||
+      (claim.version === 2 && (!matchesProfileReview(claim.review, claim.fields, claim.confirmDuplicateName, propertyCode) ||
         claim.previewDigest !== profileReviewDigest(claim.review))) ||
-      claim.intentKey !== intentKey(claim.fields) || typeof claim.confirmDuplicateName !== 'boolean') throw new Error('PROFILE_JOURNAL_CORRUPT');
+      claim.intentKey !== intentKey(claim.fields, propertyCode) || typeof claim.confirmDuplicateName !== 'boolean') throw new Error('PROFILE_JOURNAL_CORRUPT');
   const chain = await intentChain(dir, claim.intentKey);
   if (chain.length && !chain.includes(attemptKey)) {
     // An attempt that lost an intent race is a permanent no-dispatch result.
     if (!parts.result || parts.result.issue !== 'PROFILE_INTENT_HELD' || parts.initial || parts.confirm) throw new Error('PROFILE_INTENT_HELD');
   } else if (!chain.length && (parts.initial || parts.confirm)) throw new Error('PROFILE_JOURNAL_CORRUPT');
   for (const [phase, response] of [['initial', 'initial-response'], ['confirm', 'confirm-response']]) {
-    if (parts[phase] && (parts[phase].phase !== phase || parts[phase].attemptKey !== attemptKey)) throw new Error('PROFILE_JOURNAL_CORRUPT');
+    const dispatch = parts[phase];
+    if (dispatch && (![1, 2].includes(dispatch.version) || dispatch.phase !== phase || dispatch.attemptKey !== attemptKey ||
+        dispatch.version === 2 && (!dispatch.writer || typeof dispatch.writer !== 'object' || Array.isArray(dispatch.writer)))) {
+      throw new Error('PROFILE_JOURNAL_CORRUPT');
+    }
     const record = parts[response];
     if (record && (!parts[phase] || record.phase !== phase || record.attemptKey !== attemptKey ||
         typeof record.success !== 'boolean' || typeof record.question !== 'boolean' ||
@@ -127,6 +133,9 @@ async function readAttempt(dir, attemptKey) {
     throw new Error('PROFILE_JOURNAL_CORRUPT');
   }
   if (parts.confirm && (!claim.confirmDuplicateName || !parts['initial-response']?.question)) throw new Error('PROFILE_JOURNAL_CORRUPT');
+  if (parts.confirm?.version === 2 && (!parts.initial?.writer || !same(parts.confirm.writer, parts.initial.writer))) {
+    throw new Error('PROFILE_JOURNAL_CORRUPT');
+  }
   if (parts['reconcile-claim'] && (parts['reconcile-claim'].version !== 1 ||
       parts['reconcile-claim'].attemptKey !== attemptKey)) throw new Error('PROFILE_JOURNAL_CORRUPT');
   if (parts.reconcile && (!parts['reconcile-claim'] || parts.reconcile.outcome !== 'created')) throw new Error('PROFILE_JOURNAL_CORRUPT');
@@ -135,7 +144,7 @@ async function readAttempt(dir, attemptKey) {
     if (result && (result.attemptId !== claim.attemptId || typeof result.outcome !== 'string')) throw new Error('PROFILE_JOURNAL_CORRUPT');
     if (result?.nativeId != null && !/^\d+$/.test(result.nativeId)) throw new Error('PROFILE_JOURNAL_CORRUPT');
     if (result?.outcome === 'created' && (!successful?.nativeId || result.nativeId !== successful.nativeId ||
-        !matchesProfileReadback(result.readback, claim.fields, successful.nativeId, claim.review))) throw new Error('PROFILE_JOURNAL_CORRUPT');
+        (result.readback?.propertyCode !== propertyCode || !matchesProfileReadback(result.readback, claim.fields, successful.nativeId, claim.review)))) throw new Error('PROFILE_JOURNAL_CORRUPT');
     if (result?.outcome === 'confirmation_required' && (!parts['initial-response']?.question || parts.confirm)) {
       throw new Error('PROFILE_JOURNAL_CORRUPT');
     }
@@ -200,11 +209,20 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
   const create = dependencies.createGuestProfile ?? nativeCreate;
   const read = dependencies.readGuestProfile ?? nativeRead;
   const listOptions = dependencies.listGuestProfileCreationOptions ?? nativeListOptions;
+  const writerCurrent = dependencies.writerCurrent ?? cloudWriterCurrent;
+  const writerQuiesced = dependencies.writerQuiesced ?? cloudWriterQuiesced;
+  const isCurrent = identity => { try { return writerCurrent(identity) === true; } catch { return false; } };
+  const dispatchesQuiesced = parts => ['initial', 'confirm'].every(phase => {
+    const dispatch = parts[phase];
+    if (!dispatch) return true;
+    try { return Boolean(dispatch.writer) && writerQuiesced(dispatch.writer) === true; } catch { return false; }
+  });
   let dirPromise;
   const directory = () => dirPromise ??= privateDirectory(runtimeDir);
 
   async function prepareGuestProfile(input) {
-    if (!profileBusinessFields(input)) return { outcome: 'needs_input', issue: profileInputIssue(input) };
+    if (!getPropertyRegistration(input?.propertyCode)?.active || input.propertyCode !== sessionOptions.propertyCode ||
+        !profileBusinessFields(input)) return { outcome: 'needs_input', issue: profileInputIssue(input) };
     return prepare(input, sessionOptions);
   }
 
@@ -214,27 +232,29 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       return { outcome: 'not_dispatched', issue: 'PROFILE_ATTEMPT_INPUT_INVALID', dispatched: false };
     }
     const { attemptId, retryOfAttemptId, ...business } = input;
-    const fields = profileBusinessFields(business);
+    const fields = profileBusinessFields(business), propertyCode = business.propertyCode;
+    if (!getPropertyRegistration(propertyCode)?.active || propertyCode !== sessionOptions.propertyCode) {
+      return { outcome: 'not_dispatched', issue: 'PROFILE_PROPERTY_SCOPE_REQUIRED', attemptId, dispatched: false };
+    }
     if (!fields) {
       const issue = profileInputIssue(business);
       if (issue !== 'GUEST_NAME_AND_MOBILE_REQUIRED') return { outcome: 'needs_input', issue, attemptId, dispatched: false };
     }
-    const realGuest = fields && (fields.firstName !== 'Proof' || fields.lastName !== 'Labtest');
-    if (!fields || (realGuest && (!authorizeStaffWrite || !dispatchStaffWrite))) {
+    if (!fields || !authorizeStaffWrite || !dispatchStaffWrite) {
       return { outcome: 'not_dispatched', issue: 'PROFILE_LABTEST_ONLY', attemptId, dispatched: false };
     }
     const confirmDuplicateName = business.confirmDuplicateName === true;
     const extended = hasExtendedProfileFields(fields);
-    if (extended && !matchesProfileReview(business.expectedReview, fields, confirmDuplicateName)) {
+    if (extended && !matchesProfileReview(business.expectedReview, fields, confirmDuplicateName, propertyCode)) {
       return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId, dispatched: false };
     }
-    const previewDigest = extended ? profileReviewDigest(business.expectedReview) : profilePreviewDigest(fields, confirmDuplicateName);
+    const previewDigest = extended ? profileReviewDigest(business.expectedReview) : profilePreviewDigest(fields, confirmDuplicateName, propertyCode);
     if (business.expectedPreviewDigest !== previewDigest) return { outcome: 'review_required', issue: 'PROFILE_PREVIEW_CHANGED', attemptId, dispatched: false };
     let dir;
     try { dir = await directory(); } catch { return { outcome: 'not_dispatched', issue: 'PROFILE_JOURNAL_UNAVAILABLE',
       attemptId, dispatched: false, noDispatchBeforeJournal: true }; }
-    const attemptKey = hash(attemptId), key = intentKey(fields);
-    const claim = { version: extended ? 2 : 1, attemptId, fields, confirmDuplicateName, previewDigest, intentKey: key,
+    const attemptKey = hash(attemptId), key = intentKey(fields, propertyCode);
+    const claim = { version: extended ? 2 : 1, propertyCode, attemptId, fields, confirmDuplicateName, previewDigest, intentKey: key,
       ...(extended && { review: structuredClone(business.expectedReview) }) };
     try {
       await writeOnce(dir, file(attemptKey, 'claim'), claim);
@@ -242,7 +262,8 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       if (error.code !== 'EEXIST') return held(attemptId, null, 'PROFILE_JOURNAL_UNAVAILABLE');
       try {
         const prior = await readAttempt(dir, attemptKey);
-        if (!same(prior.claim, claim)) return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
+        if (!same({ ...prior.claim, propertyCode: prior.claim.propertyCode ?? 'HRCEN' }, claim)) return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
+        if (!dispatchesQuiesced(prior)) return held(attemptId, prior, 'PROFILE_WRITER_NOT_QUIESCED');
         if (prior.reconcile) return prior.reconcile;
         if (prior.result && prior.result.outcome !== 'uncertain') return publicResult(prior.result);
         return held(attemptId, prior);
@@ -263,7 +284,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
           const chain = await intentChain(dir, key);
           const previous = chain.at(-1);
           const prior = await readAttempt(dir, previous);
-          if (prior.claim.attemptId === retryOfAttemptId && prior.result && prior.result.outcome !== 'created' &&
+          if (dispatchesQuiesced(prior) && prior.claim.attemptId === retryOfAttemptId && prior.result && prior.result.outcome !== 'created' &&
               !prior.successful && !prior.result.nativeId && !prior['initial-response']?.nativeId && !prior['confirm-response']?.nativeId) {
             const proof = await verifyNoCreate(Object.freeze({ attemptId: retryOfAttemptId,
               fields: Object.freeze({ ...prior.claim.fields }), result: structuredClone(prior.result),
@@ -292,7 +313,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       pendingCallbacks++;
       try { return await callback(); } finally { pendingCallbacks--; }
     };
-    const authorized = context => context.previewDigest === previewDigest && context.confirmDuplicateName === confirmDuplicateName &&
+    const authorized = context => context.propertyCode === propertyCode && isCurrent(context.writer) && context.previewDigest === previewDigest && context.confirmDuplicateName === confirmDuplicateName &&
       same(context.fields, fields) && (!extended || same(context.review, claim.review)) &&
       (context.phase === 'initial' || context.phase === 'confirm_distinct' && confirmDuplicateName);
     const dispatchCandidate = (context, proceed) => tracked(async () => {
@@ -301,9 +322,12 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       const phase = context.phase === 'initial' ? 'initial' : 'confirm';
       if (phase === 'confirm') {
         const initial = await readRecord(dir, file(attemptKey, 'initial-response'));
-        if (!initial?.question || initial.attemptKey !== attemptKey) throw new Error('PROFILE_CONFIRMATION_UNVERIFIED');
+        const initialDispatch = await readRecord(dir, file(attemptKey, 'initial'));
+        if (!initial?.question || initial.attemptKey !== attemptKey || !same(initialDispatch?.writer, context.writer)) {
+          throw new Error('PROFILE_CONFIRMATION_UNVERIFIED');
+        }
       }
-      await writeOnce(dir, file(attemptKey, phase), { version: 1, attemptKey, phase });
+      await writeOnce(dir, file(attemptKey, phase), { version: 2, attemptKey, phase, writer: structuredClone(context.writer) });
       observed.phase = context.phase;
       let sealed = false, called = false;
       const dispatch = () => {
@@ -347,6 +371,7 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
         ...(privateFailureDiagnostics && { privateFailureDiagnostics }) });
       // Validate before returning or replaying a result, including dependency failures.
       const saved = await readAttempt(dir, attemptKey);
+      if (!dispatchesQuiesced(saved)) return held(attemptId, saved, 'PROFILE_WRITER_NOT_QUIESCED');
       if (saved.result.outcome === 'uncertain') {
         return { ...held(attemptId, saved), ...publicResult(saved.result), nativeId: saved.result.nativeId ?? saved.successful?.nativeId ?? null };
       }
@@ -367,6 +392,9 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       return { outcome: 'input_gap', issue: 'PROFILE_ID_REQUIRED' };
     }
     const { attemptId, ...business } = input;
+    if (!getPropertyRegistration(business.propertyCode)?.active || business.propertyCode !== sessionOptions.propertyCode) {
+      return { outcome: 'input_gap', issue: 'PROFILE_PROPERTY_SCOPE_REQUIRED' };
+    }
     if (!attemptId) return read(business, sessionOptions);
     let dir, parts;
     const attemptKey = hash(attemptId);
@@ -374,9 +402,10 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     catch { return dir ? partialHeld(dir, attemptKey, attemptId, 'PROFILE_JOURNAL_CORRUPT')
       : held(attemptId, null, 'PROFILE_JOURNAL_CORRUPT'); }
     if (!parts.successful?.nativeId || business.nativeId !== parts.successful.nativeId ||
-        business.propertyCode != null && business.propertyCode !== 'HRCEN') return held(attemptId, parts);
+        business.propertyCode !== (parts.claim.propertyCode ?? 'HRCEN')) return held(attemptId, parts);
+    if (!dispatchesQuiesced(parts)) return held(attemptId, parts, 'PROFILE_WRITER_NOT_QUIESCED');
     const readback = await read(business, sessionOptions);
-    if (!matchesProfileReadback(readback, parts.claim.fields, parts.successful.nativeId, parts.claim.review)) return { ...held(attemptId, parts), readback };
+    if (readback?.propertyCode !== business.propertyCode || !matchesProfileReadback(readback, parts.claim.fields, parts.successful.nativeId, parts.claim.review)) return { ...held(attemptId, parts), readback };
     if (parts.reconcile) return { ...readback, reconciliation: parts.reconcile };
     if (parts.result?.outcome === 'created') return { ...readback, reconciliation: publicResult(parts.result) };
     const result = { outcome: 'created', attemptId, phase: parts.confirm ? 'confirm_distinct' : 'initial',
@@ -402,12 +431,14 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
       dir = await directory();
       if (!await readRecord(dir, file(key, 'claim'))) return held(input.attemptId, null, 'PROFILE_ATTEMPT_NOT_FOUND');
       const parts = await readAttempt(dir, key);
-      if (Object.keys(business).length && (!same(profileBusinessFields(business), parts.claim.fields) ||
+      if (Object.keys(business).length && (business.propertyCode !== (parts.claim.propertyCode ?? 'HRCEN') ||
+          !same(profileBusinessFields(business), parts.claim.fields) ||
           business.expectedPreviewDigest !== parts.claim.previewDigest ||
           (business.confirmDuplicateName === true) !== parts.claim.confirmDuplicateName ||
           (hasExtendedProfileFields(parts.claim.fields) && !same(business.expectedReview, parts.claim.review)))) {
         return { outcome: 'review_required', issue: 'PROFILE_ATTEMPT_CHANGED', attemptId, dispatched: false };
       }
+      if (!dispatchesQuiesced(parts)) return held(attemptId, parts, 'PROFILE_WRITER_NOT_QUIESCED');
       if (parts.reconcile) return parts.reconcile;
       if (parts.result && parts.result.outcome !== 'uncertain') {
         return { ...parts.result, noDispatchRecorded: noDispatchRecorded(parts), duplicateDeclined: duplicateDeclined(parts) };

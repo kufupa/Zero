@@ -1,44 +1,35 @@
-import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { readFile, rm } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import { hmsDavinciCreateMode } from '../env.js';
 import {
   CENTURION_HMS_READ_TARGET,
-  DAVINCI_HMS_READ_TARGET,
-  hmsReadTargetForTransport,
+  hmsReadTargetForProperty,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
-import { getPropertyRegistration, resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
-import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote/property-profile.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
+import { z } from 'zod';
+import type { AiRunFence } from './run-ledger.js';
+import type { DB } from '../db/client.js';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
+  createPostgresTargetAliasLock,
   isPropertyReadLockDeadline,
   PANE_PROPERTY_LOCK_WAIT_MS,
   type PropertyReadLockAcquisitionOptions,
+  type HeldTargetAliasLock,
 } from '../hms/property-read-lock.js';
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
-import { CreateFenceError } from './pane-create-dispatch-fence.js';
 import { persistHmsShots, readStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
-import { hmsDispatchTargetKey, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKeys, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 
-const execFileAsync = promisify(execFile);
-const CREATE_LAB_STAY = fileURLToPath(
-  new URL('../../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url),
-);
-// Rooms 2+ of one booking: Associated Reservations > Add Record on the first room's confirmation.
-const ADD_ROOM_STAY = fileURLToPath(
-  new URL('../../tooling/playwright-quote/add-room-stay.mjs', import.meta.url),
-);
-const PARENT_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
 // Compatibility name for the registered Centurion property code; target selection requires a mailbox or explicit code.
 export const PANE_STAY_PROPERTY_CODE = CENTURION_HMS_READ_TARGET.propertyCode;
-// A successful preview can be committed for this long, once, and only for the same stay.
+// Preview display freshness; durable preparation and Staff Go carry write authority.
 export const PANE_PREVIEW_TTL_MS = 10 * 60_000;
 // A run's screenshots stay fetchable for this long, then its directory is removed.
 export const PANE_RUN_TTL_MS = 30 * 60_000;
@@ -47,7 +38,6 @@ export const PANE_SCREENSHOT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}\.png$/;
 // A commit that returns no booking number may still have booked the stay. Both outcomes reach the pane as
 // pane_save_unconfirmed, never as a plain failure, so staff check HMS before they press Book again.
 export const PANE_SAVE_UNCONFIRMED = 'pane_save_unconfirmed';
-const UNCONFIRMED_SAVE_OUTCOMES = new Set(['save_unconfirmed', 'save_failed']);
 /** D5: paid/guaranteed/unknown amend/cancel is out of scope. Staff handle those in HMS. */
 export const PANE_PAID_BOOKING_COPY =
   'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)';
@@ -90,7 +80,7 @@ export type PaneStay = {
 
 export type PaneStayMode = 'preview' | 'commit';
 
-/** Configured create mode. The legacy runner separately limits commits to the fake Labtest identity. */
+/** Configured Create admission; staff Go is verified independently by the worker. */
 export type PaneSaveMode = 'off' | 'lab' | 'on';
 
 export type PaneWriteWorkflow = 'create' | 'amend' | 'cancel';
@@ -149,7 +139,9 @@ export type PaneStaySpawnInput = {
   stay: PaneStay;
   stopBefore: 'save' | null;
   paneCommit: boolean;
-  /** Set for rooms 2+ of one booking: the room is added to this confirmation, not created on its own. */
+  transportId?: string;
+  nativeGuestId?: string;
+  /** Compatibility booking context; the worker executes ordered single-room allocations. */
   parentConfirmation?: string;
   /** Resolved HMS property/secret/slot. Da Vinci uses the HRDAV CDP and secret. */
   target?: HmsReadTarget;
@@ -161,7 +153,7 @@ export type PaneStaySpawnResult = {
   confirmationNumber: string;
   cmsReason?: 'saved_cms_mismatch';
   cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
-  /** Per-run directory that create-lab-stay.mjs wrote to. Absent when a test spawn never runs the CLI. */
+  /** Directory owned by the native Cloud preview. */
   runId?: string;
   runDir?: string;
   /** PNG file names written by the run. */
@@ -188,7 +180,7 @@ export type PaneStayResult = {
 
 export type PaneStayLock = {
   /** Pane runs pass a bounded acquisition, so a busy lock refuses instead of waiting with no end. */
-  withLock: <T>(fn: () => Promise<T>, acquisition?: PropertyReadLockAcquisitionOptions) => Promise<T>;
+  withLock: <T>(fn: (lockSignal?: AbortSignal, heldTargetLock?: HeldTargetAliasLock) => Promise<T>, acquisition?: PropertyReadLockAcquisitionOptions) => Promise<T>;
 };
 
 /** Work-item + stay digest grant. Source of truth across restarts; never a reusable token. */
@@ -216,6 +208,7 @@ export const paneStaySaveLoaders: {
         arrival: string;
         departure: string;
         target?: HmsReadTarget;
+        transportId?: string;
       }) => Promise<OsressDuplicateStatus>)
     | null;
   mode: (() => PaneSaveMode) | null;
@@ -315,19 +308,15 @@ export function paneStayCreateTarget(input: {
   const env = input.env ?? process.env;
   let target: HmsReadTarget;
   if (input.transportId !== undefined) {
-    const resolved = resolvePropertyTransport(input.transportId);
-    if (resolved.kind === 'refusal') return { ok: false, reason: resolved.code };
-    if (resolved.kind === 'collector') return { ok: false, reason: 'collector_no_hotel' };
-    target = hmsReadTargetForTransport(input.transportId);
-    if (input.propertyCode !== undefined && input.propertyCode !== target.propertyCode) {
-      return { ok: false, reason: 'pane_save_property_mismatch' };
-    }
+    const resolved = paneStayHmsTargetForTransport(input.transportId, input.propertyCode);
+    if (!resolved.ok) return { ok: false, reason: resolved.reason };
+    target = resolved.target;
   } else {
     if (!input.propertyCode) return { ok: false, reason: 'property_required' };
     const property = getPropertyRegistration(input.propertyCode);
     if (!property) return { ok: false, reason: 'property_unknown' };
     if (!property.active) return { ok: false, reason: 'property_inactive' };
-    target = hmsReadTargetForTransport(property.mailboxTransportId);
+    target = hmsReadTargetForProperty(property.propertyCode);
   }
   if (target.browserSlot === 'davinci' && hmsDavinciCreateMode(env) === 'off') {
     return { ok: false, reason: 'pane_save_property_mismatch' };
@@ -341,7 +330,7 @@ export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): strin
   return code ? ['--property', code] : [];
 }
 
-/** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */
+/** Compatibility environment for retained operational readers. */
 export function paneStayCreateSpawnEnv(
   target: HmsReadTarget,
   env: NodeJS.ProcessEnv = process.env,
@@ -363,8 +352,7 @@ export function assertLabStayGuard(input: {
   }
 }
 
-// The create runner is a legacy path without trusted staff approval. Only the
-// designated fake identity is eligible for a write until that contract exists.
+// Labtest admission is separate from the durable Staff Go authority.
 function assertCreateLabStay(stay: PaneStay): void {
   if (!/^proof$/i.test(stay.firstName.trim())) throw new Error('pane_save_labtest_required');
   const arrivalMs = Date.parse(`${stay.arrival}T00:00:00.000Z`);
@@ -471,30 +459,6 @@ async function recordBoundPreview(input: {
   recordPanePreview(input.owner, input.digest, input.now);
 }
 
-async function takeBoundPreview(input: {
-  owner: string;
-  digest: string;
-  now: number;
-  workItemId?: string;
-  stayId?: string;
-  previewPersist?: PaneStayPreviewPersist | null;
-}): Promise<boolean> {
-  const persist = boundPreviewPersist(input);
-  if (input.workItemId && input.stayId) {
-    // A stale process-local grant cannot replace a consumed durable grant.
-    takePanePreview(input.owner, input.digest, input.now);
-    if (!persist) return false;
-    return persist.take({
-      workItemId: input.workItemId,
-      stayId: input.stayId,
-      digest: input.digest,
-      now: input.now,
-    });
-  }
-  // Legacy unbound previews use memory; the create bridge must require bound IDs.
-  return takePanePreview(input.owner, input.digest, input.now);
-}
-
 async function persistDurableStayShots(input: {
   runId?: string;
   runDir?: string;
@@ -578,58 +542,29 @@ export async function readPaneStayScreenshot(input: {
 
 async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
   if (!input.target) throw new Error('pane_stay_target_required');
-  const target = input.target;
-  const runId = randomUUID();
-  const dir = join(tmpdir(), `pane-stay-${runId}`);
-  await mkdir(dir, { mode: 0o700 });
-  const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
-  const args = [
-    input.parentConfirmation ? ADD_ROOM_STAY : CREATE_LAB_STAY,
-    '--request',
-    requestPath,
-    '--out',
-    dir,
-    ...paneStayCreatePropertyArgs(target),
-    ...(input.parentConfirmation ? ['--parent', input.parentConfirmation] : []),
-  ];
-  if (input.stopBefore) args.push('--stop-before', input.stopBefore);
-  if (input.paneCommit) args.push('--pane-commit');
-  let stdout: string;
-  try {
-    ({ stdout } = await execFileAsync('node', args, {
-      timeout: 20 * 60_000,
-      env: paneStayCreateSpawnEnv(target),
-    }));
-  } finally {
-    await rm(requestPath, { force: true });
-  }
-  let cmsReason: 'saved_cms_mismatch' | undefined;
-  let cmsMismatches: PaneStayResult['cmsMismatches'];
-  try {
-    const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as {
-      cmsReason?: unknown;
-      proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
-    };
-    if (result.cmsReason === 'saved_cms_mismatch') {
-      cmsReason = result.cmsReason;
-      cmsMismatches = result.proof?.mismatches?.filter((item) => ['udfchar09', 'udfchar13', 'send'].includes(item.field));
-    }
-  } catch {
-    // The result file may not exist when a runner exits before it creates the file.
-  }
-  const line = stdout.trim().split('\n').at(-1) ?? '';
-  const [outcome = '', confirmationNumber = ''] = line.split(/\s+/);
-  const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
-  return {
-    outcome,
-    clickedSave: Boolean(input.paneCommit),
-    ...(cmsReason ? { cmsReason, cmsMismatches } : {}),
-    confirmationNumber,
-    runId,
-    runDir: dir,
-    screenshots,
+  // This helper only stages an unsaved form. Staff writes execute the durable worker run.
+  if (input.paneCommit || input.stopBefore !== 'save') throw new Error('hms_staff_go_required');
+  const stay = { ...input.stay, propertyCode: input.target.propertyCode };
+  const mapped = mapPaneStayToCloudCreateInput(stay, 'prepare', input.nativeGuestId,
+    { allowRealGuest: true });
+  if (mapped.outcome !== 'ok') return { outcome: `refused_${mapped.reason}`, clickedSave: false, confirmationNumber: '' };
+  const native = await import('../../tooling/hms-cloud/create-reservation.mjs' as string) as {
+    createReservation: (request: Record<string, unknown>, options: {
+      transportId?: string; allowRealGuest: boolean; expectedGuest: { firstName: string; lastName: string };
+      capturePrepareScreenshot: boolean; requireExplicitGuestSelection: boolean;
+    }) => Promise<unknown>;
   };
+  const result = z.object({ outcome: z.string(), issue: z.string().optional(),
+    requestBinding: z.object({ digest: z.string().regex(/^[a-f0-9]{64}$/) }).passthrough().optional(),
+    screenshots: z.record(z.string()).optional() }).passthrough().parse(await native.createReservation(mapped.input, {
+      transportId: input.transportId, allowRealGuest: true,
+      expectedGuest: { firstName: stay.firstName, lastName: stay.lastName },
+      capturePrepareScreenshot: true, requireExplicitGuestSelection: true,
+    }));
+  const screenshot = result.screenshots?.filled;
+  return { outcome: result.outcome === 'prepared' && result.requestBinding ? 'previewed' : `refused_${result.issue ?? result.outcome}`,
+    clickedSave: false, confirmationNumber: '',
+    ...(screenshot ? { runId: randomUUID(), runDir: dirname(screenshot), screenshots: [basename(screenshot)] } : {}) };
 }
 
 // Tenant of the worker's HMS reads (HMS_EXPECTED_TENANT), so save and cancel serialize with them on the
@@ -646,27 +581,28 @@ export function paneStayPropertyLock(target: HmsReadTarget): PaneStayLock | null
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
   const code = target.propertyCode.trim();
-  if (!code) return null;
-  return createPostgresPropertyReadLock({
-    tenantId: paneStayTenantId(),
+  const property = getPropertyRegistration(code);
+  if (!property || property.credentialSecretRef !== target.secretId || property.origin !== target.origin) return null;
+  const lock = createPostgresPropertyReadLock({
+    tenantId: property.expectedTenant,
     propertyCode: code,
     databaseUrl,
   });
+  return { withLock: (fn, acquisition) => lock.withLock(() => fn(acquisition?.signal), acquisition) };
 }
 
 /** Caller must use an independently owned Cloud browser; borrowed sessions keep the property lock. */
 export function paneStayCloudTargetLock(target: HmsReadTarget, dispatchTarget: HmsDispatchTarget,
-  session: { kind: 'independent_cloud' }): PaneStayLock | null {
+  session: { kind: 'independent_cloud'; targetAliases?: readonly string[] }): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   const parsed = hmsDispatchTargetSchema.safeParse(dispatchTarget);
-  if (!databaseUrl || session?.kind !== 'independent_cloud' || !parsed.success || target.propertyCode !== parsed.data.propertyCode ||
-      target.propertyCode !== 'HRCEN' || target.browserSlot !== 'centurion' ||
-      (parsed.data.kind === 'saved' && !parsed.data.nativeStayId)) return null;
-  return createPostgresPropertyReadLock({
-    tenantId: paneStayTenantId(),
-    propertyCode: `cloud-target:${hmsDispatchTargetKey(parsed.data)}`,
-    databaseUrl,
-  });
+  if (!databaseUrl || session?.kind !== 'independent_cloud' || !parsed.success || target.propertyCode !== parsed.data.propertyCode) return null;
+  const property = getPropertyRegistration(parsed.data.propertyCode);
+  if (!property?.active || property.browserSlot !== target.browserSlot || property.credentialSecretRef !== target.secretId ||
+      property.origin !== target.origin) return null;
+  const lock = createPostgresTargetAliasLock({ tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+    targetAliases: [...hmsDispatchTargetKeys(parsed.data), ...(session.targetAliases ?? [])], databaseUrl });
+  return { withLock: (fn, acquisition) => lock.withLock((_connection, signal, held) => fn(signal, held), acquisition) };
 }
 
 // An explicit propertyCode must name the session's hotel. Any other value would lock a key the session never
@@ -676,15 +612,14 @@ export function paneStayPropertyRefusal(
   env: NodeJS.Dict<string> = process.env,
 ): string | null {
   if (propertyCode === undefined || propertyCode === PANE_STAY_PROPERTY_CODE) return null;
-  if (propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode) {
-    return hmsDavinciCreateMode(env) === 'off' ? 'pane_save_property_mismatch' : null;
-  }
+  const property = getPropertyRegistration(propertyCode);
+  if (property?.active && property.group === 'davinci') return effectiveWorkflowPolicy(env, property.propertyCode, 'create').mode === 'off'
+    ? 'pane_save_property_mismatch' : null;
   return 'pane_save_property_mismatch';
 }
 
 // Preview: fill, check availability, screenshots, no save. A successful preview returns previewDigest.
-// Commit: needs the previewDigest of a successful preview of this same stay (same owner, within 10 minutes,
-// once). The duplicate reader stays fail-closed: while it is parked, commit refuses.
+// Commit: dispatches an existing fenced run whose durable preparation and Staff Go are verified privately.
 export async function runPaneStay(input: {
   mode: PaneStayMode;
   stay: PaneStay;
@@ -694,6 +629,8 @@ export async function runPaneStay(input: {
   workItemId?: string;
   stayId?: string;
   previewPersist?: PaneStayPreviewPersist | null;
+  nativeGuestId?: string;
+  approvedRun?: { runId: string; fence: AiRunFence; db?: DB; allocationId?: string };
   /** Room 1's HMS confirmation. The caller proves it belongs to this booking; the runner checks guest and dates. */
   parentConfirmation?: string;
 }): Promise<PaneStayResult> {
@@ -704,11 +641,6 @@ export async function runPaneStay(input: {
   }
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
-  const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
-  const modeRefusal = paneStayModeRefusal(mode, input.stay);
-  if (modeRefusal) {
-    return { status: 'refused', reason: modeRefusal };
-  }
   const resolved = paneStayCreateTarget({
     transportId: input.transportId ?? paneStayTransportIdFromOwner(input.owner),
     propertyCode: input.stay.propertyCode,
@@ -717,192 +649,79 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: resolved.reason };
   }
   const target = resolved.target;
-  // The legacy create runner does not participate in the shared Cloud write
-  // claim. Keep it available for preview, but never let it bypass that claim.
-  if (input.mode === 'commit' && target.propertyCode === PANE_STAY_PROPERTY_CODE) {
-    return { status: 'refused', reason: 'cloud_create_required' };
-  }
-  if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
-    try {
-      assertCreateLabStay(input.stay);
-    } catch (error) {
-      return { status: 'refused', reason: (error as Error).message };
-    }
-  }
+  const policy = effectiveWorkflowPolicy(process.env, target.propertyCode, 'create');
+  const configuredMode = paneStaySaveLoaders.mode?.() ?? (target.propertyCode === 'HRCEN' ? paneStaySaveMode() : policy.mode);
+  const mode = input.mode === 'commit'
+    ? policy.admittedMode === 'off' || configuredMode === 'off' ? 'off'
+      : policy.admittedMode === 'lab' || configuredMode === 'lab' ? 'lab' : 'on'
+    : configuredMode;
+  const modeRefusal = input.mode === 'commit' ? paneStayModeRefusal(mode, input.stay)
+    : mode === 'off' ? 'pane_save_flag_off' : !Number.isInteger(input.stay.adults) || input.stay.adults < 1 ? 'pane_save_adults_required' : null;
+  if (modeRefusal) return { status: 'refused', reason: modeRefusal };
   if (input.mode === 'commit') {
-    try {
-      assertCreateLabStay(input.stay);
-    } catch {
-      return { status: 'refused', reason: 'trusted_staff_create_authorization_unavailable' };
+    if (!input.approvedRun || input.approvedRun.runId !== input.approvedRun.fence.runId) {
+      return { status: 'refused', reason: 'fresh_preparation_required' };
     }
-    // A recipient causes this legacy runner to tick HMS Send Mail. Test writes must not send.
-    if (input.stay.confirmationRecipient != null) {
-      return { status: 'refused', reason: 'confirmation_email_writer_unavailable' };
+    const { executeHmsWorkerRun } = await import('../hms/hms-service.js');
+    const { getDb } = await import('../db/client.js');
+    const { verifyStaffGoForRun } = await import('../hms/staff-go-authority.js');
+    const worker = { db: input.approvedRun.db ?? getDb(), fence: input.approvedRun.fence };
+    const go = await worker.db.transaction((tx) => verifyStaffGoForRun(tx, worker.fence));
+    if (go.grant.operation !== 'create' || go.grant.propertyCode !== target.propertyCode ||
+        go.grant.transportId !== (input.transportId ?? paneStayTransportIdFromOwner(input.owner))) {
+      return { status: 'refused', reason: 'fresh_preparation_required' };
     }
-  }
-  const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
-  if (bookRefusal) {
-    return { status: 'refused', reason: bookRefusal };
-  }
-  const parent = input.parentConfirmation?.trim() || undefined;
-  if (parent && !PARENT_CONFIRMATION.test(parent)) {
-    return { status: 'refused', reason: 'pane_save_parent_invalid' };
+    const result: unknown = await executeHmsWorkerRun(worker);
+    const parsed = z.object({ status: z.literal('succeeded'), operationId: z.string(), observationRef: z.string().min(1),
+      results: z.array(z.object({ allocationId: z.string(), status: z.literal('ok'), outcome: z.literal('committed'),
+        confirmationNumber: z.string().regex(/^\d+-\d+$/), clickedSave: z.literal(true),
+        nativeStayId: z.string().regex(/^\d{1,100}$/), observationRef: z.string().min(1) }).passthrough()).min(1).max(8) })
+      .passthrough().safeParse(result);
+    if (!parsed.success || parsed.data.operationId !== go.grant.grantId) return { status: 'refused', reason: PANE_SAVE_UNCONFIRMED };
+    const allocationId = input.approvedRun.allocationId ?? input.stayId ??
+      (parsed.data.results.length === 1 ? parsed.data.results[0]?.allocationId : undefined);
+    const matches = parsed.data.results.filter(room => room.allocationId === allocationId);
+    const confirmed = matches.length === 1 ? matches[0] : undefined;
+    return confirmed ? { status: 'ok', outcome: confirmed.outcome, confirmationNumber: confirmed.confirmationNumber,
+      clickedSave: true, runId: worker.fence.runId } : { status: 'refused', reason: PANE_SAVE_UNCONFIRMED };
   }
   const digest = paneStayDigest(input.stay);
-  if (input.mode === 'commit') {
-    if (!paneStaySaveLoaders.osressGuestDatesSearch) {
-      return { status: 'refused', reason: 'osress_reader_parked' };
-    }
-    if (input.previewDigest === undefined) {
-      return { status: 'refused', reason: 'pane_save_preview_required' };
-    }
-    if (input.previewDigest !== digest) {
-      return { status: 'refused', reason: 'pane_save_digest_mismatch' };
-    }
-  }
   const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target);
-  if (!lock) {
-    return { status: 'refused', reason: 'pane_save_lock_unavailable' };
-  }
-  const reader = input.mode === 'commit' ? paneStaySaveLoaders.osressGuestDatesSearch : null;
-  const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
-  // One lock covers the duplicate read, the grant and the save, so no other run can save this guest between the read
-  // and the save. The reader takes no lock of its own: a second acquisition would wait on this one.
-  type Gate = { refusal: string } | { spawned: PaneStaySpawnResult };
-  let gate: Gate;
+  if (!lock) return { status: 'refused', reason: 'pane_save_lock_unavailable' };
+  let spawned: PaneStaySpawnResult;
   try {
-    gate = await lock.withLock(async (): Promise<Gate> => {
-      if (reader) {
-        const status = await reader({
-          lastName: input.stay.lastName,
-          arrival: input.stay.arrival,
-          departure: input.stay.departure,
-          target,
-        });
-        if (status === 'parked') return { refusal: 'osress_reader_parked' };
-        if (status === 'busy') return { refusal: 'refused_lock_busy' };
-        // Adding a room to this guest's own booking finds that booking on the same dates; that is the parent.
-        if (status === 'duplicate' && !parent) return { refusal: 'osress_duplicate' };
-        // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        // Bound grants use durable storage only; unbound legacy previews use memory.
-        if (
-          !(await takeBoundPreview({
-            owner: input.owner,
-            digest,
-            now: paneStayClock(),
-            workItemId: input.workItemId,
-            stayId: input.stayId,
-            previewPersist: input.previewPersist,
-          }))
-        ) {
-          return { refusal: 'pane_save_preview_required' };
-        }
-      }
-      return {
-        spawned: await spawn({
-          stay: input.stay,
-          stopBefore: input.mode === 'preview' ? 'save' : null,
-          paneCommit: input.mode === 'commit',
-          target,
-          ...(parent ? { parentConfirmation: parent } : {}),
-        }),
-      };
-    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    spawned = await lock.withLock(() => (paneStaySaveLoaders.spawn ?? defaultSpawn)({
+      stay: input.stay, stopBefore: 'save', paneCommit: false, target,
+      transportId: input.transportId ?? paneStayTransportIdFromOwner(input.owner), nativeGuestId: input.nativeGuestId,
+    }), acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
-    if (error instanceof CreateFenceError && error.reason === 'active') {
-      takePanePreview(input.owner, digest, paneStayClock());
-      return { status: 'refused', reason: 'write_in_flight' };
-    }
-    warnPaneStaySpawnFailed('save', error);
+    warnPaneStaySpawnFailed('prepare', error);
     throw error;
   }
-  if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
-  const spawned = gate.spawned;
-  // Register every completed run before any refusal so its directory expires.
-  if (spawned.runId && spawned.runDir) {
-    registerPaneRun({
-      runId: spawned.runId,
-      dir: spawned.runDir,
-      owner: input.owner,
-      now: paneStayClock(),
-    });
+  if (spawned.runId && spawned.runDir) registerPaneRun({ runId: spawned.runId, dir: spawned.runDir,
+    owner: input.owner, now: paneStayClock() });
+  if (spawned.outcome !== 'previewed') return { status: 'refused', reason: spawned.outcome,
+    runId: spawned.runId, screenshots: spawned.screenshots ?? [] };
+  try {
+    await recordBoundPreview({ owner: input.owner, digest, now: paneStayClock(),
+      workItemId: input.workItemId, stayId: input.stayId, previewPersist: input.previewPersist });
+  } catch {
+    takePanePreview(input.owner, digest, paneStayClock());
+    return { status: 'refused', reason: 'pane_preview_persist_failed' };
   }
-  if (/^refused/i.test(spawned.outcome)) {
-    return { status: 'refused', reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome };
-  }
-  if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
-    // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
-    const shots = await persistDurableStayShots({
-      runId: spawned.runId,
-      runDir: spawned.runDir,
-      owner: input.owner,
-      workItemId: input.workItemId,
-      propertyCode: target.propertyCode,
-      now: paneStayClock(),
-    });
-    return {
-      status: 'refused',
-      reason: PANE_SAVE_UNCONFIRMED,
-      runId: spawned.runId,
-      screenshots: spawned.screenshots ?? [],
-      ...(shots ? { shots } : {}),
-    };
-  }
-  const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
-  if (previewed) {
-    try {
-      await recordBoundPreview({
-        owner: input.owner,
-        digest,
-        now: paneStayClock(),
-        workItemId: input.workItemId,
-        stayId: input.stayId,
-        previewPersist: input.previewPersist,
-      });
-    } catch (error) {
-      // Never report an unusable bound preview, or retain an older memory grant.
-      takePanePreview(input.owner, digest, paneStayClock());
-      if (error instanceof CreateFenceError && error.reason === 'active') {
-        return { status: 'refused', reason: 'write_in_flight' };
-      }
-      console.warn('stay_preview_persist_failed', {
-        stayId: input.stayId,
-        workItemId: input.workItemId,
-        error,
-      });
-      return { status: 'refused', reason: 'pane_preview_persist_failed' };
-    }
-  }
-  const shots = await persistDurableStayShots({
-    runId: spawned.runId,
-    runDir: spawned.runDir,
-    owner: input.owner,
-    workItemId: input.workItemId,
-    propertyCode: target.propertyCode,
-    now: paneStayClock(),
-  });
-  return {
-    status: 'ok',
-    outcome: spawned.outcome,
-    ...(spawned.cmsReason ? { cmsReason: spawned.cmsReason, cmsMismatches: spawned.cmsMismatches } : {}),
-    confirmationNumber: spawned.confirmationNumber,
-    clickedSave: spawned.clickedSave,
-    previewDigest: previewed ? digest : null,
-    runId: spawned.runId,
-    screenshots: spawned.screenshots ?? [],
-    ...(shots ? { shots } : {}),
-  };
+  const shots = await persistDurableStayShots({ runId: spawned.runId, runDir: spawned.runDir, owner: input.owner,
+    workItemId: input.workItemId, propertyCode: target.propertyCode, now: paneStayClock() });
+  return { status: 'ok', outcome: 'previewed', clickedSave: false, previewDigest: digest,
+    runId: spawned.runId, screenshots: spawned.screenshots ?? [], ...(shots ? { shots } : {}) };
 }
 
-// PANE_STAY_DUP_CHECK=off keeps the commit duplicate reader parked (commit refused). Any other value runs the check.
 export function paneStayDupCheckMode(env: NodeJS.Dict<string> = process.env): 'cli' | 'off' {
   return env.PANE_STAY_DUP_CHECK === 'off' ? 'off' : 'cli';
 }
 
-// Wired at module init. runPaneStay calls the reader while it holds the save's property lock, so the reader runs its
-// CLI unlocked. A reader that cannot get the lock is reported by the save as refused_lock_busy.
+// Retained duplicate-reader seam for existing callers; Cloud workers own write serialization.
 paneStaySaveLoaders.osressGuestDatesSearch =
   paneStayDupCheckMode() === 'cli'
-    ? (input) => guestDatesDuplicateCheckViaCli(input, input.target ?? null)
+    ? (input) => guestDatesDuplicateCheckViaCli(input, input.target ?? null, input.transportId)
     : null;

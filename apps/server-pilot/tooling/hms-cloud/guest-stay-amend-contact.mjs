@@ -68,7 +68,7 @@ export async function stageSavedGuestFieldsForComposition(context, changes) {
     if (after !== changes.cmsSend || !context.isActive()) throw new Error('CMS_EDIT_UNVERIFIED');
   }
   if (Object.hasOwn(changes, 'guestOptIn')) {
-    if (changes.guestOptIn !== false) throw new Error('GUEST_OPT_IN_INVALID');
+    if (typeof changes.guestOptIn !== 'boolean') throw new Error('GUEST_OPT_IN_INVALID');
     const control = context.frame.locator('input[name="guestoptin4"]:visible');
     if (await control.count() !== 1) throw new Error('GUEST_OPT_IN_CONTROL_UNAVAILABLE');
     const before = await control.evaluate(element => {
@@ -78,13 +78,13 @@ export async function stageSavedGuestFieldsForComposition(context, changes) {
       const form = guests.length === 1 ? globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
       if (!form?.el?.dom?.contains(element) || cmp?.up?.('form') !== form || typeof cmp.getValue !== 'function') return null;
       const value = cmp.getValue();
-      if (typeof value !== 'boolean' || (value && (element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()))) return null;
+      if (typeof value !== 'boolean' || element.disabled || element.readOnly || cmp.readOnly || cmp.isDisabled?.()) return null;
       return value;
     });
     if (typeof before !== 'boolean') throw new Error('GUEST_OPT_IN_PREIMAGE_UNVERIFIED');
-    if (before) await control.click({ timeout: 5000 });
+    if (before !== changes.guestOptIn) await control.click({ timeout: 5000 });
     const after = await control.evaluate(element => globalThis.Ext?.getCmp?.(element.id.replace(/-inputEl$/, ''))?.getValue?.());
-    if (after !== false || !context.isActive()) throw new Error('GUEST_OPT_IN_EDIT_UNVERIFIED');
+    if (after !== changes.guestOptIn || !context.isActive()) throw new Error('GUEST_OPT_IN_EDIT_UNVERIFIED');
   }
   const synced = await context.frame.evaluate(() => {
     const guests = [...document.querySelectorAll('input[name="guestid"]')].filter((node) =>
@@ -129,7 +129,7 @@ function matchesAmend(request, frame, expected, state, baseline, changes) {
       SYSTEM_FUNCTION_NAME: 'OSRESV',
       USER_FUNCTION_NAME: 'OSRESV',
       CURRENT_TAB_NAME: 'HDR',
-      propertycode: 'HRCEN',
+      propertycode: expected.propertyCode,
       status: 'Reserved',
       firstname: 'Proof',
       lastname: 'Labtest',
@@ -185,10 +185,12 @@ export function matchesLabtestContactAmendDraft(before, after, field, value) {
 
 /** Ext may stage both Booker controls before synchronizing either record.data field. */
 export function matchesLabtestBookerContactDraft(before, after, changes) {
+  const childFields = [...new Set(['values', 'data'].flatMap(part =>
+    [...Object.keys(before?.[part] ?? {}), ...Object.keys(after?.[part] ?? {})].filter(name => /^child\d+$/i.test(name))))];
   return validContactChanges(changes) &&
     Object.entries(changes).every(([name, value]) => after?.values?.[name] === value) &&
     unchangedLabtestRecord(before, after, changes) &&
-    ['values', 'data'].every((part) => PRESERVED_BUSINESS_FIELDS.every((name) => {
+    ['values', 'data'].every((part) => [...PRESERVED_BUSINESS_FIELDS, ...childFields].every((name) => {
       if (Object.hasOwn(changes, name)) return true;
       const previous = before?.[part], current = after?.[part];
       if (!previous || !current) return false;

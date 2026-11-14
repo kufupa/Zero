@@ -43,7 +43,7 @@ export function matchesComposedDateAdultDraft(before, after, expected, changes, 
 
   // Identity and unedited stay fields must remain attached to the same record.
   // HMS may refresh taxes, rates, and other native fields while dates change.
-  const identity = { propertycode: 'HRCEN', confirmationnumber: expected.confirmation,
+  const identity = { propertycode: expected.propertyCode, confirmationnumber: expected.confirmation,
     guestid: expected.guestId, status: 'Reserved', roomtype: expected.roomType, rateplan: expected.ratePlan };
   for (const [name, value] of Object.entries(identity)) {
     if (value == null || String(before.data?.[name] ?? '') !== String(value) ||
@@ -482,7 +482,7 @@ export async function stageSavedRoomRateForComposition(context, fieldName, curre
 /** Read only the currently loaded options of this saved form's own component. */
 export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, options = {}) {
   if (!ownObject(expected) || Object.keys(expected).some((key) =>
-    !['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key)) ||
+    !['propertyCode', 'confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key)) ||
       !ownObject(options) || Object.keys(options).some((key) => !['field', 'offset', 'limit'].includes(key)) ||
       !['roomType', 'ratePlan'].includes(options.field)) return { outcome: 'input_gap', issue: 'AMEND_FIELD_UNSUPPORTED' };
   const { field: fieldName, offset = 0, limit = 50 } = options;
@@ -532,7 +532,7 @@ export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, op
 /** Read availability for a proposal bound to one clean saved Labtest form. */
 export async function readLabtestStayAmendmentAvailability(recordPage, availabilityPage, expected = {}, options = {}) {
   if (!ownObject(expected) || Object.keys(expected).some((key) =>
-    !['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key)) ||
+    !['propertyCode', 'confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key)) ||
       !ownObject(options) || Object.keys(options).some((key) =>
         !['change', 'occupancy', 'partyContext', 'roomQuantity', 'snapshotPath'].includes(key))) {
     return { outcome: 'input_gap', issue: 'AMEND_INPUT_INVALID', saveEligible: false };
@@ -542,7 +542,7 @@ export async function readLabtestStayAmendmentAvailability(recordPage, availabil
   }
   try { expected = structuredClone(expected); options = structuredClone(options); }
   catch { return { outcome: 'input_gap', issue: 'AMEND_INPUT_INVALID', saveEligible: false }; }
-  const input = { existing: { propertyCode: 'HRCEN', arrival: expected.arrival, departure: expected.departure,
+  const input = { existing: { propertyCode: expected.propertyCode, arrival: expected.arrival, departure: expected.departure,
     roomType: expected.roomType, ratePlan: expected.ratePlan }, change: options.change,
     occupancy: options.occupancy, partyContext: options.partyContext, roomQuantity: options.roomQuantity };
   const prepared = prepareStayAmendmentAvailability(input);
@@ -595,7 +595,7 @@ export async function readLabtestStayAmendmentAvailability(recordPage, availabil
  */
 export async function stageLabtestStayAmendment(page, expected = {}, options = {}) {
   if (!ownObject(expected) || Object.keys(expected).some((key) =>
-    !['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key))) {
+    !['propertyCode', 'confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note'].includes(key))) {
     return { outcome: 'input_gap', issue: 'UNSUPPORTED_EXPECTED_FIELD' };
   }
   if (!ownObject(options) || Object.keys(options).some((key) => !['field', 'value', 'nativeId', 'timeoutMs'].includes(key)) ||

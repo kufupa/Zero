@@ -6,6 +6,8 @@ import { basename, dirname, join } from 'node:path';
 import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
+import type { AiRunFence } from './run-ledger.js';
+import { consumeStaffGoAtDispatch, hmsAllocationOperationId } from './hms-approval.js';
 import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import {
@@ -40,12 +42,17 @@ import {
   type HmsLabtestIntent,
   type HmsLabtestWriteHandle,
 } from './hms-labtest-dispatch.js';
-import { hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
+import { hmsDispatchTargetKeys, hmsDispatchTargetSchema, type HmsDispatchTarget } from './hms-dispatch-target.js';
 import { persistHmsShots, readStoredHmsShot, verifyStoredHmsShot } from './hms-shots-store.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline } from '../hms/property-read-lock.js';
-import { loadNativeRatePlans } from '../hms/rate-catalogue.js';
-import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock, paneWriteMode } from './pane-stay-save.js';
+import { acquisitionWithin, assertTargetAliasesHeld, createPostgresTargetAliasLock,
+  PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline, type HeldTargetAliasLock } from '../hms/property-read-lock.js';
+import { loadNativeRatePlans, propertyConfigurationForScope } from '../hms/rate-catalogue.js';
+import { propertySwitchSchema, resolvePropertyScope } from '../hms/property-registry.js';
+import { cloudCreatePolicyIssue } from './pane-create-cloud-input.js';
+import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock } from './pane-stay-save.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { propertyCodeSchema } from '../hms/property-registry.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
@@ -61,6 +68,7 @@ import { formatBookerContact } from './reservation-workflow-v2-booker-contact.js
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { hmsReadTargetForProperty } from '../hms/hms-read-target.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { withCloudCredentialLease, type CloudCredentialLease } from '../../tooling/hms-cloud/cloud-session.mjs';
 
 type V2StateContext = ReservationWorkflowV2Context;
 export type ReservationWorkflowV2ServerContext = {
@@ -68,12 +76,25 @@ export type ReservationWorkflowV2ServerContext = {
   transport: { id: string };
   user: { id: string; sessionId?: string; sessionProfile?: 'legacy' | 'remote' };
   property: { propertyCode: string };
+  writeRunFence?: AiRunFence;
+  signal?: AbortSignal;
+  heldTargetLock?: HeldTargetAliasLock;
+  credentialLease?: CloudCredentialLease;
+  verifiedBatchSiblings?: Array<{ confirmation: string; nativeStayId: string; approvedRequest: Record<string, unknown>;
+    requestDigest: string; ratePlanAvailability: { averageRate: string; totalRate: string; currency: string };
+    checkedPricing?: unknown; arProfileId?: string }>;
   /** Internal service-only scope; never populated from a pane request. */
   nativeBatch?: ReservationNativeCheckBatch;
   /** Internal reconciliation-only scope; never populated from a pane request. */
   recovery?: ReservationRecoveryScope;
 };
 type ReadContext = ReservationWorkflowV2ServerContext | ReservationWorkflowV2SystemReadContext;
+
+async function createPolicyIssue(ctx: ReadContext, input: Record<string, unknown>): Promise<string | null> {
+  const scope = resolvePropertyScope({ transportId: ctx.transport.id,
+    ...(ctx.property.propertyCode === 'HRCEN' ? {} : { propertySwitch: propertySwitchSchema.parse(ctx.property.propertyCode) }) });
+  return cloudCreatePolicyIssue((await propertyConfigurationForScope(scope)).formPolicy, input);
+}
 
 const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -95,8 +116,8 @@ type NativeCreate = {
   commitOnlyFields?: string[];
   applied?: Record<string, unknown>; ratePlanAvailability?: unknown; ratePlanIssue?: unknown;
   requestBinding?: { request?: unknown; digest?: unknown }; screenshots?: Record<string, unknown>;
-  save?: { outcome?: string; dispatchCallbacksDrained?: boolean; billingReferenceStaged?: boolean };
-  confirmation?: unknown; readback?: { fields?: unknown; mismatches?: unknown[]; partyProof?: unknown };
+  save?: { outcome?: string; dispatchCallbacksDrained?: boolean; billingReferenceStaged?: boolean; checkedPricing?: unknown };
+  confirmation?: unknown; nativeStayId?: unknown; readback?: { fields?: unknown; mismatches?: unknown[]; partyProof?: unknown };
   writerSessionClosed?: boolean; saveAttempted?: boolean;
 };
 type NativeContinuation = (() => Promise<unknown>) & { proveNeverDispatched?: () => unknown };
@@ -349,14 +370,16 @@ function sourceConfirmationClaim(draft: ReservationWorkflowV2Draft, requestId: s
 
 function createDispatchAdmission(compiled: Extract<CreateCompile, { outcome: 'ok' }>): { allowed: true; allowRealGuest: boolean } |
   { allowed: false; issue: string } {
-  const mode = paneWriteMode('create');
-  if (mode === 'off') return { allowed: false, issue: 'pane_save_flag_off' };
-  if (process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return { allowed: false, issue: 'cloud_create_dispatch_flag_off' };
-  const allowRealGuest = !isLabtestGuest(compiled.expectedGuest);
   const input = compiled.nativeInput;
+  const property = propertyCodeSchema.safeParse(input.propertyCode);
+  if (!property.success) return { allowed: false, issue: 'property_scope_invalid' };
+  const mode = effectiveWorkflowPolicy(process.env, property.data, 'create').admittedMode;
+  if (mode === 'off') return { allowed: false, issue: 'pane_save_flag_off' };
+  if (property.data === 'HRCEN' && process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return { allowed: false, issue: 'cloud_create_dispatch_flag_off' };
+  const allowRealGuest = !isLabtestGuest(compiled.expectedGuest);
   const stay = record(input.stay), cms = record(input.cms);
   if (allowRealGuest) {
-    if (mode !== 'on' || process.env.PANE_WRITE_CREATE !== 'on') {
+    if (mode !== 'on' || (property.data === 'HRCEN' && process.env.PANE_WRITE_CREATE !== 'on')) {
       return { allowed: false, issue: 'real_guest_create_requires_write_on' };
     }
   } else {
@@ -556,7 +579,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     parties[field] = party.value;
   }
 
-  const optionalFields = ['sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'taCommission', 'guestOptIn', 'bookerName',
+  const optionalFields = ['sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'marketSegment', 'taCommission', 'guestOptIn', 'bookerName',
     'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient'] as const;
   const optional = Object.fromEntries(optionalFields.map((field) => [field, readValue(field)]));
   if (mode !== 'lookup') {
@@ -591,17 +614,20 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     }
   }
   if (mode !== 'lookup' && !text(optional.sourceOfBusiness)) issues.push('sourceOfBusiness:native_required');
-  if (optional.guestOptIn === true) issues.push('guestOptIn:true_not_supported');
   if (mode !== 'lookup' && optional.taCommission != null && (typeof optional.taCommission !== 'number' ||
       !Number.isFinite(optional.taCommission) || optional.taCommission < 0 || optional.taCommission > 100)) {
     issues.push('taCommission:percent_invalid');
   }
   if (mode !== 'lookup' && optional.taCommission != null && !parties.bookingAgency) issues.push('taCommission:booking_agency_required');
+  if (mode !== 'lookup' && optional.marketSegment != null &&
+      (typeof optional.marketSegment !== 'string' || !/^[A-Z0-9]{1,20}$/.test(optional.marketSegment))) issues.push('marketSegment:invalid_code');
   if (mode !== 'lookup' && optional.billingReference != null && !parties.arAccount) issues.push('billingReference:ar_account_required');
   const supportedGuarantee = new Set(['AVOUCH', 'CNFREC', 'DEPREQ', 'GRPDEF', 'GTDAGT', 'GTDCMP', 'GTDCC', 'GTDDEP', 'NGG', 'NGI']);
   if (typeof arrival !== 'string' || !isoDate.safeParse(arrival).success || typeof departure !== 'string' ||
       !isoDate.safeParse(departure).success || arrival >= departure) issues.push('stay:date_range_invalid');
-  if (propertyCode !== 'HRCEN') return { outcome: 'unsupported', issue: 'property_not_supported' };
+  if (!getPropertyRegistration(propertyCode)?.active || draft.propertyCode !== propertyCode) {
+    return { outcome: 'unsupported', issue: 'property_not_supported' };
+  }
   if (issues.some((issue) => issue.includes('not_supported') || issue.includes('unsupported'))) {
     return { outcome: 'unsupported', issue: 'create_contains_native_unsupported_field', fields: issues };
   }
@@ -635,7 +661,8 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     ...(optional.billingReference != null ? { billingReference: optional.billingReference } : {}),
     ...(optional.taCommission != null ? { taCommission: optional.taCommission } : {}),
     ...(optional.track != null ? { track: optional.track } : {}),
-    ...(optional.guestOptIn === false ? { guestoptin4: false } : {}),
+    ...(optional.marketSegment != null ? { marketSegment: optional.marketSegment } : {}),
+    ...(typeof optional.guestOptIn === 'boolean' ? { guestoptin4: optional.guestOptIn } : {}),
     ...(optional.bookerName != null || optional.bookerEmail != null || optional.bookerMobile != null ? { booker: {
       ...(optional.bookerName != null ? { name: optional.bookerName } : {}),
       ...(optional.bookerEmail != null || optional.bookerMobile != null
@@ -654,7 +681,7 @@ function compileCreate(draft: ReservationWorkflowV2Draft, requestId: string, all
     firstName: String(guestCandidate.firstName), lastName: String(guestCandidate.lastName),
   } : { firstName, lastName };
   const guestName = `${expectedGuest.firstName} ${expectedGuest.lastName}`;
-  const targetParsed = hmsDispatchTargetSchema.safeParse({ propertyCode: 'HRCEN', kind: 'create',
+  const targetParsed = hmsDispatchTargetSchema.safeParse({ propertyCode, kind: 'create',
     firstName: expectedGuest.firstName, lastName: expectedGuest.lastName, arrival });
   if (!targetParsed.success || targetParsed.data.kind !== 'create') return { outcome: 'needs_input', issue: 'invalid_create_target' };
   const semanticDigest = sha256({ nativeInput, guestName, requestedMealPlan: requestedMealPlan ?? null, mealPlan: mealPlan ?? null });
@@ -1049,8 +1076,20 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
     const tool = await import(new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url).href) as {
       withCloudLookupReadSession: (operation: (session: { page: unknown; runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
         Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+      withCloudRoomRateReadSession: (name: 'searchRoomTypes' | 'searchRoomTypesForCharge' | 'searchRatePlans',
+        operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => Promise<unknown>,
+        options: Record<string, unknown>) => Promise<unknown>;
     };
-    read = record(await tool.withCloudLookupReadSession(async ({ page, runTool }) => {
+    if (['room_type', 'room_type_for_charge', 'rate_plan'].includes(kind)) {
+      const name = kind === 'room_type' ? 'searchRoomTypes' :
+        kind === 'room_type_for_charge' ? 'searchRoomTypesForCharge' : 'searchRatePlans';
+      const catalogue = await tool.withCloudRoomRateReadSession(name, ({ runTool }) =>
+        readCreateCatalogue(runTool, name, kind as CreateCatalogueKind, ctx.property.propertyCode),
+      { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }) as CreateCatalogueRead;
+      read = { candidates: catalogue.candidates, complete: catalogue.complete, clean: true,
+        outcome: catalogue.outcome, issue: catalogue.issue,
+        nativeCriteria: catalogue.criteria, nativeCoverage: catalogue.coverage };
+    } else read = record(await tool.withCloudLookupReadSession(async ({ page, runTool }) => {
       if (field === 'track') {
         const tracks = await import(new URL('../../tooling/hms-cloud/guest-stay-track-catalog.mjs', import.meta.url).href) as {
           listTrackSubSegments: (page: unknown, options: { propertyCode: string }) => Promise<Record<string, unknown>>;
@@ -1062,16 +1101,6 @@ export async function reservationWorkflowV2NativeChoices(ctx: ReadContext,
         });
         return { candidates, complete: record(listed.coverage)?.complete === true,
           clean: listed.outcome === 'ok', issue: listed.issue, nativeCoverage: listed.coverage };
-      }
-      if (['room_type', 'room_type_for_charge', 'rate_plan'].includes(kind)) {
-        const catalogue = await readCreateCatalogue(runTool, kind === 'room_type' ? 'searchRoomTypes' :
-          kind === 'room_type_for_charge' ? 'searchRoomTypesForCharge' : 'searchRatePlans', kind as CreateCatalogueKind,
-        ctx.property.propertyCode);
-        const closed = await runTool({ tool: 'closeRoomRatePicker' });
-        return { candidates: catalogue.candidates, complete: catalogue.complete,
-          clean: closed.outcome === 'closed_unsaved' || catalogue.outcome === 'unavailable' && closed.outcome === 'not_open',
-          outcome: catalogue.outcome, issue: catalogue.issue,
-          nativeCriteria: catalogue.criteria, nativeCoverage: catalogue.coverage };
       }
       if (field === 'reasonForStay' || field === 'guaranteeType') {
         const listed = await runTool({ tool: 'listGuestStayDropdown', propertyCode: ctx.property.propertyCode, field });
@@ -1221,15 +1250,18 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     { key: 'organization', field: 'organization', role: 'organization', tool: 'searchOrganization', idField: 'companyid', nameField: 'companyname' },
     { key: 'arAccount', field: 'arAccount', role: 'ar_account', tool: 'searchArAccount', idField: 'araccountid', nameField: 'araccountname' },
   ] as const;
+  const catalogueTargets: Array<{ requestId: string; allocationId: string; allocationIndex: number }> = [];
   const bookingTool = await import(new URL('../../tooling/hms-cloud/hms-lookup-read-session.mjs', import.meta.url).href) as {
     withCloudLookupReadSession: (operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
       Promise<unknown>, options?: Record<string, unknown>) => Promise<unknown>;
+    withCloudRoomRateReadSession: (name: 'searchRoomTypes' | 'searchRoomTypesForCharge' | 'searchRatePlans',
+      operation: (session: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => Promise<unknown>,
+      options: Record<string, unknown>) => Promise<unknown>;
   };
   let sessionResult: Record<string, unknown> | null = null;
   try {
     sessionResult = record(await bookingTool.withCloudLookupReadSession(async ({ runTool }) => {
       const perAllocation: Outcome[] = [];
-      const catalogueTargets: Array<{ requestId: string; allocationId: string; allocationIndex: number }> = [];
       for (const request of createRequests) {
         const requestPath = ptr('proposal', 'content', 'requests', request.id, 'body');
         const body = effectiveSubtree(loaded.draft!, request.body, requestPath) as typeof request.body | null;
@@ -1421,27 +1453,6 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
       const catalogues: Array<Record<string, unknown>> = [];
       if (uniqueTargets.length) {
         for (const spec of [
-          { tool: 'searchRoomTypes', kind: 'room_type' },
-          { tool: 'searchRoomTypesForCharge', kind: 'room_type_for_charge' },
-          { tool: 'searchRatePlans', kind: 'rate_plan' },
-        ] as const) {
-          const catalogue = await readCreateCatalogue(runTool, spec.tool, spec.kind, ctx.property.propertyCode);
-          const closed = await runTool({ tool: 'closeRoomRatePicker' });
-          if (catalogue.outcome === 'unavailable' && closed.outcome === 'not_open') {
-            catalogues.push({ kind: catalogue.kind, outcome: catalogue.outcome, complete: false,
-              candidateCount: 0, coverage: catalogue.coverage, issue: catalogue.issue });
-            continue;
-          }
-          if (closed.outcome !== 'closed_unsaved') {
-            return { lookups: perAllocation, observations: nativeObservations, catalogues,
-              sessionSafe: false, issue: 'native_catalogue_picker_close_unverified' };
-          }
-          catalogues.push({ kind: catalogue.kind, outcome: catalogue.outcome, complete: catalogue.complete,
-            candidateCount: catalogue.candidates.length, coverage: catalogue.coverage, issue: catalogue.issue });
-          for (const target of uniqueTargets) nativeObservations.push(
-            createCatalogueObservation(loaded.draft!, target, catalogue, closed.outcome));
-        }
-        for (const spec of [
           { field: 'guaranteeType', kind: 'guarantee' }, { field: 'reasonForStay', kind: 'reason_for_stay' },
         ] as const) {
           const listed = await runTool({ tool: 'listGuestStayDropdown', propertyCode: ctx.property.propertyCode, field: spec.field });
@@ -1505,7 +1516,27 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     return { status: 'failed', issue: 'native_lookup_session_not_clean', requestId: input.requestId ?? null,
       lookups: sessionResult?.lookups ?? [] };
   }
-  const observations = sessionResult.observations.filter((item): item is ReservationWorkflowV2Observation => {
+  const catalogues: Array<Record<string, unknown>> = [];
+  const uniqueTargets = [...new Map(catalogueTargets.map(target =>
+    [`${target.requestId}\u0000${target.allocationId}`, target])).values()];
+  try {
+    if (uniqueTargets.length) for (const spec of [
+      { tool: 'searchRoomTypes', kind: 'room_type' },
+      { tool: 'searchRoomTypesForCharge', kind: 'room_type_for_charge' },
+      { tool: 'searchRatePlans', kind: 'rate_plan' },
+    ] as const) {
+      const catalogue = await bookingTool.withCloudRoomRateReadSession(spec.tool, ({ runTool }) =>
+        readCreateCatalogue(runTool, spec.tool, spec.kind, ctx.property.propertyCode),
+      { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }) as CreateCatalogueRead;
+      catalogues.push({ kind: catalogue.kind, outcome: catalogue.outcome, complete: catalogue.complete,
+        candidateCount: catalogue.candidates.length, coverage: catalogue.coverage, issue: catalogue.issue });
+      for (const target of uniqueTargets) nativeObservations.push(
+        createCatalogueObservation(loaded.draft!, target, catalogue, 'closed_unsaved'));
+    }
+  } catch {
+    return { status: 'failed', issue: 'native_catalogue_session_not_clean', requestId: input.requestId ?? null };
+  }
+  const observations = nativeObservations.filter((item): item is ReservationWorkflowV2Observation => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
     return !persistedConfirmationRefs.has((item as ReservationWorkflowV2Observation).ref);
   });
@@ -1519,7 +1550,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
   }
   return { status: 'ok', revision: fresh.result.status === 'ok' ? fresh.result.revision : input.expectedRevision,
     seq: fresh.result.status === 'ok' ? fresh.result.seq : input.expectedSeq,
-    requests, lookups: sessionResult.lookups, catalogues: sessionResult.catalogues ?? [],
+    requests, lookups: sessionResult.lookups, catalogues,
     observations: [...fresh.draft.observations, ...observations], operationResults: fresh.draft.operationResults };
 }
 
@@ -1532,6 +1563,8 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode,
     ctx.nativeBatch ? 'background_prepare' : 'prepare');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [], details: compiled.details ?? [] };
+  const policyIssue = await createPolicyIssue(ctx, compiled.nativeInput);
+  if (policyIssue) return { status: 'needs_input', issue: policyIssue };
   try {
     const tool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
       createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
@@ -1540,6 +1573,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
       withBookingLookupSession: (callback: unknown, options: Record<string, unknown>) => Promise<unknown>;
     } : null;
     const native = await tool.createReservation(compiled.nativeInput, { allowRealGuest: true, expectedGuest: compiled.expectedGuest,
+      transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal,
       cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
       requireExplicitGuestSelection: true, capturePrepareScreenshot: true, allowCommitOnlyBillingReference: true,
       ...(session ? { withSession: (callback: unknown, options: Record<string, unknown>) =>
@@ -1691,6 +1725,51 @@ function preparedFor(draft: ReservationWorkflowV2Draft, requestId: string, alloc
   if (bindingParties?.arAccount && (!arAccountProfileId || !/^\d+$/.test(arAccountProfileId))) return null;
   return { result, observation, stored, request: binding.request, digest: binding.digest, price, arAccountProfileId,
     prepareShot: shot && typeof shot.runId === 'string' && typeof shot.sha256 === 'string' ? shot : null };
+}
+
+/** Project only a current, fully verified native Create preview into the durable approval boundary. */
+export async function reservationWorkflowV2CreatePreparation(ctx: ReservationWorkflowV2ServerContext,
+  input: ReservationWorkflowV2PrepareInput, observationRef?: string) {
+  if (!input.allocationId) return null;
+  const loaded = await currentDraft(ctx, input);
+  if (!loaded.draft) return null;
+  const request = loaded.draft.proposal.content.requests.find(entry => entry.id === input.requestId);
+  if (!request || request.kind !== 'create') return null;
+  const body = effectiveSubtree(loaded.draft, request.body, ptr('proposal', 'content', 'requests', request.id, 'body')) as typeof request.body | null;
+  if (!body || !Array.isArray(body.allocations) || body.allocations.length < 1 || body.allocations.length > 8 ||
+      new Set(body.allocations.map(allocation => allocation.id)).size !== body.allocations.length) return null;
+  const allocations: Array<{ allocationId: string; businessDigest: string; observationRef: string }> = [];
+  const observations: Array<{ allocationId: string; observationRef: string; stored: unknown }> = [];
+  const prices: Array<{ allocationId: string; price: unknown }> = [];
+  const aliases = new Set<string>();
+  const warnings: string[] = [];
+  let oldest = '';
+  for (const allocation of body.allocations) {
+    if (loaded.draft.operationResults.some(result => result.workflow === 'create' && result.requestId === input.requestId &&
+        result.allocationId === allocation.id && (result.status === 'succeeded' || result.status === 'unknown'))) return null;
+    const compiled = compileCreate(loaded.draft, input.requestId, allocation.id, ctx.property.propertyCode, 'prepare');
+    if (compiled.outcome !== 'ok') return null;
+    if (await createPolicyIssue(ctx, compiled.nativeInput)) return null;
+    const prepared = preparedFor(loaded.draft, input.requestId, allocation.id, compiled.semanticDigest);
+    const target = hmsDispatchTargetSchema.safeParse(compiled.target);
+    if (!prepared || observationRef && allocation.id === input.allocationId && prepared.observation.ref !== observationRef ||
+        !prepared.prepareShot || !prepared.observation.coverage.complete ||
+        !Number.isFinite(Date.parse(prepared.observation.observedAt)) ||
+        Date.now() - Date.parse(prepared.observation.observedAt) >= 30 * 60_000 ||
+        !nativeInputMatchesBinding(compiled, prepared.request) || !target.success || target.data.kind !== 'create' ||
+        reservationWorkflowV2CreatePriceComparison(loaded.draft, input.requestId, allocation.id, ctx.property.propertyCode).blocksGo) return null;
+    for (const alias of hmsDispatchTargetKeys(target.data)) aliases.add(alias);
+    allocations.push({ allocationId: allocation.id, businessDigest: compiled.semanticDigest, observationRef: prepared.observation.ref });
+    observations.push({ allocationId: allocation.id, observationRef: prepared.observation.ref, stored: prepared.stored });
+    prices.push({ allocationId: allocation.id, price: prepared.price });
+    warnings.push(...prepared.observation.coverage.notes);
+    if (!oldest || Date.parse(prepared.observation.observedAt) < Date.parse(oldest)) oldest = prepared.observation.observedAt;
+  }
+  if (!allocations.some(allocation => allocation.allocationId === input.allocationId)) return null;
+  const { allocationId: _allocationId, ...batchInput } = input;
+  return { operation: 'create' as const, targetAliases: [...aliases].sort(),
+    nativeObservation: { beforeDigest: sha256(observations), capturedAt: oldest, price: prices, warnings },
+    allocations, workflowContext: { endpoint: 'execute' as const, input: batchInput } };
 }
 
 type PriceCheck = 'match' | 'mismatch' | 'unknown' | 'not_requested';
@@ -2175,6 +2254,7 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
        (input.billingReference === undefined && bound.billingReference != null) ||
        (input.taCommission === undefined && bound.nativeCommissionPercent != null) ||
        (input.track === undefined && bound.track != null) ||
+       (input.marketSegment === undefined && bound.marketSegment != null) ||
        (input.guestoptin4 === undefined && bound.guestOptIn != null) ||
        (input.cms === undefined && (bound.cmsMessageId != null || bound.cmsRecipient != null)))) return false;
   for (const [key, id, name] of [
@@ -2196,7 +2276,8 @@ function nativeInputMatchesBinding(compiled: Extract<CreateCompile, { outcome: '
     (input.billingReference === undefined || bound.billingReference === input.billingReference) &&
     (input.taCommission === undefined ? bound.nativeCommissionPercent == null : bound.nativeCommissionPercent === input.taCommission) &&
     (input.track === undefined || input.track === record(bound.track)?.lookupCode || input.track === record(bound.track)?.display) &&
-    (input.guestoptin4 !== false || bound.guestOptIn === false) &&
+    (input.marketSegment === undefined ? bound.marketSegment == null : input.marketSegment === record(bound.marketSegment)?.value) &&
+    (input.guestoptin4 === undefined || bound.guestOptIn === input.guestoptin4) &&
     (options.ignoreBookerContact
       ? canonicalJson(withoutBookerContact(bound.booker)) === canonicalJson(withoutBookerContact(input.booker))
       : input.booker === undefined || canonicalJson(bound.booker) === canonicalJson(input.booker)) &&
@@ -2433,6 +2514,8 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   }
   const compiled = compileCreate(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode, 'execute');
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [], details: compiled.details ?? [] };
+  const policyIssue = await createPolicyIssue(ctx, compiled.nativeInput);
+  if (policyIssue) return { status: 'needs_input', issue: policyIssue };
   const admission = createDispatchAdmission(compiled);
   if (!admission.allowed) return { status: 'refused', issue: admission.issue };
   if (!ctx.user.sessionId || !ctx.user.sessionProfile) return { status: 'refused', issue: 'authenticated_staff_session_required' };
@@ -2444,7 +2527,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   const targetResult = hmsDispatchTargetSchema.safeParse(compiled.target);
   if (!targetResult.success || targetResult.data.kind !== 'create') return { status: 'needs_input', issue: 'create_target_invalid' };
   const propertyTarget = paneStayCreateTarget({ transportId: ctx.transport.id, propertyCode: ctx.property.propertyCode });
-  if (!propertyTarget.ok || propertyTarget.target.propertyCode !== 'HRCEN' || propertyTarget.target.browserSlot !== 'centurion') {
+  if (!propertyTarget.ok || propertyTarget.target.propertyCode !== ctx.property.propertyCode) {
     return { status: 'unsupported', issue: 'create_property_session_unavailable' };
   }
   const targetLock = paneStayCloudTargetLock(propertyTarget.target, targetResult.data, { kind: 'independent_cloud' });
@@ -2459,25 +2542,32 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
   };
   const siblingVerifier = priorSiblings.length ? await import(new URL('../../tooling/hms-cloud/batch-sibling-readback.mjs', import.meta.url).href) as {
-    verifyBatchSiblings: (census: unknown, siblings: Array<{ confirmation: string; approvedRequest: Record<string, unknown>;
-      requestDigest: string }>, options?: Record<string, unknown>) => Promise<boolean>;
+    censusMatchesApprovedSiblings: (census: unknown, siblings: NonNullable<ReservationWorkflowV2ServerContext['verifiedBatchSiblings']>,
+      options: Record<string, unknown>) => boolean;
   } : null;
+  if (priorSiblings.length && (!ctx.verifiedBatchSiblings || priorSiblings.some(sibling =>
+      !ctx.verifiedBatchSiblings!.some(proved => proved.confirmation === sibling.confirmation && proved.requestDigest === sibling.requestDigest)))) {
+    return { status: 'needs_reconcile', issue: 'create_prior_room_fresh_proof_missing' };
+  }
   const nativeInput: Record<string, unknown> = { ...compiled.nativeInput, mode: 'commit' };
   let dispatchHandle: HmsLabtestWriteHandle | null = null;
   let releaseProvedNeverDispatched = false;
   let claimIssue: string | null = null;
   let priorSiblingsVerified = false;
+  let lockSignal: AbortSignal | undefined;
   const liveOptions: Record<string, unknown> = {
     allowRealGuest: admission.allowRealGuest, expectedGuest: compiled.expectedGuest,
     cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival),
     expectedRequestDigest: prepared.digest, expectedRateAvailability: prepared.price,
+    ...(prepared.arAccountProfileId ? { expectedArProfileId: prepared.arAccountProfileId } : {}),
     allowCommitOnlyBillingReference: true,
     ...(siblingVerifier ? { verifyLabtestMatches: async (census: unknown) => {
-      priorSiblingsVerified = await siblingVerifier.verifyBatchSiblings(census, priorSiblings,
-        { cloudTargetKey: createCloudTargetKey(compiled.expectedGuest, record(compiled.nativeInput.stay)?.arrival) });
+      priorSiblingsVerified = siblingVerifier.censusMatchesApprovedSiblings(census, ctx.verifiedBatchSiblings!,
+        { propertyCode: ctx.property.propertyCode });
       return priorSiblingsVerified;
     } } : {}),
     authorizeCandidate: async () => {
+      if (lockSignal?.aborted) return false;
       const current = await currentDraft(ctx, input);
       if (!current.draft) return false;
       const live = compileCreate(current.draft, input.requestId, input.allocationId!, ctx.property.propertyCode, 'execute');
@@ -2489,6 +2579,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
           nativeInputMatchesBinding(live, livePrepared.request));
     },
     dispatchCandidate: async (request: unknown, next: NativeContinuation, evidence: unknown) => {
+      lockSignal?.throwIfAborted();
       const requestDigest = nativeCreateSaveDigest(request);
       if (!nativeInputMatchesBinding(compiled, prepared.request)) throw new Error('reservation_v2_native_binding_changed');
       const event = record(evidence), beforePath = event?.beforeScreenshot, preimage = record(event?.preimage);
@@ -2516,7 +2607,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
       try {
         dispatch = await claimHmsLabtestDispatch(ctx.db, {
           workItemId: input.workItemId, transportId: ctx.transport.id, actorUserId: ctx.user.id,
-          grantId: input.idempotencyKey, propertyCode: 'HRCEN', firstName: compiled.expectedGuest.firstName,
+          grantId: input.idempotencyKey, propertyCode: targetResult.data.propertyCode, firstName: compiled.expectedGuest.firstName,
           lastName: compiled.expectedGuest.lastName, target: targetResult.data, nativeGuestId: String(record(nativeInput.guest)?.profileId),
           operation: 'create', stayId: `${input.requestId}_${input.allocationId}`,
           sourceDigest: input.source.sourceHash, approvedDigest: prepared.digest, requestDigest,
@@ -2525,8 +2616,12 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
             previewShot, beforeShot, preimage, guaranteeDisplay: event.guaranteeDisplay,
             ratePlanAvailability: prepared.price, arAccountProfileId: prepared.arAccountProfileId,
             priorRoomConfirmations: priorSiblings.map(({ confirmation, requestDigest }) => ({ confirmation, requestDigest })) },
-        }, async (tx) => authorizeCurrentCreate(tx, ctx, input, prepared.digest, compiled.semanticDigest,
-          input.requestId, input.allocationId!, priorSiblings, attempt), expectedEpoch);
+        }, async (tx) => {
+          if (!ctx.writeRunFence) throw new Error('staff_go_required');
+          await consumeStaffGoAtDispatch(tx, ctx.writeRunFence, lockSignal, input.allocationId);
+          await authorizeCurrentCreate(tx, ctx, input, prepared.digest, compiled.semanticDigest,
+            input.requestId, input.allocationId!, priorSiblings, attempt);
+        }, expectedEpoch);
       } catch (error) {
         if (error instanceof HmsLabtestDispatchError && error.reason === 'occupied') {
           claimIssue = 'create_target_held_for_reconciliation';
@@ -2553,7 +2648,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
         }
         throw new Error('reservation_v2_create_receipt_unavailable');
       }
-      try { return await next(); }
+      try { lockSignal?.throwIfAborted(); return await next(); }
       catch (error) {
         const proof = next.proveNeverDispatched?.();
         if (proof) {
@@ -2567,8 +2662,20 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     },
   };
   let native: NativeCreate;
-  try { native = await targetLock.withLock(() => nativeModule.createReservation(nativeInput, liveOptions),
-    acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS)); }
+  const invoke = (signal?: AbortSignal) => {
+    lockSignal = signal && ctx.signal ? AbortSignal.any([signal, ctx.signal]) : signal ?? ctx.signal;
+    return nativeModule.createReservation(nativeInput, { ...liveOptions, signal: lockSignal, transportId: ctx.transport.id,
+      credentialLease: ctx.credentialLease });
+  };
+  try {
+    if (ctx.heldTargetLock) {
+      const property = getPropertyRegistration(targetResult.data.propertyCode);
+      if (!property || !ctx.credentialLease) throw new Error('create_batch_scope_unavailable');
+      assertTargetAliasesHeld(ctx.heldTargetLock, { tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+        targetAliases: hmsDispatchTargetKeys(targetResult.data) });
+      native = await invoke(ctx.heldTargetLock.signal);
+    } else native = await targetLock.withLock(invoke, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+  }
   catch (error) { native = { outcome: 'uncertain', issue: isPropertyReadLockDeadline(error) ? 'create_lock_busy' : 'native_create_invocation_failed' }; }
   if (claimIssue) return { status: 'needs_reconcile', issue: claimIssue };
   const activeDispatch = dispatchHandle as HmsLabtestWriteHandle | null;
@@ -2586,6 +2693,7 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
   const billingRequested = typeof nativeInput.billingReference === 'string';
   const success = native.outcome === 'saved' && native.writerSessionClosed === true &&
     native.save?.dispatchCallbacksDrained === true && /^\d{6,10}-\d{1,2}$/.test(confirmation) &&
+    typeof native.nativeStayId === 'string' && /^\d{1,100}$/.test(native.nativeStayId) &&
     Array.isArray(fields) && Array.isArray(native.readback?.mismatches) && native.readback.mismatches.length === 0 &&
     (!partiesRequested || record(native.readback?.partyProof)?.outcome === 'verified') &&
     (!billingRequested || native.save?.billingReferenceStaged === true) && mealReadbackMatched && priceMatches(savedPrice, prepared.price);
@@ -2638,7 +2746,8 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
     return { status: 'needs_reconcile', operationId: input.idempotencyKey, confirmation, dispatchHoldId: activeDispatch.holdId };
   }
   return { status: 'succeeded', operationId: input.idempotencyKey, requestId: input.requestId,
-    allocationId: input.allocationId, confirmation, price: savedPrice, observationRef: successObservation.ref };
+    allocationId: input.allocationId, confirmation, nativeStayId: native.nativeStayId,
+    checkedPricing: native.save?.checkedPricing, price: savedPrice, observationRef: successObservation.ref };
 }
 
 /** Positive-only recovery: an uncertain Save remains blocked unless fresh native reconciliation proves the created stay. */
@@ -2681,3 +2790,115 @@ export async function reservationWorkflowV2Reconcile(ctx: ReservationWorkflowV2S
 }
 
 
+
+/** Execute only the exact request captured by a verified, worker-owned staff Go. */
+export async function executePreparedReservationV2Run(input: {
+  db: DB; go: import('../hms/staff-go-authority.js').VerifiedStaffGo; fence: AiRunFence; signal?: AbortSignal;
+}) {
+  const { go, fence, signal, db } = input;
+  signal?.throwIfAborted();
+  const prepared = go.preparation, captured = prepared.workflowContext;
+  if (!captured || go.grant.preparedRef !== prepared.preparedRef || go.grant.workItemId !== captured.input.workItemId ||
+      go.grant.transportId !== prepared.scope.transportId || go.grant.propertyCode !== prepared.scope.propertyCode) {
+    throw new Error('reservation_v2_preparation_invalid');
+  }
+  const ctx: ReservationWorkflowV2ServerContext = { db, transport: { id: go.grant.transportId },
+    property: { propertyCode: go.grant.propertyCode },
+    user: { id: go.actorUserId, sessionId: go.sessionId, sessionProfile: go.sessionProfile },
+    writeRunFence: fence, signal };
+  if (captured.endpoint === 'createGuestProfile') {
+    if (go.grant.operation !== 'create_guest_profile') throw new Error('reservation_v2_operation_mismatch');
+    const { reservationWorkflowV2CreateGuestProfile } = await import('./reservation-workflow-v2-guest.js');
+    return reservationWorkflowV2CreateGuestProfile(ctx, { ...captured.input, go: true, idempotencyKey: go.grant.grantId });
+  }
+  if (captured.endpoint === 'executeServices') {
+    if (go.grant.operation !== 'add_on') throw new Error('reservation_v2_operation_mismatch');
+    const { reservationWorkflowV2ExecuteServices } = await import('./reservation-workflow-v2-services-execute.js');
+    return reservationWorkflowV2ExecuteServices(ctx, { ...captured.input, go: true, idempotencyKey: go.grant.grantId });
+  }
+  if (captured.endpoint === 'executeSavedServices') {
+    if (go.grant.operation !== 'add_on') throw new Error('reservation_v2_operation_mismatch');
+    const { reservationWorkflowV2ExecuteSavedServices } = await import('./reservation-workflow-v2-services-execute.js');
+    return reservationWorkflowV2ExecuteSavedServices(ctx, { ...captured.input, go: true, idempotencyKey: go.grant.grantId });
+  }
+  const current = await getReservationWorkflowV2Draft(stateContext(ctx), captured.input);
+  if (current.status !== 'ok') throw new Error('reservation_v2_draft_unavailable');
+  const request = current.draft.proposal.content.requests.find((row) => row.id === captured.input.requestId);
+  if (!request || (request.kind === 'filing' ? 'attach_document' : request.kind) !== go.grant.operation) {
+    throw new Error('reservation_v2_operation_mismatch');
+  }
+  const requestInput = { ...captured.input, go: true as const, idempotencyKey: go.grant.grantId };
+  if (request.kind === 'create') {
+    const allocations = prepared.allocations;
+    if (!allocations?.length || captured.input.allocationId !== undefined) throw new Error('reservation_v2_batch_preparation_invalid');
+    const last = allocations.at(-1)!;
+    if (!last.observationRef) throw new Error('reservation_v2_batch_observation_missing');
+    const projection = await reservationWorkflowV2CreatePreparation(ctx,
+      { ...captured.input, allocationId: last.allocationId }, last.observationRef);
+    if (!projection || canonicalJson(projection.allocations) !== canonicalJson(allocations) ||
+        canonicalJson(projection.targetAliases) !== canonicalJson(prepared.targetAliases) ||
+        canonicalJson(projection.nativeObservation) !== canonicalJson(prepared.nativeObservation)) {
+      throw new Error('reservation_v2_batch_preparation_changed');
+    }
+    const snapshots = allocations.map(allocation => {
+      const compiled = compileCreate(current.draft, captured.input.requestId, allocation.allocationId,
+        ctx.property.propertyCode, 'prepare');
+      const staged = compiled.outcome === 'ok' ? preparedFor(current.draft, captured.input.requestId,
+        allocation.allocationId, compiled.semanticDigest) : null;
+      if (!staged || !record(staged.request)) throw new Error('reservation_v2_batch_binding_missing');
+      return { approvedRequest: record(staged.request)!, requestDigest: staged.digest, ratePlanAvailability: staged.price,
+        arProfileId: staged.arAccountProfileId ?? undefined };
+    });
+    const property = getPropertyRegistration(go.grant.propertyCode), databaseUrl = process.env.DATABASE_URL;
+    if (!property?.active || !databaseUrl || property.expectedTenant !== go.grant.tenantId) throw new Error('reservation_v2_batch_lock_unavailable');
+    const siblingTools = await import(new URL('../../tooling/hms-cloud/batch-sibling-readback.mjs', import.meta.url).href) as {
+      verifyApprovedBatchSiblings: (siblings: NonNullable<ReservationWorkflowV2ServerContext['verifiedBatchSiblings']>,
+        options: Record<string, unknown>) => Promise<boolean>;
+    };
+    const aliases = new Set(prepared.targetAliases);
+    const siblings: NonNullable<ReservationWorkflowV2ServerContext['verifiedBatchSiblings']> = [];
+    const results: Outcome[] = [];
+    for (const [index, allocation] of allocations.entries()) {
+      signal?.throwIfAborted();
+      const lock = createPostgresTargetAliasLock({ tenantId: property.expectedTenant, propertyCode: property.propertyCode,
+        targetAliases: [...aliases], databaseUrl });
+      const result = await lock.withLock(async (_connection, targetSignal, heldTargetLock) => {
+        const currentSignal = signal ? AbortSignal.any([signal, targetSignal]) : targetSignal;
+        return withCloudCredentialLease(property.propertyCode, async credentialLease => {
+          if (siblings.length && !await siblingTools.verifyApprovedBatchSiblings(siblings, {
+            propertyCode: property.propertyCode, transportId: ctx.transport.id, signal: currentSignal, credentialLease,
+          })) return { status: 'needs_reconcile', issue: 'create_prior_room_fresh_proof_missing' };
+          currentSignal.throwIfAborted();
+          return reservationWorkflowV2Execute({ ...ctx, signal: currentSignal, heldTargetLock, credentialLease,
+            verifiedBatchSiblings: siblings }, { ...captured.input, allocationId: allocation.allocationId, go: true,
+            idempotencyKey: hmsAllocationOperationId(go.grant.grantId, allocation.allocationId) });
+        }, { signal: currentSignal });
+      }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), ...(signal ? { signal } : {}) });
+      results.push(result);
+      if (result.status !== 'succeeded' || typeof result.confirmation !== 'string' ||
+          typeof result.nativeStayId !== 'string' || !/^\d{1,100}$/.test(result.nativeStayId)) {
+        return { status: 'needs_reconcile', issue: 'create_batch_incomplete', allocationId: allocation.allocationId, results };
+      }
+      const target = hmsDispatchTargetSchema.safeParse({ propertyCode: property.propertyCode, kind: 'saved',
+        confirmation: result.confirmation, nativeStayId: result.nativeStayId });
+      if (!target.success || target.data.kind !== 'saved') return { status: 'needs_reconcile', issue: 'create_batch_target_unverified', results };
+      for (const alias of hmsDispatchTargetKeys(target.data)) aliases.add(alias);
+      siblings.push({ ...snapshots[index]!, confirmation: result.confirmation, nativeStayId: result.nativeStayId,
+        checkedPricing: result.checkedPricing });
+    }
+    return { status: 'succeeded', operationId: go.grant.grantId, observationRef: results.at(-1)?.observationRef, results };
+  }
+  if (request.kind === 'amend') {
+    const { reservationWorkflowV2AmendExecute } = await import('./reservation-workflow-v2-amend.js');
+    return reservationWorkflowV2AmendExecute(ctx, requestInput);
+  }
+  if (request.kind === 'cancel') {
+    const { reservationWorkflowV2CancelExecute } = await import('./reservation-workflow-v2-cancel.js');
+    return reservationWorkflowV2CancelExecute(ctx, requestInput);
+  }
+  if (request.kind === 'filing') {
+    const { reservationWorkflowV2FilingExecute } = await import('./reservation-workflow-v2-filing.js');
+    return reservationWorkflowV2FilingExecute(ctx, requestInput);
+  }
+  throw new Error('reservation_v2_operation_unavailable');
+}

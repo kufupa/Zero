@@ -4,7 +4,7 @@ import * as records from './labtest-record.mjs';
 import { blankSavedPartyFields } from './labtest-party-fields.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
-const expected = { confirmation: '123456-1', guestId: '123', arrival: '2027-11-12', departure: '2027-11-14',
+const expected = { propertyCode: 'HRCEN', confirmation: '123456-1', guestId: '123', arrival: '2027-11-12', departure: '2027-11-14',
   roomType: 'STQN', ratePlan: 'BAR', note: 'Proof Labtest test' };
 const organization = { nativeId: '41', name: 'Example Company' };
 const recordOptions = { allowUnchangedBusinessParties: true, expectedOrganization: organization };

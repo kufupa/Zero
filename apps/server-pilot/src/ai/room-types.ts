@@ -3,7 +3,7 @@
  * behavior aligned with the parity test rather than importing across production app boundaries.
  */
 import { ROOM_ABBREVIATIONS, ROOM_TYPE_NAMES, ROOM_WORD_ALIASES } from '../../config/room-types.js';
-import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
 
 export { ROOM_TYPE_NAMES };
 

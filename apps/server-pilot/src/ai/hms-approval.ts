@@ -15,18 +15,22 @@ import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { paneWriteMode } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { publicCloudAmendFields, retainedPricesForApproval } from './cloud-amend-price-projection.js';
-import { HMS_LABTEST_AMEND_PROMPT_VERSION, labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
+import { HMS_LABTEST_AMEND_PROMPT_VERSION } from './pane-cloud-amend-readiness.js';
 import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
-import { resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
+import { propertyCodeSchema, resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { hmsOperationSchema, hmsPreparationSchema, hmsWriteGrantV2Schema, loadHmsPreparation,
-  preparationDigest, recordHmsPreparation, staffSessionSchema, preparedSummarySchema,
+  preparationDigest, recordHmsPreparation, staffSessionSchema, preparedSummarySchema, hmsConfigurationIdentities, hmsWorkflowForOperation,
   type HmsPreparation, type PreparedSummary } from '../hms/hms-preparation.js';
+import { reservationWorkflowV2DraftSchema } from './reservation-workflow-v2-contract.js';
+import { propertyConfigurationForScope } from '../hms/rate-catalogue.js';
 import { verifyStaffGoForRun, type VerifiedStaffGo } from '../hms/staff-go-authority.js';
 import { hmsDispatchTargetKeys, hmsDispatchTargetSchema, hmsDispatchWorkItemKey } from './hms-dispatch-target.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import {
   HMS_WRITE_RUN_KIND,
+  HMS_V2_WRITE_PROMPT_VERSION,
   HMS_CLOUD_CANCEL_PROMPT_VERSION,
   HMS_LABTEST_ATTACH_PROMPT_VERSION,
   NONTERMINAL_AI_RUN_STATES,
@@ -192,6 +196,33 @@ function formOf(state: Record<string, unknown>): Record<string, unknown> {
   delete form[HMS_SNAPSHOT_KEY];
   delete form.reservationistHandledRequests;
   delete form.cloudCancelPreview;
+  for (const key of ['cloudCreatePreviews', 'cloudCreateBatch', 'cloudCreatePastBatches', 'cloudCreateBatchHolds', 'stayPreviews']) delete form[key];
+  if (form.stays && typeof form.stays === 'object' && !Array.isArray(form.stays)) {
+    form.stays = Object.fromEntries(Object.entries(form.stays).map(([id, value]) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [id, value];
+      return [id, Object.fromEntries(Object.entries(value).filter(([key]) => !key.startsWith('cloudCreate') &&
+        !['status', 'confirmationNumber', 'screenshotRef', 'runId', 'readbackDigest', 'observationRef', 'nativePrice', 'shots', 'nativeStayId'].includes(key)))];
+    }));
+  }
+  if (form.reservationWorkflowV2 && typeof form.reservationWorkflowV2 === 'object' && !Array.isArray(form.reservationWorkflowV2)) {
+    const draft = Object.fromEntries(Object.entries(form.reservationWorkflowV2));
+    // Native observations are bound separately; dispatch progress must not change approved staff fields.
+    for (const key of ['observations', 'operationResults', 'errors', 'status', 'prefill']) delete draft[key];
+    const proposal = draft.proposal && typeof draft.proposal === 'object' && !Array.isArray(draft.proposal)
+      ? draft.proposal as Record<string, unknown> : null;
+    const content = proposal?.content && typeof proposal.content === 'object' && !Array.isArray(proposal.content)
+      ? proposal.content as Record<string, unknown> : null;
+    if (Array.isArray(content?.requests) && content.requests.some(request => request && typeof request === 'object' &&
+        !Array.isArray(request) && (request as Record<string, unknown>).kind === 'filing')) {
+      // Filing mirrors are derived from the source-bound V2 proposal and sealed native observation.
+      // The worker independently checks their exact PDF, target and document fields before dispatch.
+      for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName',
+        'sourceDocumentName', 'requestedDocumentName', 'documentDescription', 'pdfSha256', 'sourceMessageId',
+        'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash', 'documentCode',
+        'filingStateDigest', 'filingHistorySeq', 'reason', 'fields', 'previewDigest', 'cloudAmend', 'cloudCancel']) delete form[key];
+    }
+    form.reservationWorkflowV2 = draft;
+  }
   return form;
 }
 
@@ -461,6 +492,9 @@ export async function endHmsWriteRun(input: {
   const db = input.db ?? getDb();
   return db.transaction(async (tx) => {
     const now = new Date();
+    const reviewCompleted = input.reason === 'hms_v2_native_review_ready' && input.failureClass === 'POLICY_BLOCK' &&
+      await hmsWriteRunReviewCompleted(tx as DB, input.fence);
+    if (input.reason === 'hms_v2_native_review_ready' && !reviewCompleted) throw new HmsApprovalError('state_changed');
     const mark = {
       runId: input.fence.runId,
       claimOwner: input.fence.claimOwner,
@@ -480,7 +514,10 @@ export async function endHmsWriteRun(input: {
           .set({ state: sql`${workItem.state} - 'hmsSnapshot'`, updatedAt: now })
           .where(eq(workItem.id, row.workItemId));
       }
-      await recordNeedsCheck(tx as DB, {
+      if (reviewCompleted) await tx.insert(workEvent).values({ workItemId: row.workItemId, at: now,
+        actorKind: 'system', type: 'status.changed', value: { needsCheck: false, resolvedRunId: row.id,
+          reason: input.reason, finalSave: false } });
+      else await recordNeedsCheck(tx as DB, {
         workItemId: row.workItemId,
         runId: row.id,
         failureClass: input.failureClass,
@@ -529,19 +566,23 @@ async function supersedeChangedQueuedWrite(
 }
 
 /** Recheck the prepared target, business fields and observed price under the current write mode. */
-async function assertCloudAmendForm(state: Record<string, unknown>, env?: NodeJS.Dict<string>): Promise<void> {
-  if (!labtestAmendWorkerEnabled(env)) throw new HmsApprovalError('amend_save_unavailable');
+async function assertCloudAmendForm(state: Record<string, unknown>, env?: NodeJS.Dict<string>, expectedPropertyCode?: HmsPreparation['scope']['propertyCode']): Promise<void> {
   const [{ cloudAmendDispatchFormSchema }, { cloudAmendFirstPilotScopeSupported }] = await Promise.all([
     import('./pane-cloud-amend-dispatch.js'), import('./pane-cloud-amend.js'),
   ]);
   const parsed = cloudAmendDispatchFormSchema.safeParse(state);
   if (!parsed.success) throw new HmsApprovalError('state_changed');
   const form = parsed.data, { binding, preimage, nativeDigest, approvedPrices, preserved } = form.cloudAmend;
+  const propertyCode = propertyCodeSchema.parse(preimage.native.propertyCode);
+  const mode = effectiveWorkflowPolicy(env ?? process.env, propertyCode, 'amend').admittedMode;
+  if (expectedPropertyCode !== undefined && (propertyCode !== expectedPropertyCode || mode === 'off')) {
+    throw new HmsApprovalError('amend_save_unavailable');
+  }
   const price = retainedPricesForApproval(approvedPrices);
   const previewDigest = hmsStateDigest({ binding, preimage, changes: form.fields, nativeDigest, approvedPrices, preserved });
   if (form.confirmation !== preimage.native.confirmation || form.arrival !== preimage.native.arrival ||
       state.lastName !== preimage.native.lastName || previewDigest !== form.previewDigest || price?.version !== 2 ||
-      !cloudAmendFirstPilotScopeSupported(preimage.native, form.fields, (env ?? process.env).PANE_WRITE_AMEND === 'on', preserved)) {
+      !cloudAmendFirstPilotScopeSupported(preimage.native, form.fields, expectedPropertyCode === undefined || mode === 'on', preserved)) {
     throw new HmsApprovalError('state_changed');
   }
 }
@@ -551,14 +592,25 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
   snapshot: { digest: string; readAt: string; expiresAt?: string }; actorUserId: string;
   sessionId?: string; sessionProfile?: 'legacy' | 'remote'; propertySwitch?: PropertySwitch;
   preparedRef?: string; expectedRevision?: number; now: Date;
+  nativePreparation?: HmsNativePreparation;
+  expectedSourceHash?: string;
+  granting?: boolean;
 }): Promise<HmsPreparation> {
   const { item, state, snapshot, now } = input;
+  const supplied = input.preparedRef ? await loadHmsPreparation(db, input.preparedRef, item.id) : undefined;
+  const native: HmsNativePreparation | undefined = supplied ?? input.nativePreparation;
+  const v2 = native?.workflowContext ? { ...native, workflowContext: native.workflowContext } : undefined;
+  const draft = v2 ? reservationWorkflowV2DraftSchema.parse(state.reservationWorkflowV2) : undefined;
+  const revision = draft ? item.revision : item.revisionSeq;
   const staff = staffSessionSchema.safeParse({ actorUserId: input.actorUserId,
     sessionId: input.sessionId, sessionProfile: input.sessionProfile });
   if (!staff.success || !item.threadId || !item.sourceMessageId) throw new HmsApprovalError('no_grant');
   const scope = resolvePropertyScope({ transportId: item.transportId, propertySwitch: input.propertySwitch });
-  // The retained native writers still use Centurion contracts until P3.
-  if (scope.propertyCode !== 'HRCEN') throw new HmsApprovalError('write_unavailable');
+  if (scope.propertyCode !== 'HRCEN' && !v2 && state.propertyCode !== scope.propertyCode) throw new HmsApprovalError('state_changed');
+  if (draft && (draft.propertyCode !== scope.propertyCode || draft.transportId !== scope.transportId ||
+      draft.workItemId !== item.id || draft.revision !== revision ||
+      v2?.workflowContext.input.expectedRevision !== revision ||
+      v2?.workflowContext.input.expectedSeq !== item.revisionSeq)) throw new HmsApprovalError('state_changed');
   await lockCreateActorAccess(db, { transportId: item.transportId, actorUserId: staff.data.actorUserId });
   await lockCreateActorSession(db, staff.data);
   const [thread] = await db.select().from(mailThread).where(and(eq(mailThread.id, item.threadId),
@@ -568,14 +620,26 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
   if (!thread || thread.historyOnly || thread.trashedAt !== null || !mail || mail.direction !== 'inbound' ||
       mail.historyOnly || mail.sourceProvenance?.attention != null) throw new HmsApprovalError('source_mail_changed');
   const sourceHash = staffQuoteSourceHash(mail);
-  const operation = hmsOperationSchema.safeParse(state.action ?? (state.stays ? 'create' : undefined));
+  if (input.expectedSourceHash !== undefined && input.expectedSourceHash !== sourceHash) {
+    throw new HmsApprovalError('source_mail_changed');
+  }
+  const operation = hmsOperationSchema.safeParse(native?.operation ?? state.action ?? (state.stays ? 'create' : undefined));
   if (!operation.success) throw new HmsApprovalError('write_unavailable');
-  if (input.expectedRevision !== undefined && input.expectedRevision !== item.revisionSeq) {
+  const configuration = await propertyConfigurationForScope(scope);
+  const identities = hmsConfigurationIdentities(scope, configuration, operation.data);
+  const capability = configuration.capabilities[hmsWorkflowForOperation(operation.data)].status;
+  if (capability === 'unavailable' || input.granting && !['lab', 'staff-enabled'].includes(capability)) {
+    throw new HmsApprovalError('write_unavailable');
+  }
+  if (native && (native.policyIdentity !== identities.policyIdentity || native.catalogueIdentity !== identities.catalogueIdentity)) {
     throw new HmsApprovalError('state_changed');
   }
-  const generationId = typeof state.generationId === 'string' ? state.generationId
-    : `work-item:${item.id}:${item.revisionSeq}`;
-  if (!input.preparedRef) {
+  if (input.expectedRevision !== undefined && input.expectedRevision !== revision) {
+    throw new HmsApprovalError('state_changed');
+  }
+  const generationId = draft?.generationId ?? (typeof state.generationId === 'string' ? state.generationId
+    : `work-item:${item.id}:${item.revisionSeq}`);
+  if (!input.preparedRef && !v2) {
     const [prior] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
       eq(workEvent.workItemId, item.id), eq(workEvent.type, 'hms.prepared'),
       sql`${workEvent.value}->>'businessDigest' = ${formDigest(state)}`,
@@ -597,13 +661,14 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
     }
   }
   if (input.preparedRef) {
-    const prepared = await loadHmsPreparation(db, input.preparedRef, item.id);
+    if (!supplied) throw new HmsApprovalError('state_changed');
+    const prepared = supplied;
     if (prepared.scope.propertyCode !== scope.propertyCode || prepared.scope.tenantId !== scope.tenantId ||
         canonicalJson(prepared.session) !== canonicalJson(staff.data) ||
         prepared.source.transportId !== item.transportId || prepared.source.threadId !== item.threadId ||
         prepared.source.sourceMessageId !== item.sourceMessageId || prepared.source.sourceHash !== sourceHash ||
         prepared.businessDigest !== formDigest(state) || prepared.nativeObservation.beforeDigest !== snapshot.digest ||
-        prepared.nativeObservation.capturedAt !== snapshot.readAt || prepared.revision !== item.revisionSeq ||
+        prepared.nativeObservation.capturedAt !== snapshot.readAt || prepared.revision !== revision ||
         prepared.generationId !== generationId || prepared.operation !== operation.data ||
         now.getTime() >= Date.parse(prepared.expiresAt)) throw new HmsApprovalError('state_changed');
     const [existingGrant] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
@@ -614,9 +679,9 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
   }
   const saved = hmsDispatchTargetSchema.safeParse({ propertyCode: scope.propertyCode, kind: 'saved',
     confirmation: state.confirmation, nativeStayId: state.nativeStayId ?? state.reservationStayId });
-  const allocations: Array<{ allocationId: string; businessDigest: string }> = [];
-  const targetAliases: string[] = [];
-  if (operation.data === 'create' && state.stays && typeof state.stays === 'object') {
+  const allocations: NonNullable<HmsPreparation['allocations']> = [...(native?.allocations ?? [])];
+  const targetAliases: string[] = [...(native?.targetAliases ?? [])];
+  if (!native && operation.data === 'create' && state.stays && typeof state.stays === 'object') {
     for (const [stayId, rawStay] of Object.entries(state.stays)) {
       if (!rawStay || typeof rawStay !== 'object') throw new HmsApprovalError('state_changed');
       const stay = z.object({ rooms: z.number().int().min(1).max(8).default(1),
@@ -631,23 +696,61 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
   }
   if (saved.success) targetAliases.push(...hmsDispatchTargetKeys(saved.data));
   // A positively bound legacy HRCEN preparation may lack a native target; DaVinci never takes this path.
-  if (!targetAliases.length) targetAliases.push(hmsDispatchWorkItemKey(item.id));
+  if (!targetAliases.length) {
+    if (v2 || scope.propertyCode !== 'HRCEN') throw new HmsApprovalError('state_changed');
+    targetAliases.push(hmsDispatchWorkItemKey(item.id));
+  }
   const fields = formOf(state);
-  const attachment = typeof state.attachmentId === 'string' && typeof state.pdfSha256 === 'string'
-    ? { attachmentId: state.attachmentId, sha256: state.pdfSha256 } : undefined;
+  const attachment = input.nativePreparation?.sourceAttachment ?? supplied?.source.attachment ?? (
+    typeof state.attachmentId === 'string' && typeof state.pdfSha256 === 'string'
+      ? { attachmentId: state.attachmentId, sha256: state.pdfSha256 } : undefined);
   const prepared = hmsPreparationSchema.parse({ version: 2, preparedRef: randomUUID(), workItemId: item.id,
     scope, session: staff.data, source: { transportId: item.transportId, threadId: item.threadId,
       sourceMessageId: item.sourceMessageId, sourceHash, ...(attachment ? { attachment } : {}) },
-    generationId, revision: item.revisionSeq, operation: operation.data, targetAliases: [...new Set(targetAliases)].sort(),
+    generationId, revision, operation: operation.data, targetAliases: [...new Set(targetAliases)].sort(),
     businessFields: fields, businessDigest: formDigest(state), targetDigest: preparationDigest([...new Set(targetAliases)].sort()),
     nativeObservation: { beforeDigest: snapshot.digest, capturedAt: snapshot.readAt,
-      price: state.approvedPrices ?? state.nativePrice ?? null, warnings: [] },
-    policyIdentity: typeof state.policyIdentity === 'string' ? state.policyIdentity : 'retained-hrcen-native-policy/v1',
-    catalogueIdentity: typeof state.catalogueIdentity === 'string' ? state.catalogueIdentity : 'retained-hrcen-catalogue/v1',
+      price: native?.nativeObservation.price ?? state.approvedPrices ?? state.nativePrice ?? null, warnings: native?.nativeObservation.warnings ?? [] },
+    ...identities,
     capturedAt: now.toISOString(), expiresAt: new Date(Math.min(Date.parse(snapshot.readAt) + HMS_SNAPSHOT_MAX_AGE_MS,
       snapshot.expiresAt ? Date.parse(snapshot.expiresAt) : Infinity)).toISOString(),
-    ...(operation.data === 'create' ? { allocations } : {}) });
+    ...(operation.data === 'create' ? { allocations } : {}),
+    ...(v2?.workflowContext ? { workflowContext: v2.workflowContext } : {}) });
   return recordHmsPreparation(db, prepared);
+}
+
+export type HmsNativePreparation = Pick<HmsPreparation, 'operation' | 'targetAliases' | 'nativeObservation' |
+  'policyIdentity' | 'catalogueIdentity' | 'allocations'> & {
+    workflowContext?: HmsPreparation['workflowContext'];
+    sourceAttachment?: HmsPreparation['source']['attachment'];
+  };
+export type V2HmsNativePreparation = HmsNativePreparation & { workflowContext: NonNullable<HmsPreparation['workflowContext']> };
+
+/** Called after native staging closes, with the exact state captured before it began. */
+export async function prepareNativeHmsWrite(input: {
+  db: DB; transportId: string; workItemId: string; actorUserId: string;
+  sessionId: string; sessionProfile: 'legacy' | 'remote'; propertySwitch?: PropertySwitch;
+  expectedBusinessDigest: string; expectedSourceHash: string;
+  expectedRevision: number; expectedSeq: number;
+  native: HmsNativePreparation;
+}): Promise<PreparedSummary> {
+  if (input.native.workflowContext && input.native.workflowContext.input.workItemId !== input.workItemId) throw new HmsApprovalError('state_changed');
+  const prepared = await input.db.transaction(async (tx) => {
+    const [item] = await tx.select().from(workItem).where(and(eq(workItem.id, input.workItemId),
+      eq(workItem.transportId, input.transportId))).limit(1).for('update');
+    if (!item || item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
+    if (formDigest(item.state) !== input.expectedBusinessDigest || item.revisionSeq !== input.expectedSeq ||
+        (input.native.workflowContext ? item.revision : item.revisionSeq) !== input.expectedRevision) {
+      throw new HmsApprovalError('state_changed');
+    }
+    await assertNoOpenWrite(tx as DB, item.id);
+    const snapshot = { digest: input.native.nativeObservation.beforeDigest, readAt: input.native.nativeObservation.capturedAt };
+    const now = new Date();
+    if (snapshotStale(snapshot.readAt, now)) throw new HmsApprovalError('snapshot_stale');
+    await tx.update(workItem).set({ state: { ...item.state, [HMS_SNAPSHOT_KEY]: snapshot }, updatedAt: now }).where(eq(workItem.id, item.id));
+    return lockedPreparation(tx, { ...input, item, state: item.state, snapshot, now, nativePreparation: input.native });
+  });
+  return publicHmsPreparedSummary(prepared);
 }
 
 /** Persist the completed unsaved preview without granting Save. */
@@ -706,11 +809,15 @@ export async function approveHmsWrite(input: {
 }): Promise<{ grantId: string; runId: string; preparedRef: string; expectedRevision: number; hmsReadAt: string; expiresAt: string }> {
   const db = input.db ?? getDb();
   const now = input.now ?? new Date();
+  const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch });
+  const env = input.env ?? process.env;
   return db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    const existingPreparation = input.preparedRef ? await loadHmsPreparation(tx, input.preparedRef, input.workItemId) : undefined;
+    if (existingPreparation && canonicalJson(existingPreparation.scope) !== canonicalJson(scope)) throw new HmsApprovalError('state_changed');
     let cancelSourceBound = false;
     if (input.cloudCancelSelection) {
-      if (paneWriteMode('cancel', 'unpaid', input.env) === 'off' || !input.sessionId || !input.sessionProfile) {
+      if (effectiveWorkflowPolicy(env, scope.propertyCode, 'cancel').admittedMode === 'off' || !input.sessionId || !input.sessionProfile) {
         throw new HmsApprovalError('state_changed');
       }
       const { lockSelectedCloudCancel } = await import('./pane-cloud-cancel.js');
@@ -721,7 +828,7 @@ export async function approveHmsWrite(input: {
     }
     let cloudSourceBound = false;
     if (input.cloudSelection) {
-      if (!labtestAmendWorkerEnabled(input.env)) throw new HmsApprovalError('amend_save_unavailable');
+      if (effectiveWorkflowPolicy(env, scope.propertyCode, 'amend').admittedMode === 'off') throw new HmsApprovalError('amend_save_unavailable');
       const { lockSelectedBoundCloudAmend } = await import('./pane-cloud-amend.js');
       if (!await lockSelectedBoundCloudAmend(tx, { workItemId: input.workItemId, transportId: input.transportId,
         source: input.cloudSelection })) throw new HmsApprovalError('state_changed');
@@ -737,34 +844,32 @@ export async function approveHmsWrite(input: {
     await assertHmsSelectedSource(tx as DB, input, item, true);
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
-    const target = paneStayHmsTargetForTransport(input.transportId);
-    const cloudCancel = item.state.action === 'cancel' && target.ok && target.target.propertyCode === 'HRCEN';
+    const target = paneStayHmsTargetForTransport(input.transportId, scope.propertyCode);
+    const cloudCancel = !existingPreparation?.workflowContext && item.state.action === 'cancel';
     if (cloudCancel !== cancelSourceBound || (cloudCancel && !input.formDigest)) throw new HmsApprovalError('state_changed');
     if (cloudCancel) {
-      const mode = paneWriteMode('cancel', 'unpaid', input.env);
+      const mode = effectiveWorkflowPolicy(env, scope.propertyCode, 'cancel').admittedMode;
       const { cloudCancelDispatchSchema } = await import('./pane-cloud-cancel.js');
       const bound = cloudCancelDispatchSchema.safeParse(item.state.cloudCancel);
-      if (!bound.success || mode === 'off' || (bound.data.preimage.allowRealGuest && mode !== 'on')) {
+      if (!bound.success || mode === 'off' || bound.data.preimage.propertyCode !== scope.propertyCode ||
+          (bound.data.preimage.allowRealGuest && mode !== 'on')) {
         throw new HmsApprovalError('state_changed');
       }
     }
-    const labtestAttach = item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN';
-    if (item.state.action === 'attach_document' && (!target.ok || (labtestAttach &&
-        (!isBoundLabtestAttachment(item.state, item.sourceMessageId, input.env) || !labtestAttachEnabled(input.env) ||
+    const labtestAttach = !existingPreparation?.workflowContext && item.state.action === 'attach_document';
+    const attachMode = effectiveWorkflowPolicy(env, scope.propertyCode, 'attach').admittedMode;
+    if (labtestAttach && (!target.ok ||
+        attachMode === 'off' || !isBoundLabtestAttachment(item.state, item.sourceMessageId, { ...env, PANE_WRITE_ATTACH: attachMode }) ||
          !input.sessionId || !input.sessionProfile || !input.selectedInternetMessageId ||
          !boundFilingSelectionMatches(item.state, input.selectedSource) ||
-         canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)))) {
+         canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)) {
       throw new HmsApprovalError('filing_unavailable');
     }
-    const cloudAmend = item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend');
-    if (cloudAmend && !labtestAmendWorkerEnabled(input.env)) throw new HmsApprovalError('amend_save_unavailable');
+    const cloudAmend = !existingPreparation?.workflowContext && item.state.action === 'amend' && Object.hasOwn(item.state, 'cloudAmend');
     if (cloudAmend !== cloudSourceBound || (cloudAmend && !input.formDigest)) throw new HmsApprovalError('state_changed');
     if (cloudAmend) {
-      const targetKeys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-      if (!target.ok || targetKeys.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
-        throw new HmsApprovalError('state_changed');
-      }
-      await assertCloudAmendForm(item.state, input.env);
+      if (!target.ok || target.target.propertyCode !== scope.propertyCode) throw new HmsApprovalError('state_changed');
+      await assertCloudAmendForm(item.state, input.env, scope.propertyCode);
     }
     const cloudSession = z.object({ sessionId: z.string().trim().min(1).max(512),
       sessionProfile: z.enum(['legacy', 'remote']) }).safeParse({ sessionId: input.sessionId, sessionProfile: input.sessionProfile });
@@ -777,7 +882,7 @@ export async function approveHmsWrite(input: {
     if (labtestAttach || cloudAmend) {
       const previous = await latestWriteRun(tx as DB, item.id);
       const promptVersion = cloudAmend ? HMS_LABTEST_AMEND_PROMPT_VERSION : HMS_LABTEST_ATTACH_PROMPT_VERSION;
-      if (previous?.state === 'succeeded' && previous.promptVersion === promptVersion) {
+      if (previous?.state === 'succeeded' && [promptVersion, HMS_V2_WRITE_PROMPT_VERSION].includes(previous.promptVersion)) {
         const previousGrantId = grantIdForRun(previous);
         try {
           if (!previousGrantId) throw new HmsApprovalError('no_grant');
@@ -794,14 +899,11 @@ export async function approveHmsWrite(input: {
     }
 
     let state = item.state;
-    let snapshot = readSnapshot(state);
+    let snapshot = existingPreparation
+      ? { digest: existingPreparation.nativeObservation.beforeDigest, readAt: existingPreparation.nativeObservation.capturedAt }
+      : readSnapshot(state);
     if (!snapshot || snapshotStale(snapshot.readAt, now)) {
-      if (!input.rereadHmsState) {
-        throw new HmsApprovalError(snapshot ? 'snapshot_stale' : 'snapshot_missing');
-      }
-      snapshot = { digest: hmsStateDigest(await input.rereadHmsState()), readAt: now.toISOString() };
-      state = { ...state, [HMS_SNAPSHOT_KEY]: snapshot };
-      await tx.update(workItem).set({ state, updatedAt: now }).where(eq(workItem.id, item.id));
+      throw new HmsApprovalError(snapshot ? 'snapshot_stale' : 'snapshot_missing');
     }
     if (labtestAttach && snapshot.digest !== item.state.filingStateDigest) {
       throw new HmsApprovalError('snapshot_stale');
@@ -810,7 +912,7 @@ export async function approveHmsWrite(input: {
     const prepared = await lockedPreparation(tx, { item, state, snapshot,
       actorUserId: input.actorUserId, sessionId: input.sessionId, sessionProfile: input.sessionProfile,
       propertySwitch: input.propertySwitch, preparedRef: input.preparedRef,
-      expectedRevision: input.expectedRevision, now });
+      expectedRevision: input.expectedRevision, now, granting: true });
     const grant = hmsWriteGrantV2Schema.parse({
       version: 2, grantId: randomUUID(), preparedRef: prepared.preparedRef,
       workItemId: item.id, transportId: input.transportId, ...prepared.session,
@@ -842,9 +944,7 @@ export async function approveHmsWrite(input: {
         runKind: HMS_WRITE_RUN_KIND,
         idempotencyKey: `hms-write:${grant.grantId}`,
         modelId: NOT_APPLICABLE_MODEL_ID,
-        promptVersion: cloudAmend ? HMS_LABTEST_AMEND_PROMPT_VERSION
-          : cloudCancel ? HMS_CLOUD_CANCEL_PROMPT_VERSION
-            : labtestAttach ? HMS_LABTEST_ATTACH_PROMPT_VERSION : HMS_WRITE_PROMPT_VERSION,
+        promptVersion: HMS_V2_WRITE_PROMPT_VERSION,
         executorLane: 'hms',
         workItemId: item.id,
         priority: HMS_WRITE_PRIORITY,
@@ -1012,13 +1112,11 @@ export async function consumeHmsWriteApproval(input: {
       )
       .limit(1);
     if (used) throw new HmsApprovalError('already_consumed');
-    await tx.insert(workEvent).values({
-      workItemId: item.id,
-      at: now,
-      actorKind: 'system',
-      type: 'approval.consumed',
-      payloadHash,
-      value: { grantId, runId: run.id },
+    // V2 consumes only in the short native-dispatch transaction after restaging.
+    // Existing V1 recovery retains its previously recorded consumption semantics.
+    if (!verified) await tx.insert(workEvent).values({
+      workItemId: item.id, at: now, actorKind: 'system', type: 'approval.consumed',
+      payloadHash, value: { grantId, runId: run.id },
     });
     await tx
       .update(aiWorkflowRun)
@@ -1038,16 +1136,192 @@ type HmsDispatchTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
 /** Runs within the native request's short authorization transaction. */
 async function recordHmsDispatchStarted(tx: HmsDispatchTransaction, fence: AiRunFence, grant: HmsWriteGrant): Promise<void> {
   if (!('version' in grant) || grant.version !== 2) return;
-  const authority = await verifyStaffGoForRun(tx, fence, true);
-  const [started] = await tx.select({ id: workEvent.id }).from(workEvent).where(and(
+  await consumeStaffGoAtDispatch(tx, fence);
+}
+
+/** The native request continues only after this transaction commits. */
+export function hmsAllocationOperationId(grantId: string, allocationId: string): string {
+  const hex = createHash('sha256').update('zero/hms-allocation/v2\0').update(grantId).update('\0').update(allocationId).digest('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+export async function consumeStaffGoAtDispatch(tx: HmsDispatchTransaction, fence: AiRunFence,
+  signal?: AbortSignal, allocationId?: string, profilePhase?: 'initial' | 'confirm_distinct'): Promise<VerifiedStaffGo> {
+  signal?.throwIfAborted();
+  const authority = await verifyStaffGoForRun(tx, fence, allocationId !== undefined || profilePhase === 'confirm_distinct');
+  const grant = authority.grant;
+  const started = await tx.select({ value: workEvent.value }).from(workEvent).where(and(
     eq(workEvent.workItemId, grant.workItemId), eq(workEvent.type, 'hms.dispatch.started'),
-    eq(workEvent.payloadHash, authority.payloadHash))).limit(1).for('share');
-  if (started) throw new HmsApprovalError('already_consumed');
+    eq(workEvent.payloadHash, authority.payloadHash))).for('share');
+  let operationId: string | undefined;
+  if (allocationId !== undefined) {
+    const allocations = authority.preparation.allocations;
+    const index = allocations?.findIndex(allocation => allocation.allocationId === allocationId) ?? -1;
+    if (grant.operation !== 'create' || !allocations ||
+        index < 0 || started.length !== index) throw new HmsApprovalError('state_changed');
+    const [item] = await tx.select({ state: workItem.state }).from(workItem)
+      .where(eq(workItem.id, grant.workItemId)).limit(1).for('share');
+    const draft = authority.preparation.workflowContext
+      ? reservationWorkflowV2DraftSchema.parse(item?.state.reservationWorkflowV2) : undefined;
+    const evidence = draft ? [] : await tx.select({ value: workEvent.value }).from(workEvent).where(and(
+      eq(workEvent.workItemId, grant.workItemId), eq(workEvent.type, 'write.evidence'), eq(workEvent.actorKind, 'system'),
+      eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1'))).for('share');
+    for (const earlier of allocations.slice(0, index)) {
+      const earlierId = hmsAllocationOperationId(grant.grantId, earlier.allocationId);
+      const dispatched = started.some(event => {
+        const parsed = z.object({ runId: z.string(), allocationId: z.string(), operationId: z.string() }).safeParse(event.value);
+        return parsed.success && parsed.data.runId === fence.runId && parsed.data.allocationId === earlier.allocationId && parsed.data.operationId === earlierId;
+      });
+      const result = draft?.operationResults.find(result => result.id === earlierId && result.allocationId === earlier.allocationId &&
+        result.workflow === 'create' && result.generationId === grant.generationId && result.status === 'succeeded');
+      let readback = result?.observationRefs.some(ref => draft?.observations.some(observation =>
+        observation.ref === ref && observation.propertyCode === grant.propertyCode && observation.coverage.complete));
+      if (!draft) {
+        const stays = item?.state.stays;
+        const row = stays && typeof stays === 'object' && !Array.isArray(stays)
+          ? (stays as Record<string, unknown>)[earlier.allocationId] : undefined;
+        const booked = z.object({ status: z.literal('booked'), cloudCreateVerified: z.literal(true),
+          cloudCreateGrantId: z.literal(earlierId), confirmationNumber: z.string().regex(/^\d+-\d+$/),
+          readbackDigest: z.string().regex(/^[a-f0-9]{64}$/), observationRef: z.string().min(1) }).safeParse(row);
+        const intent = evidence.map(event => z.object({ version: z.literal(1), kind: z.literal('intent'),
+          holdId: z.string().uuid(), operation: z.literal('create'), grantId: z.literal(earlierId),
+          stayId: z.literal(earlier.allocationId), transportId: z.literal(grant.transportId),
+          propertyCode: z.literal(grant.propertyCode) }).safeParse(event.value)).filter(value => value.success);
+        readback = booked.success && intent.length === 1 && evidence.some(event => {
+          const resolved = z.object({ version: z.literal(1), kind: z.literal('resolved'), operation: z.literal('create'),
+            holdId: z.literal(intent[0]!.data.holdId), confirmation: z.literal(booked.data.confirmationNumber),
+            readbackDigest: z.literal(booked.data.readbackDigest), nativeReadback: z.record(z.string(), z.unknown()) }).safeParse(event.value);
+          return resolved.success && hmsStateDigest(resolved.data.nativeReadback) === resolved.data.readbackDigest;
+        });
+      }
+      if (!dispatched || !readback) throw new HmsApprovalError('state_changed');
+    }
+    operationId = hmsAllocationOperationId(grant.grantId, allocationId);
+  } else if (profilePhase) {
+    const context = authority.preparation.workflowContext;
+    if (grant.operation !== 'create_guest_profile' || context?.endpoint !== 'createGuestProfile' ||
+        (profilePhase === 'initial' && started.length !== 0) ||
+        (profilePhase === 'confirm_distinct' && (context.input.confirmDuplicateName !== true || started.length !== 1 ||
+          !started.some(event => {
+            const parsed = z.object({ runId: z.string(), profilePhase: z.literal('initial') }).safeParse(event.value);
+            return parsed.success && parsed.data.runId === fence.runId;
+          })))) throw new HmsApprovalError('state_changed');
+  } else if (started.length) throw new HmsApprovalError('already_consumed');
+  if (!started.length) await tx.insert(workEvent).values({ workItemId: grant.workItemId, actorKind: 'system',
+    type: 'approval.consumed', payloadHash: authority.payloadHash, value: { grantId: grant.grantId, runId: fence.runId } });
   await tx.insert(workEvent).values({ workItemId: grant.workItemId, actorKind: 'system',
     type: 'hms.dispatch.started', payloadHash: authority.payloadHash,
     value: { version: 2, grantId: grant.grantId, preparedRef: grant.preparedRef, runId: fence.runId,
       propertyCode: grant.propertyCode, tenantId: grant.tenantId, operation: grant.operation,
-      targetAliases: authority.preparation.targetAliases, allocations: authority.preparation.allocations ?? [] } });
+      targetAliases: authority.preparation.targetAliases, allocations: authority.preparation.allocations ?? [],
+      ...(allocationId === undefined ? {} : { allocationId, operationId }),
+      ...(profilePhase === undefined ? {} : { profilePhase }) } });
+  signal?.throwIfAborted();
+  return authority;
+}
+
+/** A dispatched receipt remains evidence of uncertainty even after a worker restart. */
+export async function hmsWriteRunStarted(db: DB, runId: string): Promise<boolean> {
+  const [started] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
+    inArray(workEvent.type, ['approval.consumed', 'hms.dispatch.started']),
+    sql`${workEvent.value}->>'runId' = ${runId}`)).limit(1);
+  return Boolean(started);
+}
+
+/** Terminal success must name durable readback from this receipt, including every ordered room. */
+export async function hmsWriteRunReadbackCompleted(db: DB, fence: AiRunFence, observationRef: string): Promise<boolean> {
+  const [run] = await db.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, fence.runId),
+    eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+    eq(aiWorkflowRun.state, 'running'), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND))).limit(1);
+  const grantId = /^hms-write:([a-f0-9-]{36})$/.exec(run?.idempotencyKey ?? '')?.[1];
+  if (!run?.workItemId || !grantId) return false;
+  const [event] = await db.select().from(workEvent).where(and(eq(workEvent.id, grantId),
+    eq(workEvent.workItemId, run.workItemId), eq(workEvent.type, 'approval.granted'))).limit(1);
+  const parsed = hmsWriteGrantV2Schema.safeParse(event?.value);
+  if (!parsed.success || event?.actorKind !== 'user' || event.actorUserId !== parsed.data.actorUserId ||
+      event.payloadHash !== preparationDigest(parsed.data) || parsed.data.transportId !== run.transportId) return false;
+  const grant = parsed.data, prepared = await loadHmsPreparation(db, grant.preparedRef, run.workItemId);
+  const [item] = await db.select({ state: workItem.state }).from(workItem).where(and(eq(workItem.id, run.workItemId),
+    eq(workItem.transportId, grant.transportId))).limit(1);
+  if (!item) return false;
+  if (prepared.workflowContext) {
+    const draft = reservationWorkflowV2DraftSchema.safeParse(item.state.reservationWorkflowV2);
+    if (!draft.success || draft.data.generationId !== grant.generationId || draft.data.propertyCode !== grant.propertyCode ||
+        draft.data.source.messageId !== grant.sourceMessageId || draft.data.source.sourceHash !== grant.sourceHash) return false;
+    const ids = grant.operation === 'create' ? prepared.allocations?.map(allocation => hmsAllocationOperationId(grantId, allocation.allocationId)) : [grantId];
+    if (!ids?.length) return false;
+    const workflow = grant.operation === 'create_guest_profile' ? 'guest_profile' : grant.operation === 'attach_document' ? 'filing'
+      : grant.operation === 'add_on' ? 'services' : grant.operation;
+    let returnedObservation = false;
+    for (const id of ids) {
+      const allocation = prepared.allocations?.find(row => hmsAllocationOperationId(grantId, row.allocationId) === id);
+      const operation = draft.data.operationResults.find(result => result.id === id && result.status === 'succeeded' &&
+        result.workflow === workflow && result.generationId === grant.generationId &&
+        result.requestId === prepared.workflowContext!.input.requestId && (!allocation || result.allocationId === allocation.allocationId));
+      const observations = operation?.observationRefs.map(ref => draft.data.observations.find(observation =>
+        observation.ref === ref && observation.propertyCode === grant.propertyCode && observation.sourceMessageId === grant.sourceMessageId &&
+        observation.generationId === grant.generationId && observation.status === 'complete' && observation.coverage.complete));
+      if (!observations?.length || observations.some(observation => !observation)) return false;
+      returnedObservation ||= observations.some(observation => observation?.ref === observationRef);
+    }
+    return returnedObservation;
+  }
+  const evidence = await db.select({ id: workEvent.id, value: workEvent.value }).from(workEvent).where(and(
+    eq(workEvent.workItemId, run.workItemId), eq(workEvent.type, 'write.evidence'), eq(workEvent.actorKind, 'system'),
+    eq(workEvent.fieldPath, 'nava.hms.labtest.dispatch.v1')));
+  const ids = grant.operation === 'create' ? prepared.allocations?.map(allocation => ({ id: hmsAllocationOperationId(grantId, allocation.allocationId),
+    allocationId: allocation.allocationId })) : [{ id: grantId }];
+  if (!ids?.length) return false;
+  let returnedObservation = false;
+  for (const operation of ids) {
+    const intents = evidence.map(event => z.object({ kind: z.literal('intent'), holdId: z.string().uuid(),
+      grantId: z.literal(operation.id), transportId: z.literal(grant.transportId), propertyCode: z.literal(grant.propertyCode),
+      operation: z.literal(grant.operation) }).safeParse(event.value)).filter(value => value.success);
+    if (intents.length !== 1) return false;
+    const resolved = evidence.filter(event => {
+      const result = z.object({ kind: z.literal('resolved'), holdId: z.literal(intents[0]!.data.holdId),
+        operation: z.literal(grant.operation), nativeReadback: z.record(z.string(), z.unknown()),
+        readbackDigest: z.string().regex(/^[a-f0-9]{64}$/) }).safeParse(event.value);
+      return result.success && hmsStateDigest(result.data.nativeReadback) === result.data.readbackDigest;
+    });
+    if (resolved.length !== 1) return false;
+    if ('allocationId' in operation) {
+      const stays = item.state.stays;
+      const row = stays && typeof stays === 'object' && !Array.isArray(stays) ? (stays as Record<string, unknown>)[operation.allocationId] : undefined;
+      const saved = z.object({ status: z.literal('booked'), cloudCreateVerified: z.literal(true), cloudCreateGrantId: z.literal(operation.id),
+        observationRef: z.string().min(1), readbackDigest: z.string().regex(/^[a-f0-9]{64}$/) }).safeParse(row);
+      if (!saved.success || saved.data.readbackDigest !== (resolved[0]!.value as Record<string, unknown>).readbackDigest) return false;
+      returnedObservation ||= saved.data.observationRef === observationRef;
+    } else returnedObservation ||= resolved[0]!.id === observationRef;
+  }
+  return returnedObservation;
+}
+
+export async function hmsWriteRunReviewCompleted(db: DB, fence: AiRunFence): Promise<boolean> {
+  const [run] = await db.select({ workItemId: aiWorkflowRun.workItemId, transportId: aiWorkflowRun.transportId,
+    idempotencyKey: aiWorkflowRun.idempotencyKey }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, fence.runId),
+      eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+      eq(aiWorkflowRun.state, 'running'), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND))).limit(1);
+  const grantId = /^hms-write:([a-f0-9-]{36})$/.exec(run?.idempotencyKey ?? '')?.[1];
+  if (!run?.workItemId || !grantId) return false;
+  const [granted] = await db.select().from(workEvent).where(and(eq(workEvent.id, grantId),
+    eq(workEvent.workItemId, run.workItemId), eq(workEvent.type, 'approval.granted'))).limit(1);
+  const grant = hmsWriteGrantV2Schema.safeParse(granted?.value);
+  if (!grant.success || grant.data.operation !== 'amend' || grant.data.transportId !== run.transportId ||
+      granted?.payloadHash !== preparationDigest(grant.data)) return false;
+  const reviews = await db.select({ value: workEvent.value }).from(workEvent).where(and(
+    eq(workEvent.workItemId, run.workItemId), eq(workEvent.type, 'hms.dispatch.reviewed'),
+    eq(workEvent.actorKind, 'system'), eq(workEvent.payloadHash, granted.payloadHash),
+    sql`${workEvent.value}->>'runId' = ${fence.runId}`)).limit(2);
+  if (reviews.length !== 1) return false;
+  const review = z.object({ version: z.literal(1), runId: z.string().uuid(), grantId: z.string().uuid(),
+    preparedRef: z.string().uuid(), payloadHash: z.string().regex(/^[a-f0-9]{64}$/), propertyCode: z.string(),
+    observationRef: z.string().min(1), requestId: z.string().min(1), allocationId: z.string().min(1), holdId: z.string().uuid(),
+    callbackReviewDigest: z.string().regex(/^[a-f0-9]{64}$/), freshReadbackDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    finalSave: z.literal(false) }).strict().safeParse(reviews[0]?.value);
+  return review.success && review.data.runId === fence.runId && review.data.grantId === grantId &&
+    review.data.preparedRef === grant.data.preparedRef && review.data.propertyCode === grant.data.propertyCode &&
+    review.data.payloadHash === granted.payloadHash;
 }
 
 /** Revalidate the consumed Cloud cancel Go at the exact intercepted POST. */
@@ -1062,32 +1336,43 @@ export async function lockConsumedCloudCancelApproval(tx: HmsDispatchTransaction
   phase?: 'dispatch';
 }): Promise<void> {
   const { item, authority, fence } = input;
-  if (paneWriteMode('cancel', 'unpaid', input.env) === 'off') throw new HmsApprovalError('state_changed');
   if (!item || item.transportId !== input.transportId || item.state.action !== 'cancel' ||
       !Object.hasOwn(item.state, 'cloudCancel') || !item.threadId || !item.sourceMessageId ||
       item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('state_changed');
   const { cloudCancelDispatchSchema } = await import('./pane-cloud-cancel.js');
   const bound = cloudCancelDispatchSchema.safeParse(item.state.cloudCancel);
-  if (!bound.success || (bound.data.preimage.allowRealGuest && paneWriteMode('cancel', 'unpaid', input.env) !== 'on')) {
-    throw new HmsApprovalError('state_changed');
-  }
+  if (!bound.success) throw new HmsApprovalError('state_changed');
   await lockCreateActorAccess(tx, { transportId: input.transportId, actorUserId: authority.actorUserId });
   await lockCreateActorSession(tx, authority);
   const [run] = await tx.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
     eq(aiWorkflowRun.workItemId, item.id), eq(aiWorkflowRun.transportId, input.transportId),
-    eq(aiWorkflowRun.promptVersion, HMS_CLOUD_CANCEL_PROMPT_VERSION),
+    inArray(aiWorkflowRun.promptVersion, [HMS_CLOUD_CANCEL_PROMPT_VERSION, HMS_V2_WRITE_PROMPT_VERSION]),
     inArray(aiWorkflowRun.state, ['claimed', 'running']),
   )).limit(1).for('update');
   const now = new Date();
-  if (!run?.deadlineAt || run.promptVersion !== HMS_CLOUD_CANCEL_PROMPT_VERSION ||
+  if (!run?.deadlineAt ||
       run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
       run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
       run.triggerMessageId !== item.sourceMessageId) throw new HmsApprovalError('lease_lost');
   if (grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('no_grant');
   const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
-  const snapshot = readSnapshot(item.state);
+  const v2 = 'version' in grant && grant.version === 2;
+  const verified = v2 ? await verifyStaffGoForRun(tx, fence, input.phase !== 'dispatch') : undefined;
+  const scope = verified?.preparation.scope ?? resolvePropertyScope({ transportId: grant.transportId });
+  const expectedPrompt = v2 ? HMS_V2_WRITE_PROMPT_VERSION : HMS_CLOUD_CANCEL_PROMPT_VERSION;
+  if (run.promptVersion !== expectedPrompt || (verified && (verified.grant.grantId !== input.grantId ||
+      verified.grant.operation !== 'cancel')) || (!v2 && (scope.propertyCode !== 'HRCEN' || input.phase === 'dispatch'))) {
+    throw new HmsApprovalError('no_grant');
+  }
+  const mode = effectiveWorkflowPolicy(input.env ?? process.env, scope.propertyCode, 'cancel').admittedMode;
+  if (mode === 'off' || (bound.data.preimage.allowRealGuest && mode !== 'on') ||
+      (bound.data.preimage.propertyCode ?? (!v2 ? 'HRCEN' : undefined)) !== scope.propertyCode) {
+    throw new HmsApprovalError('state_changed');
+  }
+  const snapshot = verified ? { digest: verified.preparation.nativeObservation.beforeDigest,
+    readAt: verified.preparation.nativeObservation.capturedAt } : readSnapshot(item.state);
   if (grant.workItemId !== item.id || grant.transportId !== input.transportId ||
       grant.actorUserId !== authority.actorUserId || grant.sessionId !== authority.sessionId ||
       grant.sessionProfile !== authority.sessionProfile || grant.formDigest !== input.approvedDigest ||
@@ -1100,13 +1385,14 @@ export async function lockConsumedCloudCancelApproval(tx: HmsDispatchTransaction
     eq(workEvent.payloadHash, payloadHash), sql`${workEvent.value}->>'runId' = ${run.id}`,
     sql`${workEvent.value}->>'grantId' = ${input.grantId}`,
   )).limit(2).for('share');
-  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  if (consumed.length !== (v2 && input.phase === 'dispatch' ? 0 : 1)) {
+    throw new HmsApprovalError('not_consumed');
+  }
   const at = new Date();
   if (run.deadlineAt.getTime() <= at.getTime() || snapshotStale(grant.hmsReadAt, at)) {
     throw new HmsApprovalError('lease_lost');
   }
   if (input.phase === 'dispatch') await recordHmsDispatchStarted(tx, input.fence, grant);
-  else if ('version' in grant && grant.version === 2) await verifyStaffGoForRun(tx, input.fence, true);
   await tx.update(aiWorkflowRun).set({ heartbeatAt: at, updatedAt: at }).where(eq(aiWorkflowRun.id, run.id));
 }
 
@@ -1124,24 +1410,30 @@ export async function lockConsumedCloudAmendApproval(tx: HmsDispatchTransaction,
   if (!item || item.transportId !== input.transportId || item.state.action !== 'amend' ||
       !Object.hasOwn(item.state, 'cloudAmend') || !item.threadId || !item.sourceMessageId ||
       item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('state_changed');
-  await assertCloudAmendForm(item.state, input.env);
   await lockCreateActorAccess(tx, { transportId: input.transportId, actorUserId: authority.actorUserId });
   await lockCreateActorSession(tx, authority);
   const [run] = await tx.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
     eq(aiWorkflowRun.workItemId, item.id), eq(aiWorkflowRun.transportId, input.transportId),
-    eq(aiWorkflowRun.promptVersion, HMS_LABTEST_AMEND_PROMPT_VERSION),
+    inArray(aiWorkflowRun.promptVersion, [HMS_LABTEST_AMEND_PROMPT_VERSION, HMS_V2_WRITE_PROMPT_VERSION]),
     inArray(aiWorkflowRun.state, ['claimed', 'running']),
   )).limit(1).for('update');
   const now = new Date();
-  if (!run?.deadlineAt || run.promptVersion !== HMS_LABTEST_AMEND_PROMPT_VERSION ||
+  if (!run?.deadlineAt ||
       run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
       run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
       run.triggerMessageId !== item.sourceMessageId) throw new HmsApprovalError('lease_lost');
   if (grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('no_grant');
   const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
-  const snapshot = readSnapshot(item.state);
+  if (!('version' in grant) || grant.version !== 2 || run.promptVersion !== HMS_V2_WRITE_PROMPT_VERSION) {
+    throw new HmsApprovalError('no_grant');
+  }
+  const verified = await verifyStaffGoForRun(tx, fence);
+  if (verified.grant.grantId !== input.grantId || verified.grant.operation !== 'amend') throw new HmsApprovalError('no_grant');
+  await assertCloudAmendForm(item.state, input.env, verified.grant.propertyCode);
+  const snapshot = { digest: verified.preparation.nativeObservation.beforeDigest,
+    readAt: verified.preparation.nativeObservation.capturedAt };
   if (grant.workItemId !== item.id || grant.transportId !== input.transportId ||
       grant.actorUserId !== authority.actorUserId || grant.sessionId !== authority.sessionId ||
       grant.sessionProfile !== authority.sessionProfile || grant.formDigest !== input.approvedDigest ||
@@ -1154,7 +1446,9 @@ export async function lockConsumedCloudAmendApproval(tx: HmsDispatchTransaction,
     eq(workEvent.payloadHash, payloadHash), sql`${workEvent.value}->>'runId' = ${run.id}`,
     sql`${workEvent.value}->>'grantId' = ${input.grantId}`,
   )).limit(2).for('share');
-  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  if (consumed.length !== 0) {
+    throw new HmsApprovalError('not_consumed');
+  }
   const at = new Date();
   if (run.deadlineAt.getTime() <= at.getTime() || snapshotStale(grant.hmsReadAt, at)) {
     throw new HmsApprovalError('lease_lost');
@@ -1173,12 +1467,12 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
   lockSource: (tx: WorkTransaction) => Promise<typeof workItem.$inferSelect | null>;
   env?: NodeJS.Dict<string>;
 }): Promise<void> {
-  if (!labtestAttachEnabled(input.env ?? process.env) || !/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(input.documentCode) ||
+  if (!/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/.test(input.documentCode) ||
       !/^[a-f0-9]{64}$/.test(input.sourceDigest) || !/^[a-f0-9]{64}$/.test(input.approvedDigest) ||
       !/^[a-f0-9]{64}$/.test(input.pdfSha256)) throw new HmsApprovalError('filing_unavailable');
   const item = await input.lockSource(tx);
   if (!item || item.id !== input.workItemId || item.transportId !== input.transportId ||
-      !isBoundLabtestAttachment(item.state, item.sourceMessageId, input.env) || item.state.confirmation !== input.confirmation ||
+      item.state.action !== 'attach_document' || item.state.confirmation !== input.confirmation ||
       item.state.arrival !== input.arrival || item.state.sourceSnapshotDigest !== input.sourceDigest ||
       item.state.documentName !== input.documentName || item.state.pdfSha256 !== input.pdfSha256 ||
       item.state.documentCode !== input.documentCode) {
@@ -1199,14 +1493,25 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
   const [run] = await tx.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, input.fence.runId),
     eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND), eq(aiWorkflowRun.claimOwner, input.fence.claimOwner),
     eq(aiWorkflowRun.claimToken, input.fence.claimToken), eq(aiWorkflowRun.workItemId, item.id),
-    eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.promptVersion, HMS_LABTEST_ATTACH_PROMPT_VERSION),
+    eq(aiWorkflowRun.transportId, input.transportId),
+    inArray(aiWorkflowRun.promptVersion, [HMS_LABTEST_ATTACH_PROMPT_VERSION, HMS_V2_WRITE_PROMPT_VERSION]),
     inArray(aiWorkflowRun.state, ['claimed', 'running']))).limit(1).for('update');
   const now = new Date();
   if (!run?.deadlineAt || run.deadlineAt.getTime() !== input.fence.deadlineAt.getTime() ||
       run.deadlineAt.getTime() <= now.getTime() || run.threadId !== item.threadId ||
       run.triggerMessageId !== item.sourceMessageId || grantIdForRun(run) !== input.grantId) throw new HmsApprovalError('lease_lost');
   const { grant, payloadHash } = await loadGrant(tx as DB, item.id, input.grantId, true);
-  const snapshot = readSnapshot(item.state);
+  if (!('version' in grant) || grant.version !== 2 || run.promptVersion !== HMS_V2_WRITE_PROMPT_VERSION) {
+    throw new HmsApprovalError('no_grant');
+  }
+  const verified = await verifyStaffGoForRun(tx, input.fence);
+  const mode = effectiveWorkflowPolicy(input.env ?? process.env, verified.grant.propertyCode, 'attach').admittedMode;
+  if (verified.grant.grantId !== input.grantId || verified.grant.operation !== 'attach_document' || mode === 'off' ||
+      !isBoundLabtestAttachment(item.state, item.sourceMessageId, { ...(input.env ?? process.env), PANE_WRITE_ATTACH: mode })) {
+    throw new HmsApprovalError('filing_unavailable');
+  }
+  const snapshot = { digest: verified.preparation.nativeObservation.beforeDigest,
+    readAt: verified.preparation.nativeObservation.capturedAt };
   if (grant.workItemId !== item.id || grant.transportId !== input.transportId || grant.actorUserId !== input.actorUserId ||
       grant.sessionId !== input.sessionId || grant.sessionProfile !== input.sessionProfile ||
       formDigest(item.state) !== grant.formDigest || grant.formDigest !== input.approvedDigest ||
@@ -1216,7 +1521,9 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
   const consumed = await tx.select({ id: workEvent.id }).from(workEvent).where(and(eq(workEvent.workItemId, item.id),
     eq(workEvent.type, 'approval.consumed'), eq(workEvent.actorKind, 'system'), eq(workEvent.payloadHash, payloadHash),
     sql`${workEvent.value}->>'runId' = ${run.id}`, sql`${workEvent.value}->>'grantId' = ${input.grantId}`)).limit(2).for('share');
-  if (consumed.length !== 1) throw new HmsApprovalError('not_consumed');
+  if (consumed.length !== 0) {
+    throw new HmsApprovalError('not_consumed');
+  }
   const checkedAt = new Date();
   if (checkedAt.getTime() >= run.deadlineAt.getTime() || snapshotStale(grant.hmsReadAt, checkedAt)) {
     throw new HmsApprovalError('lease_lost');
@@ -1283,7 +1590,10 @@ export async function assertHmsUnchangedBeforeSave(input: {
       ),
     )
     .limit(1);
-  if (!consumed) throw new HmsApprovalError('not_consumed');
+  if (!consumed) {
+    if (!('version' in grant) || grant.version !== 2) throw new HmsApprovalError('not_consumed');
+    await db.transaction((tx) => verifyStaffGoForRun(tx, input.fence));
+  }
   const workItemId = run.workItemId;
   const itemReason = async (): Promise<'not_open' | 'form_changed' | null> => {
     const [item] = await db
@@ -1301,6 +1611,7 @@ export async function assertHmsUnchangedBeforeSave(input: {
   if (!reason && snapshotStale(grant.hmsReadAt, input.now?.() ?? new Date())) reason = 'snapshot_stale';
   if (!(await heartbeatAiRun(input.fence, db))) return { status: 'lease_lost' };
   if (!reason) return { status: 'unchanged' };
+  if ('version' in grant && grant.version === 2) return { status: 'needs_check', reason };
   await db.transaction(async (tx) => {
     const now = new Date();
     const row = await markAiRunDeadLetter(

@@ -7,6 +7,7 @@ import type {
 } from './reservation-workflow-v2-contract.js';
 import {
   reservationWorkflowV2DraftSchema,
+  reservationWorkflowV2PrepareInputSchema,
 } from './reservation-workflow-v2-contract.js';
 import {
   appendReservationWorkflowV2Observation,
@@ -19,7 +20,6 @@ import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
-import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import {
   compileReservationWorkflowV2Create,
@@ -65,12 +65,8 @@ export function nativeServiceControls(value: unknown): Record<string, unknown> |
   return Object.keys(selected).length ? selected : undefined;
 }
 
-const sourceInputSchema = z.object({ threadId: z.string().min(1).max(500), messageId: z.string().min(1).max(500),
-  sourceHash: z.string().regex(/^[a-f0-9]{64}$/), arrivedAt: z.string().datetime({ offset: true }) }).strict();
-const inputSchema = z.object({ workItemId: z.string().uuid(), source: sourceInputSchema,
-  expectedRevision: z.number().int().nonnegative(), expectedSeq: z.number().int().nonnegative(),
-  requestId: z.string().min(1).max(80), allocationId: z.string().min(1).max(80),
-  serviceId: z.string().min(1).max(80).optional() }).strict();
+const inputSchema = reservationWorkflowV2PrepareInputSchema.extend({ allocationId: z.string().min(1).max(80),
+  serviceId: z.string().min(1).max(80).optional(), reviewedPrepareRef: z.string().min(1).max(160).optional() }).strict();
 
 function stateContext(ctx: ReservationWorkflowV2ServerContext) {
   return { db: ctx.db, transportId: ctx.transport.id, userId: ctx.nativeBatch ? null : ctx.user.id,
@@ -386,7 +382,8 @@ async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Pick
 }
 
 async function createThenAddon(compiled: Extract<ReturnType<typeof compileReservationWorkflowV2Create>, { outcome: 'ok' }>,
-  operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>, signal?: AbortSignal) {
+  operation: (page: unknown, readForm: () => Promise<unknown>) => Promise<unknown>,
+  scope: { propertyCode: string; transportId: string }, signal?: AbortSignal) {
   const createTool = await import(new URL('../../tooling/hms-cloud/create-reservation.mjs', import.meta.url).href) as {
     createReservation: (input: Record<string, unknown>, options: Record<string, unknown>) => Promise<NativeCreate>;
   };
@@ -398,12 +395,12 @@ async function createThenAddon(compiled: Extract<ReturnType<typeof compileReserv
   const withSession = (callback: (session: { page: unknown; runTool: (input: Record<string, unknown>) => Promise<unknown> }) => Promise<unknown>,
     options: Record<string, unknown> = {}) => bookingTool.withBookingLookupSession(async session => {
       await callback(session);
-      const readForm = () => session.runTool({ tool: 'readGuestStayForm', propertyCode: 'HRCEN' });
+      const readForm = () => session.runTool({ tool: 'readGuestStayForm', propertyCode: scope.propertyCode });
       addon = await operation(session.page, readForm);
-    }, { ...options, memory: null, blockServiceWorkers: true, signal });
+    }, { ...options, ...scope, memory: null, signal });
   const native = await createTool.createReservation(compiled.nativeInput, { allowRealGuest: true,
     expectedGuest: compiled.expectedGuest, requireExplicitGuestSelection: true, allowCommitOnlyBillingReference: true,
-    withSession });
+    ...scope, signal, withSession });
   return { native, addon };
 }
 
@@ -439,7 +436,6 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
   const parsed = inputSchema.safeParse(rawInput);
   if (!parsed.success) return { status: 'invalid_input', issue: 'service_lookup_input_invalid' };
   const input = parsed.data;
-  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'service_property_not_supported' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return { ...loaded.result };
   const linked = serviceTargets(loaded.draft, input);
@@ -459,7 +455,7 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
     };
     const { native, addon } = await createThenAddon(compiled, (page, readForm) =>
       addonTool.listUnsavedStay360AddOnItems(page, { expectedCreate: compiled.nativeInput,
-        expectedGuest: compiled.expectedGuest, readForm }), ctx.nativeBatch?.signal);
+        expectedGuest: compiled.expectedGuest, readForm }), { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id }, ctx.nativeBatch?.signal);
     const listing = record(addon);
     const candidates = Array.isArray(listing?.candidates) ? listing.candidates.map(record).filter(Boolean) : [];
     const coverage = record(listing?.coverage);
@@ -472,7 +468,7 @@ export async function reservationWorkflowV2LookupServices(ctx: ReservationWorkfl
       record(native.ratePlanAvailability) !== null && actualMeal === boundMeal &&
       reservationWorkflowV2CreateMealPlanMatches(compiled.requestedMealPlan, compiled.mealPlan, actualMeal, ctx.property.propertyCode) &&
       listing?.outcome === 'ok' && listing.unsaved === true &&
-      listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true && validCandidates;
+      listing.saved !== true && listing.propertyCode === ctx.property.propertyCode && coverage?.complete === true && validCandidates;
     const observations: ReservationWorkflowV2Observation[] = [];
     const serviceRows = new Map(addRows.map(row => [row.service.id, row]));
     for (const row of serviceRows.values()) {
@@ -529,7 +525,6 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
   const parsed = inputSchema.safeParse(rawInput);
   if (!parsed.success) return { status: 'invalid_input', issue: 'service_preview_input_invalid' };
   const input = parsed.data;
-  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'service_property_not_supported' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return { ...loaded.result };
   const linked = serviceTargets(loaded.draft, input);
@@ -558,7 +553,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
     const items = plans.map(plan => plan.items);
     const { native, addon } = await createThenAddon(compiledCreate, (page, readForm) =>
       addonTool.previewUnsavedStay360AddOns(page, { expectedCreate: compiledCreate.nativeInput,
-        expectedGuest: compiledCreate.expectedGuest, readForm, items }), ctx.nativeBatch?.signal);
+        expectedGuest: compiledCreate.expectedGuest, readForm, items }), { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id }, ctx.nativeBatch?.signal);
     const preview = record(addon), nativeItems = Array.isArray(preview?.items) ? preview.items.map(record) : [];
     const capability = (await import('./reservation-workflow-v2-services-execute.js')).linkedServiceCapability(loaded.draft, input);
     const actualMeal = record(native.applied)?.mealPlan;
@@ -579,7 +574,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
       const priceMatches = Boolean(expectedPrice && actualPrice === expectedPrice && actual?.totalCost && actual?.currency &&
         actual?.status === 'VALID');
       const complete = createBound && preview?.outcome === 'prepared' && preview.unsaved === true && preview.saved === false &&
-        preview.propertyCode === 'HRCEN' && nativeItem?.outcome === 'prepared' &&
+        preview.propertyCode === ctx.property.propertyCode && nativeItem?.outcome === 'prepared' &&
         itemIdMatches && priceMatches && actual?.code === plan.candidate.code &&
         actualQuantity === expectedQuantity && actual?.startDate === plan.items.startDate && actual?.endDate === plan.items.endDate &&
         (['frequency', 'pricingControl', 'folio', 'comment'] as const)
@@ -588,7 +583,7 @@ export async function reservationWorkflowV2PreviewServices(ctx: ReservationWorkf
         'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status']
         .filter(key => Object.hasOwn(actual, key)).map(key => [key, actual[key]])) : null;
       const controls = nativeServiceControls(actual);
-      const nativeControls = createBound && preview?.propertyCode === 'HRCEN' && preview.unsaved === true && preview.saved === false &&
+      const nativeControls = createBound && preview?.propertyCode === ctx.property.propertyCode && preview.unsaved === true && preview.saved === false &&
         itemIdMatches && actual?.code === plan.candidate.code ? controls : undefined;
       const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: loaded.draft!.generationId,
         kind: 'service_preview', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
@@ -805,7 +800,7 @@ export function selectedSavedStay(draft: ReservationWorkflowV2Draft, input: Rese
 /** Read-only saved-stay lookup, then catalogue and exact saved-row observations for that selection. */
 export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2SavedServicesInput): Promise<Result> {
-  if (ctx.property.propertyCode !== 'HRCEN' || input.targetRef.kind !== 'saved_target') return { status: 'unsupported', issue: 'service_property_not_supported' };
+  if (input.targetRef.kind !== 'saved_target') return { status: 'unsupported', issue: 'service_property_not_supported' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return { ...loaded.result };
   const draft = loaded.draft, found = savedTarget(draft, input);
@@ -819,9 +814,8 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
   const confirmation = amendSelection?.stay.confirmation ?? found.hint.confirmation;
   const arrival = amendSelection?.stay.arrival ?? found.hint.bookedArrival;
   if (!/^\d+-\d+$/.test(String(confirmation ?? ''))) return { status: 'needs_input', issue: 'one_saved_stay_confirmation_required' };
-  const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
-  if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
-    .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
+  const resolved = paneStayHmsTargetForTransport(ctx.transport.id, ctx.property.propertyCode);
+  if (!resolved.ok || resolved.target.propertyCode !== ctx.property.propertyCode) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
   const query = Object.fromEntries(['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map(key => [key, found.hint[key] || null]));
   const request = { confirmation: String(confirmation), ...(typeof arrival === 'string' && arrival ? { arrival } : {}) };
   if (ctx.nativeBatch && !paneStayLookupEnabled()) return { status: 'needs_input', issue: 'stay_lookup_disabled' };
@@ -830,7 +824,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       const lock = paneStayPropertyLock(resolved.target);
       if (!lock) return null;
       return lock.withLock(async () => projectCloudStayFind(request,
-        await runCloudStayFind({ request, target: resolved.target, transportId: ctx.transport.id, signal: ctx.nativeBatch!.signal })),
+        await runCloudStayFind({ request, target: resolved.target, transportId: ctx.transport.id, signal: ctx.nativeBatch!.signal }), ctx.property.propertyCode),
       { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
     })().catch(() => null)
     : await findStay(request, { target: resolved.target, transportId: ctx.transport.id, lock: () => paneStayPropertyLock(resolved.target),
@@ -872,7 +866,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
     const native = record(await addon.withStay360AddOnSession(async ({ runTool }) => {
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
-      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || !target || target.confirmation !== stay.confirmation ||
+      if (read?.outcome !== 'ok' || read.propertyCode !== ctx.property.propertyCode || !target || target.confirmation !== stay.confirmation ||
           target.status !== 'Reserved' || target.arrival !== stay.arrival || target.departure !== stay.departure || !nativeServiceGuestNameMatches(target.guestName, guestName) ||
           record(read.coverage)?.complete !== true) return null;
       if (!Array.isArray(read.items)) return null;
@@ -889,7 +883,7 @@ export async function reservationWorkflowV2LookupSavedServices(ctx: ReservationW
       if (detailed?.outcome !== 'ok' || record(detailed.coverage)?.complete !== true || details.length !== ids.length ||
           ids.some(id => !details.some(row => record(row)?.nativeId === id))) return null;
       return { details, candidates: Array.isArray(listing?.candidates) ? listing.candidates : [] };
-    }, { headless: true, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
+    }, { headless: true, propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
     if (!native) return { status: 'needs_input', issue: 'saved_addon_read_incomplete' };
     let count = 0;
     for (const row of found.matches) {
@@ -1022,7 +1016,6 @@ export function reservationWorkflowV2CompileSavedService(draft: ReservationWorkf
 /** Unsaved, single-item preparation. A later Save must reprepare and bind its own durable approval. */
 export async function reservationWorkflowV2PreviewSavedServices(ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2SavedServicesInput): Promise<Result> {
-  if (ctx.property.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'service_property_not_supported' };
   const loaded = await currentDraft(ctx, input);
   if (!loaded.draft) return { ...loaded.result };
   const draft = loaded.draft, plan = reservationWorkflowV2CompileSavedService(draft, input);
@@ -1037,13 +1030,13 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
     const staged = record(await addon.withStay360AddOnSession(async ({ runTool }) => {
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
-      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || record(read.coverage)?.complete !== true ||
+      if (read?.outcome !== 'ok' || read.propertyCode !== ctx.property.propertyCode || record(read.coverage)?.complete !== true ||
           !target || target.confirmation !== stay.confirmation || target.status !== 'Reserved' || target.arrival !== stay.arrival ||
           target.departure !== stay.departure || !nativeServiceGuestNameMatches(target.guestName, guestName)) return null;
       const prepared = record(await runTool(operation === 'add'
         ? { tool: 'prepare', confirmation: stay.confirmation, items: [requested] }
         : { tool: 'prepareChanges', confirmation: stay.confirmation, changes: [requested] }));
-      if (prepared?.outcome !== 'prepared' || prepared.saved !== false || prepared.propertyCode !== 'HRCEN') return null;
+      if (prepared?.outcome !== 'prepared' || prepared.saved !== false || prepared.propertyCode !== ctx.property.propertyCode) return null;
       if (operation === 'add') {
         const actual = Array.isArray(prepared.items) ? prepared.items[0] : null;
         const native = savedServiceBusiness(actual);
@@ -1064,9 +1057,9 @@ export async function reservationWorkflowV2PreviewSavedServices(ctx: Reservation
       const controls = operation === 'edit' && text(afterFields?.code) && text(afterFields?.itemId) &&
         afterFields?.code === prior?.code && afterFields?.itemId === prior?.itemId ? nativeServiceControls(afterFields) : undefined;
       return { before, after: operation === 'remove' ? null : after, ...(controls ? { nativeControls: controls } : {}) };
-    }, { headless: true, blockServiceWorkers: true, signal: ctx.nativeBatch?.signal }));
+    }, { headless: true, propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
     if (!staged) return { status: 'needs_input', issue: 'saved_addon_prepare_unverified', saved: false };
-    const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay);
+    const capability = await (await import('./reservation-workflow-v2-services-execute.js')).savedServiceCapability(selected.stay, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id });
     const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId, kind: 'service_preview',
       status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId,
       sourceRefs: [selected.observation.ref, candidateObservation.ref], criteria: { workflow: 'services', kind: 'saved_addon_preview',

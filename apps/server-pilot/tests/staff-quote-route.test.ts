@@ -96,7 +96,7 @@ async function nativeFixture(
   request: QuoteSourceRecord['request'],
   propertyCode = 'HRCEN',
 ): Promise<QuoteSourceRecord> {
-  const { normalizeQuoteRequest } = await import('../tooling/playwright-quote/quote-contract.mjs');
+  const { normalizeQuoteRequest } = await import('../tooling/hms-cloud/quote-contract.mjs');
   const normalized = normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
   return {
     ref: 'synthetic:' + randomUUID(),

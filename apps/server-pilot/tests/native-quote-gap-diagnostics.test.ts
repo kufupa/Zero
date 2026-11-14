@@ -21,7 +21,7 @@ import {
  * The block is deliberate; these tests pin only what the failure says about itself.
  */
 
-const contractPath = fileURLToPath(new URL('../tooling/playwright-quote/quote-contract.mjs', import.meta.url));
+const contractPath = fileURLToPath(new URL('../tooling/hms-cloud/quote-contract.mjs', import.meta.url));
 const privateRoot = fileURLToPath(new URL('../../../.private/playwright-quote', import.meta.url));
 const owner = {
   cdpUrl: 'http://127.0.0.1:9222',

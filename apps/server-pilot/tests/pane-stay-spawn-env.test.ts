@@ -20,7 +20,7 @@ const configuration = {
     propertyCode: 'HRCEN',
     secretPath: '/repo/.private/owner/secret.json',
   },
-  outputDir: '/repo/.private/playwright-quote/out',
+  outputDir: '/repo/.private/hms-cloud/out',
   ratePolicyConfigurationPath: '/repo/.private/rate-policy.json',
 } as StaffQuoteInstallationConfiguration;
 
@@ -239,30 +239,18 @@ describe('paneStaySpawnEnv', () => {
 });
 
 describe('paneStayHmsTargetForTransport', () => {
-  it('maps a Da Vinci transport to the HRDAV slot and secret, ignoring a caller-supplied property', () => {
-    expect(paneStayHmsTargetForTransport('transport-davinci')).toEqual({
-      ok: true,
-      target: DAVINCI_HMS_READ_TARGET,
+  it('resolves Da Vinci selection only inside the authenticated mailbox group', () => {
+    expect(paneStayHmsTargetForTransport('transport-davinci')).toEqual({ ok: true, target: DAVINCI_HMS_READ_TARGET });
+    expect(paneStayHmsTargetForTransport('transport-faith', 'HRDAVS')).toMatchObject({
+      ok: true, target: { propertyCode: 'HRDAVS', browserSlot: 'davinci' },
     });
-    expect(paneStayHmsTargetForTransport('transport-davinci', 'HRCEN')).toEqual({
-      ok: true,
-      target: DAVINCI_HMS_READ_TARGET,
-    });
-    expect(paneStayHmsTargetForTransport('transport-faith', 'HRCEN')).toEqual({
-      ok: true,
-      target: DAVINCI_HMS_READ_TARGET,
-    });
+    expect(paneStayHmsTargetForTransport('transport-davinci', 'HRCEN')).toEqual({ ok: false, reason: 'property_mismatch' });
+    expect(paneStayHmsTargetForTransport('transport-centurion', 'HRDAV')).toEqual({ ok: false, reason: 'property_mismatch' });
+    expect(paneStayHmsTargetForTransport('transport-centurion', 'UNKNOWN')).toEqual({ ok: false, reason: 'property_mismatch' });
   });
 
-  it('maps a Centurion transport to HRCEN, ignoring a caller-supplied HRDAV property', () => {
-    expect(paneStayHmsTargetForTransport('transport-centurion')).toEqual({
-      ok: true,
-      target: CENTURION_HMS_READ_TARGET,
-    });
-    expect(paneStayHmsTargetForTransport('transport-centurion', 'HRDAV')).toEqual({
-      ok: true,
-      target: CENTURION_HMS_READ_TARGET,
-    });
+  it('maps a Centurion transport to HRCEN', () => {
+    expect(paneStayHmsTargetForTransport('transport-centurion')).toEqual({ ok: true, target: CENTURION_HMS_READ_TARGET });
   });
 
   it('refuses an unknown or blank transport before any spawn', () => {

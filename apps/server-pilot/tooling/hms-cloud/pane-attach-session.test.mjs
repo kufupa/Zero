@@ -49,7 +49,7 @@ async function nativeScreenshots(root) {
 
 test('the selected fake booking matches property, guest and approved dates', () => {
   assert.deepEqual(filingSnapshot(record, stay), snapshot);
-  assert.deepEqual(approvedLabtestRecord(record, stay), { confirmation: native.confirmation, guestId: native.guestId,
+  assert.deepEqual(approvedLabtestRecord(record, stay), { propertyCode: native.propertyCode, confirmation: native.confirmation, guestId: native.guestId,
     nativeStayId: native.reservationStayId, firstName: native.firstName, lastName: native.lastName,
     status: native.status, allowRealGuest: false,
     arrival: native.arrival, departure: native.departure });
@@ -110,14 +110,16 @@ test('fresh listing requires a unique exact code and filename', () => {
 
 test('restart recovery requires a stopped writer and fresh exact unique document metadata on the same fake stay', async () => {
   const code = documentCodeForUuid(randomUUID());
-  const intent = { operation: 'attach_document', propertyCode: 'HRCEN', firstName: 'Proof', lastName: 'Labtest',
+  const intent = { operation: 'attach_document', propertyCode: 'HRCEN', transportId: 'transport-centurion', firstName: 'Proof', lastName: 'Labtest',
     nativeGuestId: native.guestId, recovery: { confirmation: native.confirmation, arrival: native.arrival,
       departure: native.departure, documentCode: code, documentName: 'voucher.pdf', pdfSha256: 'a'.repeat(64), writer: {} } };
   const row = { documentCode: code, name: 'voucher.pdf' };
   let shots = 0;
-  const deps = { writerQuiesced: () => true, shallow: async () => {}, read: async () => record,
+  const credentialLease = { signal: new AbortController().signal };
+  const deps = { credentialLease, writerQuiesced: () => true, shallow: async () => {}, read: async () => record,
     documents: async () => ({ documents: [row] }), openSession: async (fn, options) => {
-      assert.equal(options.blockServiceWorkers, true); assert.equal(typeof options.prepareContext, 'function');
+      assert.equal(options.propertyCode, 'HRCEN'); assert.equal(options.startScreen, 'OSRESS'); assert.equal(typeof options.prepareContext, 'function');
+      assert.equal(options.credentialLease, credentialLease);
       return fn({ screenshot: async () => { shots++; return png; } });
     } };
   const positive = await provePositiveAttachRecovery(intent, deps);
@@ -138,6 +140,12 @@ test('restart recovery requires a stopped writer and fresh exact unique document
     await fn({ screenshot: async () => png }); throw new Error('browser close unconfirmed');
   } })).outcome, 'unconfirmed');
   assert.equal(shots, 1);
+  const aborted = new AbortController();
+  aborted.abort();
+  let openedAfterAbort = false;
+  assert.equal((await provePositiveAttachRecovery(intent, { ...deps, signal: aborted.signal,
+    openSession: async () => { openedAfterAbort = true; } })).outcome, 'unconfirmed');
+  assert.equal(openedAfterAbort, false);
 
   const realNative = { ...native, firstName: 'Real', lastName: 'Guest', status: 'Cancelled',
     arrival: '2026-10-12', departure: '2026-10-13' };
@@ -157,9 +165,10 @@ test('restart recovery requires a stopped writer and fresh exact unique document
 });
 
 test('filing refuses names that the Documents reader would normalize before opening HMS', async () => {
+  const credentialLease = { signal: new AbortController().signal };
   for (const documentName of ['Proof  Labtest.pdf', ' Proof Labtest.pdf', 'Proof\u00a0Labtest.pdf']) {
     let opened = 0;
-    const result = await runCloudPaneAttach({ target: { propertyCode: 'HRCEN' }, documentName, guestName: 'Proof Labtest',
+    const result = await runCloudPaneAttach({ target: { propertyCode: 'HRCEN' }, transportId: 'transport-centurion', credentialLease, documentName, guestName: 'Proof Labtest',
       approvedStay: stay, approvedSnapshot: snapshot, pdfSha256: 'a'.repeat(64), beforeDispatch: async () => true,
       finalAuthority: async () => true, continuationAllowed: () => true, dispatchWithAuthority: async () => {} },
     { openSession: async () => { opened++; } });
@@ -175,7 +184,8 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
     const bytes = Buffer.from('%PDF-synthetic'), path = join(dir, 'source.pdf');
     await writeFile(path, bytes);
     let heldCode;
-    const input = { target: { propertyCode: 'HRCEN' }, confirmation: native.confirmation, arrival: native.arrival,
+    const credentialLease = { signal: new AbortController().signal };
+    const input = { credentialLease, target: { propertyCode: 'HRCEN' }, transportId: 'transport-centurion', confirmation: native.confirmation, arrival: native.arrival,
       guestName: 'Proof Labtest', documentName: 'voucher.pdf', file: path, approvedStay: stay, approvedSnapshot: snapshot, beforeDispatch: async () => true,
       continuationAllowed: () => true,
       finalAuthority: async (code) => { heldCode = code; return true; },
@@ -186,7 +196,8 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
       pdfSha256: createHash('sha256').update(bytes).digest('hex') };
     let sessions = 0, readbacks = 0;
     const deps = { openSession: async (fn, options) => { sessions++;
-        assert.equal(options.blockServiceWorkers, true); assert.equal(typeof options.prepareContext, 'function');
+        assert.equal(options.propertyCode, 'HRCEN'); assert.equal(options.startScreen, 'OSRESS'); assert.equal(typeof options.prepareContext, 'function');
+        assert.equal(options.credentialLease, credentialLease);
         return fn({ session: sessions }); },
       shallow: async () => {}, read: async () => record,
       attach: async (_page, expected, file, options) => { assert.equal(expected.guestId, native.guestId);
@@ -196,6 +207,8 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
         assert.equal(await options.dispatchWithAuthority(async () => 'continued', 'a'.repeat(64)), 'continued');
         return { outcome: 'awaiting_readback', ...await nativeScreenshots(options.evidenceRoot),
           dispatchCallbacksDrained: true }; },
+      openReadSession: async (fn, options) => { sessions++; assert.equal(options.propertyCode, 'HRCEN');
+        assert.equal(options.credentialLease, credentialLease); return fn({ session: sessions }); },
       writerIdentity: () => writer,
       freshRead: async (page, _input, code, setNative) => { assert.equal(page.session, 2); assert.match(code, /^NAVA[A-Z2-7]{25}[AEIMQUY4]$/);
         assert.equal(typeof setNative, 'function'); setNative(native);
@@ -239,8 +252,8 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
     sessions = 0;
     const unknown = await runCloudPaneAttach(input, { ...deps,
       attach: async (_page, _expected, _file, options) => { options.onDispatched(); throw new Error('connection lost'); } });
-    assert.equal(unknown.outcome, 'uncertain'); assert.equal(unknown.uploadSent, true); assert.equal(unknown.listed, true);
-    assert.equal(sessions, 2); assert.equal(readbacks, 4);
+    assert.equal(unknown.outcome, 'uncertain'); assert.equal(unknown.uploadSent, true); assert.equal(unknown.listed, undefined);
+    assert.equal(sessions, 1); assert.equal(readbacks, 3);
     await rm(unknown.cleanupRoot, { recursive: true, force: true });
 
     sessions = 0;
@@ -248,7 +261,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
       attach: async () => { throw new Error('connection lost'); },
       freshRead: async () => { throw new Error('readback unavailable'); } });
     assert.equal(lostCallback.outcome, 'uncertain'); assert.equal(lostCallback.uploadSent, true);
-    assert.equal(lostCallback.listed, undefined); assert.equal(sessions, 2);
+    assert.equal(lostCallback.listed, undefined); assert.equal(sessions, 1);
     await rm(lostCallback.cleanupRoot, { recursive: true, force: true });
 
     sessions = 0;

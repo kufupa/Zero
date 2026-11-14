@@ -5,6 +5,7 @@ import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup
 import { currentVerifiedLabtestProfileToken, isVerifiedLabtestProfile, isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './guest-profile.mjs';
 import { isLabtestGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 import { parseResponse as parsePickerResponse } from './guest-stay-room-rate.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const CLOUD_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const TEXT_FIELDS = {
@@ -12,7 +13,7 @@ const TEXT_FIELDS = {
   reservationNote: 'reservationnote', guestEmail: 'emailaddress', cmsRecipient: 'udfchar13',
 };
 const DATE_FIELDS = { arrivalDate: 'arrivaldate', departureDate: 'departuredate' };
-const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType: 'guaranteetype' };
+const COMBOS = { adults: 'adults', reasonForStay: 'reasonforstay', guaranteeType: 'guaranteetype', marketSegment: 'marketsegment' };
 const DANGEROUS_PATH = /save|delete|cancel|duplicate|checkin|checkout|send|crs/i;
 const CHILD_AGE_VALIDATE = '/web/base/OSRESV.HDR.validateChildAgeDetails';
 const GUARANTEE_CHANGE = '/web/base/OSRESV.HDR.changeguaranteemethod';
@@ -54,14 +55,20 @@ async function readFields(page) {
     let root = agency;
     while (root && !root.contains(confirmation)) root = root.parentElement;
     if (!root) throw new Error('GUEST_STAY_FORM_UNAVAILABLE');
-    return [...root.querySelectorAll('input,textarea,select')].filter((el) => visible(el) && !['hidden', 'password'].includes(el.type)).map((el) => {
+    const form = agency?.id && globalThis.Ext?.getCmp?.(agency.id.replace(/-inputEl$/, ''))?.up?.('form');
+    return [...root.querySelectorAll('input,textarea,select')].filter((el) => {
+      const child = /^child\d+$/.test(el.name || '') && !el.closest('.x-window') &&
+        globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''))?.up?.('form') === form;
+      return (visible(el) && !['hidden', 'password'].includes(el.type)) || child;
+    }).map((el) => {
       const cmp = el.id && globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
       const checkbox = cmp?.getXType?.() === 'checkboxfield' || el.type === 'checkbox';
       return {
         id: el.id || null, name: el.name || null,
         label: el.closest('.x-form-item,.x-field')?.querySelector('label')?.innerText?.trim() || cmp?.getFieldLabel?.() || cmp?.boxLabel || null,
-        type: el.type || el.tagName.toLowerCase(), value: checkbox ? (cmp?.getValue?.() ?? el.checked) : el.value,
-        disabled: el.disabled, readOnly: Boolean(el.readOnly),
+        type: el.type || el.tagName.toLowerCase(), value: checkbox ? (cmp?.getValue?.() ?? el.checked) :
+          !visible(el) && /^child\d+$/.test(el.name || '') ? (cmp?.getValue?.() ?? el.value) : el.value,
+        disabled: el.disabled, readOnly: Boolean(el.readOnly), required: cmp?.allowBlank === false,
       };
     });
   });
@@ -80,7 +87,7 @@ function changes(before, after) {
 async function verifySettled(page, result, fields) {
   if (!['updated_unsaved', 'unchanged_unsaved'].includes(result.outcome)) return;
   const name = TEXT_FIELDS[result.field] || DATE_FIELDS[result.field] || COMBOS[result.field] ||
-    ({ cmsSend: 'udfchkbox04', cmsMessageId: 'udfchar09' })[result.field];
+    ({ cmsSend: 'udfchkbox04', guestOptIn: 'guestoptin4', cmsMessageId: 'udfchar09' })[result.field];
   if (name) {
     const matching = fields.filter((field) => field.name === name);
     const expected = Object.hasOwn(DATE_FIELDS, result.field) ? result.displayed :
@@ -113,15 +120,14 @@ function allowedPost(request, origin, propertyCode, kind, expectedAges) {
   }
   if (kind !== 'ages' || !['/web/base/OSRESV.HDR.getChildAges', '/web/base/OSRESV.HDR.validateChildAgeDetails'].includes(url.pathname)) return false;
   try {
-    if (body.getAll('params').length !== 1 || body.getAll('ONLY_DATA_REQUIRED').length !== 1 || body.get('ONLY_DATA_REQUIRED') !== 'true' ||
-        [...body.keys()].some((key) => !['params', 'ONLY_DATA_REQUIRED'].includes(key))) return false;
+    if (body.getAll('params').length !== 1 || body.getAll('ONLY_DATA_REQUIRED').length !== 1 || body.get('ONLY_DATA_REQUIRED') !== 'true') return false;
     const params = JSON.parse(body.get('params'));
     const isRead = url.pathname.endsWith('.getChildAges');
     const keys = isRead ? ['propertyCode', 'reservationStayId', 'childAges'] : [
       'propertyCode', 'reservationStayId', 'childAges', 'adultCount', 'childCount', 'updateChildCategories',
       'activeChildCategories', 'confirmChildCategory', 'childCategoryCounts',
     ];
-    if (Object.keys(params).length !== keys.length || keys.some((key) => !Object.hasOwn(params, key))) return false;
+    if (!params || typeof params !== 'object' || Array.isArray(params) || keys.some((key) => !Object.hasOwn(params, key))) return false;
     if (params.propertyCode !== propertyCode || params.reservationStayId !== '' || !Array.isArray(params.childAges) ||
         !params.childAges.every((age) => Number.isInteger(age) && age >= 0 && age <= 17)) return false;
     return isRead || (JSON.stringify(params.childAges) === JSON.stringify(expectedAges) &&
@@ -141,10 +147,10 @@ function wireDate(value) {
 
 // The current form's record holds the session ID even though it is not a form input.
 async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expectedGuest } = {}) {
-  if (propertyCode !== 'HRCEN') return null;
+  if (!getPropertyRegistration(propertyCode)?.active) return null;
   const identity = allowRealGuest ? expectedGuest : { firstName: 'Proof', lastName: 'Labtest' };
   if (!validCreateGuest(identity) || (!allowRealGuest && !isLabtestGuest(identity))) return null;
-  const state = await page.evaluate(({ origin, blankIds, identity, allowRealGuest }) => {
+  const state = await page.evaluate(({ origin, blankIds, identity, allowRealGuest, propertyCode }) => {
     if (location.origin !== origin) return null;
     const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
     const names = ['guaranteetype', 'ta1', 'confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate', 'departuredate'];
@@ -157,7 +163,7 @@ async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expe
     const unique = (key) => keys && Object.hasOwn(data, key) && keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1;
     const exact = (key, value) => unique(key) && String(data[key] ?? '').trim() === value;
     const guest = component('guestid');
-    if (!data || !exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+    if (!data || !exact('propertycode', propertyCode) || !exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) || !exact('status', 'New') ||
         !exact('confirmationnumber', '') || !blankIds.every((key) => exact(key, '')) || !unique('guestid') ||
         ['arprofileid', 'araccountid'].some((key) => keys.filter((name) => name.toLowerCase() === key).length > 1) ||
         !unique('bookingsessionid') || !String(data.bookingsessionid ?? '').trim() ||
@@ -172,7 +178,7 @@ async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expe
     if (!allowRealGuest && Boolean(profileId) !== Boolean(accountId)) return null;
     return { session: String(data.bookingsessionid), arrival: fields.arrivaldate[0].value, departure: fields.departuredate[0].value,
       guestId, ar: profileId || accountId ? { accountId, profileId, hasAccountId, hasProfileId } : null };
-  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS, identity, allowRealGuest });
+  }, { origin: CLOUD_ORIGIN, blankIds: GUARANTEE_BLANK_IDS, identity, allowRealGuest, propertyCode });
   if (!state) return null;
   const arrival = wireDate(state.arrival), departure = wireDate(state.departure);
   if (!arrival || !departure || !validCreateDates(arrival.iso, departure.iso, allowRealGuest) ||
@@ -187,7 +193,7 @@ async function guaranteeDraft(page, propertyCode, { allowRealGuest = false, expe
     if (!guestToken) return null;
     guest = { nativeId: state.guestId, token: guestToken };
   }
-  return { session: state.session, arrival, departure, firstName: identity.firstName, lastName: identity.lastName,
+  return { propertyCode, session: state.session, arrival, departure, firstName: identity.firstName, lastName: identity.lastName,
     ar: arIdentity ? { ...state.ar, token: token || null } : null, guest };
 }
 
@@ -202,7 +208,7 @@ function guaranteeRequest(page, request, expected) {
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
     const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
     const fields = {
-      propertycode: 'HRCEN', PKID: '@[EMPTY]#@[EMPTY]#HRCEN#', status: 'New',
+      propertycode: expected.draft.propertyCode, PKID: `@[EMPTY]#@[EMPTY]#${expected.draft.propertyCode}#`, status: 'New',
       firstname: expected.draft.firstName, lastname: expected.draft.lastName,
       arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire, guaranteetype: expected.value,
       ONLY_DATA_REQUIRED: 'true', bookingsessionid: expected.draft.session,
@@ -253,7 +259,7 @@ async function verifyGuaranteeResponse(response, expected) {
   const values = parseGuaranteeResponse(await bounded(response.text(), 5000, 'GUARANTEE_RESPONSE_TIMEOUT'));
   const ar = expected.draft.ar;
   const guest = expected.draft.guest;
-  const fields = { propertycode: 'HRCEN', status: 'New',
+  const fields = { propertycode: expected.draft.propertyCode, status: 'New',
     firstname: expected.draft.firstName, lastname: expected.draft.lastName,
     arrivaldate: expected.draft.arrival.wire, departuredate: expected.draft.departure.wire,
     guaranteetype: expected.value, bookingsessionid: expected.draft.session, confirmationnumber: '', guestid: guest?.nativeId || '',
@@ -289,7 +295,8 @@ async function run(page, propertyCode, { allowed = null, post = null, expectedAg
   let guaranteeExpected = null, guaranteeApproved = null, rejectDialog;
   const guaranteeResponses = [];
   const dialogPromise = new Promise((_, reject) => { rejectDialog = reject; });
-  const onDialog = () => { nativeDialog = true; if (post === 'guarantee') rejectDialog(new Error('UNEXPECTED_DIALOG')); };
+  const onDialog = dialog => { nativeDialog = true; fence?.quarantine();
+    void dialog.dismiss().catch(() => {}); if (post === 'guarantee') rejectDialog(new Error('UNEXPECTED_DIALOG')); };
   const onResponse = (response) => { if (response.request() === guaranteeApproved) guaranteeResponses.push(response); };
   const ensureActive = () => { if (!active) throw new Error('ACTION_EXPIRED'); };
   const guard = async (route) => {
@@ -530,14 +537,15 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
       allowGuarantee({ draft: ready, value: clean(value) });
     } else await check();
     await items.nth(indexes[0]).click({ timeout: 5000 });
+    const checkSubmitted = guarantee || field === 'marketSegment';
     await waitForInputState(page, input, { value, display: matches[0].label, trim: true,
-      submitted: guarantee }); await check();
+      submitted: checkSubmitted }); await check();
     const actual = await input.evaluate((el, includeSubmitted) => {
       const cmp = Ext.getCmp(el.id.replace(/-inputEl$/, ''));
-      return { value: cmp?.getValue?.(), display: el.value, ...(includeSubmitted ? { submitted: cmp?.getSubmitData?.()?.guaranteetype } : {}) };
-    }, guarantee);
+      return { value: cmp?.getValue?.(), display: el.value, ...(includeSubmitted ? { submitted: cmp?.getSubmitData?.()?.[el.name] } : {}) };
+    }, checkSubmitted);
     if (clean(actual.value) !== clean(value)) throw new Error('DROPDOWN_READBACK_MISMATCH');
-    if (guarantee && (clean(actual.display) !== clean(matches[0].label) || clean(actual.submitted) !== clean(value))) {
+    if (checkSubmitted && (clean(actual.display) !== clean(matches[0].label) || clean(actual.submitted) !== clean(value))) {
       throw new Error('DROPDOWN_READBACK_MISMATCH');
     }
     const profileProofToken = field === 'adults' ? await currentVerifiedLabtestProfileToken(page) : null;
@@ -546,10 +554,10 @@ export async function selectGuestStayDropdown(page, { propertyCode, field, value
   });
 }
 
-export async function setCmsSendCheckbox(page, { propertyCode, checked } = {}) {
-  if (typeof checked !== 'boolean') return inputGap('CMS_SEND_BOOLEAN_REQUIRED');
+async function setCheckbox(page, propertyCode, checked, name, field) {
+  if (typeof checked !== 'boolean') return inputGap('CHECKBOX_BOOLEAN_REQUIRED');
   return run(page, propertyCode, {}, async ({ check, mark }) => {
-    const input = await uniqueInput(page, 'udfchkbox04');
+    const input = await uniqueInput(page, name);
     const read = () => input.evaluate((el) => Ext.getCmp(el.id.replace(/-inputEl$/, ''))?.getValue?.());
     const before = await read();
     if (typeof before !== 'boolean') throw new Error('CHECKBOX_UNAVAILABLE');
@@ -557,8 +565,16 @@ export async function setCmsSendCheckbox(page, { propertyCode, checked } = {}) {
     await waitForInputState(page, input, { value: checked }); await check();
     const actual = await read();
     if (actual !== checked) throw new Error('CHECKBOX_READBACK_MISMATCH');
-    return { outcome: 'updated_unsaved', field: 'cmsSend', requested: checked, actual };
+    return { outcome: 'updated_unsaved', field, requested: checked, actual };
   });
+}
+
+export async function setCmsSendCheckbox(page, { propertyCode, checked } = {}) {
+  return setCheckbox(page, propertyCode, checked, 'udfchkbox04', 'cmsSend');
+}
+
+export async function setGuestOptInCheckbox(page, { propertyCode, checked } = {}) {
+  return setCheckbox(page, propertyCode, checked, 'guestoptin4', 'guestOptIn');
 }
 
 export async function setGuestStayChildAges(page, { propertyCode, childAges } = {}) {
@@ -643,35 +659,42 @@ export async function setGuestStayChildAges(page, { propertyCode, childAges } = 
     if (!response.ok()) throw new Error('AGE_VALIDATION_FAILED');
     const native = await response.json();
     if (native.propertyCode !== propertyCode || native.reservationStayId !== '' || native.confirmChildCategory ||
-        JSON.stringify(native.childAges) !== JSON.stringify(requested) || Number(native.childCount) !== requested.length) {
+        !Array.isArray(native.childAges) || JSON.stringify([...native.childAges].sort((a, b) => a - b)) !== JSON.stringify([...requested].sort((a, b) => a - b)) ||
+        Number(native.childCount) !== requested.length) {
       throw new Error('AGE_VALIDATION_MISMATCH');
     }
     await popup.waitFor({ state: 'hidden', timeout: 10000 });
-    await page.waitForFunction(({ childCount, nativeCounts }) => {
-      const names = ['children', 'child1', 'child2', 'child3'];
-      const values = names.map((name) => {
-        const fields = [...document.querySelectorAll(`input[name="${name}"]`)].filter((element) =>
-          (element.offsetWidth || element.offsetHeight) && getComputedStyle(element).visibility !== 'hidden' &&
-          !element.closest('.x-window'));
-        return fields.length === 1 ? fields[0].value.trim() : null;
-      });
-      return values[0] === String(childCount) && names.slice(1).every((name, index) =>
-        values[index + 1] === String(nativeCounts?.[name] ?? nativeCounts?.[name.toUpperCase()] ?? 0));
-    }, { childCount: requested.length, nativeCounts: native.childCategoryCounts }, { timeout: 5000 });
+    const observed = await page.waitForFunction(({ childCount, nativeCounts, activeCount }) => {
+      const guest = [...document.querySelectorAll('input[name="guestid"]')].filter(el =>
+        (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
+      const form = guest.length === 1 ? globalThis.Ext?.getCmp?.(guest[0].id.replace(/-inputEl$/, ''))?.up?.('form') : null;
+      const model = form?.getRecord?.()?.data;
+      if (!form?.el?.dom || !model || (activeCount !== null && (!Number.isInteger(activeCount) || activeCount < 0))) return false;
+      const statuses = Object.keys(model).filter(key => /^child\d+status$/.test(key));
+      if (!statuses.length) return false;
+      const names = statuses.filter(key => model[key] === 'ACTIVE').map(key => key.slice(0, -6));
+      if (activeCount !== null && names.length !== activeCount) return false;
+      const counts = {};
+      for (const name of ['children', ...names]) {
+        const fields = [...form.el.dom.querySelectorAll('input')].filter(el => el.name === name && !el.closest('.x-window'));
+        if (fields.length !== 1 || !Object.hasOwn(model, name)) return false;
+        const field = fields[0], cmp = globalThis.Ext?.getCmp?.(field.id.replace(/-inputEl$/, ''));
+        const value = cmp?.getValue?.();
+        if (cmp?.up?.('form') !== form || !/^\d+$/.test(String(value)) || String(field.value).trim() !== String(value)) return false;
+        counts[name] = Number(value);
+        if (name !== 'children') {
+          const keys = Object.keys(nativeCounts || {}).filter(key => key.toLowerCase() === name);
+          if (keys.length > 1 || (keys.length === 1 ? Number(nativeCounts[keys[0]]) !== counts[name] : Number(model[name]) !== counts[name])) return false;
+        }
+      }
+      return counts.children === childCount && names.reduce((sum, name) => sum + counts[name], 0) === childCount
+        ? Object.fromEntries(names.map(name => [name, counts[name]])) : false;
+    }, { childCount: requested.length, nativeCounts: native.childCategoryCounts,
+      activeCount: native.activeChildCategories == null || native.activeChildCategories === '' ? null : Number(native.activeChildCategories) }, { timeout: 5000 });
+    const ageBandCounts = await observed.jsonValue();
+    await observed.dispose();
     await check();
-    const counts = {};
-    for (const name of ['children', 'child1', 'child2', 'child3']) counts[name] = clean(await (await uniqueInput(page, name)).inputValue());
-    const names = ['child1', 'child2', 'child3'];
     const nativeCounts = native.childCategoryCounts;
-    const ageBandCounts = Object.fromEntries(names.map((name) => [name, /^\d+$/.test(counts[name]) ? Number(counts[name]) : null]));
-    const emptyNativeCounts = nativeCounts == null && requested.length === 0;
-    if ((!emptyNativeCounts && (!nativeCounts || typeof nativeCounts !== 'object')) || counts.children !== String(requested.length) ||
-        names.some((name) => {
-          const reported = nativeCounts?.[name] ?? nativeCounts?.[name.toUpperCase()];
-          return ageBandCounts[name] === null || (reported === undefined ? ageBandCounts[name] !== 0 : reported !== ageBandCounts[name]);
-        }) || names.reduce((sum, name) => sum + ageBandCounts[name], 0) !== requested.length) {
-      throw new Error('CHILD_COUNT_READBACK_MISMATCH');
-    }
     const profileProofToken = await currentVerifiedLabtestProfileToken(page);
     return { outcome: 'updated_unsaved', requestedChildAges: requested, actualChildAges: native.childAges,
       previousChildAges: initial.childAges, ageBandCounts, nativeAgeBandCounts: nativeCounts ?? null,

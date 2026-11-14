@@ -15,6 +15,7 @@ import {
   mailBaselineGenerationKey,
   RunDeadlineError,
   HMS_JOB_PROMPT_VERSION,
+  HMS_V2_WRITE_PROMPT_VERSION,
   HMS_WRITE_RUN_KIND,
   shouldRetryAiFailure,
   toAiRunFence,
@@ -24,7 +25,8 @@ import {
   type AiWorkflowRunKind,
   type CandidateReadPlanKind,
 } from './run-ledger.js';
-import { sweepLostHmsWriteLeases } from './hms-approval.js';
+import { endHmsWriteRun, hmsWriteRunStarted, hmsWriteRunReadbackCompleted, hmsWriteRunReviewCompleted, sweepLostHmsWriteLeases } from './hms-approval.js';
+import { executeHmsWorkerRun } from '../hms/hms-service.js';
 import { cloudCancelWorkerEnabled, labtestAttachWorkerEnabled, runCloudCancelOnce, runLabtestAttachOnce } from './hms-labtest-attach-worker.js';
 import { runLabtestAmendOnce } from './hms-labtest-amend-worker.js';
 import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
@@ -5926,6 +5928,72 @@ export async function runHmsJobOnce(
   return true;
 }
 
+/** Only fresh V2 approvals enter this runner; legacy and uncertain writes retain their own recovery paths. */
+export async function runHmsWriteOnce(options: {
+  shutdownSignal?: AbortSignal;
+  db?: DB;
+  recovery?: HmsRecoveryGate;
+  execute?: typeof executeHmsWorkerRun;
+} = {}): Promise<boolean> {
+  if (options.shutdownSignal?.aborted ||
+      (options.recovery && !(await options.recovery.mayClaim()))) return false;
+  if (options.shutdownSignal?.aborted) return false;
+  const db = options.db ?? getDb();
+  const claimed = await claimNextAiRun({
+    ownerId: aiWorkerOwnerId('hms'), lane: 'hms', db,
+    runKind: HMS_WRITE_RUN_KIND, promptVersion: HMS_V2_WRITE_PROMPT_VERSION,
+  });
+  if (!claimed) return false;
+  const fence = toAiRunFence(claimed);
+  if (!fence) return true;
+  const leaseAbort = new AbortController();
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  let heartbeat: Promise<void> | undefined;
+  try {
+    const remaining = remainingRunBudgetMs(fence);
+    if (remaining <= CLEANUP_RESERVE_MS) throw new RunDeadlineError();
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(remaining - CLEANUP_RESERVE_MS),
+      leaseAbort.signal,
+      ...(options.shutdownSignal ? [options.shutdownSignal] : []),
+    ]);
+    signal.throwIfAborted();
+    if (!(await markAiRunRunning(fence, db))) return true;
+    heartbeatTimer = setInterval(() => {
+      if (!heartbeat) heartbeat = renewAiRunLease(fence, leaseAbort,
+        (current) => heartbeatAiRun(current, db)).finally(() => { heartbeat = undefined; });
+    }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
+    // Native execution owns its browser callbacks/context cleanup and fresh readback; await it even after abort.
+    const outcome = await (options.execute ?? executeHmsWorkerRun)({ db, fence, signal });
+    if (heartbeat) await heartbeat;
+    signal.throwIfAborted();
+    const started = await hmsWriteRunStarted(db, fence.runId);
+    if (started && 'status' in outcome && outcome.status === 'succeeded' &&
+        'observationRef' in outcome && typeof outcome.observationRef === 'string' && outcome.observationRef.trim() &&
+        await hmsWriteRunReadbackCompleted(db, fence, outcome.observationRef)) {
+      signal.throwIfAborted();
+      await markAiRunSucceeded({ ...fence, expectedStates: ['running'],
+        metrics: { nativeWriteObservationRef: outcome.observationRef,
+          ...('nativeReadbackDigest' in outcome && typeof outcome.nativeReadbackDigest === 'string'
+            ? { nativeReadbackDigest: outcome.nativeReadbackDigest } : {}) } }, db);
+    } else if ('status' in outcome && outcome.status === 'needs_review' && await hmsWriteRunReviewCompleted(db, fence)) {
+      await endHmsWriteRun({ db, fence, failureClass: 'POLICY_BLOCK', reason: 'hms_v2_native_review_ready' });
+    } else {
+      await endHmsWriteRun({ db, fence, failureClass: started ? 'LEASE_LOST' : 'POLICY_BLOCK',
+        reason: 'hms_v2_write_outcome_unverified' });
+    }
+  } catch {
+    // A failed dispatch lookup cannot prove that HMS was untouched. No write enters automatic retry.
+    const started = await hmsWriteRunStarted(db, fence.runId).catch(() => true);
+    await endHmsWriteRun({ db, fence, failureClass: started ? 'LEASE_LOST' : 'POLICY_BLOCK',
+      reason: 'hms_v2_write_interrupted' });
+  } finally {
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (heartbeat) await heartbeat;
+  }
+  return true;
+}
+
 const HMS_JOB_POLL_MS = 3_000;
 const HMS_WRITE_SWEEP_MS = 5_000;
 
@@ -5958,6 +6026,21 @@ async function runHmsJobLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Pr
       return false;
     });
     if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
+  }
+}
+
+/** The default worker always services V2 approvals; native policy checks decide whether each workflow may dispatch. */
+async function runHmsWriteLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
+  while (!signal.aborted) {
+    const worked = await runHmsWriteOnce({ shutdownSignal: signal, recovery }).catch(() => {
+      console.error('hms_v2_write_loop_failed');
+      return false;
+    });
+    if (!worked && !signal.aborted) await new Promise<void>((resolve) => {
+      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
+      const timer = setTimeout(done, HMS_JOB_POLL_MS);
+      signal.addEventListener('abort', done, { once: true });
+    });
   }
 }
 
@@ -6094,6 +6177,11 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && !scope.idempotencyPrefix
       ? runHmsWriteSweepLoop(shutdown.signal)
       : null;
+  const hmsWrites =
+    resolveWorkerLane() === 'default' && !scope.idempotencyPrefix && !scope.transportId &&
+    !scope.runKind && !scope.promptVersion
+      ? runHmsWriteLoop(shutdown.signal, hmsRecovery)
+      : null;
   const hmsLabtestAttach =
     resolveWorkerLane() === 'default' && labtestAttachWorkerEnabled() && !scope.idempotencyPrefix
       ? runLabtestAttachLoop(shutdown.signal, hmsRecovery)
@@ -6125,6 +6213,7 @@ export async function runAiWorkerLoop(
     // Let a running HMS job settle its run row before the database closes.
     shutdown.abort();
     await hmsJobs;
+    await hmsWrites;
     await hmsLabtestAttach;
     await hmsCloudCancel;
     await hmsLabtestAmend;

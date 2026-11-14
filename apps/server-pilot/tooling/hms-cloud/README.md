@@ -48,17 +48,12 @@ On success it returns the selected field and visible form fields with their
 changes. A/R selection also returns `nativeReadback` with the account ID, name
 and status fields present in the HMS response. Organization, agency and A/R
 selections send a field-change request before Save. The guard checks the HMS
-origin, current HRCEN property, exact blank stay keys, data-only flag and chosen
+origin, current selected property, exact blank stay keys, data-only flag and chosen
 ID. A/R selection also blocks unexpected POSTs during selection. The reply must
 confirm the ID and contain no HMS message. A failure after a selection
 interaction quarantines the page for further fenced actions. The action may have
 occurred: inspect the form if useful,
 then start a fresh page before selecting again. `PAGE_ACTION_UNCERTAIN` also
 signals a quarantined page. Unexpected dialogs are left untouched.
-
-The compatibility path `../playwright-quote/hms-party-search.mjs` retains
-`searchBookingAgencies`, `searchOrganizations`, `searchArAccounts`, and
-`selectBookingAgency`. The legacy agency selection also accepts an ID alone and
-checks it against the latest live grid.
 
 Results can contain personal, business and financial details. Keep them private.

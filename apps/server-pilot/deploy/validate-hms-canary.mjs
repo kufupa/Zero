@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { effectiveWorkflowPolicy, HMS_PROPERTIES, HMS_WORKFLOWS } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { effectiveWorkflowPolicy, hmsWriterReady, HMS_PROPERTIES, HMS_WORKFLOWS, HMS_WRITE_WORKFLOWS } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
 
 const [newPath, oldPath, canaryOverride, liveSha] = process.argv.slice(2);
 const workflows = {
@@ -48,13 +48,14 @@ try {
   }
   for (const [flag, workflow] of Object.entries(workflows)) {
     const value = next[flag];
-    const widensAmend = flag === 'PANE_WRITE_AMEND' &&
-      ((value === 'lab' && !['lab', 'on'].includes(prev[flag])) || (value === 'on' && prev[flag] !== 'on'));
+    const widensAmend = flag === 'PANE_WRITE_AMEND' && value === 'on' && prev[flag] !== 'on';
     const changedLegacyScope = configuredPropertyFlags.has(flag) && isOn(value) && isOn(prev[flag]) &&
       ((next.HMS_EXPECTED_PROPERTY_CODE || 'HRCEN') !== (prev.HMS_EXPECTED_PROPERTY_CODE || 'HRCEN') ||
        next.HMS_EXPECTED_TENANT !== prev.HMS_EXPECTED_TENANT || next.HMS_EXPECTED_TRANSPORT_ID !== prev.HMS_EXPECTED_TRANSPORT_ID);
     if (!widensAmend && !changedLegacyScope && (!isOn(value) || isOn(prev[flag]))) continue;
     if ((flag === 'PANE_CLOUD_CREATE_DISPATCH' && next.PANE_WRITE_CREATE === 'lab') ||
+        (flag === 'PANE_HMS_LAB_CREATE_WORKER' && next.PANE_WRITE_CREATE === 'lab') ||
+        (flag === 'PANE_HMS_LAB_AMEND_WORKER' && next.PANE_WRITE_AMEND === 'lab') ||
         (flag === 'PANE_HMS_LAB_ATTACH_WORKER' && next.PANE_WRITE_ATTACH === 'lab')) continue;
     if (flag.startsWith('HMS_DAVINCI_')) {
       const enabled = (next.HMS_DAVINCI_ENABLED_PROPERTIES || '').split(',').filter(Boolean);
@@ -73,6 +74,9 @@ try {
   for (const { workflow, property } of needed.values()) {
     if (!rows.has(`canary pass ${workflow} ${property} ${liveSha}`.toLowerCase())) {
       fail(`no exact CANARY PASS ${workflow} ${property} ${liveSha}`);
+    }
+    if (HMS_WRITE_WORKFLOWS.includes(workflow) && !hmsWriterReady({ ...next, NAVA_CANARY_PASS_FILE: canaryPath }, property, workflow, liveSha)) {
+      fail(`no compatible writer readiness for ${workflow} ${property} ${liveSha}`);
     }
   }
 } catch {

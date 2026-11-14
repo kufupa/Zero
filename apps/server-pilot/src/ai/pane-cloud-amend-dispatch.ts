@@ -8,11 +8,12 @@ import { formDigest, hmsStateDigest, hmsWriteEvidenceKey, lockConsumedCloudAmend
 import { claimHmsLabtestDispatch, normalizeHmsLabtestClaim, resolveHmsLabtestDispatch, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { cloudAmendChangesSchema, cloudAmendFirstPilotScopeSupported, cloudAmendSourceBindingSchema, lockBoundCloudAmendSource } from './pane-cloud-amend.js';
 import type { AiRunFence } from './run-ledger.js';
-import { resolvePropertyScope } from '../hms/property-registry.js';
+import { propertyCodeSchema, propertySwitchSchema, resolvePropertyScope } from '../hms/property-registry.js';
+import { cloudWriterCurrent } from '../../tooling/hms-cloud/cloud-session.mjs';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const native = z.object({
-  source: z.literal('record_view_ext_model'), propertyCode: z.literal('HRCEN'),
+  source: z.literal('record_view_ext_model'), propertyCode: propertyCodeSchema,
   firstName: z.string().min(1).max(256).refine((v) => v === v.trim() && !/[\p{Cc}]/u.test(v)),
   lastName: z.string().min(1).max(256).refine((v) => v === v.trim() && !/[\p{Cc}]/u.test(v)), status: z.literal('Reserved'),
   confirmation: z.string().regex(/^\d{6,}-\d+$/), guestId: z.string().regex(/^\d{1,30}$/),
@@ -30,7 +31,8 @@ export const cloudAmendDispatchFormSchema = z.object({
     preimage: z.object({ native }).passthrough(), approvedPrices: z.unknown() }).strict(),
 }).passthrough();
 const step = z.object({ operationDigest: digest, phase: z.enum(['amend.availability', 'amend.save']),
-  requestDigest: digest, beforeEvidence: z.object({ eventId: z.string().uuid(), sha256: digest }).strict() }).strict();
+  requestDigest: digest, writer: z.unknown().refine(cloudWriterCurrent),
+  beforeEvidence: z.object({ eventId: z.string().uuid(), sha256: digest }).strict() }).strict();
 type Consumed = Awaited<ReturnType<typeof consumeHmsWriteApproval>>;
 type DispatchTx = Parameters<Parameters<DB['transaction']>[0]>[0];
 
@@ -71,16 +73,20 @@ export async function requireCloudAmendEvidence(tx: DispatchTx, input: {
  */
 export function cloudAmendDispatchCallbacks(input: {
   db: DB; fence: AiRunFence; transportId: string; workItemId: string; consumed: Consumed; expectedEpoch: string;
-  allowRealGuest?: boolean; env?: NodeJS.Dict<string>;
+  allowRealGuest?: boolean; env?: NodeJS.Dict<string>; assertActive?: () => void;
 }, deps: {
   claim?: typeof claimHmsLabtestDispatch;
   lockSource?: typeof lockBoundCloudAmendSource;
   lockApproval?: typeof lockConsumedCloudAmendApproval;
   checkEvidence?: typeof requireBeforeEvidence;
 } = {}) {
-  const scope = resolvePropertyScope({ transportId: input.transportId });
   const parsed = cloudAmendDispatchFormSchema.safeParse(input.consumed.form), authority = input.consumed.authority;
-  if (scope.propertyCode !== 'HRCEN' || !parsed.success || !authority || !digest.safeParse(input.expectedEpoch).success ||
+  if (!parsed.success) throw new Error('CLOUD_AMEND_AUTHORITY_INVALID');
+  const propertyCode = parsed.data.cloudAmend.preimage.native.propertyCode;
+  const scope = resolvePropertyScope({ transportId: input.transportId,
+    ...(propertyCode === 'HRCEN' ? {} : { propertySwitch: propertySwitchSchema.parse(propertyCode) }) });
+  if (scope.propertyCode !== propertyCode || (input.consumed.verifiedStaffGo &&
+      input.consumed.verifiedStaffGo.grant.propertyCode !== propertyCode) || !authority || !digest.safeParse(input.expectedEpoch).success ||
       !z.string().uuid().safeParse(input.workItemId).success ||
       !z.string().uuid().safeParse(input.consumed.grantId).success ||
       parsed.data.confirmation !== parsed.data.cloudAmend.preimage.native.confirmation ||
@@ -113,8 +119,8 @@ export function cloudAmendDispatchCallbacks(input: {
       const current = preimage.native;
       const claimInput = normalizeHmsLabtestClaim({
         workItemId: input.workItemId, transportId: input.transportId, actorUserId: authority.actorUserId,
-        grantId: input.consumed.grantId, propertyCode: 'HRCEN', tenantId: scope.tenantId, firstName: current.firstName, lastName: current.lastName,
-        target: { propertyCode: 'HRCEN', kind: 'saved', confirmation: current.confirmation, nativeStayId: current.reservationStayId },
+        grantId: input.consumed.grantId, propertyCode, tenantId: scope.tenantId, firstName: current.firstName, lastName: current.lastName,
+        target: { propertyCode, kind: 'saved', confirmation: current.confirmation, nativeStayId: current.reservationStayId },
         nativeGuestId: preimage.native.guestId, operation: 'amend', sourceDigest: binding.digest,
         approvedDigest, requestDigest: requested.requestDigest,
         recovery: { version: 1, firstPhase: requested.phase, confirmation: current.confirmation, reservationStayId: current.reservationStayId,
@@ -123,17 +129,21 @@ export function cloudAmendDispatchCallbacks(input: {
             children: current.children, childAges: current.childAges, roomType: current.roomType, ratePlan: current.ratePlan },
           approved: parsed.data.fields, nativeDigest: parsed.data.cloudAmend.nativeDigest,
           approvedPrices: parsed.data.cloudAmend.approvedPrices, preserved: parsed.data.cloudAmend.preserved,
-          hmsBeforeDigest: input.consumed.hmsBeforeDigest, beforeEvidence: requested.beforeEvidence },
+          hmsBeforeDigest: input.consumed.hmsBeforeDigest, beforeEvidence: requested.beforeEvidence,
+          writer: requested.writer },
       });
       const encoded = canonicalJson(claimInput);
       const handle = await claim(input.db, claimInput, async (tx) => {
+        input.assertActive?.();
         const item = await lockSource(tx, { workItemId: input.workItemId, transportId: input.transportId, binding });
         if (!item) throw new Error('CLOUD_AMEND_SOURCE_CHANGED');
         await lockApproval(tx, { fence: input.fence, transportId: input.transportId, item,
           grantId: input.consumed.grantId, approvedDigest, authority, env: input.env });
         await checkEvidence(tx, { transportId: input.transportId, workItemId: input.workItemId, runId: input.fence.runId,
           eventId: requested.beforeEvidence.eventId, sha256: requested.beforeEvidence.sha256 });
+        input.assertActive?.();
       }, input.expectedEpoch);
+      if (!cloudWriterCurrent(requested.writer)) throw new Error('CLOUD_AMEND_WRITER_LOST');
       approvedClaim = encoded;
       return handle;
     },

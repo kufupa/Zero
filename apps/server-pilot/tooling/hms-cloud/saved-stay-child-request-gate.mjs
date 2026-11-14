@@ -2,6 +2,7 @@
 // This gate only identifies exact requests. It never routes, sends, or authorizes Save.
 import { isDeepStrictEqual } from 'node:util';
 import { matchesSavedChildAgeRead, matchesSavedChildAgeValidation, planSavedChildOccupancy } from './guest-stay-amend-children.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 export const SAVED_CHILD_STAGE_PATHS = Object.freeze([
   '/web/base/OSRESV.HDR.getChildAges', '/web/base/OSRESV.HDR.validateChildAgeDetails',
@@ -14,17 +15,18 @@ export const isSavedChildStageRequestGate = (gate) => Boolean(gate && issuedGate
  * Callers must still use the page-lifetime fence and context read-only guard. A matched
  * request is consumed even if a downstream route fails, and can never be retried here.
  */
-export function createSavedChildStageRequestGate({ frame, stayId, adults, priorAges, priorBands, nextAges,
+export function createSavedChildStageRequestGate({ propertyCode, frame, stayId, adults, priorAges, priorBands, nextAges,
   readAges = priorAges ?? [], readOnly = false, deadlineAt } = {}) {
   const prior = planSavedChildOccupancy({ childCount: Array.isArray(priorAges) ? priorAges.length : null, childAges: priorAges });
   const next = readOnly ? null : planSavedChildOccupancy({ childCount: Array.isArray(nextAges) ? nextAges.length : null, childAges: nextAges });
   const read = planSavedChildOccupancy({ childCount: Array.isArray(readAges) ? readAges.length : null, childAges: readAges });
-  if (!frame || typeof stayId !== 'string' || !/^\d+$/.test(stayId) || !Number.isInteger(adults) || adults < 1 || adults > 16 ||
+  const bandNames = priorBands && typeof priorBands === 'object' && !Array.isArray(priorBands) ? Object.keys(priorBands) : null;
+  const bandTotal = bandNames?.reduce((sum, name) => sum + priorBands[name], 0);
+  if (!getPropertyRegistration(propertyCode)?.active || !frame || typeof stayId !== 'string' || !/^\d+$/.test(stayId) || !Number.isInteger(adults) || adults < 1 || adults > 16 ||
       typeof readOnly !== 'boolean' || prior.outcome !== 'planned' || read.outcome !== 'planned' || read.childAges === null ||
       (!readOnly && (next.outcome !== 'planned' || next.childAges === null)) ||
-      !priorBands || ['child1', 'child2', 'child3'].some((name) => !Number.isInteger(priorBands[name]) || priorBands[name] < 0 || priorBands[name] > 9) ||
-      priorBands.child1 + priorBands.child2 + priorBands.child3 > 9 ||
-      (prior.childAges !== null && prior.childAges.length !== priorBands.child1 + priorBands.child2 + priorBands.child3) ||
+      !bandNames || bandNames.some(name => !/^child\d+$/.test(name) || !Number.isInteger(priorBands[name]) || priorBands[name] < 0 || priorBands[name] > 9) ||
+      bandTotal > 9 || (prior.childAges !== null && prior.childAges.length !== bandTotal) ||
       !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
     throw new Error('CHILD_STAGE_GATE_INPUT_INVALID');
   }
@@ -55,13 +57,13 @@ export function createSavedChildStageRequestGate({ frame, stayId, adults, priorA
     },
     consume(request) {
       if (!active()) return false;
-      if (state === 'read_armed' && matchesSavedChildAgeRead(request, frame, stayId, requestAges)) {
+      if (state === 'read_armed' && matchesSavedChildAgeRead(request, frame, stayId, requestAges, propertyCode)) {
         state = 'read_consumed';
         readRequest = request;
         return true;
       }
       if (state === 'validation_armed' && matchesSavedChildAgeValidation(request, frame,
-        { stayId, adults, priorBands: bands, ages })) {
+        { propertyCode, stayId, adults, priorBands: bands, ages })) {
         state = 'validation_consumed';
         validationRequest = request;
         return true;

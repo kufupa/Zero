@@ -1,7 +1,7 @@
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';

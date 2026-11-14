@@ -1,48 +1,16 @@
-import {
-  acquisitionWithin,
-  isPropertyReadLockDeadline,
-  PANE_PROPERTY_LOCK_WAIT_MS,
-} from '../hms/property-read-lock.js';
-import {
-  PANE_PAID_BOOKING_COPY,
-  PANE_SCREENSHOT_NAME_PATTERN,
-  paneStayClock,
-  paneStayPropertyLock,
-  paneStayTransportIdFromOwner,
-  paneWriteMode,
-  pruneExpiredPaneRuns,
-  recordPanePreview,
-  registerPaneRun,
-  takePanePreview,
-  type PaneSaveMode,
-  type PaneStayLock,
-  type PaneWriteMoneyState,
-} from './pane-stay-save.js';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { basename, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { PANE_PAID_BOOKING_COPY, paneStayTransportIdFromOwner, paneWriteMode,
+  type PaneSaveMode, type PaneStayLock, type PaneWriteMoneyState } from './pane-stay-save.js';
+import { createHash } from 'node:crypto';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import type { PropertyCode } from '../hms/property-registry.js';
 import type { CancelRequestBinding } from './pane-cloud-cancel.js';
-import { classifyAmendPayment, findStay, type AmendPaymentStay } from './pane-stay-lookup.js';
-import { tmpdir } from 'node:os';
-
-const execFileAsync = promisify(execFile);
-const CANCEL_STAY = fileURLToPath(
-  new URL('../../tooling/playwright-quote/cancel-stay.mjs', import.meta.url),
-);
+import type { AmendPaymentStay } from './pane-stay-lookup.js';
 const LAB_ARRIVAL_FLOOR = '2027-01-01';
-const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
-const CANCEL_TIMEOUT_MS = 20 * 60_000;
-/** Caller already holds the property lock, so findStay must not acquire again. */
-const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 export type PaneStayCancelMode = 'preview' | 'commit';
 
-export type PaneStayCancelPreviewInput = CancelRequestBinding & { confirmation: string; arrival: string; workItemId?: string;
+export type PaneStayCancelPreviewInput = CancelRequestBinding & { confirmation: string; arrival: string; propertyCode?: PropertyCode; workItemId?: string;
   source?: { threadId: string; messageId: string; sourceHash: string } };
 export type PaneStayCancelCommitInput = PaneStayCancelPreviewInput & {
   reason: string;
@@ -101,7 +69,7 @@ export type PaneStayCancelSpawnInput = {
   confirmation: string;
   arrival: string;
   reason: string | null;
-  /** True only in on mode. The CLI then drops the Labtest guard for this run. */
+  /** True only in on mode. The approved worker admits the selected native guest. */
   allowRealGuest: boolean;
   /**
    * Commit only: the stay the write's approval was checked against. The CLI reads the record it opens again and refuses
@@ -114,10 +82,7 @@ export type PaneStayCancelSpawnInput = {
   lastName?: string;
 };
 
-/** The expected-stay file a commit run reads, inside its own output directory. */
-const EXPECT_STAY_FILE = 'expect-stay.json';
-
-/** What one cancel-stay.mjs run reports in its result.json. Screenshots are absolute paths. */
+/** The native cancellation preparation result. Screenshots are absolute paths. */
 export type PaneStayCancelSpawnResult = {
   outcome: string;
   statusBefore: string | null;
@@ -141,7 +106,7 @@ export const paneStayCancelLoaders: {
   lock: PaneStayLock | null;
   mode: (() => PaneSaveMode) | null;
   moneyState: (() => PaneWriteMoneyState) | null;
-  /** Commit only. Tests inject a folio snapshot; production leaves this null and the CLI re-reads. */
+  /** Commit only. Tests inject a folio snapshot; production leaves this null and the approved Cloud worker re-reads. */
   folio: ((input: PaneStayCancelPreviewInput) => Promise<AmendPaymentStay | null>) | null;
 } = {
   spawn: null,
@@ -185,30 +150,6 @@ export function paneCancelDigest(stay: PaneStayCancelPreviewInput): string {
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 
-export function buildCancelStayArgs(input: PaneStayCancelSpawnInput, outDir: string): string[] {
-  const args = [
-    CANCEL_STAY,
-    '--confirmation',
-    input.confirmation,
-    '--arrival',
-    input.arrival,
-    '--mode',
-    input.mode,
-    '--out',
-    outDir,
-  ];
-  if (input.mode === 'commit' && input.reason) args.push('--reason', input.reason);
-  if (input.mode === 'commit' && input.expectStay) args.push('--expect-stay', join(outDir, EXPECT_STAY_FILE));
-  // Only an on-mode run passes the switch. Nothing else in the environment can lift the lab guard.
-  if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
-  if (input.target) args.push('--property', input.target.propertyCode);
-  const lastName =
-    input.lastName
-    ?? (typeof input.expectStay?.lastName === 'string' ? input.expectStay.lastName : undefined);
-  if (lastName) args.push('--last-name', lastName);
-  return args;
-}
-
 function refused(outcome: string): PaneStayCancelResult {
   return {
     outcome,
@@ -226,197 +167,29 @@ function refused(outcome: string): PaneStayCancelResult {
   };
 }
 
-export async function spawnPaneStayCancel(input: PaneStayCancelSpawnInput): Promise<PaneStayCancelSpawnResult> {
-  const dir = await mkdtemp(join(tmpdir(), 'pane-cancel-'));
-  let runError: unknown = null;
-  try {
-    if (input.mode === 'commit' && input.expectStay) {
-      await writeFile(join(dir, EXPECT_STAY_FILE), JSON.stringify(input.expectStay), { mode: 0o600 });
-    }
-    if (!input.target) throw new Error('pane_stay_target_required');
-    await execFileAsync('node', buildCancelStayArgs(input, dir), {
-      timeout: CANCEL_TIMEOUT_MS,
-      env: paneStaySpawnEnv(process.env, undefined, input.target),
-    });
-  } catch (error) {
-    // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
-    runError = error;
-  }
-  let result: Partial<PaneStayCancelSpawnResult>;
-  try {
-    result = JSON.parse(
-      await readFile(join(dir, 'result.json'), 'utf8'),
-    ) as Partial<PaneStayCancelSpawnResult>;
-  } catch {
-    // No result means no run to show, so the directory and any screenshots in it are removed now.
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-    throw runError ?? new Error('pane_cancel_no_result');
-  }
-  // A failed CLI run writes result.json and does not throw, so it is logged here, as the lookup spawner does.
-  if ((result.outcome ?? 'execution_failure') === 'execution_failure') {
-    const cliError = (result as { error?: string }).error ?? 'pane_cancel_execution_failure';
-    warnPaneStaySpawnFailed(input.mode, new Error(cliError));
-  }
-  return {
-    outcome: result.outcome ?? 'execution_failure',
-    statusBefore: result.statusBefore ?? null,
-    statusAfter: result.statusAfter ?? null,
-    reasons: result.reasons ?? [],
-    penaltyText: result.penaltyText ?? null,
-    arrivalMismatch: result.arrivalMismatch,
-    requestedArrival: result.requestedArrival,
-    hmsArrival: result.hmsArrival,
-    screenshots: result.screenshots ?? [],
-    runDir: dir,
-    clickedOk: result.clickedOk === true,
-    warning: typeof result.warning === 'string' && result.warning.trim() ? result.warning.trim() : null,
-  };
-}
-
 async function runPaneStayCancel(
   mode: PaneStayCancelMode,
   input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string; cancellationNote?: string }>,
 ): Promise<PaneStayCancelResult> {
-  if (!/^\d+-\d+$/.test(input.confirmation) || !isRealIsoDate(input.arrival)) {
-    return refused('refused_input_invalid');
-  }
+  if (!/^\d+-\d+$/.test(input.confirmation) || !isRealIsoDate(input.arrival)) return refused('refused_input_invalid');
   const reason = mode === 'commit' ? (input.reason ?? '').replace(/\s+/g, ' ').trim() : null;
-  if (mode === 'commit' && (!reason || reason.startsWith('-')))
-    return refused('refused_reason_missing');
-  // A commit needs the grant of a preview of this same stay. Both checks run before the lock and the browser.
-  const digest = paneCancelDigest(input);
+  if (mode === 'commit' && (!reason || reason.startsWith('-'))) return refused('refused_reason_missing');
   const transportId = input.transportId ?? paneStayTransportIdFromOwner(input.owner);
-  const resolved = paneStayHmsTargetForTransport(transportId);
+  const resolved = paneStayHmsTargetForTransport(transportId, input.propertyCode);
   if (!resolved.ok) return refused('refused_unknown_transport');
-  const target = resolved.target;
-  if (target.propertyCode === 'HRCEN') {
-    if (!input.transportId || !input.actorUserId || !input.workItemId || !input.source ||
-        input.owner !== `${input.actorUserId}:${input.transportId}`) return refused('refused_source_changed');
-    const cloud = await import('./pane-cloud-cancel.js');
-    const context = { transportId: input.transportId, actorUserId: input.actorUserId, sessionId: input.sessionId,
-      sessionProfile: input.sessionProfile, workItemId: input.workItemId, source: input.source,
-      confirmation: input.confirmation, arrival: input.arrival, target, requestId: input.requestId,
-      expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId };
-    if (mode === 'preview') return cloud.previewCloudCancel(context);
-    if (!input.previewDigest || !input.reason) return refused('cancel_preview_required');
-    return cloud.commitCloudCancel({ ...context, reason: input.reason, previewDigest: input.previewDigest,
-      cancellationNote: input.cancellationNote });
+  if (!input.transportId || !input.actorUserId || !input.workItemId || !input.source ||
+      !input.sessionId || !input.sessionProfile || input.owner !== `${input.actorUserId}:${input.transportId}`) {
+    return refused('refused_source_changed');
   }
-  // The legacy non-Cloud path retains its existing payment and flag rules.
-  const injectedMode = paneStayCancelLoaders.mode?.();
-  const injectedMoney = paneStayCancelLoaders.moneyState?.() ?? null;
-  let allowRealGuest = false;
-  if (injectedMode != null || injectedMoney != null) {
-    const moneyState = injectedMoney ?? 'unknown';
-    const saveMode = injectedMode ?? paneWriteMode('cancel', moneyState);
-    if (saveMode === 'off') return refused('refused_flag_off');
-    const moneyResolved = injectedMode != null || moneyState === 'unpaid' || moneyState === 'paid';
-    allowRealGuest = moneyResolved && saveMode === 'on';
-    const inputRefusal = checkCancelInput(input, { allowRealGuest });
-    if (inputRefusal) return refused(inputRefusal);
-  }
-  if (mode === 'commit') {
-    if (input.previewDigest === undefined) return refused('cancel_preview_required');
-    if (input.previewDigest !== digest) return refused('cancel_digest_mismatch');
-  }
-  // The lock key is the session hotel. A caller-supplied property never selects it.
-  const lock = paneStayCancelLoaders.lock ?? paneStayPropertyLock(target);
-  if (!lock) return refused('refused_lock_unavailable');
-  const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
-  const request: PaneStayCancelSpawnInput = {
-    mode,
-    confirmation: input.confirmation,
-    arrival: input.arrival,
-    reason,
-    allowRealGuest,
-    target,
-  };
-  try {
-    await pruneExpiredPaneRuns(paneStayClock());
-    let flagRefusal: string | null = null;
-    const spawned = await lock.withLock(
-      async () => {
-        let guest = allowRealGuest;
-        if (injectedMode == null && injectedMoney == null) {
-          const lookupDirs: string[] = [];
-          const found = await findStay(
-            { confirmation: input.confirmation, arrival: input.arrival },
-            {
-              lock: () => HELD_LOCK,
-              target,
-              transportId,
-              onRun: ({ dir }) => lookupDirs.push(dir),
-            },
-          ).finally(() =>
-            Promise.all(lookupDirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {}))),
-          );
-          if (found.outcome !== 'found' || !found.stay) {
-            flagRefusal =
-              found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
-            return null;
-          }
-          const classified = classifyAmendPayment(found.stay);
-          const moneyState = classified === 'unpaid' ? 'unpaid' : classified === 'paid' ? 'paid' : 'unknown';
-          const saveMode = paneWriteMode('cancel', moneyState);
-          if (saveMode === 'off') {
-            flagRefusal = 'refused_flag_off';
-            return null;
-          }
-          const moneyResolved = moneyState === 'unpaid' || moneyState === 'paid';
-          guest = moneyResolved && saveMode === 'on';
-          if (!guest && input.arrival < LAB_ARRIVAL_FLOOR) {
-            flagRefusal = 'refused_not_lab';
-            return null;
-          }
-        }
-        // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        if (mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock())) return null;
-        if (mode === 'commit' && paneStayCancelLoaders.folio) {
-          const folioStay = await paneStayCancelLoaders.folio(input);
-          if (classifyAmendPayment(folioStay) !== 'unpaid') return { unpaidRefusal: true as const };
-        }
-        return spawn({ ...request, allowRealGuest: guest });
-      },
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-    );
-    if (flagRefusal) return refused(flagRefusal);
-    if (spawned === null) return refused('cancel_preview_required');
-    if ('unpaidRefusal' in spawned) return refused('refused_not_unpaid');
-    // HMS refused the reason before it clicked cancel, so nothing was cancelled: the grant stays usable for another reason.
-    if (mode === 'commit' && spawned.outcome === 'refused_reason_missing') {
-      recordPanePreview(input.owner, digest, paneStayClock());
-    }
-    let runId: string | null = null;
-    if (spawned.runDir) {
-      runId = randomUUID();
-      registerPaneRun({ runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
-    }
-    // Only a preview that finished as preview_ok grants a commit. already_cancelled grants nothing.
-    const previewDigest = mode === 'preview' && spawned.outcome === 'preview_ok' ? digest : null;
-    if (previewDigest) recordPanePreview(input.owner, previewDigest, paneStayClock());
-    return {
-      outcome: spawned.outcome,
-      statusBefore: spawned.statusBefore,
-      statusAfter: spawned.statusAfter,
-      reasons: spawned.reasons,
-      penaltyText: spawned.penaltyText,
-      message:
-        paneCancelMessage(spawned.outcome)
-        ?? (typeof spawned.warning === 'string' && spawned.warning.trim() ? spawned.warning.trim() : null),
-      arrivalMismatch: spawned.arrivalMismatch === true,
-      requestedArrival: spawned.requestedArrival ?? input.arrival ?? null,
-      hmsArrival: spawned.hmsArrival ?? null,
-      screenshots: spawned.screenshots
-        .map((path) => basename(path))
-        .filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)),
-      runId,
-      previewDigest,
-    };
-  } catch (error) {
-    if (isPropertyReadLockDeadline(error)) return refused('refused_lock_busy');
-    warnPaneStaySpawnFailed('cancel', error);
-    return refused('execution_failure');
-  }
+  const cloud = await import('./pane-cloud-cancel.js');
+  const context = { transportId: input.transportId, actorUserId: input.actorUserId, sessionId: input.sessionId,
+    sessionProfile: input.sessionProfile, workItemId: input.workItemId, source: input.source,
+    confirmation: input.confirmation, arrival: input.arrival, target: resolved.target, requestId: input.requestId,
+    expectedSeq: input.expectedSeq, expectedExtractionId: input.expectedExtractionId };
+  if (mode === 'preview') return cloud.previewCloudCancel(context);
+  if (!input.previewDigest || !reason) return refused('cancel_preview_required');
+  return cloud.commitCloudCancel({ ...context, reason, previewDigest: input.previewDigest,
+    cancellationNote: input.cancellationNote });
 }
 
 export function previewCancel(

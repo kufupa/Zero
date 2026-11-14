@@ -34,10 +34,11 @@ function fixture({ listing, values = fieldValues, nativeChanges = {}, party = { 
   const fields = Object.entries(values).map(([name, value]) => ({ name, value,
     ...(name === 'reservationnote' ? { rawValue: value } : {}) }));
   const nativePreimage = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: candidate.confirmation,
-    guestId: '123', status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: candidate.arrival,
+    reservationStayId: '456', guestId: '123', status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: candidate.arrival,
     departure: candidate.departure, roomType: 'DLXKNG', ratePlan: 'BAR', adults: 2, children: 3,
-    guaranteeCode: 'NGI', ...nativeChanges };
+    childAges: request.stay.childAges, guaranteeCode: 'NGI', ...nativeChanges };
   return { calls, options: {
+    writerQuiesced: writer => writer === intent.recovery.writer || JSON.stringify(writer) === JSON.stringify(intent.recovery.writer),
     census: async () => { calls.push('census'); return listing ?? { outcome: 'existing_matches',
       arrival: candidate.arrival, departure: candidate.departure,
       searchedDateRange: { from: '2027-03-01', to: '2027-03-30' },
@@ -59,7 +60,7 @@ test('a unique positive fresh read verifies all approved fields, parties, and a 
   assert.ok(Buffer.isBuffer(result.screenshot));
   assert.equal(f.calls[0], 'census');
   assert.deepEqual(f.calls[1], ['fresh-read', { readOnly: true, readOnlyConfirmation: candidate.confirmation,
-    cloudTargetKey: '["HRCEN","create","proof","labtest","2027-03-15"]' }]);
+    propertyCode: 'HRCEN', transportId: undefined, signal: undefined, credentialLease: undefined, cloudTargetKey: '["HRCEN","create","proof","labtest","2027-03-15"]' }]);
   assert.deepEqual(f.calls[2][1].agency, request.parties.agency);
   assert.deepEqual(f.calls[2][1].organization, request.parties.organization);
   const { sourceOfBusiness: _sourceOfBusiness, ...withoutSource } = request;

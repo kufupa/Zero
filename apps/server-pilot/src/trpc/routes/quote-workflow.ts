@@ -17,7 +17,7 @@ import {
 } from '../../ai/quote-workflow-analyse-selection.js';
 import type { ModelAdapter } from '../../ai/bedrock/adapter.js';
 import { resolveAgentRunRecorder, type AgentRunRecorder } from '../../ai/hitl-recorder.js';
-import { classifyStayCommit, classifyStayPreview, recordToolOutcome } from '../../ai/hitl-tool-run.js';
+import { classifyStayPreview, recordToolOutcome } from '../../ai/hitl-tool-run.js';
 import {
   extractVoucherGuest,
   isVoucherMail,
@@ -38,26 +38,20 @@ import {
   PANE_MARKET_SEGMENT_MAX,
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
-  PANE_PREVIEW_TTL_MS,
   PANE_RESERVATION_NOTE_MAX,
-  runPaneStay,
-  type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
-import { createWorkItemPreviewPersist } from '../../ai/pane-stay-preview-persist.js';
-import { cloudPreviewSelection, commitPaneCloud, previewPaneCloud } from '../../ai/pane-cloud-preview.js';
+import { cloudPreviewSelection, preparePaneCloudWrite, previewPaneCloud } from '../../ai/pane-cloud-preview.js';
+import { approveHmsWrite, hmsAllocationOperationId } from '../../ai/hms-approval.js';
+import { hmsWriteGrantV2Schema, loadHmsPreparation } from '../../hms/hms-preparation.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
 import {
-  loadStayCommit,
-  recordStayCommit,
-  stayCommitFromPaneResult,
-  stayCommitGuard,
   workItemIdForMail,
   formStays,
   requestPayload,
 } from '../../ai/work-items.js';
 import { getDb, type DB } from '../../db/client.js';
-import { mailThread, message } from '../../db/schema/mail.js';
+import { aiWorkflowRun, mailThread, message } from '../../db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../../db/schema/work.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import { boundAmendRateRequest, boundSourceRateRequest, ratePartyBindingKey, ratePartyBindingSchema,
@@ -73,14 +67,14 @@ import { withLockedCreateSourceForCreate as withLockedCreateSource } from '../..
 import { MANUAL_CREATE_KEY, manualCreatePayload } from '../../ai/manual-create-source.js';
 import { assertNoCreateDispatchFence } from '../../ai/pane-create-dispatch-fence.js';
 import { advancePaneRevision } from '../../ai/work-item-revision.js';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { mailboxProcedure, router } from '../trpc.js';
 import { createHmsService } from '../../hms/hms-service.js';
 import { propertySwitchSchema, resolvePropertyScope, type PropertySwitch } from '../../hms/property-registry.js';
 import { hmsReadTargetForProperty } from '../../hms/hms-read-target.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { refuseProperty } from '../../hms/property-refusal.js';
-import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../../tooling/hms-cloud/property-registry.mjs';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 
@@ -695,132 +689,97 @@ export const quoteWorkflowRouter = router({
   }),
   previewStay: mailboxProcedure
     .input(paneStayInput)
-    .use(({ input, ctx, next }) =>
-      recordToolOutcome(
-        () => ({
-          kind: 'stay_preview',
-          transportId: ctx.activeTransportId,
-          messageId: input.createSelection?.source.messageId ?? null,
-          userId: ctx.sessionUser.id,
-        }),
-        classifyStayPreview,
-        next,
-      ),
-    )
+    .use(({ input, ctx, next }) => recordToolOutcome(
+      () => ({ kind: 'stay_preview', transportId: ctx.activeTransportId,
+        messageId: input.createSelection?.source.messageId ?? null, userId: ctx.sessionUser.id }),
+      classifyStayPreview, next,
+    ))
     .mutation(async ({ input, ctx }) => {
-    const { stayId, workItemId, createSelection, confirmationSendMail, ...stay } = input;
-    const target = resolvePropertyTransport(ctx.activeTransportId);
-    if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
+      const { stayId, workItemId, createSelection, confirmationSendMail, ...stay } = input;
       if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+      const selected = propertySwitchSchema.safeParse(stay.propertyCode);
+      const scope = resolvePropertyScope({ transportId: ctx.activeTransportId,
+        ...(selected.success ? { propertySwitch: selected.data } : {}) });
+      if (stay.propertyCode && stay.propertyCode !== scope.propertyCode) return { status: 'refused' as const, reason: 'pane_save_property_mismatch' };
       return previewPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
         actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
-        workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail } });
-    }
-    const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-    const previewPersist =
-      workItemId && stayId
-        ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
-        : undefined;
-    return runPaneStay({
-      mode: 'preview',
-      stay,
-      owner,
-      workItemId,
-      stayId,
-      previewPersist,
-    });
-  }),
-  commitStay: mailboxProcedure
-    .input(
-      paneStayInput.extend({
-        previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
-        // Rooms 2+ of one booking name room 1's stay; the server reads its confirmation from this work item.
-        parentStayId: z.string().trim().min(1).max(200).optional(),
-        batch: paneCloudBatchInput.optional(),
-      }),
-    )
-    .use(({ input, ctx, next }) =>
-      recordToolOutcome(
-        () => ({
-          kind: 'stay_commit',
-          transportId: ctx.activeTransportId,
-          messageId: input.createSelection?.source.messageId ?? null,
-          userId: ctx.sessionUser.id,
-        }),
-        (value: PaneStayResult) => classifyStayCommit(value, input.previewDigest),
-        next,
-      ),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const { previewDigest, stayId, workItemId, parentStayId, createSelection, confirmationSendMail, batch, ...stay } = input;
-      const target = resolvePropertyTransport(ctx.activeTransportId);
-      if (target.kind === 'property' && target.property.propertyCode === 'HRCEN') {
-        if (!workItemId || !stayId || !createSelection) return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
-        if (parentStayId) return { status: 'refused' as const, reason: 'pane_save_parent_unsupported' };
-        if (batch?.kind === 'start' && batch.rooms.some((room) => room.workItemId !== workItemId)) {
-          return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
-        }
-        const cloudBatch = batch?.kind === 'start' ? { ...batch, rooms: batch.rooms.map((room) => {
-          const { stayId: roomId, workItemId: _workItemId, createSelection: selection, previewDigest: roomDigest, ...roomStay } = room;
-          return { stayId: roomId, selection, previewDigest: roomDigest, stay: roomStay };
-        }) } : batch;
-        return commitPaneCloud(getDb(), { transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
-          actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
-          workItemId, stayId, selection: createSelection, stay: { ...stay, confirmationSendMail }, batch: cloudBatch }, previewDigest);
-      }
-      if (batch) return { status: 'refused' as const, reason: 'pane_batch_property_unsupported' };
-      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
-      const previewPersist =
-        workItemId && stayId
-          ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
-          : undefined;
-      let parentConfirmation: string | undefined;
-      if (parentStayId) {
-        const parent =
-          workItemId && stayId && parentStayId !== stayId
-            ? await loadStayCommit(getDb(), { transportId: ctx.activeTransportId, workItemId, stayId: parentStayId })
-            : undefined;
-        if (!parent?.confirmationNumber || parent.status !== 'booked') {
-          return { status: 'refused' as const, reason: 'pane_save_parent_not_booked' };
-        }
-        parentConfirmation = parent.confirmationNumber;
-      }
-      if (workItemId && stayId) {
-        const existing = await loadStayCommit(getDb(), {
-          transportId: ctx.activeTransportId,
-          workItemId,
-          stayId,
-        });
-        const guard = stayCommitGuard(existing);
-        if (guard.action === 'refuse') {
-          return { status: 'refused' as const, reason: guard.reason };
-        }
-      }
-      const result = await runPaneStay({
-        mode: 'commit',
-        stay,
-        previewDigest,
-        owner,
-        workItemId,
-        stayId,
-        previewPersist,
-        ...(parentConfirmation ? { parentConfirmation } : {}),
-      });
-      if (workItemId && stayId) {
-        const record = stayCommitFromPaneResult(result);
-        if (record) {
-          try {
-            await recordStayCommit(getDb(), {
-              transportId: ctx.activeTransportId,
-              workItemId,
-              stayId,
-              record,
-            });
-          } catch (error) {
-            console.warn('stay_commit_persist_failed', { stayId, workItemId, error });
-          }
-        }
-      }
-      return result;
+        workItemId, stayId, selection: createSelection, stay: { ...stay, propertyCode: scope.propertyCode, confirmationSendMail } });
     }),
+  prepareStay: mailboxProcedure.input(z.object({ workItemId: z.string().uuid(), propertySwitch: propertySwitchSchema.optional(),
+    rooms: z.array(z.object({ stayId: z.string().regex(/^[A-Za-z0-9_-]{1,120}$/),
+      previewDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict()).min(1).max(8) }).strict()).mutation(async ({ input, ctx }) => {
+    if (!ctx.sessionUser.sessionId || !ctx.sessionUser.sessionProfile) throw new Error('authenticated_staff_session_required');
+    return preparePaneCloudWrite(getDb(), { ...input, transportId: ctx.activeTransportId, mailboxAddress: ctx.transportEmail,
+      actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile });
+  }),
+  commitStay: mailboxProcedure.input(paneStayInput.extend({ previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    preparedRef: z.string().uuid().optional(), expectedRevision: z.number().int().nonnegative().optional(),
+    parentStayId: z.string().trim().min(1).max(200).optional(), batch: paneCloudBatchInput.optional() })).mutation(async ({ input, ctx }) => {
+    if (!input.workItemId || !input.stayId || !input.createSelection || !input.preparedRef || input.expectedRevision === undefined ||
+        !ctx.sessionUser.sessionId || !ctx.sessionUser.sessionProfile || input.parentStayId || input.batch?.kind === 'continue') {
+      return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+    }
+    const db = getDb();
+    const prepared = await db.transaction(tx => loadHmsPreparation(tx, input.preparedRef!, input.workItemId!));
+    const selected = propertySwitchSchema.safeParse(input.propertyCode);
+    const scope = resolvePropertyScope({ transportId: ctx.activeTransportId,
+      ...(selected.success ? { propertySwitch: selected.data } : {}) });
+    if (prepared.operation !== 'create' || prepared.workflowContext || prepared.scope.propertyCode !== scope.propertyCode ||
+        (input.propertyCode && input.propertyCode !== scope.propertyCode) || prepared.session.actorUserId !== ctx.sessionUser.id ||
+        prepared.session.sessionId !== ctx.sessionUser.sessionId || prepared.session.sessionProfile !== ctx.sessionUser.sessionProfile ||
+        prepared.revision !== input.expectedRevision || !prepared.allocations?.some(row => row.allocationId === input.stayId) ||
+        prepared.source.threadId !== input.createSelection.source.threadId ||
+        prepared.source.sourceMessageId !== input.createSelection.source.messageId ||
+        prepared.source.sourceHash !== input.createSelection.source.sourceHash) {
+      return { status: 'refused' as const, reason: 'pane_preview_binding_required' };
+    }
+    const approved = await approveHmsWrite({ db, transportId: ctx.activeTransportId, workItemId: input.workItemId,
+      actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId, sessionProfile: ctx.sessionUser.sessionProfile,
+      ...(selected.success ? { propertySwitch: selected.data } : {}), selectedSource: input.createSelection.source,
+      preparedRef: input.preparedRef, expectedRevision: input.expectedRevision, formDigest: prepared.businessDigest });
+    return { status: 'queued' as const, ...approved };
+  }),
+  getStayWrite: mailboxProcedure.input(z.object({ workItemId: z.string().uuid(), preparedRef: z.string().uuid(),
+    runId: z.string().min(1).max(200).optional() }).strict()).query(async ({ input, ctx }) => {
+    const db = getDb();
+    const prepared = await db.transaction(tx => loadHmsPreparation(tx, input.preparedRef, input.workItemId));
+    if (prepared.operation !== 'create' || prepared.workflowContext || prepared.scope.transportId !== ctx.activeTransportId ||
+        prepared.session.actorUserId !== ctx.sessionUser.id || prepared.session.sessionId !== ctx.sessionUser.sessionId ||
+        prepared.session.sessionProfile !== ctx.sessionUser.sessionProfile) throw new Error('cloud_create_scope_changed');
+    const events = await db.select().from(workEvent).where(and(eq(workEvent.workItemId, input.workItemId),
+      eq(workEvent.type, 'approval.granted'), sql`${workEvent.value}->>'preparedRef' = ${input.preparedRef}`)).limit(2);
+    if (events.length !== 1) return { status: 'needs_reconcile' as const, runId: input.runId ?? null, results: [] };
+    const event = events[0]!;
+    const grant = hmsWriteGrantV2Schema.safeParse(event?.value);
+    if (!grant.success || event?.actorKind !== 'user' || event.actorUserId !== ctx.sessionUser.id ||
+        grant.data.preparedRef !== prepared.preparedRef || grant.data.sessionId !== prepared.session.sessionId ||
+        grant.data.sessionProfile !== prepared.session.sessionProfile) throw new Error('cloud_create_scope_changed');
+    const grantId = grant.data.grantId;
+    const [run] = await db.select().from(aiWorkflowRun).where(and(eq(aiWorkflowRun.idempotencyKey, `hms-write:${grantId}`),
+      eq(aiWorkflowRun.workItemId, input.workItemId), eq(aiWorkflowRun.transportId, ctx.activeTransportId),
+      eq(aiWorkflowRun.runKind, 'hms_write'))).limit(1);
+    if (!run || input.runId && run.id !== input.runId) {
+      return { status: 'needs_reconcile' as const, runId: input.runId ?? null, grantId, results: [] };
+    }
+    if (['queued', 'claimed', 'running', 'retry_wait'].includes(run.state)) {
+      return { status: run.state === 'running' ? 'running' as const : 'queued' as const, runId: run.id, grantId, results: [] };
+    }
+    if (run.state !== 'succeeded') return { status: 'needs_reconcile' as const, runId: run.id, grantId, results: [] };
+    const [item] = await db.select({ state: workItem.state }).from(workItem).where(and(eq(workItem.id, input.workItemId),
+      eq(workItem.transportId, ctx.activeTransportId))).limit(1);
+    const stays = item?.state.stays;
+    if (!stays || typeof stays !== 'object' || Array.isArray(stays)) return { status: 'needs_reconcile' as const, runId: run.id, grantId, results: [] };
+    const results = (prepared.allocations ?? []).map(allocation => {
+      const row = z.object({ status: z.literal('booked'), cloudCreateVerified: z.literal(true),
+        cloudCreateGrantId: z.literal(hmsAllocationOperationId(grantId, allocation.allocationId)),
+        confirmationNumber: z.string().min(1), nativeStayId: z.string().regex(/^\d{1,100}$/),
+        observationRef: z.string().uuid(), readbackDigest: z.string().regex(/^[a-f0-9]{64}$/) }).safeParse(
+          (stays as Record<string, unknown>)[allocation.allocationId]);
+      return row.success ? { allocationId: allocation.allocationId, status: 'ok' as const, outcome: 'committed' as const,
+        confirmationNumber: row.data.confirmationNumber, nativeStayId: row.data.nativeStayId,
+        observationRef: row.data.observationRef, clickedSave: true } : null;
+    });
+    if (!results.length || results.some(result => !result)) return { status: 'needs_reconcile' as const, runId: run.id, grantId, results: [] };
+    return { status: 'succeeded' as const, runId: run.id, grantId, results: results.filter(result => result !== null) };
+  }),
 });

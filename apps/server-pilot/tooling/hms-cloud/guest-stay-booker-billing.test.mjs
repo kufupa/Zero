@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import { allowsBookerBillingRequest, assessBookerBillingReadback, planBookerBilling,
-  stageGuestStayBookerBilling } from './guest-stay-booker-billing.mjs';
+import test, { mock } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+// The session identity is an owned-page capability; mock its module only for these synthetic page tests.
+if (typeof mock.module !== 'function') {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ['--experimental-test-module-mocks', '--test', '--test-reporter=tap',
+    fileURLToPath(import.meta.url)], { encoding: 'utf8', env });
+  process.stdout.write(child.stdout); process.stderr.write(child.stderr); process.exit(child.status ?? 1);
+}
+const cloud = await import('./cloud-session.mjs');
+mock.module('./cloud-session.mjs', { namedExports: { ...cloud,
+  cloudSessionIdentity: () => ({ propertyCode: 'HRCEN' }) } });
+const { allowsBookerBillingRequest, assessBookerBillingReadback, planBookerBilling,
+  stageGuestStayBookerBilling } = await import('./guest-stay-booker-billing.mjs');
 
 const identity = { session: 'synthetic-session', guestId: '', accountId: '', profileId: '',
   arrival: '01-JAN-2027', departure: '03-JAN-2027' };
@@ -186,7 +200,7 @@ function nativeFormPage(options = {}) {
     context() { return browserContext; },
     on(event, handler) { if (!listeners.has(event)) listeners.set(event, new Set()); listeners.get(event).add(handler); },
     off(event, handler) { listeners.get(event)?.delete(handler); },
-    emit(event) { for (const handler of listeners.get(event) || []) handler({}); },
+    emit(event) { for (const handler of listeners.get(event) || []) handler({ dismiss: async () => {} }); },
     async close(optionsArg) { actions.push(['close', optionsArg]); page.closed = true; },
     async route(_pattern, route) { routes.push(route); },
     async unroute(_pattern, route) { const index = routes.indexOf(route); if (index !== -1) routes.splice(index, 1); },

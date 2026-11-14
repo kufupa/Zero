@@ -2539,6 +2539,7 @@ export function NavaPane({
                     transportId={voucherMailboxScope ? activeConnection?.id ?? null : null}
                     mailboxScope={voucherMailboxScope}
                     propertyCode={activePaneConfig?.propertyCode ?? null}
+                    selectionEpoch={contextRevision.current.selectionEpoch}
                     filingCapability={activePaneConfig?.capabilities?.attach ?? null}
                     workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
                     trpc={trpcClient}

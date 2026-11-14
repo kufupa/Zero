@@ -22,7 +22,7 @@ export async function runCloudCancelOnce(options: Parameters<typeof runLabtestAt
   if (!claimed) return false;
   const fence = toAiRunFence(claimed);
   if (!fence) return true;
-  await (options.run ?? runPaneHmsWriteOnce)({ runId: claimed.id, fence, db: options.db, env });
+  await (options.run ?? runPaneHmsWriteOnce)({ runId: claimed.id, fence, db: options.db, env, signal: options.signal });
   return true;
 }
 
@@ -45,6 +45,6 @@ export async function runLabtestAttachOnce(options: {
   if (!claimed) return false;
   const fence = toAiRunFence(claimed);
   if (!fence) return true; // The lost-lease sweep handles an unusable claim; never retry it here.
-  await (options.run ?? runPaneHmsWriteOnce)({ runId: claimed.id, fence, db: options.db, env });
+  await (options.run ?? runPaneHmsWriteOnce)({ runId: claimed.id, fence, db: options.db, env, signal: options.signal });
   return true;
 }

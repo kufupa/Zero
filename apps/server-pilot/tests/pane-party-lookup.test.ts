@@ -69,7 +69,7 @@ type RunnerSeams = {
   assertPartyLookupAccount: (secret: { expectedPropertyCode?: string }, propertyCode: string) => void;
 };
 const runner = (await import(
-  new URL('../tooling/playwright-quote/party-lookup.mjs', import.meta.url).href
+  new URL('../tooling/hms-cloud/party-lookup.mjs', import.meta.url).href
 )) as RunnerSeams;
 
 // Fixture HMS grids for each kind. Names are test fixtures, not HMS data.
@@ -1033,7 +1033,7 @@ describe('Da Vinci guarded party reads', () => {
 
   it('keeps the HRCEN CLI path and request', async () => {
     execFileMock.mockImplementation(async (_executable: string, args: string[]) => {
-      expect(args[0]).toContain('tooling/playwright-quote/party-lookup.mjs');
+      expect(args[0]).toContain('tooling/hms-cloud/party-lookup.mjs');
       expect(args[1]).toBe('--request');
       expect(JSON.parse(await readFile(args[2], 'utf8'))).toEqual({
         kind: 'organization', query: { organizationName: 'ABC' }, propertyCode: 'HRCEN',

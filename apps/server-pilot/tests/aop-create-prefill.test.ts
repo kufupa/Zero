@@ -54,7 +54,7 @@ function stay(over: Record<string, unknown> = {}) {
 async function validateCreate(request: Record<string, unknown>) {
   const mod = (await import(
     pathToFileURL(
-      fileURLToPath(new URL('../tooling/playwright-quote/create-request.mjs', import.meta.url)),
+      fileURLToPath(new URL('../tooling/hms-cloud/create-request.mjs', import.meta.url)),
     ).href
   )) as {
     loadCreateToolSchema(): Promise<unknown>;

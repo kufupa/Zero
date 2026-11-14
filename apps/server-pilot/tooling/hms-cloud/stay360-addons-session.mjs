@@ -1,26 +1,14 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
-import { centurionWriterIdentity, withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { cloudWriterIdentity, withCloudCredentialLease, withCloudWriterSession } from './cloud-session.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 import { readConfirmationFromStay360 } from './stay360-confirmation.mjs';
-import { readRecordViewFromStay360 } from './stay360-record-view.mjs';
-import { readStay360AddOns, listStay360AddOnItems, listStay360AddOnCatalogue, prepareStay360AddOns, saveStay360AddOns, prepareStay360AddOnChanges, saveStay360AddOnChanges } from './stay360-addons.mjs';
+import { bindStay360AddOnProperty, readStay360AddOns, listStay360AddOnItems, listStay360AddOnCatalogue, prepareStay360AddOns, saveStay360AddOns, prepareStay360AddOnChanges, saveStay360AddOnChanges } from './stay360-addons.mjs';
 
 const activeWrites = new Set();
 const issue = error => /^[A-Z][A-Z0-9_]{2,100}$/.test(error.message || '') ? error.message : 'ADDONS_SESSION_FAILED';
 const failure = error => ({ outcome: 'execution_failure', issue: issue(error) });
-
-async function authorizeLabtest(prepared, withPage, signal) {
-  return withPage(async page => {
-    await readConfirmationFromStay360(page, prepared.confirmation, { guestName: 'Proof Labtest', arrivalDate: prepared.target.arrival });
-    const read = await readRecordViewFromStay360(page, prepared.confirmation, { nativePropertyCode: 'HRCEN', nativeIdentityOnly: true });
-    const identity = read.nativePreimage, cms = read.details.fields.filter(field => field.name === 'udfchkbox04');
-    return Boolean(identity && identity.propertyCode === 'HRCEN' && identity.confirmation === prepared.confirmation &&
-      identity.reservationStayId === prepared.native.stayId && identity.firstName === 'Proof' && identity.lastName === 'Labtest' &&
-      identity.status === 'Reserved' && identity.arrival >= '2027-01-01' && identity.arrival === prepared.target.arrival &&
-      identity.departure === prepared.target.departure && cms.length === 1 && cms[0].value === false);
-  }, { headless: true, blockServiceWorkers: true, signal });
-}
 
 const nativeIdOf = row => String(row.enhexpsequencekey ?? '').trim();
 const canonicalDate = value => {
@@ -44,6 +32,8 @@ async function reconcileChanges(save, { withPage, target }) {
       await readConfirmationFromStay360(page, save.confirmation, { guestName: target?.guestName, arrivalDate: target?.arrival });
       const listing = await readStay360AddOns(page, save.confirmation);
       if (listing.outcome !== 'ok') return listing;
+      const expectedId = save.nativeStayId ?? target?.nativeStayId;
+      if (!expectedId || listing.nativeStayId !== expectedId) return { outcome: 'refused', issue: 'ADDONS_TARGET_CHANGED' };
       const present = new Set(listing.rows.map(nativeIdOf));
       const detailIds = save.changes.filter(change => present.has(change.nativeId)).map(change => change.nativeId);
       return detailIds.length ? readStay360AddOns(page, save.confirmation, { detailIds }) : listing;
@@ -81,7 +71,7 @@ async function reconcileChanges(save, { withPage, target }) {
 }
 
 /** Fresh session readback; recover possible dispatches even without a response ID. */
-export async function reconcileStay360AddOns(save, { withPage = withCenturionStay360Page, target } = {}) {
+async function reconcileWithPage(save, { withPage, target } = {}) {
   if (!save || !/^\d+-\d+$/.test(save.confirmation || '') || !Array.isArray(save.receipts) ||
       (save.attempts !== undefined && !Array.isArray(save.attempts))) {
     return { outcome: 'needs_input', issue: 'ADDONS_RECEIPTS_REQUIRED' };
@@ -97,6 +87,8 @@ export async function reconcileStay360AddOns(save, { withPage = withCenturionSta
       await readConfirmationFromStay360(page, save.confirmation, { guestName: target?.guestName, arrivalDate: target?.arrival });
       const listing = await readStay360AddOns(page, save.confirmation);
       if (listing.outcome !== 'ok') return listing;
+      const expectedId = save.nativeStayId ?? target?.nativeStayId;
+      if (!expectedId || listing.nativeStayId !== expectedId) return { outcome: 'refused', issue: 'ADDONS_TARGET_CHANGED' };
       const acknowledgedIds = new Set(expected.map(attempt => attempt.nativeId).filter(Boolean));
       for (const attempt of expected) {
         if (attempt.nativeId) continue;
@@ -128,19 +120,62 @@ export async function reconcileStay360AddOns(save, { withPage = withCenturionSta
   } catch (error) { return { outcome: 'uncertain', issue: issue(error), confirmation: save.confirmation }; }
 }
 
-/** Owns one serialized page; trusted host callbacks supply staff authorization. */
+function sessionScope(options) {
+  const property = getPropertyRegistration(options.propertyCode);
+  if (!property?.active || typeof options.transportId !== 'string' || !property.transportIds.includes(options.transportId)) {
+    throw new Error('ADDONS_PROPERTY_SCOPE_REQUIRED');
+  }
+  return { propertyCode: property.propertyCode, transportId: options.transportId, signal: options.signal };
+}
+
+function targetKeys(scope, confirmation, nativeStayId) {
+  if (!/^\d+-\d+$/.test(confirmation || '')) return [];
+  const property = getPropertyRegistration(scope.propertyCode);
+  const partition = scope.propertyCode === 'HRCEN' ? [] : [property.expectedTenant];
+  const decimal = value => value.replace(/^0+(?=\d)/, '');
+  const [base, suffix] = confirmation.split('-');
+  const result = [JSON.stringify([scope.propertyCode, 'saved', `${decimal(base)}-${decimal(suffix)}`, ...partition])];
+  if (/^\d+$/.test(nativeStayId || '')) result.push(JSON.stringify([scope.propertyCode, 'saved_native', decimal(nativeStayId), ...partition]));
+  return result;
+}
+
+function scopedPage(scope, credentialLease, aliases = () => []) {
+  return async operation => withCloudWriterSession(async page => {
+    bindStay360AddOnProperty(page, scope.propertyCode);
+    return operation(page);
+  }, { ...scope, credentialLease, ...(aliases().length ? { cloudTargetKeys: aliases() } : {}), startScreen: 'OSRESS' });
+}
+
+/** A separate authenticated session reconciles possible dispatches after the writer has closed. */
+export async function reconcileStay360AddOns(save, options = {}) {
+  const scope = sessionScope(options);
+  const run = lease => reconcileWithPage(save, { withPage: scopedPage(scope, lease,
+    () => targetKeys(scope, save?.confirmation, save?.nativeStayId ?? options.target?.nativeStayId)), target: options.target });
+  return options.credentialLease ? run(options.credentialLease) : withCloudCredentialLease(scope.propertyCode, run, { signal: scope.signal });
+}
+
+/** Prepare and save in sequential sessions, held under the same credential lease. */
 export async function withStay360AddOnSession(operation, options = {}) {
   if (typeof operation !== 'function') throw new Error('ADDONS_SESSION_CALLBACK_REQUIRED');
-  const withPage = options.withPage || withCenturionStay360Page;
-  for (const key of ['authorizeChanges', 'beforeChangeDispatch', 'afterChangeDispatch']) {
-    if (options[key] !== undefined && typeof options[key] !== 'function') throw new Error('ADDONS_CHANGE_CALLBACK_INVALID');
+  const baseScope = sessionScope(options);
+  for (const key of ['authorize', 'authorizeChanges', 'beforeDispatch', 'afterDispatch', 'beforeChangeDispatch', 'afterChangeDispatch', 'withWriteLock']) {
+    if (options[key] !== undefined && typeof options[key] !== 'function') throw new Error('ADDONS_CALLBACK_INVALID');
   }
-  if (options.authorize && [options.beforeDispatch, options.afterDispatch, options.withWriteLock].some(value => typeof value !== 'function')) {
-    throw new Error('ADDONS_TRUSTED_WRITE_CALLBACKS_REQUIRED');
-  }
-  return withPage(async page => {
-    let confirmation = null, currentTarget = null, closed = false, lastSave = null;
+  if ((options.authorize || options.authorizeChanges) &&
+      [options.withWriteLock, ...(options.authorize ? [options.beforeDispatch, options.afterDispatch] : []),
+        ...(options.authorizeChanges ? [options.beforeChangeDispatch, options.afterChangeDispatch] : [])]
+        .some(value => typeof value !== 'function')) throw new Error('ADDONS_TRUSTED_WRITE_CALLBACKS_REQUIRED');
+  const work = async credentialLease => {
+    const signals = [baseScope.signal, credentialLease?.signal].filter(Boolean);
+    const scope = { ...baseScope, signal: signals.length ? AbortSignal.any(signals) : undefined };
+    let confirmation = null, currentTarget = null, nativeStayId = null, closed = false, lastSave = null, prepared = null;
+    const withPage = scopedPage(scope, credentialLease, () => targetKeys(scope, confirmation, nativeStayId));
     let tail = Promise.resolve();
+    const open = async (request, action) => withPage(async page => {
+      scope.signal?.throwIfAborted();
+      await readConfirmationFromStay360(page, request.confirmation, { guestName: request.guestName, arrivalDate: request.arrivalDate });
+      return action(page);
+    });
     const execute = async request => {
       if (!request || typeof request !== 'object' || Array.isArray(request)) return { outcome: 'needs_input', issue: 'ADDONS_REQUEST_INVALID' };
       if (closed && request.tool !== 'reconcile') return { outcome: 'refused', issue: 'ADDONS_FRESH_SESSION_REQUIRED' };
@@ -156,81 +191,107 @@ export async function withStay360AddOnSession(operation, options = {}) {
       }
       if (!/^\d+-\d+$/.test(request.confirmation || '')) return { outcome: 'needs_input', issue: 'INVALID_CONFIRMATION' };
       if (confirmation && request.confirmation !== confirmation) return { outcome: 'refused', issue: 'ADDONS_SESSION_TARGET_CHANGED' };
-      if (!confirmation || !currentTarget) {
-        if (!confirmation) await readConfirmationFromStay360(page, request.confirmation, { guestName: request.guestName, arrivalDate: request.arrivalDate });
-        confirmation = request.confirmation;
-        const read = await readStay360AddOns(page, confirmation, request.tool === 'read' ? { detailIds: request.detailIds } : {});
-        if (read.outcome !== 'ok') {
-          closed = !['ADDONS_DETAIL_IDS_INVALID', 'ADDONS_DETAIL_NOT_LOADED'].includes(read.issue);
-          return read;
-        }
-        currentTarget = read.target;
-        if (request.tool === 'read') return read;
-      }
-      if (request.tool === 'read') return readStay360AddOns(page, confirmation, { detailIds: request.detailIds });
-      if (request.tool === 'list') return request.itemType === undefined ? listStay360AddOnItems(page, confirmation) :
-        listStay360AddOnCatalogue(page, confirmation, { itemType: request.itemType });
-      if (request.tool === 'prepare') return prepareStay360AddOns(page, confirmation, request.items);
-      if (request.tool === 'prepareChanges') return prepareStay360AddOnChanges(page, confirmation, request.changes);
+      confirmation = request.confirmation;
       if (request.tool === 'reconcile') {
         if (!lastSave) return { outcome: 'needs_input', issue: 'ADDONS_SAVE_RECEIPTS_REQUIRED' };
-        return reconcileStay360AddOns(lastSave, { withPage, target: currentTarget });
+        return reconcileWithPage(lastSave, { withPage, target: currentTarget });
       }
-      if (activeWrites.has(confirmation)) return { outcome: 'refused', issue: 'ADDONS_WRITE_IN_PROGRESS' };
-      activeWrites.add(confirmation);
+      if (['read', 'list', 'prepare', 'prepareChanges'].includes(request.tool)) {
+        const result = await open(request, async page => {
+          if (request.tool === 'read') return readStay360AddOns(page, confirmation, { detailIds: request.detailIds });
+          const read = await readStay360AddOns(page, confirmation);
+          if (read.outcome !== 'ok') return read;
+          if (currentTarget && JSON.stringify(currentTarget) !== JSON.stringify(read.target)) return { outcome: 'refused', issue: 'ADDONS_TARGET_CHANGED' };
+          if (!/^\d+$/.test(read.nativeStayId || '') || (nativeStayId && nativeStayId !== read.nativeStayId)) return { outcome: 'refused', issue: 'ADDONS_TARGET_CHANGED' };
+          nativeStayId = read.nativeStayId;
+          currentTarget = read.target;
+          if (request.tool === 'list') return request.itemType === undefined ? listStay360AddOnItems(page, confirmation) :
+            listStay360AddOnCatalogue(page, confirmation, { itemType: request.itemType });
+          return request.tool === 'prepare' ? prepareStay360AddOns(page, confirmation, request.items) :
+            prepareStay360AddOnChanges(page, confirmation, request.changes);
+        });
+        if (request.tool === 'read' && result.outcome === 'ok') {
+          if (currentTarget && JSON.stringify(currentTarget) !== JSON.stringify(result.target)) return { outcome: 'refused', issue: 'ADDONS_TARGET_CHANGED' };
+          if (!/^\d+$/.test(result.nativeStayId || '') || (nativeStayId && nativeStayId !== result.nativeStayId)) return { outcome: 'refused', issue: 'ADDONS_TARGET_CHANGED' };
+          nativeStayId = result.nativeStayId;
+          currentTarget = result.target;
+        }
+        if (['prepare', 'prepareChanges'].includes(request.tool)) {
+          prepared = result.outcome === 'prepared' ? { request, result: structuredClone(result), target: structuredClone(currentTarget) } : null;
+        }
+        return result;
+      }
+      const correction = request.tool === 'saveChanges';
+      if (!prepared || request.preparedId !== prepared.result.preparedId ||
+          (correction ? prepared.request.tool !== 'prepareChanges' : prepared.request.tool !== 'prepare')) {
+        return { outcome: 'refused', issue: 'ADDONS_PREPARED_ID_REQUIRED' };
+      }
+      if (typeof (correction ? options.authorizeChanges : options.authorize) !== 'function' || typeof options.withWriteLock !== 'function') {
+        return { outcome: 'refused', issue: 'ADDONS_SAVE_AUTHORIZATION_REQUIRED' };
+      }
+      const writeKey = `${scope.propertyCode}\0${confirmation}`;
+      if (activeWrites.has(writeKey)) return { outcome: 'refused', issue: 'ADDONS_WRITE_IN_PROGRESS' };
+      activeWrites.add(writeKey);
+      let dispatchAttempted = false;
       try {
-        const save = async () => {
-          const correction = request.tool === 'saveChanges';
-          if (correction) {
-            lastSave = await saveStay360AddOnChanges(page, confirmation, request.preparedId, {
-              authorize: options.authorizeChanges || (prepared => authorizeLabtest(prepared, withPage, options.signal)),
-              beforeDispatch: options.captureWriterIdentity && options.beforeChangeDispatch
-                ? dispatch => {
-                    const writer = centurionWriterIdentity(page);
-                    if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
-                    return options.beforeChangeDispatch(dispatch, writer);
-                  } : options.beforeChangeDispatch,
-              afterDispatch: options.afterChangeDispatch,
-              readBaseline: prepared => withPage(async freshPage => {
-                await readConfirmationFromStay360(freshPage, prepared.confirmation, { guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival });
-                const listing = await readStay360AddOns(freshPage, prepared.confirmation);
-                if (listing.outcome !== 'ok') return listing;
-                const present = new Set(listing.rows.map(nativeIdOf));
-                const detailIds = prepared.changes.map(change => change.nativeId).filter(id => present.has(id));
-                return detailIds.length ? readStay360AddOns(freshPage, prepared.confirmation, { detailIds }) : listing;
-              }, { headless: true, blockServiceWorkers: true }),
-            });
-            if (lastSave.kind === 'changes') closed = true;
-          } else lastSave = await saveStay360AddOns(page, confirmation, request.preparedId, {
-            authorize: options.authorize || (prepared => authorizeLabtest(prepared, withPage, options.signal)),
-            beforeDispatch: options.captureWriterIdentity && options.beforeDispatch
-              ? dispatch => {
-                  const writer = centurionWriterIdentity(page);
-                  if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
-                  return options.beforeDispatch(dispatch, writer);
-                } : options.beforeDispatch,
-            afterDispatch: options.afterDispatch,
-            readBaseline: prepared => withPage(async freshPage => {
-              await readConfirmationFromStay360(freshPage, prepared.confirmation, {
-                guestName: prepared.target.guestName, arrivalDate: prepared.target.arrival,
-              });
-              return readStay360AddOns(freshPage, prepared.confirmation);
-            }, { headless: true, blockServiceWorkers: true }),
+        return await options.withWriteLock(confirmation, async () => {
+          scope.signal?.throwIfAborted();
+          const hints = { confirmation, guestName: prepared.target?.guestName, arrivalDate: prepared.target?.arrival };
+          const baseline = await open(hints, async page => {
+            const listing = await readStay360AddOns(page, confirmation);
+            if (!correction || listing.outcome !== 'ok') return listing;
+            const present = new Set(listing.rows.map(nativeIdOf));
+            const detailIds = prepared.result.changes.map(change => change.nativeId).filter(id => present.has(id));
+            return detailIds.length ? readStay360AddOns(page, confirmation, { detailIds }) : listing;
           });
+          if (baseline.outcome !== 'ok' || baseline.coverage?.complete !== true ||
+              baseline.nativeStayId !== nativeStayId ||
+              JSON.stringify(baseline.target) !== JSON.stringify(prepared.target)) {
+            return { outcome: 'needs_input', issue: 'ADDONS_BASELINE_INCOMPLETE' };
+          }
+          scope.signal?.throwIfAborted();
+          lastSave = await open(hints, async page => {
+            const staged = correction ? await prepareStay360AddOnChanges(page, confirmation, prepared.request.changes) :
+              await prepareStay360AddOns(page, confirmation, prepared.request.items);
+            const key = correction ? 'changes' : 'items';
+            if (staged.outcome !== 'prepared' || staged.propertyCode !== scope.propertyCode ||
+                JSON.stringify(staged[key]) !== JSON.stringify(prepared.result[key])) {
+              return { outcome: 'needs_input', issue: 'ADDONS_PRICE_OR_FIELDS_CHANGED', preview: staged };
+            }
+            const before = correction ? options.beforeChangeDispatch : options.beforeDispatch;
+            const config = {
+              authorize: correction ? options.authorizeChanges : options.authorize,
+              signal: scope.signal,
+              beforeDispatch: dispatch => {
+                dispatchAttempted = true;
+                const writer = cloudWriterIdentity(page);
+                if (!writer) throw new Error('HMS_WRITER_IDENTITY_UNAVAILABLE');
+                return before(dispatch, writer);
+              },
+              afterDispatch: correction ? options.afterChangeDispatch : options.afterDispatch,
+              readBaseline: async () => structuredClone(baseline),
+            };
+            return correction ? saveStay360AddOnChanges(page, confirmation, staged.preparedId, config) :
+              saveStay360AddOns(page, confirmation, staged.preparedId, config);
+          });
+          prepared = null;
           if (!['awaiting_readback', 'uncertain', 'unchanged'].includes(lastSave.outcome) || !lastSave.receipts) return lastSave;
           closed = true;
-          const reconciliation = await reconcileStay360AddOns(lastSave, { withPage, target: currentTarget });
+          const reconciliation = await reconcileWithPage(lastSave, { withPage, target: currentTarget });
           return { ...lastSave, outcome: reconciliation.outcome === 'verified' ? (lastSave.outcome === 'unchanged' ? 'unchanged' : 'saved') : 'uncertain',
             reconciliation, next: reconciliation.outcome === 'verified' ? 'fresh_session' : 'reconcile_before_retry' };
-        };
-        return options.withWriteLock ? await options.withWriteLock(confirmation, save) : await save();
+        });
       } catch (error) {
         if (lastSave?.receipts && ['awaiting_readback', 'uncertain'].includes(lastSave.outcome)) {
           closed = true;
           return { ...lastSave, outcome: 'uncertain', issue: issue(error), next: 'reconcile_before_retry' };
         }
+        if (dispatchAttempted) {
+          closed = true;
+          return { outcome: 'uncertain', issue: issue(error), confirmation, next: 'reconcile_before_retry' };
+        }
         throw error;
-      } finally { activeWrites.delete(confirmation); }
+      } finally { activeWrites.delete(writeKey); }
     };
     const runTool = request => {
       try { request = structuredClone(request); }
@@ -241,12 +302,13 @@ export async function withStay360AddOnSession(operation, options = {}) {
     };
     try { return await operation({ runTool }); }
     finally { await tail; }
-  }, { headless: true, blockServiceWorkers: true });
+  };
+  return options.credentialLease ? work(options.credentialLease) : withCloudCredentialLease(baseScope.propertyCode, work, { signal: baseScope.signal });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.argv.includes('--help')) {
-    console.log('Usage: node stay360-addons-session.mjs --jsonl\nTools: read, list, prepare, save, prepareChanges, saveChanges, reconcile. Each request requires confirmation. CLI saves verified Labtest only.');
+    console.log('Usage: node stay360-addons-session.mjs --jsonl --property PROPERTY --transport TRANSPORT\nTools: read, list, prepare, prepareChanges, reconcile. Each request requires confirmation.');
   } else if (!process.argv.includes('--jsonl')) {
     console.error('Use --jsonl or --help.'); process.exitCode = 1;
   } else {
@@ -258,7 +320,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
           try { request = JSON.parse(line); } catch { console.log(JSON.stringify({ outcome: 'needs_input', issue: 'INVALID_JSON' })); continue; }
           console.log(JSON.stringify(await runTool(request)));
         }
-      });
+      }, { propertyCode: process.argv[process.argv.indexOf('--property') + 1],
+        transportId: process.argv[process.argv.indexOf('--transport') + 1] });
     } catch (error) { console.log(JSON.stringify(failure(error))); process.exitCode = 1; }
   }
 }

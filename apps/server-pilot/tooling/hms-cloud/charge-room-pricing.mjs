@@ -49,7 +49,7 @@ export function compareChargeRoomCriteria(checked, data) {
     String(wanted).trim() === actual ? 'MATCHED' : 'CHANGED';
   const occupancy = checked?.occupancy;
   const result = {};
-  for (const name of ['adults', 'children', 'childages', 'child1', 'child2', 'child3']) {
+  for (const name of ['adults', 'children', 'childages', ...Object.keys(occupancy || {}).filter(key => /^child[1-9]\d*$/.test(key))]) {
     if (['adults', 'children', 'childages'].includes(name) || Object.hasOwn(occupancy || {}, name)) {
       result[name] = compare(occupancy?.[name], value(data, name));
     }

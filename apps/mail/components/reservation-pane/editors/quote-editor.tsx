@@ -58,6 +58,9 @@ function quoteMealPlanCode(value: unknown, configuration: Editor['configuration'
   const label = text(value).trim().toLocaleLowerCase().replace(/\s+/gu, ' ');
   const observed = configuration?.nativeMealMappings.find(row => row.label.trim().toLocaleLowerCase().replace(/\s+/gu, ' ') === label);
   if (observed) return observed.mealPlan;
+  if (configuration && configuration.propertyCode !== 'HRCEN') {
+    return label === 'room_only' || label === 'bb' || label === 'dinner_bb' ? label : null;
+  }
   const mealPlan = label.replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
   if (['room_only', 'roomonly', 'ro'].includes(mealPlan)) return 'room_only';
   if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(mealPlan)) return 'bb';
@@ -66,7 +69,9 @@ function quoteMealPlanCode(value: unknown, configuration: Editor['configuration'
 }
 function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof latestQuote>) {
   if (quoteCurrent(editor, observation)) return true;
-  if (!observation || observation.sourceMessageId !== editor.snapshot.session.draft.source.messageId ||
+  if (!observation || observation.generationId !== editor.snapshot.session.draft.generationId ||
+      observation.propertyCode !== editor.snapshot.session.draft.propertyCode ||
+      observation.sourceMessageId !== editor.snapshot.session.draft.source.messageId ||
       observation.criteria.sourceHash !== editor.snapshot.session.draft.source.sourceHash) return false;
   const result = record(observation.result);
   if (!Array.isArray(result.quoteDiagnostics) || !result.quoteDiagnostics.length ||
@@ -258,7 +263,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
 
 function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bodyPath: string; groups: Record<string, unknown>[]; rows: Record<string, unknown>[] }) {
   return <Section title="Extras">
-    <p className={styles.note}>Centurion meal plans do not include lunch. Add lunch and transfers as separate lines.</p>
+    <p className={styles.note}>Add lunch and transfers as separate lines.</p>
     <div className={styles.inlineButtons}>{[
       { kind: 'lunch', label: 'Lunch' },
       { kind: 'airport_transfer', label: 'Airport Transfer / Shuttle' },

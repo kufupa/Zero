@@ -399,8 +399,11 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       guestCreatesInFlight.add(inFlightKey);
       return run(async context => {
         const previousAttempt = readGuestAttempt(context.source, requestId, allocationId);
+        const previousDispatch = context.snapshot.session.workflowDispatches?.find(row => row.endpoint === 'createGuestProfile' &&
+          row.requestId === requestId && row.allocationId === allocationId);
         const previousResult = previousAttempt ? context.snapshot.operationResults.find(row => row.id === previousAttempt && row.workflow === 'guest_profile') : undefined;
-        if (previousResult?.status === 'succeeded' || previousResult?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
+        if (previousDispatch && previousDispatch.status !== 'succeeded' && previousDispatch.status !== 'failed') throw new Error('Check the previous profile creation outcome before trying again.');
+        if (previousDispatch?.status === 'succeeded' || previousDispatch?.status === 'failed' || previousResult?.status === 'succeeded' || previousResult?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
         else if (previousAttempt) throw new Error('Check the previous profile creation outcome before trying again.');
         let current = context.snapshot;
         const root = `${requestPath(requestId)}/body`;
@@ -424,6 +427,10 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         apply(prepared, context.source, entry);
         const reply = record(prepared.workflowReply);
         if (prepared.serviceNotice || reply.status !== 'prepared' || typeof reply.prepareRef !== 'string') return prepared;
+        if (typeof reply.preparedRef !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(reply.preparedRef) ||
+            reply.expectedRevision !== prepared.session.revision || reply.generationId !== prepared.session.draft.generationId) {
+          throw new Error('Check the guest profile again before creating it.');
+        }
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return prepared;
         if ([...entry.pending.keys()].some(path => path === guestPath || path.startsWith(`${guestPath}/`))) {
           throw new Error('Guest details changed. Review them before creating the profile.');
@@ -435,7 +442,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         let result: ReservationPaneSnapshot;
         try {
           result = await client.createGuestProfile({ source: context.source, snapshot: prepared, requestId, allocationId,
-            confirmDuplicateName, prepareRef: reply.prepareRef, idempotencyKey });
+            confirmDuplicateName, prepareRef: reply.prepareRef, preparedRef: reply.preparedRef, idempotencyKey });
         } catch (error) {
           // A stale response with a fresh snapshot and no claim proves this attempt was rejected before dispatch.
           if (error instanceof ReservationWorkflowStaleRevisionError &&
@@ -444,8 +451,11 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           }
           throw error;
         }
-        const operation = result.operationResults.find(row => row.id === idempotencyKey);
         const response = record(result.workflowReply);
+        const operationId = response.status === 'queued' && typeof response.operationId === 'string' && response.operationId === response.grantId
+          ? response.operationId : idempotencyKey;
+        if (operationId !== idempotencyKey) saveGuestAttempt(context.source, requestId, allocationId, operationId);
+        const operation = result.operationResults.find(row => row.id === operationId);
         // These replies are returned before the server claims or dispatches this attempt.
         // A failed refresh or any uncertain reply must retain the recovery hold.
         const rejectedBeforeClaim = ['needs_prepare', 'stale_revision', 'wrong_property', 'not_found', 'invalid_source', 'invalid_value']
@@ -458,6 +468,9 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
     },
     guestProfilePending(allocationId) {
       if (!request) return null;
+      const dispatch = current?.session.workflowDispatches?.find(row => row.endpoint === 'createGuestProfile' &&
+        row.requestId === request.id && row.allocationId === allocationId);
+      if (dispatch) return dispatch.status === 'succeeded' || dispatch.status === 'failed' ? null : dispatch.operationId;
       const id = readGuestAttempt(source, request.id, allocationId);
       const operation = id ? current?.operationResults.find(row => row.id === id && row.workflow === 'guest_profile') : undefined;
       if (operation?.status === 'succeeded' || operation?.status === 'failed') return null;
@@ -465,20 +478,26 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
     },
     checkGuestProfile(allocationId) {
       const requestId = requireRequest();
-      const operationId = readGuestAttempt(source, requestId, allocationId);
+      const operationId = current?.session.workflowDispatches?.find(row => row.endpoint === 'createGuestProfile' &&
+        row.requestId === requestId && row.allocationId === allocationId)?.operationId ?? readGuestAttempt(source, requestId, allocationId);
       if (!operationId) return Promise.reject(new Error('No pending profile attempt was found on this device.'));
       return run(async context => {
         const latest = await client.get(context);
         apply(latest, context.source, entry);
         if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return latest;
-        const operation = latest.operationResults.find(row => row.id === operationId && row.workflow === 'guest_profile' &&
+        const dispatch = latest.session.workflowDispatches?.find(row => row.endpoint === 'createGuestProfile' &&
+          row.requestId === requestId && row.allocationId === allocationId);
+        if (dispatch && dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_reconcile')
+          throw new Error('Infor is still processing this profile. Check again shortly.');
+        const currentOperationId = dispatch?.operationId ?? operationId;
+        const operation = latest.operationResults.find(row => row.id === currentOperationId && row.workflow === 'guest_profile' &&
           row.requestId === requestId && row.allocationId === allocationId);
         if (!operation) throw new Error('Infor has not recorded the profile outcome yet. Check again later or contact support.');
         if (operation.status === 'succeeded' || operation.status === 'failed') {
           clearGuestAttempt(context.source, requestId, allocationId); return latest;
         }
-        const result = await client.reconcile({ source: context.source, snapshot: latest, operationId });
-        const checked = result.operationResults.find(row => row.id === operationId);
+        const result = await client.reconcile({ source: context.source, snapshot: latest, operationId: currentOperationId });
+        const checked = result.operationResults.find(row => row.id === currentOperationId);
         if (checked?.status === 'succeeded' || checked?.status === 'failed') clearGuestAttempt(context.source, requestId, allocationId);
         return result;
       });
@@ -502,7 +521,15 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       apply(next, context.source, entry);
       if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return next;
       const reviewed = await client.review({ source: context.source, snapshot: next, fieldPath, decision: 'accepted', note });
-      return { ...reviewed, workflowReply: context.snapshot.workflowReply };
+      apply(reviewed, context.source, entry);
+      if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return reviewed;
+      const requestId = requireRequest();
+      const observation = reviewed.session.draft.observations.find(row => row.ref === observationRef &&
+        row.generationId === reviewed.session.draft.generationId && row.criteria.requestId === requestId);
+      const target = observation?.criteria.hintId;
+      if (typeof target !== 'string' || !target) throw new Error('The reviewed stay changed. Check its details again.');
+      const prepared = await client.prepare({ source: context.source, snapshot: reviewed, requestId, allocationId: target });
+      return { ...prepared, workflowReply: context.snapshot.workflowReply };
     }); },
     configureFiling(attachmentId, target, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, ...(typeof target === 'string' ? { confirmation: target } : target), kind })); },
     lookupServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
@@ -547,7 +574,8 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   }, [current, busy, changed, key, preview, arrivalChecksPending, uncommitted, canPrepareAttach, canRead]);
   const autoDigest = useRef(new Map<string, string>());
   useEffect(() => {
-    if (!current || current.session.sourceChanged || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
+    if (!current || current.session.sourceChanged || current.preparationViews.some(view => view.dispatch) ||
+        current.session.workflowDispatches?.some(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review') || arrivalChecksPending || !request || busy || entry.pending.size || uncommitted.size || entry.conflict || preview) return;
     const body = record(effectiveAt(current, `${requestPath(request.id)}/body`));
     if (request.kind !== 'create' && request.kind !== 'quote') return;
     if (!canRead || (request.kind === 'create' ? !canPrepareCreate : !canPrepareQuote)) return;

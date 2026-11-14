@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { installSavedStayReadGuard, savedStayReadMayRequest } from './saved-stay-read-guard.mjs';
 import { searchGuestInCloud } from './pane-guest-search.mjs';
 

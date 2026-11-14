@@ -1,4 +1,8 @@
 import { getPropertyRegistration } from './property-registry.mjs';
+import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
+import { dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const HMS_PROPERTIES = Object.freeze(['HRCEN', 'HRDAV', 'HRDAVS']);
 export const HMS_WORKFLOWS = Object.freeze(['reads', 'quote', 'create', 'amend', 'cancel', 'attach', 'addons', 'guest_profile_create']);
@@ -76,7 +80,7 @@ function centurionMode(env, workflow) {
     case 'amend': return maxMode(mode(env.PANE_WRITE_AMEND), mode(env.PANE_WRITE_AMEND_UNPAID), mode(env.PANE_WRITE_AMEND_PAID), legacy === 'lab' ? 'lab' : 'off');
     case 'cancel': return maxMode(mode(env.PANE_WRITE_CANCEL_UNPAID), mode(env.PANE_WRITE_CANCEL_PAID), legacy);
     case 'attach': return env.PANE_WRITE_ATTACH !== undefined ? mode(env.PANE_WRITE_ATTACH) : env.RESERVATIONIST_PANE_SAVE === 'lab' ? 'lab' : 'off';
-    case 'addons': return mode(env.PANE_WRITE_ADDONS);
+    case 'addons': return maxMode(mode(env.PANE_WRITE_ADDONS), centurionCreateDispatchMode(env));
     case 'guest_profile_create': return centurionCreateDispatchMode(env);
     default: return 'off';
   }
@@ -100,6 +104,82 @@ function centurionWriteCapability(env, workflow, configuredMode) {
   return admittedMode === 'on' ? 'staff-enabled' : admittedMode === 'lab' ? 'lab' : 'prepare-only';
 }
 
+const writerSources = Object.freeze({
+  create: ['tooling/hms-cloud/create-reservation.mjs', 'src/ai/pane-cloud-preview.ts', 'src/ai/reservation-workflow-v2-tools.ts'],
+  amend: ['tooling/hms-cloud/pane-amend-session.mjs', 'src/ai/pane-cloud-amend-runner.ts', 'src/ai/reservation-workflow-v2-amend.ts'],
+  cancel: ['tooling/hms-cloud/pane-cancel-session.mjs', 'src/ai/pane-hms-write.ts', 'src/ai/reservation-workflow-v2-cancel.ts'],
+  attach: ['tooling/hms-cloud/stay360-document-attach.mjs', 'src/ai/pane-hms-write.ts', 'src/ai/reservation-workflow-v2-filing.ts'],
+  addons: ['tooling/hms-cloud/stay360-addons-session.mjs', 'src/ai/reservation-workflow-v2-services-execute.ts'],
+  guest_profile_create: ['tooling/hms-cloud/guest-profile-runner.mjs', 'src/ai/reservation-workflow-v2-guest.ts'],
+});
+const writerDigests = new Map();
+
+/** Hash the installed writer and its local source dependencies, independently of UI commits. */
+export function hmsWriterDependencyDigest(workflow) {
+  if (!writerSources[workflow]) throw new Error('hms_writer_workflow_invalid');
+  if (writerDigests.has(workflow)) return writerDigests.get(workflow);
+  const root = fileURLToPath(new URL('../../', import.meta.url));
+  const pending = [...writerSources[workflow], 'src/ai/hms-approval.ts', 'src/ai/worker.ts',
+    'src/hms/staff-go-authority.ts', 'src/hms/property-read-lock.ts', 'package.json',
+    ...HMS_PROPERTIES.map(property => `tooling/hms-cloud/${getPropertyRegistration(property).profileFile}`)];
+  const sources = new Map();
+  const findSource = path => {
+    const candidates = [path, path.replace(/\.js$/, '.ts'), path.replace(/\.js$/, '.tsx'),
+      `${path}.ts`, `${path}.mjs`, resolve(path, 'index.ts')];
+    return candidates.find(candidate => { try { return lstatSync(candidate).isFile(); } catch { return false; } });
+  };
+  while (pending.length) {
+    const path = findSource(resolve(root, pending.pop()));
+    if (!path || !path.startsWith(root) || sources.size > 1500) throw new Error('hms_writer_source_missing');
+    const name = relative(root, path);
+    if (sources.has(name)) continue;
+    const bytes = readFileSync(path);
+    sources.set(name, bytes);
+    if (!/\.(?:[cm]?js|tsx?)$/.test(path)) continue;
+    const imports = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\bnew\s+URL\s*\(\s*|\brequire\s*\(\s*)['"](\.[^'"]+)['"]/g;
+    for (const match of bytes.toString('utf8').matchAll(imports)) {
+      if (/^new\s+URL/.test(match[0]) && !/\.(?:[cm]?js|tsx?)$/.test(match[1])) continue;
+      pending.push(relative(root, resolve(dirname(path), match[1])));
+    }
+  }
+  const hash = createHash('sha256').update('zero/hms-writer-dependencies/v2\0');
+  const lockfile = readFileSync(resolve(root, '../../pnpm-lock.yaml'));
+  hash.update('pnpm-lock.yaml\0').update(String(lockfile.length)).update('\0').update(lockfile);
+  for (const [name, bytes] of [...sources].sort(([left], [right]) => left.localeCompare(right))) {
+    hash.update(name).update('\0').update(String(bytes.length)).update('\0').update(bytes);
+  }
+  const digest = hash.digest('hex');
+  writerDigests.set(workflow, digest);
+  return digest;
+}
+
+/** Operator-owned evidence binds a real canary to the installed implementation and credential version. */
+export function hmsWriterReady(env, property, workflow, expectedSourceRevision) {
+  if (!HMS_WRITE_WORKFLOWS.includes(workflow)) return false;
+  try {
+    const registration = getPropertyRegistration(property);
+    const credentialHmac = env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${property}`];
+    const digest = hmsWriterDependencyDigest(workflow);
+    if (!/^[a-f0-9]{64}$/.test(credentialHmac ?? '') || env[WRITER_DIGEST_KEYS[workflow]] !== digest ||
+        env[WRITER_CREDENTIAL_IDENTITY_KEYS[property]] !== registration.credentialSecretRef) return false;
+    const path = env.NAVA_CANARY_PASS_FILE || '/etc/nava/hms-canary-passes.txt';
+    const stat = lstatSync(`${path}.writers.json`);
+    if (!stat.isFile() || (stat.mode & 0o022) !== 0 || stat.size > 1024 * 1024 ||
+        ![0, process.getuid?.()].includes(stat.uid)) return false;
+    const data = JSON.parse(readFileSync(`${path}.writers.json`, 'utf8'));
+    if (data.version !== 2 || !Array.isArray(data.writers)) return false;
+    const canaries = new Set(readFileSync(path, 'utf8').split(/\r?\n/));
+    return data.writers.some(row => row.propertyCode === property && row.workflow === workflow &&
+      row.tenantId === registration.expectedTenant && row.credentialIdentity === registration.credentialSecretRef &&
+      row.credentialVersionHmacSha256 === credentialHmac && row.writerDependencyDigest === digest &&
+      (expectedSourceRevision === undefined || row.sourceRevision === expectedSourceRevision) &&
+      /^[a-f0-9]{40}$/.test(row.sourceRevision ?? '') && /^[a-f0-9]{64}$/.test(row.readbackDigest ?? '') &&
+      (workflow === 'guest_profile_create' ? /^\d{1,30}$/.test(row.nativeGuestId ?? '') : /^\d+-\d+$/.test(row.confirmation ?? '')) &&
+      Number.isFinite(Date.parse(row.observedAt)) &&
+      Date.parse(row.observedAt) <= Date.now() && canaries.has(`CANARY PASS ${workflow} ${property} ${row.sourceRevision}`));
+  } catch { return false; }
+}
+
 /** Modes describe configured scope; capabilities never make an unproven DaVinci writer available. */
 export function effectiveWorkflowPolicy(env, property, workflow) {
   if (!HMS_PROPERTIES.includes(property) || !HMS_WORKFLOWS.includes(workflow)) throw new Error('hms_workflow_scope_invalid');
@@ -114,13 +194,20 @@ export function effectiveWorkflowPolicy(env, property, workflow) {
   let capability = 'unavailable';
   if (workflow === 'reads' || workflow === 'quote') capability = configuredMode === 'on' ? 'staff-enabled' : 'unavailable';
   else if (property === 'HRCEN') capability = centurionWriteCapability(env, workflow, configuredMode);
+  else if (readEnabled) capability = configuredMode === 'lab' ? 'lab' : 'prepare-only';
   const registration = getPropertyRegistration(property);
   const credentialIdentity = (HMS_WRITE_WORKFLOWS.includes(workflow) && env[WRITER_CREDENTIAL_IDENTITY_KEYS[property]]) || registration.credentialSecretRef;
   if (credentialIdentity !== registration.credentialSecretRef && capability !== 'unavailable') {
     capability = property === 'HRCEN' ? 'prepare-only' : 'unavailable';
   }
+  const writerReady = HMS_WRITE_WORKFLOWS.includes(workflow) && configuredMode === 'on' && hmsWriterReady(env, property, workflow);
+  if (HMS_WRITE_WORKFLOWS.includes(workflow) && configuredMode === 'on') {
+    if (writerReady && readEnabled && (property !== 'HRCEN' || capability === 'staff-enabled')) capability = 'staff-enabled';
+    else if (capability === 'staff-enabled') capability = 'prepare-only';
+  }
+  const admittedMode = capability === 'staff-enabled' ? 'on' : capability === 'lab' ? 'lab' : 'off';
   return {
-    property, workflow, mode: configuredMode, readEnabled, capability,
+    property, workflow, mode: configuredMode, admittedMode, readEnabled, capability, writerReady,
     credentialIdentity,
     writerDependencyDigest: WRITER_DIGEST_KEYS[workflow] ? env[WRITER_DIGEST_KEYS[workflow]] || null : null,
   };

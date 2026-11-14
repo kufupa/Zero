@@ -1018,17 +1018,17 @@ describe('exact selected-email HMS lookup', () => {
       const client = amendFindClientFromTrpc(trpc, 'mailbox-a');
       expect(hmsJobTransport(client, THREAD, null, { exactSource: true })).toBeNull();
       expect(hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash: '' })).toBeNull();
-      const transport = hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash })!;
+      const transport = hmsJobTransport(client, THREAD, 'msg-old', { exactSource: true, sourceHash, propertySwitch: 'HRDAVS' })!;
       setMailCacheScope({ userId: 'user-1', activeTransportId: 'mailbox-b' });
       const pinned = { context: { activeTransportId: 'mailbox-a' } };
       await transport.queue({ kind: 'find', confirmation: CONFIRMATION });
       await transport.queue({ kind: 'search_guest', lastName: 'Mokoena', arrival: '2027-09-14' });
-      expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-old', sourceHash }), pinned);
-      expect(queueSearch).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-old', sourceHash }), pinned);
+      expect(queueFind).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-old', sourceHash, propertySwitch: 'HRDAVS' }), pinned);
+      expect(queueSearch).toHaveBeenCalledWith(expect.objectContaining({ threadId: THREAD, messageId: 'msg-old', sourceHash, propertySwitch: 'HRDAVS' }), pinned);
       expect(await transport.status({ kind: 'find', confirmation: CONFIRMATION })).toMatchObject({ sourceMessageId: 'msg-old' });
-      expect(status).toHaveBeenLastCalledWith({ threadId: THREAD, messageId: 'msg-old', sourceHash, kind: 'find', confirmation: CONFIRMATION }, pinned);
+      expect(status).toHaveBeenLastCalledWith({ threadId: THREAD, messageId: 'msg-old', sourceHash, propertySwitch: 'HRDAVS', kind: 'find', confirmation: CONFIRMATION }, pinned);
       expect(await transport.status({ runId: RUN_ID })).toMatchObject({ sourceMessageId: 'msg-old' });
-      expect(status).toHaveBeenLastCalledWith({ runId: RUN_ID, threadId: THREAD, messageId: 'msg-old', sourceHash }, pinned);
+      expect(status).toHaveBeenLastCalledWith({ runId: RUN_ID, threadId: THREAD, messageId: 'msg-old', sourceHash, propertySwitch: 'HRDAVS' }, pinned);
       status.mockResolvedValueOnce({ ...await status.mock.results[0]!.value, sourceMessageId: 'msg-new' });
       expect(await transport.status({ runId: RUN_ID })).toBeNull();
       status.mockResolvedValueOnce({ ...await status.mock.results[0]!.value, sourceMessageId: null });
@@ -1040,12 +1040,15 @@ describe('exact selected-email HMS lookup', () => {
       const request = { workItemId: RUN_ID, source: { threadId: THREAD, messageId: 'msg-old', sourceHash },
         confirmation: CONFIRMATION, arrival: '2026-10-12', changes: { ratePlan: 'BAR', retainRates: 'no' as const,
           cmsSend: false, cmsMessageId: '', cmsRecipient: '', bookerContact: '+2782123456783' } };
-      const view = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: CONFIRMATION,
+      const view = { status: 'needs_you', formDigest: DIGEST, form: { propertyCode: 'HRCEN', action: 'amend', confirmation: CONFIRMATION,
         arrival: request.arrival, fields: { ...request.changes, bookerContact: '+[card ••••6783]' },
         cloudAmend: { bound: true } }, before: null, snapshot: null, grant: null, run: null, needsCheck: false };
       const cloud = { hmsApproval: { cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: true }) },
         bindCloudAmend: { mutate: vi.fn().mockResolvedValue({ status: 'bound', formDigest: DIGEST,
           previewDigest: DIGEST, readAt: '2026-10-12T00:00:00.000Z' }) },
+        prepareCloudAmend: { mutate: vi.fn().mockResolvedValue({ status: 'prepared', preparedRef: RUN_ID,
+          propertyCode: 'HRCEN', businessDigest: DIGEST, revision: 4, generationId: 'generation-1',
+          expiresAtIso: '2099-01-01T00:00:00.000Z', warnings: [] }) },
         cloudAmendState: { query: vi.fn(async () => view) }, approveCloudAmend: { mutate: vi.fn() },
         reviewCloudAmend: { mutate: vi.fn() }, cloudAmendEvidence: { query: vi.fn() } } };
       const amend = await cloudAmendClientFromTrpc(cloud, request, {
@@ -1055,6 +1058,9 @@ describe('exact selected-email HMS lookup', () => {
       expect(await amend?.prepare(draft)).toBe(true);
       expect(cloud.hmsApproval.bindCloudAmend.mutate).toHaveBeenCalledWith(expect.objectContaining({ draft }), expect.anything());
       expect(await amend?.approval.writeState({ workItemId: RUN_ID })).toMatchObject({ formDigest: DIGEST });
+      await amend?.approval.approve({ workItemId: RUN_ID, formDigest: DIGEST });
+      expect(cloud.hmsApproval.approveCloudAmend.mutate).toHaveBeenCalledWith(expect.objectContaining({
+        preparedRef: RUN_ID, expectedRevision: 4, formDigest: DIGEST }), expect.anything());
       view.formDigest = 'b'.repeat(64);
       await expect(amend?.approval.writeState({ workItemId: RUN_ID })).rejects.toThrow('state_changed');
       amend?.dispose();
@@ -2467,7 +2473,7 @@ describe('AmendLookupPanel amend form', () => {
       const cloud = { ...trpc, hmsApproval: {
         cloudAmendReady: { query: vi.fn().mockResolvedValue({ ready: true }) },
         bindCloudAmend: { mutate: vi.fn(async (request: CloudAmendRequest) => {
-          stored = { status: 'needs_you', formDigest: DIGEST, form: { action: 'amend', confirmation: request.confirmation,
+          stored = { status: 'needs_you', formDigest: DIGEST, form: { propertyCode: 'HRCEN', action: 'amend', confirmation: request.confirmation,
             arrival: request.arrival, fields: request.changes, cloudAmend: { bound: true,
               approvedPrices: { version: 2, currency: 'ZAR', totalCents: '10000', options: [] },
               preserved: { bookingAgency: null, organization: null } } }, before: { fields: {} },
@@ -2476,6 +2482,9 @@ describe('AmendLookupPanel amend form', () => {
             lastError: null, evidence: [], reviewed: null }, needsCheck: false };
           return { status: 'bound', formDigest: DIGEST, previewDigest: DIGEST, readAt: AS_OF };
         }) },
+        prepareCloudAmend: { mutate: vi.fn().mockResolvedValue({ status: 'prepared', preparedRef: RUN_ID,
+          propertyCode: 'HRCEN', businessDigest: DIGEST, revision: 4, generationId: 'generation-1',
+          expiresAtIso: '2099-01-01T00:00:00.000Z', warnings: [] }) },
         cloudAmendState: { query: state },
         approveCloudAmend: { mutate: vi.fn(() => new Promise((resolve) => {
           pendingGo.finish = () => {

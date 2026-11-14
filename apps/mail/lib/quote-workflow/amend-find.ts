@@ -1,6 +1,7 @@
 import type { PartyFindReply } from './party-lookup';
 import type { QuoteAmendment } from './types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import type { PropertySwitch } from '@/lib/reservation-workflow/types';
 
 /**
  * Shared HMS read helpers for quote, amend and cancel mail.
@@ -203,6 +204,7 @@ export type FindStayInput = {
   threadId?: string;
   messageId?: string;
   sourceHash?: string;
+  propertySwitch?: PropertySwitch;
 };
 
 /**
@@ -248,6 +250,7 @@ export type GuestSearchInput = {
   threadId?: string;
   messageId?: string;
   sourceHash?: string;
+  propertySwitch?: PropertySwitch;
 };
 
 /** The reply a search job stores. rows are complete only for outcome ok. */
@@ -327,11 +330,12 @@ export type HmsJobClient = {
   }) => Promise<PartyFindReply>;
   jobStatus: (
     input:
-      | { runId: string; threadId?: string; messageId?: string; sourceHash?: string }
+      | { runId: string; threadId?: string; messageId?: string; sourceHash?: string; propertySwitch?: PropertySwitch }
       | {
           threadId: string;
           messageId?: string;
           sourceHash?: string;
+          propertySwitch?: PropertySwitch;
           kind: HmsJobKind;
           confirmation?: string;
           lastName?: string;
@@ -457,12 +461,13 @@ export function hmsJobTransport(
   client: HmsJobClient | null,
   threadId: string | null,
   messageId?: string | null,
-  sourceOptions?: { exactSource: true; sourceHash?: string },
+  sourceOptions?: { exactSource: true; sourceHash?: string; propertySwitch?: PropertySwitch },
 ): HmsJobTransport | null {
   if (!client || !threadId || (sourceOptions?.exactSource && !messageId?.trim()) ||
       (sourceOptions?.sourceHash !== undefined && !/^[a-f0-9]{64}$/.test(sourceOptions.sourceHash))) return null;
   const mail = { ...mailAnchor(threadId, messageId),
     ...(sourceOptions?.sourceHash ? { sourceHash: sourceOptions.sourceHash } : {}) };
+  const stayScope = { ...mail, ...(sourceOptions?.propertySwitch ? { propertySwitch: sourceOptions.propertySwitch } : {}) };
   const selectedMessageId = sourceOptions?.exactSource ? mail.messageId : undefined;
   return {
     ...(client.jobQueueEnabled ? { jobQueueEnabled: client.jobQueueEnabled } : {}),
@@ -472,14 +477,14 @@ export function hmsJobTransport(
           ? { confirmation: request.confirmation, arrival: request.arrival }
           : { confirmation: request.confirmation };
         const { runId } = await client.queueFind({
-          ...mail,
+          ...stayScope,
           ...input,
           ...(options?.autoStart ? { autoStart: true } : {}),
         });
         if (runId) return { runId };
         if (options?.autoStart) return { runId: null };
         if (!client.findStay) throw new Error('paneStayLookup.findStay unavailable');
-        return { runId: null, view: syncView(request, await client.findStay({ ...input, ...mail }), selectedMessageId, sourceOptions?.sourceHash) };
+        return { runId: null, view: syncView(request, await client.findStay({ ...input, ...stayScope }), selectedMessageId, sourceOptions?.sourceHash) };
       }
       if (request.kind === 'party') {
         if (sourceOptions?.exactSource) throw new Error('Party lookup is not bound to the selected email');
@@ -511,7 +516,7 @@ export function hmsJobTransport(
         ? { lastName: request.lastName, arrival: request.arrival, departure: request.departure }
         : { lastName: request.lastName, arrival: request.arrival };
       const { runId } = await client.queueSearchGuest({
-        ...mail,
+        ...stayScope,
         ...input,
         ...(options?.autoStart ? { autoStart: true } : {}),
       });
@@ -519,7 +524,7 @@ export function hmsJobTransport(
       // Auto-start with the queue off must not run the live search: it would repeat on every card open.
       if (options?.autoStart) return { runId: null };
       if (!client.searchGuest) throw new Error('paneStayLookup.searchGuest unavailable');
-      return { runId: null, view: syncView(request, await client.searchGuest({ ...input, ...mail }), selectedMessageId, sourceOptions?.sourceHash) };
+      return { runId: null, view: syncView(request, await client.searchGuest({ ...input, ...stayScope }), selectedMessageId, sourceOptions?.sourceHash) };
     },
     status: async (input) => {
       if (selectedMessageId && !('runId' in input) && input.kind === 'party') return null;
@@ -527,7 +532,8 @@ export function hmsJobTransport(
         ? { ...input, threadId, messageId: selectedMessageId,
             ...(sourceOptions?.sourceHash ? { sourceHash: sourceOptions.sourceHash } : {}) }
         : 'runId' in input ? input : { threadId, ...input };
-      const view = await client.jobStatus(query);
+      const view = await client.jobStatus({ ...query,
+        ...(sourceOptions?.propertySwitch ? { propertySwitch: sourceOptions.propertySwitch } : {}) });
       return (selectedMessageId && view?.sourceMessageId !== selectedMessageId) ||
         (sourceOptions?.sourceHash && view?.sourceHash !== sourceOptions.sourceHash) ? null : view;
     },

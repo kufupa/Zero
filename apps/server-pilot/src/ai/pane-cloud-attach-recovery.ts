@@ -5,7 +5,6 @@ import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
-import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import { getS3Storage } from '../storage/s3.js';
 import { canonicalJson } from './draft-approval.js';
@@ -67,10 +66,9 @@ export async function recordNeverDispatchedAttach(tx: CreateFenceTransaction, in
 }
 
 /** The same verified booking target protects the original write and recovery. */
-export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action: () => Promise<T>): Promise<T> {
-  const target = paneStayHmsTargetForTransport(intent.transportId);
-  const keys = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-  if (!target.ok || keys.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+  const target = paneStayHmsTargetForTransport(intent.transportId, intent.propertyCode);
+  if (!target.ok || target.target.propertyCode !== intent.propertyCode) {
     throw new Error('filing_recovery_property_unavailable');
   }
   let dispatchTarget = hmsLabtestIntentTarget(intent);
@@ -80,10 +78,13 @@ export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action
     if (recovery.data.cloudTargetKey) throw new Error('filing_recovery_target_unavailable');
     // Older intents can lack the native alias. Establish it from a fresh
     // native read before taking the target lock, then prove it again inside.
+    const initialLock = paneStayCloudTargetLock(target.target, dispatchTarget, { kind: 'independent_cloud' });
+    if (!initialLock) throw new Error('filing_recovery_lock_unavailable');
     const reader = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
-      provePositiveAttachRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; readback?: unknown }>;
+      provePositiveAttachRecovery(intent: HmsLabtestIntent, options?: { signal?: AbortSignal }): Promise<{ outcome: string; readback?: unknown }>;
     };
-    const observed = await reader.provePositiveAttachRecovery(intent);
+    const observed = await initialLock.withLock((signal) => reader.provePositiveAttachRecovery(intent, { signal }),
+      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     const readback = readbackSchema.safeParse(observed.readback);
     if (observed.outcome !== 'verified' || !readback.success || readback.data.confirmation !== dispatchTarget.confirmation) {
       throw new Error('filing_recovery_target_unavailable');
@@ -98,12 +99,12 @@ export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action
   if (recovery.data.cloudTargetKey && recovery.data.cloudTargetKey !== hmsDispatchTargetKey(dispatchTarget!)) {
     throw new Error('filing_recovery_target_unavailable');
   }
-  return lock.withLock(() => recoveryTarget.run({ holdId: intent.holdId, nativeStayId }, action),
+  return lock.withLock((signal) => recoveryTarget.run({ holdId: intent.holdId, nativeStayId }, () => action(signal)),
     acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
 /** Verify the sealed before-image and obtain a fresh, independent positive listing. */
-export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Promise<AttachRecoveryProof> {
+export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent, signal?: AbortSignal): Promise<AttachRecoveryProof> {
   const parsed = recoverySchema.safeParse(intent.recovery);
   if (!parsed.success || intent.operation !== 'attach_document') throw new Error('filing_recovery_unavailable');
   const recovery = parsed.data;
@@ -121,10 +122,10 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent): Pro
   if (!beforeObject || !pngSignature.equals(beforeObject.body.subarray(0, pngSignature.length)) ||
       sha256(beforeObject.body) !== recovery.before.sha256) throw new Error('filing_recovery_evidence_unavailable');
   const reader = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
-    provePositiveAttachRecovery(intent: HmsLabtestIntent): Promise<{ outcome: string; confirmation?: unknown;
+    provePositiveAttachRecovery(intent: HmsLabtestIntent, options?: { signal?: AbortSignal }): Promise<{ outcome: string; confirmation?: unknown;
       readback?: unknown; screenshot?: unknown }>;
   };
-  const observed = await reader.provePositiveAttachRecovery(intent);
+  const observed = await reader.provePositiveAttachRecovery(intent, { signal });
   const readback = readbackSchema.safeParse(observed.readback);
   const lockedTarget = recoveryTarget.getStore();
   if (observed.outcome !== 'verified' || observed.confirmation !== recovery.confirmation || !readback.success ||

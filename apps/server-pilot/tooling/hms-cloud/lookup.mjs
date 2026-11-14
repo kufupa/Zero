@@ -1,13 +1,13 @@
 // Live lookups on an authenticated, unsaved Guest Stay. The caller owns the page.
 import { randomUUID } from 'node:crypto';
 import { ensureApplicationMenuOpen, ensureMenuChild } from './hms-menu-readiness.mjs';
-import { treeClickFallback } from '../playwright-quote/open-guest-stay.mjs';
+import { treeClickFallback } from './open-guest-stay.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { currentVerifiedLabtestProfileToken } from './guest-profile.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
+import { cloudSessionIdentity } from './cloud-session.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
-const PROPERTY = 'HRCEN';
 const LOOKUPS = {
   agency: {
     title: 'Booking Agencies', field: 'ta1', label: 'Primary Booking Agency',
@@ -45,6 +45,8 @@ function forgetVerifiedAr(page) {
 
 // Retain the native record object, not a caller-supplied draft identifier.
 async function arDraftRecord(page) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) return null;
   let record;
   try {
     record = await page.evaluateHandle((origin) => {
@@ -58,23 +60,24 @@ async function arDraftRecord(page) {
       if (!form?.el?.dom || fields.some(([el]) => !form.el.dom.contains(el) || component(el)?.up?.('form') !== form)) return null;
       return form.getRecord?.() ?? null;
     }, ORIGIN);
-    const session = await record.evaluate((item) => {
+    const session = await record.evaluate((item, propertyCode) => {
       const data = item?.data, keys = data && Object.keys(data);
       const exact = (key, value) => keys && Object.hasOwn(data, key) &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
-      if (!exact('propertycode', 'HRCEN') || !exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') || !exact('status', 'New') ||
+      if (!exact('propertycode', propertyCode) || !exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) || !exact('status', 'New') ||
           !keys.includes('bookingsessionid') || keys.filter((key) => key.toLowerCase() === 'bookingsessionid').length !== 1) return null;
       return String(data.bookingsessionid ?? '').trim() || null;
-    });
-    if (session) return { record, session };
+    }, propertyCode);
+    if (session) return { record, session, propertyCode };
   } catch { /* A selection can still succeed without a guarantee proof. */ }
   await record?.dispose().catch(() => {});
   return null;
 }
 
 async function arRecordMatches(page, identity) {
+  if (cloudSessionIdentity(page)?.propertyCode !== identity?.propertyCode) return false;
   try {
-    return await page.evaluate(({ origin, record, session, accountId, profileId }) => {
+    return await page.evaluate(({ origin, record, session, accountId, profileId, propertyCode }) => {
       if (location.origin !== origin) return false;
       const visible = (el) => Boolean((el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
       const names = ['guaranteetype', 'araccountname', 'confirmationnumber'];
@@ -87,7 +90,7 @@ async function arRecordMatches(page, identity) {
       const data = record?.data, keys = data && Object.keys(data);
       const exact = (key, value) => keys && Object.hasOwn(data, key) &&
         keys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1 && String(data[key] ?? '').trim() === value;
-      return Boolean(exact('propertycode', 'HRCEN') && exact('PKID', '@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status', 'New') &&
+      return Boolean(exact('propertycode', propertyCode) && exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) && exact('status', 'New') &&
         exact('bookingsessionid', session) && exact('araccountid', accountId) && exact('arprofileid', profileId));
     }, { origin: ORIGIN, ...identity });
   } catch { return false; }
@@ -102,7 +105,7 @@ export async function verifiedArSelectionToken(page, identity) {
 
 export function isVerifiedArSelectionCurrent(page, identity) {
   const proof = verifiedArSelections.get(page);
-  return Boolean(proof && proof.token === identity.token && proof.session === identity.session &&
+  return Boolean(proof && cloudSessionIdentity(page)?.propertyCode === proof.propertyCode && proof.token === identity.token && proof.session === identity.session &&
     proof.accountId === identity.accountId && proof.profileId === identity.profileId);
 }
 
@@ -143,7 +146,8 @@ async function assertNewGuestStay(page) {
   }
 }
 
-async function assertSelectionProperty(page, propertyCode = PROPERTY) {
+async function assertSelectionProperty(page, propertyCode = cloudSessionIdentity(page)?.propertyCode) {
+  if (!propertyCode || cloudSessionIdentity(page)?.propertyCode !== propertyCode) throw new Error('PROPERTY_MISMATCH');
   if (new URL(page.url()).origin !== ORIGIN) throw new Error('HMS_TARGET_MISMATCH');
   const property = page.locator('[data-qtip="Property"]:visible');
   if (await property.count() !== 1 || (await property.innerText()).trim().toUpperCase() !== propertyCode) {
@@ -152,13 +156,13 @@ async function assertSelectionProperty(page, propertyCode = PROPERTY) {
   return propertyCode;
 }
 
-/** True only for the expected data-only change on the verified blank HRCEN stay. */
+/** True only for the expected data-only change on the verified blank stay. */
 export function isSafePartySelectionRequest({ method, url, postData }, { kind, nativeId, propertyCode, pageOrigin } = {}) {
   try {
     const spec = LOOKUPS[kind];
     const target = new URL(url);
     if (!spec || !clean(nativeId) || method !== 'POST' || target.origin !== ORIGIN || target.origin !== pageOrigin ||
-        target.pathname !== spec.changePath || target.search || target.hash || propertyCode !== PROPERTY) return false;
+        target.pathname !== spec.changePath || target.search || target.hash || !getPropertyRegistration(propertyCode)?.active) return false;
     const body = new URLSearchParams(postData || '');
     const required = ['PKID', 'confirmationnumber', 'propertycode', spec.requestId,
       'recordid', 'reservationid', 'ONLY_DATA_REQUIRED'];
@@ -174,8 +178,8 @@ export function isSafePartySelectionRequest({ method, url, postData }, { kind, n
 }
 
 /** Open a new, unsaved Guest Stay on the supplied authenticated page. */
-export async function openNewGuestStay(page, { propertyCode = PROPERTY } = {}) {
-  if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROPERTY_CODE_REQUIRED');
+export async function openNewGuestStay(page, { propertyCode = cloudSessionIdentity(page)?.propertyCode } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active || cloudSessionIdentity(page)?.propertyCode !== propertyCode) throw new Error('PROPERTY_CODE_REQUIRED');
   let nativeDialog = false;
   const onDialog = () => { nativeDialog = true; };
   page.on('dialog', onDialog);
@@ -229,7 +233,7 @@ export async function openNewGuestStay(page, { propertyCode = PROPERTY } = {}) {
   }
 }
 
-async function openLookupWindow(page, kind, hasNativeDialog, propertyCode = PROPERTY) {
+async function openLookupWindow(page, kind, hasNativeDialog, propertyCode = cloudSessionIdentity(page)?.propertyCode) {
   await assertExpectedDialogs(page, hasNativeDialog());
   const win = lookupWindow(page, kind);
   if (await win.isVisible().catch(() => false)) {
@@ -392,8 +396,8 @@ function coverage(metadata, loaded) {
   return { loaded, total, reportedTotal, pageSize, serverMoreRecords, truncated, possiblyTruncated: truncated !== false };
 }
 
-async function search(page, kind, input, { timeoutMs = 20000, field = 'name', collectPages = false, propertyCode = PROPERTY } = {}) {
-  if (!getPropertyRegistration(propertyCode)?.active) return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED', candidates: [] };
+async function search(page, kind, input, { timeoutMs = 20000, field = 'name', collectPages = false, propertyCode = cloudSessionIdentity(page)?.propertyCode } = {}) {
+  if (!getPropertyRegistration(propertyCode)?.active || cloudSessionIdentity(page)?.propertyCode !== propertyCode) return { outcome: 'input_gap', issue: 'PROPERTY_CODE_REQUIRED', candidates: [] };
   if (field !== 'name' && !(kind === 'organization' && field === 'nativeId')) return { outcome: 'input_gap', issue: 'lookup_field_unsupported' };
   const spec = field === 'nativeId' ? { ...LOOKUPS[kind], filter: 'Organization ID', alias: 'companyid' } : LOOKUPS[kind];
   const query = typeof input === 'string' ? input.trim() : '';
@@ -487,7 +491,7 @@ async function search(page, kind, input, { timeoutMs = 20000, field = 'name', co
     await assertSelectionProperty(page, propertyCode);
     const candidates = rows.map((row) => candidate(row, grid.records, kind, spec, keys));
     const searchId = randomUUID();
-    lastSearch.set(page, { kind, windowId, searchId, controls: JSON.stringify(controls), grid: JSON.stringify(grid.records),
+    lastSearch.set(page, { kind, propertyCode, windowId, searchId, controls: JSON.stringify(controls), grid: JSON.stringify(grid.records),
       candidates: candidates.map((item) => ({ nativeId: item.nativeId, name: item.name,
         ...(kind === 'agency' ? {
           ...(Object.hasOwn(item, 'referenceNumber') ? { referenceNumber: item.referenceNumber } : {}),
@@ -642,7 +646,7 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
     if (candidates.length !== 1 || !candidates[0].name) throw new Error('LOOKUP_ID_NOT_UNIQUE');
     await assertExpectedDialogs(page);
     await assertNewGuestStay(page);
-    pageProperty = await assertSelectionProperty(page);
+    pageProperty = await assertSelectionProperty(page, previous.propertyCode);
     const win = lookupWindow(page, kind);
     if (!await win.isVisible() || await win.getAttribute('id') !== previous.windowId) throw new Error('LOOKUP_STALE');
     const grid = await readGrid(page, previous.windowId);
@@ -692,9 +696,9 @@ async function select(page, kind, selection, { timeoutMs = 20000 } = {}, require
         else if (requestIdVerified && changeResponseVerified && !pendingChangeResponses && Date.now() - stableSince >= 500 &&
             value.trim().toLocaleLowerCase() === candidates[0].name.toLocaleLowerCase()) {
           if (arDraft && arRequestBound && arResponseIdentity &&
-              await arRecordMatches(page, { record: arDraft.record, ...arResponseIdentity }) &&
+              await arRecordMatches(page, { record: arDraft.record, propertyCode: arDraft.propertyCode, ...arResponseIdentity }) &&
               !nativeDialog && !requestFailed && !inFlight.size) {
-            verifiedArSelections.set(page, { record: arDraft.record, ...arResponseIdentity, token: randomUUID() });
+            verifiedArSelections.set(page, { record: arDraft.record, propertyCode: arDraft.propertyCode, ...arResponseIdentity, token: randomUUID() });
             nativeReadback.arprofileid = arResponseIdentity.profileId;
             arDraft = null;
           }
@@ -746,7 +750,7 @@ export const searchOrganization = searchOrganizations;
 export const searchArAccount = searchArAccounts;
 
 /** Close the current party picker without choosing a candidate or changing the draft. */
-export async function closeGuestStayPartyPicker(page, { propertyCode } = {}) {
+export async function closeGuestStayPartyPicker(page, { propertyCode = cloudSessionIdentity(page)?.propertyCode } = {}) {
   if (!page || typeof page.locator !== 'function' || typeof page.route !== 'function') {
     return { outcome: 'input_gap', issue: 'PAGE_REQUIRED' };
   }

@@ -1,6 +1,6 @@
 // Open the selected Stay 360 record and read its Record View in the same page.
 import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } from './stay360-notes.mjs';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { readNativeSavedStayPreimage } from './stay360-native-preimage.mjs';
 import { expandStay360Panel } from './stay360-panel-expansion.mjs';
 

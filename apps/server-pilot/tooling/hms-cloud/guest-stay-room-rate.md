@@ -1,30 +1,9 @@
 # Guest Stay room and rate catalogs
 
-These tools operate on the caller's authenticated, **unsaved HRCEN Guest Stay**.
-Install the existing read-only guard and open a new stay first. Serialize all
-operations on the page, including calls to other HMS modules. The tools verify
-the HMS origin, HRCEN toolbar and blank confirmation before acting; they do not
-save a stay. Unexpected dialogs are left untouched.
-
-```js
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
-import { openNewGuestStay } from './lookup.mjs';
-import {
-  searchRoomTypes, searchRatePlans, inspectRoomRateCandidate,
-  selectRoomType, closeRoomRatePicker,
-} from './guest-stay-room-rate.mjs';
-
-await installReadOnlyGuard(page.context());
-await openNewGuestStay(page);
-const rooms = await searchRoomTypes(page, { query, limit: 20 });
-// The caller inspects the candidates and explicitly supplies the chosen ID or code.
-const details = await inspectRoomRateCandidate(page, { searchId: rooms.searchId, nativeId: chosenId });
-const selection = await selectRoomType(page, { searchId: rooms.searchId, nativeId: chosenId });
-
-const rates = await searchRatePlans(page, { query, limit: 20 });
-const rateDetails = await inspectRoomRateCandidate(page, { searchId: rates.searchId, code: chosenCode });
-await closeRoomRatePicker(page);
-```
+For standalone catalog reads, call `withCloudRoomRateReadSession` from
+`hms-lookup-read-session.mjs` with an explicit property and transport. The
+session closes the browser before returning the catalog. The caller reviews
+candidates; catalog results do not authorize a booking.
 
 `query` is an optional case-insensitive substring of a loaded candidate's ID,
 code or name. `offset` defaults to 0 and `limit` to 20 (maximum 100). Results
@@ -71,7 +50,7 @@ unexpected dialogs; it never makes the incomplete catalog selectable.
 Room selection requires a unique current candidate with both a native ID and a
 code. A non-unique supplied identifier returns `ambiguous` on inspection and selection
 refuses; a distinguishing ID/code pair can resolve it. The tool checks the selected row, fences both observed
-field-change requests to `ONLY_DATA_REQUIRED=true`, the empty HRCEN reservation keys and chosen ID/code,
+field-change requests to `ONLY_DATA_REQUIRED=true`, the empty selected-property reservation keys and chosen ID/code,
 checks their responses, and reads back the form. `changedFields` includes visible
 fields added, removed or changed. If it returns `selection_uncertain`, an action
 may have occurred. The page is quarantined for later selections using the shared

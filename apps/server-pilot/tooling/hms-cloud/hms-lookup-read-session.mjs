@@ -6,13 +6,12 @@ import { searchGuestProfiles, inspectGuestProfileCandidates, closeGuestProfilePi
 import { listGuestStayDropdown, listCmsMessageIds, closeCmsMessageIdPicker } from './guest-stay-form.mjs';
 import { searchGuestStaySourceBusiness, inspectGuestStaySourceBusiness,
   closeGuestStaySourceBusinessPicker } from './guest-stay-source-business.mjs';
-import { searchRoomTypes, searchRoomTypesForCharge, searchRatePlans, closeRoomRatePicker } from './guest-stay-room-rate.mjs';
+import { searchRoomTypes, searchRoomTypesForCharge, searchRatePlans } from './guest-stay-room-rate.mjs';
 
 /** Pure lookup tools share one verified, guarded blank stay and never select a record. */
 export function createCloudLookupReadTools(page, propertyCode, signal) {
   if (!getPropertyRegistration(propertyCode)?.active) throw new Error('HMS_PROPERTY_REQUIRED');
   let tail = Promise.resolve();
-  let roomRateAttempted = false;
   return (request = {}) => {
     const run = async () => {
       signal?.throwIfAborted();
@@ -36,23 +35,6 @@ export function createCloudLookupReadTools(page, propertyCode, signal) {
           { field: request.field, query: request.query }, { propertyCode }); break;
         case 'inspectGuestStaySourceBusiness': result = await inspectGuestStaySourceBusiness(page, request); break;
         case 'closeGuestStaySourceBusinessPicker': result = await closeGuestStaySourceBusinessPicker(page); break;
-        case 'searchRoomTypes':
-        case 'searchRoomTypesForCharge':
-        case 'searchRatePlans': {
-          if (propertyCode !== 'HRCEN') {
-            result = { outcome: 'unavailable', issue: 'NATIVE_ROOM_RATE_LOOKUP_UNVERIFIED', candidates: [] };
-            break;
-          }
-          roomRateAttempted = true;
-          const search = tool === 'searchRoomTypes' ? searchRoomTypes :
-            tool === 'searchRoomTypesForCharge' ? searchRoomTypesForCharge : searchRatePlans;
-          result = await search(page, request);
-          break;
-        }
-        case 'closeRoomRatePicker':
-          result = roomRateAttempted ? await closeRoomRatePicker(page) : { outcome: 'not_open' };
-          if (['closed_unsaved', 'not_open'].includes(result.outcome)) roomRateAttempted = false;
-          break;
         default: return { id, tool, outcome: 'input_gap', issue: 'unknown_tool' };
       }
       signal?.throwIfAborted();
@@ -64,7 +46,7 @@ export function createCloudLookupReadTools(page, propertyCode, signal) {
   };
 }
 
-export async function withCloudLookupReadSession(operation, { propertyCode, signal, transportId } = {}) {
+export async function withCloudLookupReadSession(operation, { propertyCode, signal, transportId, credentialLease } = {}) {
   const property = getPropertyRegistration(propertyCode);
   if (!property?.active || typeof operation !== 'function') throw new Error('HMS_PROPERTY_REQUIRED');
   return withCloudReadSession(async (page, identity) => {
@@ -74,5 +56,44 @@ export async function withCloudLookupReadSession(operation, { propertyCode, sign
     }
     await openNewGuestStay(page, { propertyCode });
     return operation({ page, runTool: createCloudLookupReadTools(page, propertyCode, signal) });
-  }, { propertyCode, signal, startScreen: 'OSRESV', ...(transportId !== undefined && { transportId }) });
+  }, { propertyCode, signal, credentialLease, startScreen: 'OSRESV', ...(transportId !== undefined && { transportId }) });
+}
+
+// Rate Shop cannot be cancelled by a read-only session. Isolate each catalogue
+// in its own browser and publish the callback result only after that browser closes.
+export async function withCloudRoomRateReadSession(tool, operation, { propertyCode, signal, transportId, credentialLease } = {}) {
+  const searches = { searchRoomTypes, searchRoomTypesForCharge, searchRatePlans };
+  const search = Object.hasOwn(searches, tool) ? searches[tool] : null;
+  const property = getPropertyRegistration(propertyCode);
+  if (!search || typeof operation !== 'function') throw new Error('ROOM_RATE_LOOKUP_REQUIRED');
+  if (!property?.active) throw new Error('HMS_PROPERTY_REQUIRED');
+  return withCloudReadSession(async (page, identity) => {
+    if (!identity || identity.propertyCode !== propertyCode || identity.tenantId !== property.expectedTenant ||
+        identity.landingPropertyCode !== property.landingPropertyCode || identity.origin !== property.origin) {
+      throw new Error('HMS_PROPERTY_MISMATCH');
+    }
+    await openNewGuestStay(page, { propertyCode });
+    let accepting = true, tail = Promise.resolve();
+    const runTool = request => {
+      let input;
+      try { input = structuredClone(request); } catch { return Promise.resolve({ outcome: 'input_gap', issue: 'INVALID_REQUEST' }); }
+      if (!accepting) return Promise.resolve({ id: input?.id, tool: input?.tool, outcome: 'refused', issue: 'SESSION_CLOSED' });
+      const pending = tail.then(async () => {
+        signal?.throwIfAborted();
+        if (!input || typeof input !== 'object' || Array.isArray(input) || input.tool !== tool) {
+          return { id: input?.id, tool: input?.tool, outcome: 'input_gap', issue: 'unknown_tool' };
+        }
+        if (input.propertyCode !== undefined && input.propertyCode !== propertyCode) {
+          return { id: input.id, tool, outcome: 'input_gap', issue: 'PROPERTY_MISMATCH' };
+        }
+        const result = await search(page, input);
+        signal?.throwIfAborted();
+        return { id: input.id, tool, ...result };
+      });
+      tail = pending.then(() => undefined, () => undefined);
+      return pending;
+    };
+    try { return await operation({ runTool }); }
+    finally { accepting = false; await tail; }
+  }, { propertyCode, signal, credentialLease, startScreen: 'OSRESV', ...(transportId !== undefined && { transportId }) });
 }

@@ -3,11 +3,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { cloudWriterQuiesced } from '../../tooling/hms-cloud/cloud-session.mjs';
+import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { canonicalJson } from './draft-approval.js';
 import { hmsDispatchTargetKey } from './hms-dispatch-target.js';
@@ -16,6 +18,9 @@ import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation
 import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf,
   RESERVATION_WORKFLOW_V2_STATE_KEY } from './reservation-workflow-v2-state.js';
 import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
+import { paneStayCloudTargetLock } from './pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
+import { readbackMatches } from './reservation-workflow-v2-amend.js';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const uuid = z.string().uuid();
@@ -32,13 +37,15 @@ const recoverySchema = z.object({
   approved: z.record(z.string(), z.unknown()),
   approvedPrices: z.record(z.string(), z.unknown()),
   preserved: z.record(z.string(), z.unknown()),
+  applied: z.object({ mealPlan: z.string().min(1).max(120) }).passthrough(),
+  expectedFinalCommission: z.number().finite().min(0).max(100).optional(),
   nativeDigest: digest,
   recoveryBaseline: z.object({
     beforeNote: z.string().max(2000), beforeParties: z.record(z.string(), z.unknown()),
     beforeRecipient: z.string().max(1000), beforeGuestEmail: z.string().max(1000).nullable(),
     beforeBookerName: z.string().max(1000).nullable(), beforeBookerContact: z.string().max(1000).nullable(),
     beforeGuaranteeCode: z.string().regex(/^[A-Z0-9]{1,40}$/), beforeSavedRates: z.unknown().nullable(),
-  }).strict(),
+  }).passthrough(),
   requestId: z.string().min(1).max(80), hintId: z.string().min(1).max(80), operationId: uuid,
   draftRevision: z.number().int().nonnegative(), prepareObservationRef: z.string().min(1).max(160),
 }).passthrough();
@@ -54,32 +61,15 @@ type AmendRecoveryProof = {
 };
 
 function approvedReadbackMatches(readback: Record<string, unknown>, recovery: z.infer<typeof recoverySchema>): boolean {
-  const target = recovery.approvedAfter, changes = recovery.approved, preserved = recovery.preserved;
-  for (const key of ['confirmation', 'nativeStayId', 'arrival', 'departure', 'roomType', 'ratePlan', 'adults', 'children',
-    'firstName', 'lastName']) {
-    if (readback[key] !== target[key]) return false;
-  }
-  if (Array.isArray(target.childAges)) {
-    if (!Array.isArray(readback.childAges) || canonicalJson([...readback.childAges].sort((a, b) => Number(a) - Number(b))) !==
-        canonicalJson([...target.childAges].sort((a, b) => Number(a) - Number(b)))) return false;
-  }
-  for (const key of ['guestEmail', 'bookerName', 'bookerContact']) {
-    if (Object.hasOwn(changes, key) && readback[key] !== changes[key]) return false;
-    if (!Object.hasOwn(changes, key) && Object.hasOwn(preserved, key) && readback[key] !== preserved[key]) return false;
-  }
-  if (readback.cmsSend !== changes.cmsSend) return false;
-  if (changes.cmsSend === true) {
-    if (readback.cmsMessageId !== changes.cmsMessageId || readback.cmsRecipient !== changes.cmsRecipient) return false;
-  } else if (readback.cmsRecipient !== preserved.cmsRecipient ||
-      (Object.hasOwn(preserved, 'cmsMessageId') && readback.cmsMessageId !== preserved.cmsMessageId)) return false;
-  const actualPrice = row(readback.price), approvedPrice = recovery.approvedPrices;
-  return Boolean(actualPrice && actualPrice.version === approvedPrice.version && actualPrice.currency === approvedPrice.currency &&
-    actualPrice.totalCents === approvedPrice.totalCents && actualPrice.averageCents === approvedPrice.averageCents);
+  return Boolean(readbackMatches(readback, { target: recovery.approvedAfter, nativeChanges: recovery.approved,
+    preserved: recovery.preserved, recoveryBaseline: recovery.recoveryBaseline, approvedPrices: recovery.approvedPrices,
+    applied: recovery.applied, expectedFinalCommission: recovery.expectedFinalCommission }));
 }
 
-function checkedRecovery(intent: HmsLabtestIntent) {
-  const parsed = recoverySchema.safeParse(intent.recovery), target = hmsLabtestIntentTarget(intent);
-  if (!parsed.success || intent.operation !== 'amend' || intent.propertyCode !== 'HRCEN' || !target || target.kind !== 'saved' ||
+function checkedRecovery(intent: HmsLabtestIntent, value: unknown) {
+  const parsed = recoverySchema.safeParse(value), target = hmsLabtestIntentTarget(intent);
+  if (!parsed.success || intent.operation !== 'amend' || !target || target.kind !== 'saved' ||
+      (parsed.data.selected.propertyCode ?? 'HRCEN') !== intent.propertyCode || target.propertyCode !== intent.propertyCode ||
       target.confirmation !== parsed.data.selected.confirmation || target.nativeStayId !== parsed.data.selected.reservationStayId ||
       intent.grantId !== parsed.data.operationId || !digest.safeParse(intent.approvedDigest).success ||
       parsed.data.beforeShot.runId !== parsed.data.runId ||
@@ -87,18 +77,47 @@ function checkedRecovery(intent: HmsLabtestIntent) {
   return { recovery: parsed.data, dispatchTarget: target };
 }
 
-/** An advisory lock alone cannot prove the original writer and browser have stopped. */
-export async function withAmendRecoveryLock<T>(_intent: HmsLabtestIntent, _action: () => Promise<T>): Promise<T> {
-  throw new Error('amend_automatic_recovery_unavailable_operator_must_verify_writer_closed');
+async function loadRecovery(db: DB, intent: HmsLabtestIntent) {
+  const summary = row(intent.recovery);
+  if (!summary || !cloudWriterQuiesced(summary.writer) || !digest.safeParse(summary.recoveryEvidenceDigest).success ||
+      summary.operationId !== intent.grantId) throw new Error('amend_recovery_writer_unverified');
+  const events = await db.select({ actorKind: workEvent.actorKind, value: workEvent.value }).from(workEvent)
+    .where(and(eq(workEvent.workItemId, intent.workItemId), eq(workEvent.type, 'write.evidence'),
+      eq(workEvent.fieldPath, 'nava.hms.amend.recovery.v1'),
+      sql`${workEvent.value}->>'operationId' = ${intent.grantId}`)).limit(2);
+  const event = events.length === 1 && events[0]?.actorKind === 'system' ? row(events[0].value) : null;
+  const recovery = row(event?.recovery);
+  if (!event || event.sourceDigest !== intent.sourceDigest || !recovery || sha256(recovery) !== summary.recoveryEvidenceDigest) {
+    throw new Error('amend_recovery_evidence_unverified');
+  }
+  return checkedRecovery(intent, { ...recovery, runId: summary.runId, beforeShot: summary.beforeShot });
+}
+
+/** The original writer must be gone before opening a fresh reader under the same target aliases. */
+export async function withAmendRecoveryLock<T>(intent: HmsLabtestIntent, action: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+  const summary = row(intent.recovery), dispatchTarget = hmsLabtestIntentTarget(intent);
+  const target = paneStayHmsTargetForTransport(intent.transportId, intent.propertyCode);
+  if (!summary || !cloudWriterQuiesced(summary.writer) || intent.operation !== 'amend' ||
+      !dispatchTarget || dispatchTarget.kind !== 'saved' || dispatchTarget.propertyCode !== intent.propertyCode ||
+      dispatchTarget.confirmation !== summary.confirmation || dispatchTarget.nativeStayId !== summary.reservationStayId ||
+      !target.ok || target.target.propertyCode !== intent.propertyCode) throw new Error('amend_recovery_target_unavailable');
+  const lock = paneStayCloudTargetLock(target.target, dispatchTarget, { kind: 'independent_cloud' });
+  if (!lock) throw new Error('amend_recovery_lock_unavailable');
+  return lock.withLock((signal) => {
+    signal?.throwIfAborted();
+    if (!cloudWriterQuiesced(summary.writer)) throw new Error('amend_recovery_writer_unverified');
+    return recoveryLock.run({ holdId: intent.holdId, targetKey: hmsDispatchTargetKey(dispatchTarget), target: target.target },
+      () => action(signal));
+  }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
 /** Re-read the approved native after-state in a fresh guarded session; never retries Save. */
-export async function proveAmendRecovery(_db: DB, intent: HmsLabtestIntent): Promise<AmendRecoveryProof> {
-  const { recovery, dispatchTarget } = checkedRecovery(intent), locked = recoveryLock.getStore();
+export async function proveAmendRecovery(db: DB, intent: HmsLabtestIntent, signal?: AbortSignal): Promise<AmendRecoveryProof> {
+  const { recovery, dispatchTarget } = await loadRecovery(db, intent), locked = recoveryLock.getStore();
   const owner = `${intent.actorUserId}:${intent.transportId}`;
   if (!locked || locked.holdId !== intent.holdId || locked.targetKey !== hmsDispatchTargetKey(dispatchTarget) ||
       !await verifyStoredHmsShot({ ...recovery.beforeShot, name: 'before.png', owner,
-        propertyCode: 'HRCEN', workItemId: intent.workItemId }, 'before.png')) {
+        propertyCode: intent.propertyCode, workItemId: intent.workItemId }, 'before.png')) {
     throw new Error('amend_recovery_before_image_unverified');
   }
   const work = await mkdtemp(join(tmpdir(), 'hms-amend-recovery-'));
@@ -108,16 +127,13 @@ export async function proveAmendRecovery(_db: DB, intent: HmsLabtestIntent): Pro
       readCloudPaneAmend(input: Record<string, unknown>): Promise<Record<string, unknown>>;
     };
     const selected = recovery.selected;
-    const observed = await native.readCloudPaneAmend({ target: locked.target, selected,
+    const observed = await native.readCloudPaneAmend({ ...recovery.recoveryBaseline,
+      target: locked.target, transportId: intent.transportId, selected,
       confirmation: selected.confirmation, arrival: selected.arrival, changes: recovery.approved,
-      allowRealGuest: true, beforeNote: recovery.recoveryBaseline.beforeNote,
-      beforeParties: recovery.recoveryBaseline.beforeParties, beforeRecipient: recovery.recoveryBaseline.beforeRecipient,
-      beforeGuestEmail: recovery.recoveryBaseline.beforeGuestEmail,
-      beforeBookerName: recovery.recoveryBaseline.beforeBookerName,
-      beforeBookerContact: recovery.recoveryBaseline.beforeBookerContact,
-      beforeGuaranteeCode: recovery.recoveryBaseline.beforeGuaranteeCode,
-      beforeSavedRates: recovery.recoveryBaseline.beforeSavedRates, approvedPrices: recovery.approvedPrices,
-      afterScreenshot: screenshot, signal: AbortSignal.timeout(8 * 60_000) });
+      allowRealGuest: true, approvedPrices: recovery.approvedPrices,
+      capturePriceComponents: true, captureMealPlan: true, approvedMealPlan: recovery.applied.mealPlan,
+      ...(recovery.expectedFinalCommission === undefined ? {} : { expectedFinalCommission: recovery.expectedFinalCommission }),
+      afterScreenshot: screenshot, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8 * 60_000)]) : AbortSignal.timeout(8 * 60_000) });
     const readback = row(observed.readback);
     if (observed.outcome !== 'matched' || !readback || !approvedReadbackMatches(readback, recovery) ||
         readback.confirmation !== dispatchTarget.confirmation || readback.nativeStayId !== dispatchTarget.nativeStayId) {
@@ -126,11 +142,11 @@ export async function proveAmendRecovery(_db: DB, intent: HmsLabtestIntent): Pro
     const stage = await mkdtemp(join(tmpdir(), 'hms-amend-recovery-shot-'));
     try {
       await copyFile(screenshot, join(stage, 'saved.png'));
-      const shots = await persistHmsShots({ propertyCode: 'HRCEN', workItemId: intent.workItemId,
+      const shots = await persistHmsShots({ propertyCode: intent.propertyCode, workItemId: intent.workItemId,
         runId: recoveryRunId, sourceDir: stage, owner, now: Date.now() });
       const shot = shots?.find((item) => item.name === 'saved.png');
       if (!shot || !await verifyStoredHmsShot({ runId: recoveryRunId, name: 'saved.png', sha256: shot.sha256,
-        owner, propertyCode: 'HRCEN', workItemId: intent.workItemId }, 'saved.png')) {
+        owner, propertyCode: intent.propertyCode, workItemId: intent.workItemId }, 'saved.png')) {
         throw new Error('amend_recovery_saved_image_unverified');
       }
       return { confirmation: String(readback.confirmation), nativeStayId: String(readback.nativeStayId),
@@ -141,14 +157,14 @@ export async function proveAmendRecovery(_db: DB, intent: HmsLabtestIntent): Pro
 
 /** Resolve only the exact unknown v2 operation bound into the original durable Amend intent. */
 export async function recordRecoveredAmend(tx: CreateFenceTransaction, intent: HmsLabtestIntent, proof: AmendRecoveryProof): Promise<void> {
-  const { recovery, dispatchTarget } = checkedRecovery(intent);
+  const { recovery, dispatchTarget } = await loadRecovery(tx as unknown as DB, intent);
   if (proof.confirmation !== dispatchTarget.confirmation || proof.nativeStayId !== dispatchTarget.nativeStayId ||
       proof.savedShot.runId === recovery.runId || proof.readbackDigest !== sha256(proof.nativeReadback) ||
       !approvedReadbackMatches(proof.nativeReadback, recovery)) throw new Error('amend_recovery_proof_scope_changed');
   const owner = `${intent.actorUserId}:${intent.transportId}`;
-  if (!await verifyStoredHmsShot({ ...recovery.beforeShot, name: 'before.png', owner, propertyCode: 'HRCEN',
+  if (!await verifyStoredHmsShot({ ...recovery.beforeShot, name: 'before.png', owner, propertyCode: intent.propertyCode,
     workItemId: intent.workItemId }, 'before.png') ||
-      !await verifyStoredHmsShot({ ...proof.savedShot, name: 'saved.png', owner, propertyCode: 'HRCEN',
+      !await verifyStoredHmsShot({ ...proof.savedShot, name: 'saved.png', owner, propertyCode: intent.propertyCode,
         workItemId: intent.workItemId }, 'saved.png')) throw new Error('amend_recovery_screenshot_scope_changed');
   const [item] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, intent.transportId))).limit(1).for('update');
@@ -165,19 +181,21 @@ export async function recordRecoveredAmend(tx: CreateFenceTransaction, intent: H
     observation.criteria.hintId === recovery.hintId && observation.criteria.semanticDigest === intent.approvedDigest);
   const preparedResult = row(prepared?.result);
   if (!draft || !prior || !preparedResult || intent.transportId !== draft.transportId || intent.propertyCode !== draft.propertyCode ||
-      draft.propertyCode !== 'HRCEN' || intent.sourceDigest !== draft.source.sourceHash ||
+      intent.sourceDigest !== draft.source.sourceHash ||
       prior.draftRevision !== recovery.draftRevision || canonicalJson(preparedResult.target) !== canonicalJson(recovery.approvedAfter) ||
       canonicalJson(preparedResult.before) !== canonicalJson(recovery.selected) ||
       canonicalJson(preparedResult.nativeChanges) !== canonicalJson(recovery.approved) ||
       canonicalJson(preparedResult.preserved) !== canonicalJson(recovery.preserved) ||
       canonicalJson(preparedResult.recoveryBaseline) !== canonicalJson(recovery.recoveryBaseline) ||
+      canonicalJson(preparedResult.applied) !== canonicalJson(recovery.applied) ||
+      preparedResult.expectedFinalCommission !== recovery.expectedFinalCommission ||
       preparedResult.nativeDigest !== recovery.nativeDigest ||
       canonicalJson(preparedResult.approvedPrices) !== canonicalJson(recovery.approvedPrices)) {
     throw new Error('reservation_workflow_v2_amend_recovery_scope_changed');
   }
   const observation: ReservationWorkflowV2Observation = {
     ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status: 'complete',
-    observedAt: new Date().toISOString(), propertyCode: 'HRCEN', sourceMessageId: draft.source.messageId, sourceRefs: [],
+    observedAt: new Date().toISOString(), propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
     criteria: { workflow: 'amend', requestId: recovery.requestId, hintId: recovery.hintId,
       operationId: recovery.operationId, recovered: true, sourceHash: draft.source.sourceHash,
       approvedDigest: intent.approvedDigest, prepareObservationRef: recovery.prepareObservationRef },

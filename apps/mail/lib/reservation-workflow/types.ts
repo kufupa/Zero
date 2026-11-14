@@ -46,6 +46,22 @@ export type ReservationWorkflowV2Session = {
   revisionHead: number;
   seq: number;
   preparationViews: ReservationPreparationView[];
+  workflowDispatches?: ReservationWorkflowDispatch[];
+  workflowPreparations?: ReservationWorkflowPreparation[];
+};
+
+export type ReservationWorkflowPreparation = {
+  endpoint: 'execute' | 'createGuestProfile' | 'executeServices' | 'executeSavedServices';
+  requestId: string; allocationId?: string; serviceId?: string; targetRef?: ReservationSavedServiceTarget;
+  prepareRef?: string; reviewedPrepareRef?: string;
+  preparedRef: string; expectedRevision: number; generationId: string;
+};
+
+export type ReservationWorkflowDispatch = {
+  endpoint: 'execute' | 'createGuestProfile' | 'executeServices' | 'executeSavedServices';
+  requestId: string; allocationId?: string; serviceId?: string;
+  status: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'needs_reconcile' | 'needs_review' | 'succeeded' | 'failed';
+  runId: string | null; grantId: string; operationId: string;
 };
 
 export type ReservationPreparationView = {
@@ -58,6 +74,8 @@ export type ReservationPreparationView = {
   price?: { averageRate?: unknown; totalRate?: unknown; currency?: unknown };
   priceComparison?: Record<string, unknown>;
   observedAt?: string;
+  receipt?: { preparedRef: string; expectedRevision: number; generationId: string };
+  dispatch?: { status: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'needs_reconcile'; runId: string | null; grantId: string; operationId: string };
 };
 
 export type ReservationFieldProjection = {
@@ -154,7 +172,7 @@ export interface ReservationWorkflowClient {
   guestProfileOptions(input: ReservationCommandContext & { requestId: string; allocationId: string;
     field: ReservationGuestProfileOptionField }): Promise<ReservationPaneSnapshot>;
   prepareGuestProfile(input: ReservationGuestProfileCommand): Promise<ReservationPaneSnapshot>;
-  createGuestProfile(input: ReservationGuestProfileCommand & { prepareRef: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
+  createGuestProfile(input: ReservationGuestProfileCommand & { prepareRef: string; preparedRef: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;

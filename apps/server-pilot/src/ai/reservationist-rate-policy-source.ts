@@ -3,7 +3,7 @@ import {quoteDigest,type Board,type InclusionPolicy,type QuoteSourceRecord} from
 import type {AuthorizedTaskAnswer,ReservationistExecutionServices} from './reservationist-execution.js';
 import type {PreparedFact} from './prepared-draft-input.js';
 import {deriveStaffAnswerTopics,ReservationistTaskEvidenceUnavailable} from './reservationist-execution.js';
-import {getProfileLetter,profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
+import {getProfileLetter,profileFor} from '../../tooling/hms-cloud/property-profile.mjs';
 import {boardsFor,norm} from './rate-options.js';
 
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];

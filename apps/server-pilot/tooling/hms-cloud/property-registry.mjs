@@ -1,4 +1,4 @@
-import { installAvailabilityReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { installAvailabilityReadOnlyGuard } from './hms-read-only-guard.mjs';
 
 export const PROPERTY_REGISTRY_SCHEMA = Object.freeze({
   $schema: 'https://json-schema.org/draft/2020-12/schema',

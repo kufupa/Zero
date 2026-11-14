@@ -58,7 +58,7 @@ vi.mock('node:fs/promises', () => fsState.mocks);
 const { listQuoteRunScreenshots, quoteRunIdFromEvidenceDirectory, readQuoteRunScreenshot } =
   await import('../src/ai/staff-quote-evidence.js');
 
-const OUT = '/synthetic/.private/playwright-quote/runs';
+const OUT = '/synthetic/.private/hms-cloud/runs';
 const RUN = '2026-10-07T23-33-12-345Z-abcd1234';
 const RUN_DIR = `${OUT}/${RUN}`;
 const SHOTS = `${RUN_DIR}/screenshots`;

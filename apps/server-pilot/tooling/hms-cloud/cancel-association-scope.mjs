@@ -1,5 +1,6 @@
 // Verify the complete native Associated Reservations response for one saved stay.
 import { openStay360RecordTab } from './hms-readers.mjs';
+import { installPageRequestFence } from './page-request-fence.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const unique = (object, key) => object && Object.hasOwn(object, key) &&
@@ -48,7 +49,7 @@ export function matchesAssociationRequest(request, frame, expected) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
     const required = { CURRENT_TAB_NAME: 'RAN', SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV',
-      propertycode: 'HRCEN', confirmationnumber: expected.confirmation, reservationstayid: expected.nativeStayId,
+      propertycode: expected.propertyCode, confirmationnumber: expected.confirmation, reservationstayid: expected.nativeStayId,
       guestid: expected.guestId, firstname: expected.firstName, lastname: expected.lastName };
     return request.method() === 'POST' && request.frame() === frame && url.origin === ORIGIN &&
       url.pathname === '/web/base/OSRESV.RAN' && !url.search && !url.hash &&
@@ -66,7 +67,7 @@ function currentOnlyScope(values, expected) {
   const bulk = values?.associateconfnumbers;
   const currentSelection = !Object.hasOwn(values ?? {}, 'associateconfnumbers') ||
     (unique(values, 'associateconfnumbers') && [null, '', expected.confirmation].includes(bulk));
-  return exact(values, 'propertycode', 'HRCEN') && exact(values, 'guestid', expected.guestId) &&
+  return exact(values, 'propertycode', expected.propertyCode) && exact(values, 'guestid', expected.guestId) &&
     exact(values, 'firstname', expected.firstName) && exact(values, 'lastname', expected.lastName) &&
     exact(values, 'parentconfirmationnumber', expected.confirmation) && currentSelection &&
     ['coordinatorreservationid', 'groupid', 'reservationshareid'].every(empty) &&
@@ -79,6 +80,19 @@ export async function verifySingleCancellationScope(page, expected) {
   if (await frames.count() !== 1) return false;
   const frame = await (await frames.elementHandle())?.contentFrame();
   if (!frame) return false;
+  const fence = await installPageRequestFence(page, ['/web/base/OSRESV.RAN']);
+  const scope = fence.open();
+  let allowed = false;
+  const gate = async route => {
+    const request = route.request();
+    let path;
+    try { path = new URL(request.url()).pathname; } catch { return route.abort(); }
+    if (path !== '/web/base/OSRESV.RAN') return route.fallback();
+    if (allowed || !matchesAssociationRequest(request, frame, expected) || !scope.allow(request)) return route.abort();
+    allowed = true;
+    return route.fallback();
+  };
+  await page.route('**/*', gate);
   const pending = page.waitForResponse((response) => matchesAssociationRequest(response.request(), frame, expected),
     { timeout: 25_000 }).catch(() => null);
   try {
@@ -91,4 +105,5 @@ export async function verifySingleCancellationScope(page, expected) {
     await openStay360RecordTab(page, expected.confirmation, 'Record View');
     return true;
   } catch { return false; }
+  finally { scope.close(); await page.unroute('**/*', gate).catch(() => {}); }
 }

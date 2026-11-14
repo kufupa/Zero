@@ -4,12 +4,17 @@ import { rm } from 'node:fs/promises';
 import { CREATE_GUARANTEES } from '../tooling/hms-cloud/cloud-create-policy.mjs';
 
 const fixture = vi.hoisted(() => ({ page: null as unknown }));
-vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', async (original) => ({
-  ...await original<typeof import('../tooling/playwright-quote/centurion-stay360.mjs')>(),
-  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>) => operation(fixture.page),
+vi.mock('../tooling/hms-cloud/cloud-session.mjs', async (original) => ({
+  ...await original<typeof import('../tooling/hms-cloud/cloud-session.mjs')>(),
+  withCloudCredentialLease: async (_property: string, operation: (lease: unknown) => Promise<unknown>) => operation({}),
+  withCloudWriterSession: async (operation: (page: unknown, identity: unknown) => Promise<unknown>) =>
+    operation(fixture.page, { propertyCode: 'HRCEN' }),
+  cloudSessionIdentity: () => ({ propertyCode: 'HRCEN' }),
+  cloudWriterIdentity: () => ({ id: 'synthetic-writer' }),
+  cloudWriterCurrent: () => true,
 }));
-vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', async (original) => ({
-  ...await original<typeof import('../tooling/playwright-quote/hms-read-only-guard.mjs')>(),
+vi.mock('../tooling/hms-cloud/hms-read-only-guard.mjs', async (original) => ({
+  ...await original<typeof import('../tooling/hms-cloud/hms-read-only-guard.mjs')>(),
   installReadOnlyGuard: async () => {},
 }));
 vi.mock('../tooling/hms-cloud/lookup.mjs', async (original) => ({
@@ -66,7 +71,7 @@ function visibleFields() {
   return Object.entries({ guestid: '123', status: 'Reserved', firstname: 'Proof', lastname: 'Labtest',
     arrivaldate: '29-DEC-2027', departuredate: '31-DEC-2027', adults: '1', children: '0', child1: '0',
     child2: '0', child3: '0', roomtype: 'STQN', rateplan: 'BAR', company: '',
-    averagerate: '1000.00', totalrate: '2000.00',
+    averagerate: '1000.00', totalrate: '2000.00', averageratecurr: 'ZAR', totalratecurr: 'ZAR',
     guaranteetype: 'Non-Guaranteed Individual', reservationnote: 'Synthetic note',
     udfchkbox04: false, udfchar13: '', emailaddress: '' }).map(([name, value]) => ({
       name, value, ...(name === 'reservationnote' ? { rawValue: value } : {}),
@@ -108,8 +113,12 @@ function simulatedPage(order: string[], options: { guarantee?: string; bodyGuara
     url: () => 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/OSRESV.HDR?pageaction=SAVE',
     postData: () => body.toString(), headers: () => ({ 'content-type': 'application/x-www-form-urlencoded' }) };
   const response = { request: () => request, status: () => 200 };
+  let contextEntered = false;
   const route = {
-    request: () => request, fallback: async () => contextHandler?.(route), abort: async () => { order.push('abort'); },
+    request: () => request, fallback: async () => {
+      if (!contextEntered) { contextEntered = true; return contextHandler?.(route); }
+      order.push('continue'); ready.resolve(response);
+    }, abort: async () => { order.push('abort'); },
     continue: async () => { order.push('continue'); ready.resolve(response); },
   };
   return {
@@ -152,8 +161,8 @@ describe('server-owned create callbacks through the real session and writer', ()
         withSavedSession: async (operation: (context: unknown) => Promise<unknown>) => operation({
           runTool: async () => ({ outcome: 'ok', record: {
             nativePreimage: { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1',
-              guestId: '123', status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: '2027-12-29',
-              departure: '2027-12-31', roomType: 'STQN', ratePlan: 'BAR', adults: 1, children: 0, guaranteeCode: 'NGI' },
+              guestId: '123', reservationStayId: '42', status: 'Reserved', firstName: 'Proof', lastName: 'Labtest', arrival: '2027-12-29',
+              departure: '2027-12-31', roomType: 'STQN', ratePlan: 'BAR', adults: 1, children: 0, childBands: { child1: 0, child2: 0, child3: 0 }, guaranteeCode: 'NGI' },
             details: { fields: visibleFields(), captureScope: 'synthetic' },
           } }),
         }),
@@ -179,7 +188,7 @@ describe('server-owned create callbacks through the real session and writer', ()
 describe('agent guarantee in the real native request guard', () => {
   const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
     actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } };
-  const request = { preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31',
+  const request = { propertyCode: 'HRCEN', preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31',
     guestId: '123', roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'GTDAGT',
     guaranteeSelection: selection, note: 'Synthetic note' };
 
@@ -206,7 +215,7 @@ describe('observed native guarantees and real-guest identity at the Save guard',
     const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: code,
       actual: { value: code, submitted: code, display } };
     const result = await saveNewLabtestStay(simulatedPage(order, { guarantee: code }), {
-      preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31', guestId: '123',
+      propertyCode: 'HRCEN', preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31', guestId: '123',
       roomType: 'STQN', ratePlan: 'BAR', guaranteeType: code, guaranteeSelection: selection, note: 'Synthetic note',
     }, { timeoutMs: 1000 });
     expect(result).toMatchObject({ outcome: 'saved_same_form', requestSeen: true });
@@ -216,7 +225,7 @@ describe('observed native guarantees and real-guest identity at the Save guard',
   it('binds the real guest name in the outgoing native POST', async () => {
     const selection = { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDCC',
       actual: { value: 'GTDCC', submitted: 'GTDCC', display: 'Guaranteed By Credit Card' } };
-    const request = { preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31', guestId: '123',
+    const request = { propertyCode: 'HRCEN', preimageId: 'synthetic', arrival: '2027-12-29', departure: '2027-12-31', guestId: '123',
       roomType: 'STQN', ratePlan: 'BAR', guaranteeType: 'GTDCC', guaranteeSelection: selection, note: 'Synthetic note' };
     const authority = { allowRealGuest: true, expectedGuest: { firstName: 'Ada', lastName: 'Moyo' }, timeoutMs: 300,
       authorizeCandidate: async () => true, dispatchCandidate: async (_request: unknown, next: () => Promise<unknown>) => next() };

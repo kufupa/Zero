@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { mailboxTransport, mailThread, message } from '../db/schema/mail.js';
-import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import { classifyMailSource } from './mail-source.js';
 import { preStaySourceText } from './existing-stay-information.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';

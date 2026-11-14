@@ -1,7 +1,7 @@
 import { AmendLookupPanel, type AmendReadOnlyContext } from '@/components/quote-workflow/amend-lookup-panel';
 import { VoucherFindCard } from '@/components/quote-workflow/voucher-find-card';
 import { ApproveCard } from '@/components/quote-workflow/approve-card';
-import { hmsApprovalFromTrpc } from '@/lib/quote-workflow/hms-write';
+import { hmsApprovalFromTrpc, type HmsPreparedReceipt } from '@/lib/quote-workflow/hms-write';
 import type { MailSourceSelection } from '@/lib/quote-workflow/backend-bind';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { amendmentOf } from '@/lib/quote-workflow/session';
@@ -57,13 +57,14 @@ export function BookingVoucherCard({
   readOnlyAmend?: AmendReadOnlyContext | null;
 }) {
   const selectedSource = session.staffSource;
+  const propertySwitch = propertyCode === 'HRDAV' || propertyCode === 'HRDAVS' ? propertyCode : undefined;
   const approvalClient = useMemo(
-    () => hmsApprovalFromTrpc(trpcClient, transportId, internetMessageId, selectedSource),
-    [transportId, internetMessageId, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash],
+    () => hmsApprovalFromTrpc(trpcClient, transportId, internetMessageId, selectedSource, propertySwitch),
+    [transportId, internetMessageId, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash, propertySwitch],
   );
   const amendment = amendmentOf(session);
   const [approvalRevision, setApprovalRevision] = useState(0);
-  const [preparedFiling, setPreparedFiling] = useState<{ scope: string; digest: string | null } | null>(null);
+  const [preparedFiling, setPreparedFiling] = useState<{ scope: string; digest: string | null; receipt?: HmsPreparedReceipt } | null>(null);
   const filingScope = JSON.stringify([mailboxScope, propertyCode, filingCapability?.status ?? null, transportId, internetMessageId, lookupSelection, workItemId,
     session.binding?.selectionEpoch, selectedSource?.threadId, selectedSource?.messageId, selectedSource?.sourceHash,
     readOnlyAmend?.historyEpoch, readOnlyAmend?.historyBusy]);
@@ -118,6 +119,8 @@ export function BookingVoucherCard({
           filingApprovalAllowed={filingSourceCurrent && preparedFiling?.scope === filingScope}
           filingReviewAllowed={filingSourceCurrent}
           filingApprovalDigest={preparedFiling?.scope === filingScope ? preparedFiling.digest : null}
+          filingPrepared={propertyCode === 'HRCEN' || propertySwitch
+            ? (preparedFiling?.scope === filingScope ? preparedFiling.receipt ?? null : null) : undefined}
         />
       ) : null}
       {showVoucherFindCard ? (
@@ -140,7 +143,7 @@ export function BookingVoucherCard({
           reviewSource={selectedSource}
           selectionCurrent={filingSourceCurrent}
           onTargetChanged={() => setPreparedFiling(null)}
-          onPrepared={(digest) => { setPreparedFiling({ scope: filingScope, digest: digest ?? null }); setApprovalRevision((revision) => revision + 1); }}
+          onPrepared={(digest, receipt) => { setPreparedFiling({ scope: filingScope, digest: digest ?? null, receipt }); setApprovalRevision((revision) => revision + 1); }}
           propertyCode={propertyCode}
           filingCapability={filingCapability}
         />

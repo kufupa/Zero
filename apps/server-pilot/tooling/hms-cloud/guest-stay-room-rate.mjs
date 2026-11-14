@@ -1,9 +1,8 @@
-// Current room/rate catalogs and explicit room selection on an unsaved HRCEN Guest Stay.
+// Current room/rate catalogs and explicit room selection on an unsaved verified Guest Stay.
 import { randomUUID } from 'node:crypto';
-import { installReadOnlyGuard } from '../playwright-quote/hms-read-only-guard.mjs';
+import { cloudSessionIdentity } from './cloud-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 
-const PROPERTY = 'HRCEN';
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const UNAVAILABLE_MESSAGE = 'Selected criteria is not available for these dates.';
 const ROOM_CHANGE_PATHS = ['/web/base/OSRESV.HDR.roomtypechange', '/web/base/OSRESV.HDR.attributerefresh'];
@@ -14,7 +13,7 @@ const SPECS = {
 };
 const roomKind = (kind) => kind === 'roomType' || kind === 'roomTypeForCharge';
 const roomField = (kind) => kind === 'roomTypeForCharge' ? 'roomtypecharge' : 'roomtype';
-const searches = new WeakMap(), guards = new WeakMap();
+const searches = new WeakMap();
 const chargeRevisions = new WeakMap();
 export const chargeRoomRevision = (page) => chargeRevisions.get(page) || 0;
 const busy = new WeakSet();
@@ -62,13 +61,15 @@ async function dismissUnavailableMessage(page, nativeDialog, allowedWindows, tim
   return true;
 }
 async function formFields(page) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) throw new Error('PROPERTY_MISMATCH');
   if (new URL(page.url()).origin !== HMS_ORIGIN) throw new Error('TARGET_MISMATCH');
-  return page.evaluate(() => {
+  return page.evaluate((propertyCode) => {
     const visible = (el) => !!(el.offsetWidth || el.offsetHeight) && !el.closest('.x-window');
     const properties = [...document.querySelectorAll('[data-qtip="Property"]')].filter(visible);
     const confirmations = [...document.querySelectorAll('input[name="confirmationnumber"]')].filter(visible);
     const agency = [...document.querySelectorAll('input[name="ta1"]')].filter(visible);
-    if (properties.length !== 1 || properties[0].textContent.trim().toUpperCase() !== 'HRCEN') {
+    if (properties.length !== 1 || properties[0].textContent.trim().toUpperCase() !== propertyCode) {
       throw new Error('PROPERTY_MISMATCH');
     }
     if (confirmations.length !== 1 || confirmations[0].value.trim() || agency.length !== 1) {
@@ -84,8 +85,14 @@ async function formFields(page) {
         type: el.type || el.tagName.toLowerCase(),
         value: ['checkbox', 'radio'].includes(el.type) ? el.checked : el.value,
         disabled: el.disabled, readOnly: Boolean(el.readOnly) }));
-  });
+  }, propertyCode);
 }
+const FORM_BUSINESS_FIELDS = new Set(['confirmationnumber', 'guestid', 'firstname', 'lastname', 'arrivaldate',
+  'departuredate', 'adults', 'children', 'childages', 'roomtype', 'roomtypecharge', 'rateplan', 'mealplan',
+  'guaranteetype', 'ta1', 'company', 'araccountname', 'billingreference', 'reservationnote', 'track',
+  'sourceofbusinessdesc', 'emailaddress', 'caller', 'udfchar06', 'guestoptin4', 'udfchkbox04', 'udfchar09', 'udfchar13']);
+const formSignature = fields => JSON.stringify(fields.filter(field => FORM_BUSINESS_FIELDS.has(field.name) ||
+  /^child[1-9]\d*$/.test(field.name)).map(({ name, value }) => [name, value]).sort(([a], [b]) => a.localeCompare(b)));
 async function readWindow(page, id) {
   return page.evaluate((windowId) => {
     const win = Ext.getCmp(windowId);
@@ -163,10 +170,16 @@ function coverage(metadata, loaded) {
   return { loaded, total, reportedTotal: metadata.RECORDS ?? null, serverMoreRecords,
     complete, possiblyTruncated: complete !== true };
 }
-function propertyAlias(body) {
-  return [...body.entries()].some(([key, value]) => /^LOV_ALIAS_VALUE_\d+$/.test(key) && value === PROPERTY);
+function propertyAlias(body, propertyCode) {
+  const aliases = [...body].filter(([key, value]) => /^LOV_ALIAS_NAME_\d+$/i.test(key) && value.toLowerCase() === 'param.propertycode');
+  if (aliases.length !== 1) return false;
+  const name = aliases[0][0], valueName = name.replace(/NAME/i, 'VALUE');
+  return [...body.keys()].filter(key => key.toLowerCase() === name.toLowerCase()).length === 1 &&
+    [...body.keys()].filter(key => key.toLowerCase() === valueName.toLowerCase()).length === 1 &&
+    body.get(valueName) === propertyCode;
 }
-function allowedSearch(request, kind, origin) {
+
+function allowedSearch(request, kind, origin, propertyCode) {
   const url = new URL(request.url());
   if (url.origin !== origin || request.method() !== 'POST') return false;
   if (url.search && (url.pathname !== '/api/internalBooking/rateshop/inquiryForGrid' || url.search !== '?houseAvailabilityOnly=true')) return false;
@@ -174,29 +187,29 @@ function allowedSearch(request, kind, origin) {
   const spec = SPECS[kind];
   if (url.pathname === '/web/base/GETCACHE') return body.get('GRID_NAME') === spec.grid;
   if (roomKind(kind)) return url.pathname === '/web/base/LOVPOP' &&
-    body.get('GRID_NAME') === spec.grid && body.get('LOV_TAGNAME') === roomField(kind) && propertyAlias(body);
-  if (url.pathname === '/web/base/BSMSLV') return body.get('GRID_NAME') === spec.grid && propertyAlias(body);
+    body.get('GRID_NAME') === spec.grid && body.get('LOV_TAGNAME') === roomField(kind) && propertyAlias(body, propertyCode);
+  if (url.pathname === '/web/base/BSMSLV') return body.get('GRID_NAME') === spec.grid && propertyAlias(body, propertyCode);
   if (url.pathname === '/web/base/OSRASD' || url.pathname === '/web/base/OSRASD.RatePlanChange') {
     return body.getAll('property').length === 1 && body.getAll('confirmationnumber').length === 1 &&
-      body.get('property') === PROPERTY && !clean(body.get('confirmationnumber'));
+      body.get('property') === propertyCode && !clean(body.get('confirmationnumber'));
   }
   if (url.pathname === '/api/internalBooking/rateshop/inquiryForGrid') {
     try {
       const input = JSON.parse(request.postData() || '{}');
-      return clean(input.propertyCodes).toUpperCase() === PROPERTY && !clean(input.reservationStayID) &&
+      return clean(input.propertyCodes).toUpperCase() === propertyCode && !clean(input.reservationStayID) &&
         clean(input.launchedFrom).toLowerCase() === 'gueststay';
     } catch { return false; }
   }
   return false;
 }
-function roomFilterResetRequest(request, origin, metadata, kind) {
+function roomFilterResetRequest(request, origin, metadata, kind, propertyCode) {
   if (!metadata) return false;
   const url = new URL(request.url());
   const body = new URLSearchParams(request.postData() || '');
   const gridId = clean(metadata.GRIDID), dataSpyId = clean(metadata.DATASPYID);
   const expected = { GRID_ID: gridId, GRID_NAME: SPECS.roomType.grid, DATASPY_ID: dataSpyId,
     USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR', GRID_TYPE: 'LOV', REQUEST_TYPE: 'LOV.DATA_ONLY.STORED',
-    LOV_TAGNAME: roomField(kind), LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: PROPERTY, LOV_ALIAS_TYPE_1: 'text' };
+    LOV_TAGNAME: roomField(kind), LOV_ALIAS_NAME_1: 'param.propertycode', LOV_ALIAS_VALUE_1: propertyCode, LOV_ALIAS_TYPE_1: 'text' };
   return request.method() === 'POST' && url.origin === origin && url.pathname === '/web/base/GRIDDATA' && !url.search && !url.hash &&
     /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
     /^\d+$/.test(gridId) && /^\d+$/.test(dataSpyId) &&
@@ -234,7 +247,8 @@ async function withFence(page, allowed, action, scope = null, quarantine = null)
   page.on('response', onResponse);
   page.on('requestfinished', onFinished);
   page.on('requestfailed', onFailed);
-  await page.route('**/*', handler);
+  try { await page.route('**/*', handler); }
+  catch (error) { scope?.close(); quarantine?.(); throw error; }
   let verified = false;
   try {
     let result;
@@ -264,6 +278,8 @@ async function waitGrid(page, id, count, timeout = 15000) {
   }, { id, count }, { timeout });
 }
 async function collectCatalog(page, kind, nativeDialog, allowReset) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) throw new Error('PROPERTY_MISMATCH');
   const spec = SPECS[kind];
   const dismissUnavailable = async (timeout = 0) => {
     const state = searches.get(page);
@@ -273,23 +289,26 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       ['Rate Shop', ...(state.windowId ? ['Rate Plans'] : [])], timeout);
   };
   await assertWindows(page, [], nativeDialog);
-  const form = await formFields(page), formState = JSON.stringify(form);
+  const form = await formFields(page), formState = formSignature(form);
   let initial;
   if (kind === 'ratePlan') {
     const inquiry = page.waitForResponse((response) => {
       const request = response.request();
       return new URL(response.url()).pathname === '/api/internalBooking/rateshop/inquiryForGrid' &&
-        allowedSearch(request, kind, new URL(page.url()).origin);
+        allowedSearch(request, kind, new URL(page.url()).origin, propertyCode);
     }, { timeout: 20000 }).catch(() => null);
     const rate = page.locator('input[name="rateplan"]:visible').first();
     await rate.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
     const shop = picker(page, 'Rate Shop');
     await shop.waitFor({ state: 'visible', timeout: 20000 });
     const shopId = await shop.getAttribute('id'); if (!shopId) throw new Error('PICKER_UNAVAILABLE');
-    searches.set(page, { kind, shopId, formState, cleanupOnly: true });
+    searches.set(page, { kind, propertyCode, shopId, formState, cleanupOnly: true });
     const response = await inquiry;
     if (!response || response.status() !== 200) throw new Error('RATE_SHOP_INQUIRY_UNVERIFIED');
     await responseText(response);
+    const inquiryInput = JSON.parse(response.request().postData() || '{}');
+    if (typeof inquiryInput.bookingSessionID !== 'string' || !inquiryInput.bookingSessionID.trim()) throw new Error('BOOKING_SESSION_UNVERIFIED');
+    searches.set(page, { ...searches.get(page), bookingSessionId: inquiryInput.bookingSessionID });
     if (await dismissUnavailable(1000)) return { criteriaUnavailable: true };
     try { await assertWindows(page, ['Rate Shop'], nativeDialog); }
     catch (error) {
@@ -298,7 +317,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
     }
     initial = page.waitForResponse((response) => {
       const req = response.request();
-      return new URL(req.url()).pathname === '/web/base/BSMSLV' && allowedSearch(req, kind, new URL(page.url()).origin);
+      return new URL(req.url()).pathname === '/web/base/BSMSLV' && allowedSearch(req, kind, new URL(page.url()).origin, propertyCode);
     }, { timeout: 20000 }).catch(() => null);
     const ratePlans = shop.locator('input[name="rateplans"]:visible').first();
     try { await ratePlans.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click({ timeout: 20000 }); }
@@ -309,7 +328,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   } else {
     initial = page.waitForResponse((response) => {
       const req = response.request();
-      return new URL(req.url()).pathname === '/web/base/LOVPOP' && allowedSearch(req, kind, new URL(page.url()).origin);
+      return new URL(req.url()).pathname === '/web/base/LOVPOP' && allowedSearch(req, kind, new URL(page.url()).origin, propertyCode);
     }, { timeout: 20000 }).catch(() => null);
     const room = page.locator(`input[name="${roomField(kind)}"]:visible`).first();
     await room.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
@@ -321,7 +340,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
     throw error;
   }
   const id = await win.getAttribute('id'); if (!id) throw new Error('PICKER_UNAVAILABLE');
-  searches.set(page, { kind, windowId: id, shopId: searches.get(page)?.shopId, formState, cleanupOnly: true });
+  searches.set(page, { ...searches.get(page), kind, propertyCode, windowId: id, formState, cleanupOnly: true });
   if (kind === 'ratePlan' && await dismissUnavailable()) return { criteriaUnavailable: true };
   const response = await initial;
   if (kind === 'ratePlan' && await dismissUnavailable()) return { criteriaUnavailable: true };
@@ -358,7 +377,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       allowReset(metadata);
       await input.fill('');
       if (await input.inputValue() !== '') throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
-      const pending = page.waitForResponse((res) => roomFilterResetRequest(res.request(), HMS_ORIGIN, initialMetadata, kind),
+      const pending = page.waitForResponse((res) => roomFilterResetRequest(res.request(), HMS_ORIGIN, initialMetadata, kind, propertyCode),
         { timeout: 20000 }).catch(() => null);
       await assertWindows(page, [spec.title], nativeDialog);
       await run.click({ timeout: 10000 });
@@ -372,7 +391,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       current = await readWindow(page, id);
       if (!only(controls('selfiltervaluectrl'), '') ||
           current.controls.filter(control => control.name?.startsWith('ff_')).some(control => clean(control.value)) ||
-          JSON.stringify(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
+          formSignature(await formFields(page)) !== formState) throw new Error('ROOM_FILTER_RESET_UNVERIFIED');
       // The reset request can contain other native filters. Preserve those
       // observations instead of assuming clearing the text cleared them all.
       nativeFilters = [...new URLSearchParams(reset.request().postData() || '')]
@@ -383,7 +402,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
   }
   for (let attempt = 0; attempt < 20 && coverage(metadata, rows.length).complete === false; attempt += 1) {
     const next = page.waitForResponse((res) => new URL(res.url()).pathname === '/web/base/GETCACHE' &&
-      allowedSearch(res.request(), kind, new URL(page.url()).origin), { timeout: 8000 }).catch(() => null);
+      allowedSearch(res.request(), kind, new URL(page.url()).origin, propertyCode), { timeout: 8000 }).catch(() => null);
     await win.locator('.x-grid-view:visible').last().evaluate((element) => { element.scrollTop = element.scrollHeight; });
     const res = await next;
     if (!res) break;
@@ -422,18 +441,19 @@ async function collectCatalog(page, kind, nativeDialog, allowReset) {
       responseData: row, gridData: matches.length === 1 ? matches[0] : null,
       ...(matches.length > 1 ? { possibleGridData: matches } : {}) };
   });
-  return { windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: catalogCoverage,
+  return { propertyCode, bookingSessionId: searches.get(page)?.bookingSessionId, windowId: id, shopId: searches.get(page)?.shopId, observedAt: new Date().toISOString(), candidates, coverage: catalogCoverage,
     nativeFilters, initialNativeFilters, nativeFilterReset,
     columns: current.columns, metadata, pickerState: JSON.stringify(current),
-    formState: JSON.stringify(await formFields(page)),
+    formState: formSignature(await formFields(page)),
     shopState: kind === 'ratePlan' ? JSON.stringify(await shopControls(page)) : null };
 }
 async function assertCurrent(page, state, nativeDialog) {
+  if (cloudSessionIdentity(page)?.propertyCode !== state.propertyCode) throw new Error('PROPERTY_MISMATCH');
   const spec = SPECS[state.kind];
   await assertWindows(page, state.kind === 'ratePlan' ? ['Rate Shop', spec.title] : [spec.title], nativeDialog);
   const win = picker(page, spec.title);
   if (!await win.isVisible().catch(() => false) || await win.getAttribute('id') !== state.windowId ||
-      JSON.stringify(await formFields(page)) !== state.formState ||
+      formSignature(await formFields(page)) !== state.formState ||
       JSON.stringify(await readWindow(page, state.windowId)) !== state.pickerState ||
       (state.kind === 'ratePlan' && JSON.stringify(await shopControls(page)) !== state.shopState)) {
     throw new Error('SEARCH_STALE');
@@ -458,9 +478,8 @@ async function search(page, kind, input = {}) {
   const onDialog = () => { native = true; };
   page.on('dialog', onDialog);
   try {
-    const context = page.context();
-    if (!guards.has(context)) guards.set(context, installReadOnlyGuard(context).catch((error) => { guards.delete(context); throw error; }));
-    await guards.get(context);
+    const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+    if (!propertyCode || (input.propertyCode !== undefined && input.propertyCode !== propertyCode)) throw new Error('PROPERTY_MISMATCH');
     let state = searches.get(page);
     let effects = [];
     if (state && !state.cleanupOnly && roomKind(state.kind) && roomKind(kind) && state.kind !== kind) {
@@ -474,12 +493,14 @@ async function search(page, kind, input = {}) {
       await assertCurrent(page, state, () => native);
     } else {
       let resetMetadata = null;
-      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin) ||
-        (roomKind(kind) && roomFilterResetRequest(req, origin, resetMetadata, kind)),
-      () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }));
+      const nativeFence = await installPageRequestFence(page, ['/web/base/OSRASD.RatePlanChange']);
+      const nativeScope = nativeFence.open();
+      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin, propertyCode) ||
+        (roomKind(kind) && roomFilterResetRequest(req, origin, resetMetadata, kind, propertyCode)),
+      () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }), nativeScope, () => nativeFence.quarantine());
       if (capture.result?.criteriaUnavailable) return {
         outcome: 'criteria_unavailable', kind, issue: 'RATE_SHOP_CRITERIA_UNAVAILABLE',
-        message: UNAVAILABLE_MESSAGE, criteria: { propertyCode: PROPERTY, scope: 'guest_stay_rate_shop_catalog' },
+        message: UNAVAILABLE_MESSAGE, criteria: { propertyCode: propertyCode, scope: 'guest_stay_rate_shop_catalog' },
         cleanupRequired: true, effects: capture.effects,
       };
       state = { kind, ...capture.result };
@@ -492,7 +513,7 @@ async function search(page, kind, input = {}) {
     searches.set(page, { ...state, searchId });
     const outcome = matches.length ? 'matches' : state.coverage.complete === true ? 'no_match' : 'incomplete';
     return { outcome, kind, ...(roomKind(kind) ? { forField: kind } : {}), searchId, observedAt: state.observedAt,
-      criteria: { propertyCode: PROPERTY, scope: kind === 'ratePlan' ? 'guest_stay_rate_shop_catalog' : 'guest_stay_room_catalog',
+      criteria: { propertyCode: propertyCode, scope: kind === 'ratePlan' ? 'guest_stay_rate_shop_catalog' : 'guest_stay_room_catalog',
         query: filter.query, offset: filter.offset, limit: filter.limit,
         ...(roomKind(kind) ? { nativeFilters: state.nativeFilters.map((item) => ({ ...item })),
           ...(state.nativeFilterReset ? { nativeFilterReset: true,
@@ -551,6 +572,8 @@ function changedFields(before, after) {
   });
 }
 export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {}) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) return { outcome: 'input_gap', issue: 'PROPERTY_MISMATCH' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
   let native = false, attempted = false, fence, scope;
@@ -583,8 +606,8 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
       const bodyKeys = [...body.keys()];
       return url.origin === origin && !url.search && ROOM_CHANGE_PATHS.includes(url.pathname) &&
         keys.every((key) => body.getAll(key).length === 1 && bodyKeys.filter((name) => name.toLowerCase() === key.toLowerCase()).length === 1) &&
-        body.get('propertycode') === PROPERTY && !clean(body.get('confirmationnumber')) &&
-        body.get('PKID') === `@[EMPTY]#@[EMPTY]#${PROPERTY}#` && !clean(body.get('recordid')) &&
+        body.get('propertycode') === propertyCode && !clean(body.get('confirmationnumber')) &&
+        body.get('PKID') === `@[EMPTY]#@[EMPTY]#${propertyCode}#` && !clean(body.get('recordid')) &&
         !clean(body.get('reservationid')) && body.get('ONLY_DATA_REQUIRED') === 'true' &&
         body.get('roomtype') === chosen.code && body.get('roomtypeid') === chosen.nativeId;
     }, async () => {
@@ -605,7 +628,7 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
         if (matched.length !== 1 || matched[0].status() !== 200) throw new Error('ROOM_CHANGE_UNVERIFIED');
         const values = parseResponse(await responseText(matched[0])).values;
         if (!values || !['propertycode', 'confirmationnumber', 'recordid', 'reservationid', 'roomtype', 'roomtypeid']
-          .every((key) => Object.hasOwn(values, key)) || clean(values.propertycode) !== PROPERTY ||
+          .every((key) => Object.hasOwn(values, key)) || clean(values.propertycode) !== propertyCode ||
           clean(values.confirmationnumber) || clean(values.recordid) || clean(values.reservationid) ||
           clean(values.roomtype) !== chosen.code || clean(values.roomtypeid) !== chosen.nativeId) throw new Error('ROOM_CHANGE_UNVERIFIED');
       }
@@ -627,6 +650,8 @@ export async function selectRoomType(page, input = {}, { timeoutMs = 20000 } = {
 
 /** Select a charge room type on the current unsaved stay, independently of its room type. */
 export async function selectRoomTypeForCharge(page, input = {}, { timeoutMs = 20000 } = {}) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) return { outcome: 'input_gap', issue: 'PROPERTY_MISMATCH' };
   if (busy.has(page)) return { outcome: 'execution_failure', issue: 'PICKER_IN_PROGRESS' };
   busy.add(page);
   let native = false, attempted = false, fence, scope;
@@ -658,7 +683,7 @@ export async function selectRoomTypeForCharge(page, input = {}, { timeoutMs = 20
     page.on('response', onResponse);
     const { result: after, effects } = await withFence(page, (request, origin) => {
       const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
-      const expected = { propertycode: PROPERTY, confirmationnumber: '', PKID: `@[EMPTY]#@[EMPTY]#${PROPERTY}#`,
+      const expected = { propertycode: propertyCode, confirmationnumber: '', PKID: `@[EMPTY]#@[EMPTY]#${propertyCode}#`,
         recordid: '', reservationid: '', status: 'New', ONLY_DATA_REQUIRED: 'true',
         roomtype: clean(room[0].value), roomtypecharge: chosen.code };
       const noProfileWrite = ['newprofileclick', 'linkprofileflag', 'createinactiveprofileflag',
@@ -687,7 +712,7 @@ export async function selectRoomTypeForCharge(page, input = {}, { timeoutMs = 20
       if (responses.length !== 1 || responses[0].status() !== 200) throw new Error('ROOM_CHARGE_CHANGE_UNVERIFIED');
       const values = parseResponse(await responseText(responses[0])).values;
       if (!values || !['propertycode', 'confirmationnumber', 'recordid', 'reservationid', 'roomtype', 'roomtypecharge']
-          .every((key) => Object.hasOwn(values, key)) || clean(values.propertycode) !== PROPERTY || clean(values.confirmationnumber) ||
+          .every((key) => Object.hasOwn(values, key)) || clean(values.propertycode) !== propertyCode || clean(values.confirmationnumber) ||
           clean(values.recordid) || clean(values.reservationid) || clean(values.roomtypecharge) !== chosen.code ||
           clean(values.roomtype) !== clean(room[0].value)) throw new Error('ROOM_CHARGE_CHANGE_UNVERIFIED');
       const fields = await formFields(page), charge = fields.filter((field) => field.name === 'roomtypecharge');
@@ -717,15 +742,25 @@ async function closeRoomRatePickerLocked(page) {
     if (!state) throw new Error('SEARCH_STALE');
     if (state.cleanupOnly) {
       await assertWindows(page, state.kind === 'ratePlan' ? ['Rate Shop', ...(state.windowId ? ['Rate Plans'] : [])] : state.windowId ? ['Room Types'] : [], () => native);
-      if (JSON.stringify(await formFields(page)) !== state.formState ||
+      if (formSignature(await formFields(page)) !== state.formState ||
           (state.windowId && await picker(page, SPECS[state.kind].title).getAttribute('id') !== state.windowId) ||
           (state.shopId && await picker(page, 'Rate Shop').getAttribute('id') !== state.shopId)) throw new Error('SEARCH_STALE');
     } else await assertCurrent(page, state, () => native);
+    const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+    if (!propertyCode || state.propertyCode !== propertyCode) throw new Error('PROPERTY_MISMATCH');
+    const cancelPath = `/api/internalBooking/${propertyCode}/rateshop/rateSelection`;
+    const cancelFence = await installPageRequestFence(page, [cancelPath]);
+    const cancelScope = cancelFence.open();
     const result = await withFence(page, (req, origin) => {
       const url = new URL(req.url());
       if (state.kind !== 'ratePlan' || url.origin !== origin || url.search ||
-          url.pathname !== `/api/internalBooking/${PROPERTY}/rateshop/rateSelection`) return false;
-      try { return JSON.parse(req.postData() || '{}').action === 'CANCEL'; } catch { return false; }
+          url.pathname !== `/api/internalBooking/${propertyCode}/rateshop/rateSelection`) return false;
+      try {
+        const input = JSON.parse(req.postData() || '{}');
+        return input.action === 'CANCEL' && Boolean(state.bookingSessionId) &&
+          input.rateShopping?.bookingSessionID === state.bookingSessionId &&
+          !clean(input.rateShopping?.reservationStayID) && req.frame() === page.mainFrame();
+      } catch { return false; }
     }, async () => {
       if (state.windowId) {
         const win = picker(page, SPECS[state.kind].title);
@@ -741,7 +776,7 @@ async function closeRoomRatePickerLocked(page) {
       }
       await assertWindows(page, [], () => native);
       await formFields(page);
-    });
+    }, cancelScope, () => cancelFence.quarantine());
     searches.delete(page);
     return { outcome: state.cancelUncertain ? 'close_uncertain' : 'closed_unsaved',
       ...(state.cancelUncertain ? { issue: 'RATE_SHOP_CANCEL_UNVERIFIED' } : {}), effects: result.effects };

@@ -127,7 +127,7 @@ let createRequestMod: Promise<CreateRequestMod> | null = null;
 function loadCreateRequest(): Promise<CreateRequestMod> {
   createRequestMod ??= import(
     pathToFileURL(
-      fileURLToPath(new URL('../../../tooling/playwright-quote/create-request.mjs', import.meta.url)),
+      fileURLToPath(new URL('../../../tooling/hms-cloud/create-request.mjs', import.meta.url)),
     ).href
   ) as Promise<CreateRequestMod>;
   return createRequestMod;

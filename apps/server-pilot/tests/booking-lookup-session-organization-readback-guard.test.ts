@@ -14,28 +14,18 @@ const fixtures = vi.hoisted(() => ({
   saved: { outcome: 'saved_same_form', confirmation: '1234567-1' },
 }));
 
-vi.mock('../tooling/playwright-quote/centurion-stay360.mjs', () => ({
-  withCenturionStay360Page: async (operation: (page: unknown) => Promise<unknown>,
-    options?: { prepareContext?: (context: unknown) => Promise<void> }) => {
-    fixtures.events.push('context-open');
-    await options?.prepareContext?.(fixtures.context);
-    return operation({ context: () => fixtures.context });
-  },
-}));
-vi.mock('../tooling/playwright-quote/hms-read-only-guard.mjs', () => ({
-  installReadOnlyGuard: async (context: unknown) => {
+vi.mock('../tooling/hms-cloud/saved-stay-read-guard.mjs', () => ({
+  installSavedStayReadGuard: async (context: unknown) => {
     fixtures.guardContexts.push(context);
     fixtures.events.push('guard');
   },
 }));
-vi.mock('../tooling/hms-cloud/stay360-confirmation.mjs', () => ({
-  readConfirmationFromStay360: async (_page: unknown, confirmation: string) => {
+vi.mock('../tooling/hms-cloud/hms-readers.mjs', () => ({
+  readShallow: async (_page: unknown, confirmation: string) => {
     fixtures.events.push('confirmation');
     return { confirmation };
   },
-}));
-vi.mock('../tooling/hms-cloud/stay360-record-view.mjs', () => ({
-  readRecordViewFromStay360: async () => { fixtures.events.push('record-view'); },
+  readRecord: async () => { fixtures.events.push('record-view'); return {}; },
 }));
 vi.mock('../tooling/hms-cloud/labtest-record.mjs', async (importOriginal) => {
   const { blankSavedPartyFields } = await import('../tooling/hms-cloud/labtest-party-fields.mjs');
@@ -65,7 +55,7 @@ vi.mock('../tooling/hms-cloud/lookup.mjs', () => {
   };
 });
 
-import { runBookingLookupTool } from '../tooling/hms-cloud/booking-lookup-session.mjs';
+import { buildLabtestOrganizationReadbackTarget, readSavedOrganizationCreate, runBookingLookupTool } from '../tooling/hms-cloud/booking-lookup-session.mjs';
 
 describe('organization readback fresh-context guard', () => {
   beforeEach(() => {
@@ -88,58 +78,41 @@ describe('organization readback fresh-context guard', () => {
     expect(fixtures.saveCalls).toBe(0);
   });
 
-  it('binds agent-guarantee readback to the saved native selection', async () => {
-    const page = {};
-    const session = { page, labtestPreimage: { outcome: 'clear', preimageId: 'preimage-1' } };
-    await runBookingLookupTool(session, { tool: 'selectOrganization', nativeId: '90210', searchId: 'org-search-1' });
-    await runBookingLookupTool(session, {
-      tool: 'saveNewLabtestStay', preimageId: 'preimage-1', guestId: '45678',
-      arrival: '2027-01-25', departure: '2027-01-27', roomType: 'DLXKNG', ratePlan: 'BAR',
-      guaranteeType: 'GTDAGT', note: 'synthetic org create', organizationSelection: fixtures.selection,
-      guaranteeSelection: { outcome: 'updated_unsaved', field: 'guaranteeType', requested: 'GTDAGT',
-        actual: { value: 'GTDAGT', submitted: 'GTDAGT', display: 'Guaranteed By Agent' } },
-    });
-    fixtures.events.length = 0;
-    const read = await runBookingLookupTool({ page }, {
-      tool: 'readSavedLabtestRecord', confirmation: fixtures.saved.confirmation,
-    });
-    expect(read).toMatchObject({ outcome: 'read_back_verified' });
-    expect(fixtures.events).toEqual(['context-open', 'guard', 'confirmation', 'record-view', 'labtest-record']);
-    expect(fixtures.recordCalls).toEqual([expect.objectContaining({ options: {
-      allowUnchangedBusinessParties: true, expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' },
-      expectedGuarantee: { code: 'GTDAGT', display: 'Guaranteed By Agent' },
-    } })]);
-  });
-
-  it('installs the read-only fence before searching the saved confirmation', async () => {
-    const page = {};
-    const session = { page, labtestPreimage: { outcome: 'clear', preimageId: 'preimage-1' } };
-    await runBookingLookupTool(session, { tool: 'selectOrganization', nativeId: '90210', searchId: 'org-search-1' });
-    await runBookingLookupTool(session, {
-      tool: 'saveNewLabtestStay', preimageId: 'preimage-1', guestId: '45678',
-      arrival: '2027-01-25', departure: '2027-01-27', roomType: 'DLXKNG', ratePlan: 'BAR',
-      guaranteeType: 'NGI', note: 'synthetic org create', organizationSelection: fixtures.selection,
-    });
-
-    fixtures.events.length = 0;
-    const read = await runBookingLookupTool({ page }, {
-      tool: 'readSavedLabtestRecord', confirmation: fixtures.saved.confirmation,
-    });
-
+  it.each([
+    ['GTDAGT', 'Guaranteed By Agent'],
+    ['NGI', 'Non-Guaranteed Individual'],
+  ])('binds %s readback to the saved organization and fresh guarded property', async (code, display) => {
+    const request = { propertyCode: 'HRCEN', guestId: '45678', arrival: '2027-01-25', departure: '2027-01-27',
+      roomType: 'DLXKNG', ratePlan: 'BAR', guaranteeType: code, note: 'synthetic org create',
+      organizationSelection: fixtures.selection,
+      guaranteeSelection: { outcome: 'updated_unsaved', field: 'guaranteeType', requested: code,
+        actual: { value: code, submitted: code, display } } };
+    const target = buildLabtestOrganizationReadbackTarget(fixtures.saved, request, fixtures.selection,
+      { propertyCode: 'HRCEN', transportId: 'transport-centurion' });
+    expect(target).not.toBeNull();
+    const read = await readSavedOrganizationCreate({ savedOrganizationCreate: target },
+      { confirmation: fixtures.saved.confirmation }, {
+        openSession: async (operation: (page: unknown) => Promise<unknown>, options: {
+          propertyCode: string; transportId: string; startScreen: string; prepareContext: (context: unknown) => Promise<void>;
+        }) => {
+          fixtures.events.push('context-open');
+          expect(options).toMatchObject({ propertyCode: 'HRCEN', transportId: 'transport-centurion', startScreen: 'OSRESS' });
+          await options.prepareContext(fixtures.context);
+          return operation({});
+        },
+      });
     expect(read).toMatchObject({ outcome: 'read_back_verified', organization: {
       nativeId: '90210', name: 'Synthetic Company',
     } });
     expect(fixtures.guardContexts).toEqual([fixtures.context]);
     expect(fixtures.events).toEqual(['context-open', 'guard', 'confirmation', 'record-view', 'labtest-record']);
     expect(fixtures.recordCalls).toEqual([{
-      expected: {
-        confirmation: '1234567-1', guestId: '45678', firstName: 'Proof', lastName: 'Labtest',
-        arrival: '2027-01-25', departure: '2027-01-27',
-        roomType: 'DLXKNG', ratePlan: 'BAR', note: 'synthetic org create',
-      },
+      expected: { propertyCode: 'HRCEN', confirmation: '1234567-1', guestId: '45678', firstName: 'Proof',
+        lastName: 'Labtest', arrival: '2027-01-25', departure: '2027-01-27', roomType: 'DLXKNG',
+        ratePlan: 'BAR', note: 'synthetic org create' },
       options: { allowUnchangedBusinessParties: true,
         expectedOrganization: { nativeId: '90210', name: 'Synthetic Company' },
-        expectedGuarantee: { code: 'NGI', display: 'Non-Guaranteed Individual' } },
+        expectedGuarantee: { code, display } },
     }]);
   });
 });

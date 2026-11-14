@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { attachment, mailThread, message } from '../db/schema/mail.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { bindHmsMailboxProperty, loadThreadMailboxHmsOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { propertySwitchSchema, resolvePropertyScope, type PropertySwitch } from '../hms/property-registry.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { assertNoOpenWrite, formDigest, HmsApprovalError, hmsStateDigest, hmsWriteStateOf } from './hms-approval.js';
 import { cloudAmendPreservedSchema, retainedPricesForApproval } from './cloud-amend-price-projection.js';
@@ -50,6 +53,7 @@ export const cloudAmendChangesSchema = z.object({
 export const bindCloudAmendInput = z.object({
   workItemId: z.string().uuid(), source: cloudAmendSelectionSchema, confirmation: z.string().regex(/^\d{6,}-\d+$/),
   arrival: day, changes: cloudAmendChangesSchema,
+  propertySwitch: propertySwitchSchema.optional(),
   draft: amendDraftIdentitySchema.extend({ expectedSeq: cursor }).strict().optional(),
 }).strict();
 export type CloudAmendChanges = z.infer<typeof cloudAmendChangesSchema>;
@@ -124,10 +128,10 @@ const sameBinding = (left: CloudAmendSourceBinding | null, right: CloudAmendSour
   left.draft?.stayId === right.draft?.stayId);
 
 /** Stable server-owned HMS facts; observedAt and browser session ids must not alter the approval digest. */
-export function cloudAmendPreimage(found: HmsCloudFindResult, allowRealGuest = false) {
+export function cloudAmendPreimage(found: HmsCloudFindResult, allowRealGuest = false, propertyCode = 'HRCEN') {
   const native = found.nativePreimage, stay = found.stay;
   if (found.outcome !== 'found' || found.arrivalMismatch || !native || !stay ||
-      native.propertyCode !== 'HRCEN' || !native.firstName?.trim() || !native.lastName?.trim() ||
+      native.propertyCode !== propertyCode || !native.firstName?.trim() || !native.lastName?.trim() ||
       (!allowRealGuest && (native.firstName !== 'Proof' || native.lastName !== 'Labtest' || native.arrival < '2027-01-01')) ||
       native.status !== 'Reserved') return null;
   return { native };
@@ -234,10 +238,13 @@ export async function lockBoundCloudAmendSource(tx: WorkTx, input: {
 /** Read the approval card only while its exact selected message still owns the bound form. */
 export async function cloudAmendWriteState(input: {
   db?: DB; workItemId: string; transportId: string; source: z.infer<typeof cloudAmendSelectionSchema>;
+  propertySwitch?: PropertySwitch;
 }) {
   const db = input.db ?? getDb();
+  const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch });
   return db.transaction(async (tx) => {
-    if (!await lockSelectedBoundCloudAmend(tx, input)) return null;
+    const item = await lockSelectedBoundCloudAmend(tx, input);
+    if (!item || (item.state.propertyCode ?? 'HRCEN') !== scope.propertyCode) return null;
     return hmsWriteStateOf({ db: tx as unknown as DB, transportId: input.transportId,
       workItemId: input.workItemId, cloudAmendOnly: true });
   });
@@ -266,11 +273,17 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   const { db: supplied, transportId, ...request } = input;
   const parsed = bindCloudAmendInput.safeParse(request);
   if (!parsed.success) return { status: 'refused' as const, reason: 'form_invalid' };
-  if (!labtestAmendWorkerEnabled()) {
-    return { status: 'refused' as const, reason: 'amend_save_unavailable' };
-  }
   const db = supplied ?? getDb();
   const data = parsed.data;
+  const scope = resolvePropertyScope({ transportId, propertySwitch: data.propertySwitch });
+  const policy = effectiveWorkflowPolicy(process.env, scope.propertyCode, 'amend');
+  if (!policy.readEnabled || (scope.propertyCode === 'HRCEN' && !labtestAmendWorkerEnabled())) {
+    return { status: 'refused' as const, reason: 'amend_save_unavailable' };
+  }
+  const origin = await loadThreadMailboxHmsOrigin({ transportId, threadId: data.source.threadId, messageId: data.source.messageId });
+  if (!origin || !bindHmsMailboxProperty({ transportId, propertyCode: scope.propertyCode, origin }).ok) {
+    return { status: 'refused' as const, reason: 'source_mail_changed' };
+  }
   const [selectedItem] = await db.select({ extractionId: workItem.extractionId }).from(workItem)
     .where(and(eq(workItem.id, data.workItemId), eq(workItem.transportId, transportId))).limit(1);
   if (!selectedItem?.extractionId) return { status: 'refused' as const, reason: 'source_mail_changed' };
@@ -286,9 +299,8 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
     arrival: data.arrival, draft: data.draft })) {
     return { status: 'refused' as const, reason: 'source_mail_changed' };
   }
-  const target = paneStayHmsTargetForTransport(transportId);
-  const exactTarget = ['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const;
-  if (!target.ok || exactTarget.some((key) => target.target[key] !== CENTURION_HMS_READ_TARGET[key])) {
+  const target = paneStayHmsTargetForTransport(transportId, scope.propertyCode);
+  if (!target.ok || target.target.propertyCode !== scope.propertyCode) {
     return { status: 'refused' as const, reason: 'refused_unknown_transport' };
   }
   const readAt = new Date();
@@ -296,8 +308,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   const raw = await runCloudStayFind({ request: stayRequest, target: target.target, transportId, signal: AbortSignal.timeout(5 * 60_000) });
   // Real stays may always be staged unsaved; dispatch remains governed by the write flag.
   const allowRealGuest = true;
-  const realWritesEnabled = process.env.PANE_WRITE_AMEND === 'on';
-  const preimage = cloudAmendPreimage(projectCloudStayFind(stayRequest, raw), allowRealGuest);
+  const preimage = cloudAmendPreimage(projectCloudStayFind(stayRequest, raw, scope.propertyCode), allowRealGuest, scope.propertyCode);
   if (!preimage || preimage.native.confirmation !== data.confirmation || preimage.native.arrival !== data.arrival) {
     return { status: 'refused' as const, reason: 'hms_preimage_unverified' };
   }
@@ -308,12 +319,12 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   // Record View's complete model before showing the human approval; never persist it.
   const nativeUrl = new URL('../../tooling/hms-cloud/pane-amend-session.mjs', import.meta.url);
   const nativeModule = await import(nativeUrl.href) as { prepareCloudPaneAmend(input: {
-    target: HmsReadTarget; selected: CloudAmendPreimage['native']; confirmation: string; arrival: string;
+    target: HmsReadTarget; transportId: string; selected: CloudAmendPreimage['native']; confirmation: string; arrival: string;
     changes: CloudAmendChanges; allowRealGuest: boolean; cloudTargetKey: string; signal: AbortSignal;
   }): Promise<{ outcome: string; nativeDigest?: string; approvedPrices?: unknown; preserved?: unknown }> };
-  const native = await nativeModule.prepareCloudPaneAmend({ target: target.target, selected: preimage.native,
+  const native = await nativeModule.prepareCloudPaneAmend({ target: target.target, transportId, selected: preimage.native,
     confirmation: data.confirmation, arrival: data.arrival, changes: data.changes, allowRealGuest,
-    cloudTargetKey: hmsDispatchTargetKey({ propertyCode: 'HRCEN', kind: 'saved',
+    cloudTargetKey: hmsDispatchTargetKey({ propertyCode: scope.propertyCode, kind: 'saved',
       confirmation: preimage.native.confirmation, nativeStayId: preimage.native.reservationStayId }),
     signal: AbortSignal.timeout(5 * 60_000) });
   if (native.outcome !== 'prepared' || !native.nativeDigest || !/^[a-f0-9]{64}$/.test(native.nativeDigest)) {
@@ -329,7 +340,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   const previewDigest = hmsStateDigest({ binding, preimage, changes: data.changes, nativeDigest,
     approvedPrices: native.approvedPrices, preserved: preserved.data });
   return db.transaction(async (tx) => {
-    if (!labtestAmendWorkerEnabled() || realWritesEnabled !== (process.env.PANE_WRITE_AMEND === 'on')) {
+    if (!effectiveWorkflowPolicy(process.env, scope.propertyCode, 'amend').readEnabled) {
       return { status: 'refused' as const, reason: 'amend_save_unavailable' };
     }
     const item = await lockCloudAmendSource(tx, { workItemId: data.workItemId, transportId, binding });
@@ -348,7 +359,7 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
     for (const key of ['action', 'confirmation', 'arrival', 'lastName', 'attachmentId', 'documentName', 'pdfSha256',
       'sourceMessageId', 'sourceInternetMessageId', 'sourceSnapshotDigest', 'sourceThreadId', 'sourceHash', 'documentCode', 'filingStateDigest',
       'reason', 'fields', 'previewDigest', 'cloudAmend', 'cloudCancel', 'cloudCancelPreview', 'hmsSnapshot']) delete state[key];
-    Object.assign(state, { action: 'amend', confirmation: data.confirmation, arrival: data.arrival, lastName: preimage.native.lastName,
+    Object.assign(state, { action: 'amend', propertyCode: scope.propertyCode, confirmation: data.confirmation, arrival: data.arrival, lastName: preimage.native.lastName,
       fields: data.changes, previewDigest, cloudAmend: { binding, preimage, nativeDigest,
         approvedPrices: native.approvedPrices, preserved: preserved.data },
       hmsSnapshot: { digest: hmsStateDigest(preimage), readAt: readAt.toISOString(), values: {

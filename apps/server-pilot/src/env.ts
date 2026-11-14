@@ -7,7 +7,7 @@
  */
 
 import { z } from 'zod';
-import { getPropertyRegistration } from '../tooling/playwright-quote/property-registry.mjs';
+import { getPropertyRegistration } from '../tooling/hms-cloud/property-registry.mjs';
 
 export type NodeEnv = 'production' | 'development' | 'test';
 

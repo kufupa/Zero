@@ -1,4 +1,5 @@
 // One verified room picker sequence in the existing saved-stay request fence.
+import { getPropertyRegistration } from './property-registry.mjs';
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 export const SAVED_ROOM_STAGE_PATHS = Object.freeze([
   '/web/base/LOVPOP', '/web/base/GRIDDATA',
@@ -20,7 +21,7 @@ export function matchesSavedStageRequest(request, frame, path, expected) {
 
 /** The mutable state is usable only by the active lifecycle that issued this gate. */
 export function createSavedRoomStageRequestGate({ frame, selected, deadlineAt } = {}) {
-  if (!frame || selected?.propertyCode !== 'HRCEN' || selected.status !== 'Reserved' ||
+  if (!frame || !getPropertyRegistration(selected?.propertyCode)?.active || selected.status !== 'Reserved' ||
       !/^\d{6,}-\d+$/.test(selected.confirmation || '') || !/^\d+$/.test(selected.guestId || '') ||
       !/^\d+$/.test(selected.reservationStayId || '') || !/^\d+$/.test(selected.reservationId || '') ||
       !/^\d+$/.test(selected.recordId || '') || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
@@ -35,7 +36,7 @@ export function createSavedRoomStageRequestGate({ frame, selected, deadlineAt } 
   const roomReadRequestKind = (request) => {
     const base = { GRID_NAME:'LVROOMTYPE2', GRID_TYPE:'LOV', LOV_TAGNAME:'roomtype',
       USER_FUNCTION_NAME:'OSRESV', CURRENT_TAB_NAME:'HDR', LOV_ALIAS_NAME_1:'param.propertycode',
-      LOV_ALIAS_VALUE_1:'HRCEN', LOV_ALIAS_TYPE_1:'text' };
+      LOV_ALIAS_VALUE_1:selected.propertyCode, LOV_ALIAS_TYPE_1:'text' };
     if (state === 'initial_armed' && matchesSavedStageRequest(request, frame, SAVED_ROOM_STAGE_PATHS[0], {
       ...base, REQUEST_TYPE:'LOV.HEAD_DATA.STORED', popup:'true', filterfields:'roomtypecode',
       filteroperator:'CONTAINS', filtervalue:current })) return 'initial';
@@ -49,7 +50,7 @@ export function createSavedRoomStageRequestGate({ frame, selected, deadlineAt } 
       const data = snapshot?.data;
       if (!active() || state !== 'ready' || !data || !/^[A-Z0-9]{1,12}$/.test(before || '') ||
           !/^[A-Z0-9]{1,12}$/.test(after || '') || before === after || String(data.roomtype ?? '') !== before ||
-          data.propertycode !== 'HRCEN' || data.status !== 'Reserved' ||
+          data.propertycode !== selected.propertyCode || data.status !== 'Reserved' ||
           String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
           String(data.reservationstayid ?? '') !== selected.reservationStayId ||
           String(data.reservationid ?? '') !== selected.reservationId || String(data.recordid ?? '') !== selected.recordId ||

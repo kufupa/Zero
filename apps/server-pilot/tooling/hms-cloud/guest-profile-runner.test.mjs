@@ -8,21 +8,22 @@ import { join } from 'node:path';
 import { profileBusinessFields, profilePreviewDigest, profileReviewDigest } from './guest-profile-create.mjs';
 import { createGuestProfileRunner } from './guest-profile-runner.mjs';
 
-const business = { guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000999' }, confirmDuplicateName: true };
+const business = { propertyCode: 'HRCEN', guest: { firstName: 'Proof', lastName: 'Labtest', mobile: '+27000000999' }, confirmDuplicateName: true };
 const fields = profileBusinessFields(business);
 const input = { ...business, expectedPreviewDigest: profilePreviewDigest(fields, true), attemptId: 'attempt-one' };
-const readback = { outcome: 'read', nativeId: '123', firstName: 'Proof', lastName: 'Labtest', mobile: fields.mobile,
+const readback = { outcome: 'read', propertyCode: 'HRCEN', nativeId: '123', firstName: 'Proof', lastName: 'Labtest', mobile: fields.mobile,
   email: '', status: 'ACTIVE', consent: [false, false, false, false], consentCoverage: 'complete' };
 async function fixture(t, createImpl, verifyNoCreate) {
   const parent = join(homedir(), '.nava-hms-runtime');
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const dir = await mkdtemp(join(parent, 'profile-runner-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  let saves = 0;
+  let saves = 0, quiesced = true;
   const dependencies = { prepareGuestProfile: async () => ({ outcome: 'ready' }),
+    writerCurrent: () => true, writerQuiesced: () => quiesced,
     readGuestProfile: async () => readback,
     createGuestProfile: async (request, options) => {
-      const context = { phase: 'initial', previewDigest: request.expectedPreviewDigest,
+      const context = { propertyCode: 'HRCEN', writer: {}, phase: 'initial', previewDigest: request.expectedPreviewDigest,
         confirmDuplicateName: request.confirmDuplicateName === true, fields: profileBusinessFields(request) };
       assert.equal(await options.authorizeCandidate(context), true);
       return createImpl({ options, context, dir, dispatch: async (response, phase = 'initial') => {
@@ -30,8 +31,10 @@ async function fixture(t, createImpl, verifyNoCreate) {
         return options.dispatchCandidate(current, async () => { saves++; await options.recordResponse(current, response); });
       } });
     } };
-  const runner = () => createGuestProfileRunner({ runtimeDir: dir, dependencies, verifyNoCreate });
-  return { dir, runner, saves: () => saves };
+  const runner = () => createGuestProfileRunner({ runtimeDir: dir, dependencies, verifyNoCreate,
+    sessionOptions: { propertyCode: 'HRCEN', transportId: 'transport-centurion' },
+    authorizeStaffWrite: async () => true, dispatchStaffWrite: async (_context, proceed) => proceed() });
+  return { dir, runner, saves: () => saves, setQuiesced: value => { quiesced = value; } };
 }
 const success = { status: 200, success: true, nativeId: '123', question: false };
 const created = { outcome: 'created', attemptId: input.attemptId, phase: 'initial', dispatched: true, nativeId: '123', readback };
@@ -66,7 +69,7 @@ test('concurrent and restarted calls cannot dispatch twice; completed result rep
   const held = await oversized.runner().createGuestProfile(input);
   assert.equal(held.outcome, 'reconciliation_required');
   assert.equal(held.nativeId, '123');
-  assert.equal((await oversized.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId })).reconciliation.outcome, 'created');
+  assert.equal((await oversized.runner().readGuestProfile({ propertyCode: 'HRCEN', nativeId: '123', attemptId: input.attemptId })).reconciliation.outcome, 'created');
   assert.equal(oversized.saves(), 1);
 });
 
@@ -74,8 +77,11 @@ test('known returned ID survives uncertainty and reconciles without another Save
   const f = await fixture(t, async ({ dispatch }) => { await dispatch(success); return { outcome: 'uncertain', issue: 'READ_FAILED', attemptId: input.attemptId }; });
   const result = await f.runner().createGuestProfile(input);
   assert.equal(result.nativeId, '123');
+  f.setQuiesced(false);
+  assert.equal((await f.runner().readGuestProfile({ propertyCode: 'HRCEN', nativeId: '123', attemptId: input.attemptId })).issue, 'PROFILE_WRITER_NOT_QUIESCED');
   assert.equal((await f.runner().createGuestProfile(input)).outcome, 'reconciliation_required');
-  const fresh = await f.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId });
+  f.setQuiesced(true);
+  const fresh = await f.runner().readGuestProfile({ propertyCode: 'HRCEN', nativeId: '123', attemptId: input.attemptId });
   assert.equal(fresh.reconciliation.outcome, 'created');
   assert.equal((await f.runner().createGuestProfile(input)).outcome, 'created');
   assert.equal(f.saves(), 1);
@@ -88,7 +94,7 @@ test('known returned ID survives uncertainty and reconciles without another Save
   const attemptKey = createHash('sha256').update(JSON.stringify(input.attemptId)).digest('hex');
   await writeFile(join(interrupted.dir, `attempt-${attemptKey}-reconcile-claim.json`),
     JSON.stringify({ version: 1, attemptKey }) + '\n', { flag: 'wx', mode: 0o600 });
-  const resumed = await interrupted.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId });
+  const resumed = await interrupted.runner().readGuestProfile({ propertyCode: 'HRCEN', nativeId: '123', attemptId: input.attemptId });
   assert.equal(resumed.reconciliation.outcome, 'created');
   assert.equal(interrupted.saves(), 1);
 });
@@ -113,12 +119,14 @@ test('extended review authorize ignores JSONB key order between claim and live p
   t.after(() => rm(dir, { recursive: true, force: true }));
   let authorized = false;
   const runner = createGuestProfileRunner({
-    runtimeDir: dir,
+    runtimeDir: dir, sessionOptions: { propertyCode: 'HRCEN', transportId: 'transport-centurion' },
+    authorizeStaffWrite: async () => true, dispatchStaffWrite: async (_context, proceed) => proceed(),
     dependencies: {
+      writerCurrent: () => true, writerQuiesced: () => true,
       createGuestProfile: async (request, options) => {
         const liveFields = profileBusinessFields(request);
         // Live prepare often rebuilds fields/review with different key order than the claim.
-        const context = { phase: 'initial', previewDigest: request.expectedPreviewDigest,
+        const context = { propertyCode: 'HRCEN', writer: {}, phase: 'initial', previewDigest: request.expectedPreviewDigest,
           confirmDuplicateName: true, fields: liveFields, review };
         authorized = await options.authorizeCandidate(context) === true;
         assert.equal(authorized, true);
@@ -142,7 +150,8 @@ test('extended review authorize ignores JSONB key order between claim and live p
   const changed = { ...input, guest: { ...business.guest, mobile: '+27000000998' } };
   changed.expectedPreviewDigest = profilePreviewDigest(profileBusinessFields({ guest: changed.guest, confirmDuplicateName: true }), true);
   assert.equal((await f.runner().createGuestProfile(changed)).issue, 'PROFILE_ATTEMPT_CHANGED');
-  assert.equal((await f.runner().createGuestProfile({ ...input, attemptId: 'real', guest: { ...business.guest, firstName: 'Real' } })).issue, 'PROFILE_LABTEST_ONLY');
+  const withoutAuthority = createGuestProfileRunner({ runtimeDir: f.dir, sessionOptions: { propertyCode: 'HRCEN' } });
+  assert.equal((await withoutAuthority.createGuestProfile({ ...input, attemptId: 'real', guest: { ...business.guest, firstName: 'Real' } })).issue, 'PROFILE_LABTEST_ONLY');
   assert.equal((await f.runner().createGuestProfile({ ...input, attemptId: 'authority', authorized: true })).issue, 'PROFILE_ATTEMPT_INPUT_INVALID');
   assert.equal(f.saves(), 1);
 });
@@ -163,7 +172,8 @@ test('malformed journal and unavailable persistence fail closed', async t => {
   const claim = (await readdir(f.dir)).find(name => name.endsWith('-claim.json') && name.startsWith('attempt-'));
   await writeFile(join(f.dir, claim), '{bad');
   assert.equal((await f.runner().createGuestProfile(input)).issue, 'PROFILE_JOURNAL_CORRUPT');
-  const unavailable = createGuestProfileRunner({ runtimeDir: '/dev/null/profile-journal', dependencies: {} });
+  const unavailable = createGuestProfileRunner({ runtimeDir: '/dev/null/profile-journal', dependencies: {},
+    sessionOptions: { propertyCode: 'HRCEN' }, authorizeStaffWrite: async () => true, dispatchStaffWrite: async (_context, proceed) => proceed() });
   assert.equal((await unavailable.createGuestProfile({ ...input, attemptId: 'unavailable' })).issue, 'PROFILE_JOURNAL_UNAVAILABLE');
   assert.equal(f.saves(), 1);
 });
@@ -227,7 +237,7 @@ test('a failed response record retains an observed ID for later manual reconcili
   const replay = await f.runner().createGuestProfile(input);
   assert.equal(replay.outcome, 'reconciliation_required');
   assert.equal(replay.nativeId, '123');
-  assert.equal((await f.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId })).outcome, 'reconciliation_required');
+  assert.equal((await f.runner().readGuestProfile({ propertyCode: 'HRCEN', nativeId: '123', attemptId: input.attemptId })).outcome, 'reconciliation_required');
   assert.equal((await f.runner().createGuestProfile({ ...input, attemptId: 'next', retryOfAttemptId: input.attemptId })).issue, 'PROFILE_INTENT_HELD');
   assert.equal(reviewed, 0);
 });
@@ -241,7 +251,7 @@ test('a corrupt final record retains the ID from an intact response without enab
   assert.equal(replay.issue, 'PROFILE_JOURNAL_CORRUPT');
   assert.equal(replay.nativeId, '123');
   assert.equal(replay.dispatched, true);
-  const read = await f.runner().readGuestProfile({ nativeId: '123', attemptId: input.attemptId });
+  const read = await f.runner().readGuestProfile({ propertyCode: 'HRCEN', nativeId: '123', attemptId: input.attemptId });
   assert.equal(read.outcome, 'reconciliation_required');
   assert.equal(read.nativeId, '123');
   assert.equal(f.saves(), 1);
@@ -252,9 +262,11 @@ test('a new process holds a dispatch after the writer exits without a result', a
   const runnerUrl = new URL('./guest-profile-runner.mjs', import.meta.url).href;
   const code = `import { createGuestProfileRunner } from ${JSON.stringify(runnerUrl)};
     const input = ${JSON.stringify(input)}, fields = ${JSON.stringify(fields)};
-    const runner = createGuestProfileRunner({ runtimeDir: process.argv[1], dependencies: {
+    const runner = createGuestProfileRunner({ runtimeDir: process.argv[1], sessionOptions: { propertyCode: 'HRCEN' },
+      authorizeStaffWrite: async () => true, dispatchStaffWrite: async (_context, proceed) => proceed(), dependencies: {
+      writerCurrent: () => true,
       createGuestProfile: async (request, options) => {
-        const context = { phase: 'initial', previewDigest: request.expectedPreviewDigest, confirmDuplicateName: true, fields };
+        const context = { propertyCode: 'HRCEN', writer: {}, phase: 'initial', previewDigest: request.expectedPreviewDigest, confirmDuplicateName: true, fields };
         if (!await options.authorizeCandidate(context)) process.exit(2);
         await options.dispatchCandidate(context, async () => options.recordResponse(context, ${JSON.stringify(success)}));
         process.exit(0);

@@ -16,7 +16,7 @@ const OPEN_PATH = '/web/base/OSCNRS';
 const financialFields = ['guaranteetype', 'araccountname', 'arprofileid', 'araccountid',
   'guaranteecreditcardid', 'leaseguaranteecreditcardid'];
 const preservedFields = ['arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults', 'children',
-  'child1', 'child2', 'child3', 'childages', 'track', 'reservationnote', 'firstname', 'lastname',
+  'childages', 'track', 'reservationnote', 'firstname', 'lastname',
   'emailaddress', 'bookername', 'bookercontact', 'caller', 'udfchar06',
   'udfchkbox04', 'udfchar09', 'udfchar13'];
 const usedPages = new WeakSet();
@@ -57,14 +57,15 @@ function actionDeadline(page, timeoutMs, hooks) {
   };
   const onDialog = (dialog) => {
     const observed = { type: dialog.type(), message: dialog.message() };
+    const reject = () => { stop('NATIVE_DIALOG', observed); void dialog.dismiss().catch(() => {}); };
     if (hooks.onNativeCharge && observed.type === 'confirm' && /penalt|fee|charge|deposit/i.test(observed.message)) {
       void (async () => {
-        if (await hooks.onNativeCharge(observed) !== true || stopped) return stop('NATIVE_DIALOG', observed);
+        if (await hooks.onNativeCharge(observed) !== true || stopped) return reject();
         await dialog.accept();
-      })().catch(() => stop('NATIVE_DIALOG', observed));
+      })().catch(reject);
       return;
     }
-    stop('NATIVE_DIALOG', observed);
+    reject();
   };
   page.on('dialog', onDialog);
   const timer = setTimeout(() => stop('ACTION_TIMEOUT'), timeoutMs);
@@ -132,7 +133,9 @@ function unchangedCancellationFields(before, after, expected) {
   if (!isCloudCancellation(expected)) return true;
   return ['values', 'data'].every((part) => {
     const a = before?.[part], b = after?.[part];
-    return a && b && preservedFields.every((key) => {
+    const keys = new Set([...preservedFields, ...Object.keys(a ?? {}).filter(key => /^child\d+(?:status|label)?$/i.test(key)),
+      ...Object.keys(b ?? {}).filter(key => /^child\d+(?:status|label)?$/i.test(key))]);
+    return a && b && [...keys].every((key) => {
       const has = Object.hasOwn(a, key);
       return has === Object.hasOwn(b, key) && (!has || JSON.stringify(a[key]) === JSON.stringify(b[key]));
     });
@@ -183,10 +186,10 @@ export function cancellationRequestDigest(request) {
   } catch { return null; }
 }
 
-function matchesOpen(request, frame, confirmation) {
+function matchesOpen(request, frame, expected) {
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
-    const required = { SYSTEM_FUNCTION_NAME: 'OSCNRS', USER_FUNCTION_NAME: 'OSCNRS', confirmationnumber: confirmation, propertycode: 'HRCEN' };
+    const required = { SYSTEM_FUNCTION_NAME: 'OSCNRS', USER_FUNCTION_NAME: 'OSCNRS', confirmationnumber: expected.confirmation, propertycode: expected.propertyCode };
     return request.method() === 'POST' && request.frame() === frame && url.origin === ORIGIN && url.pathname === OPEN_PATH &&
       !url.search && !url.hash &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
@@ -203,6 +206,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
   let fence, scope, interactionStarted = false, openedReady = false, baselineVerified = false;
   let preChargeStarted = false, preChargeText = null;
   const blocked = [];
+  const forwarded = new WeakSet();
   const approvePreCharge = async (dialog) => {
     preChargeText = dialog.text;
     if (!baselineVerified || typeof awaitChargeApproval !== 'function' || typeof prepareChargeWithAuthority !== 'function' ||
@@ -224,7 +228,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK' }),
   });
   const work = (async () => { try {
-    fence = await installPageRequestFence(page, [OPEN_PATH]);
+    const policyPath = `/api/booking/${encodeURIComponent(expected.propertyCode)}/cancelPolicy/${encodeURIComponent(expected.confirmation)}`;
+    fence = await installPageRequestFence(page, [OPEN_PATH, policyPath]);
     action.check();
     scope = fence.open();
     const state = await currentCancellationRecord(page, expected), frame = state.frame;
@@ -250,18 +255,19 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
         pathname = url.pathname;
         action = url.searchParams.get('pageaction') || '';
         policyRead = request.method() === 'GET' && url.origin === ORIGIN && !url.hash &&
-          pathname === `/api/booking/HRCEN/cancelPolicy/${encodeURIComponent(expected.confirmation)}`;
+          pathname === policyPath && !url.search;
       }
       catch { /* Block unparseable targets. */ }
-      if (policyRead) return route.fallback();
+      if (policyRead && scope.allow(request)) return route.fallback();
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && pathname &&
           !/save|delete|cancel|checkin|checkout|send|email|mail|crs|charge|fee|penalt|payment/i.test(pathname) &&
           !(pathname === '/web/base/OSRESV.HDR' && /^(SAVE|DELETE)$/i.test(action))) return route.fallback();
-      if (armed && !nativeDialog && !fence.isQuarantined() && matchesOpen(request, frame, expected.confirmation) && scope.allow(request)) {
+      if (forwarded.delete(request) && !fence.isQuarantined()) return route.fallback();
+      if (armed && !nativeDialog && !fence.isQuarantined() && matchesOpen(request, frame, expected) && scope.allow(request)) {
         armed = false;
         authorizedRequest = request;
         dispatched = true;
-        return route.continue();
+        return route.fallback();
       }
       armed = false;
       blocked.push({ method: request.method(), path: /^\/web\/base\/[A-Za-z0-9_.-]+$/.test(pathname) ? pathname : 'other' });
@@ -274,7 +280,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       try {
         const url = new URL(item.url());
         return item.request().method() === 'GET' && url.origin === ORIGIN &&
-          url.pathname === `/api/booking/HRCEN/cancelPolicy/${encodeURIComponent(expected.confirmation)}`;
+          url.pathname === policyPath && !url.search;
       } catch { return false; }
     }, { timeout: timeoutMs }).catch(() => null);
     action.check();
@@ -341,7 +347,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       unchangedExcept(baseline, afterOpen, {}) && unchangedCancellationFields(baseline, afterOpen, expected) &&
       !blocked.length && !fence.isQuarantined();
     if (reasonReady) pendingPages.set(page, { frame, expected: { ...expected }, native: { ...state.native }, track: state.track,
-      blocked, baseline: afterOpen, fence, reasons, partyPreimage: state.partyPreimage,
+      blocked, baseline: afterOpen, fence, forwarded, reasons, partyPreimage: state.partyPreimage,
       noCancelPolicy: policy?.applyCancelPolicy === false && policy?.allowCancelPolicyOverride === false,
       chargeApproved: preChargeStarted, penaltyText: preChargeText, dialogSeen: () => nativeDialog });
     openedReady = reasonReady;
@@ -371,7 +377,7 @@ export function matchesCancellation(request, frame, expected, state, reasonCode,
     const changes = { cancelreason: reasonCode, cancellationnote: cancellationNote, reservationstaystatus: 'CANCELED' };
     const required = {
       SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR',
-      propertycode: 'HRCEN', status: 'Reserved', firstname: state.expectedFirstName, lastname: state.expectedLastName, confirmationnumber: expected.confirmation,
+      propertycode: expected.propertyCode, status: 'Reserved', firstname: state.expectedFirstName, lastname: state.expectedLastName, confirmationnumber: expected.confirmation,
       guestid: expected.guestId, arrivaldate: state.arrivalWire, departuredate: state.departureWire,
       roomtype: expected.roomType, rateplan: expected.ratePlan, track: state.track, reservationnote: expected.note,
       cancelreason: reasonCode, cancellationnote: cancellationNote, reservationstaystatus: 'CANCELED',
@@ -393,7 +399,7 @@ function matchesChargeSave(request, frame, expected, state, reasonCode, cancella
   try {
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
     const required = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR',
-      propertycode: 'HRCEN', confirmationnumber: expected.confirmation, guestid: expected.guestId,
+      propertycode: expected.propertyCode, confirmationnumber: expected.confirmation, guestid: expected.guestId,
       reservationstayid: expected.nativeStayId, ...state.native };
     const status = body.get('status');
     if (!['Reserved', 'Cancelled', 'Canceled'].includes(status)) return false;
@@ -414,7 +420,7 @@ async function chargeTargetIsCurrent(frame, expected) {
     if (guests.length !== 1) return false;
     const form = globalThis.Ext?.getCmp?.(guests[0].id.replace(/-inputEl$/, ''))?.up?.('form');
     const data = form?.getRecord?.()?.data;
-    return Boolean(data && String(data.propertycode) === 'HRCEN' &&
+    return Boolean(data && String(data.propertycode) === target.propertyCode &&
       String(data.confirmationnumber) === target.confirmation && String(data.guestid) === target.guestId &&
       String(data.reservationstayid) === target.nativeStayId);
   }, expected).catch(() => false);
@@ -480,7 +486,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     action.check();
     if (fence !== opened.fence || fence.isQuarantined()) throw new Error('PAGE_ACTION_UNCERTAIN');
     scope = fence.open();
-    const names = ['confirmation', 'guestId', 'nativeStayId', 'firstName', 'lastName', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'allowRealGuest'];
+    const names = ['propertyCode', 'confirmation', 'guestId', 'nativeStayId', 'firstName', 'lastName', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'allowRealGuest'];
     if (names.some((name) => opened.expected[name] !== expected[name]) || opened.blocked.length || opened.dialogSeen()) {
       throw new Error('CANCEL_REASON_STALE');
     }
@@ -538,7 +544,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
           if (released || fence.isQuarantined() || continuationAllowed() !== true) throw new Error('CANCEL_CHARGE_DISARMED');
           released = true;
           chargeDispatched = true;
-          return route.continue();
+          opened.forwarded.add(request);
+          return route.fallback();
         };
         try {
           if (!requestDigest || typeof dispatchChargeWithAuthority !== 'function') return route.abort();
@@ -559,7 +566,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
             throw new Error('CANCEL_DISPATCH_DISARMED');
           }
           released = true; dispatched = true; onDispatched?.();
-          return route.continue();
+          opened.forwarded.add(request);
+          return route.fallback();
         };
         try {
           if (!requestDigest || (beforeDispatch && await beforeDispatch() !== true)) return route.abort();

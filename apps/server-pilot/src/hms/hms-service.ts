@@ -11,7 +11,7 @@ import { quoteStayReadDataSchema } from './quote-stay-contract.js';
 import type { ReadRequest } from './read-service.js';
 import { reservationFindResultSchema, reservationContextReadResultSchema } from './reservation-context-contract.js';
 import { staffSessionSchema, loadHmsPreparation, type StaffSession } from './hms-preparation.js';
-import { verifyStaffGoForRun } from './staff-go-authority.js';
+import { verifyStaffGoForRun, type VerifiedStaffGo } from './staff-go-authority.js';
 import { hmsPropertyReadEnabled } from './mailbox-hms-origin-bind.js';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -20,6 +20,33 @@ import { loadWorkerActiveReadSet, DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT } from './
 import { loadHmsReadRoleProofV2ForTool } from './release-kernel.js';
 import { runtimeFingerprintSha256 } from './evidence-runtime.js';
 import { READ_TOOLS } from './read-tools.js';
+
+async function executeVerifiedRun(db: DB, go: VerifiedStaffGo, request: { runId: string; fence: AiRunFence; signal?: AbortSignal }) {
+  if (go.preparation.workflowContext) {
+    const { executePreparedReservationV2Run } = await import('../ai/reservation-workflow-v2-tools.js');
+    return executePreparedReservationV2Run({ db, go, fence: request.fence, signal: request.signal });
+  }
+  if (go.grant.operation === 'create') {
+    const { executePreparedPaneCreateRun } = await import('../ai/pane-cloud-preview.js');
+    return executePreparedPaneCreateRun({ db, go, fence: request.fence, signal: request.signal });
+  }
+  if (go.grant.operation === 'amend') {
+    const { runCloudPaneAmendOnce } = await import('../ai/pane-cloud-amend-runner.js');
+    return runCloudPaneAmendOnce({ ...request, db, go });
+  }
+  if (go.grant.operation === 'cancel' || go.grant.operation === 'attach_document') {
+    const { runPaneHmsWriteOnce } = await import('../ai/pane-hms-write.js');
+    return runPaneHmsWriteOnce({ runId: request.runId, fence: request.fence, db, signal: request.signal, go });
+  }
+  throw new Error('hms_write_adapter_unavailable');
+}
+
+/** The worker has no caller-supplied property or staff claims. Its durable receipt resolves them. */
+export async function executeHmsWorkerRun(input: { db: DB; fence: AiRunFence; signal?: AbortSignal }) {
+  input.signal?.throwIfAborted();
+  const go = await input.db.transaction((tx) => verifyStaffGoForRun(tx, input.fence));
+  return executeVerifiedRun(input.db, go, { runId: input.fence.runId, fence: input.fence, signal: input.signal });
+}
 
 async function validatedReadCapabilities(scope: ResolvedPropertyScope) {
   const unavailable = { reads: false, quote: false };
@@ -108,8 +135,8 @@ export function createHmsService(input: {
       return approveHmsWrite({ db, transportId: scope.transportId, propertySwitch: input.propertySwitch,
         preparedRef: request.preparedRef, workItemId: request.workItemId, expectedRevision: request.expectedRevision,
         ...session, selectedSource: request.source, selectedInternetMessageId: mail?.header ?? undefined,
-        ...(prepared.operation === 'cancel' ? { cloudCancelSelection: request.source } : {}),
-        ...(prepared.operation === 'amend' ? { cloudSelection: request.source } : {}),
+        ...(!prepared.workflowContext && prepared.operation === 'cancel' ? { cloudCancelSelection: request.source } : {}),
+        ...(!prepared.workflowContext && prepared.operation === 'amend' ? { cloudSelection: request.source } : {}),
         formDigest: request.formDigest });
     },
     async executeApprovedRun(request: { runId: string; fence: AiRunFence; signal?: AbortSignal }) {
@@ -117,18 +144,10 @@ export function createHmsService(input: {
       const db = database();
       const go = await db.transaction((tx) => verifyStaffGoForRun(tx, request.fence));
       if (go.grant.transportId !== scope.transportId || go.grant.propertyCode !== scope.propertyCode ||
-          go.grant.tenantId !== scope.tenantId || scope.propertyCode !== 'HRCEN') {
+          go.grant.tenantId !== scope.tenantId) {
         throw new Error('hms_write_capability_unavailable');
       }
-      if (go.grant.operation === 'amend') {
-        const { runCloudPaneAmendOnce } = await import('../ai/pane-cloud-amend-runner.js');
-        return runCloudPaneAmendOnce({ ...request, db });
-      }
-      if (go.grant.operation === 'cancel' || go.grant.operation === 'attach_document') {
-        const { runPaneHmsWriteOnce } = await import('../ai/pane-hms-write.js');
-        return runPaneHmsWriteOnce({ runId: request.runId, fence: request.fence, db });
-      }
-      throw new Error('hms_write_adapter_unavailable');
+      return executeVerifiedRun(db, go, request);
     },
   };
 }

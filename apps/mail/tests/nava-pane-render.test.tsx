@@ -3343,6 +3343,7 @@ describe('NavaPane', () => {
     const webBridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
       entryId: 'mail-1', storeId: 'transport-1', folderEntryId: 'thread' } };
     const pane = render(<NavaPane bridge={webBridge} preview />);
+    await settle();
     expect(await screen.findByText('Select this guest email in webmail before reviewing the booking.')).toBeTruthy();
     expect(screen.queryByTestId('amend-lookup-panel')).toBeNull();
 

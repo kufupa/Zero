@@ -141,7 +141,7 @@ function wireDate(value) {
 
 function previewTargetMatches(expected, snapshot) {
   const required = {
-    propertycode: 'HRCEN', status: 'Reserved', firstname: expected?.firstName ?? 'Proof', lastname: expected?.lastName ?? 'Labtest',
+    propertycode: expected.propertyCode, status: 'Reserved', firstname: expected?.firstName ?? 'Proof', lastname: expected?.lastName ?? 'Labtest',
     confirmationnumber: expected?.confirmation, guestid: expected?.guestId,
     arrivaldate: wireDate(expected?.arrival), departuredate: wireDate(expected?.departure),
     roomtype: expected?.roomType, rateplan: expected?.ratePlan, reservationnote: expected?.note,
@@ -215,7 +215,7 @@ export function labtestAdultAmendPreview(expected, adults, before, after, delta)
   return {
     field: 'adults',
     target: {
-      propertyCode: 'HRCEN', status: 'Reserved', confirmation: expected.confirmation, guestId: expected.guestId,
+      propertyCode: expected.propertyCode, status: 'Reserved', confirmation: expected.confirmation, guestId: expected.guestId,
       arrival: expected.arrival, departure: expected.departure, roomType: expected.roomType,
       ratePlan: expected.ratePlan, note: expected.note,
     },
@@ -227,7 +227,8 @@ export function labtestAdultAmendPreview(expected, adults, before, after, delta)
     bodyChanges: delta.bodyChanges,
     nativeSideEffects: delta.nativeSideEffects,
     // Raw native fields remain absent, null, blank or valued; none implies a child count.
-    childOccupancy: Object.fromEntries(['children', 'childages', 'child1', 'child2', 'child3'].map((name) => [name, {
+    childOccupancy: Object.fromEntries([...new Set(['children', 'childages', ...['data', 'values'].flatMap(part =>
+      Object.keys(before?.[part] ?? {}).filter(name => /^child\d+$/i.test(name)))])].map((name) => [name, {
       model: field(before, 'data', name), form: field(before, 'values', name),
     }])),
     pricing: { state: 'not_repriced', inventory: 'not_verified', tax: 'not_repriced' },
@@ -287,7 +288,8 @@ async function selectAdultOption(frame, baseline, requested, commit, assertActiv
       'recordid', 'status', 'firstname', 'lastname', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan',
       'adults', 'children', 'child1', 'child2', 'child3', 'childages', 'track', 'guaranteetype',
       'reservationnote', 'emailaddress', 'udfchkbox04', 'udfchar09', 'udfchar13', 'caller', 'udfchar06',
-      ...partyFields];
+      ...partyFields, ...new Set(['data', 'values'].flatMap(part =>
+        Object.keys(preimage[part] ?? {}).filter(name => /^child\d+$/i.test(name))))];
     const values = nativeForm?.getValues?.();
     const unchanged = (before, after, name) => before && after &&
       Object.hasOwn(before, name) === Object.hasOwn(after, name) &&
@@ -352,7 +354,7 @@ export async function stageSavedAdultForComposition(context, expected, adults) {
  */
 export async function stageLabtestAdultAmendment(page, expected = {}, options = {}) {
   if (!expected || typeof expected !== 'object' || Array.isArray(expected) ||
-      Object.keys(expected).some((key) => !['confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults'].includes(key))) {
+      Object.keys(expected).some((key) => !['propertyCode', 'confirmation', 'guestId', 'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'adults'].includes(key))) {
     return { outcome: 'input_gap', issue: 'UNSUPPORTED_EXPECTED_FIELD' };
   }
   if (!options || typeof options !== 'object' || Array.isArray(options) ||

@@ -4,8 +4,8 @@ import { compareRateClaim, type RateComparison } from '../quote-proposal/rate-ch
 import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
-import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
-import { requiredBookNativeFields } from '../../tooling/playwright-quote/property-profile.mjs';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { requiredBookNativeFields } from '../../tooling/hms-cloud/property-profile.mjs';
 import { CENTURION_RATE_PLANS } from '../hms/rate-catalogue.js';
 
 export type BookingDraftDefaults = {
@@ -249,7 +249,7 @@ async function defaultValidateCreate(
 ): Promise<{ ok: boolean; errors: unknown[] }> {
   const mod = (await import(
     pathToFileURL(
-      fileURLToPath(new URL('../../tooling/playwright-quote/create-request.mjs', import.meta.url)),
+      fileURLToPath(new URL('../../tooling/hms-cloud/create-request.mjs', import.meta.url)),
     ).href
   )) as {
     loadCreateToolSchema(): Promise<unknown>;
@@ -283,7 +283,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
 
   const schema = JSON.parse(
     readFileSync(
-      fileURLToPath(new URL('../../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+      fileURLToPath(new URL('../../tooling/hms-cloud/create-tool.schema.json', import.meta.url)),
       'utf8',
     ),
   ) as {
@@ -301,7 +301,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
   const profile = JSON.parse(
     readFileSync(
       fileURLToPath(
-        new URL('../../tooling/playwright-quote/' + property.profileFile, import.meta.url),
+        new URL('../../tooling/hms-cloud/' + property.profileFile, import.meta.url),
       ),
       'utf8',
     ),

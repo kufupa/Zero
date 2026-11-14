@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
-import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
+import { PROPERTY_REGISTRY } from '../../tooling/hms-cloud/property-registry.mjs';
+import { profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
 import { z } from 'zod';
 
 /**
@@ -81,7 +81,7 @@ const TRACK_LABELS: Record<string, string> = {
 
 const schema = JSON.parse(
   readFileSync(
-    fileURLToPath(new URL('../../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+    fileURLToPath(new URL('../../tooling/hms-cloud/create-tool.schema.json', import.meta.url)),
     'utf8',
   ),
 ) as {

@@ -577,8 +577,8 @@ export async function resolveHmsLabtestDispatch(db: DB, handle: HmsLabtestWriteH
 async function recoverPositiveDispatch<P extends { confirmation: string; nativeStayId?: string;
   nativeReadback?: Record<string, unknown>; readbackDigest: string;
   savedShot?: { runId: string; sha256: string } }>(db: DB, holdId: string, kind: z.infer<typeof operation>, driver: {
-    withLock: <T>(intent: Intent, action: () => Promise<T>) => Promise<T>;
-    prove: (intent: Intent) => Promise<P>;
+    withLock: <T>(intent: Intent, action: (signal?: AbortSignal) => Promise<T>) => Promise<T>;
+    prove: (intent: Intent, signal?: AbortSignal) => Promise<P>;
     record: (tx: CreateFenceTransaction, intent: Intent, proof: P) => Promise<void>;
   }): Promise<void> {
   if (!z.string().uuid().safeParse(holdId).success) throw new HmsLabtestDispatchError('invalid');
@@ -596,8 +596,10 @@ async function recoverPositiveDispatch<P extends { confirmation: string; nativeS
     const intent = entry.intent;
     return intent;
   });
-  await driver.withLock(original, async () => {
-    const proof = await driver.prove(original);
+  await driver.withLock(original, async (signal) => {
+    signal?.throwIfAborted();
+    const proof = await driver.prove(original, signal);
+    signal?.throwIfAborted();
     const result = resolutionSchema.omit({ version: true, kind: true, holdId: true }).safeParse({ operation: kind,
       confirmation: proof.confirmation, ...(proof.nativeStayId ? { nativeStayId: proof.nativeStayId } : {}),
       ...(proof.nativeReadback ? { nativeReadback: proof.nativeReadback } : {}),
@@ -626,7 +628,7 @@ export async function recoverHmsLabtestAttach(db: DB, holdId: string): Promise<v
   const driver = await import('./pane-cloud-attach-recovery.js');
   await recoverPositiveDispatch(db, holdId, 'attach_document', {
     withLock: driver.withAttachRecoveryLock,
-    prove: (intent) => driver.proveAttachRecovery(db, intent),
+    prove: (intent, signal) => driver.proveAttachRecovery(db, intent, signal),
     record: driver.recordRecoveredAttach,
   });
 }
@@ -636,7 +638,7 @@ export async function recoverHmsLabtestAmend(db: DB, holdId: string): Promise<vo
   const driver = await import('./pane-cloud-amend-recovery.js');
   await recoverPositiveDispatch(db, holdId, 'amend', {
     withLock: driver.withAmendRecoveryLock,
-    prove: (intent) => driver.proveAmendRecovery(db, intent),
+    prove: (intent, signal) => driver.proveAmendRecovery(db, intent, signal),
     record: driver.recordRecoveredAmend,
   });
 }
@@ -646,7 +648,7 @@ export async function recoverHmsLabtestAddOn(db: DB, holdId: string): Promise<vo
   const driver = await import('./reservation-workflow-v2-services-execute.js');
   await recoverPositiveDispatch(db, holdId, 'add_on', {
     withLock: driver.withServiceRecoveryLock,
-    prove: (intent) => driver.proveServiceRecovery(db, intent),
+    prove: (intent, signal) => driver.proveServiceRecovery(db, intent, signal),
     record: driver.recordRecoveredService,
   });
 }
@@ -657,7 +659,7 @@ export async function recoverHmsLabtestV2Attach(db: DB, holdId: string,
   const driver = await import('./reservation-workflow-v2-filing.js');
   await recoverPositiveDispatch(db, holdId, 'attach_document', {
     withLock: driver.withReservationWorkflowV2AttachRecoveryLock,
-    prove: (intent) => driver.proveReservationWorkflowV2AttachRecovery(db, intent, access),
+    prove: (intent, signal) => driver.proveReservationWorkflowV2AttachRecovery(db, intent, access, signal),
     record: (tx, intent, proof) => driver.recordReservationWorkflowV2AttachRecovery(tx, intent, proof, access),
   });
 }

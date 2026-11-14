@@ -3,22 +3,20 @@ import {
   type StaffQuoteInstallationConfiguration,
 } from './staff-quote-installation.js';
 import {
-  hmsReadTargetForTransport,
+  hmsReadTargetForProperty,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
-import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
+import { propertyCodeSchema, resolvePropertyScope } from '../hms/property-registry.js';
 
 export type PaneStayHmsTargetResolution =
   | { ok: true; target: HmsReadTarget }
-  | { ok: false; reason: 'unknown_transport' | 'inactive_transport' | 'collector_no_hotel' };
+  | { ok: false; reason: 'unknown_transport' | 'inactive_transport' | 'collector_no_hotel' | 'property_mismatch' };
 
-/**
- * Mailbox transport → HMS slot/secret/lock. Callers never supply the property: a second
- * argument is ignored so a DV mailbox cannot be steered onto HRCEN.
- */
+/** Resolve the selected property only within the authenticated mailbox group. */
 export function paneStayHmsTargetForTransport(
   transportId: string | null | undefined,
-  _callerProperty?: string | null,
+  selectedProperty?: string | null,
 ): PaneStayHmsTargetResolution {
   const id = typeof transportId === 'string' ? transportId.trim() : '';
   if (!id) return { ok: false, reason: 'unknown_transport' };
@@ -27,7 +25,14 @@ export function paneStayHmsTargetForTransport(
   if (resolved.kind === 'refusal') {
     return { ok: false, reason: resolved.code === 'property_inactive' ? 'inactive_transport' : 'unknown_transport' };
   }
-  return { ok: true, target: hmsReadTargetForTransport(id) };
+  const selected = selectedProperty == null ? undefined : propertyCodeSchema.safeParse(selectedProperty);
+  if (selected && !selected.success) return { ok: false, reason: 'property_mismatch' };
+  try {
+    const code = selected?.data;
+    const scope = resolvePropertyScope({ transportId: id, ...(code && code !== 'HRCEN' ? { propertySwitch: code } : {}) });
+    if (code && code !== scope.propertyCode) return { ok: false, reason: 'property_mismatch' };
+    return { ok: true, target: hmsReadTargetForProperty(scope.propertyCode) };
+  } catch { return { ok: false, reason: 'property_mismatch' }; }
 }
 
 const PANE_WRITE_ENV_NAMES = [

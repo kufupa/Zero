@@ -2,7 +2,8 @@
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 
 /** Own a saved-stay session while exposing only read and cancellation preparation. */
-export async function withCancellationPreflightSession(operation, { signal } = {}) {
+export async function withCancellationPreflightSession(operation, { propertyCode, transportId, confirmation,
+  signal, credentialLease, cloudTargetKey } = {}) {
   if (typeof operation !== 'function') throw new Error('SESSION_CALLBACK_REQUIRED');
   return withSavedStayAgentSession(async ({ runTool }) => {
     const runPreflightTool = (request) => {
@@ -19,5 +20,5 @@ export async function withCancellationPreflightSession(operation, { signal } = {
       return runTool(input);
     };
     return operation({ runTool: runPreflightTool });
-  }, { signal });
+  }, { readOnly: true, readOnlyConfirmation: confirmation, propertyCode, transportId, signal, credentialLease, cloudTargetKey });
 }

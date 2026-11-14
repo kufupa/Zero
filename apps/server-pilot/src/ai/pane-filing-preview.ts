@@ -2,7 +2,9 @@ import { and, eq } from 'drizzle-orm';
 import { getDb, type DB } from '../db/client.js';
 import { mailThread, mailboxAccess, mailboxTransport, message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
-import { assertHmsReadOriginAllowed, CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
+import { bindHmsMailboxProperty, isDaVinciMailboxOrigin, loadThreadMailboxHmsOriginScan } from '../hms/mailbox-hms-origin-bind.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { propertyCodeSchema, type PropertySwitch } from '../hms/property-registry.js';
 import { getS3Storage, type S3Storage } from '../storage/s3.js';
 import { readPaneFilingAttachment } from './pane-filing-source.js';
 import { findStay } from './pane-stay-lookup.js';
@@ -11,6 +13,7 @@ import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 
 export type PreviewInput = {
   transportId: string;
+  propertySwitch?: PropertySwitch;
   actorUserId: string;
   workItemId: string;
   sourceMessageId: string;
@@ -61,14 +64,12 @@ export async function currentFilingSourceThread(db: DB, input: PreviewInput): Pr
  * record, then revalidate the source. It creates no approval, run or write.
  */
 export async function previewFiling(input: PreviewInput): Promise<PreviewResult> {
-  const resolved = paneStayHmsTargetForTransport(input.transportId);
-  const expected = CENTURION_HMS_READ_TARGET;
-  if (!resolved.ok || resolved.target.propertyCode !== expected.propertyCode ||
-      resolved.target.origin !== expected.origin || resolved.target.secretId !== expected.secretId ||
-      resolved.target.browserSlot !== expected.browserSlot ||
-      resolved.target.installationEnvName !== expected.installationEnvName) {
+  const resolved = paneStayHmsTargetForTransport(input.transportId, input.propertySwitch);
+  const property = resolved.ok ? propertyCodeSchema.safeParse(resolved.target.propertyCode) : null;
+  if (!resolved.ok || !property?.success || !effectiveWorkflowPolicy(process.env, property.data, 'attach').readEnabled) {
     return { status: 'refused', reason: 'property_unavailable' };
   }
+  const expected = resolved.target;
   const db = input.db ?? getDb();
   const current = await currentFilingSource(db, input);
   if (!current) return { status: 'refused', reason: 'source_unavailable' };
@@ -79,10 +80,11 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
   };
   const originAllowed = async () => {
     try {
-      const target = await assertHmsReadOriginAllowed({ transportId: input.transportId, threadId, messageId: input.sourceMessageId });
-      return target.propertyCode === expected.propertyCode && target.origin === expected.origin &&
-        target.secretId === expected.secretId && target.browserSlot === expected.browserSlot &&
-        target.installationEnvName === expected.installationEnvName;
+      const scan = await loadThreadMailboxHmsOriginScan({ transportId: input.transportId, threadId, messageId: input.sourceMessageId });
+      if (!scan.selectedFound || !scan.selected || (expected.propertyCode === 'HRCEN' &&
+          [scan.selected, ...scan.inbounds].some(isDaVinciMailboxOrigin))) return false;
+      return bindHmsMailboxProperty({ transportId: input.transportId,
+        propertyCode: expected.propertyCode, origin: scan.selected, toolId: 'documents_list_existing' }).ok;
     } catch { return false; }
   };
   const sourceInput = { db, s3: input.s3 ?? getS3Storage(), transportId: input.transportId,

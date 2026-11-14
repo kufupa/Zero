@@ -839,6 +839,7 @@ export async function runStaffQuote(
                 authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
                 signer,
                 propertyCode: quoteTarget.target.propertyCode,
+                transportId: identity.transportId,
                 childEnv,
                 onEvidenceDirectory: (directory) => {
                   evidence.directory = directory;

@@ -51,12 +51,12 @@ import {
   loadCreateToolSchema,
   optionalPartyAndNoteFills,
   validateCreateRequest,
-} from '../tooling/playwright-quote/create-request.mjs';
+} from '../tooling/hms-cloud/create-request.mjs';
 import {
   marketSegmentOptions,
   profileFor,
   stayBookFieldRefusal,
-} from '../tooling/playwright-quote/property-profile.mjs';
+} from '../tooling/hms-cloud/property-profile.mjs';
 import {
   PANE_STAY_ALREADY_BOOKED,
   stayCommitFromPaneResult,

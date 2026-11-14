@@ -1,4 +1,4 @@
-// Select a current rate code on a verified new HRCEN Guest Stay.
+// Select a current rate code on a verified new verified Guest Stay.
 import { createHash } from 'node:crypto';
 import { searchRatePlans, closeRoomRatePicker, chargeRoomRevision } from './guest-stay-room-rate.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
@@ -6,9 +6,9 @@ import { isVerifiedLabtestProfileCurrent, verifiedLabtestProfileToken } from './
 import { isVerifiedArSelectionCurrent, verifiedArSelectionToken } from './lookup.mjs';
 import { validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 import { compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { cloudSessionIdentity } from './cloud-session.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
-const PROPERTY = 'HRCEN';
 const VALIDATE = '/web/base/fieldvalidate';
 const CHANGE = '/web/base/OSRESV.HDR.rateplanchange';
 const CHECK_AVAILABILITY = '/web/base/OSRESV.HDR.getcheckavailability';
@@ -32,7 +32,9 @@ function dateParts(value) {
 }
 
 async function readDraft(page) {
-  return page.evaluate(({ expectedOrigin, blankIds }) => {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode) throw new Error('PROPERTY_MISMATCH');
+  return page.evaluate(({ expectedOrigin, blankIds, propertyCode }) => {
     if (location.origin !== expectedOrigin) throw new Error('HMS_ORIGIN_MISMATCH');
     const visible = element => Boolean((element.offsetWidth || element.offsetHeight) &&
       getComputedStyle(element).visibility !== 'hidden' && !element.closest('.x-window'));
@@ -65,8 +67,11 @@ async function readDraft(page) {
       const matches = keys?.filter(key => key.toLowerCase() === name) || [];
       return matches.length === 1 ? String(data[matches[0]] ?? '').trim() : null;
     };
+    const childStatusNames = keys?.filter(name => /^child[1-9]\d*status$/.test(name)) || [];
+    const childBands = Object.fromEntries(childStatusNames.filter(name => data[name] === 'ACTIVE').map(name =>
+      [name.slice(0, -6), optionalValue(name.slice(0, -6))]));
     const identity = data ? {
-      valid:exact('propertycode','HRCEN') && exact('PKID','@[EMPTY]#@[EMPTY]#HRCEN#') && exact('status','New') &&
+      valid:exact('propertycode',propertyCode) && exact('PKID',`@[EMPTY]#@[EMPTY]#${propertyCode}#`) && exact('status','New') &&
         exact('confirmationnumber','') && unique('guestid') && unique('arprofileid') && accountKeys.length <= 1 &&
         partyIdKeys.every(name => keys.filter(key => key.toLowerCase() === name).length <= 1) &&
         unique('bookingsessionid') && Boolean(value('bookingsessionid')) &&
@@ -74,7 +79,7 @@ async function readDraft(page) {
       session:value('bookingsessionid'),guestId:value('guestid'),arAccountId:optionalValue('araccountid') || '',
       arProfileId:value('arprofileid'),arAccountName:value('araccountname'),
       agencyId:optionalValue('taid1'),organizationId:optionalValue('companyid'),childAges:optionalValue('childages'),
-      sourceCode:optionalValue('sourceofbus'),
+      sourceCode:optionalValue('sourceofbus'), childBands,
     } : null;
     let submit = null;
     try { submit = cmp?.getSubmitData?.() || null; } catch { /* Fail the readback if unavailable. */ }
@@ -94,13 +99,13 @@ async function readDraft(page) {
           value:component(element)?.getXType?.() === 'checkboxfield' || ['checkbox','radio'].includes(element.type)
             ? (component(element)?.getValue?.() ?? element.checked) : element.value,
           disabled:element.disabled,readOnly:Boolean(element.readOnly)}))};
-  },{expectedOrigin:ORIGIN,blankIds:BLANK_DRAFT_IDS});
+  },{expectedOrigin:ORIGIN,blankIds:BLANK_DRAFT_IDS,propertyCode});
 }
 
 async function checkedDraft(draft, guestId, page, { allowRealGuest = false, expectedGuest } = {}) {
   if (clean(draft.guestId) !== guestId || clean(draft.guestNativeId) !== guestId) throw new Error('GUEST_PROFILE_ID_UNSUPPORTED');
   const arrival = dateParts(draft.arrival), departure = dateParts(draft.departure);
-  if (draft.property !== PROPERTY || clean(draft.confirmation) || draft.windows || !arrival || !departure || arrival.iso >= departure.iso) {
+  if (draft.property !== cloudSessionIdentity(page)?.propertyCode || clean(draft.confirmation) || draft.windows || !arrival || !departure || arrival.iso >= departure.iso) {
     throw new Error('NEW_DRAFT_UNVERIFIED');
   }
   const identity = draft.identity;
@@ -125,7 +130,7 @@ async function checkedDraft(draft, guestId, page, { allowRealGuest = false, expe
     // An inherited real-profile account is preserved by exact draft/request/readback checks.
     ar = {accountId:accountId || '',profileId:profileId || '',token:token || null};
   }
-  return {arrival,departure,session:guestProof || ar ? identity.session : null,guest:guestProof,ar};
+  return {propertyCode:draft.property,arrival,departure,session:guestProof || ar ? identity.session : null,guest:guestProof,ar};
 }
 function proofsCurrent(page, proof) {
   return (!proof.guest || isVerifiedLabtestProfileCurrent(page,{session:proof.session,...proof.guest})) &&
@@ -133,18 +138,22 @@ function proofsCurrent(page, proof) {
 }
 const draftFingerprint = draft => fingerprint([draft.fields,draft.identity]);
 const PRICE_FIELDS = ['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan',
-  'adults', 'children', 'child1', 'child2', 'child3', 'guaranteetype', 'ta1', 'company', 'araccountname',
+  'adults', 'children', 'guaranteetype', 'ta1', 'company', 'araccountname',
   'track', 'sourceofbusinessdesc', 'averagerate', 'totalrate', 'averageratecurr', 'totalratecurr'];
 const PRICE_REQUIRED = new Set(['guestid', 'arrivaldate', 'departuredate', 'roomtype', 'roomtypecharge', 'rateplan', 'averagerate', 'totalrate']);
 const PRICE_RESULT_FIELDS = new Set(['averagerate', 'totalrate', 'averageratecurr', 'totalratecurr']);
 function chargePriceFields(draft) {
   if (!Array.isArray(draft?.fields)) return null;
-  const values = {};
-  for (const name of PRICE_FIELDS) {
+  const values = { ...draft.identity?.childBands };
+  for (const name of [...PRICE_FIELDS, ...new Set(draft.fields.filter(field => /^child\d+$/.test(field.name)).map(field => field.name))]) {
     const fields = draft.fields.filter(field => field.name === name);
     if (fields.length > 1 || (!fields.length && PRICE_REQUIRED.has(name))) return null;
     if (fields.length) values[name] = fields[0].value;
   }
+  const total = Number(fieldValue(draft.fields, 'children'));
+  const counts = Object.values(draft.identity?.childBands ?? {});
+  if (counts.some(value => !/^\d+$/.test(String(value ?? ''))) ||
+      (total > 0 && !counts.length) || counts.reduce((sum, value) => sum + Number(value), 0) !== total) return null;
   return values;
 }
 
@@ -161,7 +170,7 @@ export async function checkedChargeRateEvidence(page, expected) {
   return { averageRate: proof.fields.averagerate, totalRate: proof.fields.totalrate, currency: proof.currency,
     sourceCode: proof.identity.sourceCode,
     occupancy: { adults: proof.fields.adults, children: proof.fields.children, childages: proof.identity.childAges,
-      ...Object.fromEntries(['child1', 'child2', 'child3'].filter(name => Object.hasOwn(proof.fields, name))
+      ...Object.fromEntries(Object.keys(proof.fields).filter(name => /^child[1-9]\d*$/.test(name))
         .map(name => [name, proof.fields[name]])) } };
 }
 export async function currentCheckedChargeRate(page, expected) {
@@ -190,7 +199,7 @@ function validationRequest(request, code, dates) {
   const expected = {
     GRID_NAME:'LVRATEPLANS2',GRID_TYPE:'LOV',REQUEST_TYPE:'LOV.HEAD_DATA.STORED',LOV_TAGNAME:'rateplan',
     RUN_DS:'false',USER_FUNCTION_NAME:'OSRESV',CURRENT_TAB_NAME:'HDR',
-    LOV_ALIAS_NAME_1:'param.propertycode',LOV_ALIAS_VALUE_1:PROPERTY,LOV_ALIAS_TYPE_1:'text',
+    LOV_ALIAS_NAME_1:'param.propertycode',LOV_ALIAS_VALUE_1:dates.propertyCode,LOV_ALIAS_TYPE_1:'text',
     LOV_ALIAS_NAME_2:'param.arrivaldate',LOV_ALIAS_VALUE_2:dates.arrival.wire,LOV_ALIAS_TYPE_2:'date',
     LOV_ALIAS_NAME_3:'param.departuredate',LOV_ALIAS_VALUE_3:dates.departure.wire,LOV_ALIAS_TYPE_3:'date',
     filterfields:'rateplancode',filteroperator:'=',filtervalue:code,
@@ -215,16 +224,21 @@ function rateChangeRequest(page, request, code, dates, sessionId, draft) {
   if (!requestUrl(request,CHANGE) || !sessionId || !proofsCurrent(page,dates)) return false;
   const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
   const expected = {
-    propertycode:PROPERTY,PKID:`@[EMPTY]#@[EMPTY]#${PROPERTY}#`,confirmationnumber:'',recordid:'',reservationid:'',
-    reservationstayid:'',reservationshareid:'',guestid:clean(draft.guestId),firstname:draft.first,lastname:draft.last,status:'New',
+    propertycode:dates.propertyCode,PKID:`@[EMPTY]#@[EMPTY]#${dates.propertyCode}#`,confirmationnumber:'',recordid:'',reservationid:'',
+    reservationstayid:'',guestid:clean(draft.guestId),firstname:draft.first,lastname:draft.last,status:'New',
     arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,
     ONLY_DATA_REQUIRED:'true',bookingsessionid:sessionId,
-    newprofileclick:'',linkprofileflag:'',savecctoprofile:'0',createinactiveprofileflag:'0',reqguestprofilelookup:'',
-    pagemode:'display',isafterreservationsave:'',savesettlementcctoprofile:'0',linkedprofileflag:'0',
     ...(dates.ar ? {araccountid:dates.ar.accountId,arprofileid:dates.ar.profileId,araccountname:draft.arAccountName} : {}),
   };
   if (!Object.entries(expected).every(([key,value]) => body.getAll(key).length === 1 && body.get(key) === value &&
       keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1)) return false;
+  const optionalSafetyFields = { reservationshareid:'', newprofileclick:'', linkprofileflag:'', savecctoprofile:'0',
+    createinactiveprofileflag:'0', reqguestprofilelookup:'', pagemode:'display', isafterreservationsave:'',
+    savesettlementcctoprofile:'0', linkedprofileflag:'0' };
+  if (!Object.entries(optionalSafetyFields).every(([key, value]) => {
+    const present = keys.filter(name => name.toLowerCase() === key.toLowerCase());
+    return !present.length || present.length === 1 && body.get(present[0]) === value;
+  })) return false;
   return !draftIdIssue(request,clean(draft.guestId),dates.ar);
 }
 // Only the armed Check Availability click may pass this read-only action.
@@ -248,20 +262,26 @@ function isCreateAvailabilityRequest(page, request, { draft, dates, code, sessio
       if (expected == null || expected === '') return !values.length || values[0] === '';
       return values.length === 1 && values[0] === String(expected);
     };
-    const required = { propertycode: PROPERTY, bookingsessionid: sessionId, guestid: draft.identity?.guestId,
+    const required = { propertycode: dates.propertyCode, bookingsessionid: sessionId, guestid: draft.identity?.guestId,
       arrivaldate: dates.arrival.wire, departuredate: dates.departure.wire, roomtype: createDraft.roomType,
       rateplan: code, adults: createDraft.adults, children: createDraft.childCount, guaranteetype: createDraft.guaranteeType };
     if (!Object.entries(required).every(([name, value]) => value != null && exact(name, value))) return false;
+    if (createDraft.marketSegment && !exact('marketsegment', createDraft.marketSegment.value)) return false;
     const chargeRoom = fieldValue(draft.fields, 'roomtypecharge');
     if (!optional('roomtypecharge', chargeRoom) || !optional('taid1', draft.identity?.agencyId) ||
         !optional('companyid', draft.identity?.organizationId) || !optional('araccountid', draft.identity?.arAccountId) ||
         !optional('arprofileid', draft.identity?.arProfileId) || !optional('sourceofbus', draft.identity?.sourceCode)) return false;
     const childAges = draft.identity?.childAges;
     if (createDraft.childCount > 0 ? !childAges || !exact('childages', childAges) : !optional('childages', childAges)) return false;
-    for (const name of ['child1', 'child2', 'child3']) {
+    for (const [name, count] of Object.entries(draft.identity?.childBands ?? {})) {
+      if (count === null || !/^\d+$/.test(count) || !exact(name, count)) return false;
+    }
+    for (const name of new Set((draft.fields || []).filter(field => /^child\d+$/.test(field.name)).map(field => field.name))) {
       const present = (draft.fields || []).filter(field => field.name === name);
       if (present.length > 1 || (present.length === 1 && !exact(name, clean(present[0].value)))) return false;
     }
+    const bands = Object.values(draft.identity?.childBands ?? {});
+    if ((createDraft.childCount > 0 && !bands.length) || bands.reduce((sum, count) => sum + Number(count), 0) !== createDraft.childCount) return false;
     return true;
   } catch { return false; }
 }
@@ -314,7 +334,7 @@ function validateResponses(validation, change, code, dates, sessionId, draft) {
     if (!grid?.METADATA || clean(grid.METADATA.GRIDNAME) !== 'LVRATEPLANS2' || !Array.isArray(grid.DATA) ||
         grid.DATA.filter(row => clean(row.rateplancode) === code).length !== 1) throw new Error('RATE_VALIDATION_UNVERIFIED');
     const values = parseResponse(changeText)?.values;
-    const expected = {propertycode:PROPERTY,confirmationnumber:'',recordid:'',reservationid:'',reservationstayid:'',guestid:clean(draft.guestId),
+    const expected = {propertycode:dates.propertyCode,confirmationnumber:'',recordid:'',reservationid:'',reservationstayid:'',guestid:clean(draft.guestId),
       firstname:clean(draft.first),lastname:clean(draft.last),arrivaldate:dates.arrival.wire,departuredate:dates.departure.wire,rateplan:code,bookingsessionid:sessionId,
       ...(dates.ar ? {araccountid:dates.ar.accountId,arprofileid:dates.ar.profileId,araccountname:clean(draft.arAccountName)} : {})};
     const keys = Object.keys(values || {});
@@ -335,6 +355,10 @@ function bounded(promise, ms, issue) {
 
 /** Select an explicit current code on a verified unsaved draft, without saving. */
 export async function selectGuestStayRatePlan(page, { code, guestProfileId, createDraft } = {}, createAuthority = {}) {
+  const propertyCode = cloudSessionIdentity(page)?.propertyCode;
+  if (!propertyCode || (createAuthority.propertyCode !== undefined && createAuthority.propertyCode !== propertyCode)) {
+    return {outcome:'input_gap',issue:'PROPERTY_MISMATCH'};
+  }
   if (guestProfileId !== undefined && (typeof guestProfileId !== 'string' || !/^\d{1,100}$/.test(guestProfileId))) {
     return {outcome:'input_gap',issue:'GUEST_PROFILE_ID_INVALID'};
   }
@@ -347,11 +371,13 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
   if (requireM1CreateAvailability && (typeof approveM1CreateAvailabilityRequest !== 'function' || !createDraft)) {
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_AUTHORITY_REQUIRED'};
   }
-  if (requireM1CreateAvailability && (createDraft.propertyCode !== PROPERTY || !createDraft.guest ||
+  if (requireM1CreateAvailability && (createDraft.propertyCode !== propertyCode || !createDraft.guest ||
       clean(createDraft.guest.nativeId) !== guestId || !clean(createDraft.guest.firstName) || !clean(createDraft.guest.lastName) ||
       !Number.isInteger(createDraft.adults) || createDraft.adults < 1 || !Number.isInteger(createDraft.childCount) ||
       createDraft.childCount < 0 || !clean(createDraft.roomType) ||
       (createDraft.track != null && (!clean(createDraft.track.display) || !clean(createDraft.track.code))) ||
+      (createDraft.marketSegment != null && (!/^[A-Z0-9]{1,20}$/.test(createDraft.marketSegment.value || '') ||
+        !clean(createDraft.marketSegment.display))) ||
       !clean(createDraft.guaranteeType) ||
       (createDraft.source != null && (!clean(createDraft.source.nativeCode) || !clean(createDraft.source.description))))) {
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_INPUT_INCOMPLETE'};
@@ -376,10 +402,10 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       const url = new URL(request.url());
       if (url.origin !== ORIGIN || request.method() !== 'POST') return;
       const input = JSON.parse(request.postData() || '{}');
-      if (url.pathname === '/api/internalBooking/rateshop/inquiryForGrid' && input.propertyCodes === PROPERTY && !clean(input.reservationStayID)) {
+      if (url.pathname === '/api/internalBooking/rateshop/inquiryForGrid' && input.propertyCodes === propertyCode && !clean(input.reservationStayID)) {
         sessions.push({kind:'inquiry',id:input.bookingSessionID,request});
       }
-      if (url.pathname === `/api/internalBooking/${PROPERTY}/rateshop/rateSelection` && input.action === 'CANCEL') {
+      if (url.pathname === `/api/internalBooking/${propertyCode}/rateshop/rateSelection` && input.action === 'CANCEL') {
         sessions.push({kind:'cancel',id:input.rateShopping?.bookingSessionID,request});
       }
     } catch { /* Only the observed JSON requests contribute session evidence. */ }
@@ -391,8 +417,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
   };
   page.on('dialog',onDialog); page.on('request',onRequest); page.on('response',onResponse);
   try {
-    fence = await installPageRequestFence(page,[CHANGE,CHECK_AVAILABILITY]);
-    scope = fence.open();
+    fence = await installPageRequestFence(page,[VALIDATE,CHANGE,CHECK_AVAILABILITY]);
     before = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const dates = await bounded(checkedDraft(before,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     const previousCode = clean(before.rate) || null, prior = selectedOnPage.get(page);
@@ -412,7 +437,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     const ready = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
     const readyProof = await bounded(checkedDraft(ready,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
     const businessNames = ['guestid','firstname','lastname','arrivaldate','departuredate','adults','children',
-      'child1','child2','child3','roomtype','track','guaranteetype','sourceofbusinessdesc','reservationnote',
+      ...new Set(before.fields.filter(field => /^child\d+$/.test(field.name)).map(field => field.name)),'roomtype','track','guaranteetype','sourceofbusinessdesc','reservationnote',
       'udfchkbox04','udfchar09','udfchar13','ta1','company','araccountname'];
     if (businessNames.some(name => fieldValue(ready.fields,name) !== fieldValue(before.fields,name)) ||
         JSON.stringify(readyProof) !== JSON.stringify(dates)) {
@@ -426,6 +451,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     // selected. HMS does not emit a rate-change response for that same value;
     // verify the existing selection and run its native availability check.
     const recheckExistingRate = requireM1CreateAvailability && previousCode === code;
+    scope = fence.open();
     guard = async route => {
       const request = route.request();
       let kind = null;
@@ -435,7 +461,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       else if (requireM1CreateAvailability && availabilityCheckArmed && !Array.from(requests.values()).includes('availability') &&
           isCreateAvailabilityRequest(page,request,{ draft:after, dates, code, sessionId, createDraft })) kind = 'availability';
       if (kind) {
-        if (kind === 'change' && !scope?.allow(request)) return route.abort();
+        if (kind !== 'availability' && !scope?.allow(request)) return route.abort();
         if (kind === 'availability') {
           availabilityCheckArmed = false;
           if (!scope?.allow(request) || approveM1CreateAvailabilityRequest(request) !== true) return route.abort();
@@ -539,11 +565,12 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       const checked = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
       const checkedProof = await bounded(checkedDraft(checked,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
       const criteria = draft => ({ identity: draft.identity, guarantee: clean(draft.guaranteeValue),
-        fields: PRICE_FIELDS.filter(name => !PRICE_RESULT_FIELDS.has(name)).map(name =>
+        fields: [...PRICE_FIELDS, ...new Set(draft.fields.filter(field => /^child\d+$/.test(field.name)).map(field => field.name))].filter(name => !PRICE_RESULT_FIELDS.has(name)).map(name =>
           [name, (draft.fields || []).filter(field => field.name === name).map(field => field.value)]) });
       const businessFields = [
         ['adults', createDraft.adults], ['children', createDraft.childCount], ['roomtype', createDraft.roomType],
         ...(createDraft.track ? [['track', createDraft.track.display]] : []),
+        ...(createDraft.marketSegment ? [['marketsegment', createDraft.marketSegment.display]] : []),
         ...(createDraft.source ? [['sourceofbusinessdesc', createDraft.source.description]] : []),
         ['reservationnote', createDraft.note], ['udfchkbox04', createDraft.cmsSend],
         ...(createDraft.cmsMessageId != null ? [['udfchar09', createDraft.cmsMessageId]] : []),
@@ -555,7 +582,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
           clean(checked.guaranteeValue) !== clean(createDraft.guaranteeType) ||
           JSON.stringify(checkedProof) !== JSON.stringify(dates) ||
           JSON.stringify(criteria(checked)) !== JSON.stringify(criteria(after)) ||
-          checked.property !== PROPERTY || checked.confirmation || checked.windows || checked.rate !== code ||
+          checked.property !== propertyCode || checked.confirmation || checked.windows || checked.rate !== code ||
           checked.rateValue !== code || checked.rateSubmit !== code || checked.rateErrors.length || checked.rateInvalid === 'true') {
         throw new Error('RATE_AVAILABILITY_UNVERIFIED');
       }
@@ -594,7 +621,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
         arrival: dates.arrival.iso, departure: dates.departure.iso, currency: rateAvailability.currency } : null;
     selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
-    return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:PROPERTY,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
+    return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:propertyCode,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
       nativeCodeEvidence:recheckExistingRate ? 'validated_row_and_existing_draft' : 'validated_row_and_draft_change_response',
       nativeRatePlanId:'unsupported',
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,

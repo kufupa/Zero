@@ -21,5 +21,4 @@ For a standalone read, provide JSON on standard input:
 node apps/server-pilot/tooling/hms-cloud/read-associated-reservations-ui.mjs --json-stdin < /private/lookup.json > /private/result.json
 ```
 
-The input can include `confirmation`, `guestName` and `arrivalDate`. The legacy
-`playwright-quote/` module and CLI paths remain available as wrappers.
+The input can include `confirmation`, `guestName` and `arrivalDate`..

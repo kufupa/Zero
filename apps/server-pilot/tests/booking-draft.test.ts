@@ -54,7 +54,7 @@ const NULL_DEFAULTS = {
 async function validateCreate(request: Record<string, unknown>) {
   const mod = (await import(
     pathToFileURL(
-      fileURLToPath(new URL('../tooling/playwright-quote/create-request.mjs', import.meta.url)),
+      fileURLToPath(new URL('../tooling/hms-cloud/create-request.mjs', import.meta.url)),
     ).href
   )) as {
     loadCreateToolSchema(): Promise<unknown>;
@@ -75,7 +75,7 @@ async function validateCreate(request: Record<string, unknown>) {
 async function loadCreateRequestForProperty(propertyCode: string, track: string) {
   const mod = (await import(
     pathToFileURL(
-      fileURLToPath(new URL('../tooling/playwright-quote/create-request.mjs', import.meta.url)),
+      fileURLToPath(new URL('../tooling/hms-cloud/create-request.mjs', import.meta.url)),
     ).href
   )) as {
     loadCreateRequest(argv: string[]): Promise<{
@@ -284,7 +284,7 @@ describe('createRequestFieldOptions', () => {
     const profile = JSON.parse(
       readFileSync(
         fileURLToPath(
-          new URL('../tooling/playwright-quote/property-profiles/HRDAV.json', import.meta.url),
+          new URL('../tooling/hms-cloud/property-profiles/HRDAV.json', import.meta.url),
         ),
         'utf8',
       ),
@@ -306,7 +306,7 @@ describe('createRequestFieldOptions', () => {
     );
     const schema = JSON.parse(
       readFileSync(
-        fileURLToPath(new URL('../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+        fileURLToPath(new URL('../tooling/hms-cloud/create-tool.schema.json', import.meta.url)),
         'utf8',
       ),
     ) as {
@@ -345,7 +345,7 @@ describe('createRequestFieldOptions', () => {
   it('keeps HRCEN choices unchanged and has no extra required create fields', () => {
     const schema = JSON.parse(
       readFileSync(
-        fileURLToPath(new URL('../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+        fileURLToPath(new URL('../tooling/hms-cloud/create-tool.schema.json', import.meta.url)),
         'utf8',
       ),
     ) as {
@@ -364,7 +364,7 @@ describe('createRequestFieldOptions', () => {
     expect(options.track).toEqual(schema.$defs.request.properties.track.enum);
     expect(options.sourceOfBusiness).toEqual(schema.$defs.request.properties.sourceOfBusiness.enum);
     const profile = JSON.parse(
-      readFileSync(fileURLToPath(new URL('../tooling/playwright-quote/property-profiles/HRCEN.json', import.meta.url)), 'utf8'),
+      readFileSync(fileURLToPath(new URL('../tooling/hms-cloud/property-profiles/HRCEN.json', import.meta.url)), 'utf8'),
     ) as { createForm?: { options?: { guaranteetype?: { choices?: Array<{ display: string }> } } } };
     expect(options.guaranteeType).toEqual(
       profile.createForm?.options?.guaranteetype?.choices?.map(({ display }) => display) ??

@@ -1,5 +1,5 @@
 // Read and bind the complete native state before a staff-approved amendment.
-import { withCenturionStay360Page } from '../playwright-quote/centurion-stay360.mjs';
+import { cloudWriterCurrent, cloudWriterIdentity, withCloudCredentialLease, withCloudWriterSession } from './cloud-session.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { cleanLabtestRecord, currentLabtestRecord, snapshotLabtestRecord,
@@ -26,6 +26,7 @@ import { nativeMoneyCents, nativeAverageCents, nativeMoneyTenThousandths, native
   readAmendNightlyQuote, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
 import { stageSavedAdultForComposition } from './guest-stay-amend-adults.mjs';
 import { stageSavedDatesForComposition, stageSavedRoomRateForComposition } from './guest-stay-amend-date-room-rate.mjs';
+import { getPropertyRegistration } from './property-registry.mjs';
 
 const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStayId', 'reservationId',
   'recordId', 'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType',
@@ -39,8 +40,10 @@ const portableBusinessImage = snapshot => {
 };
 const percent = value => value !== null && value !== undefined && String(value).trim() !== '' &&
   Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100 ? Number(value) : null;
-const validTarget = (target) => target?.propertyCode === 'HRCEN' && target.browserSlot === 'centurion' &&
-  target.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com';
+const validTarget = (target, selected) => {
+  const property = getPropertyRegistration(target?.propertyCode);
+  return Boolean(property?.active && target.origin === property.origin && selected?.propertyCode === property.propertyCode);
+};
 const searchHints = (selected, arrivalDate) => {
   const guestName = `${selected.firstName} ${selected.lastName}`;
   return { arrivalDate, ...(guestName.length <= 256 ? { guestName } : {}) };
@@ -130,24 +133,45 @@ export function cloudAmendNativePartyBaseline(state, snapshot) {
 // Install the exact-confirmation read fence before any page or login request.
 // A session that skips the pre-login hook is unusable even for a rehearsal.
 function guardedSession(input, guard, timeoutMs = 5 * 60_000) {
-  let guardedContext = null, guardStarted = false;
+  let guardedContext = null, guardStarted = false, ownedPage = null;
   const deadline = AbortSignal.timeout(timeoutMs);
   const safeContext = (context) => context?._options?.serviceWorkers === 'block' &&
     typeof context.serviceWorkers === 'function' && context.serviceWorkers().length === 0;
   return {
-    hasGuard: (context) => guardedContext === context && safeContext(context),
-    options: { headless: true, blockServiceWorkers: true,
+    hasGuard: (context, page) => {
+      if (guardedContext !== context || !safeContext(context) || !page || page.context() !== context ||
+          (ownedPage && ownedPage !== page)) return false;
+      ownedPage = page;
+      return true;
+    },
+    options: { propertyCode: input.selected.propertyCode, transportId: input.transportId,
+      credentialLease: input.credentialLease, startScreen: 'OSRESS',
+      cloudTargetKeys: savedTargetKeys(input.selected),
       ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}),
-      signal: input.signal ? AbortSignal.any([input.signal, deadline]) : deadline,
+      signal: AbortSignal.any([input.signal, input.credentialLease?.signal, deadline].filter(Boolean)),
       prepareContext: async (context) => {
         if (guardStarted || !safeContext(context)) throw new Error('BROWSER_CONTEXT_UNSAFE');
         // Claim the hook before awaiting route installation. A second context
         // must not race a still-pending guard and become the chosen session.
         guardStarted = true;
-        await guard(context, { confirmation: input.confirmation });
+        await guard(context, { confirmation: input.confirmation, propertyCode: input.selected.propertyCode,
+          getOwnedPage: () => ownedPage, forwardToCloud: true });
         guardedContext = context;
       } },
   };
+}
+
+function savedTargetKeys(selected) {
+  const property = getPropertyRegistration(selected?.propertyCode);
+  if (!property?.active) throw new Error('AMEND_PROPERTY_UNSUPPORTED');
+  const suffix = property.propertyCode === 'HRCEN' ? [] : [property.expectedTenant];
+  if (!/^\d+-\d+$/.test(selected.confirmation || '') || !/^\d{1,100}$/.test(selected.reservationStayId || '')) {
+    throw new Error('AMEND_TARGET_INVALID');
+  }
+  const normalize = value => value.replace(/^0+(?=\d)/, '');
+  const [base, segment] = selected.confirmation.split('-');
+  return [JSON.stringify([property.propertyCode, 'saved', `${normalize(base)}-${normalize(segment)}`, ...suffix]),
+    JSON.stringify([property.propertyCode, 'saved_native', normalize(selected.reservationStayId), ...suffix])];
 }
 
 const wireDate = (value) => `${value.slice(5, 7)}/${value.slice(8, 10)}/${value.slice(0, 4)}`;
@@ -159,7 +183,7 @@ const isLabtest = (selected) => selected?.firstName === 'Proof' && selected?.las
 /** The requested target is business data, independent of the native form's size. */
 function amendTarget(selected, changes, { allowRealGuest = false } = {}) {
   if (!selected || !changes || typeof changes !== 'object' || Array.isArray(changes) ||
-      selected.propertyCode !== 'HRCEN' || selected.status !== 'Reserved' ||
+      !getPropertyRegistration(selected.propertyCode)?.active || selected.status !== 'Reserved' ||
       !/^\d{6,}-\d+$/.test(selected.confirmation || '') || !/^\d+$/.test(selected.guestId || '') ||
       !/^\d+$/.test(selected.reservationStayId || '') || !/^\d+$/.test(selected.reservationId || '') ||
       !/^\d+$/.test(selected.recordId || '') || (!allowRealGuest && !isLabtest(selected))) return null;
@@ -188,7 +212,7 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   if (!target || !data || !values || !baseline?.data || !state ||
       !unchangedLabtestBusinessParties(state.partyPreimage, snapshot,
         { allowModelOnlyPrimaryPartyIds: true, allowRealGuest: state.allowRealGuest === true })) return false;
-  const required = { propertycode: 'HRCEN', status: 'Reserved', confirmationnumber: target.confirmation,
+  const required = { propertycode: target.propertyCode, status: 'Reserved', confirmationnumber: target.confirmation,
     guestid: target.guestId, reservationid: target.reservationId, reservationstayid: target.reservationStayId,
     recordid: target.recordId, firstname: target.firstName, lastname: target.lastName,
     arrivaldate: wireDate(target.arrival), departuredate: wireDate(target.departure), roomtype: target.roomType,
@@ -219,9 +243,9 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   }
   if (Object.hasOwn(changes, 'taCommission') && (percent(data.ta1commission) !== changes.taCommission ||
       percent(values.ta1commission) !== changes.taCommission)) return false;
-  if (Object.hasOwn(changes, 'guestOptIn') && (changes.guestOptIn !== false ||
-      nativeCmsSendValue(data.guestoptin4) !== false || snapshot.guestOptInControl !== false ||
-      (Object.hasOwn(values, 'guestoptin4') && nativeCmsSendValue(values.guestoptin4) !== false))) return false;
+  if (Object.hasOwn(changes, 'guestOptIn') && (typeof changes.guestOptIn !== 'boolean' ||
+      nativeCmsSendValue(data.guestoptin4) !== changes.guestOptIn || snapshot.guestOptInControl !== changes.guestOptIn ||
+      (Object.hasOwn(values, 'guestoptin4') && nativeCmsSendValue(values.guestoptin4) !== changes.guestOptIn))) return false;
   const recipient = changes.cmsRecipient, message = changes.cmsMessageId;
   const formCms = !Object.hasOwn(values, 'udfchkbox04') || values.udfchkbox04 === ''
     ? false : nativeCmsSendValue(values.udfchkbox04);
@@ -252,7 +276,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
         url.pathname !== '/web/base/OSRESV.HDR' || url.hash || url.searchParams.get('pageaction') !== 'SAVE' ||
         !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
     const required = { SYSTEM_FUNCTION_NAME: 'OSRESV', USER_FUNCTION_NAME: 'OSRESV', CURRENT_TAB_NAME: 'HDR',
-      propertycode: 'HRCEN', confirmationnumber: selected.confirmation, guestid: selected.guestId,
+      propertycode: selected.propertyCode, confirmationnumber: selected.confirmation, guestid: selected.guestId,
       reservationid: selected.reservationId, reservationstayid: selected.reservationStayId, recordid: selected.recordId,
       status: 'Reserved' };
     for (const name of ['firstname', 'lastname', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'adults',
@@ -263,7 +287,9 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     if (Object.hasOwn(data, 'roomtypecharge')) required.roomtypecharge = String(data.roomtypecharge ?? '');
     if (Object.hasOwn(data, 'track')) required.track = String(data.track ?? '');
     if (Object.hasOwn(changes, 'childAges')) {
-      for (const name of ['childages', 'child1', 'child2', 'child3']) required[name] = String(data[name] ?? '');
+      const occupancy = savedChildOccupancy(snapshot);
+      if (!occupancy.valid) return false;
+      for (const name of ['childages', ...Object.keys(occupancy.bands)]) required[name] = String(data[name] ?? '');
     }
     if (Object.hasOwn(changes, 'taCommission')) {
       const fields = [...body].filter(([name]) => name.toLowerCase() === 'ta1commission');
@@ -271,7 +297,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     }
     if (Object.hasOwn(changes, 'guestOptIn')) {
       const fields = [...body].filter(([name]) => name.toLowerCase() === 'guestoptin4');
-      if (fields.length !== 1 || fields[0][0] !== 'guestoptin4' || nativeCmsSendValue(fields[0][1]) !== false) return false;
+      if (fields.length !== 1 || fields[0][0] !== 'guestoptin4' || nativeCmsSendValue(fields[0][1]) !== changes.guestOptIn) return false;
     }
     for (const [key, name] of Object.entries({ bookerName: 'caller', bookerContact: 'udfchar06',
       billingReference: 'billingreference', cmsMessageId: 'udfchar09' })) {
@@ -302,43 +328,71 @@ export function expectedLabtestAmendRecord(record, selected, { allowRealGuest = 
   childAgePreimage = null, allowUnknownChildAges = false } = {}) {
   const native = record?.nativePreimage, fields = record?.details?.fields;
   if (!native || !selected || !Array.isArray(fields) || native.source !== 'record_view_ext_model' ||
-      native.propertyCode !== 'HRCEN' || !native.firstName?.trim() || !native.lastName?.trim() ||
+      !getPropertyRegistration(native.propertyCode)?.active || native.propertyCode !== selected.propertyCode || !native.firstName?.trim() || !native.lastName?.trim() ||
       (!allowRealGuest && (native.firstName !== 'Proof' || native.lastName !== 'Labtest' || native.guaranteeCode !== 'NGI' || native.arrival < '2027-01-01')) ||
       native.status !== 'Reserved' || !/^[A-Z0-9]{1,20}$/.test(native.guaranteeCode || '') ||
       identityKeys.some((key) => !Object.hasOwn(native, key) || !Object.hasOwn(selected, key) ||
-        (!same(native[key], selected[key]) && !(key === 'childAges' && native.childAges === 'unknown' &&
-          Array.isArray(selected.childAges) && (allowUnknownChildAges ||
-            sameChildAgeMultiset(childAgePreimage, selected.childAges)))))) return null;
+        (!same(native[key], selected[key]) && !(key === 'childAges' && (
+          Array.isArray(native.childAges) && sameChildAgeMultiset(native.childAges, selected.childAges) ||
+          native.childAges === 'unknown' && Array.isArray(selected.childAges) &&
+            (allowUnknownChildAges || sameChildAgeMultiset(childAgePreimage, selected.childAges))))))) return null;
   const notes = fields.filter((field) => field?.name === 'reservationnote');
   if (notes.length !== 1 || typeof notes[0].rawValue !== 'string' || notes[0].rawValue.length > 2_000) return null;
-  return { confirmation: native.confirmation, guestId: native.guestId, firstName: native.firstName, lastName: native.lastName, arrival: native.arrival,
+  return { propertyCode: native.propertyCode, confirmation: native.confirmation, guestId: native.guestId, firstName: native.firstName, lastName: native.lastName, arrival: native.arrival,
     departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan, note: notes[0].rawValue,
     adults: native.adults, childCount: native.children,
     childAges: native.childAges === 'unknown' ? null : native.childAges };
 }
 
 /** Stage the actual amendment and HMS pricing, with Save permanently disarmed. */
-export async function prepareCloudPaneAmend(input, { openSession = withCenturionStay360Page,
+export async function prepareCloudPaneAmend(input, dependencies = {}) {
+  const { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord, bind = labtestCombinedAmendPreimageBinding,
-  quote = readAmendNightlyQuote } = {}) {
+  quote = readAmendNightlyQuote } = dependencies;
   const selected = input?.selected;
-  if (!validTarget(input?.target) || !amendTarget(selected, input?.changes, { allowRealGuest: input?.allowRealGuest === true }) ||
+  if (!validTarget(input?.target, input?.selected) || !amendTarget(selected, input?.changes, { allowRealGuest: input?.allowRealGuest === true }) ||
       selected.confirmation !== input.confirmation || selected.arrival !== input.arrival) {
     return { outcome: 'refused', issue: 'AMEND_INPUT_INVALID' };
   }
   try {
+    if (!input.credentialLease && openSession === withCloudWriterSession) {
+      return await withCloudCredentialLease(selected.propertyCode, credentialLease =>
+        prepareCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal });
+    }
+    let stageQuote = quote;
+    if (openSession === withCloudWriterSession && quote === readAmendNightlyQuote) {
+      const preliminary = guardedSession(input, guard);
+      const partyPreimage = await openSession(async page => {
+        if (!preliminary.hasGuard(page.context(), page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
+        await shallow(page, input.confirmation, searchHints(selected, input.arrival));
+        const record = await read(page, input.confirmation, { nativePropertyCode: selected.propertyCode });
+        const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
+          childAgePreimage: input.childAgePreimage });
+        if (!expected) throw new Error('APPROVED_STAY_MISMATCH');
+        const state = await current(page, expected, nativeOptions(input, record));
+        if (!state?.partyPreimage) throw new Error('AMEND_PARTY_PREIMAGE_UNVERIFIED');
+        return structuredClone(state.partyPreimage);
+      }, preliminary.options);
+      const quoteInput = Array.isArray(input.childAgePreimage)
+        ? { ...input, selected: { ...selected, childAges: input.childAgePreimage } } : input;
+      const observedQuote = await quote(quoteInput, { partyPreimage });
+      stageQuote = async (_input, state) => {
+        if (!same(state?.partyPreimage, partyPreimage)) throw new Error('AMEND_PARTY_PREIMAGE_CHANGED');
+        return observedQuote;
+      };
+    }
     const protectedSession = guardedSession(input, guard);
     return await openSession(async (page) => {
-      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
-      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await read(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
         childAgePreimage: input.childAgePreimage });
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
       const result = await runLabtestAmendSave(page, cloudPaneAmendRunOptions({ page, input: {
         ...input, signal: protectedSession.options.signal }, expected, prepareOnly: true },
-      { current, snapshot, bind, quote, recordOptions: nativeOptions(input, record) }));
+      { current, snapshot, bind, quote: stageQuote, recordOptions: nativeOptions(input, record) }));
       if (result.issue === 'PREPARE_ONLY' && result.nativeDigest && result.approvedPrices && result.preserved) {
         return { outcome: 'prepared', nativeDigest: result.nativeDigest,
           approvedPrices: result.approvedPrices, preserved: result.preserved,
@@ -354,19 +408,19 @@ export async function prepareCloudPaneAmend(input, { openSession = withCenturion
 }
 
 /** Resolve unknown saved ages in a separate, read-only native session. */
-export async function readCloudSavedChildAges(input, { openSession = withCenturionStay360Page,
+export async function readCloudSavedChildAges(input, { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
   const selected = input?.selected;
-  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+  if (!validTarget(input?.target, input?.selected) || !selected || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || !amendTarget(selected, { retainRates: 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' },
         { allowRealGuest: input.allowRealGuest === true })) return { outcome: 'refused', issue: 'AMEND_INPUT_INVALID' };
   try {
     const protectedSession = guardedSession(input, guard);
     return await openSession(async page => {
-      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
-      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await read(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, selected, {
         allowRealGuest: input.allowRealGuest === true,
         allowUnknownChildAges: true,
@@ -383,7 +437,7 @@ export async function readCloudSavedChildAges(input, { openSession = withCenturi
               await bounded(save.count()) !== 1) throw new Error('CHILD_PREIMAGE_UNVERIFIED');
           return { frame: state.frame, save, baseline, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true,
             expected: { ...expected, reservationStayId: selected.reservationStayId, expectedGuarantee: state.expectedGuarantee },
-            childStageGate: createSavedChildStageRequestGate({ frame: state.frame, stayId: selected.reservationStayId,
+            childStageGate: createSavedChildStageRequestGate({ propertyCode: selected.propertyCode, frame: state.frame, stayId: selected.reservationStayId,
               adults: expected.adults, priorAges: occupancy.ages, priorBands: occupancy.bands,
               readAges: occupancy.ages ?? [], readOnly: true, deadlineAt: performance.now() + 120_000 }) };
         },
@@ -402,11 +456,11 @@ export async function readCloudSavedChildAges(input, { openSession = withCenturi
 }
 
 /** Preview requested child ages in the native editor, then Cancel without Apply. */
-export async function previewCloudPaneAmendChildren(input, { openSession = withCenturionStay360Page,
+export async function previewCloudPaneAmendChildren(input, { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
   const selected = input?.selected, beforeAges = input?.beforeChildAges, ages = input?.childAges;
-  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+  if (!validTarget(input?.target, input?.selected) || !selected || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || !Array.isArray(beforeAges) || beforeAges.length !== selected.children ||
       !Array.isArray(ages) || ages.length > 9 || [...beforeAges, ...ages].some(age => !Number.isInteger(age) || age < 0 || age > 17)) {
     return { outcome: 'refused', issue: 'CHILD_INPUT_INVALID' };
@@ -414,9 +468,9 @@ export async function previewCloudPaneAmendChildren(input, { openSession = withC
   try {
     const protectedSession = guardedSession(input, guard);
     return await openSession(async page => {
-      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
-      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await read(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, selected, { allowRealGuest: input.allowRealGuest === true,
         childAgePreimage: beforeAges });
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
@@ -433,7 +487,7 @@ export async function previewCloudPaneAmendChildren(input, { openSession = withC
           return { frame: state.frame, save, baseline, enableComposedStage: true, allowRealGuest: input.allowRealGuest === true,
             expected: { ...expected, childAges: beforeAges, reservationStayId: selected.reservationStayId,
               expectedGuarantee: state.expectedGuarantee },
-            childStageGate: createSavedChildStageRequestGate({ frame: state.frame, stayId: selected.reservationStayId,
+            childStageGate: createSavedChildStageRequestGate({ propertyCode: selected.propertyCode, frame: state.frame, stayId: selected.reservationStayId,
               adults: expected.adults, priorAges: beforeAges, priorBands: occupancy.bands,
               readAges: occupancy.ages ?? [], readOnly: true, deadlineAt: performance.now() + 110_000 }) };
         },
@@ -451,11 +505,11 @@ export async function previewCloudPaneAmendChildren(input, { openSession = withC
 }
 
 /** Search selected-stay party pickers without dispatching a selection callback or Save. */
-export async function inspectCloudPaneAmendParties(input, { openSession = withCenturionStay360Page,
+export async function inspectCloudPaneAmendParties(input, { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
   const selected = input?.selected, queries = input?.queries;
-  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+  if (!validTarget(input?.target, input?.selected) || !selected || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || !Array.isArray(queries) || !queries.length || queries.length > 3 ||
       queries.some(item => !item || !['organization', 'bookingAgency', 'arAccount'].includes(item.kind) ||
         typeof item.query !== 'string' || !item.query.trim() || item.query !== item.query.trim() ||
@@ -464,9 +518,9 @@ export async function inspectCloudPaneAmendParties(input, { openSession = withCe
   try {
     const protectedSession = guardedSession(input, guard);
     return await openSession(async page => {
-      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
-      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await read(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, selected, {
         allowRealGuest: input.allowRealGuest === true,
         allowUnknownChildAges: true,
@@ -502,11 +556,11 @@ export async function inspectCloudPaneAmendParties(input, { openSession = withCe
 }
 
 /** Read the selected reservation's Track choices with Save permanently disarmed. */
-export async function listCloudPaneAmendTrackChoices(input, { openSession = withCenturionStay360Page,
+export async function listCloudPaneAmendTrackChoices(input, { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = {}) {
   const selected = input?.selected;
-  if (!validTarget(input?.target) || !selected || selected.confirmation !== input.confirmation ||
+  if (!validTarget(input?.target, input?.selected) || !selected || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || !amendTarget(selected, { retainRates: 'no', cmsSend: false, cmsMessageId: '', cmsRecipient: '' },
         { allowRealGuest: input.allowRealGuest === true })) {
     return { outcome: 'refused', issue: 'AMEND_INPUT_INVALID' };
@@ -514,9 +568,9 @@ export async function listCloudPaneAmendTrackChoices(input, { openSession = with
   try {
     const protectedSession = guardedSession(input, guard);
     return await openSession(async page => {
-      if (!protectedSession.hasGuard(page.context())) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
+      if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
       await shallow(page, input.confirmation, searchHints(selected, input.arrival));
-      const record = await read(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await read(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, selected, {
         allowRealGuest: input.allowRealGuest === true,
         allowUnknownChildAges: true,
@@ -573,14 +627,15 @@ export async function nativeAmendTaxReadValues(frame, before, approvedCurrency, 
     if (!record?.data || typeof panel?.getFldValue !== 'function' || typeof globalThis.EAM?.Date?.standardFormat !== 'function' ||
         ['propertycode', 'confirmationnumber', 'guestid', 'reservationstayid', 'reservationid', 'arrivaldate', 'departuredate']
           .some((key) => String(record.data[key] ?? '') !== String(before.data[key] ?? '')) ||
-        record.data.propertycode !== 'HRCEN' || panel.getFldValue('currency') !== approvedCurrency) return null;
-    return { reservationstayid: String(record.data.reservationstayid), propertycode: 'HRCEN',
+        record.data.propertycode !== before.data.propertycode || panel.getFldValue('currency') !== approvedCurrency) return null;
+    return { reservationstayid: String(record.data.reservationstayid), propertycode: String(record.data.propertycode),
       arrivaldate: globalThis.EAM.Date.standardFormat(panel.getFldValue('arrivaldate')),
       departuredate: globalThis.EAM.Date.standardFormat(panel.getFldValue('departuredate')), currency: approvedCurrency };
   }, { before, approvedCurrency }));
   if (!result || result.reservationstayid !== String(before.data.reservationstayid) ||
       result.arrivaldate !== `${before.data.arrivaldate} 00:00` || result.departuredate !== `${before.data.departuredate} 00:00` ||
-      result.currency !== approvedCurrency || result.propertycode !== 'HRCEN') return null;
+      result.currency !== approvedCurrency || result.propertycode !== before.data.propertycode ||
+      !getPropertyRegistration(result.propertycode)?.active) return null;
   return Object.freeze(result);
 }
 
@@ -742,7 +797,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       (Object.hasOwn(changes ?? {}, 'guaranteeType') && input.guaranteeChoiceCode !== changes.guaranteeType)) {
     throw new Error('GUARANTEE_CHOICE_UNVERIFIED');
   }
-  if (!page || !expected || !validTarget(input?.target) || !target || selected.confirmation !== input.confirmation ||
+  if (!page || !expected || !validTarget(input?.target, input?.selected) || !target || selected.confirmation !== input.confirmation ||
       selected.arrival !== input.arrival || (!prepareOnly && (!/^[a-f0-9]{64}$/.test(input.nativeDigest || '') ||
         !authorization || !input.preserved))) throw new Error('AMEND_CHOICE_UNSUPPORTED');
   if (changes.retainRates === 'yes' && (target.departure <= selected.arrival || target.arrival >= selected.departure)) {
@@ -767,7 +822,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   let firstSnapshot = null, questionSnapshot = null, extendSnapshot = null;
   let preparedState = null, nativeDigest = null, preserved = null, quoted = null, stopOperation = null;
   let rateScope = null, operationBounded = null, callbackEffects = null;
-  const rateTarget = { confirmation: selected.confirmation, nativeStayId: selected.reservationStayId,
+  const rateTarget = { propertyCode: selected.propertyCode, confirmation: selected.confirmation, nativeStayId: selected.reservationStayId,
     arrival: selected.arrival, departure: selected.departure };
   const readSavedBasis = (state, bounded, requestScope = null) => readRates(page, state, rateTarget,
     { mode: 'saved_direct', requestScope, bounded });
@@ -941,7 +996,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         ? createSavedGuaranteeRequestGate({ frame: state.frame, isActive: () => !input.signal?.aborted,
           deadlineAt: performance.now() + 6 * 60_000 }) : null;
       const occupancy = savedChildOccupancy(baseline);
-      const childStageGate = childChanged ? createSavedChildStageRequestGate({ frame: state.frame,
+      const childStageGate = childChanged ? createSavedChildStageRequestGate({ propertyCode: selected.propertyCode, frame: state.frame,
         stayId: selected.reservationStayId, adults: callbackMode ? selected.adults : target.adults,
         priorAges: callbackMode ? input.childAgePreimage : occupancy.ages,
         readAges: occupancy.ages ?? [], priorBands: occupancy.bands, nextAges: changes.childAges,
@@ -1076,7 +1131,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         prepared.recoveryBaseline.requestedGuaranteeDisplay = matches[0].label;
         if (!prepareOnly && changes.guaranteeType !== before.code) {
           const result = await bounded(applySavedGuaranteeOnGo(context, {
-            expected: { confirmation: selected.confirmation, guestId: selected.guestId,
+            expected: { propertyCode: selected.propertyCode, confirmation: selected.confirmation, guestId: selected.guestId,
               reservationStayId: selected.reservationStayId, reservationId: selected.reservationId,
               recordId: selected.recordId, firstName: selected.firstName, lastName: selected.lastName,
               arrival: selected.arrival, departure: selected.departure,
@@ -1183,17 +1238,27 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   };
 }
 
-/** Compatibility export: admission depends on the native handle, not process identity. */
-export function bindCloudAmendWriter(_page, authorization) {
-  if (typeof authorization?.authorizeFirst !== 'function') throw new Error('AMEND_AUTHORITY_INVALID');
-  return authorization;
+/** Bind the durable claim and every continuation to the owned Cloud writer. */
+export function bindCloudAmendWriter(page, authorization) {
+  const writer = cloudWriterIdentity(page);
+  if (typeof authorization?.authorizeFirst !== 'function' || !writer || !cloudWriterCurrent(writer)) {
+    throw new Error('AMEND_AUTHORITY_INVALID');
+  }
+  const current = () => cloudWriterCurrent(writer) && (authorization.isEnabled?.() ?? true);
+  return Object.freeze({ ...authorization, isEnabled: current,
+    authorizeFirst: async step => {
+      if (!current()) throw new Error('AMEND_WRITER_NOT_CURRENT');
+      const result = await authorization.authorizeFirst({ ...step, writer: structuredClone(writer) });
+      if (!current()) throw new Error('AMEND_WRITER_NOT_CURRENT');
+      return result;
+    } });
 }
 
 /** Admit a bound native stay; all effects still require the paused-request claim. */
 export function admitsCloudPaneAmend(input, authorization) {
   const selected = input?.selected;
-  return Boolean(input?.discoveryOnly !== true && validTarget(input?.target) && amendTarget(selected, input?.changes, { allowRealGuest: input.allowRealGuest === true }) &&
-    selected?.source === 'record_view_ext_model' && selected.propertyCode === 'HRCEN' &&
+  return Boolean(input?.discoveryOnly !== true && validTarget(input?.target, input?.selected) && amendTarget(selected, input?.changes, { allowRealGuest: input.allowRealGuest === true }) &&
+    selected?.source === 'record_view_ext_model' && getPropertyRegistration(selected.propertyCode)?.active &&
     selected.firstName?.trim() && selected.lastName?.trim() &&
     (input.allowRealGuest === true || (selected.firstName === 'Proof' && selected.lastName === 'Labtest')) && selected.status === 'Reserved' &&
     /^\d{6,}-\d+$/.test(selected.confirmation || '') && /^\d{1,30}$/.test(selected.guestId || '') &&
@@ -1217,7 +1282,7 @@ export async function reviewCloudPaneAmendCallbacks(input, authorization) {
   }
   const phases = [...(input.callbackPlan.guarantee ? ['guarantee'] : []),
     ...(input.callbackPlan.parties ?? []).map(item => item.kind), ...(input.callbackPlan.children ? ['children'] : []), 'availability'];
-  let authority, callbackTask = null, callbackOutcome = null, before = null, attempted = false;
+  let authority, boundAuthorization, callbackTask = null, callbackOutcome = null, before = null, attempted = false;
   const drainTask = async () => {
     if (!callbackTask) return true;
     let timer;
@@ -1227,13 +1292,15 @@ export async function reviewCloudPaneAmendCallbacks(input, authorization) {
   try {
     authority = createFirstGoCallbackAuthority({ operationDigest: authorization.operationDigest,
       sourceDigest: input.sourceDigest, targetDigest: input.targetDigest, plan: input.callbackPlan,
-      approvedPlanDigest: input.callbackPlanDigest, phases, authorizeFirst: authorization.authorizeFirst,
-      isEnabled: authorization.isEnabled });
+      approvedPlanDigest: input.callbackPlanDigest, phases,
+      authorizeFirst: step => boundAuthorization.authorizeFirst(step),
+      isEnabled: () => Boolean(boundAuthorization?.isEnabled()) });
     const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
-    const staged = await withCenturionStay360Page(async page => {
-      if (!protectedSession.hasGuard(page.context())) throw new Error('BROWSER_CONTEXT_UNSAFE');
+    const staged = await withCloudWriterSession(async page => {
+      if (!protectedSession.hasGuard(page.context(), page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
+      boundAuthorization = bindCloudAmendWriter(page, authorization);
       await readShallow(page, input.confirmation, searchHints(input.selected, input.arrival));
-      const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await readRecord(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const approvedLab = input.allowChangedLabGuarantee === true && isLabtest(input.selected) && input.selected.arrival >= '2027-01-01';
       const expected = expectedLabtestAmendRecord(record, input.selected, { allowRealGuest: input.allowRealGuest === true || approvedLab,
         childAgePreimage: input.childAgePreimage });
@@ -1271,10 +1338,18 @@ export async function commitCloudPaneAmendReviewed(input, authorization) {
       !input.approvedBeforeCallbackPrice || input.changes?.retainRates !== 'no') {
     return { outcome: 'not_dispatched', issue: 'CALLBACK_FINAL_INPUT_INVALID' };
   }
+  if (!input.credentialLease) {
+    let began = false;
+    try { return await withCloudCredentialLease(input.selected.propertyCode, credentialLease => {
+      began = true;
+      return commitCloudPaneAmendReviewed({ ...input, credentialLease }, authorization);
+    }, { signal: input.signal }); }
+    catch { return { outcome: began ? 'uncertain' : 'not_dispatched', issue: 'CALLBACK_FINAL_UNVERIFIED' }; }
+  }
   const phases = [...(input.callbackPlan.guarantee ? ['guarantee'] : []),
     ...(input.callbackPlan.parties ?? []).map(item => item.kind), ...(input.callbackPlan.children ? ['children'] : []),
     'availability', 'save', 'retain'];
-  let issued, callbackTask = null, callbackOutcome = null, checks = null, before = null, attempted = false;
+  let issued, boundAuthorization, callbackTask = null, callbackOutcome = null, checks = null, before = null, attempted = false;
   const drainTask = async () => {
     if (!callbackTask) return true;
     let timer;
@@ -1285,14 +1360,16 @@ export async function commitCloudPaneAmendReviewed(input, authorization) {
     issued = createFinalGoCallbackAuthority({ operationDigest: authorization.operationDigest,
       sourceDigest: input.sourceDigest, targetDigest: input.targetDigest, reviewDigest: input.reviewDigest,
       plan: input.callbackPlan, approvedPlanDigest: input.callbackPlanDigest, phases,
-      authorizeFirst: authorization.authorizeFirst, isEnabled: authorization.isEnabled,
+      authorizeFirst: step => boundAuthorization.authorizeFirst(step),
+      isEnabled: () => Boolean(boundAuthorization?.isEnabled()),
       verifyFinal: (...args) => checks?.verifyFinal(...args) === true,
       verifyDispatch: (...args) => checks?.verifyDispatch(...args) ?? false });
     const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
-    const saved = await withCenturionStay360Page(async page => {
-      if (!protectedSession.hasGuard(page.context())) throw new Error('BROWSER_CONTEXT_UNSAFE');
+    const saved = await withCloudWriterSession(async page => {
+      if (!protectedSession.hasGuard(page.context(), page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
+      boundAuthorization = bindCloudAmendWriter(page, authorization);
       await readShallow(page, input.confirmation, searchHints(input.selected, input.arrival));
-      const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await readRecord(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const approvedLab = input.allowChangedLabGuarantee === true && isLabtest(input.selected) && input.selected.arrival >= '2027-01-01';
       const expected = expectedLabtestAmendRecord(record, input.selected, { allowRealGuest: input.allowRealGuest === true || approvedLab,
         childAgePreimage: input.childAgePreimage });
@@ -1325,19 +1402,24 @@ export async function commitCloudPaneAmendReviewed(input, authorization) {
 /** Independently reopen the selected stay after callbacks; only approved effects may be present. */
 export async function readCloudCallbackReviewState(input) {
   const selected = input?.selected, plan = input?.callbackPlan, before = input?.before;
-  if (!validTarget(input?.target) || !selected || !plan || !before?.beforeParties ||
+  if (!validTarget(input?.target, input?.selected) || !selected || !plan || !before?.beforeParties ||
       typeof before.beforeNote !== 'string' || !Array.isArray(input.callbackEffects)) return { outcome: 'unverified' };
   // This independent read may observe a changed guarantee on the approved Lab
   // guest; it does not grant the writer permission to operate on a real guest.
   if (input.allowRealGuest !== true && (selected.firstName !== 'Proof' || selected.lastName !== 'Labtest' ||
       selected.arrival < '2027-01-01')) return { outcome: 'unverified' };
+  if (!input.credentialLease) {
+    try { return await withCloudCredentialLease(selected.propertyCode, credentialLease =>
+      readCloudCallbackReviewState({ ...input, credentialLease }), { signal: input.signal }); }
+    catch { return { outcome: 'unverified' }; }
+  }
   const readInput = { ...input, allowRealGuest: true };
   try {
     const protectedSession = guardedSession(input, installSavedStayReadGuard);
-    const result = await withCenturionStay360Page(async page => {
-      if (!protectedSession.hasGuard(page.context())) return null;
+    const result = await withCloudWriterSession(async page => {
+      if (!protectedSession.hasGuard(page.context(), page)) return null;
       await readShallow(page, selected.confirmation, searchHints(selected, selected.arrival));
-      const record = await readRecord(page, selected.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await readRecord(page, selected.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const native = record?.nativePreimage;
       if (!native || ['source', 'propertyCode', 'confirmation', 'reservationStayId', 'reservationId', 'recordId',
         'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType', 'ratePlan', 'adults']
@@ -1404,7 +1486,8 @@ export async function readCloudCallbackReviewState(input) {
       }
       const exempt = new Set([...permitted, ...nativePriceComponents,
         ...(plan.guarantee ? ['guaranteetype'] : []),
-        ...(plan.children ? ['children', 'child1', 'child2', 'child3', 'childages'] : []),
+        ...(plan.children ? ['children', 'childages', ...new Set(['data', 'values'].flatMap(part =>
+          [...Object.keys(plan.beforeImage?.[part] ?? {}), ...Object.keys(image?.[part] ?? {})].filter(key => /^child\d+$/i.test(key))))] : []),
         ...(plan.parties.some(item => item.kind === 'bookingAgency' && item.expectedEffects) ? ['ta1commission'] : []),
         'bookingsessionid']);
       if (plan.beforeImage) for (const part of ['data', 'values']) {
@@ -1442,19 +1525,28 @@ export async function readCloudCallbackReviewState(input) {
 /** Staff Go's native entry point; failures after an effect retain UNKNOWN. */
 export async function commitCloudPaneAmend(input, authorization) {
   if (!admitsCloudPaneAmend(input, authorization)) return { outcome: 'not_dispatched', issue: 'AMEND_INPUT_INVALID' };
+  if (!input.credentialLease) {
+    let began = false;
+    try { return await withCloudCredentialLease(input.selected.propertyCode, credentialLease => {
+      began = true;
+      return commitCloudPaneAmend({ ...input, credentialLease }, authorization);
+    }, { signal: input.signal }); }
+    catch { return { outcome: began ? 'uncertain' : 'not_dispatched', issue: 'AMEND_UNVERIFIED' }; }
+  }
   let attempted = false, before = null;
   try {
     const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
-    const saved = await withCenturionStay360Page(async (page) => {
-      if (!protectedSession.hasGuard(page.context())) throw new Error('BROWSER_CONTEXT_UNSAFE');
+    const saved = await withCloudWriterSession(async (page) => {
+      if (!protectedSession.hasGuard(page.context(), page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
       await readShallow(page, input.confirmation, searchHints(input.selected, input.arrival));
-      const record = await readRecord(page, input.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await readRecord(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, input.selected, { allowRealGuest: input.allowRealGuest === true,
         childAgePreimage: input.childAgePreimage });
       if (!expected) throw new Error('APPROVED_STAY_MISMATCH');
       attempted = true;
       return runLabtestAmendSave(page, cloudPaneAmendRunOptions({ page,
-        input: { ...input, signal: protectedSession.options.signal }, expected, authorization,
+        input: { ...input, signal: protectedSession.options.signal }, expected,
+        authorization: bindCloudAmendWriter(page, authorization),
         captureBefore: (value) => { before = value; } }, { recordOptions: nativeOptions(input, record) }));
     }, protectedSession.options);
     if (saved.outcome !== 'awaiting_readback' || saved.dispatchCallbacksDrained !== true) return saved;
@@ -1467,23 +1559,28 @@ export async function commitCloudPaneAmend(input, authorization) {
 }
 
 /** Reopen the saved stay and verify the requested business fields independently. */
-export async function readCloudPaneAmend(input, { openSession = withCenturionStay360Page,
+export async function readCloudPaneAmend(input, dependencies = {}) {
+  const { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
-  current = currentLabtestRecord, snapshot = snapshotLabtestRecord, readRates = readSavedStayNightlyRates } = {}) {
+  current = currentLabtestRecord, snapshot = snapshotLabtestRecord, readRates = readSavedStayNightlyRates } = dependencies;
   const selected = input?.selected, changes = input?.changes;
   const target = amendTarget(selected, changes, { allowRealGuest: input?.allowRealGuest === true });
-  if (!validTarget(input?.target) || !target || typeof input.beforeNote !== 'string' ||
+  if (!validTarget(input?.target, input?.selected) || !target || typeof input.beforeNote !== 'string' ||
       !input.beforeParties || !input.afterScreenshot) return { outcome: 'unverified' };
   let savedNative = null;
   try {
+    if (!input.credentialLease && openSession === withCloudWriterSession) {
+      return await withCloudCredentialLease(selected.propertyCode, credentialLease =>
+        readCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal });
+    }
     const protectedSession = guardedSession(input, guard);
     const result = await openSession(async (page) => {
-      if (!protectedSession.hasGuard(page.context())) return { outcome: 'unverified' };
+      if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'unverified' };
       await shallow(page, target.confirmation, searchHints(target, target.arrival));
-      const record = await read(page, target.confirmation, { nativePropertyCode: 'HRCEN' });
+      const record = await read(page, target.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const native = record?.nativePreimage;
       if (!native || native.confirmation !== target.confirmation || native.reservationStayId !== target.reservationStayId ||
-          native.reservationId !== target.reservationId || native.guestId !== target.guestId || native.propertyCode !== 'HRCEN' ||
+          native.reservationId !== target.reservationId || native.guestId !== target.guestId || native.propertyCode !== target.propertyCode ||
           native.status !== 'Reserved' || native.firstName !== target.firstName || native.lastName !== target.lastName ||
           native.arrival !== target.arrival || native.departure !== target.departure || native.roomType !== target.roomType ||
           native.ratePlan !== target.ratePlan || native.adults !== target.adults || native.children !== target.children ||
@@ -1523,7 +1620,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
             (el.offsetWidth || el.offsetHeight) && getComputedStyle(el).visibility !== 'hidden' && !el.closest('.x-window'));
           return controls.length === 1 ? globalThis.Ext?.getCmp?.(controls[0].id.replace(/-inputEl$/, ''))?.getValue?.() : null;
         });
-        if (typeof input.beforeGuestOptIn !== 'boolean' || nativeCmsSendValue(data.guestoptin4) !== false || actual !== false) {
+        if (typeof input.beforeGuestOptIn !== 'boolean' || nativeCmsSendValue(data.guestoptin4) !== changes.guestOptIn || actual !== changes.guestOptIn) {
           return { outcome: 'unverified' };
         }
       }
@@ -1558,7 +1655,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
       } else {
         const beforeRates = input.beforeSavedRates;
         if (!Array.isArray(beforeRates?.nightly) || !beforeRates.nightly.length) return { outcome: 'unverified' };
-        const afterRates = await readRates(page, state, { confirmation: target.confirmation,
+        const afterRates = await readRates(page, state, { propertyCode: selected.propertyCode, confirmation: target.confirmation,
           nativeStayId: target.reservationStayId, arrival: target.arrival, departure: target.departure }, { mode: 'saved_direct' });
         if (!afterRates || afterRates.currency !== beforeRates.currency || !Array.isArray(afterRates.nightly)) return { outcome: 'unverified' };
         const afterByDate = new Map(afterRates.nightly.map((night) => [night.date, night]));
@@ -1577,7 +1674,7 @@ export async function readCloudPaneAmend(input, { openSession = withCenturionSta
         ...(billingReference === null ? {} : { billingReference }),
         ...(track === null ? {} : { track }),
         ...(Object.hasOwn(changes, 'taCommission') || input.expectedFinalCommission !== undefined ? { taCommission: commission } : {}),
-        ...(Object.hasOwn(changes, 'guestOptIn') ? { guestOptIn: false } : {}),
+        ...(Object.hasOwn(changes, 'guestOptIn') ? { guestOptIn: changes.guestOptIn } : {}),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null, { includeComponents: input.capturePriceComponents === true }) } };
