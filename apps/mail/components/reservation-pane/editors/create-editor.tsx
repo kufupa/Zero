@@ -72,7 +72,7 @@ function SourceConfirmationNotice({ editor }: { editor: Editor }) {
   const path = `${requestPath(editor.request.id)}/confirmationReference`;
   const hit = editor.snapshot.preparationViews.some(view => view.requestId === editor.request.id &&
       view.fields?.some(field => field === path || field.startsWith(`${path}:`) || field.startsWith(`${path}/`)))
-    || editor.snapshot.issues.some(issue => issue.path === path || issue.path.startsWith(`${path}/`))
+    || editor.snapshot.issues.some(issue => issue.path === path || Boolean(issue.path?.startsWith(`${path}/`)))
     || Boolean(editor.snapshot.fields[path]?.issue);
   if (!hit) return null;
   return <div className={styles.notice} data-field-path={path} role="note">
