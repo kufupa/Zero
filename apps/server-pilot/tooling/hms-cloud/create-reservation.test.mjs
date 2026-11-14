@@ -30,7 +30,7 @@ function harness(options = {}) {
   const calls = [], sources = [...Array.from({ length: 100 }, (_, i) => ({ nativeCode: `X${i}`, description: `Other ${i}` })),
     { nativeCode: 'EMA', description: 'E-Mail' }];
   let freshReads = 0, censuses = 0, sessionOptions;
-  const partyFields = {};
+  const partyFields = { udfchkbox04: options.draft?.udfchkbox04 ?? false };
   const partyDefaults = { organization: { nativeId: '41', name: 'Example Company' },
     agency: { nativeId: '99', name: 'Example Agency', city: 'Pretoria', referenceNumber: '123' },
     arAccount: { nativeId: '75', name: 'Example Account', accountNumber: 'AR-75', status: 'Active' } };
@@ -61,7 +61,9 @@ function harness(options = {}) {
       case 'selectGuestProfile': return { outcome: 'selected_unsaved', nativeId: options.selectedGuestId ?? request.nativeId };
       case 'setGuestStayDate': return { outcome: 'updated_unsaved', actual: request.date, displayed: request.field === 'arrivalDate' ? '15-MAR-2027' : '17-MAR-2027' };
       case 'selectGuestStayDropdown':
-        if (request.field === 'marketSegment') { partyFields.marketsegment = 'Corporate'; return { outcome: 'updated_unsaved',
+        if (request.field === 'marketSegment') {
+          if (options.marketRequiresCmsOff && partyFields.udfchkbox04 !== false) throw new Error('CMS_SEND_NOT_OFF');
+          partyFields.marketsegment = 'Corporate'; return { outcome: 'updated_unsaved',
           field: 'marketSegment', requested: request.value, actual: { value: request.value, submitted: request.value, display: 'Corporate' } }; }
         if (request.field === 'reasonForStay') { partyFields.reasonforstay = 'Business'; return { outcome: 'updated_unsaved', field: request.field,
           requested: request.value, actual: { value: request.value, display: 'Business' } }; }
@@ -90,7 +92,11 @@ function harness(options = {}) {
       case 'listCmsMessageIds': return { outcome: 'ok', searchId: 'cms', candidates: [{ code: '03', description: 'Test' }], coverage: { complete: null, loaded: 1 } };
       case 'closeCmsMessageIdPicker': return { outcome: 'closed_unsaved' };
       case 'selectCmsMessageId': partyFields.udfchar09 = request.code; return { outcome: 'updated_unsaved', field: 'cmsMessageId', requested: request.code, actual: request.code };
-      case 'setCmsSendCheckbox': return { outcome: 'updated_unsaved', actual: false };
+      case 'setCmsSendCheckbox': {
+        const actual = options.cmsSendActual ?? request.checked;
+        partyFields.udfchkbox04 = actual;
+        return { outcome: 'updated_unsaved', actual };
+      }
       case 'setGuestOptInCheckbox': partyFields.guestoptin4 = request.checked; return { outcome: 'updated_unsaved', actual: request.checked };
       case 'setGuestStayText':
         if (request.field === 'reservationNote') partyFields.reservationnote = request.value;
@@ -101,7 +107,10 @@ function harness(options = {}) {
       case 'readGuestStayForm': return { outcome: 'ok', fields: [...fields(options.draft
         ? { ...options.draft, ...(partyFields.track !== undefined ? { track: partyFields.track } : {}),
           ...(partyFields.guestoptin4 !== undefined ? { guestoptin4: partyFields.guestoptin4 } : {}),
-          ...(partyFields.marketsegment !== undefined ? { marketsegment: partyFields.marketsegment } : {}) }
+          ...(partyFields.marketsegment !== undefined ? { marketsegment: partyFields.marketsegment } : {}),
+          ...(options.liveCmsFields && partyFields.udfchkbox04 !== undefined ? { udfchkbox04: partyFields.udfchkbox04 } : {}),
+          ...(options.liveCmsFields && partyFields.udfchar09 !== undefined ? { udfchar09: partyFields.udfchar09 } : {}),
+          ...(options.liveCmsFields && partyFields.udfchar13 !== undefined ? { udfchar13: partyFields.udfchar13 } : {}) }
         : { ...values, ...partyFields,
           ...(options.trackRequired !== undefined ? { track: partyFields.track ?? options.trackInitial ?? '' } : {}) })
         .map(field => field.name === 'track' && options.trackRequired !== undefined
@@ -592,6 +601,31 @@ test('supported inputs stage without claiming approval readiness', async () => {
   assert.equal((await rate(createDraft)).issue, 'PROPERTY_MISMATCH');
   assert.equal((await rate({ ...createDraft, source: { nativeCode: 'EMA', description: 'E-Mail' } })).issue, 'PROPERTY_MISMATCH');
   assert.equal((await rate({ ...createDraft, source: { nativeCode: '', description: 'E-Mail' } })).issue, 'PROPERTY_MISMATCH');
+});
+
+test('market refresh switches CMS send off first and restores the requested real guest choice', async () => {
+  const realProfile = { ...profile, firstName: 'Real', lastName: 'Guest' };
+  const request = { ...input, mode: 'prepare', marketSegment: 'COR',
+    cms: { send: true, messageId: '03', recipient: 'guest@example.test' } };
+  const options = { profiles: [realProfile], marketRequiresCmsOff: true, liveCmsFields: true,
+    draft: { ...values, firstname: 'Real', lastname: 'Guest', udfchkbox04: true },
+    guaranteeResult: { outcome: 'updated_unsaved', actual: { value: 'NGI', submitted: 'NGI', display: 'Non-Guaranteed Individual' } } };
+  const fake = harness(options);
+  const result = await createReservation(request, { ...fake.options, allowRealGuest: true,
+    expectedGuest: { firstName: 'Real', lastName: 'Guest' } });
+  assert.equal(result.outcome, 'prepared');
+  const sequence = fake.calls.filter(call => call.tool === 'setCmsSendCheckbox' ||
+    (call.tool === 'selectGuestStayDropdown' && call.field === 'marketSegment'));
+  assert.deepEqual(sequence.map(call => call.tool === 'setCmsSendCheckbox' ? call.checked : 'market'), [false, 'market', true]);
+  assert.deepEqual(result.requestBinding.request.sendHmsConfirmation, { kind: 'send', recipient: 'guest@example.test' });
+  assert.equal(fake.calls.some(({ tool }) => tool === 'saveNewLabtestStay'), false);
+
+  const blocked = harness({ ...options, cmsSendActual: true });
+  const uncertain = await createReservation(request, { ...blocked.options, allowRealGuest: true,
+    expectedGuest: { firstName: 'Real', lastName: 'Guest' } });
+  assert.equal(uncertain.outcome, 'uncertain');
+  assert.equal(uncertain.field, 'cms.send');
+  assert.equal(blocked.calls.some(call => call.tool === 'selectGuestStayDropdown' && call.field === 'marketSegment'), false);
 });
 
 test('prepare binds a billing reference after staging and verifying it on the selected A/R account', async () => {
