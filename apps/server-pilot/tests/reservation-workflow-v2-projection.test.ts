@@ -227,9 +227,16 @@ describe('reservation workflow host projection', () => {
     ['room', 'Please book BAR, but BAR is sold out.', 'BAR', 'BAR', null],
     ['room', "Don't book BAR or DLX.", 'DLX', 'DLX', null],
     ['room', "Don't book BAR or DLX and STQN.", 'STQN', 'STQN', null],
+    ['room', "Don't book BAR or the room DLX.", 'DLX', 'DLX', null],
     ['room', "Don't book BAR, but use DLX and STQN.", 'STQN', 'STQN', 'STQN'],
     ['room', 'Room BAR and DLX are unavailable.', 'BAR', 'BAR', null],
     ['room', 'Room BAR and DLX are unavailable.', 'DLX', 'DLX', null],
+    ['room', 'room code stqn', 'room code stqn', 'STQN', 'STQN'],
+    ['rate', 'rate code promo', 'rate code promo', 'PROMO', 'PROMO'],
+    ['room', 'avoid room code stqn', 'room code stqn', 'STQN', null],
+    ['room', 'avoid room code stqn', 'avoid room code stqn', 'STQN', null],
+    ['rate', 'rate code promo is unavailable', 'rate code promo', 'PROMO', null],
+    ['rate', 'rate code promo is unavailable', 'rate code promo is unavailable', 'PROMO', null],
   ] as const)('projects only wanted %s code in %s (%s)', async (kind, body, raw, code, expected) => {
     const envelope = { status: 'available', coverage: { scope: 'whole_catalog', complete: true } };
     vi.spyOn(nativeCatalog, 'preloadNativeCatalogLookup').mockResolvedValue({ propertyCode: 'HRCEN',
@@ -244,6 +251,63 @@ describe('reservation workflow host projection', () => {
     const request = result.proposal.content.requests.find(row => row.kind === 'create');
     if (request?.kind !== 'create') throw new Error('expected Create');
     expect((kind === 'room' ? request.body.shared.roomType : request.body.shared.ratePlan) ?? null).toBe(expected);
+  });
+
+  it.each([
+    ['Avoid STQN, DLX', ['DLX'], []],
+    ['Do not book STQN, DLX, or STE', ['DLX'], []],
+    ['Do not book STQN, DLX, or STE', ['STE'], []],
+    ['Avoid STQN, room DLX, room code STE', ['STE'], []],
+    ['Avoid STQN/DLX', ['DLX'], []],
+    ['STQN, DLX, STE are unavailable', ['STQN'], []],
+    ['STQN, DLX, STE are unavailable', ['DLX'], []],
+    ['STQN, DLX, STE are unavailable', ['STE'], []],
+    ['STQN, room DLX, room code STE are unavailable', ['STQN'], []],
+    ['STQN, DLX not wanted', ['STQN'], []],
+    ['STQN, DLX are closed/sold out', ['STQN'], []],
+    ['Avoid STQN. Book DLX', ['DLX'], ['DLX']],
+    ['BAR is unavailable, please quote PROMO.', ['PROMO'], ['PROMO']],
+    ['BAR is unavailable, DLX', ['DLX'], ['DLX']],
+    ['Please quote STQN, DLX', ['STQN'], ['STQN']],
+    ['Please quote STQN, DLX', ['DLX'], ['DLX']],
+    ['Avoid STQN, please quote DLX', ['DLX'], ['DLX']],
+  ] as const)('projects only requested room codes from list: %s', async (body, codes, expected) => {
+    const envelope = { status: 'available', coverage: { scope: 'whole_catalog', complete: true } };
+    vi.spyOn(nativeCatalog, 'preloadNativeCatalogLookup').mockResolvedValue({ propertyCode: 'HRCEN',
+      roomsEnvelope: () => envelope, ratesEnvelope: () => envelope,
+      lookupVerifiedCode: () => ({ status: 'unique' }),
+    } as never);
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref),
+      requestText: claim(body, body, ref), roomTypeHints: codes.map(code => claim(code, code, ref)),
+      dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }] }], issues: [] }),
+    undefined, `${body} 2027-01-10 to 2027-01-12`);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (request?.kind !== 'quote') throw new Error('expected Quote');
+    expect(request.body.groups[0]?.roomCodes).toEqual(expected);
+  });
+
+  it.each([
+    { requestedDatesCovered: false }, { allChunksSearched: false }, { truncated: true }, { gridComplete: false },
+    { displayed: 0, total: 1 },
+    { searchedRanges: [{ from: '2027-01-01', to: '2027-01-15' }] },
+    {},
+  ])('preserves found stays with accurate confirmation coverage: %s', async flags => {
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    vi.spyOn(paneStaySave, 'paneStayPropertyLock').mockReturnValue({ withLock: async <T>(operation: () => Promise<T>) => operation() } as never);
+    const range = { from: '2027-01-01', to: '2027-01-31' };
+    const completeness = { searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+      displayed: 1, total: 1, gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false, ...flags };
+    vi.spyOn(cloudStay, 'runCloudStayFind').mockResolvedValue({ outcome: 'ok', completeness,
+      shallow: { confirmation: '123456-1', searchResults: { complete: true } },
+      record: { details: { fields: [{ name: 'firstname', value: 'Proof' }, { name: 'lastname', value: 'Labtest' }] } } });
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode: 'HRCEN', transportId: 'transport',
+      source: { messageId: 'source', threadId: 'thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' } });
+    const complete = Object.keys(flags).length === 0;
+    expect(await read({ id: 'confirmation', ref: 'source-confirmation', kind: 'stay_candidate', propertyCode: 'HRCEN',
+      criteria: { confirmationOrGuestText: '123456-1' }, sourceRefs: [] })).toMatchObject({
+      status: complete ? 'complete' : 'partial', result: { outcome: 'found', stay: { firstName: 'Proof', lastName: 'Labtest' } },
+      coverage: { complete, notes: complete ? [] : [expect.stringMatching(/\S/)] },
+    });
   });
 
   it.each([
@@ -294,6 +358,24 @@ describe('reservation workflow host projection', () => {
     expect(await read(candidate)).toMatchObject({ status: 'partial', result: { completeness, truncated: false,
       searchedDateRange: completeness.searchedDateRange, requestedDateHorizon: completeness.requestedDateHorizon, reason: 'incomplete' },
       coverage: { complete: false, notes: [expect.stringContaining('absence is not established')] } });
+  });
+
+  it.each([
+    { requestedDatesCovered: false }, { allChunksSearched: false }, { truncated: true }, { gridComplete: false },
+  ])('keeps guest matches when search coverage is incomplete: %s', async flags => {
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    const range = { from: '2027-01-01', to: '2027-01-10' };
+    const completeness = { searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+      displayed: 1, total: 1, gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false, ...flags };
+    const rows = [{ confirmation: '123456-1', firstName: 'Proof', lastName: 'Labtest', status: 'Reserved',
+      arrival: '2027-01-01', departure: '2027-01-10' }];
+    vi.spyOn(paneLookup, 'searchGuestCloudBatch').mockResolvedValue([{ outcome: 'ok', rows, screenshots: [], runId: null, completeness }]);
+    const candidate = { id: 'guest-stay', ref: 'guest-stay', kind: 'stay_candidate' as const, propertyCode: 'HRCEN',
+      criteria: { confirmationOrGuestText: 'Labtest', dates: [{ arrival: range.from, departure: range.to }] }, sourceRefs: [] };
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode: 'HRCEN', transportId: 'transport',
+      source: { messageId: 'source', threadId: 'thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' }, candidates: [candidate] });
+    expect(await read(candidate)).toMatchObject({ status: 'partial', result: { rows, completeness },
+      coverage: { complete: false, notes: [expect.stringMatching(/\S/)] } });
   });
 
   it('does not treat a guest search without coverage metadata as complete', async () => {

@@ -1032,10 +1032,16 @@ export function createReservationWorkflowV2CandidateReader(input: {
         const request = { confirmation: query, ...(arrivals.length === 1 ? { arrival: arrivals[0] } : {}) };
         const propertyLock = lock();
         if (!propertyLock) return unavailable('Property read lock is unavailable.');
-        const found = await propertyLock.withLock(async () => projectCloudStayFind(request,
-          await runCloudStayFind({ request, target, transportId: input.transportId, signal: input.signal }), target.propertyCode),
-        { ...acquisition, signal: input.signal });
-        const status = completeNativeRead(found.outcome);
+        const { found, completenessProvided } = await propertyLock.withLock(async () => {
+          const raw = await runCloudStayFind({ request, target, transportId: input.transportId, signal: input.signal });
+          return { found: projectCloudStayFind(request, raw, target.propertyCode),
+            completenessProvided: isRecord(raw) && Object.hasOwn(raw, 'completeness') };
+        }, { ...acquisition, signal: input.signal });
+        const incomplete = found.completeness
+          ? !isStaySearchComplete(found.completeness) || !coversStaySearchHorizon(found.completeness)
+          : completenessProvided;
+        const nativeStatus = completeNativeRead(found.outcome);
+        const status = nativeStatus === 'complete' && incomplete ? 'partial' : nativeStatus;
         return { status, result: { propertyCode: target.propertyCode, outcome: found.outcome, stay: found.stay, commercial: found.commercial ?? null,
           arrivalMismatch: found.arrivalMismatch,
           ...(found.reason ? { reason: found.reason } : {}),
@@ -1945,13 +1951,26 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
         catalog.lookupVerifiedCode(kind, code).status !== 'unique') return null;
   }
   const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const token = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, 'g');
+  const token = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'gi' : 'g');
   const context = options.rawContext ?? raw;
-  if (!context.includes(raw) || !new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`).test(raw)) return null;
+  if (!context.includes(raw) || !new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'i' : '').test(raw)) return null;
   if (/^(?:A|AN|AND|AS|AT|BE|BOOK|FOR|FROM|IN|IS|IT|NO|NOT|OF|ON|OR|PLEASE|THE|TO|WE|WITH)$/u.test(code)) return null;
   const negative = /\b(?:no|not|never|without|avoid|avoided|except|exclude|excluded|unavailable|unwanted|sold\s+out|fully\s+booked|closed|isn['’]t|aren['’]t|don['’]t|doesn['’]t|cannot|can['’]t|instead\s+of|rather\s+than)\b/i;
-  const positive = /\b(?:book|reserve|request|prefer|want|choose|select|use|quote|need)\b/i;
-  const boundaries = [...context.matchAll(/[,\n;.!?]|\b(?:and|but|or|however)\b/gi)];
+  const boundaries = [...context.matchAll(/[,/\n;.!?]|\b(?:and|but|or|however)\b/gi)];
+  const listSeparator = (value: string) => /^(?:,|\/|and|or)$/i.test(value);
+  const listLabel = (value: string) => /^(?:(?:the|a|an)(?:\s+|$))?(?:(?:room|rate)(?:\s+(?:type|plan))?(?:\s+code)?|code)?$/i.test(value.trim());
+  const splitListItem = (value: string) => {
+    const words = value.trim().split(/\s+/);
+    const itemCode = words.pop() ?? '';
+    const prefix = words.join(' ');
+    const labeled = /\b(?:room\s*(?:type\s*)?code|rate\s*(?:plan\s*)?(?:code|plan))\s*$/i.test(prefix);
+    return /^[A-Z][A-Z0-9_-]{0,15}$/.test(itemCode) || (labeled && /^[A-Z][A-Z0-9_-]{0,15}$/i.test(itemCode))
+      ? { prefix } : null;
+  };
+  const bareListItem = (value: string) => {
+    const item = splitListItem(value);
+    return item !== null && listLabel(item.prefix);
+  };
   const matches = [...context.matchAll(token)];
   if (!matches.length) return null;
   for (const match of matches) {
@@ -1962,18 +1981,31 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
     const after = context.slice(match.index + code.length, next?.index).split(/\b(?:instead\s+of|rather\s+than)\b/i, 1)[0] ?? '';
     const clause = before + after;
     if (negative.test(before) || negative.test(after)) return null;
-    if (next && /^(?:and|or|,)$/i.test(next[0])) {
-      const following = boundaries.find(boundary => boundary.index > next.index);
-      const continuation = context.slice(next.index + next[0].length, following?.index);
-      if (/\b(?:are|were)\s+(?:(?:currently|both|no\s+longer)\s+)*(?:not\b|unavailable\b|unwanted\b|sold\s+out\b|fully\s+booked\b|closed\b)/i.test(continuation)) return null;
+    if (next && !after.trim()) {
+      let boundary: RegExpExecArray | undefined = next;
+      while (boundary && listSeparator(boundary[0])) {
+        const boundaryIndex: number = boundary.index;
+        const following: RegExpExecArray | undefined = boundaries.find(item => item.index > boundaryIndex);
+        const continuation = context.slice(boundary.index + boundary[0].length, following?.index).trim();
+        if (continuation) {
+          const predicate = continuation.match(/^(.*?)\s+(?:(?:is|are|was|were)\s+)?(?:(?:currently|both)\s+)*(?:not\b|never\b|no\s+longer\b|unavailable\b|unwanted\b|sold\s+out\b|fully\s+booked\b|closed\b)/i);
+          if (predicate && bareListItem(predicate[1] ?? '')) return null;
+          if (!bareListItem(continuation)) break;
+        }
+        boundary = following;
+      }
     }
-    if (previous && !positive.test(before)) {
-      let boundary = previous;
-      while (/^(?:and|or)$/i.test(boundary[0])) {
-        const priorBoundary: RegExpExecArray | undefined = boundaries.findLast(item => item.index < boundary.index);
-        const prior = context.slice(priorBoundary ? priorBoundary.index + priorBoundary[0].length : 0, boundary.index);
-        if (negative.test(prior)) return null;
-        if (positive.test(prior) || !priorBoundary) break;
+    if (previous && listLabel(before)) {
+      let boundary: RegExpExecArray | undefined = previous;
+      while (boundary && listSeparator(boundary[0])) {
+        const boundaryIndex: number = boundary.index;
+        const priorBoundary: RegExpExecArray | undefined = boundaries.findLast(item => item.index < boundaryIndex);
+        const prior = context.slice(priorBoundary ? priorBoundary.index + priorBoundary[0].length : 0, boundary.index).trim();
+        if (prior) {
+          const item = splitListItem(prior);
+          if (item && negative.test(item.prefix) && !/\b(?:is|are|was|were)\s+(?:not|never|no)\s*$/i.test(item.prefix)) return null;
+          if (!bareListItem(prior)) break;
+        }
         boundary = priorBoundary;
       }
     }
