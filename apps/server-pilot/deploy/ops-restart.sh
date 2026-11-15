@@ -139,7 +139,17 @@ NAVA_BUILD_COMMIT="$remote_launch_build_commit" start_remote_http
 unset remote_launch_build_commit
 pm2 save
 for health_url in http://127.0.0.1:8788/health http://127.0.0.1:8789/health; do
-  curl -fsS "$health_url"
+  for attempt in $(seq 1 10); do
+    if curl -fsS --max-time 10 "$health_url"; then
+      break
+    fi
+    if [ "$attempt" -eq 10 ]; then
+      echo "health check failed for ${health_url}" >&2
+      exit 1
+    fi
+    echo "health attempt ${attempt}/10 failed for ${health_url}; retry in ${attempt}s"
+    sleep "$attempt"
+  done
 done
 spa_origin="https://nava.legacyhotels.co.za"
 spa_host="${spa_origin#https://}"
