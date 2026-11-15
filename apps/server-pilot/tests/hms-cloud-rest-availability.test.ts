@@ -101,6 +101,29 @@ describe('opt-in REST availability', () => {
     expect(result.groups[0]?.options[0]?.nightly[1]?.stockStatus).toBe('unknown');
   });
 
+  it.each(['occupied', 'arrival', 'departure'] as const)(
+    'applies arrival and departure restrictions to the right dates: %s', async scenario => {
+      fetchMock.mockImplementation((_url: string, options: RequestInit) => {
+        const fixture = selectionFixture();
+        fixture.data.children[0].columns = Object.fromEntries([1, 2, 3, 4].map(i => [`col${i}`, { restricted: false }]));
+        fixture.rate.columns.col2.combClosedToArrival = true;
+        fixture.rate.columns.col1.combClosedToDeparture = true;
+        if (scenario === 'arrival') fixture.rate.columns.col1.combClosedToArrival = true;
+        if (scenario === 'departure') fixture.rate.columns.col4.combClosedToDeparture = true;
+        return new Response(JSON.stringify({ appliedCriteria: JSON.parse(String(options.body)), availabilitydata: fixture.data }),
+          { status: 200, headers: { 'content-type': 'application/json' } });
+      });
+      const result = projectCloudAvailability(request, await runCloudAvailability({ request, target }));
+      if (result.outcome !== 'read') throw new Error('expected REST read');
+      const option = result.groups[0]?.options[0];
+      expect(option?.nightly.map(night => night.stockStatus)).toEqual(scenario === 'occupied'
+        ? ['available', 'available', 'available'] : scenario === 'arrival'
+          ? ['restricted', 'available', 'available'] : ['restricted', 'restricted', 'restricted']);
+      expect(option?.nightly[0]?.restrictionEvidence).toMatchObject({ isclosetedeparture: true, unknownRestrictionFlags: [] });
+      expect(option?.nightly[1]?.restrictionEvidence).toMatchObject({ isclosetoarrival: true, unknownRestrictionFlags: [] });
+      expect(option?.departure).toMatchObject({ verified: true, restrictions: { isclosetedeparture: scenario === 'departure' } });
+    });
+
   it.each(['closed', 'missing', 'unknown', 'arrival_only', 'open'] as const)(
     'projects departure eligibility and preserves night evidence: %s', async scenario => {
       fetchMock.mockImplementation((_url: string, options: RequestInit) => {

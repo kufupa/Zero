@@ -2710,7 +2710,8 @@ function currentBoundNativeStay(input: {
   sourceDates: Array<{ arrival: string; departure: string }>;
 }): boolean {
   return input.observations.some((observation) => {
-    if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || !observation.coverage.complete ||
+    if (observation.kind !== 'stay_candidate' ||
+        !(observation.status === 'partial' || observation.status === 'complete' && observation.coverage.complete) ||
         observation.sourceMessageId !== input.sourceMessageId || !observation.sourceRefs.length ||
         !observation.sourceRefs.every((ref) => input.currentRefs.has(ref) && input.linkedRefs.has(ref))) return false;
     const criteria = observation.criteria;
@@ -2723,12 +2724,16 @@ function currentBoundNativeStay(input: {
       candidate.arrival === date.arrival && candidate.departure === date.departure));
     if (!matchedDates.length) return false;
     const result = observation.result;
-    if (result.outcome === 'found' && isRecord(result.stay)) return true;
+    if (result.outcome === 'found' && isRecord(result.stay)) {
+      const stay = result.stay;
+      return observation.status === 'complete' || stay.confirmation === query &&
+        matchedDates.some((date) => stay.arrival === date.arrival && stay.departure === date.departure);
+    }
     if (result.outcome !== 'ok' || !Array.isArray(result.rows)) return false;
     return result.rows.some((row) => isRecord(row) && typeof row.firstName === 'string' && typeof row.lastName === 'string' &&
       sameGuestName(`${row.firstName} ${row.lastName}`, query) &&
       typeof row.arrival === 'string' && matchedDates.some((date) => row.arrival === date.arrival &&
-        (row.departure === null || row.departure === date.departure)) &&
+        (row.departure === date.departure || observation.status === 'complete' && row.departure === null)) &&
       !(typeof row.status === 'string' && /^cancel{1,2}ed$/i.test(row.status.trim())));
   });
 }
@@ -2994,7 +2999,7 @@ function holdCreateForExistingVoucherStay(input: {
     }
   }
   addProjectionIssue(input.proposal, { path: `/requests/${create.id}`, kind: 'voucher_existing_native_stay_hold',
-    explanation: 'A complete current-source native stay read matched this voucher request. New Create execution was held; any same-source Filing remains a separate manually targeted action.',
+    explanation: 'A verified current-source native stay matched this voucher request. New Create execution was held; any same-source Filing remains a separate manually targeted action.',
     evidenceRefs: input.evidenceRefs });
 }
 
@@ -3109,7 +3114,7 @@ function projectAgencyVoucherFilings(input: {
     if (!additionalNewRoom && currentConfirmationReference(extracted, input.currentRefs, input.evidence,
         input.sourceMessageId, input.observations)) {
       addProjectionIssue(input.proposal, { path: `/requests/${request.id}/confirmationReference`, kind: 'voucher_existing_booking_guard',
-        explanation: 'A canonical current HMS confirmation or a complete source-bound native stay read indicates an existing booking. The voucher is retained as source evidence, but no duplicate Create-to-Filing task was generated.',
+        explanation: 'A canonical current HMS confirmation or a verified source-bound native stay indicates an existing booking. The voucher is retained as source evidence, but no duplicate Create-to-Filing task was generated.',
         evidenceRefs: refs });
       continue;
     }
@@ -5301,7 +5306,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
     const uniqueRequest = extractionId && proposal.content.requests.filter((row) => row.kind === 'amend' &&
       input.extractionIdByProposalRequestId.get(row.id) === extractionId).length === 1;
     const matches = singleRequest && currentConfirmation && uniqueRequest && !foreignTargetNote && !unverifiedNoteInstruction ? input.observations.filter((row) =>
-      row.kind === 'stay_candidate' && row.status === 'complete' && row.coverage.complete &&
+      row.kind === 'stay_candidate' && (row.status === 'complete' || row.status === 'partial') &&
       row.sourceMessageId === input.source.messageId && row.criteria.kind === 'prefill_saved_note_baseline' &&
       row.criteria.requestId === extractionId && row.criteria.confirmationOrGuestText === confirmation && row.result.outcome === 'found' &&
       isRecord(row.result.reservationObservations) && isRecord(row.result.reservationObservations.reservationNote) &&

@@ -599,7 +599,7 @@ export function guestSearchCompleteness(args, dateWindow = null, records = null,
     parsed && parsed.unreadable === 0 && parsed.rows.length === records.shown);
   const requestedDatesCovered = windowCovers(dateWindow, args.arrival);
   return { searchedDateRange: dateWindow, searchedRanges: dateWindow ? [dateWindow] : [],
-    requestedDateHorizon: args.arrival ? { from: args.arrival, to: args.departure ?? args.arrival } : null,
+    requestedDateHorizon: args.arrival ? { from: args.arrival, to: args.arrival } : null,
     displayed: records?.shown ?? null, total: records?.total ?? null, gridComplete, requestedDatesCovered,
     allChunksSearched: gridComplete && requestedDatesCovered, truncated: Boolean(records && records.shown < records.total) };
 }

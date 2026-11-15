@@ -157,11 +157,22 @@ test('guest search completeness requires a covered, fully parsed, consistent gri
   assert.equal(complete.gridComplete, true);
   assert.equal(complete.requestedDatesCovered, true);
   assert.equal(complete.allChunksSearched, true);
-  assert.deepEqual(complete.requestedDateHorizon, { from: args.arrival, to: args.departure });
+  assert.deepEqual(complete.requestedDateHorizon, { from: args.arrival, to: args.arrival });
   assert.equal(guestSearchCompleteness(args, window, { shown: 0, total: 3 }, parsed).truncated, true);
   assert.equal(guestSearchCompleteness(args, window, { shown: 1, total: 0 }, parsed).gridComplete, false);
   assert.equal(guestSearchCompleteness(args, window, { shown: 0, total: 0 }, { ...parsed, unreadable: 1 }).gridComplete, false);
   assert.equal(guestSearchCompleteness(args, window, { shown: 1, total: 1 }, parsed).gridComplete, false);
   assert.equal(guestSearchCompleteness(args, { from: '2027-01-01', to: '2027-01-31' }, { shown: 0, total: 0 }, parsed).requestedDatesCovered, false);
   assert.equal(guestSearchCompleteness(args).gridComplete, false);
+});
+
+test('a stay departing after the search window still covers its arrival search', async () => {
+  const { guestSearchCompleteness } = await import('./pane-guest-search.mjs');
+  const args = { arrival: '2027-09-30', departure: '2027-10-03' };
+  const window = { from: '2027-09-01', to: '2027-09-30' };
+  const completeness = guestSearchCompleteness(args, window, { shown: 1, total: 1 },
+    { rows: [{ arrival: args.arrival, departure: args.departure }], unreadable: 0 });
+  assert.equal(completeness.requestedDatesCovered, true);
+  assert.equal(completeness.allChunksSearched, true);
+  assert.deepEqual(completeness.requestedDateHorizon, { from: args.arrival, to: args.arrival });
 });

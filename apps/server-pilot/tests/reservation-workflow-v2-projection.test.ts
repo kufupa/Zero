@@ -12,6 +12,7 @@ import * as nativeCatalog from '../src/ai/native-catalog-lookup.js';
 import { lookupNativeParty } from '../src/ai/reservation-workflow-v2-native-party.js';
 import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
+import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -26,18 +27,18 @@ const usage = {
 };
 
 function projectionFixture(
-  extraction: (sourceRef: string) => ReservationWorkflowV2Extraction,
+  extraction: (sourceRef: string, attachmentRef?: string) => ReservationWorkflowV2Extraction,
   synthesis?: (sourceRef: string) => Record<string, unknown>,
 ): ModelAdapter {
   let call = 0;
   return {
     async invoke(input) {
       call += 1;
-      const sourceRef = (JSON.parse(input.userPrompt) as { evidence: Array<{ ref: string }> })
-        .evidence[0]!.ref;
+      const evidence = (JSON.parse(input.userPrompt) as { evidence: Array<{ ref: string; kind: string }> }).evidence;
+      const sourceRef = evidence[0]!.ref;
       return {
         modelId: 'projection-fixture',
-        output: call === 1 ? extraction(sourceRef) : (synthesis?.(sourceRef) ?? {}),
+        output: call === 1 ? extraction(sourceRef, evidence.find(row => row.kind === 'attachment_text')?.ref) : (synthesis?.(sourceRef) ?? {}),
         usage,
       };
     },
@@ -45,9 +46,11 @@ function projectionFixture(
 }
 
 async function project(
-  extraction: (sourceRef: string) => ReservationWorkflowV2Extraction,
+  extraction: (sourceRef: string, attachmentRef?: string) => ReservationWorkflowV2Extraction,
   synthesis?: (sourceRef: string) => Record<string, unknown>,
   body = 'Please quote both stays for two adults per room, room only or bed and breakfast.',
+  readCandidate?: ReturnType<typeof createReservationWorkflowV2CandidateReader>,
+  attachments: SyncedQuoteAttachment[] = [],
 ) {
   const messageId = 'projection-message';
   const threadId = 'projection-thread';
@@ -69,9 +72,10 @@ async function project(
       currentBodyText: body,
       fromAddress: 'guest@example.com',
       preceding: [],
-      attachments: [],
+      attachments,
     },
     lookupFixtures: {},
+    readCandidate,
     env: {},
   });
 }
@@ -112,6 +116,97 @@ function allocatedCreate(ref: string, shared: Record<string, unknown> = {}) {
 }
 
 describe('reservation workflow host projection', () => {
+  it.each([
+    ['matched guest', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-12' }] }, true],
+    ['wrong guest', { outcome: 'ok', rows: [{ firstName: 'Other', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-12' }] }, false],
+    ['wrong dates', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-13' }] }, false],
+    ['unknown departure', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: null }] }, false],
+    ['cancelled guest', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Cancelled', arrival: '2027-01-10', departure: '2027-01-12' }] }, false],
+    ['not found', { outcome: 'not_found', rows: [] }, false],
+    ['ambiguous', { outcome: 'ambiguous', rows: [] }, false],
+  ])('binds a partial guest stay only on positive identity and dates: %s', async (_scenario, stayResult, matched) => {
+    const body = 'Please book Proof Labtest for Northwind Travel from 2027-01-10 to 2027-01-12. See attached voucher.';
+    const result = await project((ref, attachmentRef) => {
+      if (!attachmentRef) throw new Error('expected voucher evidence');
+      return { requests: [{ ...quoteFixture(ref), kind: 'create',
+        requestText: claim('Please book Proof Labtest', 'Please book Proof Labtest', ref),
+        dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }],
+        guests: [{ role: 'guest', name: claim('Proof Labtest', 'Proof Labtest', ref) }],
+        parties: [{ role: 'bookingAgency', name: claim('Northwind Travel', 'Northwind Travel', ref) }],
+        documentRefs: [attachmentRef], documentHints: [{ documentRef: attachmentRef, kind: 'voucher', sourceRefs: [attachmentRef] }],
+      }], issues: [] };
+    }, ref => allocatedCreate(ref), body, async candidate => candidate.kind === 'stay_candidate'
+      ? { status: 'partial', result: stayResult, coverage: { complete: false, notes: ['Search incomplete'] } } : null,
+    [{ id: 'voucher', filename: 'voucher.pdf', mimeType: 'application/pdf', bytesPresent: true, text: 'Voucher for Proof Labtest' }]);
+    expect(result.proposal.issues.some(issue => issue.kind === 'voucher_existing_native_stay_hold')).toBe(matched);
+    expect(result.proposal.content.requests.find(request => request.id === 'quote_request')?.kind).toBe(matched ? 'other' : 'create');
+  });
+
+  it.each([
+    ['matched confirmation', 'partial', { outcome: 'found', stay: { confirmation: '123456-1', arrival: '2027-01-10', departure: '2027-01-12' } }, true],
+    ['wrong confirmation', 'partial', { outcome: 'found', stay: { confirmation: '654321-1', arrival: '2027-01-10', departure: '2027-01-12' } }, false],
+    ['wrong dates', 'partial', { outcome: 'found', stay: { confirmation: '123456-1', arrival: '2027-01-10', departure: '2027-01-13' } }, false],
+    ['failed read', 'failed', { outcome: 'found', stay: { confirmation: '123456-1', arrival: '2027-01-10', departure: '2027-01-12' } }, false],
+    ['ambiguous read', 'partial', { outcome: 'ambiguous', stay: { confirmation: '123456-1', arrival: '2027-01-10', departure: '2027-01-12' } }, false],
+  ] as const)('binds a partial confirmation stay only on positive identity and dates: %s', async (_scenario, status, stayResult, matched) => {
+    const body = 'Please book 123456-1 for Northwind Travel from 2027-01-10 to 2027-01-12. See attached voucher.';
+    const result = await project((ref, attachmentRef) => {
+      if (!attachmentRef) throw new Error('expected voucher evidence');
+      return { requests: [{ ...quoteFixture(ref), kind: 'create',
+        requestText: claim('Please book 123456-1', 'Please book 123456-1', ref),
+        dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }],
+        confirmationHints: [claim('123456-1', '123456-1', ref)],
+        parties: [{ role: 'bookingAgency', name: claim('Northwind Travel', 'Northwind Travel', ref) }],
+        documentRefs: [attachmentRef], documentHints: [{ documentRef: attachmentRef, kind: 'voucher', sourceRefs: [attachmentRef] }],
+      }], issues: [] };
+    }, ref => allocatedCreate(ref), body, async candidate => candidate.kind === 'stay_candidate'
+      ? { status, result: stayResult, coverage: { complete: false, notes: ['Search incomplete'] } } : null,
+    [{ id: 'voucher', filename: 'voucher.pdf', mimeType: 'application/pdf', bytesPresent: true, text: 'Voucher for 123456-1' }]);
+    expect(result.proposal.issues.some(issue => issue.kind === 'voucher_existing_native_stay_hold')).toBe(matched);
+  });
+
+  it('combines a verified saved note after a partial confirmation search', async () => {
+    vi.stubEnv('PANE_STAY_LOOKUP', 'on');
+    vi.spyOn(paneStaySave, 'paneStayPropertyLock').mockReturnValue({ withLock: async <T>(operation: () => Promise<T>) => operation() } as never);
+    const range = { from: '2027-01-01', to: '2027-01-31' };
+    const completeness = { searchedDateRange: range, searchedRanges: [range],
+      requestedDateHorizon: { from: '2020-01-01', to: '2040-01-01' }, displayed: 1, total: 1,
+      gridComplete: true, requestedDatesCovered: false, allChunksSearched: false, truncated: false };
+    const native = { source: 'record_view_ext_model', propertyCode: 'HRCEN', confirmation: '123456-1',
+      guestId: '42', reservationStayId: '81', reservationId: '82', recordId: '83', status: 'Reserved',
+      firstName: 'Proof', lastName: 'Labtest', arrival: '2027-01-10', departure: '2027-01-12',
+      roomType: 'STQN', ratePlan: 'BAR', adults: 2, children: 0, childAges: 'unknown' };
+    const run = vi.spyOn(cloudStay, 'runCloudStayFind').mockResolvedValue({ outcome: 'ok', completeness,
+      shallow: { confirmation: '123456-1', searchResults: { complete: true } }, record: { nativePreimage: native, details: { fields: [
+        { name: 'status', value: 'Reserved' }, { name: 'guestid', value: '42' },
+        { name: 'firstname', value: 'Proof' }, { name: 'lastname', value: 'Labtest' },
+        { name: 'arrivaldate', value: '10-Jan-2027' }, { name: 'departuredate', value: '12-Jan-2027' },
+        { name: 'roomtype', value: 'STQN' }, { name: 'rateplan', value: 'BAR' },
+        { name: 'adults', value: '2' }, { name: 'children', value: '0' },
+        { name: 'reservationnote', value: 'Existing note', rawValue: 'Existing note' },
+      ] } } });
+    const read = createReservationWorkflowV2CandidateReader({ db: {} as never, propertyCode: 'HRCEN', transportId: 'transport',
+      source: { messageId: 'projection-message', threadId: 'projection-thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' } });
+    const body = 'Please amend 123456-1.\nParking requested.';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'amend',
+      requestText: claim('Please amend 123456-1', 'Please amend 123456-1', ref),
+      confirmationHints: [claim('123456-1', '123456-1', ref)] }], issues: [] }), ref => ({
+      proposal: { schemaVersion: 'reservation-prefill.v0.2', content: { requests: [{ id: 'quote_request', kind: 'amend',
+        requestText: 'Please amend 123456-1', sourceRefs: [ref], serviceRefs: [], documentRefs: [], body: {
+          targets: { mode: 'explicit', include: [{ id: 'target', confirmation: '123456-1', candidateRefs: [], suggestedRef: null,
+            sourceRefs: [ref] }], exclude: [], sourceRefs: [ref] }, sharedChanges: [], perTarget: [] } }], services: [], documents: [] },
+        annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] }, reviewRequirements: {} }), body, read);
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ request: { confirmation: '123456-1' } }));
+    const baseline = result.observations.find(row => row.criteria.kind === 'prefill_saved_note_baseline');
+    expect(baseline).toMatchObject({ status: 'partial', coverage: { complete: false, notes: [expect.any(String)] },
+      result: { outcome: 'found', completeness, reservationObservations: { reservationNote: {
+        state: 'observed', value: 'Existing note', source: 'record_view_raw_value', confirmation: '123456-1' } } } });
+    const request = result.proposal.content.requests.find(row => row.kind === 'amend');
+    if (request?.kind !== 'amend') throw new Error('expected Amend');
+    expect(request.body.perTarget.flatMap(row => row.changes)).toContainEqual(expect.objectContaining({
+      op: 'set', field: 'reservationNote', value: 'Existing note\nParking requested.' }));
+    expect(result.proposal.issues).not.toContainEqual(expect.objectContaining({ kind: 'saved_note_requires_review' }));
+  });
   it.each(['create', 'quote', 'amend'] as const)('emits schema-valid source-only note composition for %s', async (kind) => {
       const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind,
         requestText: claim('Please arrange', 'Please arrange', ref) }], issues: [] }), undefined,

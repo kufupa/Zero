@@ -194,9 +194,9 @@ function restGroupView(group: RestAvailabilityGroup, quantity: number): CloudAva
     rate: { ...observation.rate, promotioncode: observation.rate.promotionCode },
     category: 'unknown', reasons: ['REST_AVAILABILITY_WITHOUT_DOM'],
     departure: observation.departure,
-    nights: observation.nightly.map(night => {
+    nights: observation.nightly.map((night, nightIndex) => {
       const closed = night.restrictions.closedOrRestricted || night.restrictions.isclosed ||
-        night.restrictions.isclosetoarrival || night.restrictions.isclosetedeparture;
+        nightIndex === 0 && night.restrictions.isclosetoarrival === true;
       const departure = observation.departure;
       const departureUnknown = !departure?.verified || !departure.restrictions ||
         departure.restrictions.unknownRestrictionFlags.length > 0;
