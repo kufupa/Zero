@@ -170,7 +170,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     check(proof.prepared.outcome === 'prepared' && /^[a-f0-9]{64}$/.test(proof.prepared.nativeDigest ?? '') &&
       proof.prepared.preserved?.cmsSend === false, 'AMEND_PREPARE_UNVERIFIED');
     if (occupancy) check(proof.prepared.approvedPrices?.currency === 'ZAR' &&
-      proof.prepared.approvedPrices.totalCents === 0, 'AMEND_OCCUPANCY_PRICE_UNVERIFIED');
+      proof.prepared.approvedPrices.totalCents === '0', 'AMEND_OCCUPANCY_PRICE_UNVERIFIED');
     await readOwned();
     const operationDigest = hash({ propertyCode, confirmation: own.confirmation, nativeStayId: own.nativeStayId,
       changes, nativeDigest: proof.prepared.nativeDigest, approvedPrices: proof.prepared.approvedPrices,
@@ -351,7 +351,7 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
         readback.guaranteeType === selected.guaranteeType && readback.reservationNote === own.note &&
         (occupancy ? journal.propertyCode === 'HRCEN' && selected.room.ratePlan === 'CMPRO' &&
           selected.stay.adults === 1 && proof.changes?.adults === 2 && proof.changes.retainRates === 'no' &&
-          proof.prepared.approvedPrices?.currency === 'ZAR' && proof.prepared.approvedPrices.totalCents === 0 &&
+          proof.prepared.approvedPrices?.currency === 'ZAR' && proof.prepared.approvedPrices.totalCents === '0' &&
           readback.bookerContact === proof.beforeBookerContact &&
           proof.beforeBookerContact === journal.workflowProofs?.amend?.changes?.bookerContact
           : typeof proof.changes?.bookerContact === 'string' && /^Labtest amend [a-f0-9]{8}$/.test(proof.changes.bookerContact) &&
