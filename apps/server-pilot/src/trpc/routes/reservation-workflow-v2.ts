@@ -445,7 +445,7 @@ export const reservationWorkflowV2Router = router({
     });
     const granted = new Set(grants.map(grant => grant.preparedRef));
     const runs = grants.length ? await scoped.db.select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state,
-      idempotencyKey: aiWorkflowRun.idempotencyKey }).from(aiWorkflowRun).where(and(
+      idempotencyKey: aiWorkflowRun.idempotencyKey, failureClass: aiWorkflowRun.failureClass }).from(aiWorkflowRun).where(and(
         eq(aiWorkflowRun.workItemId, input.workItemId), eq(aiWorkflowRun.transportId, scoped.transportId),
         eq(aiWorkflowRun.runKind, 'hms_write'), inArray(aiWorkflowRun.idempotencyKey, grants.map(grant => `hms-write:${grant.grantId}`)),
         inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait', 'dead_letter', 'superseded', 'succeeded']))) : [];
@@ -487,7 +487,11 @@ export const reservationWorkflowV2Router = router({
       return [{ endpoint: captured.endpoint, requestId: captured.input.requestId,
         ...(captured.input.allocationId ? { allocationId: captured.input.allocationId } : {}),
         ...('serviceId' in captured.input ? { serviceId: captured.input.serviceId } : {}),
-        runId: run?.id ?? null, grantId: grant.grantId, operationId: grant.grantId, status }];
+        runId: run?.id ?? null, grantId: grant.grantId, operationId: grant.grantId, status,
+        // Only closed codes leave the server; never expose stored error text.
+        ...(run?.failureClass && ['failed', 'needs_reconcile', 'retry_wait'].includes(status)
+          ? { failureClass: ['BEDROCK_TRANSIENT', 'ARTIFACT_TRANSIENT', 'AUDIT_CAPTURE', 'STAFF_QUOTE_ACTIVE',
+            'WORKER_SHUTDOWN', 'HMS_OUTAGE', 'UNKNOWN'].includes(run.failureClass) ? run.failureClass : 'UNKNOWN' } : {}) }];
     });
     const workflowPreparations = preparations.flatMap(saved => {
       const captured = saved.workflowContext;

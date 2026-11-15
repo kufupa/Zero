@@ -62,6 +62,7 @@ export type ReservationWorkflowDispatch = {
   requestId: string; allocationId?: string; serviceId?: string;
   status: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'needs_reconcile' | 'needs_review' | 'succeeded' | 'failed';
   runId: string | null; grantId: string; operationId: string;
+  failureClass?: string;
 };
 
 export type ReservationPreparationView = {

@@ -2,6 +2,7 @@ import { formatStayDate } from './amend-find';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { cancelChargeClientFromTrpc, type CancelChargeClient, type CancelRun } from './amend-cancel';
 import type { PropertySwitch } from '@/lib/reservation-workflow/types';
+import { knownFailureCopy } from '@/lib/reservation-workflow/failure-copy';
 
 /**
  * The HMS write as the approve and review cards see it (U18). The wire types mirror hmsWriteStateOf and the hmsApproval
@@ -271,14 +272,14 @@ export type WriteStatus = {
 };
 
 function needsCheckWords(run: Run): string {
-  return NEEDS_CHECK_REASON[run.lastError ?? ''] ?? 'The outcome is not known. Check HMS.';
+  return NEEDS_CHECK_REASON[run.lastError ?? ''] ?? knownFailureCopy(run.failureClass, true) ?? 'The outcome is not known. Check HMS.';
 }
 
 function stopWords(run: Run): string {
   if (run.state === 'superseded' && run.failureClass == null) {
     return 'A newer approval replaced this write.';
   }
-  return STOP_REASON[run.failureClass ?? ''] ?? 'Nava stopped the write.';
+  return knownFailureCopy(run.failureClass, true) ?? STOP_REASON[run.failureClass ?? ''] ?? 'Nava stopped the write.';
 }
 
 export function writeStatusOf(view: HmsWriteView): WriteStatus {
