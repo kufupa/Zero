@@ -98,6 +98,8 @@ if (lines.some((line)=>!/127\.0\.0\.1:(8788|8789)\b/.test(line))) process.exit(1
 }
 
 bash "$SERVER_PILOT/deploy/check-migration-compatibility.sh"
+NAVA_LIVE_SHA="$NAVA_BUILD_COMMIT" \
+  bash "$SERVER_PILOT/deploy/set-ec2-runtime-controls.sh" --bind-installed-canaries
 
 validate_remote_env_files || {
   echo "remote HTTP environment validation failed before PM2 mutation" >&2

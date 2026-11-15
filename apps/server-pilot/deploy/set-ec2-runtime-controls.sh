@@ -3,7 +3,7 @@
 # then use the existing M1 renderer and its canary guard for the remote overlay.
 set -euo pipefail
 [ "$(id -un)" = ubuntu ] || { echo 'must run as ubuntu' >&2; exit 2; }
-[ "$#" -gt 0 ] || { echo "usage: $0 KEY=value [KEY=value ...]" >&2; exit 2; }
+[ "$#" -gt 0 ] || { echo "usage: $0 KEY=value [KEY=value ...] | --bind-installed-canaries" >&2; exit 2; }
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 POLICY_MODULE="$SCRIPT_DIR/../tooling/hms-cloud/hms-workflow-policy.mjs"
 [ ! -e "${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" ] || { echo "scoped update refused: HOLD file present" >&2; exit 2; }
@@ -18,8 +18,89 @@ for file in "$ENV_FILE" "$COMMON" "$ADMIN"; do
     echo 'durable or common env missing or unsafe' >&2; exit 2;
   }
 done
-exec 9>>/home/ubuntu/.nava-deploy.lock
+DEPLOY_LOCK=/home/ubuntu/.nava-deploy.lock
+# Deploy/restart already holds this descriptor; reopening it would deadlock.
+if ! { [ -e "/proc/$$/fd/9" ] && [ "/proc/$$/fd/9" -ef "$DEPLOY_LOCK" ]; }; then
+  exec 9>>"$DEPLOY_LOCK"
+fi
 flock -x 9
+if [ "${1:-}" = "--bind-installed-canaries" ]; then
+  [ "$#" -eq 1 ] || exit 2
+  bindings="$(node --input-type=module - "$POLICY_MODULE" "$ENV_FILE" "$REPO_ROOT" "$COMMON" <<'NODE'
+import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { parseEnv } from 'node:util';
+import { pathToFileURL } from 'node:url';
+const [policyPath, envPath, root, commonPath] = process.argv.slice(2);
+try {
+  const policy = await import(pathToFileURL(policyPath).href);
+  const sha = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  let built;
+  try { built = fs.readFileSync(`${root}/apps/server-pilot/dist/.nava-build-commit`, 'utf8').trim(); }
+  catch (error) { if (error.code === 'ENOENT') process.exit(0); throw error; }
+  if (!/^[a-f0-9]{40}$/.test(sha) || built !== sha ||
+      (process.env.NAVA_LIVE_SHA && process.env.NAVA_LIVE_SHA !== sha)) process.exit(0);
+  const ledger = '/etc/nava/hms-canary-passes.txt';
+  for (const path of [ledger, `${ledger}.writers.json`]) {
+    let stat;
+    try { stat = fs.lstatSync(path); }
+    catch (error) { if (error.code === 'ENOENT') process.exit(0); throw error; }
+    if (!stat.isFile() || (stat.mode & 0o022) || stat.size > 1048576 ||
+        ![0, process.getuid()].includes(stat.uid)) throw Error();
+  }
+  const data = JSON.parse(fs.readFileSync(`${ledger}.writers.json`, 'utf8'));
+  if (data.version !== 2 || !Array.isArray(data.writers)) throw Error();
+  const env = parseEnv(fs.readFileSync(envPath, 'utf8'));
+  const environments = [env, parseEnv(fs.readFileSync(commonPath, 'utf8'))];
+  const updates = new Map();
+  for (const row of data.writers) {
+    if (row?.sourceRevision !== sha || !policy.HMS_PROPERTIES.includes(row.propertyCode) ||
+        !policy.HMS_WRITE_WORKFLOWS.includes(row.workflow)) continue;
+    const key = policy.WRITER_DIGEST_KEYS[row.workflow];
+    const candidate = { ...env, NAVA_CANARY_PASS_FILE: ledger, [key]: row.writerDependencyDigest };
+    // Readiness checks the real PASS, writer sources, credential identity and fresh-readback metadata.
+    if (policy.hmsWriterReady(candidate, row.propertyCode, row.workflow, sha)) {
+      // Digests are shared across properties; do not make the M1 promotion guard abort startup.
+      const scopeReady = environments.every(current => policy.HMS_PROPERTIES.every(property =>
+        current[key] === row.writerDependencyDigest ||
+        policy.effectiveWorkflowPolicy(current, property, row.workflow).mode !== 'on' ||
+        policy.hmsWriterReady({ ...current, NAVA_CANARY_PASS_FILE: ledger, [key]: row.writerDependencyDigest },
+          property, row.workflow, sha)));
+      if (scopeReady) updates.set(key, row.writerDependencyDigest);
+    }
+  }
+  if (updates.size) {
+    // A shared-path migration must not discard another workflow/property's valid custom proof.
+    const unsafeMigration = environments.some(current => {
+      const candidate = { ...current, ...Object.fromEntries(updates), NAVA_CANARY_PASS_FILE: ledger };
+      return policy.HMS_PROPERTIES.some(property => policy.HMS_WRITE_WORKFLOWS.some(workflow => {
+        const before = policy.effectiveWorkflowPolicy(current, property, workflow);
+        const after = policy.effectiveWorkflowPolicy(candidate, property, workflow);
+        return (policy.hmsWriterReady(current, property, workflow) && !policy.hmsWriterReady(candidate, property, workflow)) ||
+          (after.capability === 'staff-enabled' && before.capability !== 'staff-enabled' &&
+            !policy.hmsWriterReady(candidate, property, workflow, sha));
+      }));
+    });
+    if (unsafeMigration) {
+      console.error('installed canary binding skipped: unsafe writer readiness change');
+      process.exit(0);
+    }
+    console.log(`NAVA_CANARY_PASS_FILE=${ledger}`);
+    for (const [key, value] of updates) console.log(`${key}=${value}`);
+  }
+} catch {
+  console.error('installed canary binding refused: invalid proof, build identity or environment');
+  process.exit(2);
+}
+NODE
+)"
+  if [ -z "$bindings" ]; then
+    echo 'No compatible installed writer bindings; runtime controls unchanged'
+    exit 0
+  fi
+  mapfile -t binding_args <<<"$bindings"
+  set -- "${binding_args[@]}"
+fi
 umask 077
 candidate="$(mktemp "$(dirname -- "$ENV_FILE")/.env.scoped.XXXXXX")"
 backup="$(mktemp "$SERVER_PILOT/.env.common-backup.XXXXXX")"
