@@ -2104,7 +2104,9 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
     const dinner = affirmativeMeal(/\bdinner\b|\bdbb\b/iu), breakfast = affirmativeMeal(/\bbreakfast\b|\bb&b\b|\bdbb\b/iu);
     const roomOnlyMentions = boardText.split(/[;,.!?]|\bbut\b/iu).flatMap((fragment) =>
       [...fragment.matchAll(new RegExp(ROOM_ONLY_BOARD, 'giu'))].map((mention) =>
-        !/\b(?:not|never|declin(?:e|ed|ing)|exclud(?:e|ed|ing)|(?:don|isn|aren|won|needn)['’]t|unwanted|rather\s+than|instead\s+of)\b/iu.test(fragment.slice(0, mention.index))));
+        !/\b(?:no|not|never|declin(?:e|ed|ing)|exclud(?:e|ed|ing)|(?:don|isn|aren|won|needn)['’]t|unwanted|rather\s+than|instead\s+of)\b/iu.test(fragment.slice(0, mention.index)) &&
+        !/^\s*(?:(?:is|are|was|were)\s+)?(?:not\s+(?:required|needed|included|wanted)|(?:isn|aren)['’]t\s+(?:required|needed|included|wanted)|declined|excluded|unwanted)\b/iu
+          .test(fragment.slice(mention.index + mention[0].length))));
     const roomOnly = roomOnlyMentions.length > 0 && roomOnlyMentions.every(Boolean);
     // Room only beside an affirmative meal in one clause is two alternatives, not one board.
     if (roomOnly) return dinner || breakfast ? null : 'room_only';
@@ -2175,8 +2177,8 @@ const OPERATIONAL_NOTE_CLASSES: RegExp[] = [
   // Celebrations.
   /\b(?:honeymoon(?:ers)?|anniversar(?:y|ies)|birthdays?|celebrat(?:e|es|ed|ing|ions?)|newly-?\s*weds?|surprise)\b/i,
 ];
-const OPERATIONAL_NOTE_PRICING = /\b(?:rates?|prices?|pricing|costs?|tariffs?|invoices?|deposits?|refunds?|payments?|how\s+much|bank|eft)\b|(?:\b(?:R|ZAR|USD|EUR|GBP)\s?|[$€£]\s?)\d/i;
-const OPERATIONAL_NOTE_CONTACT = /[^\s@]+@[^\s@]+\.[^\s@]+|\b(?:tel|telephone|cell|mobile|fax|phone)\s*(?:no\.?|number)?\s*:/i;
+// Price talk and money movements ("bank transfer") are not stay instructions.
+const OPERATIONAL_NOTE_PRICING = /\b(?:rates?|prices?|pricing|costs?|tariffs?|quotations?|how\s+much)\b|(?:\b(?:R|ZAR|USD|EUR|GBP)\s?|[$€£]\s?)\d|\b(?:bank|eft|wire|money|funds?)\s+transfers?\b|\btransfer(?:s|red|ring)?\s+(?:the\s+)?(?:money|funds?|payment|deposit|amount|balance)\b/i;
 const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:morning|afternoon|evening|day))\b[^,:!\n]{0,60}[,:!]\s*/i;
 const OPERATIONAL_NOTE_REGARDS = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*(?:[ \t]+\S+){0,3}[ \t]*$/im;
 const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(?:very\s+much|in\s+advance|kindly))?|cheers)[ \t]*[,.!]*[ \t]*$/gim;
@@ -2184,13 +2186,16 @@ const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(
 function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
   const current = (input.selection.currentBodyText ?? input.selection.bodyText)
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
-  // Everything from the sign-off down is signature, not a stay instruction.
+  // Everything from the sign-off down is signature, not a stay instruction, except an explicit postscript.
   const signOff = OPERATIONAL_NOTE_REGARDS.exec(current)?.index ?? [...current.matchAll(OPERATIONAL_NOTE_THANKS)].at(-1)?.index;
-  const body = signOff === undefined ? current : current.slice(0, signOff);
+  const signature = signOff === undefined ? '' : current.slice(signOff);
+  const postscript = /^[ \t]*p\.?[ \t]?s\b[.:\-–]?[ \t]*/im.exec(signature);
+  const body = signOff === undefined ? current
+    : `${current.slice(0, signOff)}\n${postscript ? signature.slice(postscript.index + postscript[0].length) : ''}`;
   // Dropping a leading greeting keeps each clause a verbatim substring of the current email body.
   const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim()).filter((line) =>
     (Boolean(dinnerAmount(line)) || OPERATIONAL_NOTE_CLASSES.some((pattern) => pattern.test(line)) &&
-      !OPERATIONAL_NOTE_PRICING.test(line) && !OPERATIONAL_NOTE_CONTACT.test(line)) &&
+      !OPERATIONAL_NOTE_PRICING.test(line)) &&
     line.length > 3 && !/https?:\/\/|www\./i.test(line));
   return [...new Set(clauses)];
 }
@@ -2452,7 +2457,7 @@ function currentPdfEvidence(input: {
 }
 
 // Words that may stand between a negation and the "cancel" it governs ("do not ever want to cancel").
-const CANCEL_BRIDGE = String.raw`(?:go\s+ahead(?:\s+and)?|under\s+any\s+circumstances?|in\s+any\s+(?:case|event|way)|at\s+all|please|kindly|ever|just|only|simply|actually|really|yet|now|longer|circumstances?|to|needs?|wants?|wish(?:es)?|like|going|intend|plan(?:ning)?|have|has|proceed|try|us|you|we|i|they|them|then|however|repeat|again)`;
+const CANCEL_BRIDGE = String.raw`(?:go\s+ahead(?:\s+and)?|under\s+any\s+circumstances?|in\s+any\s+(?:case|event|way)|at\s+all|please|kindly|ever|just|only|simply|actually|really|yet|now|longer|circumstances?|to|needs?|wants?|wish(?:es)?|like|going|intend|plan(?:ning)?|have|has|proceed|try|us|you|we|i|they|them|then|however|repeat|again|\w+ly)`;
 const CANCEL_NEGATED_TAIL = new RegExp(String.raw`\b(?:not|never|no|cannot|\w+n['’]t|rather\s+than|instead\s+of)(?:\s+${CANCEL_BRIDGE})*\s*$`, 'iu');
 const CANCEL_BRIDGE_ONLY = new RegExp(String.raw`^(?:\s*\b${CANCEL_BRIDGE}\b)*\s*$`, 'iu');
 
@@ -2476,11 +2481,12 @@ function isNegatedCancelInstruction(prefix: string): boolean {
 }
 
 function isPartialStayCancellation(text: string): boolean {
-  const affirmative = (pattern: RegExp) => [...text.matchAll(pattern)].some((match) =>
-    !isNegatedCancelInstruction(text.slice(0, match.index)));
-  // An affirmative whole-stay instruction beside the partial one is not an unambiguous departure change.
-  return affirmative(/\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/giu) &&
-    !affirmative(/\bcancel\s+(?:(?:the|this|our|my|their)\s+)?(?:entire|whole|full|complete)\s+(?:reservation|booking|stay)\b/giu);
+  const partial = [...text.matchAll(/\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/giu)]
+    .some((match) => !isNegatedCancelInstruction(text.slice(0, match.index)));
+  // Apply the same clause-level negation to whole-stay and partial instructions.
+  const whole = [...text.matchAll(/\bcancel\s+(?:(?:the|this|our|my|their)\s+)?(?:entire|whole|full|complete)\s+(?:reservation|booking|stay)\b/giu)]
+    .some((match) => !isNegatedCancelInstruction(text.slice(0, match.index)));
+  return partial && !whole;
 }
 
 function recoverSourceIntent(input: {
@@ -2851,34 +2857,52 @@ function isPaymentProofOnlyCreate(extracted: ReservationWorkflowV2Extraction['re
   return paymentProof && !newBookingIntent;
 }
 
-type CreateAllocationOccupancy = { adults: number | null; childCount: number | null; childAges: Array<number | null> | null };
-
 /**
- * One current occupancy row per Create allocation, in source order. Returns null unless every
- * row is cited in the current message, is scoped to a room (or to a stay holding a single room)
- * and agrees with whatever occupancy synthesis already placed on that allocation.
+ * Occupancy array order is not a room identity. Use a unique cited guest/date anchor,
+ * or interchangeable per-room rows; otherwise leave counts for staff review.
  */
 function occupancyRowsByAllocation(input: {
   extracted: ReservationWorkflowV2Extraction['requests'][number];
-  allocations: Array<{ dateSectionId: string; occupancy: CreateAllocationOccupancy }>;
+  allocations: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>['body']['allocations'];
+  dateSections: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>['body']['dateSections'];
   currentRefs: Set<string>;
 }): Array<{ row: ReservationWorkflowV2Extraction['requests'][number]['occupancy'][number]; occupancy: CreateAllocationOccupancy }> | null {
   const rows = input.extracted.occupancy;
   if (rows.length < 2 || rows.length !== input.allocations.length) return null;
-  const mapped = rows.flatMap((row, index) => {
-    const allocation = input.allocations[index]!;
+  const mapped = rows.flatMap((row) => {
     const ageClaims = row.childAges?.filter((claim) => currentClaim(claim, input.currentRefs)) ?? [];
     const adults = citedInteger(currentClaim(row.adults, input.currentRefs)) ?? null;
     const childCount = citedInteger(currentClaim(row.childCount, input.currentRefs)) ?? null;
-    const roomScoped = row.scope === 'per_room' || row.scope === 'whole_group' &&
-      input.allocations.filter((other) => other.dateSectionId === allocation.dateSectionId).length === 1;
-    const contradicts = adults !== null && allocation.occupancy.adults !== null && allocation.occupancy.adults !== adults ||
-      childCount !== null && allocation.occupancy.childCount !== null && allocation.occupancy.childCount !== childCount;
-    if (!roomScoped || contradicts || adults === null && childCount === null) return [];
+    if (row.scope === 'unknown' || adults === null && childCount === null) return [];
     const childAges = ageClaims.length ? ageClaims.map((claim) => citedInteger(claim) ?? null) : childCount === 0 ? [] : null;
-    return [{ row, occupancy: { adults, childCount, childAges } }];
+    const raw = normalizedFact([row.adults, row.childCount, ...ageClaims]
+      .flatMap((claim) => currentClaim(claim, input.currentRefs)?.raw ?? []).join(' '));
+    return [{ row, occupancy: { adults, childCount, childAges }, raw }];
   });
-  return mapped.length === rows.length ? mapped : null;
+  if (mapped.length !== rows.length) return null;
+  const interchangeable = new Set(mapped.map(({ occupancy }) => JSON.stringify(occupancy))).size === 1;
+  const used = new Set<number>();
+  const assigned = input.allocations.map((allocation) => {
+    const section = input.dateSections.find((candidate) => candidate.id === allocation.dateSectionId);
+    const oneRoom = input.allocations.filter((other) => other.dateSectionId === allocation.dateSectionId).length === 1;
+    const name = normalizedFact([allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' '));
+    const candidates = mapped.flatMap((entry, index) => {
+      if (used.has(index) || entry.row.scope !== 'per_room' && !oneRoom) return [];
+      const contradiction = (['adults', 'childCount'] as const).some((field) =>
+        entry.occupancy[field] !== null && allocation.occupancy[field] !== null &&
+        entry.occupancy[field] !== allocation.occupancy[field]) ||
+        entry.occupancy.childAges !== null && allocation.occupancy.childAges !== null &&
+        JSON.stringify(entry.occupancy.childAges) !== JSON.stringify(allocation.occupancy.childAges);
+      const linked = name.length >= 4 && entry.raw.includes(name) || oneRoom && section?.arrival && section.departure &&
+        entry.raw.includes(normalizedFact(section.arrival)) && entry.raw.includes(normalizedFact(section.departure));
+      return !contradiction && (interchangeable || linked) ? [index] : [];
+    });
+    const index = interchangeable ? candidates[0] : candidates.length === 1 ? candidates[0] : undefined;
+    if (index === undefined) return null;
+    used.add(index);
+    return mapped[index]!;
+  });
+  return assigned.every((entry) => entry !== null) ? assigned : null;
 }
 
 function projectSourceCreateAllocations(input: {
@@ -2929,7 +2953,7 @@ function projectSourceCreateAllocations(input: {
   // Create projection already decided occupancy for the allocations it was given. Only rooms
   // added here from the cited room count can newly line up one-to-one with the occupancy rows.
   const occupancyByAllocation = addedAllocations ? occupancyRowsByAllocation({ extracted: input.extracted,
-    allocations: input.request.body.allocations, currentRefs: input.currentRefs }) : null;
+    allocations: input.request.body.allocations, dateSections: input.request.body.dateSections, currentRefs: input.currentRefs }) : null;
   if (occupancyByAllocation) {
     input.request.body.allocations = input.request.body.allocations.map((allocation, index) =>
       ({ ...allocation, occupancy: occupancyByAllocation[index]!.occupancy }));
@@ -3725,10 +3749,23 @@ function projectCurrentExtraction(input: {
           [...new Set(mealClaims.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
     }
-    // A lone Create or lone Quote owns the email's operational notes even when the same
-    // email also carries requests of other kinds (for example a Cancel beside the Create).
+    // Mixed requests need positive ownership, not merely the absence of another stay's name.
+    const noteMarkers = (row: ReservationWorkflowV2Extraction['requests'][number]) => [...row.confirmationHints.flatMap((claim) => [claim.raw, claim.value]),
+      ...row.guests.flatMap((guest) => guest.role === 'guest' ? [guest.name?.raw, guest.name?.value] : [])]
+      .map(normalizedFact).filter((marker) => marker.length >= 4);
+    const otherRequests = currentExtraction.requests.filter((candidate) => candidate.id !== extracted.id &&
+      ['create', 'quote', 'amend', 'cancel', 'filing'].includes(candidate.kind));
+    const ownMarkers = new Set(noteMarkers(extracted));
+    const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row).filter((marker) => !ownMarkers.has(marker)),
+      normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
     const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
-      currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1 ? operationalSourceNote(input) : [];
+      currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1
+      ? operationalSourceNote(input).filter((clause) => {
+        const text = normalizedFact(clause);
+        return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
+          !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
+          (normalizedFact(extracted.requestText.raw).includes(text) || [...ownMarkers].some((marker) => text.includes(marker)));
+      }) : [];
     if (request.kind === 'create' || request.kind === 'quote') {
       const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
       const limit = request.kind === 'create' ? 2000 : 4000;
@@ -4459,8 +4496,7 @@ function projectCurrentExtraction(input: {
       request.body.dateSections.forEach((section) => { section.requestedTotals = { ...occupancyEmpty }; });
       const synthesizedAllocationOccupancy = request.body.allocations.some((allocation) =>
         allocation.occupancy.adults !== null || allocation.occupancy.childCount !== null || allocation.occupancy.childAges !== null);
-      const synthesizedOccupancyByAllocation = request.body.allocations.map((allocation) =>
-        ({ dateSectionId: allocation.dateSectionId, occupancy: allocation.occupancy }));
+      const synthesizedOccupancyByAllocation = structuredClone(request.body.allocations);
       request.body.allocations.forEach((allocation) => { allocation.occupancy = { ...occupancyEmpty }; });
       if (request.body.dateSections.length === 1) {
         const section = request.body.dateSections[0]!;
@@ -4511,11 +4547,11 @@ function projectCurrentExtraction(input: {
           request.body.allocations.every((allocation) => allocation.dateSectionId === section.id) &&
           dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
           datePairKey(section.arrival, section.departure) === currentDatePair);
-        // Several occupancy rows: one row per allocation, in source order, when the dates
-        // themselves mapped cleanly and a single stay's room count agrees with its allocations.
+        // Differing room counts require identity links; clean dates alone do not establish array order.
         const occupancyByAllocation = exactPerRoomScope || dateLinks.unlinkedDates.length > 0 ||
           section && typeof quantity === 'number' && quantity !== request.body.allocations.length ? null
-          : occupancyRowsByAllocation({ extracted, allocations: synthesizedOccupancyByAllocation, currentRefs });
+          : occupancyRowsByAllocation({ extracted, allocations: synthesizedOccupancyByAllocation,
+            dateSections: request.body.dateSections, currentRefs });
         if (exactPerRoomScope) request.body.allocations.forEach((allocation, index) => {
           allocation.occupancy = { adults: occupancy.occupancy.adults, childCount: occupancy.occupancy.childCount,
             childAges: occupancy.occupancy.childAges };
