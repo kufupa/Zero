@@ -3,6 +3,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { attentionFieldPath, inputFieldLabel } from '@/lib/reservation-workflow/client';
+import { knownFailureCopy, staffFailureCopy } from '@/lib/reservation-workflow/failure-copy';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
 import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
@@ -26,6 +27,8 @@ const actionKinds = Object.keys(editors) as Array<Exclude<ReservationWorkflowKin
 const createScopedFields = new Set(['requestedMealPlan', 'mealPlan', 'taCommission', 'roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'bookingAgency', 'organization', 'arAccount',
   'sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
 function issueText(explanation: string) {
+  const failure = knownFailureCopy(explanation);
+  if (failure) return failure;
   if (/^Candidate read v2_[a-z0-9]+ failed\.$/i.test(explanation)) return 'An Infor search during email prefill failed. Search again to verify the details.';
   if (/^Candidate read v2_[a-z0-9]+ .+; coverage is not complete\.$/i.test(explanation)) return 'An Infor search during email prefill was incomplete. Search again to verify the details.';
   return explanation;
@@ -300,7 +303,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     if (content) content.scrollTop += destination.getBoundingClientRect().top - content.getBoundingClientRect().top - 16;
   };
   const showAttention = (message: string, fields: string[] = []) => {
-    setAttention({ digest: digestFor(workbench.latestSnapshot()), message, fields: [...new Set(fields)] });
+    setAttention({ digest: digestFor(workbench.latestSnapshot()), message: knownFailureCopy(message) ?? message, fields: [...new Set(fields)] });
     if (fields[0]) requestAnimationFrame(() => focusField(fields[0]!));
   };
   const showFailure = (failure: unknown) => {
@@ -544,7 +547,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     </div>}</nav>
     <div className={styles.sources}>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     <main className={`${styles.content} nava-pane-scroll`}>
-    {(props.loadError || workbench.error) && <div className={styles.error} role="alert">{workbench.error || props.loadError}{workbench.conflict && <>
+    {(props.loadError || workbench.error) && <div className={styles.error} role="alert">{knownFailureCopy(workbench.error || props.loadError) ?? (workbench.error || props.loadError)}{workbench.conflict && <>
       {workbench.unresolvedPending.length > 0 && <div><p>These edits need to be entered again. Copy the values before discarding:</p>
         {workbench.unresolvedPending.map(edit => <p key={edit.path}><strong>{edit.label}:</strong> {edit.value || '(empty)'}</p>)}</div>}
       <div><button type="button" disabled={sourceChanged || busy || !workbench.applicablePendingCount} onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div></>}</div>}
@@ -631,16 +634,18 @@ export function ReservationPane(props: ReservationPaneProps) {
       {attention?.digest === digest && <div className={styles.notice} role="alert">{attention.message}
         {attention.fields.length > 0 && <div>{attention.fields.map(field => <button type="button" key={field} onClick={() => focusField(field)}>Review {inputFieldLabel(field)}</button>)}</div>}
       </div>}
-      {pendingDispatch && <p className={styles.notice} role="status">{pendingDispatch.status === 'needs_reconcile'
-        ? 'The save outcome needs confirmation. Check Infor or contact support before trying again.'
-        : 'Saving in Infor. Waiting for the confirmed outcome.'}</p>}
+      {snapshot?.session.workflowDispatches?.filter(dispatch => dispatch.requestId === request?.id &&
+        (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass)).map(dispatch =>
+        <p key={dispatch.grantId} className={styles.notice} role="status">{staffFailureCopy(dispatch.failureClass, true)}</p>)}
+      {pendingDispatch && pendingDispatch.status !== 'needs_reconcile' && !pendingDispatch.failureClass &&
+        <p className={styles.notice} role="status">Saving in Infor. Waiting for the confirmed outcome.</p>}
       {['queued', 'running'].includes(prefill?.status ?? '') && <p className={styles.small}>{prefill?.status === 'queued' ? 'Prefill is queued.' : prefill?.phase === 'native_checks' ? 'Checking the extracted details in Infor.' : 'Reading the email and attachments.'} You can start editing now.</p>}
       {directPrefillAbandoned && prefill.attemptCount < 2 && <p className={styles.small}>Prefill appears interrupted. Your edits are kept. <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
       {prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
-      {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
+      {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{knownFailureCopy(issue.kind) ?? issueText(issue.explanation)}</p>)}
       {earlierIssues.length > 0 && <details className={styles.earlierChecks}>
         <summary>Earlier email checks · {earlierIssues.length} notices</summary>
-        {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue.explanation)}</p>)}
+        {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{knownFailureCopy(issue.kind) ?? issueText(issue.explanation)}</p>)}
       </details>}
     </main>
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
