@@ -593,7 +593,7 @@ function redactText(
 }
 
 function isSensitiveName(key: string): boolean {
-  return /^(?:authorization|proxy-authorization|cookie|set-cookie|password|passcode|secret|credential|token|jwt|sid|api[-_]?key|client[-_]?secret|x[-_](?:api[-_]key|auth(?:entication)?[-_]?(?:token|key)?|access[-_]token|refresh[-_]token|csrf[-_]token|session[-_](?:id|token)|id[-_]token)|(?:access|refresh|csrf|session|id)[-_]?(?:token|key|id))$/i.test(
+  return /^(?:auth|authorization|proxy-authorization|cookie|set-cookie|password|passcode|secret|credential|token|jwt|sid|api[-_]?key|client[-_]?secret|x[-_](?:api[-_]key|auth(?:entication)?[-_]?(?:token|key)?|access[-_]token|refresh[-_]token|csrf[-_]token|session[-_](?:id|token)|id[-_]token)|(?:access|refresh|csrf|session|id)[-_]?(?:token|key|id))$/i.test(
     key,
   );
 }
