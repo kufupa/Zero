@@ -6,6 +6,52 @@ import { dismissNotesOrThrow, installStay360NotesHandler, takeHandledNotes } fro
 export { dismissNotesOrThrow } from './stay360-notes.mjs';
 
 const SEARCH_TIMEOUT_MS = 30_000;
+const DAY_MS = 86_400_000;
+const shiftDay = (day, amount) => new Date(Date.parse(`${day}T00:00:00Z`) + amount * DAY_MS).toISOString().slice(0, 10);
+
+function checkSweepBudget({ signal, deadline = Infinity, now = Date.now() } = {}) {
+  if (signal?.aborted) throw new Error('SEARCH_ABORTED');
+  if (now >= deadline) throw new Error('SEARCH_DEADLINE_EXCEEDED');
+}
+
+export function mergeSearchedRanges(ranges) {
+  const sorted = ranges.filter((range) => range?.from && range?.to && range.from <= range.to)
+    .map((range) => ({ ...range })).sort((a, b) => a.from.localeCompare(b.from));
+  const merged = [];
+  for (const range of sorted) {
+    const previous = merged.at(-1);
+    if (previous && range.from <= shiftDay(previous.to, 1)) previous.to = previous.to > range.to ? previous.to : range.to;
+    else merged.push(range);
+  }
+  return merged;
+}
+
+export function planStaySearchChunks({ searchedRanges, requestedDateHorizon, currentRange, maxChunks = 6,
+  signal, deadline = Infinity, now = Date.now() }) {
+  checkSweepBudget({ signal, deadline, now });
+  if (!currentRange || !requestedDateHorizon || maxChunks <= 0) return [];
+  const ranges = mergeSearchedRanges(searchedRanges);
+  const containing = ranges.find((range) => range.from <= currentRange.from && range.to >= currentRange.to);
+  if (!containing) return [];
+  const width = Math.floor((Date.parse(`${currentRange.to}T00:00:00Z`) - Date.parse(`${currentRange.from}T00:00:00Z`)) / DAY_MS) + 1;
+  if (!Number.isFinite(width) || width < 1) return [];
+  const left = containing.from > requestedDateHorizon.from ? shiftDay(containing.from, -width) : null;
+  const rightEdge = shiftDay(requestedDateHorizon.to, 1 - width);
+  const desiredRight = containing.to < requestedDateHorizon.to ? shiftDay(containing.to, 1) : null;
+  const right = desiredRight && (desiredRight > rightEdge ? rightEdge : desiredRight);
+  const candidates = [left && (left < requestedDateHorizon.from ? requestedDateHorizon.from : left),
+    right && right > containing.from ? right : null].filter(Boolean);
+  return candidates.slice(0, maxChunks);
+}
+
+export function buildStaySearchCompleteness({ searchedDateRange = null, searchedRanges = [], requestedDateHorizon = null,
+  displayed = null, total = null, gridComplete = false, allChunksSearched = false, truncated = false } = {}) {
+  const ranges = mergeSearchedRanges(searchedRanges);
+  const requestedDatesCovered = Boolean(requestedDateHorizon && ranges.some((range) =>
+    range.from <= requestedDateHorizon.from && range.to >= requestedDateHorizon.to));
+  return { searchedDateRange, searchedRanges: ranges, requestedDateHorizon, displayed, total,
+    gridComplete, requestedDatesCovered, allChunksSearched: allChunksSearched && requestedDatesCovered, truncated };
+}
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -33,7 +79,10 @@ function parseSearchDate(value) {
   const match = /^([A-Za-z]{3})\s+(\d{1,2}),\s+(\d{4})$/.exec(value.trim());
   const month = match && MONTHS.findIndex((name) => name.slice(0, 3).toLowerCase() === match[1].toLowerCase());
   if (!match || month < 0) throw new Error('SEARCH_DATE_RANGE_UNREADABLE');
-  return Date.UTC(Number(match[3]), month, Number(match[2]));
+  const date = new Date(Date.UTC(Number(match[3]), month, Number(match[2])));
+  if (date.getUTCFullYear() !== Number(match[3]) || date.getUTCMonth() !== month ||
+      date.getUTCDate() !== Number(match[2])) throw new Error('SEARCH_DATE_RANGE_UNREADABLE');
+  return date.getTime();
 }
 
 async function readSearchDateRange(popup) {
@@ -41,51 +90,57 @@ async function readSearchDateRange(popup) {
   if (await title.count() !== 1) throw new Error('SEARCH_DATE_RANGE_UNREADABLE');
   const range = (await title.innerText()).split(/\s+-\s+/);
   if (range.length !== 2) throw new Error('SEARCH_DATE_RANGE_UNREADABLE');
-  return {
-    from: new Date(parseSearchDate(range[0])).toISOString().slice(0, 10),
-    to: new Date(parseSearchDate(range[1])).toISOString().slice(0, 10),
-  };
+  const from = new Date(parseSearchDate(range[0])).toISOString().slice(0, 10);
+  const to = new Date(parseSearchDate(range[1])).toISOString().slice(0, 10);
+  if (from > to) throw new Error('SEARCH_DATE_RANGE_UNREADABLE');
+  return { from, to };
 }
 
-async function adjustSearchWindow(page, popup, arrival) {
-  const range = await readSearchDateRange(popup);
-  const arrivalDate = arrival.toISOString().slice(0, 10);
-  if (arrivalDate >= range.from && arrivalDate <= range.to) {
-    return null;
-  }
-
-  const start = new Date(arrival.getTime() - 14 * 24 * 60 * 60 * 1000);
+async function moveSearchWindowStart(page, popup, startDate, deadline = Infinity, signal) {
+  checkSweepBudget({ deadline, signal });
+  const start = new Date(`${startDate}T00:00:00Z`);
   const calendarButton = popup.locator('[data-testid="calendarbtn"]:visible');
   if (await calendarButton.count() !== 1) throw new Error('SEARCH_DATE_PICKER_NOT_UNIQUE');
-  await calendarButton.click();
+  const remaining = () => Math.min(10_000, Math.max(1, deadline - Date.now()));
+  await calendarButton.click({ timeout: remaining() });
   const picker = page.locator('.x-datepicker:visible');
-  await picker.waitFor({ state: 'visible', timeout: 10_000 });
+  await picker.waitFor({ state: 'visible', timeout: remaining() });
   const monthTitle = picker.locator('.x-datepicker-month .x-btn-inner');
   for (let i = 0; i < 36; i += 1) {
-    const current = (await monthTitle.innerText()).trim();
+    checkSweepBudget({ deadline, signal });
+    const current = (await monthTitle.innerText({ timeout: remaining() })).trim();
     const match = /^([A-Za-z]+)\s+(\d{4})$/.exec(current);
     const month = match && MONTHS.indexOf(match[1]);
     if (!match || month < 0) throw new Error('SEARCH_DATE_PICKER_UNREADABLE');
     const difference = (start.getUTCFullYear() - Number(match[2])) * 12 + start.getUTCMonth() - month;
     if (!difference) break;
-    await picker.locator(difference < 0 ? '.x-datepicker-prev' : '.x-datepicker-next').click();
+    await picker.locator(difference < 0 ? '.x-datepicker-prev' : '.x-datepicker-next').click({ timeout: remaining() });
     await page.waitForFunction((previous) => [...document.querySelectorAll('.x-datepicker')].some((element) => {
       const box = element.getBoundingClientRect();
       const nextTitle = element.querySelector('.x-datepicker-month .x-btn-inner')?.textContent?.trim();
       return box.width > 0 && box.height > 0 && nextTitle && nextTitle !== previous;
-    }), current, { timeout: 5_000 });
+    }), current, { timeout: Math.min(5_000, Math.max(1, deadline - Date.now())) });
   }
   const expectedMonth = `${MONTHS[start.getUTCMonth()]} ${start.getUTCFullYear()}`;
-  if ((await monthTitle.innerText()).trim() !== expectedMonth) throw new Error('SEARCH_DATE_PICKER_OUT_OF_RANGE');
+  if ((await monthTitle.innerText({ timeout: remaining() })).trim() !== expectedMonth) throw new Error('SEARCH_DATE_PICKER_OUT_OF_RANGE');
   const day = String(start.getUTCDate()).padStart(2, '0');
   const dateTitle = `${MONTHS[start.getUTCMonth()]} ${day}, ${start.getUTCFullYear()}`;
-  await picker.locator(`td[title="${dateTitle}"] a`).click();
+  await picker.locator(`td[title="${dateTitle}"] a`).click({ timeout: remaining() });
   const expectedStart = `${MONTHS[start.getUTCMonth()].slice(0, 3)} ${day}, ${start.getUTCFullYear()} - `;
   await page.waitForFunction((prefix) => [...document.querySelectorAll('[name="gridTitle"]')].some((element) => {
     const box = element.getBoundingClientRect();
     return box.width > 0 && box.height > 0 && element.textContent.trim().startsWith(prefix);
-  }), expectedStart, { timeout: 10_000 });
-  return { arrivalDateHint: arrival.toISOString().slice(0, 10), searchStartDate: start.toISOString().slice(0, 10) };
+  }), expectedStart, { timeout: Math.min(10_000, Math.max(1, deadline - Date.now())) });
+  checkSweepBudget({ deadline, signal });
+}
+
+async function adjustSearchWindow(page, popup, arrival, deadline, signal) {
+  const range = await readSearchDateRange(popup);
+  const arrivalDate = arrival.toISOString().slice(0, 10);
+  if (arrivalDate >= range.from && arrivalDate <= range.to) return null;
+  const start = new Date(arrival.getTime() - 14 * DAY_MS).toISOString().slice(0, 10);
+  await moveSearchWindowStart(page, popup, start, deadline, signal);
+  return { arrivalDateHint: arrivalDate, searchStartDate: start };
 }
 
 async function exactSearchMatches(popup, wanted) {
@@ -149,11 +204,14 @@ export function normalizeLookupOptions(options) {
   return { guestName: options.guestName?.trim() || null, arrivalDate: parseArrivalDate(options.arrivalDate) };
 }
 
-function lookupError(code, matches, searchedDateRange, searchResults) {
+function lookupError(code, matches, searchedDateRange, searchResults, completeness) {
   return Object.assign(new Error(code), {
     candidates: matches.map((match) => match.candidate),
     searchedDateRange,
     searchResults,
+    searchedRanges: completeness?.searchedRanges ?? [],
+    requestedDateHorizon: completeness?.requestedDateHorizon ?? null,
+    completeness,
   });
 }
 
@@ -198,10 +256,11 @@ async function findSearchWindow(page, searchBox) {
   return candidates[0] ?? null;
 }
 
-async function waitForSearch(page, searchBox) {
-  const deadline = Date.now() + SEARCH_TIMEOUT_MS;
+async function waitForSearch(page, searchBox, limit = Infinity, signal) {
+  const deadline = Math.min(Date.now() + SEARCH_TIMEOUT_MS, limit);
   let emptySince = null;
   while (Date.now() < deadline) {
+    checkSweepBudget({ signal, deadline });
     const popup = await findSearchWindow(page, searchBox);
     if (popup) {
       const state = await popup.evaluate((element) => {
@@ -229,8 +288,9 @@ async function waitForSearch(page, searchBox) {
         emptySince = null;
       }
     }
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(Math.min(100, Math.max(1, deadline - Date.now())));
   }
+  if (limit <= Date.now()) throw new Error('SEARCH_DEADLINE_EXCEEDED');
   throw new Error('CONFIRMATION_SEARCH_TIMEOUT');
 }
 
@@ -277,6 +337,9 @@ export async function readConfirmationFromStay360(page, confirmation, options) {
   // Keep the existing diagnostic batch working; explicit options never read process-wide hints.
   const hints = options === undefined ? legacyLookupOptions(wanted) : options;
   const { guestName, arrivalDate } = normalizeLookupOptions(hints);
+  const duration = Number.isFinite(hints?.maxDurationMs) ? Math.max(0, hints.maxDurationMs) : 45_000;
+  const deadline = Date.now() + duration;
+  checkSweepBudget({ deadline, signal: hints?.signal });
   await installReadOnlyGuard(page.context());
   await installStay360NotesHandler(page);
 
@@ -298,41 +361,99 @@ export async function readConfirmationFromStay360(page, confirmation, options) {
   if (adjacentRuns.length !== 1) throw new Error('CONFIRMATION_RUN_BUTTON_NOT_UNIQUE');
   await adjacentRuns[0].click();
 
-  let searchResult = await waitForSearch(page, searchBox);
+  let searchResult = await waitForSearch(page, searchBox, deadline, hints?.signal);
   let popup = searchResult.popup;
   let searchWindow;
   if (arrivalDate) {
-    searchWindow = await adjustSearchWindow(page, popup, arrivalDate);
+    searchWindow = await adjustSearchWindow(page, popup, arrivalDate, deadline, hints?.signal);
     if (searchWindow) {
-      searchResult = await waitForSearch(page, searchBox);
+      searchResult = await waitForSearch(page, searchBox, deadline, hints?.signal);
       popup = searchResult.popup;
     }
   }
-  const searchedDateRange = await readSearchDateRange(popup).catch(() => null);
-  const searchResults = {
-    displayed: searchResult.displayed,
-    total: searchResult.total,
-    complete: searchResult.total <= searchResult.displayed,
-  };
-  const matches = await exactSearchMatches(popup, wanted);
-  if (!searchResults.complete) throw lookupError('SEARCH_RESULTS_CAPPED', matches, searchedDateRange, searchResults);
-  if (matches.length === 0) throw lookupError('CONFIRMATION_NOT_FOUND', matches, searchedDateRange, searchResults);
+  let searchedDateRange = await readSearchDateRange(popup).catch(() => null);
+  const today = new Date().toISOString().slice(0, 10);
+  const requestedDateHorizon = arrivalDate
+    ? { from: arrivalDate.toISOString().slice(0, 10), to: arrivalDate.toISOString().slice(0, 10) }
+    : { from: shiftDay(today, -3660), to: shiftDay(today, 3660) };
+  const searchedRanges = searchedDateRange ? [searchedDateRange] : [];
+  let searchResults = { displayed: searchResult.displayed, total: searchResult.total,
+    complete: searchResult.total === searchResult.displayed };
+  let matches = (await exactSearchMatches(popup, wanted)).map((match) => ({ ...match, chunkStartDate: searchedDateRange?.from }));
+  let truncated = searchResult.displayed < searchResult.total;
+  let gridComplete = searchResults.complete;
+  const snapshots = new Map(searchedDateRange ? [[searchedDateRange.from, matches]] : []);
+  const completeness = () => buildStaySearchCompleteness({ searchedDateRange, searchedRanges, requestedDateHorizon,
+    displayed: searchResults.displayed, total: searchResults.total, gridComplete,
+    allChunksSearched: true, truncated });
+  if (!searchResults.complete) throw lookupError('SEARCH_RESULTS_CAPPED', matches, searchedDateRange, searchResults, completeness());
+  if (!arrivalDate && matches.length === 0 && searchedDateRange) {
+    const maxChunks = Number.isSafeInteger(hints?.maxChunks) ? Math.min(100, Math.max(1, hints.maxChunks)) : 6;
+    const keys = new Set();
+    for (let chunk = 1; chunk < maxChunks; chunk += 1) {
+      let next;
+      try {
+        const planned = planStaySearchChunks({ searchedRanges, requestedDateHorizon, currentRange: searchedDateRange,
+          signal: hints?.signal, deadline });
+        next = planned[chunk % 2 === 0 && planned.length > 1 ? 1 : 0];
+        if (!next) break;
+        await moveSearchWindowStart(page, popup, next, deadline, hints?.signal);
+        searchResult = await waitForSearch(page, searchBox, deadline, hints?.signal);
+        popup = searchResult.popup;
+        const range = await readSearchDateRange(popup);
+        if (range.from !== next || searchedRanges.some((old) => old.from === range.from && old.to === range.to)) break;
+        searchedDateRange = range;
+      } catch { break; }
+      searchedRanges.push(searchedDateRange);
+      searchResults = { displayed: searchResult.displayed, total: searchResult.total,
+        complete: searchResult.displayed === searchResult.total };
+      truncated ||= searchResult.displayed < searchResult.total;
+      gridComplete &&= searchResults.complete;
+      const found = (await exactSearchMatches(popup, wanted)).map((match) => ({ ...match, chunkStartDate: searchedDateRange.from }));
+      snapshots.set(searchedDateRange.from, found);
+      for (const match of found) {
+        const key = [hints?.propertyCode || '', wanted, match.candidate.arrivalDate || '', match.candidate.guestName || ''].join('|');
+        if (!keys.has(key)) { keys.add(key); matches.push(match); }
+      }
+      if (!searchResults.complete) throw lookupError('SEARCH_RESULTS_CAPPED', matches, searchedDateRange, searchResults, completeness());
+    }
+  }
+  if (matches.length === 0) throw lookupError('CONFIRMATION_NOT_FOUND', matches, searchedDateRange, searchResults, completeness());
 
   const viable = matchHints(matches, guestName, arrivalDate).filter((item) => !item.contradicted);
-  if (viable.length === 0) throw lookupError('CONFIRMATION_HINT_MISMATCH', matches, searchedDateRange, searchResults);
+  if (viable.length === 0) throw lookupError('CONFIRMATION_HINT_MISMATCH', matches, searchedDateRange, searchResults, completeness());
   if (viable.length !== 1 || !viable[0].verified) {
     const error = matches.length === 1 ? 'CONFIRMATION_HINT_UNVERIFIED' : 'AMBIGUOUS_CONFIRMATION';
-    throw lookupError(error, matches, searchedDateRange, searchResults);
+    throw lookupError(error, matches, searchedDateRange, searchResults, completeness());
   }
   const selected = viable[0].match;
   const matchedHints = [guestName && 'guestName', arrivalDate && 'arrivalDate'].filter(Boolean);
   const matchSelection = matches.length > 1 ? `unique ${matchedHints.join(' and ')} match` : null;
 
-  // The popup can refresh; never click an index whose displayed identity changed.
+  if (selected.chunkStartDate && selected.chunkStartDate !== searchedDateRange?.from) {
+    try {
+      const targetIndex = searchedRanges.findIndex((range) => range.from === selected.chunkStartDate);
+      for (let index = searchedRanges.length - 2; index >= targetIndex; index -= 1) {
+        const start = searchedRanges[index].from;
+        await moveSearchWindowStart(page, popup, start, deadline, hints?.signal);
+        searchResult = await waitForSearch(page, searchBox, deadline, hints?.signal);
+        popup = searchResult.popup;
+        const returnedRange = await readSearchDateRange(popup);
+        if (returnedRange.from !== start || searchResult.displayed !== searchResult.total) throw new Error('SEARCH_RESULTS_CHANGED');
+        searchedDateRange = returnedRange;
+        searchResults = { displayed: searchResult.displayed, total: searchResult.total, complete: true };
+      }
+    } catch {
+      throw lookupError('SEARCH_RESULTS_CHANGED', matches, searchedDateRange, { ...searchResults, complete: false }, { ...completeness(), gridComplete: false });
+    }
+  }
+  try { checkSweepBudget({ deadline, signal: hints?.signal }); }
+  catch { throw lookupError('SEARCH_RESULTS_CHANGED', matches, searchedDateRange, { ...searchResults, complete: false }, { ...completeness(), gridComplete: false }); }
+  const expected = snapshots.get(selected.chunkStartDate) ?? matches;
   const current = await exactSearchMatches(popup, wanted);
-  if (current.length !== matches.length || current.some((item, index) => item.index !== matches[index].index ||
-      JSON.stringify(item.text) !== JSON.stringify(matches[index].text))) {
-    throw lookupError('SEARCH_RESULTS_CHANGED', current, searchedDateRange, { ...searchResults, complete: false });
+  if (current.length !== expected.length || current.some((item, index) => item.index !== expected[index].index ||
+      JSON.stringify(item.text) !== JSON.stringify(expected[index].text))) {
+    throw lookupError('SEARCH_RESULTS_CHANGED', current, searchedDateRange, { ...searchResults, complete: false }, { ...completeness(), gridComplete: false });
   }
 
   const row = popup.locator('.x-grid-row:visible').nth(selected.index);
@@ -427,6 +548,9 @@ export async function readConfirmationFromStay360(page, confirmation, options) {
     notes: [...notes, ...await takeHandledNotes(page)],
     details,
     searchedDateRange,
+    searchedRanges: completeness().searchedRanges,
+    requestedDateHorizon,
+    completeness: completeness(),
     searchResults,
     ...(matchedHints.length ? { matchedHints } : {}),
     ...(searchWindow ? { searchWindow } : {}),

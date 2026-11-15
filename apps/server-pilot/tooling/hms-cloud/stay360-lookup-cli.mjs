@@ -33,6 +33,8 @@ export function lookupFailure(error, started) {
   };
   if (Array.isArray(error?.candidates)) result.candidates = error.candidates;
   if (Object.hasOwn(error ?? {}, 'searchedDateRange')) result.searchedDateRange = error.searchedDateRange;
-  if (error?.searchResults) result.searchResults = error.searchResults;
+  for (const name of ['searchedRanges', 'requestedDateHorizon', 'completeness', 'searchResults']) {
+    if (Object.hasOwn(error ?? {}, name)) result[name] = error[name];
+  }
   return result;
 }

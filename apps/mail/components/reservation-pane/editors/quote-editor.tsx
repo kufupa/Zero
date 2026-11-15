@@ -10,6 +10,38 @@ import styles from './create-quote-editor.module.css';
 import pickerStyles from '../reservation-pane.module.css';
 
 type Editor = WorkbenchEditorProps;
+const reviewContextPath = (path: string) => /\/body\/(?:guestNames|groups\/[^/]+\/(?:guestNames|requestedRoomDescription))(?:\/|$)/u.test(path);
+function pricingOverrides(value: unknown): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record(value)).filter(([path]) => !reviewContextPath(path)));
+}
+
+function GuestRoster({ editor, path }: { editor: Editor; path: string }) {
+  const saved = valueAt(editor.snapshot, path);
+  const savedNames = Array.isArray(saved) ? saved.filter((name): name is string => typeof name === 'string') : [];
+  const [names, setNames] = useState(savedNames);
+  const [dirty, setDirty] = useState(false);
+  const version = useRef(0);
+  const savedKey = JSON.stringify(savedNames);
+  useEffect(() => { if (!dirty) setNames(savedNames); }, [savedKey, dirty]);
+  const stage = (next: string[]) => {
+    version.current += 1; setNames(next); setDirty(true); editor.commands.stageEdit(path, next);
+  };
+  const save = (next: string[]) => {
+    const savedVersion = version.current;
+    void editor.commands.edit(path, next).then(() => { if (version.current === savedVersion) setDirty(false); }).catch(() => {});
+  };
+  return <div className={styles.stack} data-field-path={path}>
+    <strong>Guest roster (review context only)</strong>
+    {names.map((name, index) => <div className={styles.inlineButtons} key={index}>
+      <input aria-label={`Guest ${index + 1}`} value={name} maxLength={300} disabled={editor.view.busy}
+        onChange={event => stage(names.map((item, i) => i === index ? event.target.value : item))}
+        onBlur={() => { if (dirty) save(names); }} />
+      <button type="button" disabled={editor.view.busy} onClick={() => { const next = names.filter((_, i) => i !== index); stage(next); save(next); }}>Remove</button>
+    </div>)}
+    <button type="button" className={styles.linkButton} disabled={editor.view.busy || names.length >= 200}
+      onClick={() => { const next = [...names, '']; stage(next); save(next); }}>+ Add guest</button>
+  </div>;
+}
 const strategies = [
   { value: 'BAR', label: 'BAR · best available rate' }, { value: 'PROMO', label: 'PROMO · promotion' },
   { value: 'PRESET', label: 'PRESET' }, { value: 'WS', label: 'WS' }, { value: 'NC', label: 'NC' },
@@ -38,7 +70,7 @@ function quoteCurrent(editor: Editor, observation: ReturnType<typeof latestQuote
     .filter(([path]) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([path, override]) => [path, { state: override.state, ...(override.state === 'set' ? { value: override.value } : {}) }]));
-  if (JSON.stringify(current) !== JSON.stringify(result.inputOverrides)) return false;
+  if (JSON.stringify(pricingOverrides(current)) !== JSON.stringify(pricingOverrides(result.inputOverrides))) return false;
   // Structural row changes need a scope comparison too; adding/removing a group does not create a field override.
   const body = record(effectiveAt(editor.snapshot, `${requestPath(editor.request.id)}/body`));
   const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
@@ -84,7 +116,7 @@ function quoteOffersCurrent(editor: Editor, observation: ReturnType<typeof lates
     .filter(([path]) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([path, override]) => [path, { state: override.state, ...(override.state === 'set' ? { value: override.value } : {}) }]));
-  if (JSON.stringify(overrides) !== JSON.stringify(result.inputOverrides)) return false;
+  if (JSON.stringify(pricingOverrides(overrides)) !== JSON.stringify(pricingOverrides(result.inputOverrides))) return false;
   const body = record(effectiveAt(editor.snapshot, `${requestPath(editor.request.id)}/body`));
   const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
   const requested = Array.isArray(result.requestedGroups) ? result.requestedGroups.map(record) : [];
@@ -428,6 +460,7 @@ export function QuoteEditor(editor: Editor) {
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
+      <GuestRoster editor={editor} path={`${bodyPath}/guestNames`} />
       {!groups.length && <p className={styles.notice}>Add a room group to start a manual quote.</p>}
       {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Refresh before relying on it.`}</p>}
       <div className={styles.groupHeading}><strong>Room groups</strong>
@@ -448,6 +481,8 @@ export function QuoteEditor(editor: Editor) {
               requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
           <div className={styles.twoCol}><Field label="Arrival" path={`${groupPath}/arrival`} editor={editor} type="date" review />
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>
+          <GuestRoster editor={editor} path={`${groupPath}/guestNames`} />
+          <Field label="Room Request (review context)" path={`${groupPath}/requestedRoomDescription`} editor={editor} maxLength={1000} compact />
           {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
             <Field label="Meal Plan request" path={`${groupPath}/requestedMealPlan`} editor={editor} maxLength={120} review

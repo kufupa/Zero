@@ -196,7 +196,46 @@ export function currentServiceCatalogue(snapshot: ReservationPaneSnapshot, input
 }
 export type NativeRecommendationLead = { ref: string; value: string; label: string;
   basis: 'exact_sender' | 'normalized_entity'; support: number;
+  denominator?: number; purity?: number | null; autoSelectable?: boolean; blockedReason?: string | null; confirmations?: string[];
   stock?: { status: 'available_each_night' | 'sold_or_restricted' | 'unknown'; observedAt: string } };
+
+export type NoteCompositionSummary = { sourceHash: string; path: string; existing: { state: 'unset' | 'none' | 'set'; text: string };
+  sourceClauses: Array<{ text: string; sourceRefs: string[] }>;
+  memory: Array<{ kind: string; value: string; text: string; support: number; denominator: number; purity: number;
+    autoApplied: boolean; blockedReason: string | null }>;
+  conflicts: string[]; compositionStatus: 'clean' | 'conflict' | 'over_limit' | 'blocked_none' };
+
+export function noteCompositionSummary(snapshot: ReservationPaneSnapshot, path: string): NoteCompositionSummary | null {
+  const draft = snapshot?.session?.draft;
+  if (!draft || snapshot.session.sourceChanged || !draft.source?.sourceHash || !Array.isArray(draft.observations)) return null;
+  const observation = [...draft.observations].reverse().find(row => {
+    const criteria = record(row.criteria);
+    return row.kind === 'source' && row.status === 'complete' && row.generationId === draft.generationId &&
+      row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId &&
+      criteria.kind === 'reservation_note_composition' && criteria.fieldPath === path &&
+      criteria.generationId === draft.generationId && criteria.propertyCode === draft.propertyCode && criteria.sourceHash === draft.source.sourceHash;
+  });
+  if (!observation) return null;
+  const result = record(observation.result), existing = record(result.existing);
+  if (result.path !== path || (existing.state !== 'unset' && existing.state !== 'none' && existing.state !== 'set') ||
+      typeof existing.text !== 'string' || (result.compositionStatus !== 'clean' && result.compositionStatus !== 'conflict' &&
+      result.compositionStatus !== 'over_limit' && result.compositionStatus !== 'blocked_none')) return null;
+  const memory = record(result.memory);
+  return { sourceHash: draft.source.sourceHash, path, existing: { state: existing.state, text: existing.text },
+    sourceClauses: (Array.isArray(result.sourceClauses) ? result.sourceClauses : []).flatMap(raw => {
+      const row = record(raw);
+      return typeof row.text === 'string' && Array.isArray(row.sourceRefs)
+        ? [{ text: row.text, sourceRefs: row.sourceRefs.filter((ref): ref is string => typeof ref === 'string') }] : [];
+    }),
+    memory: Object.entries(memory).flatMap(([kind, raw]) => {
+      const row = record(raw);
+      return typeof row.value === 'string' && typeof row.support === 'number' && typeof row.denominator === 'number' &&
+        typeof row.purity === 'number' && typeof row.autoApplied === 'boolean'
+        ? [{ kind, value: row.value, text: text(row.text), support: row.support, denominator: row.denominator,
+          purity: row.purity, autoApplied: row.autoApplied, blockedReason: typeof row.blockedReason === 'string' ? row.blockedReason : null }] : [];
+    }), conflicts: Array.isArray(result.conflicts) ? result.conflicts.filter((row): row is string => typeof row === 'string') : [],
+    compositionStatus: result.compositionStatus };
+}
 
 export function autoTransferHistory(snapshot: ReservationPaneSnapshot, path: string): { support: number; denominator: number; partyKind: 'organization' | 'arAccount' } | null {
   const draft = snapshot.session.draft;
@@ -344,10 +383,11 @@ export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, pat
   const draft = snapshot.session.draft;
   const requestId = decodeURIComponent(path.split('/')[4] ?? '');
   const request = draft.proposal.content.requests.find(row => row.id === requestId);
-  if (!request || !['create', 'quote'].includes(request.kind)) return [];
+  if (!request || !['create', 'quote', 'amend'].includes(request.kind)) return [];
   const owner = path.replace(/\/nativeSelectionRef$/, '');
-  const role = kind === 'rate_plan' ? 'rate_plan' : kind === 'room_type' ? 'room_type' : owner.endsWith('/bookingAgency') ? 'bookingAgency'
+  const role = kind === 'rate_plan' ? 'rate_plan' : kind === 'room_type' ? 'room_type' : request.kind === 'amend' ? amendPartyRole(snapshot, request.id, owner) : owner.endsWith('/bookingAgency') ? 'bookingAgency'
     : owner.endsWith('/arAccount') ? 'ar_account' : 'organization';
+  if (!role) return [];
   const queryPath = kind === 'rate_plan' || kind === 'room_type' ? path : `${owner}/name`;
   const normalize = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
   const currentQuery = normalize(valueAt(snapshot, queryPath));
@@ -371,6 +411,11 @@ export function nativeRecommendationLeads(snapshot: ReservationPaneSnapshot, pat
       const historicalRank = typeof row.historicalRank === 'number' && Number.isSafeInteger(row.historicalRank) && row.historicalRank >= 0
         ? row.historicalRank : undefined;
       return [{ ref: observation.ref, value: row.value, label: row.label, basis: row.basis, support: row.support,
+        ...(typeof row.denominator === 'number' && Number.isSafeInteger(row.denominator) && row.denominator >= row.support ? { denominator: row.denominator } : {}),
+        ...(row.purity === null || typeof row.purity === 'number' && row.purity >= 0 && row.purity <= 1 ? { purity: row.purity } : {}),
+        ...(typeof row.autoSelectable === 'boolean' ? { autoSelectable: row.autoSelectable } : {}),
+        ...(row.blockedReason === null || typeof row.blockedReason === 'string' ? { blockedReason: row.blockedReason } : {}),
+        ...(Array.isArray(row.confirmations) ? { confirmations: row.confirmations.filter((item): item is string => typeof item === 'string').slice(0, 3) } : {}),
         ...(stock ? { stock } : {}), ...(historicalRank !== undefined ? { historicalRank } : {}) } satisfies NativeRecommendationLead & { historicalRank?: number }];
     });
   });

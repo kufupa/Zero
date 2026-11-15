@@ -20,6 +20,7 @@ import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import * as rateCatalogue from '../src/hms/rate-catalogue.js';
 import * as hmsService from '../src/hms/hms-service.js';
+import { coversStaySearchHorizon, parseStaySearchCompleteness } from '../src/ai/stay-search-completeness.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import {
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
@@ -75,6 +76,19 @@ const STAY: PaneStayFields = {
 };
 
 const DUP_QUERY = { lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-15' };
+
+it('covers the requested arrival when departure lies beyond the guest search window', async () => {
+  const moduleUrl = new URL('../tooling/hms-cloud/pane-guest-search.mjs', import.meta.url);
+  const { guestSearchCompleteness } = await import(moduleUrl.href);
+  const arrival = '2027-09-30';
+  const departure = '2027-10-03';
+  const raw = guestSearchCompleteness({ arrival, departure }, { from: '2027-09-01', to: arrival },
+    { shown: 1, total: 1 }, { rows: [{ arrival, departure }], unreadable: 0 });
+  const completeness = parseStaySearchCompleteness(raw);
+  expect(completeness).toMatchObject({ requestedDatesCovered: true, allChunksSearched: true,
+    requestedDateHorizon: { from: arrival, to: arrival } });
+  expect(completeness && coversStaySearchHorizon(completeness)).toBe(true);
+});
 
 function passingLock(seen: string[] = []): PaneStayLock {
   return {
@@ -1371,5 +1385,32 @@ describe('paneStayLookup.searchGuest route', () => {
       outcome: 'refused_input_invalid',
       rows: [],
     });
+  });
+});
+
+it('rejects explicit incomplete guest search evidence before a duplicate verdict', async () => {
+  const range = { from: '2027-09-01', to: '2027-09-30' };
+  const completeness = { searchedDateRange: range, searchedRanges: [range],
+    requestedDateHorizon: { from: DUP_QUERY.arrival, to: DUP_QUERY.departure }, displayed: 0, total: 0,
+    gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  for (const flags of [{ truncated: true }, { gridComplete: false }, { requestedDatesCovered: false }, { allChunksSearched: false }]) {
+    paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ok', rows: [], completeness: { ...completeness, ...flags } });
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
+  }
+  paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ok', rows: [], completeness });
+  await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
+  paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'ok', rows: [], truncated: true });
+  await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
+});
+
+it('preserves stay search completeness through the pane find result', async () => {
+  const range = { from: '2027-09-01', to: '2027-09-30' };
+  const completeness = { searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+    displayed: 0, total: 0, gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  paneStayLookupLoaders.enabled = () => true;
+  paneStayLookupLoaders.spawn = async () => lookupResult({ outcome: 'not_found', reason: 'CONFIRMATION_NOT_FOUND',
+    searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range, completeness });
+  await expect(findStay({ confirmation: '123456-1' }, { lock: () => passingLock() })).resolves.toMatchObject({
+    outcome: 'not_found', completeness, searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
   });
 });

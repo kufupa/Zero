@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto';
 import { propertyConfigurationSchema, type PropertyConfiguration } from './property-configuration.js';
 import { resolvePropertyScope, type ResolvedPropertyScope } from './property-registry.js';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
-import { loadHmsNativeCatalog, nativeCatalogReadOptions } from '../../tooling/hms-cloud/hms-native-catalog.mjs';
+import { nativeCatalogReadOptions } from '../../tooling/hms-cloud/hms-native-catalog.mjs';
+import { loadNativeCatalogArtifact, nativeCodeRecords } from '../ai/native-catalog-lookup.js';
 import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
 import { readShuttleProviderConfig, type ShuttleProviderConfig } from '../ai/shuttle-draft.js';
 import {
@@ -106,18 +107,12 @@ export async function loadNativeRatePlans(
   propertyCode: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<NativeRatePlan[] | null> {
-  const loaded = await loadHmsNativeCatalog(nativeCatalogReadOptions({ propertyCode, env }));
+  const loaded = await loadNativeCatalogArtifact(nativeCatalogReadOptions({ propertyCode, env }));
   if (loaded.status !== 'available') return null;
   const records = loaded.catalog?.catalogs?.ratePlans?.records;
   if (!Array.isArray(records)) return null;
   const rates = new Map<string, NativeRatePlan>();
-  for (const raw of records) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-    const record = raw as Record<string, unknown>;
-    const code = typeof record.code === 'string' ? record.code.trim() : '';
-    const meaning = typeof record.meaning === 'string' ? record.meaning.trim() : '';
-    if (code) rates.set(code, { code, name: meaning || code });
-  }
+  for (const { code, meaning } of nativeCodeRecords(records)) rates.set(code, { code, name: meaning });
   return rates.size ? [...rates.values()] : null;
 }
 
@@ -183,7 +178,7 @@ export async function propertyConfigurationForScope(
   let formPolicy: PropertyConfiguration['formPolicy'] = { requiredFields: [], guestOptIn: 'unknown', cancellation: 'unknown',
     guaranteeChoices: [], cmsChoices: [], childCategoryPolicy: 'discover_active' };
   {
-    const result = await loadHmsNativeCatalog(nativeCatalogReadOptions({ propertyCode: scope.propertyCode, env }));
+    const result = await loadNativeCatalogArtifact(nativeCatalogReadOptions({ propertyCode: scope.propertyCode, env }));
     const data = result.status === 'available' ? result.catalog : undefined;
     if (data) {
       const coverage = (kind: string): 'complete' | 'partial' | 'unknown' => {
@@ -213,14 +208,7 @@ export async function propertyConfigurationForScope(
           guestOptIn: guestOptIn ? guestOptIn.required ? 'required' : 'optional' : 'unknown', childCategories,
           marketSegmentChoices: marketSegment?.choices ?? [],
           guaranteeChoices: (guarantee?.choices ?? []).map(({ code, meaning }) => ({ code, meaning, ready: true, reason: null })) };
-        const records = (kind: string): Array<{ code: string; meaning: string }> =>
-          (data.catalogs?.[kind]?.records ?? []).flatMap((raw) => {
-            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-            const row = raw as Record<string, unknown>;
-            const code = typeof row.code === 'string' ? row.code.trim() : '';
-            const meaning = typeof row.meaning === 'string' ? row.meaning.trim() : '';
-            return code ? [{ code, meaning: meaning || code }] : [];
-          });
+        const records = (kind: string) => nativeCodeRecords(data.catalogs?.[kind]?.records ?? []);
         ratePlans = records('ratePlans').map(({ code, meaning }) => ({ code, name: meaning, mealPlan: 'unknown' as const }));
         roomTypes = records('roomTypes').map(({ code, meaning }) => ({ code, label: meaning }));
       }

@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { resolveQuoteRevision, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
+import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
@@ -18,6 +19,7 @@ const jobMocks = vi.hoisted(() => ({
   markSucceeded: vi.fn(),
   markRetry: vi.fn(),
   markDeadLetter: vi.fn(),
+  markPolicyRefused: vi.fn(),
 }));
 
 const quoteRunMocks = vi.hoisted(() => ({
@@ -97,6 +99,7 @@ vi.mock('../src/ai/run-ledger.js', async (importOriginal) => ({
   markAiRunSucceeded: jobMocks.markSucceeded,
   markAiRunRetry: jobMocks.markRetry,
   markAiRunDeadLetter: jobMocks.markDeadLetter,
+  markAiRunPolicyRefused: jobMocks.markPolicyRefused,
 }));
 
 vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
@@ -435,6 +438,44 @@ async function syntheticSingleRevision(authorizationId: string, mealPlan: 'break
 }
 
 describe('staff_quote HMS job execution', () => {
+  it('dispatches HRDAVS and refuses cross-tenant job metadata', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS', '/tmp/hrdavs-install');
+    const selected = fixture({ userId: user.id, staffQuoteUser: user, selectedPropertyCode: 'HRDAVS' });
+    selected.run.transportId = 'transport-davinci';
+    jobMocks.runStaffQuote.mockRejectedValueOnce(new Error('synthetic failure'));
+    await executeHmsJob({ ...selected, db });
+    expect(jobMocks.runStaffQuote).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ transportId: 'transport-davinci', propertyCode: 'HRDAVS' }), db, expect.anything());
+
+    jobMocks.runStaffQuote.mockClear();
+    jobMocks.markPolicyRefused.mockClear();
+    const crossTenant = fixture({ userId: user.id, staffQuoteUser: user, selectedPropertyCode: 'HRDAVS' });
+    await expect(executeHmsJob({ ...crossTenant, db })).resolves.toBe('dead_letter');
+    expect(jobMocks.runStaffQuote).not.toHaveBeenCalled();
+    expect(jobMocks.markPolicyRefused).toHaveBeenCalledWith(expect.objectContaining({ lastError: 'property_unknown' }), db);
+
+    const conflicting = fixture({ userId: user.id, staffQuoteUser: user, selectedPropertyCode: 'HRDAVS',
+      hmsReadTarget: hmsReadTargetForProperty('HRDAV') });
+    conflicting.run.transportId = 'transport-davinci';
+    await expect(executeHmsJob({ ...conflicting, db })).resolves.toBe('dead_letter');
+    expect(jobMocks.runStaffQuote).not.toHaveBeenCalled();
+  });
+
+  it('rechecks HRDAVS again inside the staff quote run', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS', '/tmp/hrdavs-install');
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {}, false, 'transport-davinci');
+    run.metrics = { userId: user.id, staffQuoteUser: user, selectedPropertyCode: 'HRDAVS' };
+    quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRDAVS' }, outputDir: '/tmp/synthetic-staff-quote' });
+    await executeHmsJob({ run, fence, db: quoteDb });
+    expect(quoteRunMocks.readConfiguration).toHaveBeenCalledWith('HRDAVS');
+    expect(quoteRunMocks.getServices).toHaveBeenCalledWith(expect.objectContaining({
+      propertyCode: 'HRDAVS', transportId: 'transport-davinci',
+    }), expect.anything());
+  });
+
   it('records rate-pick history only for manual staff quotes', async () => {
     for (const autoStart of [false, true]) {
       jobMocks.runStaffQuote.mockClear();
@@ -806,7 +847,7 @@ describe('staff_quote HMS job execution', () => {
 
     expect(jobMocks.runStaffQuote).toHaveBeenCalledWith(
       STAFF_QUOTE_INPUT,
-      { transportId: run.transportId, user },
+      { transportId: run.transportId, propertyCode: 'HRCEN', user },
       db,
       expect.objectContaining({
         signal: undefined,
@@ -990,7 +1031,7 @@ describe('staff_quote HMS job execution', () => {
 
     expect(jobMocks.runStaffQuote).toHaveBeenCalledWith(
       input,
-      { transportId: run.transportId, user },
+      { transportId: run.transportId, propertyCode: 'HRCEN', user },
       db,
       expect.objectContaining({
         signal: undefined,

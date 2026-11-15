@@ -123,3 +123,33 @@ it('does not run Cloud for a mismatched Centurion target', async () => {
   expect(result.outcome).toBe('execution_failure');
   expect(cloud.search).not.toHaveBeenCalled();
 });
+
+it('requires complete Cloud evidence for production duplicate checks', async () => {
+  const { guestDatesDuplicateCheckViaCli } = await import('../src/ai/pane-stay-lookup.js');
+  const query = { lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-15' };
+  const range = { from: '2027-09-01', to: '2027-09-30' };
+  const completeness = { searchedDateRange: range, searchedRanges: [range],
+    requestedDateHorizon: { from: query.arrival, to: query.departure }, displayed: 0, total: 0,
+    gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  cloud.search.mockResolvedValue({ propertyCode: 'HRCEN', outcome: 'ok', rows: [] });
+  await expect(guestDatesDuplicateCheckViaCli(query, CENTURION_HMS_READ_TARGET, 'transport')).resolves.toBe('duplicate');
+  for (const flags of [{ truncated: true }, { gridComplete: false }, { requestedDatesCovered: false }, { allChunksSearched: false }]) {
+    cloud.search.mockResolvedValue({ propertyCode: 'HRCEN', outcome: 'ok', rows: [], completeness: { ...completeness, ...flags } });
+    await expect(guestDatesDuplicateCheckViaCli(query, CENTURION_HMS_READ_TARGET, 'transport')).resolves.toBe('duplicate');
+  }
+  cloud.search.mockResolvedValue({ propertyCode: 'HRCEN', outcome: 'ok', rows: [], completeness });
+  await expect(guestDatesDuplicateCheckViaCli(query, CENTURION_HMS_READ_TARGET, 'transport')).resolves.toBe('clear');
+});
+
+it('refuses to expose incomplete Cloud guest rows', async () => {
+  const range = { from: '2027-09-01', to: '2027-09-30' };
+  const complete = { searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+    displayed: 0, total: 0, gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  const deps = { target: CENTURION_HMS_READ_TARGET, lock: () => ({ withLock: async <T>(fn: () => Promise<T>) => fn() }),
+    onRun: ({ dir }: { dir: string }) => { dirs.push(dir); } };
+  const query = { lastName: 'Labtest', arrival: '2027-09-14' };
+  cloud.search.mockResolvedValue({ propertyCode: 'HRCEN', outcome: 'ok', rows: [], completeness: { ...complete, truncated: true } });
+  await expect(searchGuest(query, deps)).resolves.toMatchObject({ outcome: 'ambiguous_capped', rows: [] });
+  cloud.search.mockResolvedValue({ propertyCode: 'HRCEN', outcome: 'ok', rows: [], completeness: { ...complete, gridComplete: false } });
+  await expect(searchGuest(query, deps)).resolves.toMatchObject({ outcome: 'execution_failure', rows: [] });
+});
