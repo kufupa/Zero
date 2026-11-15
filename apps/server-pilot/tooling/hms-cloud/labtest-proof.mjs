@@ -54,8 +54,14 @@ async function assertNoTargetHold() {
       journal?.created?.freshReadbackVerified === true &&
       (await readFile(legacyPath, 'utf8')).trim() === 'guest_profile_create_possible', 'JOURNAL_HELD');
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  try { await lstat(holdPath); fail('JOURNAL_HELD'); }
-  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const paths = [holdPath];
+  if (args.stage !== 'guest_profile_create' && journal?.created && journal.effectiveRequest?.stay) {
+    paths.push(join(args.root, `${args.propertyCode}-create-${hash([journal.effectiveRequest.stay.arrival, guest])}-hold`));
+  }
+  for (const path of new Set(paths)) {
+    try { await lstat(path); fail('JOURNAL_HELD'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
 }
 
 function parseArgs(argv) {

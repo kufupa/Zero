@@ -226,7 +226,6 @@ async function main() {
   await mkdir(DIR, { mode: 0o755 }).catch(error => { if (error.code !== 'EEXIST') throw error; });
   await directory(DIR, [0, process.getuid()], 0o022);
   await lock(join(DIR, '.canary-ledger.lock'));
-  await absent(join(state, `${property}-hold`), 'CANARY_HELD');
   await lock(join(state, `${property}-operation.lock`));
   const load = path => import(pathToFileURL(join(APP, path)).href);
   const { getPropertyRegistration } = await load('tooling/hms-cloud/property-registry.mjs');
@@ -235,6 +234,16 @@ async function main() {
   const journalBytes = await bytes(join(journals, `${property}-journal.json`), { owners: [ownerUid], privateMode: true, optional: true });
   check(journalBytes, 'JOURNAL_MISSING');
   const journal = JSON.parse(journalBytes.toString('utf8'));
+  const legacyHold = await bytes(join(state, `${property}-hold`),
+    { owners: [ownerUid], privateMode: true, optional: true, maximum: 128 });
+  check(legacyHold === null || workflow !== 'guest_profile_create' && journal.created?.freshReadbackVerified === true &&
+    legacyHold.toString('utf8').trim() === 'guest_profile_create_possible', 'CANARY_HELD');
+  check(!journal.workflowHolds?.[workflow], 'CANARY_HELD');
+  const holdTargets = workflow === 'guest_profile_create' ? ['guest_profile_create'] : [
+    `stay-${hash([journal.created?.confirmation, journal.created?.nativeStayId])}`,
+    `create-${hash([journal.effectiveRequest?.stay?.arrival, { firstName: 'Proof', lastName: 'Labtest' }])}`,
+  ];
+  for (const target of holdTargets) await absent(join(state, `${property}-${target}-hold`), 'CANARY_HELD');
   const row = rowFor(journal, workflow, getPropertyRegistration(property), policy.hmsWriterDependencyDigest(workflow), digestCloudCreateRequest);
   const originalFile = await bytes(LEDGER, { owners: [0, ownerUid], optional: true });
   const original = originalFile ?? Buffer.alloc(0);
