@@ -70,6 +70,25 @@ export function guestProfileReceipt(row: Record<string, unknown> | undefined): {
       typeof row.nativeIdObservationRef !== 'string' || !row.nativeIdObservationRef.trim()) return null;
   return { nativeId: row.nativeId, observationRef: row.nativeIdObservationRef };
 }
+/** The email's guest search finished and found no Infor profile, and staff have not yet chosen to search or create. */
+export function guestProfileDefaultsToNew(snapshot: ReservationPaneSnapshot, requestId: string, allocationId: string, guestPath: string): boolean {
+  const draft = snapshot.session.draft;
+  if (draft.prefill?.status === 'queued' || draft.prefill?.status === 'running') return false;
+  if (draft.fieldOverrides[`${guestPath}/profileIntent`]) return false;
+  const guest = record(valueAt(snapshot, guestPath));
+  if (guest.profileIntent !== 'existing_or_unknown' || guest.suggestedRef || valueAt(snapshot, `${guestPath}/nativeSelectionRef`) ||
+      !Array.isArray(guest.candidateRefs) || guest.candidateRefs.length) return false;
+  const issue = snapshot.issues.find(row => row.kind === 'guest_profile_identity_unverified' &&
+    row.path === `/requests/${requestId}/allocations/${allocationId}/guest/candidateRefs`);
+  if (!issue) return false;
+  // A failed, partial or unreadable search is not a "no profile" answer.
+  const searches = draft.observations.filter(row => row.kind === 'guest_candidate' && issue.evidenceRefs.includes(row.ref));
+  return searches.length > 0 && searches.every(row => {
+    const result = record(row.result);
+    return row.status === 'complete' && row.coverage.complete === true && result.outcome === 'no_match' &&
+      (!Array.isArray(result.candidates) || !result.candidates.length);
+  });
+}
 export function staffEnteredAt(snapshot: ReservationPaneSnapshot, path: string): boolean {
   return Object.entries(snapshot.session.draft.fieldOverrides).some(([key, value]) =>
     (path === key || path.startsWith(`${key}/`)) && value.state === 'set');
@@ -670,7 +689,8 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     for (const entry of scoped.formPolicy.marketSegmentChoices ?? []) available.set(entry.code,
       { ref: `catalogue:${entry.code}`, value: entry.code, label: entry.meaning });
   if (kind !== 'rate_plan') {
-    for (const choice of native) available.set(choice.value, choice);
+    // Two guests can share a name; each Infor profile stays its own choice.
+    for (const choice of native) available.set(kind === 'guest_candidate' ? choice.ref : choice.value, choice);
     return [...available.values()];
   }
   if (configuration?.propertyCode === draft.propertyCode && configuration.transportId === draft.transportId)

@@ -73,3 +73,7 @@
   .compactCreate .dateFields { grid-template-columns:minmax(0,1fr) 54px; }
   .compactCreate .dateFields > :last-child { grid-column:1 / -1; }
 }
+.primaryButton { min-height: 36px; padding: 6px 10px; color: #fff; background: #7256d8; border: 1px solid #7256d8; border-radius: 6px; cursor: pointer; font: inherit; }
+.primaryButton:disabled { opacity: .5; cursor: default; }
+.primaryButton:focus-visible { outline: 2px solid #4088df; outline-offset: 2px; }
+.linkButton.leftLink { text-align: left; }
