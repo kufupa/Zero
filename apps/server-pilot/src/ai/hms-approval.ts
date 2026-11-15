@@ -2328,7 +2328,8 @@ export async function hmsWriteStateOf(input: {
     selectedInternetMessageId: input.selectedInternetMessageId, cancelSource: input.cancelSource,
     initialFormDigest: currentFormDigest, initialPreview: currentCancelPreview, run, grantBound, needsCheck });
   const priorWriteIsHistory = Boolean(input.cancelSource && completedOtherHmsWrite(run, needsCheck));
-  const attachMode = target.ok ? effectiveWorkflowPolicy(process.env, target.target.propertyCode, 'attach').admittedMode : 'off';
+  const attachMode = target.ok
+    ? effectiveWorkflowPolicy(process.env, propertyCodeSchema.parse(target.target.propertyCode), 'attach').admittedMode : 'off';
   return {
     status: item.status,
     ...(target.ok ? { filingConfigured: attachMode !== 'off' } : {}),

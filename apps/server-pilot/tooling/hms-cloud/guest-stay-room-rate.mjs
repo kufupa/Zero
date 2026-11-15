@@ -1,6 +1,6 @@
 // Current room/rate catalogs and explicit room selection on an unsaved verified Guest Stay.
 import { randomUUID } from 'node:crypto';
-import { cloudSessionIdentity } from './cloud-session.mjs';
+import { cloudSessionIdentity, withCloudSavedRateReadScope } from './cloud-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isReviewedGuestStayRatePlanInquiry, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
@@ -70,7 +70,7 @@ async function formFields(page, surface = page, saved = null) {
     const properties = [...document.querySelectorAll('[data-qtip="Property"]')].filter(visible);
     const confirmations = [...document.querySelectorAll('input[name="confirmationnumber"]')].filter(visible);
     const agency = [...document.querySelectorAll('input[name="ta1"]')].filter(visible);
-    if (properties.length !== 1 || properties[0].textContent.trim().toUpperCase() !== propertyCode) {
+    if (!saved && (properties.length !== 1 || properties[0].textContent.trim().toUpperCase() !== propertyCode)) {
       throw new Error('PROPERTY_MISMATCH');
     }
     if (confirmations.length !== 1 || confirmations[0].value.trim() !== (saved?.confirmation ?? '') || agency.length !== 1) {
@@ -584,7 +584,7 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
       '/web/base/OSRASD', '/web/base/OSRASD.RatePlanChange', '/api/internalBooking/rateshop/inquiryForGrid',
       `/api/internalBooking/${propertyCode}/rateshop/rateSelection`];
     fence = await installPageRequestFence(page, paths);
-    const captured = await withFence(page, (request, origin) => {
+    const read = () => withFence(page, (request, origin) => {
       if (request.frame() !== frame || !['xhr', 'fetch'].includes(request.resourceType())) return false;
       const url = new URL(request.url()), raw = request.postData() || '';
       if (url.username || url.password || url.hash || Buffer.byteLength(raw) > 8192) return false;
@@ -617,6 +617,8 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
       if (formSignature(await formFields(page, frame, saved)) !== before) throw new Error('AMEND_DRAFT_CHANGED');
       return result;
     }, fence.open(), () => fence.quarantine());
+    const captured = kind === 'ratePlan'
+      ? await withCloudSavedRateReadScope(page, frame, saved.reservationstayid, read) : await read();
     // Closing a saved Rate Shop can POST rateSelection. Leave it fenced; end the owning session instead.
     if (kind === 'roomType') searches.delete(page);
     return { candidates: captured.result.candidates.map(({ code, nativeId, name }) => ({ code, nativeId, display: name })),

@@ -447,8 +447,7 @@ async function catalogue(page, state, itemType = 'ITEM') {
   const total = footer ? Number(footer[2]) : Number(grid.METADATA?.RECORDS);
   const more = grid.MORERECORDS ?? grid.METADATA?.MORERECORDS;
   const countsAgree = (!footer || Number(footer[1]) === candidates.length) &&
-    (!Number.isFinite(Number(metadata?.RECORDS)) || Number(metadata.RECORDS) === total) &&
-    (!Number.isFinite(loaded.reportedTotal) || loaded.reportedTotal === total);
+    (!Number.isFinite(Number(metadata?.RECORDS)) || Number(metadata.RECORDS) === total);
   const complete = countsAgree && grid.METADATA?.MORERECORDPRESENT !== '+' &&
     !['true', true, '1', 1].includes(more) && total === candidates.length &&
     (grid.METADATA?.MORERECORDPRESENT === '-' || Boolean(footer) || ['false', false, '0', 0].includes(more));
