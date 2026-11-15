@@ -514,8 +514,12 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const pendingDispatch = snapshot?.preparationViews.find(view => view.dispatch)?.dispatch ??
     snapshot?.session.workflowDispatches?.find(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review');
-  const dispatchNotices = snapshot?.session.workflowDispatches?.filter(dispatch => dispatch.requestId === request?.id &&
-    (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass)) ?? [];
+  // Grants arrive newest first. A later success retires failed warnings, never uncertain outcomes.
+  const dispatchNotices = snapshot?.session.workflowDispatches?.filter((dispatch, index, dispatches) =>
+    dispatch.requestId === request?.id && (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass) &&
+    !(dispatch.status === 'failed' && dispatches.slice(0, index).some(newer => newer.status === 'succeeded' &&
+      newer.endpoint === dispatch.endpoint && newer.requestId === dispatch.requestId &&
+      newer.allocationId === dispatch.allocationId && newer.serviceId === dispatch.serviceId))) ?? [];
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged || capabilityUnavailable || Boolean(pendingDispatch);
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     Boolean(pendingDispatch) || hasPendingAmendPrice || (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
