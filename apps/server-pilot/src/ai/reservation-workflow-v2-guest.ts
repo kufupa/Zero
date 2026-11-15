@@ -125,8 +125,9 @@ async function validGuestPreview(preview: NonNullable<ReturnType<typeof prepared
 function writeAllowed(business: Record<string, unknown>): boolean {
   const guest = record(business.guest);
   const propertyCode = business.propertyCode;
-  if (!guest || typeof propertyCode !== 'string' || !getPropertyRegistration(propertyCode)?.active) return false;
-  const mode = effectiveWorkflowPolicy(process.env, propertyCode, 'guest_profile_create').admittedMode;
+  const property = typeof propertyCode === 'string' ? getPropertyRegistration(propertyCode) : null;
+  if (!guest || !property?.active) return false;
+  const mode = effectiveWorkflowPolicy(process.env, property.propertyCode, 'guest_profile_create').admittedMode;
   const lab = guest.firstName === 'Proof' && guest.lastName === 'Labtest';
   return lab ? mode === 'lab' || mode === 'on' : mode === 'on';
 }

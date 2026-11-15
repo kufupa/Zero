@@ -880,6 +880,8 @@ describe('prepared quote reuse price fields', () => {
   const base = build().inputs[0]!;
 
   it('ignores staff headers and pane selection counters', () => {
+    expect(staffQuoteInputsPriceEquivalent(base, { ...base, propertySwitch: 'HRDAVS' })).toBe(false);
+    expect(staffQuoteInputsPriceEquivalent({ ...base, propertySwitch: 'HRDAV' }, { ...base, propertySwitch: 'HRDAVS' })).toBe(false);
     expect(
       staffQuoteInputsPriceEquivalent(base, {
         ...base,

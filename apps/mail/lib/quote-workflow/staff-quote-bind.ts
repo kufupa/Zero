@@ -1521,7 +1521,8 @@ export async function bindAutoStartStaffQuote(
       settled.prefetch &&
       settled.request?.kind === 'staff_quote' &&
       settled.request.input.messageId === built.input.messageId &&
-      settled.request.input.sourceHash === built.input.sourceHash;
+      settled.request.input.sourceHash === built.input.sourceHash &&
+      settled.request.input.propertySwitch === built.input.propertySwitch;
     const rebased = (preparedForSource || staffQuoteRequestMatches(settled.request, built.input)) && settled.result
       ? {
           ...settled,

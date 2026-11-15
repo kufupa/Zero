@@ -339,6 +339,7 @@ export function buildPreparedStaffQuotePlan(input: {
 
 function priceShape(input: StaffQuoteInput): unknown {
   return {
+    propertySwitch: input.propertySwitch ?? null,
     groups: input.groups.map((group) => ({
       id: group.id,
       arrivalDate: group.arrivalDate,

@@ -541,6 +541,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       try { const url = new URL(request.url()); pathname = url.pathname; action = url.searchParams.get('pageaction') || ''; }
       catch { /* Block unparseable targets. */ }
       if (dispatched && !fence.isQuarantined() && isNativeTaxValuesRead(request, frame, taxReadValues) && scope.allow(request)) {
+        opened.forwarded.add(request);
         return route.fallback();
       }
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && pathname &&

@@ -554,28 +554,30 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
-  it('does not rebase a prepared auto-start result from a different source message version', async () => {
-    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
-    const staffQuoteJob = vi.fn(async () => ({
-      ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, undefined, true),
-      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { sourceHash: 'c'.repeat(64) }),
-    }));
+  it('does not rebase a prepared auto-start result from a different source version or property', async () => {
+    for (const changed of [{ sourceHash: 'c'.repeat(64) }, { propertySwitch: 'HRDAVS' as const }]) {
+      const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+      const staffQuoteJob = vi.fn(async () => ({
+        ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, undefined, true),
+        request: storedStaffQuoteRequest(queue.mock.calls[0]![0], changed),
+      }));
 
-    const result = await bindAutoStartStaffQuote({
-      propertyCode: HRCEN_PROPERTY_CODE,
-      queue,
-      staffQuoteJob,
-      source,
-      selectionEpoch: 3,
-      inputRevision: 4,
-      groups,
-      header: emptyStaffQuoteHeader(),
-    });
+      const result = await bindAutoStartStaffQuote({
+        propertyCode: HRCEN_PROPERTY_CODE,
+        queue,
+        staffQuoteJob,
+        source,
+        selectionEpoch: 3,
+        inputRevision: 4,
+        groups,
+        header: emptyStaffQuoteHeader(),
+      });
 
-    expect(result).toMatchObject({
-      status: 'unavailable',
-      reason: 'The quote is out of date because the stay details changed. Run it again.',
-    });
+      expect(result).toMatchObject({
+        status: 'unavailable',
+        reason: 'The quote is out of date because the stay details changed. Run it again.',
+      });
+    }
   });
 
   it('does not rebase a reused auto-start result for a different stored request', async () => {
