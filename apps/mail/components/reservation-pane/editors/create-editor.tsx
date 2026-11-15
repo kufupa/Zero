@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { effectiveAt, guestProfileReceipt, record, requestPath, staffEnteredAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileDefaultsToNew, guestProfileReceipt, nativeChoices, record, requestPath, staffEnteredAt, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import { ReservationNote } from '../shared/reservation-note';
@@ -340,10 +340,10 @@ function GuestDetails({ editor, allocationPath, allocationId, newProfile, disabl
 
 function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor; allocationPath: string; allocationId: string }) {
   const guestPath = `${allocationPath}/guest`;
+  const intentPath = `${guestPath}/profileIntent`, selectionPath = `${guestPath}/nativeSelectionRef`;
   const profileStatus = editor.configuration?.propertyCode === editor.source.propertyId &&
     editor.configuration.transportId === editor.source.mailboxId ? editor.configuration.capabilities?.guest_profile_create?.status : undefined;
   const canCreateProfile = profileStatus === 'lab' || profileStatus === 'staff-enabled';
-  const newProfile = valueAt(editor.snapshot, `${guestPath}/profileIntent`) === 'requested_new';
   const guest = record(effectiveAt(editor.snapshot, guestPath));
   const operations = editor.snapshot.operationResults.filter(row => row.workflow === 'guest_profile' &&
     row.requestId === editor.request.id && row.allocationId === allocationId);
@@ -360,21 +360,40 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
   const succeeded = [...operations].reverse().find(row => row.status === 'succeeded');
   const receipt = guestProfileReceipt(succeeded);
   const missingReceipt = Boolean(succeeded && !receipt);
-  const selectedCreated = receipt && !unknown && receipt.observationRef === valueAt(editor.snapshot, `${guestPath}/nativeSelectionRef`);
+  const selectedCreated = receipt && !unknown && receipt.observationRef === valueAt(editor.snapshot, selectionPath);
   const locked = editor.view.busy || Boolean(unknown);
-  const fields = ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode'];
-  const pendingReview = fields.some(field => {
-    const path = `${guestPath}/${field}`, value = valueAt(editor.snapshot, path);
-    return typeof value === 'string' && Boolean(value.trim()) && !staffEnteredAt(editor.snapshot, path) &&
-      editor.snapshot.session.draft.fieldReviewRequirements[path]?.required !== false &&
-      editor.snapshot.session.draft.staffReviews[path]?.status !== 'accepted';
-  });
-  const required = ['firstName', 'lastName', 'mobile'].every(field => text(guest[field]).trim());
-  return <div className={styles.stack} data-field-path={guestPath}>
+  // No profile found for this guest: open ready to create one. Staff can still search instead.
+  const noProfileFound = canCreateProfile && !succeeded && !unknown &&
+    guestProfileDefaultsToNew(editor.snapshot, editor.request.id, allocationId, guestPath);
+  const newProfile = valueAt(editor.snapshot, intentPath) === 'requested_new' || noProfileFound;
+  const missing = ([['firstName', 'first name'], ['lastName', 'last name'], ['mobile', 'mobile number']] as const)
+    .filter(([field]) => !text(guest[field]).trim());
+  const missingText = missing.map(([, label]) => label).join(', ').replace(/, ([^,]+)$/u, ' and $1');
+  const matches = duplicate && !newProfile && !valueAt(editor.snapshot, selectionPath)
+    ? nativeChoices(editor.snapshot, selectionPath, 'guest_candidate', editor.configuration).slice(0, 5) : null;
+  const [matchesCheckedFor, setMatchesCheckedFor] = useState<string | null>(null);
+  const matchesChecked = Boolean(duplicate) && matchesCheckedFor === text(latest?.id);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const focusMissing = () => {
+    const field = missing[0] && Array.from(rootRef.current?.querySelectorAll<HTMLElement>('[data-field-path]') ?? [])
+      .find(node => node.dataset.fieldPath === `${guestPath}/${missing[0]![0]}`);
+    Array.from(field?.querySelectorAll('input') ?? []).find(input => !input.disabled)?.focus();
+  };
+  const focusLatest = useRef(focusMissing);
+  focusLatest.current = focusMissing;
+  return <div ref={rootRef} className={styles.stack} data-field-path={guestPath}>
     {newProfile ? <div className={styles.groupHeading}><strong>New guest profile</strong>
-      <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'existing_or_unknown')}>Search instead</button></div>
-      : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={`${guestPath}/nativeSelectionRef`} editor={editor} kind="guest_candidate" disabled={locked} compact />
-        {!succeeded && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(`${guestPath}/profileIntent`, 'requested_new')}>+ New</button>}</div>}
+      <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(intentPath, 'existing_or_unknown')}>Search instead</button></div>
+      : <div className={styles.guestProfileRow}><NativePicker label="Guest Profile" path={selectionPath} editor={editor} kind="guest_candidate" disabled={locked} compact />
+        {!succeeded && <button type="button" className={styles.linkButton} disabled={locked} onClick={() => void editor.commands.edit(intentPath, 'requested_new')
+          .then(() => requestAnimationFrame(() => focusLatest.current())).catch(() => {})}>+ New</button>}</div>}
+    {matches && (matches.length > 0 || !editor.view.busy) && <div className={styles.stack}>
+      <p className={styles.notice}>{matches.length ? 'Infor has these profiles with this name. Choose the guest, or choose + New to create a separate profile.'
+        : 'Infor has a profile with this name. Search Guest Profile by surname to find the guest, or choose + New to create a separate profile.'}</p>
+      {matches.map(match => <button type="button" key={match.ref} className={styles.secondaryButton} disabled={locked}
+        onClick={() => void editor.commands.selectNative(selectionPath, match.ref).catch(() => {})}>Use {[match.label, match.detail].filter(Boolean).join(' · ')}</button>)}
+    </div>}
+    {noProfileFound && <p className={styles.note}>Infor has no profile for this guest. Check the details from the email, then create the profile.</p>}
     {newProfile && (unknown || !receipt) && <p className={styles.note}>Profile ID · {unknown ? 'Unknown' : missingReceipt ? 'Needs confirmation' : 'Not created'}</p>}
     {receipt && <p className={styles.note}>{selectedCreated ? 'Profile ID' : 'Previously created profile'} · {receipt.nativeId} ✓ Created</p>}
     {missingReceipt && !unknown && <p className={styles.notice}>The profile result needs confirmation. Contact Nava support before creating another profile.</p>}
@@ -383,14 +402,18 @@ function GuestProfile({ editor, allocationPath, allocationId }: { editor: Editor
       <button type="button" disabled={editor.view.busy} onClick={() => void (localPending
         ? editor.commands.checkGuestProfile(allocationId) : editor.commands.reconcile(text(latest?.id))).catch(() => {})}>Check outcome</button></div>
       : newProfile && !succeeded && <>
-        {duplicate && <p className={styles.notice}>Infor found a profile with this name. Search for the existing guest, or create a different profile.</p>}
-        {pendingReview && <p className={styles.note}>Confirm the marked guest details before creating the profile.</p>}
-        <button type="button" className={styles.secondaryButton} disabled={locked || editor.view.preview || !canCreateProfile || !required || pendingReview}
-          onClick={() => void editor.commands.createGuestProfile(allocationId, Boolean(duplicate)).catch(() => {})}>
-          {duplicate ? 'Create different profile' : 'Create profile & check price'}
-        </button>
+        {missing.length > 0 && canCreateProfile && <button type="button" className={`${styles.linkButton} ${styles.leftLink}`} disabled={locked} onClick={focusMissing}>
+          Add the guest’s {missingText} to create the profile.</button>}
+        {duplicate && <p className={styles.notice}>Infor already has a profile with this name. {matchesChecked
+          ? 'Create a separate profile only if this is a different guest.' : 'Check the matching profiles before creating another one.'}</p>}
+        {duplicate && !matchesChecked ? <button type="button" data-field-path={selectionPath} className={styles.primaryButton} disabled={locked}
+          onClick={() => { setMatchesCheckedFor(text(latest?.id)); void editor.commands.edit(intentPath, 'existing_or_unknown').then(() => editor.commands.lookup()).catch(() => {}); }}>Show matching profiles</button>
+          : <button type="button" data-field-path={selectionPath} className={styles.primaryButton} disabled={locked || editor.view.preview || !canCreateProfile || missing.length > 0}
+            onClick={() => void editor.commands.createGuestProfile(allocationId, Boolean(duplicate)).catch(() => {})}>
+            {duplicate ? 'Create a separate profile' : 'Create profile & check price'}
+          </button>}
         {!canCreateProfile && <p className={styles.note}>Guest profile creation is not available for this hotel yet.</p>}
-        <p className={styles.note}>The profile remains in Infor even if the reservation is not saved. The room price is checked when the booking details are ready.</p>
+        <p className={styles.note}>Creating the profile confirms the guest details shown. The profile remains in Infor even if the reservation is not saved. The room price is checked when the booking details are ready.</p>
       </>}
   </div>;
 }
