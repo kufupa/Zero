@@ -19,6 +19,7 @@ import { parseArgs } from 'node:util';
 process.umask(0o077);
 const APP = fileURLToPath(new URL('../', import.meta.url));
 const CANCELLATION_NOTE = 'Labtest proof cleanup';
+const ZERO_PENALTY_NOTICE = 'Cancellation Penalty of 0.00 may be added to account.';
 const check = (condition, issue) => { if (!condition) throw new Error(issue); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const hex = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -144,11 +145,14 @@ function rowFor(journal, workflow, registration, digest, digestCloudCreateReques
   let observation = saved.readback;
   let readback = { fields: createFields, confirmation: saved.confirmation, nativeStayId: saved.readback.nativeStayId };
   if (workflow === 'cancel') {
+    const zeroNotice = cancelled?.nativeResult?.outcome === 'zero_notice_awaiting_readback' &&
+      cancelled.nativeResult.zeroPenaltyNotice === ZERO_PENALTY_NOTICE;
     check(cancelled?.freshReadbackVerified === true && cancelled.confirmation === created.confirmation && cancelled.nativeStayId === created.nativeStayId &&
       cancelled.guestId === created.guestId && /^cancel(?:l)?ed$/i.test(cancelled.status ?? '') && cancelled.reasonCode === 'TEST' &&
       cancelled.cancellationNote === CANCELLATION_NOTE && cancelled.readback?.cancelModelVerified === true &&
-      cancelled.nativeResult?.outcome === 'awaiting_readback' && cancelled.nativeResult.requestDispatched === true && cancelled.nativeResult.httpStatus === 200 &&
+      (cancelled.nativeResult?.outcome === 'awaiting_readback' || zeroNotice) && cancelled.nativeResult.requestDispatched === true && cancelled.nativeResult.httpStatus === 200 &&
       cancelled.nativeResult.dispatchCallbacksDrained === true && cancelled.nativeResult.browserSendRequests === 0 &&
+      Array.isArray(cancelled.nativeResult.blockedRequests) && cancelled.nativeResult.blockedRequests.length === 0 &&
       cancelled.nativeResult.chargeApproved === false && cancelled.nativeResult.chargeDispatched === false, 'CANCEL_READBACK_UNVERIFIED');
     observation = cancelled.readback;
     readback = { fields: business(cancelled.readback.fields, journal, true), native: nativeCancel(cancelled.readback.native, journal),

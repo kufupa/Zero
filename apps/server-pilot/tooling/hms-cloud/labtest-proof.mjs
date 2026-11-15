@@ -32,6 +32,7 @@ for (const key of Object.keys(process.env)) {
 
 const APP_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const CANCELLATION_NOTE = 'Labtest proof cleanup';
+const ZERO_PENALTY_NOTICE = 'Cancellation Penalty of 0.00 may be added to account.';
 const fail = code => { throw new Error(code); };
 const assert = (condition, code) => { if (!condition) fail(code); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -173,7 +174,7 @@ async function bindCredentialMetadata(property, credentialVersionHmacSha256) {
 function safeNativeResult(result) {
   const safe = Object.fromEntries(['outcome', 'issue', 'confirmation', 'status', 'httpStatus', 'requestSeen',
     'requestDispatched', 'dispatchCallbacksDrained', 'blockedRequests', 'blockedRequestsAfterDispatch',
-    'browserSendRequests', 'chargeApproved', 'chargeDispatched'].filter(key =>
+    'browserSendRequests', 'chargeApproved', 'chargeDispatched', 'zeroPenaltyNotice'].filter(key =>
       Object.hasOwn(result ?? {}, key) && ['string', 'number', 'boolean'].includes(typeof result[key])).map(key => [key, result[key]]));
   if (typeof result?.draftCheck === 'string' && /^DRAFT_[A-Z0-9_]{1,80}$/.test(result.draftCheck)) safe.draftCheck = result.draftCheck;
   for (const key of ['blockedRequests', 'blockedRequestsAfterDispatch']) {
@@ -410,7 +411,9 @@ async function main() {
           reason = matches[0];
           await checkHold(options.signal);
           cancelled = await confirmLabtestCancellation(page, expected, { reasonCode: reason.value, reasonLabel: reason.display,
-            cancellationNote: CANCELLATION_NOTE });
+            cancellationNote: CANCELLATION_NOTE,
+            continuationAllowed: () => !options.signal.aborted,
+            dispatchWithAuthority: async send => { await checkHold(options.signal); return send(); } });
           await persist({ ...journal, cancelResult: safeNativeResult(cancelled), updatedAt: new Date().toISOString() });
         }, { ...base, prepareContext: context => installSavedStayReadGuard(context, { propertyCode: args.propertyCode,
           confirmation: own.confirmation, getOwnedPage: () => ownedPage, forwardToCloud: true }) });
@@ -463,7 +466,8 @@ async function main() {
             status: native.status, reasonCode: verified.reasonCode, cancellationNote: verified.cancellationNote, freshReadbackVerified: true,
             readback: { fields: finalFields, native: nativeObservation, cancelModelVerified: true, observedAt: new Date().toISOString() } };
         }, { ...base, prepareContext: context => installSavedStayReadGuard(context, { propertyCode: args.propertyCode, confirmation: own.confirmation }) });
-        assert(cancelled.outcome === 'awaiting_readback' && cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
+        const zeroNotice = cancelled.outcome === 'zero_notice_awaiting_readback' && cancelled.zeroPenaltyNotice === ZERO_PENALTY_NOTICE;
+        assert((cancelled.outcome === 'awaiting_readback' || zeroNotice) && cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
           cancelled.browserSendRequests === 0 && cancelled.chargeApproved === false && cancelled.chargeDispatched === false &&
           Array.isArray(cancelled.blockedRequests) && !cancelled.blockedRequests.length, 'CANCEL_UNCERTAIN_HELD');
         return { status: 'cancelled', cancelled: { ...readback, nativeResult: safeNativeResult(cancelled) } };
