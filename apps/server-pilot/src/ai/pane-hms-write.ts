@@ -73,7 +73,6 @@ import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   heartbeatAiRun,
   HMS_WRITE_RUN_KIND,
-  labtestAttachEnabled,
   markAiRunRunning,
   markAiRunSucceeded,
   mergeTerminalRunMetrics,
@@ -1488,7 +1487,7 @@ async function runClaimed(
 
   const isCloudAttach = form.action === 'attach_document';
   const parsedFiling = isCloudAttach ? boundFilingFormSchema.safeParse(form) : null;
-  if (isCloudAttach && ((verified.grant.propertyCode === 'HRCEN' && !labtestAttachEnabled(env)) || !parsedFiling?.success)) {
+  if (isCloudAttach && (attachMode === 'off' || !parsedFiling?.success)) {
     return endRun(db, fence, 'POLICY_BLOCK', 'refused_cloud_upload_unavailable');
   }
   if (isCloudCancel && (form.action !== 'cancel' || !form.cloudCancel ||

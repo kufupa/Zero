@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(async (_page: unknown, _config: unknown) => ({ outcome: 'not_dispatched' })),
-  current: vi.fn(), snapshot: vi.fn(), clean: vi.fn(), parties: vi.fn(), quote: vi.fn(),
+  current: vi.fn(), snapshot: vi.fn(), clean: vi.fn(), parties: vi.fn(), quote: vi.fn(), catalogue: vi.fn(),
 }));
+vi.mock('../tooling/hms-cloud/guest-stay-room-rate.mjs', () => ({ inspectSavedRoomRateCatalogue: mocks.catalogue }));
 vi.mock('../tooling/hms-cloud/quote-read.mjs', () => ({ readQuote: mocks.quote }));
 vi.mock('../tooling/hms-cloud/labtest-amend-save.mjs', () => ({ runLabtestAmendSave: mocks.run }));
 vi.mock('../tooling/hms-cloud/labtest-record.mjs', () => ({
@@ -204,7 +205,7 @@ describe('saved-stay staged amendment diagnostics', () => {
       .toMatchObject({ outcome: 'refused', issue: 'AMEND_PREIMAGE_UNVERIFIED' });
   });
 
-  it('reports the native saved LOV picker hold without opening it or changing the form', async () => {
+  it('inspects a saved LOV through the native catalogue without authorizing selection', async () => {
     const form = { el: { dom: { contains: () => true } } };
     const element = { id: 'room-inputEl', name: 'roomtype', value: 'DLX', disabled: false, readOnly: false };
     const guest = { id: 'guest-inputEl', offsetWidth: 1, offsetHeight: 1, closest: () => null };
@@ -220,8 +221,12 @@ describe('saved-stay staged amendment diagnostics', () => {
     const page = { locator: () => ({ count: async () => 1 }), context: () => ({ _options: { serviceWorkers: 'block' }, serviceWorkers: () => [] }) };
     mocks.current.mockResolvedValue(state); mocks.snapshot.mockResolvedValue(structuredClone(before));
     mocks.clean.mockReturnValue(true); mocks.parties.mockReturnValue(true);
+    mocks.catalogue.mockResolvedValue({ candidates: [{ code: 'DBL', nativeId: '12', display: 'Double' }],
+      coverage: { loaded: 1, reportedTotal: 1, complete: true }, cleanupRequired: false });
     expect(await inspectLabtestSavedRoomRateOptions(page, expected, { field: 'roomType' }))
-      .toMatchObject({ outcome: 'unavailable', issue: 'SAVED_NATIVE_PICKER_UNVERIFIED' });
+      .toMatchObject({ outcome: 'loaded_options', candidates: [{ code: 'DBL', nativeId: '12' }],
+        coverage: { complete: true } });
+    expect(mocks.catalogue).toHaveBeenCalledWith(page, frame, before, 'roomType');
     await stageLabtestStayAmendment(page, expected, { field: 'roomType', value: 'DBL', nativeId: '12' });
     const config = mocks.run.mock.calls.at(-1)![1] as any;
     await expect(config.prepare(async <T,>(promise: Promise<T>) => promise)).rejects.toThrow('SAVED_NATIVE_PICKER_UNVERIFIED');

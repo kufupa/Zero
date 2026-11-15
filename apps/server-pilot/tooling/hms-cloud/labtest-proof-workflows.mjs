@@ -223,7 +223,8 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     proof.result = await withStay360AddOnSession(async ({ runTool }) => {
       const read = await runTool({ tool: 'read', confirmation: own.confirmation, guestName: 'Proof Labtest', arrivalDate: selected.arrival });
       check(read.outcome === 'ok' && read.propertyCode === propertyCode && read.nativeStayId === own.nativeStayId &&
-        read.target?.confirmation === own.confirmation && read.target?.guestName === 'Proof Labtest' &&
+        read.target?.propertyCode === propertyCode && read.target?.confirmation === own.confirmation &&
+        read.target?.guestName === `${selected.lastName}, ${selected.firstName}` &&
         read.coverage?.complete === true, 'ADDONS_TARGET_UNVERIFIED');
       target = read.target;
       proof.prepared = await runTool({ tool: 'prepare', confirmation: own.confirmation, items });

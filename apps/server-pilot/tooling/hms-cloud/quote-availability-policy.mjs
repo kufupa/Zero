@@ -96,7 +96,12 @@ const flags = [
   'showCollapsedByBuilding', 'showArrivalDepartureCount', 'showSubGroupView',
 ];
 const nativeId = (value) => typeof value === 'string' && /^[A-Za-z0-9_.:-]{0,128}$/.test(value);
-const codes = (value) => typeof value === 'string' && /^(?:[A-Z0-9_-]+(?:,[A-Z0-9_-]+)*)?$/.test(value) && value.length <= 512;
+const codes = (value) => {
+  if (typeof value !== 'string' || value.length > 4096) return false;
+  if (value === '') return true;
+  const list = value.split(',');
+  return list.length <= 512 && list.every(code => /^[A-Z0-9_-]{1,128}$/.test(code));
+};
 
 const validDate = (value) => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
   new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
@@ -209,8 +214,8 @@ export function isReviewedRoomInformationRead(request, { origin, propertyCode, d
   } catch { return false; }
 }
 
-/** Admit the selected property's Guest Stay rate catalogue without a reservation. */
-export function isReviewedGuestStayRatePlanInquiry(request, { origin, propertyCode, rejectDuplicateJsonBodyKeys }) {
+/** Admit the selected property's Guest Stay rate catalogue, optionally bound to a saved stay. */
+export function isReviewedGuestStayRatePlanInquiry(request, { origin, propertyCode, rejectDuplicateJsonBodyKeys, reservationStayId = '' }) {
   try {
     if (!getPropertyRegistration(propertyCode)?.active || request.method() !== 'POST' ||
         !['xhr', 'fetch'].includes(request.resourceType()) ||
@@ -223,7 +228,7 @@ export function isReviewedGuestStayRatePlanInquiry(request, { origin, propertyCo
     if (!body || typeof body !== 'object' || Array.isArray(body) || hasAvailabilityWriteIntent(body)) return false;
     rejectDuplicateJsonBodyKeys(raw);
     return typeof body.propertyCodes === 'string' && body.propertyCodes.trim().toUpperCase() === propertyCode &&
-      !String(body.reservationStayID ?? '').trim() && typeof body.launchedFrom === 'string' &&
+      String(body.reservationStayID ?? '').trim() === reservationStayId && typeof body.launchedFrom === 'string' &&
       body.launchedFrom.trim().toLowerCase() === 'gueststay';
   } catch { return false; }
 }

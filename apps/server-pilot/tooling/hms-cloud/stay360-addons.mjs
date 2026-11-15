@@ -137,6 +137,9 @@ function matches(request, state, pending) {
     if (!['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) ||
         body.get('GRID_NAME') !== 'LVENHANCEDEXPERIENCE' || body.get('LOV_TAGNAME') !== 'itemorbundlecode') return false;
     const a = aliases(body);
+    if (pending.kind === 'more' && (url.pathname !== '/web/base/GRIDDATA' ||
+        !exact(body, 'GRID_ID', String(pending.metadata.GRIDID)) ||
+        !exact(body, 'DATASPY_ID', String(pending.metadata.DATASPYID)))) return false;
     return a?.get('param.propertycode') === state.propertyCode && a.get('param.itemtype') === (pending.itemType || 'ITEM') &&
       a.get('param.reservationstayid') === state.native.stayId && a.get('param.account') === state.native.account &&
       !body.has('pageaction') && !body.has('action');
@@ -404,21 +407,54 @@ async function catalogue(page, state, itemType = 'ITEM') {
   if (await trigger.count() !== 1) fail('ADDONS_ITEM_LOOKUP_UNAVAILABLE');
   const data = await step(page, state, { kind: 'lookup', itemType }, () => trigger.click());
   await picker(page).waitFor({ state: 'visible', timeout: 20000 });
-  const loaded = await loadedRows(page, 'lovgrid', picker(page)), grid = nativeGrid(data);
-  if (!grid || !Array.isArray(grid.DATA)) fail('ADDONS_CATALOGUE_RESPONSE_UNVERIFIED');
+  let loaded = await loadedRows(page, 'lovgrid', picker(page)), grid = nativeGrid(data);
+  if (grid?.METADATA?.GRIDNAME !== 'LVENHANCEDEXPERIENCE' || !Array.isArray(grid.DATA)) fail('ADDONS_CATALOGUE_RESPONSE_UNVERIFIED');
+  const metadata = grid.METADATA, rows = [...grid.DATA];
+  const signature = rows => JSON.stringify(rows.map(row => [clean(row.code), clean(row.itemid), clean(row.description)]).sort());
+  const correlated = () => {
+    if (signature(loaded.rows) !== signature(rows) ||
+        new Set(rows.map(row => clean(row.code))).size !== rows.length ||
+        new Set(rows.map(row => clean(row.itemid))).size !== rows.length) fail('ADDONS_CATALOGUE_GRID_MISMATCH');
+  };
+  correlated();
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const footer = /Records:\s*(\d+)\s+of\s+(\d+)/i.exec(loaded.text);
+    const total = Number(metadata?.RECORDS);
+    const more = grid.METADATA?.MORERECORDPRESENT === '+' || (footer && Number(footer[1]) < Number(footer[2])) ||
+      (Number.isFinite(total) && rows.length < total);
+    if (!more) break;
+    if (metadata?.GRIDNAME !== 'LVENHANCEDEXPERIENCE' ||
+        !/^\d+$/.test(String(metadata.GRIDID ?? '')) || !/^\d+$/.test(String(metadata.DATASPYID ?? ''))) {
+      fail('ADDONS_CATALOGUE_RESPONSE_UNVERIFIED');
+    }
+    const next = nativeGrid(await step(page, state, { kind: 'more', itemType, metadata },
+      () => picker(page).locator('.x-grid-view:visible').last().evaluate(element => { element.scrollTop = element.scrollHeight; })));
+    if (!Array.isArray(next?.DATA) || !next.DATA.length ||
+        ['GRIDID', 'GRIDNAME', 'DATASPYID', 'RECORDS'].some(key => String(next.METADATA?.[key]) !== String(metadata[key]))) {
+      fail('ADDONS_CATALOGUE_PAGE_UNVERIFIED');
+    }
+    rows.push(...next.DATA);
+    grid = next;
+    loaded = await loadedRows(page, 'lovgrid', picker(page));
+    correlated();
+  }
   const candidates = loaded.rows.map(row => ({ code: clean(row.code), name: clean(row.description), itemId: clean(row.itemid), native: row }));
   if (candidates.some(item => !item.code || !/^\d+$/.test(item.itemId) ||
-      grid.DATA.filter(row => clean(row.code) === item.code && clean(row.itemid) === item.itemId).length !== 1)) {
+      rows.filter(row => clean(row.code) === item.code && clean(row.itemid) === item.itemId).length !== 1)) {
     fail('ADDONS_CATALOGUE_GRID_MISMATCH');
   }
   const footer = /Records:\s*(\d+)\s+of\s+(\d+)/i.exec(loaded.text);
   const total = footer ? Number(footer[2]) : Number(grid.METADATA?.RECORDS);
   const more = grid.MORERECORDS ?? grid.METADATA?.MORERECORDS;
+  const countsAgree = (!footer || Number(footer[1]) === candidates.length) &&
+    (!Number.isFinite(Number(metadata?.RECORDS)) || Number(metadata.RECORDS) === total) &&
+    (!Number.isFinite(loaded.reportedTotal) || loaded.reportedTotal === total);
+  const complete = countsAgree && grid.METADATA?.MORERECORDPRESENT !== '+' &&
+    !['true', true, '1', 1].includes(more) && total === candidates.length &&
+    (grid.METADATA?.MORERECORDPRESENT === '-' || Boolean(footer) || ['false', false, '0', 0].includes(more));
   return { outcome: 'ok', propertyCode: state.propertyCode, candidates, columns: loaded.columns,
     coverage: { loaded: candidates.length, reportedTotal: Number.isFinite(total) ? total : loaded.reportedTotal,
-      complete: (grid.METADATA?.MORERECORDPRESENT === '-' && total === candidates.length) ||
-        (footer && Number(footer[1]) === candidates.length && total === candidates.length) ? true :
-        (['false', false, '0', 0].includes(more) && total === candidates.length ? true : null) } };
+      complete: complete ? true : null } };
 }
 
 async function closePicker(page) {
@@ -465,6 +501,15 @@ async function selectItem(page, state, code) {
     fail(matches.length ? 'ADDONS_ITEM_AMBIGUOUS' : 'ADDONS_ITEM_NOT_LOADED', 'needs_input', { options: found.candidates, coverage: found.coverage });
   }
   const item = matches[0];
+  await picker(page).evaluate((element, wanted) => {
+    const grids = (globalThis.Ext?.ComponentQuery?.query('grid') || []).filter(grid =>
+      grid.el?.dom && element.contains(grid.el.dom) && grid.el.dom.querySelector('[data-testid="lovgrid"]'));
+    const grid = grids.length === 1 ? grids[0] : null;
+    const rows = grid?.getStore?.()?.getRange?.().filter(row =>
+      String(row.get('code')).trim() === wanted.code && String(row.get('itemid')).trim() === wanted.itemId);
+    if (rows?.length !== 1) throw new Error('ADDONS_ITEM_NOT_IN_RENDERED_ROWS');
+    grid.getView().focusRow(rows[0]);
+  }, item);
   const row = picker(page).locator('.x-grid-row').filter({ has: page.getByText(code, { exact: true }) });
   const ok = picker(page).locator('[data-testid="ok"]').last().locator('xpath=ancestor::a[1]');
   if (await row.count() !== 1 || await ok.count() !== 1) fail('ADDONS_ITEM_NOT_IN_RENDERED_ROWS');
