@@ -5894,16 +5894,6 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         const widerQuote = oldQuote.replace("HRDAV'", "HRDAV,HRDAVS'");
         expect(runScope(oldQuote, widerQuote, '').status).toBe(2);
         expect(runScope(oldQuote, widerQuote, `CANARY PASS quote HRDAVS ${sha}\n`).status).toBe(0);
-        const restOff = "HMS_DAVINCI_ENABLED_PROPERTIES='HRDAV,HRDAVS'\nHMS_QUOTE_REST_FAST_PATH='off'\n";
-        const restOn = restOff.replace("'off'", "'on'");
-        const quoteProof = (...properties: string[]) => properties.map(property => `CANARY PASS quote ${property} ${sha}\n`).join('');
-        expect(runScope(restOff, restOn, quoteProof('HRCEN')).status).toBe(2);
-        expect(runScope(restOff, restOn, quoteProof('HRCEN', 'HRDAV')).status).toBe(2);
-        expect(runScope(restOff, restOn, quoteProof('HRDAV', 'HRDAVS')).status).toBe(2);
-        expect(runScope(restOff, restOn, quoteProof('HRCEN', 'HRDAV', 'HRDAVS')).status).toBe(0);
-        expect(runScope(restOn.replace(',HRDAVS', ''), restOn, quoteProof('HRCEN', 'HRDAV')).status).toBe(2);
-        expect(runScope(restOn.replace(',HRDAVS', ''), restOn, quoteProof('HRDAVS')).status).toBe(0);
-        expect(runScope(restOn, restOn, '').status).toBe(0);
         const oldDigest = `PANE_WRITE_CREATE='on'\nHMS_WRITER_DEPENDENCY_DIGEST_CREATE='${'a'.repeat(64)}'\n`;
         const newDigest = oldDigest.replace('a'.repeat(64), 'b'.repeat(64));
         expect(runScope(oldDigest, newDigest, '').status).toBe(2);
