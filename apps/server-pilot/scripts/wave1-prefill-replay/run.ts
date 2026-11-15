@@ -140,18 +140,25 @@ async function hashFile(path: string): Promise<string> {
   return hash.digest('hex');
 }
 
-function safeDatabaseIdentity(value: string | undefined) {
+type Shard = { index: number; count: number };
+const SHARD_DATABASE = /^nava_replay_[a-z0-9]+(?:_[a-z0-9]+){0,8}_shard_([1-9]\d?)$/;
+
+function safeDatabaseIdentity(value: string | undefined, shard: Shard) {
   if (!value) return null;
   let parsed: URL;
   try { parsed = new URL(value); } catch { throw new Error('REPLAY_DATABASE_URL_INVALID'); }
   const database = parsed.pathname.slice(1);
   if (!['postgres:', 'postgresql:'].includes(parsed.protocol) || parsed.hostname !== '127.0.0.1' || parsed.port !== '55447' ||
-      parsed.username !== 'fresh_replay' || !['nava_replay_wave1_20261112_195632', 'nava_replay_wave1_20261112_195632_r2', 'nava_replay_wave1_20261112_195632_r3', 'nava_replay_wave1_20261112_195632_r4', 'nava_replay_wave1_20261112_195632_r5', 'nava_replay_wave1_20261112_195632_r6', 'nava_replay_tier1_4_baseline', 'nava_replay_tier1_4_baseline2', 'nava_replay_tier1_4_candidate', 'nava_replay_tier1_4_candidate2', 'nava_replay_tier1_4_candidate3'].includes(database))
+      parsed.username !== 'fresh_replay' || (!['nava_replay_wave1_20261112_195632', 'nava_replay_wave1_20261112_195632_r2', 'nava_replay_wave1_20261112_195632_r3', 'nava_replay_wave1_20261112_195632_r4', 'nava_replay_wave1_20261112_195632_r5', 'nava_replay_wave1_20261112_195632_r6', 'nava_replay_tier1_4_baseline', 'nava_replay_tier1_4_baseline2', 'nava_replay_tier1_4_candidate', 'nava_replay_tier1_4_candidate2', 'nava_replay_tier1_4_candidate3'].includes(database) && !SHARD_DATABASE.test(database)))
     throw new Error('REPLAY_DATABASE_NOT_THE_OWNED_LOCAL_DATABASE');
+  // One database per shard: live reads serialise on an advisory lock inside a database.
+  const shardDatabase = SHARD_DATABASE.exec(database)?.[1];
+  if (shardDatabase ? Number(shardDatabase) !== shard.index : shard.count > 1)
+    throw new Error('REPLAY_SHARD_DATABASE_MISMATCH');
   return { host: parsed.hostname, port: Number(parsed.port), database, user: parsed.username };
 }
 
-async function assertLaunchEnvironment(preflight: boolean) {
+async function assertLaunchEnvironment(preflight: boolean, shard: Shard) {
   const worktree = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd(), encoding: 'utf8' }).trim();
   const sourceVersion = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).trim();
   if (sourceVersion !== SOURCE_VERSION) throw new Error('CURRENT_SOURCE_PIN_MISMATCH');
@@ -168,7 +175,7 @@ async function assertLaunchEnvironment(preflight: boolean) {
   if (process.env.TZ !== 'UTC') throw new Error('REPLAY_TIMEZONE_MUST_BE_UTC');
   if (process.env.NAVA_BUILD_COMMIT !== SOURCE_VERSION) throw new Error('RUNNER_COMMIT_ENV_MISMATCH');
   if (process.env.EXTRACTION_REASONING_EFFORT !== 'high') throw new Error('HISTORICAL_REASONING_EFFORT_MUST_BE_HIGH');
-  const database = safeDatabaseIdentity(process.env.DATABASE_URL);
+  const database = safeDatabaseIdentity(process.env.DATABASE_URL, shard);
   if (!database && !preflight) throw new Error('REPLAY_DATABASE_URL_REQUIRED');
   const shots = process.env.HMS_SHOTS_DIR;
   let shotPath: string | null = null;
@@ -350,9 +357,20 @@ function serializeArtifact(value: unknown): string {
   });
 }
 
-async function runPreflight(selectionPath: string, sealPath?: string) {
-  const environment = await assertLaunchEnvironment(true);
+/** Thread lanes in stable order; shard i (1-based) of K takes every lane whose position modulo K is i - 1. */
+function shardLanes(cases: WaveCase[], shard: Shard) {
+  const sortedCases = [...cases].sort((a, b) => a.threadId.localeCompare(b.threadId) || a.cutoff.localeCompare(b.cutoff));
+  const lanes = new Map<string, WaveCase[]>();
+  for (const item of sortedCases) lanes.set(item.threadId, [...(lanes.get(item.threadId) ?? []), item]);
+  if (lanes.size < shard.count) throw new Error('SHARDS_EXCEED_THREAD_LANES');
+  const laneQueue = [...lanes.values()].filter((_, position) => position % shard.count === shard.index - 1);
+  return { threadLaneCount: lanes.size, laneQueue, shardCases: laneQueue.flat() };
+}
+
+async function runPreflight(selectionPath: string, sealPath: string | undefined, shard: Shard) {
+  const environment = await assertLaunchEnvironment(true, shard);
   const inputs = await loadInputs(selectionPath, sealPath);
+  const { laneQueue, shardCases } = shardLanes(inputs.cases, shard);
   const imports = await verifyImports();
   const selectedThreads = new Set(inputs.cases.map(row => row.threadId));
   const output = { status: 'ready', phase: 'preflight', sourceVersion: environment.sourceVersion,
@@ -360,6 +378,7 @@ async function runPreflight(selectionPath: string, sealPath?: string) {
     configLabel: 'captured historical config snapshot; not fresh PM2 verification', selectionCount: inputs.cases.length,
     selectionSha256: inputs.selectionSha256, sealSha256: inputs.sealSha256, sealed: inputs.sealSha256 !== null,
     workflows: [...new Set(inputs.cases.map(row => row.workflow))].sort(), threadCount: selectedThreads.size,
+    shard: { index: shard.index, count: shard.count, threadLaneCount: laneQueue.length, caseCount: shardCases.length },
     artifacts: inputs.artifactHashes, sourceHashes: inputs.sourceHashes, routeIdentityHash: inputs.routeIdentityHash,
     cacheMode: 'production default native reader; current state; historical validity unresolved',
       nativeReaderMode: 'production-default',
@@ -370,14 +389,16 @@ async function runPreflight(selectionPath: string, sealPath?: string) {
 }
 
 async function runCohort(selectionPath: string, sealPath: string | undefined, confirmSelection: string | undefined,
-  confirmSeal: string | undefined, concurrency: number) {
-  const environment = await assertLaunchEnvironment(false);
+  confirmSeal: string | undefined, concurrency: number, shard: Shard) {
+  const environment = await assertLaunchEnvironment(false, shard);
   if (!sealPath) throw new Error('SEALED_CASE_ID_FILE_REQUIRED');
   const inputs = await loadInputs(selectionPath, sealPath);
   if (inputs.cases.length < 40 || inputs.cases.length > 60) throw new Error('FINAL_COHORT_MUST_HAVE_40_TO_60_CASES');
   if (confirmSelection !== inputs.selectionSha256 || confirmSeal !== inputs.sealSha256) throw new Error('FINAL_SELECTION_HASH_CONFIRMATION_MISMATCH');
   const base = process.env.FRESH_REPLAY_ROOT!;
-  const runId = `wave1-${new Date().toISOString().replace(/[:.]/g, '-')}-${inputs.selectionSha256.slice(0, 12)}`;
+  const { threadLaneCount, laneQueue, shardCases } = shardLanes(inputs.cases, shard);
+  const runId = `wave1-${new Date().toISOString().replace(/[:.]/g, '-')}-${inputs.selectionSha256.slice(0, 12)}${
+    shard.count > 1 ? `-shard-${shard.index}-of-${shard.count}` : ''}`;
   const runDir = join(base, 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o700 });
   const shotsDir = join(runDir, 'shots');
@@ -403,9 +424,6 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
     const seededAttachments = await seedAllRecoveredAttachments({ db, storage, recovered: inputs.recovered });
     const gateway = await createEvidenceGateway(join(runDir, 'native-cache'), { catalogPath: CACHE_CATALOG });
 
-    const sortedCases = [...inputs.cases].sort((a, b) => a.threadId.localeCompare(b.threadId) || a.cutoff.localeCompare(b.cutoff));
-    const lanes = new Map<string, WaveCase[]>();
-    for (const item of sortedCases) lanes.set(item.threadId, [...(lanes.get(item.threadId) ?? []), item]);
     const manifest = { sourceVersion: environment.sourceVersion,
       sourceLabel: 'current checked-out product source', capturedConfigCheckedAtUtc: inputs.deployment.checked_at_utc,
       configLabel: 'captured historical config snapshot; not fresh PM2 verification', modelId: 'gpt-6-luna',
@@ -417,11 +435,12 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
         selectedSourceRowId: row.selectedSourceRowId, workflow: row.workflow, journeyId: row.journeyId,
         cutoff: row.cutoff, packetPath: row.packetPath, packetSha256: row.packetSha256,
         packetLine: row.packetLine, packetLineSha256: row.packetLineSha256, threadId: row.threadId })),
-      concurrency, threadLaneCount: lanes.size, seeded, seededAttachments: { registered: seededAttachments.registered,
+      concurrency, threadLaneCount, shard: { index: shard.index, count: shard.count, threadLaneCount: laneQueue.length,
+        caseIds: shardCases.map(row => row.decisionId) }, seeded, seededAttachments: { registered: seededAttachments.registered,
         unavailable: seededAttachments.unavailable.length }, startedAt };
     await writeFile(join(runDir, 'manifest.json'), serializeArtifact(manifest), { mode: 0o600 });
-    console.info(JSON.stringify({ status: 'running', phase: 'wave1-current-v2', pending: inputs.cases.length,
-      concurrency, runDir }));
+    console.info(JSON.stringify({ status: 'running', phase: 'wave1-current-v2', pending: shardCases.length,
+      concurrency, shard: shard.index, shards: shard.count, runDir }));
 
     const originalById = inputs.originalById;
     const failures = new Map<string, string>();
@@ -479,20 +498,19 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
         summaries.push({ decisionId: item.decisionId, status: 'failure', failure,
           seconds: Math.round((Date.now() - began) / 100) / 10 });
       }
-      const summary = { updatedAt: new Date().toISOString(), completed: summaries.length, total: inputs.cases.length,
+      const summary = { updatedAt: new Date().toISOString(), completed: summaries.length, total: shardCases.length,
         ...summaryCounts(), summaries: [...summaries] };
       const serializedSummary = serializeArtifact(summary);
       resultWrites = resultWrites.then(() => writeFile(summaryPath, serializedSummary, { mode: 0o600 }));
       await resultWrites;
       const caseSummary = summaries.find(row => row.decisionId === item.decisionId)!;
       console.info(JSON.stringify({ status: failures.has(item.decisionId) ? 'exception' : caseSummary.workflowFailed ? 'workflow_failure' : 'complete',
-        decisionId: item.decisionId, completed: summaries.length, total: inputs.cases.length,
+        decisionId: item.decisionId, completed: summaries.length, total: shardCases.length,
         modelCalls: (caseSummary.modelCalls as number | undefined) ?? 0,
         candidateReads: (caseSummary.candidateReads as number | undefined) ?? 0,
         seconds: (caseSummary.seconds as number | undefined) ?? 0 }));
     }
 
-    const laneQueue = [...lanes.values()];
     let nextLane = 0;
     async function worker() {
       while (nextLane < laneQueue.length) {
@@ -502,7 +520,7 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
     }
     await Promise.all(Array.from({ length: Math.min(concurrency, laneQueue.length) }, worker));
     await resultWrites;
-    await writeFile(summaryPath, serializeArtifact({ completed: summaries.length, total: inputs.cases.length,
+    await writeFile(summaryPath, serializeArtifact({ completed: summaries.length, total: shardCases.length,
       ...summaryCounts(), summaries, finishedAt: new Date().toISOString() }), { mode: 0o600 });
     if (summaryCounts().failures) process.exitCode = 2;
   } finally {
@@ -516,11 +534,16 @@ async function main() {
   const sealPath = readArg('--seal', DEFAULT_SEAL);
   const concurrency = Number(readArg('--concurrency', '4'));
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('CONCURRENCY_MUST_BE_1_TO_4');
+  const shardArg = readArg('--shard'), shardsArg = readArg('--shards');
+  if ((shardArg === undefined) !== (shardsArg === undefined)) throw new Error('SHARD_AND_SHARDS_REQUIRED_TOGETHER');
+  const shard: Shard = { index: Number(shardArg ?? '1'), count: Number(shardsArg ?? '1') };
+  if (!Number.isSafeInteger(shard.count) || shard.count < 1 || shard.count > 16) throw new Error('SHARDS_MUST_BE_1_TO_16');
+  if (!Number.isSafeInteger(shard.index) || shard.index < 1 || shard.index > shard.count) throw new Error('SHARD_MUST_BE_1_TO_SHARDS');
   const modes = Number(hasFlag('--preflight')) + Number(hasFlag('--run'));
   if (modes !== 1) throw new Error('CHOOSE_EXACTLY_ONE_OF_PRELIGHT_OR_RUN');
-  if (hasFlag('--preflight')) return runPreflight(selectionPath, sealPath);
+  if (hasFlag('--preflight')) return runPreflight(selectionPath, sealPath, shard);
   return runCohort(selectionPath, sealPath, readArg('--confirm-selection-sha256'),
-    readArg('--confirm-seal-sha256'), concurrency);
+    readArg('--confirm-seal-sha256'), concurrency, shard);
 }
 
 main().catch(error => {

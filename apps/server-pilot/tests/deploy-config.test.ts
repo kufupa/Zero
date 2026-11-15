@@ -5832,6 +5832,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         ['HMS_PREFETCH_ENABLED', '1', 'prefetch'], ['HMS_JOB_QUEUE', 'on', 'queue'],
         ['LEGACY_INBOUND_TRIAGE_PIPELINE', 'on', 'triage'],
         ['HMS_AVAILABILITY_PREFETCH', 'on', 'availability'], ['HMS_QUOTE_PREPARE', 'true', 'quote'],
+        ['HMS_QUOTE_REST_FAST_PATH', 'on', 'quote'],
         ['PARTY_MATCH_V2', 'true', 'party'], ['PANE_WRITE_CREATE', 'on', 'create'],
         ['PANE_HMS_LAB_CREATE_WORKER', 'on', 'create'], ['PANE_CLOUD_CREATE_DISPATCH', 'on', 'create'],
         ['PANE_WRITE_ATTACH', 'on', 'attach'], ['PANE_HMS_LAB_ATTACH_WORKER', 'on', 'attach'],
@@ -6330,6 +6331,22 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         expect((await run(m1, { NAVA_RUN_HOLD_FILE: holdFile })).status).toBe(0);
         expect(readFileSync(common, 'utf8')).toBe(commonText + metadata.replace('version-a', 'version-b'));
         expect(readFileSync(admin, 'utf8')).toBe(adminText);
+
+        const rest = ['--m1-only', '--keys', 'HMS_QUOTE_REST_FAST_PATH'];
+        const canary = join(temp, 'rest-canary');
+        const sha = 'a'.repeat(40);
+        const restEnv = { NAVA_RUN_HOLD_FILE: holdFile, NAVA_LIVE_SHA: sha, NAVA_CANARY_PASS_FILE: toBashPath(canary) };
+        writeFileSync(legacy, source(pair) + "HMS_QUOTE_REST_FAST_PATH='on'\n");
+        expect((await run(rest, restEnv)).status).toBe(2);
+        writeFileSync(canary, `CANARY PASS quote HRCEN ${sha}\n`);
+        expect((await run(rest, restEnv)).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toContain("HMS_QUOTE_REST_FAST_PATH='on'\n");
+        writeFileSync(legacy, source(pair) + "HMS_QUOTE_REST_FAST_PATH='off'\n");
+        expect((await run(rest, restEnv)).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).toContain("HMS_QUOTE_REST_FAST_PATH='off'\n");
+        writeFileSync(legacy, source(pair));
+        expect((await run(rest, restEnv)).status).toBe(0);
+        expect(readFileSync(common, 'utf8')).not.toContain('HMS_QUOTE_REST_FAST_PATH');
       } finally {
         if (snapshot) rmSync(snapshot, { recursive: true, force: true });
         rmSync(temp, { recursive: true, force: true });
