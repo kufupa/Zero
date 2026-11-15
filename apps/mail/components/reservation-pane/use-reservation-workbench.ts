@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind, type PropertyConfiguration } from '@/lib/reservation-workflow/types';
-import { effectiveAt, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { effectiveAt, guestProfileDefaultsToNew, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -420,14 +420,22 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         const index = allocations.findIndex(row => row.id === allocationId);
         if (index < 0) throw new Error('This room changed. Review its guest before creating a profile.');
         const guestPath = `${root}/allocations/${index}/guest`;
-        if (valueAt(current, `${guestPath}/profileIntent`) !== 'requested_new') throw new Error('Choose New profile first.');
-        // Go accepts staff-entered values only. Source suggestions still need their own acknowledgement.
+        if (valueAt(current, `${guestPath}/profileIntent`) !== 'requested_new') {
+          if (!guestProfileDefaultsToNew(current, requestId, allocationId, guestPath)) throw new Error('Choose New profile first.');
+          // The email search found no profile, so this click is the staff's choice to create one.
+          current = await client.edit({ source: context.source, snapshot: current, requestId, fieldPath: `${guestPath}/profileIntent`, state: 'set', value: 'requested_new' });
+          apply(current, context.source, entry);
+          if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return current;
+        }
+        // The create click is the staff's acceptance of the profile values shown. A value staff flagged stays held.
         for (const field of ['firstName', 'lastName', 'mobile', 'email', 'titleCode', 'phoneNumber', 'phoneTypeCode', 'emailTypeCode']) {
           const path = `${guestPath}/${field}`;
           const value = effectiveAt(current, path);
-          if (!staffEnteredAt(current, path) || typeof value !== 'string' || !value.trim() ||
-              current.session.draft.staffReviews[path]?.status === 'accepted') continue;
-          current = await client.review({ source: context.source, snapshot: current, fieldPath: path, decision: 'accepted', note: 'Entered by staff' });
+          const entered = staffEnteredAt(current, path), review = current.session.draft.staffReviews[path]?.status;
+          if (typeof value !== 'string' || !value.trim() || review === 'accepted' || (!entered &&
+              (review === 'flagged' || current.session.draft.fieldReviewRequirements[path]?.required === false))) continue;
+          current = await client.review({ source: context.source, snapshot: current, fieldPath: path, decision: 'accepted',
+            note: entered ? 'Entered by staff' : 'Confirmed by staff when creating the profile' });
           apply(current, context.source, entry);
           if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch) return current;
         }
