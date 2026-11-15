@@ -81,9 +81,9 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
   if (workflow === 'guest_profile_create') {
     const { createGuestProfileRunner } = await import('./guest-profile-runner.mjs');
     const { matchesProfileReadback, profileValuesEqual } = await import('./guest-profile-create.mjs');
-    const suffix = String(BigInt(`0x${randomUUID().replaceAll('-', '')}`) % 10000000n).padStart(7, '0');
-    const business = { propertyCode, guest: { firstName: 'Proof', lastName: 'Labtest', mobile: `+2700${suffix}`, email: '' },
-      confirmDuplicateName: true };
+    check(/^Proof[a-f0-9]{12}$/.test(journal.profileProofGuest?.firstName ?? '') &&
+      journal.profileProofGuest.lastName === 'Labtest' && journal.profileProofGuest.email === '', 'PROFILE_PROOF_TARGET_INVALID');
+    const business = { propertyCode, guest: journal.profileProofGuest, confirmDuplicateName: false };
     proof.business = business;
     proof.attemptId = randomUUID();
     const runner = createGuestProfileRunner({ runtimeDir: join(root, 'guest-profile-attempts'),
@@ -91,12 +91,12 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
       authorizeStaffWrite: async context => {
         await checkHold(options.signal);
         return context.propertyCode === propertyCode && profileValuesEqual(context.fields, proof.prepared.businessFields) &&
-          context.previewDigest === proof.prepared.previewDigest && context.confirmDuplicateName === true &&
+          context.previewDigest === proof.prepared.previewDigest && context.confirmDuplicateName === false &&
           cloudWriterCurrent(context.writer);
       },
       dispatchStaffWrite: async (context, proceed) => {
         check(context.propertyCode === propertyCode && cloudWriterCurrent(context.writer) &&
-          ['initial', 'confirm_distinct'].includes(context.phase), 'PROFILE_DISPATCH_UNVERIFIED');
+          context.phase === 'initial', 'PROFILE_DISPATCH_UNVERIFIED');
         if (!proof.dispatches.length) await claim({ phase: context.phase });
         await checkHold(options.signal);
         proof.dispatches.push({ phase: context.phase, writer: context.writer });
@@ -271,15 +271,17 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
     proof.freshReadbackVerified === true && proof.dispatches?.length > 0 &&
     Date.parse(proof.observedAt) >= Date.parse(proof.startedAt), 'WORKFLOW_PROOF_INVALID');
   if (workflow === 'guest_profile_create') {
+    const firstName = proof.business?.guest?.firstName;
+    const labtestDecision = firstName === 'Proof' && proof.business.confirmDuplicateName === true ||
+      /^Proof[a-f0-9]{12}$/.test(firstName ?? '') && proof.business.confirmDuplicateName === false;
     check(proof.prepared?.outcome === 'ready' && result?.outcome === 'created' && result.dispatched === true &&
       result.callbacksDrained === true && /^\d{1,30}$/.test(proof.nativeGuestId ?? '') &&
-      proof.business?.propertyCode === journal.propertyCode && proof.business.guest?.firstName === 'Proof' &&
+      proof.business?.propertyCode === journal.propertyCode && labtestDecision &&
       proof.business.guest?.lastName === 'Labtest' && proof.business.guest?.email === '' &&
-      proof.business.confirmDuplicateName === true &&
       /^[a-f0-9]{64}$/.test(proof.prepared.previewDigest ?? '') &&
       readback?.outcome === 'read' && readback.propertyCode === journal.propertyCode &&
       readback.nativeId === proof.nativeGuestId && result.nativeId === proof.nativeGuestId &&
-      readback.firstName === 'Proof' && readback.lastName === 'Labtest' &&
+      readback.firstName === firstName && readback.lastName === 'Labtest' &&
       readback.mobile === proof.business?.guest?.mobile && readback.email === '' && readback.status === 'ACTIVE' &&
       equal(readback.consent, [false, false, false, false]), 'PROFILE_PROOF_INVALID');
   } else {
