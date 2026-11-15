@@ -2221,20 +2221,30 @@ function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extract
   const address = /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/u.test(sender) ? sender
     : /<([^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)>/u.exec(sender)?.[1];
   const display = /^["']?([^<>"']+?)["']?\s*</u.exec(sender)?.[1]?.trim();
-  const signoff = OPERATIONAL_NOTE_REGARDS.exec(authored.replace(/\u00a0/gu, ' '));
+  const signoff = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*[ \t]*/imu
+    .exec(authored.replace(/\u00a0/gu, ' '));
   const signatureName = signoff ? authored.slice(signoff.index + signoff[0].length).split(/\r?\n/u)
     .map((line) => line.trim()).find(Boolean) : undefined;
   const personName = (value: string | undefined) => value && value.length <= 120 &&
     /^(?:[A-Z][\p{L}'-]+\.?\s+){1,4}[A-Z][\p{L}'-]+\.?$/u.test(value) &&
-    !/\b(?:team|desk|hotel|reservations?|bookings?|travel|tours?|agency|company|limited|ltd|department)\b/iu.test(value) ? value : undefined;
+    !/\b(?:team|desk|hotel|reservations?|bookings?|travel|tours?|agency|company|limited|ltd|department|manager|consultant|officer|assistant|coordinator|director|administrator|advisor|specialist|supervisor|executive)\b/iu.test(value) ? value : undefined;
   const name = personName(signatureName) ?? personName(display);
+  // A signature-only forward submits its first enclosed request. A new authored
+  // booking or a reply never inherits company details from quoted history.
+  const bareForward = /^\s*(?:fw|fwd)\s*:/iu.test(input.selection.subject) &&
+    (!authored.trim() || signoff !== null && !authored.slice(0, signoff.index).trim()) &&
+    !/\b(?:please|kindly|book|reserve|quote|confirm|cancel|amend|extend|arrange)\b/iu.test(authored);
+  const organizationBody = bareForward ? (body.slice(authored.length)
+    .replace(/^\s*From:[^\n]*(?:\n|$)/imu, '')
+    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '') : authored;
   const sourceClaim = (text: string) => ({ raw: text, value: text, sourceRefs: [message.ref] });
   const stayRequests = extraction.requests.filter((request) => request.kind === 'create' || request.kind === 'quote');
   for (const request of stayRequests) {
     const bookers = request.guests.filter((guest) => guest.role === 'booker');
     if (bookers.length <= 1 && address && message.text.includes(address)) {
       const booker = bookers[0] ?? { role: 'booker' as const };
-      const matchesSender = !booker.email?.value || normalizedFact(booker.email.value) === normalizedFact(address);
+      const matchesSender = (!booker.email?.value || normalizedFact(booker.email.value) === normalizedFact(address)) &&
+        (!booker.name?.value || Boolean(name && sameGuestName(booker.name.value, name)));
       if (matchesSender) {
         const missing = (claim: typeof booker.name) => !claim?.value &&
           (!claim?.raw.trim() || !message.text.includes(claim.raw));
@@ -2257,10 +2267,11 @@ function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extract
     const organizations = new Set<string>();
     for (const match of authored.matchAll(/^[ \t]*From[ \t]+([^<>\n@:]{2,300})[ \t]*:[ \t]*$/gimu)) {
       const following = authored.slice(match.index + match[0].length);
-      if (/^\s*[-*]\s*\p{L}/u.test(following)) organizations.add(match[1]!.trim());
+      const organizationLabel = /\b(?:dept|department|ministry|government|municipal(?:ity)?|company|corporation|council|agency|university|college|institute|association|foundation|society|union|trust|bank|ltd|limited|pty|inc)\b/iu.test(match[1]!);
+      if (organizationLabel && /^\s*[-*]\s*\p{L}/u.test(following)) organizations.add(match[1]!.trim());
     }
-    for (const match of body.matchAll(/\b(?:company|organi[sz]ation)\s+(?:details|name)\s*:\s*\r?\n([^\r\n]{2,300})/giu)) {
-      const context = body.slice(Math.max(0, match.index - 1200), match.index);
+    for (const match of organizationBody.matchAll(/\b(?:company|organi[sz]ation)\s+(?:details|name)\s*:\s*\r?\n([^\r\n]{2,300})/giu)) {
+      const context = organizationBody.slice(Math.max(0, match.index - 1200), match.index);
       const dated = request.dates.length === 1 && request.dates.some((date) => date.arrival?.raw && date.departure?.raw &&
         context.indexOf(date.arrival.raw) >= 0 && context.indexOf(date.departure.raw) >= 0);
       if (dated) organizations.add(match[1]!.trim());
@@ -2545,7 +2556,7 @@ function isNegatedCancelInstruction(prefix: string): boolean {
   // ("Do not, under any circumstances, cancel ..."); a completed clause does not.
   while (segments.length) {
     const segment = segments.pop()!;
-    if (/\b(?:(?:do|must|should|shall|will|would|may|can|could)\s+not|never|cannot|(?:don|mustn|shouldn|won|wouldn|can|couldn)['’]t)\s*$/iu.test(segment))
+    if (CANCEL_NEGATED_TAIL.test(segment))
       return !/^\s*(?:if|when|unless|should|otherwise|whether|because|since|in\s+case)\b/iu.test(segment);
     if (!CANCEL_BRIDGE_ONLY.test(segment) &&
         !/^\s*(?:under|in|at|on|for|by|as|regardless|whatever|with|without|until)\b(?:\s+\S+){0,7}\s*$/iu.test(segment)) return false;
@@ -2929,6 +2940,8 @@ function isPaymentProofOnlyCreate(extracted: ReservationWorkflowV2Extraction['re
   const newBookingIntent = bookingAction && !negatedBookingAction && hasCurrentDateRange;
   return paymentProof && !newBookingIntent;
 }
+
+type CreateAllocationOccupancy = { adults: number | null; childCount: number | null; childAges: Array<number | null> | null };
 
 /**
  * Occupancy array order is not a room identity. Use a unique cited guest/date anchor,
@@ -3826,10 +3839,10 @@ function projectCurrentExtraction(input: {
     const noteMarkers = (row: ReservationWorkflowV2Extraction['requests'][number]) => [...row.confirmationHints.flatMap((claim) => [claim.raw, claim.value]),
       ...row.guests.flatMap((guest) => guest.role === 'guest' ? [guest.name?.raw, guest.name?.value] : [])]
       .map(normalizedFact).filter((marker) => marker.length >= 4);
-    const otherRequests = currentExtraction.requests.filter((candidate) => candidate.id !== extracted.id &&
-      ['create', 'quote', 'amend', 'cancel', 'filing'].includes(candidate.kind));
-    const ownMarkers = new Set(noteMarkers(extracted));
-    const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row).filter((marker) => !ownMarkers.has(marker)),
+    const otherRequests = currentExtraction.requests.filter((candidate) => candidate.id !== extracted.id && candidate.kind !== 'other');
+    const otherMarkers = new Set(otherRequests.flatMap(noteMarkers));
+    const ownMarkers = new Set(noteMarkers(extracted).filter((marker) => !otherMarkers.has(marker)));
+    const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row),
       normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
     const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
       currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1
