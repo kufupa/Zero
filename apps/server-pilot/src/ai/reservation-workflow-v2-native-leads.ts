@@ -10,6 +10,7 @@ import type { ReservationWorkflowV2Observation, ReservationWorkflowV2Proposal,
   ReservationWorkflowV2Source } from './reservation-workflow-v2-contract.js';
 import { partyMatchSearchTerms } from './party-match-v2.js';
 import { isFreemailHost } from './party-sender-map.js';
+import { preloadNativeCatalogLookup } from './native-catalog-lookup.js';
 
 type PartyRole = 'agency' | 'organization' | 'ar_account';
 type SourceParty = { role: 'bookingAgency' | 'organization' | 'arAccount'; name: string;
@@ -18,7 +19,7 @@ type Lead = { value: string; label: string; basis: 'exact_sender' | 'normalized_
   sourceParty: SourceParty | null; sourceSender: string | null; support: number; confirmations: string[];
   denominator: number; confidence: number | null; purity: number | null; autoSelectable: boolean;
   blockedReason: 'support_below_min' | 'purity_below_threshold' | 'purity_unknown' | 'multi_client_domain' |
-    'webmail_domain' | 'refund_account_excluded' | 'role_basis_not_auto' | null };
+    'webmail_domain' | 'refund_account_excluded' | 'role_basis_not_auto' | 'staff_confirmation_required' | null };
 export function isExcludedRefundArAccount(value: string): boolean {
   return /^refund\s+account\b/i.test(value.trim());
 }
@@ -260,11 +261,11 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
       Date.parse(row.sentAt) < cutoff && row.linkMethod === 'attachment-id' && row.linkProvenance?.ambiguousAttachment === false &&
       row.linkProvenance.labeledConfirmationMatch === true && row.linkProvenance.subjectHasOtherConfirmation !== true &&
       row.linkedPmsSnapshotIds?.some(id => eligibleSnapshots.has(id)) && !excluded.has(row.confirmationKey));
-    const senderKeys = new Set(verifiedAddresses.filter(row => row.address === address &&
-      ['inbound-sender', 'outbound-recipient'].includes(row.role)).map(row => row.confirmationKey));
+    const senderKeys = new Set(verifiedAddresses.filter(row => row.address.toLocaleLowerCase('en-US') === address &&
+      row.role === 'inbound-sender').map(row => row.confirmationKey));
     const domain = address.includes('@') ? address.split('@')[1] : '';
     const domainKeys = new Set(verifiedAddresses.filter(row => domain && row.address.endsWith(`@${domain}`) &&
-      ['inbound-sender', 'outbound-recipient'].includes(row.role)).map(row => row.confirmationKey));
+      row.role === 'inbound-sender').map(row => row.confirmationKey));
     const eligible = memory.observations.filter(row => eligibleSnapshots.has(row.snapshotId) &&
       row.historicalIdentity.nativeConfirmation === 'matched' && !excluded.has(row.confirmationKey));
     const organizations = new Set(eligible.filter(row => domainKeys.has(row.confirmationKey)).flatMap(row => row.outcomes.flatMap(outcome => {
@@ -273,9 +274,9 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
     })));
     const multiClientDomain = organizations.size > 1;
     const hasEntity = Boolean(input.agencyName || input.organizationName);
-    if (!hasEntity && !senderKeys.size) return { status: 'unavailable', issue: 'booking_memory_identity_unavailable' };
+    if (!senderKeys.size) return { status: 'unavailable', issue: 'booking_memory_identity_unavailable' };
     if (!hasEntity && multiClientDomain) return { status: 'unavailable', issue: 'multiple_client_domain' };
-    const rows = eligible.filter(row => (!senderKeys.size || senderKeys.has(row.confirmationKey)) && row.outcomes.some(outcome => {
+    const rows = eligible.filter(row => senderKeys.has(row.confirmationKey) && row.outcomes.some(outcome => {
       const matches = (field: 'bookingAgency' | 'organization', name?: string | null) => !name ||
         Boolean(outcome.combination[field] && !outcome.conflictingFields.includes(field) &&
           normalizedPartyName(outcome.combination[field]) === normalizedPartyName(name));
@@ -353,20 +354,25 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
         row.linkedPmsSnapshotIds?.some(id => snapshotTimes.has(id))) };
     if (!memory.observations.length) return [];
     const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
-    const query = (criteria: object) => {
-      const parsed = querySchema.safeParse(module.queryHmsBookingMemory(memory, criteria,
-        { sourceOfBusiness: 'E-Mail', limit: 200, hintLimit: 200, includeEvidence: true, evidenceLimit: 200, noteLimit: 1 }));
-      return parsed.success ? parsed.data : null;
-    };
     const common = await import(new URL('../../tooling/hms-cloud/hms-booking-memory-common.mjs', import.meta.url).href);
     const rawAddresses: string[] = common.emailsIn(input.fromAddress);
     const addresses = z.array(z.string().email()).safeParse(rawAddresses);
     const email = addresses.success && addresses.data.length === 1 ? addresses.data[0] : null;
+    const senderKeys = new Set(memory.addressEvidence.filter(row => row.role === 'inbound-sender' &&
+      row.address.toLocaleLowerCase('en-US') === email).map(row => row.confirmationKey));
+    // Party text can narrow an exact sender's history, never substitute another sender's stays.
+    const senderMemory = { ...memory, observations: memory.observations.filter(row => senderKeys.has(row.confirmationKey)),
+      addressEvidence: memory.addressEvidence.filter(row => senderKeys.has(row.confirmationKey)) };
+    const query = (criteria: object) => {
+      const parsed = querySchema.safeParse(module.queryHmsBookingMemory(senderMemory, criteria,
+        { sourceOfBusiness: 'E-Mail', limit: 200, hintLimit: 200, includeEvidence: true, evidenceLimit: 200, noteLimit: 1 }));
+      return parsed.success ? parsed.data : null;
+    };
     const sender = email
-      ? [query({ email, role: 'inbound-sender' }), query({ email, role: 'outbound-recipient' })].filter(row => row !== null) : [];
+      ? [query({ email, role: 'inbound-sender' })].filter(row => row !== null) : [];
     const domain = email?.split('@')[1];
     const webmailDomain = rawAddresses.some(isFreemailHost);
-    const domainResults = domain ? [query({ domain, role: 'inbound-sender' }), query({ domain, role: 'outbound-recipient' })]
+    const domainResults = domain ? [query({ domain, role: 'inbound-sender' })]
       .filter(row => row !== null) : [];
     const organizations = new Set(domainResults.flatMap(result => result.candidates.flatMap(candidate => {
       const value = candidate.combination.organization;
@@ -440,8 +446,10 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
         }
       }
     }
+    const catalog = senderKeys.size ? await preloadNativeCatalogLookup({ propertyCode, env: input.env }).catch(() => null) : null;
     for (const request of input.proposal.content.requests) {
       if (request.kind !== 'create' && request.kind !== 'quote') continue;
+      if (!senderKeys.size) continue;
       const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
       type Fields = { bookingAgency?: unknown; organization?: unknown; arAccount?: unknown; ratePlan?: unknown; roomType?: unknown };
       type Slot = { path: string; fields: Fields; scopeKind: 'shared' | 'date_section' | 'allocation' | 'quote_parties' | 'quote_group';
@@ -494,12 +502,16 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
           const add = (value: string, basis: Lead['basis'], sourceParty: SourceParty | null, confirmations: Array<string | null>) => {
             const ids = confirmations.filter((id): id is string => Boolean(id));
             if (!value.trim() || !ids.length) return;
+            if (role === 'ar_account' && isExcludedRefundArAccount(value)) return;
+            const nativeRate = role === 'rate_plan' ? catalog?.lookupVerifiedCode('rate', value) : null;
+            if (role === 'rate_plan' && (nativeRate?.status !== 'unique' || !nativeRate.record)) return;
             const nameKey = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : normalizedPartyName(value);
             if (!nameKey) return;
             const key = JSON.stringify([nameKey, bindingKey(sourceParty)]);
             const prior = leads.get(key);
             const combined = [...new Set([...(prior?.basis === basis ? prior.confirmations : []), ...ids])];
-            leads.set(key, { value, label: value, basis, sourceParty, sourceSender: basis === 'exact_sender' ? email : null,
+            leads.set(key, { value, label: nativeRate?.record ? `${value} - ${nativeRate.record.meaning}` : value,
+              basis, sourceParty, sourceSender: email,
               support: combined.length, confirmations: combined, denominator: 0, confidence: null, purity: null,
               autoSelectable: false, blockedReason: 'purity_unknown' });
           };
@@ -544,15 +556,8 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
             lead.denominator = denominators.get(sourceKey)?.size ?? 0;
             lead.confidence = lead.denominator && !incomplete.has(sourceKey) ? lead.support / lead.denominator : null;
             lead.purity = lead.confidence;
-            const eligibleRoleBasis = lead.basis === 'exact_sender' && (role === 'agency' || role === 'organization') ||
-              role === 'agency' && lead.sourceParty?.role === 'bookingAgency' && Boolean(lead.sourceParty.suggestedRef);
-            const refundExcluded = role === 'ar_account' && isExcludedRefundArAccount(lead.value);
-            lead.blockedReason = refundExcluded ? 'refund_account_excluded' : lead.support < 2 ? 'support_below_min' :
-              lead.basis === 'exact_sender' && webmailDomain ? 'webmail_domain'
-              : lead.basis === 'exact_sender' && multiClientDomain ? 'multi_client_domain'
-              : lead.confidence === null ? 'purity_unknown'
-              : lead.confidence < 0.8 ? 'purity_below_threshold' : !eligibleRoleBasis ? 'role_basis_not_auto' : null;
-            lead.autoSelectable = lead.blockedReason === null;
+            lead.blockedReason = 'staff_confirmation_required';
+            lead.autoSelectable = false;
           }
           const ranked = [...leads.values()].sort((a, b) => (role === 'ar_account' ? -1 : 1) *
             (Number(b.basis === 'exact_sender') - Number(a.basis === 'exact_sender')) ||

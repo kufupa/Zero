@@ -228,7 +228,7 @@ describe('reservation workflow host projection', () => {
   }, 12_000);
 
   it.each([[1, 1, false, false], [2, 3, false, false], [2, 2, true, false], [2, 2, false, true]])
-  ('requires two stays and 80%% purity for note and track memory (%i/%i)', async (support, denominator, applies, webmailDomain) => {
+  ('keeps note and guarantee history advisory, independent of research purity (%i/%i)', async (support, denominator, _applies, webmailDomain) => {
     vi.spyOn(memoryLeads, 'loadReservationMemoryGuidance').mockResolvedValue({ status: 'available', denominator,
       notes: [{ value: 'BB to agent', support, denominator, confidence: support / denominator }],
       guarantees: [{ value: 'CC', support, denominator, confidence: support / denominator }], tracks: [], complete: true, multiClientDomain: false, webmailDomain });
@@ -255,10 +255,12 @@ describe('reservation workflow host projection', () => {
     expect(memoryLeads.loadReservationMemoryGuidance, JSON.stringify(request.body)).toHaveBeenCalled();
     const note = result.observations.find(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.fieldPath ===
       `/proposal/content/requests/${request.id}/body/shared/reservationNote`);
-    expect(note?.result.memory).toMatchObject({ payer: { support, denominator, autoApplied: applies,
-      blockedReason: applies ? null : support < 2 ? 'support_below_min' : webmailDomain ? 'webmail_domain' : 'purity_below_threshold' } });
-    expect(Boolean(request.body.shared.reservationNote)).toBe(applies);
-    expect(request.body.shared.guaranteeType ?? null).toBe(applies ? 'CC' : null);
+    expect(note?.result.memory).toMatchObject({
+      guarantee: { support, denominator, autoApplied: false, blockedReason: 'staff_confirmation_required' } });
+    expect(note?.result.memory).not.toHaveProperty('payer');
+    expect(note?.result.memory).not.toHaveProperty('dinnerCap');
+    expect(request.body.shared.reservationNote).toBe('Please book one room at rate BAR 2027-01-10 to 2027-01-12.');
+    expect(request.body.shared.guaranteeType ?? null).toBeNull();
     expect(Boolean(result.observations.find(row => row.criteria.kind === 'rate_track_memory'))).toBe(support >= 2 && support / denominator >= 0.8);
   });
 
@@ -276,12 +278,12 @@ describe('reservation workflow host projection', () => {
     if (request?.kind !== 'create') throw new Error('expected Create');
     const note = result.observations.find(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.fieldPath ===
       `/proposal/content/requests/${request.id}/body/shared/reservationNote`);
-    expect(note?.result.compositionStatus).toBe(scenario === 'none' ? 'blocked_none' : scenario);
+    expect(note?.result.compositionStatus).toBe(scenario === 'none' ? 'blocked_none' : scenario === 'over_limit' ? 'over_limit' : 'clean');
     if (scenario === 'none') expect(request.body.shared.reservationNote).toEqual({ kind: 'none' });
     if (scenario === 'conflict') {
       expect(request.body.shared.reservationNote).toContain('R200');
       expect(request.body.shared.reservationNote).not.toContain('R350');
-      expect(note?.result.conflicts).toContain('Dinner allowance differs from the current note.');
+      expect(note?.result.conflicts).toEqual([]);
     }
   });
   it.each([
