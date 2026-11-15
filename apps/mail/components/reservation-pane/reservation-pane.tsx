@@ -514,6 +514,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const pendingDispatch = snapshot?.preparationViews.find(view => view.dispatch)?.dispatch ??
     snapshot?.session.workflowDispatches?.find(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review');
+  const dispatchNotices = snapshot?.session.workflowDispatches?.filter(dispatch => dispatch.requestId === request?.id &&
+    (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass)) ?? [];
   const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged || capabilityUnavailable || Boolean(pendingDispatch);
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     Boolean(pendingDispatch) || hasPendingAmendPrice || (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
@@ -634,11 +636,11 @@ export function ReservationPane(props: ReservationPaneProps) {
       {attention?.digest === digest && <div className={styles.notice} role="alert">{attention.message}
         {attention.fields.length > 0 && <div>{attention.fields.map(field => <button type="button" key={field} onClick={() => focusField(field)}>Review {inputFieldLabel(field)}</button>)}</div>}
       </div>}
-      {snapshot?.session.workflowDispatches?.filter(dispatch => dispatch.requestId === request?.id &&
-        (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass)).map(dispatch =>
+      {dispatchNotices.map(dispatch =>
         <p key={dispatch.grantId} className={styles.notice} role="status">{staffFailureCopy(dispatch.failureClass, true)}</p>)}
-      {pendingDispatch && pendingDispatch.status !== 'needs_reconcile' && !pendingDispatch.failureClass &&
-        <p className={styles.notice} role="status">Saving in Infor. Waiting for the confirmed outcome.</p>}
+      {pendingDispatch && !dispatchNotices.some(dispatch => dispatch.grantId === pendingDispatch.grantId) &&
+        <p className={styles.notice} role="status">{pendingDispatch.status === 'needs_reconcile'
+          ? staffFailureCopy('UNKNOWN', true) : 'Saving in Infor. Waiting for the confirmed outcome.'}</p>}
       {['queued', 'running'].includes(prefill?.status ?? '') && <p className={styles.small}>{prefill?.status === 'queued' ? 'Prefill is queued.' : prefill?.phase === 'native_checks' ? 'Checking the extracted details in Infor.' : 'Reading the email and attachments.'} You can start editing now.</p>}
       {directPrefillAbandoned && prefill.attemptCount < 2 && <p className={styles.small}>Prefill appears interrupted. Your edits are kept. <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
       {prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
