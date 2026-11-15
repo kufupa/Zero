@@ -166,7 +166,7 @@ describe('PartyPicker outcome copy', () => {
       'refused_origin_mismatch',
       'bookingAgency',
       'Acme',
-      'This email is Da Vinci mail. Centurion HMS will not look it up.',
+      "This email is from another hotel's mailbox. Nava will not look it up in this HMS.",
     ],
   ] as const)('names %s as an actionable state', (outcome, kind, name, expected) => {
     expect(partyNoCandidateNote(outcome, kind, name)).toBe(expected);
