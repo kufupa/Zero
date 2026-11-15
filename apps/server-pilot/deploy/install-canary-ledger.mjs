@@ -5,7 +5,7 @@
 //
 // On the box, as root (deploy/proof.sh does this):
 //   sudo -n env "PATH=$PATH" node deploy/install-canary-ledger.mjs --expected-sha <40-hex> \
-//     --property HRCEN|HRDAV|HRDAVS --workflow create|cancel [--state-dir <dir>] [--ledger <file>]
+//     --property HRCEN|HRDAV|HRDAVS --workflow <workflow> [--state-dir <dir>] [--ledger <file>]
 // create needs a journal that reached `created` (or `cancelled`); cancel needs `cancelled`.
 import { constants } from 'node:fs';
 import { lstat, mkdir, mkdtemp, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { verifyLabtestWorkflowProof } from '../tooling/hms-cloud/labtest-proof-workflows.mjs';
 
 process.umask(0o077);
 const APP = fileURLToPath(new URL('../', import.meta.url));
@@ -125,7 +126,7 @@ function nativeCancel(value, journal) {
 function rowFor(journal, workflow, registration, digest, digestCloudCreateRequest) {
   const request = journal.request, effective = journal.effectiveRequest, created = journal.created, cancelled = journal.cancelled;
   check(journal.version === 1 && journal.sha === SHA && journal.propertyCode === registration.propertyCode &&
-    (journal.status === 'cancelled' || (workflow === 'create' && journal.status === 'created')) &&
+    ['created', 'cancelled'].includes(journal.status) &&
     request?.propertyCode === journal.propertyCode && effective?.propertyCode === journal.propertyCode && hash(request) === journal.requestDigest &&
     request.cms?.send === false && effective.cms?.send === false && date(effective.stay?.arrival) && date(effective.stay?.departure) && effective.stay.arrival < effective.stay.departure &&
     Array.isArray(effective.stay.childAges) && effective.stay.childAges.every(age => Number.isInteger(age) && age >= 0 && age <= 17) &&
@@ -158,6 +159,10 @@ function rowFor(journal, workflow, registration, digest, digestCloudCreateReques
     readback = { fields: business(cancelled.readback.fields, journal, true), native: nativeCancel(cancelled.readback.native, journal),
       confirmation: cancelled.confirmation, nativeStayId: cancelled.nativeStayId,
       reasonCode: cancelled.reasonCode, cancellationNote: cancelled.cancellationNote, cancelModelVerified: true };
+  } else if (workflow !== 'create') {
+    const proof = journal.workflowProofs?.[workflow];
+    readback = verifyLabtestWorkflowProof(journal, workflow, proof);
+    observation = proof;
   }
   const provenance = journal.provenance?.[workflow];
   check(provenance && provenance.propertyCode === journal.propertyCode && provenance.tenantId === registration.expectedTenant &&
@@ -167,7 +172,9 @@ function rowFor(journal, workflow, registration, digest, digestCloudCreateReques
   return { propertyCode: journal.propertyCode, workflow, tenantId: registration.expectedTenant,
     credentialIdentity: provenance.canonicalCredentialIdentity, credentialVersionHmacSha256: provenance.credentialVersionHmacSha256,
     writerDependencyDigest: provenance.writerDependencyDigest, sourceRevision: provenance.sourceRevision,
-    readbackDigest: hash(readback), confirmation: created.confirmation, nativeStayId: created.nativeStayId,
+    readbackDigest: hash(readback), ...(workflow === 'guest_profile_create'
+      ? { nativeGuestId: journal.workflowProofs.guest_profile_create.nativeGuestId }
+      : { confirmation: created.confirmation, nativeStayId: created.nativeStayId }),
     observedAt: observedAt(observation.observedAt, provenance.boundBeforeNativeAt), evidenceKeyVersion: provenance.evidenceKeyVersion };
 }
 // The committed reader must accept this row and line before the live files change.
@@ -204,7 +211,8 @@ async function main() {
     workflow: { type: 'string' }, 'state-dir': { type: 'string' }, ledger: { type: 'string' } } });
   SHA = values['expected-sha'];
   const property = values.property, workflow = values.workflow;
-  check(/^[a-f0-9]{40}$/.test(SHA ?? '') && ['HRCEN', 'HRDAV', 'HRDAVS'].includes(property) && ['create', 'cancel'].includes(workflow), 'ARGUMENTS_INVALID');
+  check(/^[a-f0-9]{40}$/.test(SHA ?? '') && ['HRCEN', 'HRDAV', 'HRDAVS'].includes(property) &&
+    ['create', 'guest_profile_create', 'attach', 'addons', 'cancel'].includes(workflow), 'ARGUMENTS_INVALID');
   // The service account owns the checkout, the journals and the published files.
   const app = await lstat(APP);
   ownerUid = app.uid; ownerGid = app.gid;
@@ -234,7 +242,7 @@ async function main() {
   const previous = await bytes(SIDECAR, { owners: [0, ownerUid], optional: true });
   const sidecar = previous ? JSON.parse(previous.toString('utf8')) : { version: 2, writers: [] };
   check(sidecar?.version === 2 && Array.isArray(sidecar.writers) && sidecar.writers.every(entry => entry && typeof entry === 'object' && !Array.isArray(entry)), 'SIDECAR_SCHEMA_INVALID');
-  const core = entry => hash(Object.fromEntries(['propertyCode', 'workflow', 'tenantId', 'credentialIdentity', 'credentialVersionHmacSha256', 'writerDependencyDigest', 'sourceRevision', 'readbackDigest', 'confirmation', 'nativeStayId'].map(key => [key, entry[key]])));
+  const core = entry => hash(Object.fromEntries(['propertyCode', 'workflow', 'tenantId', 'credentialIdentity', 'credentialVersionHmacSha256', 'writerDependencyDigest', 'sourceRevision', 'readbackDigest', 'confirmation', 'nativeStayId', 'nativeGuestId'].map(key => [key, entry[key]])));
   const addedRow = !sidecar.writers.some(existing => core(existing) === core(row));
   if (addedRow) sidecar.writers.push(row);
   const line = `CANARY PASS ${row.workflow} ${row.propertyCode} ${SHA}`;
@@ -249,6 +257,7 @@ async function main() {
   if (addedLine) await replace(LEDGER, ledger, originalFile);
   publication = 'complete';
   process.stdout.write(`${JSON.stringify({ status: 'installed', line, addedLine, addedRow, confirmation: row.confirmation,
+    ...(row.nativeGuestId ? { nativeGuestId: row.nativeGuestId } : {}),
     observedAt: row.observedAt, ledger: LEDGER, sidecar: SIDECAR, flagsChanged: false })}\n`);
 }
 main().catch(error => {

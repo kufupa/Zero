@@ -3,7 +3,7 @@
 //
 // Run on the box from apps/server-pilot with the production env loaded and
 // NAVA_BUILD_COMMIT=<deployed sha> (deploy/proof.sh does this):
-//   node tooling/hms-cloud/labtest-proof.mjs --stage prepare|create|cancel \
+//   node tooling/hms-cloud/labtest-proof.mjs --stage <prepare|workflow> \
 //     --property HRCEN|HRDAV|HRDAVS --expected-sha <40-hex> --request <private json> [--state-dir <dir>]
 //
 // prepare: a read-only census picks the first arrival without a live Proof Labtest stay
@@ -50,7 +50,8 @@ function parseArgs(argv) {
   }
   assert(['HRCEN', 'HRDAV', 'HRDAVS'].includes(values['--property']) &&
     /^[a-f0-9]{40}$/.test(values['--expected-sha'] ?? '') &&
-    ['prepare', 'create', 'cancel'].includes(values['--stage']) && values['--request'], 'ARGUMENTS_INVALID');
+    ['prepare', 'create', 'guest_profile_create', 'amend', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
+    values['--request'], 'ARGUMENTS_INVALID');
   return { propertyCode: values['--property'], sha: values['--expected-sha'], stage: values['--stage'],
     requestPath: resolve(values['--request']),
     root: resolve(values['--state-dir'] ?? join(homedir(), '.local', 'state', 'nava-labtest-proof')) };
@@ -188,6 +189,8 @@ function safeNativeResult(result) {
 
 async function main() {
   args = parseArgs(process.argv.slice(2));
+  // The unchanged writer clones its credential lease (which contains release()), so no native attempt is safe here.
+  assert(args.stage !== 'amend', 'AMEND_WRITER_LEASE_NOT_CLONEABLE');
   await checkHold();
   const { z } = await import('zod');
   const load = path => import(pathToFileURL(join(APP_ROOT, path)).href);
@@ -217,7 +220,13 @@ async function main() {
     cms: z.object({ send: z.literal(false), messageId: text(100).optional() }).strict() }).strict().refine(value =>
       value.stay.arrival >= '2027-01-01' && value.stay.arrival < value.stay.departure &&
       (value.stay.childCount === undefined || value.stay.childCount === value.stay.childAges.length));
-  const parsed = requestSchema.safeParse(await privateFile(args.requestPath));
+  const { proof = {}, ...createInput } = await privateFile(args.requestPath);
+  const proofRequest = z.object({ addons: z.array(z.object({ code: text(100),
+    quantity: z.union([text(30), z.number().positive()]),
+    unitPrice: z.union([text(30), z.number().nonnegative()]).optional(),
+    frequency: text(100).optional(), pricingControl: text(100).optional(), folio: text(100).optional(),
+    comment: z.string().max(200).optional() }).strict()).length(1).optional() }).strict().parse(proof);
+  const parsed = requestSchema.safeParse(createInput);
   assert(parsed.success, 'REQUEST_INVALID');
   const request = parsed.data;
   delete request.mode;
@@ -234,6 +243,7 @@ async function main() {
     if (journal) {
       assert(journal.version === 1 && journal.propertyCode === args.propertyCode && journal.sha === args.sha &&
         hash(journal.request) === journal.requestDigest, 'JOURNAL_BINDING_MISMATCH');
+      if (args.stage !== 'prepare') assert(hash(journal.proofRequest ?? {}) === hash(proofRequest), 'PROOF_REQUEST_CHANGED');
     }
     let finished;
     if (args.stage === 'prepare' && journal) {
@@ -249,16 +259,21 @@ async function main() {
       assert(['prepared', 'created'].includes(journal.status), 'JOURNAL_REQUIRES_RECONCILIATION');
       assert(journal.status === (args.stage === 'create' ? 'prepared' : 'created'), 'STAGE_INVALID');
     }
+    if (!['prepare', 'create', 'cancel'].includes(args.stage)) {
+      const order = ['guest_profile_create', 'amend', 'attach', 'addons'];
+      assert(!journal.workflowProofs?.[args.stage] && !order.slice(order.indexOf(args.stage) + 1)
+        .some(workflow => journal.workflowProofs?.[workflow]), 'WORKFLOW_ALREADY_RUN_OR_OUT_OF_ORDER');
+    }
     const cloud = await load('tooling/hms-cloud/cloud-session.mjs');
     const credential = await load('tooling/hms-cloud/credential-version.mjs');
     const { createReservation } = await load('tooling/hms-cloud/create-reservation.mjs');
     const { digestCloudCreateRequest } = await load('tooling/hms-cloud/create-request-binding.mjs');
-    const { hmsDispatchTargetKeys } = await load('dist/ai/hms-dispatch-target.js');
+    const { hmsDispatchTargetKeys, hmsGuestProfileTargetKeys } = await load('dist/ai/hms-dispatch-target.js');
     const { createPostgresTargetAliasLock } = await load('dist/hms/property-read-lock.js');
     assert(process.env.DATABASE_URL && !process.env.TEST_DATABASE_URL && !process.env.VITEST_ALLOW_PILOT_RDS, 'RUNTIME_DATABASE_REQUIRED');
     const credentialProvenance = await bindCredentialMetadata(property, credential.credentialVersionHmacSha256);
     let writerDependencyDigest;
-    if (args.stage === 'create' || args.stage === 'cancel') {
+    if (args.stage !== 'prepare') {
       const { hmsWriterDependencyDigest } = await load('tooling/hms-cloud/hms-workflow-policy.mjs');
       writerDependencyDigest = hmsWriterDependencyDigest(args.stage);
       assert(/^[a-f0-9]{64}$/.test(writerDependencyDigest), 'WRITER_DEPENDENCY_DIGEST_INVALID');
@@ -270,7 +285,8 @@ async function main() {
     if (journal) await persist({ ...journal, provenance, updatedAt: new Date().toISOString() });
     const withTarget = async (target, action) => {
       await checkHold();
-      const aliases = hmsDispatchTargetKeys(target);
+      const aliases = target.kind === 'guest_profile'
+        ? hmsGuestProfileTargetKeys({ propertyCode: args.propertyCode, ...guest }) : hmsDispatchTargetKeys(target);
       const lock = createPostgresTargetAliasLock({ tenantId: property.expectedTenant, propertyCode: args.propertyCode,
         targetAliases: aliases, databaseUrl: process.env.DATABASE_URL });
       return lock.withLock(async (_connection, signal) => {
@@ -324,7 +340,7 @@ async function main() {
           'code', 'actual', 'candidates', 'coverage', 'rateAvailability'].filter(key => Object.hasOwn(prepared.detail, key))
           .map(key => [key, prepared.detail[key]]));
         await persist({ version: 1, propertyCode: args.propertyCode, sha: args.sha, request, requestDigest: hash(request),
-          provenance, census, status: 'prepare_observed', nativePrepare, updatedAt: new Date().toISOString() });
+          provenance, census, proofRequest, status: 'prepare_observed', nativePrepare, updatedAt: new Date().toISOString() });
         assert(prepared.outcome === 'prepared' && prepared.appliedVerification?.visibleFields === true &&
           prepared.applied?.guest?.firstName === guest.firstName && prepared.applied?.guest?.lastName === guest.lastName &&
           /^\d+$/.test(String(prepared.applied.guest.nativeId)) && /^[a-f0-9]{64}$/.test(prepared.requestBinding?.digest ?? '') &&
@@ -365,6 +381,19 @@ async function main() {
         return { status: 'created', created: { confirmation: saved.confirmation, nativeStayId: saved.nativeStayId,
           guestId: effective.guest.profileId, note: effective.note, save: safeNativeResult(saved.save),
           freshReadbackVerified: true, screenshots: saved.screenshots } };
+      });
+    } else if (args.stage !== 'cancel') {
+      const { runLabtestWorkflow, verifyLabtestWorkflowProof } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
+      const target = args.stage === 'guest_profile_create' ? { kind: 'guest_profile' } :
+        { propertyCode: args.propertyCode, kind: 'saved', confirmation: journal.created.confirmation,
+          nativeStayId: journal.created.nativeStayId };
+      result = await withTarget(target, async options => {
+        const proof = await runLabtestWorkflow({ workflow: args.stage, journal, property, transportId, options,
+          root: args.root, journalDir, checkHold, markPossible,
+          record: async evidence => persist({ ...journal, workflowAttempt: { workflow: args.stage, ...evidence },
+            updatedAt: new Date().toISOString() }) });
+        verifyLabtestWorkflowProof(journal, args.stage, proof);
+        return { status: 'created', workflowProofs: { ...journal.workflowProofs, [args.stage]: proof } };
       });
     } else {
       const { readShallow, readRecord } = await load('tooling/hms-cloud/hms-readers.mjs');
