@@ -78,15 +78,28 @@ export function guestProfileDefaultsToNew(snapshot: ReservationPaneSnapshot, req
   const guest = record(valueAt(snapshot, guestPath));
   if (guest.profileIntent !== 'existing_or_unknown' || guest.suggestedRef || valueAt(snapshot, `${guestPath}/nativeSelectionRef`) ||
       !Array.isArray(guest.candidateRefs) || guest.candidateRefs.length) return false;
+  const scoped = draft.observations.filter(row => row.kind === 'guest_candidate' &&
+    row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+    row.sourceMessageId === draft.source.messageId &&
+    (row.criteria.sourceHash === undefined || row.criteria.sourceHash === draft.source.sourceHash));
+  const emptySearch = (row: typeof scoped[number]) => row.status === 'complete' && row.coverage.complete === true &&
+    record(row.result).outcome === 'no_match' &&
+    (!Array.isArray(row.result.candidates) || !row.result.candidates.length);
+  // Staff refreshes supersede the email lookup, including partial results and changed search details.
+  const latest = scoped.findLast(row => row.criteria.workflow === 'create' && row.criteria.kind === 'guest_profile' &&
+    row.criteria.requestId === requestId && row.criteria.allocationId === allocationId);
+  if (latest) return currentIdentityRow(snapshot, `${guestPath}/nativeSelectionRef`, latest, false) && emptySearch(latest);
   const issue = snapshot.issues.find(row => row.kind === 'guest_profile_identity_unverified' &&
     row.path === `/requests/${requestId}/allocations/${allocationId}/guest/candidateRefs`);
   if (!issue) return false;
   // A failed, partial or unreadable search is not a "no profile" answer.
-  const searches = draft.observations.filter(row => row.kind === 'guest_candidate' && issue.evidenceRefs.includes(row.ref));
+  const searches = scoped.filter(row => issue.evidenceRefs.includes(row.ref));
+  const normal = (value: unknown) => text(value).normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
   return searches.length > 0 && searches.every(row => {
     const result = record(row.result);
-    return row.status === 'complete' && row.coverage.complete === true && result.outcome === 'no_match' &&
-      (!Array.isArray(result.candidates) || !result.candidates.length);
+    const field = result.field === 'email' ? 'email' : result.field === 'lastName' ? 'lastName' : null;
+    return emptySearch(row) && field !== null && Boolean(normal(result.query)) &&
+      normal(result.query) === normal(valueAt(snapshot, `${guestPath}/${field}`));
   });
 }
 export function staffEnteredAt(snapshot: ReservationPaneSnapshot, path: string): boolean {
