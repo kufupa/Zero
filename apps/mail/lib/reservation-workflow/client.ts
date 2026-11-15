@@ -25,6 +25,7 @@ import type {
   PropertySwitch,
 } from './types';
 import { ReservationWorkflowStaleRevisionError } from './types';
+import { knownFailureCopy } from './failure-copy';
 
 type ItemInput = {
   propertySwitch?: PropertySwitch;
@@ -122,7 +123,7 @@ function errorFor(result: StateResult): Error {
     not_found: 'The source-bound reservation draft is no longer available.',
     invalid_state: 'The saved reservation draft is not readable by this version.',
   };
-  return new Error(messages[result.status] ?? `Reservation service: ${detail}.`);
+  return new Error(knownFailureCopy(result.status) ?? messages[result.status] ?? `Reservation service: ${detail}.`);
 }
 
 const RECOGNIZED_NON_OK_RESPONSE_STATUSES = new Set([
@@ -185,6 +186,7 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
           !isString(value.requestId) || !isUuid(value.grantId) || value.operationId !== value.grantId ||
           !(isUuid(value.runId) || (status === 'needs_reconcile' || status === 'needs_review' || status === 'succeeded' || status === 'failed') && value.runId === null)) return [];
       return [{ endpoint, status, requestId: value.requestId, runId: value.runId, grantId: value.grantId, operationId: value.grantId,
+        ...(knownFailureCopy(value.failureClass) ? { failureClass: value.failureClass as string } : {}),
         ...(isString(value.allocationId) ? { allocationId: value.allocationId } : {}),
         ...(isString(value.serviceId) ? { serviceId: value.serviceId } : {}) }];
     }) : [];
@@ -572,6 +574,9 @@ function inputFieldLabels(values: unknown): string {
 function operationNotice(result: unknown, success: string[]): string | undefined {
   if (!isRecord(result)) return 'The reservation service returned an unreadable native-tool result.';
   if (success.includes(String(result.status))) return undefined;
+  const failure = knownFailureCopy(result.failureClass ?? result.issue ?? result.status,
+    result.status === 'unknown' || result.status === 'needs_reconcile');
+  if (failure) return failure;
   const status = isString(result.status) ? result.status.replaceAll('_', ' ') : 'unknown outcome';
   const issue = nativeIssueText(result.issue);
   const fields = inputFieldLabels(result.fields);
@@ -580,6 +585,8 @@ function operationNotice(result: unknown, success: string[]): string | undefined
 }
 
 function nativeIssueText(issue: unknown): string | null {
+  const failure = knownFailureCopy(issue);
+  if (failure) return failure;
   if (!isString(issue)) return null;
   if (issue === 'create_input_incomplete' || issue === 'native_create_input_incomplete') {
     return 'Complete the missing booking details and select any unresolved Infor matches before checking the booking';

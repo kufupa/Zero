@@ -6,6 +6,7 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
+import { knownFailureCopy } from '@/lib/reservation-workflow/failure-copy';
 import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 import type { MailSourceInput, MailSourceSelection } from './backend-bind';
 import type {
@@ -396,6 +397,8 @@ function roomAlternativesFromError(error: unknown): QuoteRoomAlternative[] {
 
 function searchFailure(error: unknown): { reason: string; detail?: string; noMatchingRate?: boolean; alternatives?: QuoteRoomAlternative[] } {
   const detail = rejectionReason(error);
+  const failure = knownFailureCopy(detail);
+  if (failure) return { reason: failure };
   const alternatives = roomAlternativesFromError(error);
   const withAlternatives = (value: { reason: string; detail?: string; noMatchingRate?: boolean }) =>
     alternatives.length ? { ...value, alternatives } : value;
@@ -435,7 +438,8 @@ const EXPIRED_STAFF_QUOTE_SERVER_MESSAGES = new Set([
 export function qualifiedPdfFailureReason(error: unknown): string {
   if (error instanceof Error && EXPIRED_STAFF_QUOTE_SERVER_MESSAGES.has(error.message.trim()))
     return EXPIRED_STAFF_QUOTE_COPY;
-  return rejectionReason(error);
+  const reason = rejectionReason(error);
+  return knownFailureCopy(reason) ?? reason;
 }
 
 function hrdavKnownCode(raw: string): string | null {
@@ -1387,6 +1391,8 @@ function boundStaffQuoteJob(
   const result = view.result;
   if (result?.ok === false) {
     const code = typeof result.code === 'string' ? result.code : 'staff_quote_failed';
+    const failure = knownFailureCopy(code);
+    if (failure) return { status: 'unavailable', reason: failure };
     const message =
       typeof result.message === 'string' && result.message.trim()
         ? result.message
@@ -1401,6 +1407,8 @@ function boundStaffQuoteJob(
     };
   }
   if (view.status === 'failed') {
+    const failure = knownFailureCopy(view.failureClass);
+    if (failure) return { status: 'unavailable', reason: failure };
     if (view.failureClass === 'POLL_LOST') {
       return {
         status: 'unavailable',

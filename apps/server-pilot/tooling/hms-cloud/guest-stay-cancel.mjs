@@ -206,7 +206,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
   let armed = false, dispatched = false, nativeDialog = null, response = null, authorizedRequest;
   let fence, scope, interactionStarted = false, openedReady = false, baselineVerified = false;
-  let preChargeStarted = false, preChargeText = null;
+  let preChargeStarted = false, preChargeText = null, seenChargeText = null;
   const blocked = [];
   const forwarded = new WeakSet();
   const approvePreCharge = async (dialog) => {
@@ -223,10 +223,10 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     disarm: () => { armed = false; }, recordDialog: (dialog) => { nativeDialog = dialog; },
     quarantine: () => { fence?.quarantine(); scope?.close(); },
     result: (reason, dialog) => ({ outcome: preChargeStarted ? 'fee_accepted_unconfirmed' :
-      preChargeText || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
+      (preChargeText ?? seenChargeText) || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
       dispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
     requestDispatched: dispatched, httpStatus: response?.status() || null, nativeDialog,
-    penaltyText: dialog?.message ?? preChargeText, blockedRequests: [...blocked] }),
+    penaltyText: dialog?.message ?? preChargeText ?? seenChargeText, blockedRequests: [...blocked] }),
     onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK' }),
   });
   const work = (async () => { try {
@@ -309,6 +309,9 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       windows.map((window) => window.innerText.trim())).catch(() => []);
     let fee = dialogs.some((text) => /penalt|fee|charge|deposit/i.test(text) && !/cancellation reason/i.test(text)) ||
       Boolean(nativeDialog && /penalt|fee|charge|deposit/i.test(nativeDialog.message));
+    // A later abort must still report the charge text this scan found.
+    if (fee) seenChargeText = dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text) && !/cancellation reason/i.test(text)) ??
+      nativeDialog?.message ?? null;
     const reasons = cancelReasons(policy);
     const policyReady = Boolean(reasons && (expected.allowRealGuest === true || reasons.some((item) =>
       item.value === 'TEST' && item.display === 'Test Reservations')));
@@ -367,8 +370,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     chargeApproved: preChargeStarted, dialogs, nativeDialog, blockedRequests: blocked };
   } catch (error) {
     armed = false;
-    return { outcome: preChargeStarted ? 'fee_accepted_unconfirmed' : preChargeText ? 'fee_dialog_pending' :
-      dispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), penaltyText: preChargeText,
+    return { outcome: preChargeStarted ? 'fee_accepted_unconfirmed' : (preChargeText ?? seenChargeText) ? 'fee_dialog_pending' :
+      dispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), penaltyText: preChargeText ?? seenChargeText,
       httpStatus: response?.status() || null, nativeDialog, blockedRequests: blocked };
   } finally {
     if (!openedReady && interactionStarted) fence?.quarantine();
@@ -455,8 +458,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
   let chargeArmed = false, chargeApproved = opened.chargeApproved === true, chargeDispatched = false, chargeRequest, chargeResponse;
   let chargeText = opened.penaltyText ?? null;
   let pendingDispatch = 0, preparedSnapshot = null;
-  let fence, scope, interactionStarted = false;
-  const blocked = [];
+  let fence, scope, interactionStarted = false, reasonSelected = false, settledTaxReads = 0;
+  const blocked = [], earlyTaxReads = [];
   const captureChargeResponse = (item) => { if (item.request() === chargeRequest) chargeResponse = item; };
   page.on('response', captureChargeResponse);
   const action = actionDeadline(page, timeoutMs, {
@@ -540,8 +543,11 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       let pathname = '', action = '';
       try { const url = new URL(request.url()); pathname = url.pathname; action = url.searchParams.get('pageaction') || ''; }
       catch { /* Block unparseable targets. */ }
-      if (dispatched && !fence.isQuarantined() && isNativeTaxValuesRead(request, frame, taxReadValues) && scope.allow(request)) {
+      // HMS reads the stay's tax values once a reason with a penalty is chosen. It is a read of the verified stay.
+      if ((dispatched || reasonSelected) && !fence.isQuarantined() && isNativeTaxValuesRead(request, frame, taxReadValues) && scope.allow(request)) {
         opened.forwarded.add(request);
+        if (!dispatched) earlyTaxReads.push(page.waitForResponse((item) => item.request() === request, { timeout: timeoutMs })
+          .then(async (item) => item.status() === 200 && await item.finished() === null).catch(() => false));
         return route.fallback();
       }
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && pathname &&
@@ -599,6 +605,25 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       return route.abort();
     });
     action.check();
+    const visibleChargeText = async () => (await windows.evaluateAll((items) => items.map((item) => item.innerText.trim()))
+      .catch(() => [])).find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? null;
+    // The penalty appears only after HMS has processed each tax read sent before Save.
+    // A read that fails or is still open leaves the dialog unknown, so the flow stops.
+    const settleEarlyTaxReads = async () => {
+      while (settledTaxReads < earlyTaxReads.length) {
+        const count = earlyTaxReads.length;
+        const finished = await Promise.race([
+          Promise.all(earlyTaxReads.slice(settledTaxReads, count)).then((results) => results.every((ok) => ok === true)),
+          page.waitForTimeout(Math.min(10_000, timeoutMs)).then(() => false, () => false)]);
+        if (!finished) {
+          chargeText = await visibleChargeText() ?? chargeText;
+          throw new Error('CANCEL_TAX_READ_UNFINISHED');
+        }
+        settledTaxReads = count;
+        await page.waitForTimeout(1_000);
+        action.check();
+      }
+    };
     interactionStarted = true;
     await arrow.click();
     action.check();
@@ -607,6 +632,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     });
     if (await choice.count() !== 1) throw new Error('CANCEL_REASON_NOT_UNIQUE');
     action.check();
+    reasonSelected = true;
     await choice.click();
     action.check();
     const filled = await note.evaluate((el, value) => {
@@ -621,6 +647,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
       return component?.getValue?.() === expectedReason.value && el.value.trim() === expectedReason.display;
     }, { value: reasonCode, display: reasonLabel });
+    await settleEarlyTaxReads();
     const after = await currentCancellationRecord(page, expected);
     const afterFields = await recordSnapshot(frame);
     action.check();
@@ -629,6 +656,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
         frame !== after.frame || JSON.stringify(state.native) !== JSON.stringify(after.native) ||
         !sameParties(state, afterFields, expected) || !unchangedCancellationFields(before, afterFields, expected) ||
         !unchangedExcept(before, afterFields, {}) || fence.isQuarantined() || await windows.count() !== 1) {
+      chargeText = await visibleChargeText() ?? chargeText;
       throw new Error('CANCEL_REASON_CHANGED');
     }
     preparedSnapshot = afterFields;
@@ -658,6 +686,14 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     if (bindDepositReceived && !await depositDisplayMatches(frame, expected)) throw new Error('CANCEL_DEPOSIT_CHANGED');
     action.check();
     if (continuationAllowed() !== true || fence.isQuarantined()) throw new Error('CANCEL_DISPATCH_DISARMED');
+    if (earlyTaxReads.length) {
+      // Never click OK on a dialog that changed after staff saw its text.
+      await settleEarlyTaxReads();
+      if (await windows.count() !== 1 || await dialog.count() !== 1 || (await dialog.innerText()).trim() !== reasonText) {
+        chargeText = await visibleChargeText() ?? chargeText;
+        throw new Error('CANCEL_CHARGE_CHANGED');
+      }
+    }
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs }).catch(() => null);
     action.check();
     armed = true;

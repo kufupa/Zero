@@ -4282,7 +4282,7 @@ function projectCurrentExtraction(input: {
             arrival && departure && group.arrival === arrival && group.departure === departure);
           const boardAlternatives = !safeCurrentText(date.mealPlan, currentRefs, 120) && boardsByValue.size > 1
             ? dateMatches.filter((group) => boardsByValue.has(matchedBoard(group.requestedMealPlan ?? group.mealPlan))) : [];
-          if (new Set(boardAlternatives.map((group) =>
+          if (boardAlternatives.length && new Set(boardAlternatives.map((group) =>
               matchedBoard(group.requestedMealPlan ?? group.mealPlan))).size === boardsByValue.size) {
             return boardAlternatives.map((group) => {
               usedIds.add(group.id);
