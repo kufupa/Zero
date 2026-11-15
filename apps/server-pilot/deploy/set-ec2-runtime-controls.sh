@@ -35,13 +35,16 @@ const [policyPath, envPath, root] = process.argv.slice(2);
 try {
   const policy = await import(pathToFileURL(policyPath).href);
   const sha = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  if (!/^[a-f0-9]{40}$/.test(sha) ||
-      fs.readFileSync(`${root}/apps/server-pilot/dist/.nava-build-commit`, 'utf8').trim() !== sha ||
-      (process.env.NAVA_LIVE_SHA && process.env.NAVA_LIVE_SHA !== sha)) throw Error();
+  let built;
+  try { built = fs.readFileSync(`${root}/apps/server-pilot/dist/.nava-build-commit`, 'utf8').trim(); }
+  catch (error) { if (error.code === 'ENOENT') process.exit(0); throw error; }
+  if (!/^[a-f0-9]{40}$/.test(sha) || built !== sha ||
+      (process.env.NAVA_LIVE_SHA && process.env.NAVA_LIVE_SHA !== sha)) process.exit(0);
   const ledger = '/etc/nava/hms-canary-passes.txt';
-  try { fs.lstatSync(ledger); } catch (error) { if (error.code === 'ENOENT') process.exit(0); throw error; }
   for (const path of [ledger, `${ledger}.writers.json`]) {
-    const stat = fs.lstatSync(path);
+    let stat;
+    try { stat = fs.lstatSync(path); }
+    catch (error) { if (error.code === 'ENOENT') process.exit(0); throw error; }
     if (!stat.isFile() || (stat.mode & 0o022) || stat.size > 1048576 ||
         ![0, process.getuid()].includes(stat.uid)) throw Error();
   }
@@ -60,6 +63,14 @@ try {
     }
   }
   if (updates.size) {
+    const candidate = { ...env, ...Object.fromEntries(updates), NAVA_CANARY_PASS_FILE: ledger };
+    // A shared-path migration must not discard another workflow/property's valid custom proof.
+    const losesProof = policy.HMS_PROPERTIES.some(property => policy.HMS_WRITE_WORKFLOWS.some(workflow =>
+      policy.hmsWriterReady(env, property, workflow) && !policy.hmsWriterReady(candidate, property, workflow)));
+    if (losesProof) {
+      console.error('installed canary binding skipped: canonical ledger would remove existing writer readiness');
+      process.exit(0);
+    }
     console.log(`NAVA_CANARY_PASS_FILE=${ledger}`);
     for (const [key, value] of updates) console.log(`${key}=${value}`);
   }
@@ -70,7 +81,7 @@ try {
 NODE
 )"
   if [ -z "$bindings" ]; then
-    echo 'No current installed writer proofs to bind; runtime controls unchanged'
+    echo 'No compatible installed writer bindings; runtime controls unchanged'
     exit 0
   fi
   mapfile -t binding_args <<<"$bindings"
