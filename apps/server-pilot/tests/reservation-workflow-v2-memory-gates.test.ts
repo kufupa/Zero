@@ -88,8 +88,11 @@ describe('reservation memory eligibility', () => {
     expect(await leads(accountInput, 'ar_account')).toContainEqual(expect.objectContaining({
       value: 'Account One', support: 4, autoSelectable: false }));
     const outboundInput = setup(Array(4).fill('Refund Travel'), 'booker@business.test');
-    (fixture.memory as { addressEvidence: Array<{ role: string }> }).addressEvidence
-      .forEach(row => { row.role = 'outbound-recipient'; });
+    const outboundMemory = fixture.memory as { addressEvidence: Array<{ role: string }>; observations: Array<Record<string, unknown>> };
+    outboundMemory.addressEvidence.forEach(row => { row.role = 'outbound-recipient'; });
+    outboundMemory.observations.forEach(row => { row.historicalAutoTransfer = { value: true, evidence: 'stay360_auto_transfer_card_row' }; });
+    if (request?.kind === 'create') request.body.shared.organization = { name: 'Company One', candidateRefs: [], suggestedRef: null };
+    expect(await loadReservationNativeLeads({ ...outboundInput, proposal: bound })).toEqual([]);
     expect(await leads(outboundInput, 'bookingAgency', bound)).toEqual([]);
     expect(await loadReservationMemoryGuidance({ ...outboundInput, agencyName: 'Refund Travel' })).toMatchObject({
       status: 'unavailable', issue: 'booking_memory_identity_unavailable' });

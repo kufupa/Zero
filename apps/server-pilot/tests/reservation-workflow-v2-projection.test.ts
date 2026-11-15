@@ -209,8 +209,9 @@ describe('reservation workflow host projection', () => {
   });
   it.each(['create', 'quote', 'amend'] as const)('emits schema-valid source-only note composition for %s', async (kind) => {
       const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind,
-        requestText: claim('Please arrange', 'Please arrange', ref) }], issues: [] }), undefined,
-      'Please arrange. Parking requested.');
+        requestText: claim('Please arrange', 'Please arrange', ref),
+        rateHints: [claim('corporate rate', 'corporate rate', ref)] }], issues: [] }), undefined,
+      'Please arrange. Parking requested.\nPlease quote the corporate rate.');
       const observations = result.observations.filter(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.workflow === kind);
       expect(observations.length).toBeGreaterThan(0);
       for (const row of observations) {
@@ -220,6 +221,12 @@ describe('reservation workflow host projection', () => {
       }
       expect(observations.some(row => Array.isArray(row.result.sourceClauses) && row.result.sourceClauses.some((clause: unknown) =>
         typeof clause === 'object' && clause !== null && 'text' in clause && clause.text === 'Parking requested.'))).toBe(true);
+      const request = result.proposal.content.requests.find(row => row.kind === kind);
+      const note = request?.kind === 'create' ? request.body.shared.reservationNote : request?.kind === 'quote' ? request.body.notes : null;
+      if (kind !== 'amend') {
+        expect(note).toContain('Please quote the corporate rate.');
+        expect(note).not.toContain('\ncorporate rate');
+      }
       expect(reservationWorkflowV2DraftSchema.safeParse({ contractVersion: 2, schemaVersion: 'reservation-prefill.v0.2',
         workItemId: randomUUID(), transportId: 'projection-transport', propertyCode: 'HRCEN',
         source: { messageId: 'projection-message', threadId: 'projection-thread', sourceHash: 'a'.repeat(64), arrivedAt: '2026-11-14T00:00:00.000Z' },

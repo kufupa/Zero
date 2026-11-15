@@ -381,7 +381,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
     const multiClientDomain = organizations.size > 1 || domainResults.some(result => result.candidatesTruncated || result.conflictsTruncated);
     const observations: ReservationWorkflowV2Observation[] = [];
     const latestStays = new Map<string, { capturedAt: string; rows: Memory['observations'] }>();
-    for (const row of memory.observations) {
+    for (const row of input.savedAmendBaseline ? memory.observations : senderMemory.observations) {
       const capturedAt = snapshotTimes.get(row.snapshotId);
       if (!capturedAt) continue;
       const current = latestStays.get(row.confirmationKey);

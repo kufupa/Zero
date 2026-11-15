@@ -1728,7 +1728,10 @@ function mergeSourceNote(existing: string, sourceNotes: string[], evidence: Rese
       sourceNotes.some((clause) => normalizedFact(clause) === normalizedFact(fragment)) ||
       !sourceNotes.some((clause) => normalizedFact(clause).includes(normalizedFact(fragment)));
   }).join('\n');
-  const additions = sourceNotes.filter((clause) => !normalizedFact(retained).includes(normalizedFact(clause)));
+  const completeClauses = sourceNotes.filter((clause, index) => !sourceNotes.some((other, otherIndex) =>
+    normalizedFact(other).includes(normalizedFact(clause)) &&
+    (normalizedFact(other).length > normalizedFact(clause).length || otherIndex < index)));
+  const additions = completeClauses.filter((clause) => !normalizedFact(retained).includes(normalizedFact(clause)));
   return { fullNote: [retained, ...additions].filter(Boolean).join('\n'), additions };
 }
 
