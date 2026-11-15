@@ -192,12 +192,12 @@ describe('pane stay lookup flag', () => {
 });
 
 describe('findStay', () => {
-  it.each(['HRDAV', 'HRDAVS'])('rechecks %s read proof inside the property lock and preserves HRCEN reads', async (propertyCode) => {
+  it.each(['HRDAV', 'HRDAVS'])('rechecks %s read availability inside the property lock and preserves HRCEN reads', async (propertyCode) => {
     const target = hmsReadTargetForProperty(propertyCode);
-    let selectedProofAvailable = true;
+    let selectedReadEnabled = true;
     const configuration = vi.spyOn(rateCatalogue, 'propertyConfigurationForScope').mockImplementation(async (scope) => ({
       propertyCode: scope.propertyCode, capabilities: { reads: {
-        status: scope.propertyCode === propertyCode && !selectedProofAvailable ? 'unavailable' : 'staff-enabled',
+        status: scope.propertyCode === propertyCode && !selectedReadEnabled ? 'unavailable' : 'staff-enabled',
       } },
     }) as never);
     const spawn = vi.fn(async () => lookupResult({ screenshots: [] }));
@@ -205,9 +205,9 @@ describe('findStay', () => {
     const deps = { target, transportId: 'transport-faith', lock: () => passingLock() };
     expect((await findStay({ confirmation: STAY.confirmation! }, deps)).outcome).toBe('found');
     expect(configuration).toHaveBeenCalledWith(expect.objectContaining({ propertyCode, transportId: 'transport-faith' }),
-      expect.anything(), expect.anything());
+      expect.anything());
     const waitingLock = { withLock: async <T>(operation: () => Promise<T>) => {
-      selectedProofAvailable = false;
+      selectedReadEnabled = false;
       return operation();
     } };
     expect((await findStay({ confirmation: STAY.confirmation! }, { ...deps, lock: () => waitingLock })).outcome).toBe('refused_flag_off');
