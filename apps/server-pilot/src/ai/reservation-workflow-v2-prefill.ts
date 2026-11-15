@@ -2578,6 +2578,7 @@ function isNegatedCancelInstruction(prefix: string): boolean {
 }
 
 function isPartialStayCancellation(text: string): boolean {
+  const sentenceBoundary = /[;!?\n]|(?<!\d)\.|\.(?!\d)/u;
   const partial = [...text.matchAll(/\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/giu)]
     .some((match) => !isNegatedCancelInstruction(text.slice(0, match.index)));
   // Apply the same clause-level negation to whole-stay and partial instructions.
@@ -2585,10 +2586,16 @@ function isPartialStayCancellation(text: string): boolean {
     .some((match) => {
       const prefix = text.slice(0, match.index);
       if (isNegatedCancelInstruction(prefix)) return false;
-      const clausePrefix = prefix.split(/[;,.!?\n]|\b(?:so|therefore|thus|hence)\b/iu).at(-1) ?? '';
-      const terminator = text.slice(match.index + match[0].length).match(/[;!?\n]|(?<!\d)\.|\.(?!\d)/u)?.[0];
-      const inquiry = /\b(?:if|whether|unless)\b|^\s*(?:can|could|would|should|may|might|do|does|did|is|are|was|were|how|what|why)\b/iu.test(clausePrefix);
-      return terminator !== '?' && !inquiry;
+      const sentencePrefix = prefix.split(sentenceBoundary).at(-1) ?? '';
+      const suffix = text.slice(match.index + match[0].length);
+      const terminator = sentenceBoundary.exec(suffix);
+      // Conditions can precede a comma or follow the cancellation phrase.
+      const sentence = sentencePrefix + match[0] + suffix.slice(0, terminator?.index);
+      const conditional = /\b(?:if|whether|unless|when|once|provided|providing|assuming|pending|subject\s+to|in\s+case|may|might|could|should|perhaps|maybe|possibly|potentially)\b|\bwould\b(?!\s+(?:like|prefer|want)\b)/iu.test(sentence);
+      const clausePrefix = sentencePrefix.split(/,|\b(?:so|therefore|thus|hence)\b/iu).at(-1) ?? '';
+      const inquiry = /^\s*(?:can|could|would|should|may|might|do|does|did|is|are|was|were|how|what|why)\b/iu.test(clausePrefix);
+      const affirmative = CANCEL_BRIDGE_ONLY.test(clausePrefix) || /\b(?:decided|chosen|opted|agreed)\s+to\s*$/iu.test(clausePrefix);
+      return terminator?.[0] !== '?' && !conditional && !inquiry && affirmative;
     });
   return partial && !whole;
 }
