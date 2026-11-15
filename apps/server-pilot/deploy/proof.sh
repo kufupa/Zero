@@ -8,8 +8,7 @@
 # Each then installs `CANARY PASS <workflow> <property> <sha>` and its writers.json row
 # (deploy/install-canary-ledger.mjs) unless --no-ledger is given.
 # Run order: create, guest_profile_create, amend, attach, addons, cancel.
-# Amend remains unsupported: pane-amend-session.mjs clones a credential lease containing release().
-# A writer fix is needed; this harness never modifies writers or bypasses their checks.
+# Amend changes Booker Contact on the owned stay; date/room/rate changes need separate proof.
 # Other follow-ups only target the stay this harness created. Each prepares unsaved, saves once,
 # and reads back in a fresh session. Cancel may run early for cleanup.
 # The create request may include proof.addons: [{code, quantity, ...native item fields}].
@@ -55,10 +54,6 @@ esac
   echo "proof: --request is accepted only by create; follow-ups use its bound request" >&2
   exit 2
 }
-if [ "$WORKFLOW" = amend ]; then
-  echo "PROOF UNSUPPORTED amend: pane-amend-session.mjs cloudPaneAmendRunOptions structuredClone includes credentialLease.release(); writer fix required"
-  exit 3
-fi
 if [ "$LOCAL" = 1 ]; then
   [ "$(id -un)" = ubuntu ] && [ "$SERVER_PILOT" = "$REMOTE_SERVER_PILOT" ] || {
     echo "proof: --local requires ubuntu in ${REMOTE_SERVER_PILOT}" >&2

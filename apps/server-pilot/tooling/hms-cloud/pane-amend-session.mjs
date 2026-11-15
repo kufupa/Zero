@@ -775,7 +775,8 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
     });
     return { ...draft, cmsSendControl, ...(input.captureGuestOptInBaseline ? { guestOptInControl } : {}) };
   };
-  input = { ...structuredClone({ ...input, signal: undefined }), signal: input?.signal };
+  const { signal, credentialLease, ...businessInput } = input ?? {};
+  input = { ...structuredClone(businessInput), signal, credentialLease };
   const selected = input?.selected, changes = input?.changes;
   const nativeReal = input.allowRealGuest === true || (input.allowChangedLabGuarantee === true &&
     isLabtest(selected) && selected.arrival >= '2027-01-01');

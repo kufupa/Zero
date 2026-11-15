@@ -184,13 +184,15 @@ function safeNativeResult(result) {
       if (result[key].length === 0) safe[key] = [];
     }
   }
+  // Keep native fee evidence in the private journal, never in status stdout.
+  for (const key of ['penaltyText', 'dialogs', 'nativeDialog', 'policy']) {
+    if (Object.hasOwn(result ?? {}, key)) safe[key] = result[key];
+  }
   return safe;
 }
 
 async function main() {
   args = parseArgs(process.argv.slice(2));
-  // The unchanged writer clones its credential lease (which contains release()), so no native attempt is safe here.
-  assert(args.stage !== 'amend', 'AMEND_WRITER_LEASE_NOT_CLONEABLE');
   await checkHold();
   const { z } = await import('zod');
   const load = path => import(pathToFileURL(join(APP_ROOT, path)).href);
@@ -434,6 +436,7 @@ async function main() {
           await markPossible('cancel_possible', { cancelExpected: expected });
           await checkHold(options.signal);
           const opened = await openLabtestCancellation(page, expected);
+          await persist({ ...journal, cancelOpen: safeNativeResult(opened), updatedAt: new Date().toISOString() });
           assert(opened.outcome === 'reason_ready', 'CANCEL_OPEN_UNVERIFIED');
           const matches = opened.reasons?.filter(value => value.value === 'TEST' && value.display === 'Test Reservations');
           assert(matches?.length === 1, 'CANCEL_TEST_REASON_UNAVAILABLE');
