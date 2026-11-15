@@ -11,7 +11,7 @@ import { maskCardNumbers } from './card-mask.js';
 import { classifyMailSource } from './mail-source.js';
 import { buildReservationWorkflowV2MailQuery, selectReservationWorkflowV2MailCandidates } from './reservation-workflow-v2-mail-context.js';
 import { selectReservationWorkflowV2Guidance, type WorkflowGuidanceCatalog, type WorkflowGuidanceProjection, type WorkflowGuidanceReceipt } from './reservation-workflow-v2-memory.js';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { currentAuthoredMessageText, groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
@@ -2197,9 +2197,8 @@ const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:mor
 const OPERATIONAL_NOTE_REGARDS = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*(?:[ \t]+\S+){0,3}[ \t]*$/im;
 const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(?:very\s+much|in\s+advance|kindly))?|cheers)[ \t]*[,.!]*[ \t]*$/gim;
 
-function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
-  const current = (input.selection.currentBodyText ?? input.selection.bodyText)
-    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+function authoredSourceNoteClauses(input: { selection: SyncedQuoteSelection }): string[] {
+  const current = currentAuthoredMessageText(input.selection.currentBodyText ?? input.selection.bodyText);
   // Everything from the sign-off down is signature, not a stay instruction, except an explicit postscript.
   const signOff = OPERATIONAL_NOTE_REGARDS.exec(current)?.index ?? [...current.matchAll(OPERATIONAL_NOTE_THANKS)].at(-1)?.index;
   const signature = signOff === undefined ? '' : current.slice(signOff);
@@ -2207,15 +2206,19 @@ function operationalSourceNote(input: { selection: SyncedQuoteSelection }): stri
   const body = signOff === undefined ? current
     : `${current.slice(0, signOff)}\n${postscript ? signature.slice(postscript.index + postscript[0].length) : ''}`;
   // Dropping a leading greeting keeps each clause a verbatim substring of the current email body.
-  const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim()).filter((line) =>
+  return body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim())
+    .filter((line) => line.length > 3 && !/https?:\/\/|www\./i.test(line));
+}
+
+function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
+  const clauses = authoredSourceNoteClauses(input).filter((line) =>
     !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(line) &&
     (Boolean(dinnerAmount(line)) ||
       /\b(?:rates?|tariff|quotation|availability|pro[\s-]?forma|invoice|shuttle|transfer)\b/i.test(line) &&
       /\b(?:please|kindly|request(?:ed)?|need|require|advise|send|provide|quote|confirm|arrange)\b/i.test(line) ||
       OPERATIONAL_NOTE_CLASSES.some((pattern) => pattern.test(line)) &&
       !OPERATIONAL_NOTE_PRICE_ENQUIRY.test(line) &&
-      (!OPERATIONAL_NOTE_PRICING.test(line) || /\b(?:arrange|book|reserve|provide|include|agreed|approved)\b/i.test(line))) &&
-    line.length > 3 && !/https?:\/\/|www\./i.test(line));
+      (!OPERATIONAL_NOTE_PRICING.test(line) || /\b(?:arrange|book|reserve|provide|include|agreed|approved)\b/i.test(line))));
   return [...new Set(clauses)];
 }
 
@@ -3885,14 +3888,13 @@ function projectCurrentExtraction(input: {
     const ownMarkers = new Set(noteMarkers(extracted).filter((marker) => !otherMarkers.has(marker)));
     const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row),
       normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
-    const authoredNoteText = (input.selection.currentBodyText ?? input.selection.bodyText)
-      .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+    const authoredNoteClauses = authoredSourceNoteClauses(input);
     const sourceNoteCandidates = [...operationalSourceNote(input), ...extracted.rateHints.flatMap((claim) =>
       currentClaim(claim, currentRefs) && /\brate\b/i.test(claim.raw) &&
-      authoredNoteText.includes(claim.raw) &&
       !exactSourceCode(claim, 'rate', { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode }) &&
       input.evidence.some(row => row.relation === 'current_message' && claim.sourceRefs.includes(row.ref) &&
-        row.text.includes(claim.raw)) ? [claim.raw] : [])];
+        row.text.includes(claim.raw)) ? authoredNoteClauses.filter(clause =>
+        clause.includes(claim.raw) && !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(clause)) : [])];
     const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
       currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1
       ? [...new Set(sourceNoteCandidates)].filter((clause) => {

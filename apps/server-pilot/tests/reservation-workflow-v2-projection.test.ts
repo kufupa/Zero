@@ -210,8 +210,8 @@ describe('reservation workflow host projection', () => {
   it.each(['create', 'quote', 'amend'] as const)('emits schema-valid source-only note composition for %s', async (kind) => {
       const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind,
         requestText: claim('Please arrange', 'Please arrange', ref),
-        rateHints: [claim('corporate rate', 'corporate rate', ref)] }], issues: [] }), undefined,
-      'Please arrange. Parking requested.\nPlease quote the corporate rate.');
+        rateHints: ['corporate rate', 'agency rate', 'historical rate'].map(text => claim(text, text, ref)) }], issues: [] }), undefined,
+      'Please arrange. Parking requested.\nPlease quote the corporate rate.\nDo not use the agency rate.\n> Please quote the historical rate.');
       const observations = result.observations.filter(row => row.criteria.kind === 'reservation_note_composition' && row.criteria.workflow === kind);
       expect(observations.length).toBeGreaterThan(0);
       for (const row of observations) {
@@ -226,6 +226,9 @@ describe('reservation workflow host projection', () => {
       if (kind !== 'amend') {
         expect(note).toContain('Please quote the corporate rate.');
         expect(note).not.toContain('\ncorporate rate');
+        expect(note).toContain('Do not use the agency rate.');
+        expect(note).not.toContain('\nagency rate');
+        expect(note).not.toContain('historical rate');
       }
       expect(reservationWorkflowV2DraftSchema.safeParse({ contractVersion: 2, schemaVersion: 'reservation-prefill.v0.2',
         workItemId: randomUUID(), transportId: 'projection-transport', propertyCode: 'HRCEN',
