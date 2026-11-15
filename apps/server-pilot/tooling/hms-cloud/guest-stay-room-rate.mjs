@@ -330,6 +330,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset, surface = pa
         allowedSearch(request, kind, new URL(page.url()).origin, propertyCode, null, saved);
     }, { timeout: 20000 }).catch(() => null);
     const rate = surface.locator('input[name="rateplan"]:visible').first();
+    if (saved) searches.set(page, { kind, propertyCode, bookingSessionId: saved.bookingsessionid, formState, cleanupOnly: true });
     await rate.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible').click();
     const shop = picker(surface, 'Rate Shop');
     await shop.waitFor({ state: 'visible', timeout: 20000 });
