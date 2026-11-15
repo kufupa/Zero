@@ -9,6 +9,9 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
 - **UI owner direction (2026-11-04):** UI across every workflow is a top priority. Redesign freely; field coverage and order follow actual deterministic Infor HMS tools and staff tasks, aiming for Infor parity. Existing UI must not constrain the design. Reuse backend/state machinery where useful. Rates need typed code + dropdown, code/meaning, native price/availability and human edits.
 - Check installed commands and `package.json` before calling a tool unavailable.
 - Preserve other sessions' work: never reset, stash, overwrite, delete or interrupt it. Use isolated worktrees for concurrent writers.
+- **Reversible work is pre-approved (owner, 2026-11-15):** merging, deploying main, Labtest writes, docs pushes, and flag changes once that workflow's canary passes. Take the recommended option, note it in the run's status file and continue. Stop only for real-guest Saves, sending email, deletes, secrets, or spend beyond the run's budget.
+- **Orchestrators prompt and wait:** a coordinating agent writes briefs, launches workers and reads their final reports. It does not tail worker logs, redo their checks or run probes itself. It keeps a status file the owner can read instead of asking for progress.
+- Lessons behind these rules: `docs/context/ledger/2026-11-15-daphne-ab-retro.md`.
 
 ## Repository map
 
@@ -33,7 +36,8 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
   2. Then do one Labtest Save + fresh readback on deployed main.
   - No numbered probe loops and no admin-UI clicking campaigns.
 - **No new plans, retros, ledgers, evidence dumps or handoff docs mid-run** unless the owner asks. One short state file outside the repo is enough.
-- **Model routing:** choose by task, cost and the owner's latest direction.
+- **Live HMS fixes are batched:** trace every affected workflow and property unsaved first, then ship one PR and one deploy. No deploy-per-bug loops.
+- **Model routing:** choose by task, cost and the owner's latest direction. As of 2026-11-15, Codex credit is for parallel `gpt-6-luna` bulk work only (reads, replays, test sweeps; 10–15 at once is fine). Orchestration and coding run on subscription agents (Devin, Antigravity).
 
 ## Checks, review, merge
 
