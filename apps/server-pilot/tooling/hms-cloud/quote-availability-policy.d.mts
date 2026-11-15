@@ -19,3 +19,6 @@ export declare function isReviewedRoomInformationRead(request: Request, options:
 export declare function isReviewedAvailabilityInquiry(request: Request, options: {
   origin: string; propertyCode: string; rejectDuplicateJsonBodyKeys: (raw: string) => void;
 }): boolean;
+export declare function isReviewedGuestStayRatePlanInquiry(request: Request, options: {
+  origin: string; propertyCode: string; rejectDuplicateJsonBodyKeys: (raw: string) => void;
+}): boolean;

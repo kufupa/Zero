@@ -118,6 +118,59 @@ test('Cloud browser guard admits only the reviewed selected-property inquiry', a
   ]) assert.equal(await dispatch(url, raw, type), 'abort');
 });
 
+for (const propertyCode of ['HRCEN', 'HRDAV']) {
+  test(`Cloud guard permits only safe read-only Guest Stay rate inquiries for ${propertyCode}`, async () => {
+    const { installCloudReadGuard } = await import('./cloud-session.mjs');
+    const { getPropertyRegistration } = await import('./property-registry.mjs');
+    const property = getPropertyRegistration(propertyCode);
+    const state = { writer: false, verified: true, authenticated: true, switching: null, ownedPage: null };
+    let handler;
+    await installCloudReadGuard({ routeWebSocket: async () => {}, route: async (_pattern, fn) => { handler = fn; } }, property, state);
+    const target = `${property.origin}${cloudPath}?houseAvailabilityOnly=true`;
+    const body = { propertyCodes: propertyCode, launchedFrom: 'gueststay', bookingSessionID: 'session' };
+    const dispatch = async ({ url = target, raw = JSON.stringify(body), method = 'POST', type = 'xhr',
+      contentType = 'application/json' } = {}) => {
+      let action;
+      await handler({ request: () => ({ method: () => method, url: () => url, postData: () => raw,
+        headers: () => ({ 'content-type': contentType }), resourceType: () => type, isNavigationRequest: () => false }),
+      abort: async () => { action = 'abort'; }, fallback: async () => { action = 'fallback'; } });
+      return action;
+    };
+
+    assert.equal(await dispatch(), 'fallback');
+    assert.equal(await dispatch({ type: 'fetch', contentType: 'application/json; charset=utf-8',
+      raw: JSON.stringify({ ...body, propertyCodes: ` ${propertyCode.toLowerCase()} `,
+        launchedFrom: ' GuestStay ', reservationStayID: ' ' }) }), 'fallback');
+
+    const invalid = [
+      ['different property', { raw: JSON.stringify({ ...body, propertyCodes: propertyCode === 'HRCEN' ? 'HRDAV' : 'HRCEN' }) }],
+      ['multiple properties', { raw: JSON.stringify({ ...body, propertyCodes: `${propertyCode},OTHER` }) }],
+      ['non-string property', { raw: JSON.stringify({ ...body, propertyCodes: [propertyCode] }) }],
+      ['reservation', { raw: JSON.stringify({ ...body, reservationStayID: '123' }) }],
+      ['duplicate property key', { raw: `{"propertyCodes":"OTHER","propertyCodes":"${propertyCode}","launchedFrom":"gueststay"}` }],
+      ['duplicate nested key', { raw: JSON.stringify(body).replace(/}$/, ',"nested":{"key":1,"key":2}}') }],
+      ['nested write action', { raw: JSON.stringify({ ...body, nested: { action: 'SAVE' } }) }],
+      ['write flag', { raw: JSON.stringify({ ...body, savecctoprofile: true }) }],
+      ['missing launch source', { raw: JSON.stringify({ propertyCodes: propertyCode }) }],
+      ['wrong launch source', { raw: JSON.stringify({ ...body, launchedFrom: 'hotelavailability' }) }],
+      ['invalid JSON', { raw: '{' }],
+      ['array body', { raw: JSON.stringify([body]) }],
+      ['oversized body', { raw: JSON.stringify({ ...body, padding: 'é'.repeat(4096) }) }],
+      ['wrong content type', { contentType: 'text/plain' }],
+      ['wrong method', { method: 'GET' }],
+      ['wrong resource type', { type: 'document' }],
+      ['extra query', { url: `${target}&extra=1` }],
+      ['encoded query', { url: target.replace('true', '%74rue') }],
+      ['fragment', { url: `${target}#fragment` }],
+      ['credentials', { url: target.replace('https://', 'https://user:password@') }],
+      ['wrong origin', { url: target.replace(property.origin, 'https://other.example.test') }],
+    ];
+    for (const [reason, request] of invalid) assert.equal(await dispatch(request), 'abort', reason);
+    state.verified = false;
+    assert.equal(await dispatch(), 'abort', 'unverified shell');
+  });
+}
+
 test('Cloud guard preserves a page-fenced writer inquiry and rejects the same unfenced request', async () => {
   const { installCloudReadGuard } = await import('./cloud-session.mjs');
   const { getPropertyRegistration } = await import('./property-registry.mjs');

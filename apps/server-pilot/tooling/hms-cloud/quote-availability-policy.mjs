@@ -209,6 +209,25 @@ export function isReviewedRoomInformationRead(request, { origin, propertyCode, d
   } catch { return false; }
 }
 
+/** Admit the selected property's Guest Stay rate catalogue without a reservation. */
+export function isReviewedGuestStayRatePlanInquiry(request, { origin, propertyCode, rejectDuplicateJsonBodyKeys }) {
+  try {
+    if (!getPropertyRegistration(propertyCode)?.active || request.method() !== 'POST' ||
+        !['xhr', 'fetch'].includes(request.resourceType()) ||
+        request.url() !== `${origin}/api/internalBooking/rateshop/inquiryForGrid?houseAvailabilityOnly=true`) return false;
+    const contentType = request.headers()['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+    const raw = request.postData();
+    if (contentType !== 'application/json' || typeof raw !== 'string' || Buffer.byteLength(raw) > 8192 ||
+        typeof rejectDuplicateJsonBodyKeys !== 'function') return false;
+    const body = JSON.parse(raw);
+    if (!body || typeof body !== 'object' || Array.isArray(body) || hasAvailabilityWriteIntent(body)) return false;
+    rejectDuplicateJsonBodyKeys(raw);
+    return typeof body.propertyCodes === 'string' && body.propertyCodes.trim().toUpperCase() === propertyCode &&
+      !String(body.reservationStayID ?? '').trim() && typeof body.launchedFrom === 'string' &&
+      body.launchedFrom.trim().toLowerCase() === 'gueststay';
+  } catch { return false; }
+}
+
 /** Validate the selected property, read action and business criteria; unrelated form fields may drift. */
 export function isReviewedAvailabilityInquiry(request, { origin, propertyCode, rejectDuplicateJsonBodyKeys }) {
   try {

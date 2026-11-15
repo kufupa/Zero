@@ -11,7 +11,8 @@ import { consumePageRequestAuthorization } from './page-request-fence.mjs';
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { credentialVersionHmacSha256 } from './credential-version.mjs';
-import { isReviewedAvailabilityInquiry, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
+import { isReviewedAvailabilityInquiry, isReviewedGuestStayRatePlanInquiry,
+  rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
 const readPosts = new Set([
   '/web/base/BSSTRT', '/web/base/BSSTRT.HDR', '/web/base/OSRESS', '/web/base/OSRESS.search',
@@ -397,9 +398,12 @@ export async function installCloudReadGuard(context, property, state) {
       catch { return route.abort(); }
       return route.fallback();
     }
-    if (path === '/api/internalBooking/rateshop/inquiryForGrid' &&
-        !isReviewedAvailabilityInquiry(request, { origin: property.origin, propertyCode: property.propertyCode,
-          rejectDuplicateJsonBodyKeys: rejectDuplicateAvailabilityJsonKeys })) return route.abort();
+    if (path === '/api/internalBooking/rateshop/inquiryForGrid') {
+      const options = { origin: property.origin, propertyCode: property.propertyCode,
+        rejectDuplicateJsonBodyKeys: rejectDuplicateAvailabilityJsonKeys };
+      if (!isReviewedAvailabilityInquiry(request, options) &&
+          !(state.verified && !state.writer && isReviewedGuestStayRatePlanInquiry(request, options))) return route.abort();
+    }
     if (url.username || url.password || forbiddenPath.test(path) || hasWriteIntent(request.url()) || hasWriteIntent(body) ||
         !['GET', 'HEAD', 'OPTIONS', 'POST'].includes(method)) return route.abort();
     if (request.isNavigationRequest() && url.origin !== property.origin) return route.abort();
