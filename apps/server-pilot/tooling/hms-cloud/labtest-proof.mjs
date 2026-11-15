@@ -387,10 +387,11 @@ async function main() {
         expected.lastName === 'Labtest' && expected.arrival === effective.stay.arrival && expected.departure === effective.stay.departure &&
         expected.confirmation === own.confirmation && expected.nativeStayId === own.nativeStayId &&
         expected.guestId === own.guestId && expected.note === own.note, 'CANCEL_PREIMAGE_INVALID');
-      // The readback after the cancel compares exact child ages; refuse before any write when Record View hides them.
+      // Zero children proves an empty age list even when Record View omits childages, as in Create readback.
+      const observedAges = native => native?.children === 0 ? [] : native?.childAges;
       const sortedAges = ages => hash([...ages].sort((a, b) => a - b));
-      assert(Array.isArray(initial?.nativePreimage?.childAges) &&
-        sortedAges(initial.nativePreimage.childAges) === sortedAges(effective.stay.childAges), 'CANCEL_CHILD_AGES_UNVERIFIED');
+      assert(Array.isArray(observedAges(initial?.nativePreimage)) &&
+        sortedAges(observedAges(initial.nativePreimage)) === sortedAges(effective.stay.childAges), 'CANCEL_CHILD_AGES_UNVERIFIED');
       result = await withTarget({ propertyCode: args.propertyCode, kind: 'saved', confirmation: own.confirmation, nativeStayId: own.nativeStayId }, async options => {
         let ownedPage, cancelled, reason;
         const base = { ...options, propertyCode: args.propertyCode, transportId, startScreen: 'OSRESS' };
@@ -423,7 +424,7 @@ async function main() {
             native.firstName === 'Proof' && native.lastName === 'Labtest' && native.arrival === expected.arrival &&
             native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan &&
             native.adults === effective.stay.adults && native.children === effective.stay.childAges.length &&
-            Array.isArray(native.childAges) && sortedAges(native.childAges) === sortedAges(effective.stay.childAges) &&
+            Array.isArray(observedAges(native)) && sortedAges(observedAges(native)) === sortedAges(effective.stay.childAges) &&
             (effective.guestoptin4 === undefined || field('guestoptin4')?.value === effective.guestoptin4) &&
             (effective.marketSegment === undefined || native.marketSegmentCode === effective.marketSegment) &&
             (effective.track === undefined || field('track')?.value === journal.prepared.applied.track) &&
@@ -454,6 +455,7 @@ async function main() {
           const nativeObservation = Object.fromEntries(['source', 'propertyCode', 'confirmation', 'reservationStayId', 'guestId', 'firstName',
             'lastName', 'arrival', 'departure', 'roomType', 'ratePlan', 'adults', 'children', 'childAges', 'cmsSend', 'note', 'marketSegmentCode', 'status']
             .filter(key => Object.hasOwn(native, key)).map(key => [key, native[key]]));
+          nativeObservation.childAges = observedAges(native);
           nativeObservation.cancelReasonCode = verified.reasonCode;
           nativeObservation.cancellationNote = verified.cancellationNote;
           nativeObservation.reservationStayStatus = verified.reservationStayStatus;
