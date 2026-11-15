@@ -328,6 +328,7 @@ function parsePanelSnapshot(snapshot) {
 function searchGuestOutcome({ records, rows, unreadable }) {
   if (!records) return { outcome: 'execution_failure', reason: 'records_footer_missing' };
   if (records.shown < records.total) return { outcome: 'ambiguous_capped', reason: 'records_capped' };
+  if (records.shown > records.total) return { outcome: 'execution_failure', reason: 'records_inconsistent' };
   if (unreadable > 0) return { outcome: 'execution_failure', reason: 'rows_unreadable' };
   if (rows.length !== records.shown) return { outcome: 'execution_failure', reason: 'row_count_mismatch' };
   return { outcome: 'ok', reason: null };
@@ -593,6 +594,16 @@ function windowAction({ window, arrival, panelShown }) {
   return windowCovers(window, arrival) ? 'keep' : 'move';
 }
 
+export function guestSearchCompleteness(args, dateWindow = null, records = null, parsed = null) {
+  const gridComplete = Boolean(records && records.shown <= records.total && records.total === records.shown &&
+    parsed && parsed.unreadable === 0 && parsed.rows.length === records.shown);
+  const requestedDatesCovered = windowCovers(dateWindow, args.arrival);
+  return { searchedDateRange: dateWindow, searchedRanges: dateWindow ? [dateWindow] : [],
+    requestedDateHorizon: args.arrival ? { from: args.arrival, to: args.arrival } : null,
+    displayed: records?.shown ?? null, total: records?.total ?? null, gridComplete, requestedDatesCovered,
+    allChunksSearched: gridComplete && requestedDatesCovered, truncated: Boolean(records && records.shown < records.total) };
+}
+
 function newLookupResult(args) {
   return {
     mode: args.mode,
@@ -611,6 +622,7 @@ function newLookupResult(args) {
     commercial: null,
     conflicts: [],
     records: null,
+    completeness: guestSearchCompleteness(args),
     rows: [],
     matches: [],
     unreadable: 0,
@@ -667,6 +679,7 @@ async function searchGuest(ctx) {
   let state = quick.result;
   if (!state.panel) return failPanel(ctx, 'panel_not_shown');
   let dateWindow = await readWindow(page);
+  result.completeness = guestSearchCompleteness(args, dateWindow);
   if (!dateWindow) return failPanel(ctx, 'window_unreadable');
   if (windowAction({ window: dateWindow, arrival: args.arrival, panelShown: true }) === 'move') {
     await setQuickWindow(page, args.arrival);
@@ -677,6 +690,7 @@ async function searchGuest(ctx) {
     result.quickStages.push(...moved.stages.map((stage) => `window.${stage}`));
     state = moved.result;
     dateWindow = state.panel ? await readWindow(page) : null;
+    result.completeness = guestSearchCompleteness(args, dateWindow);
     if (!state.panel || !dateWindow || !windowCovers(dateWindow, args.arrival)) {
       return failPanel(ctx, 'window_not_covering_arrival');
     }
@@ -689,6 +703,7 @@ async function searchGuest(ctx) {
   const parsed = parsePanelSnapshot(snapshot);
   const records = parseRecordsFooter(snapshot.footer);
   result.records = records;
+  result.completeness = guestSearchCompleteness(args, dateWindow, records, parsed);
   result.rows = parsed.rows;
   result.unreadable = parsed.unreadable;
   result.unreadableRows = parsed.unreadableRows;

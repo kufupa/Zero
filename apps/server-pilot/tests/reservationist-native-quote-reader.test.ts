@@ -1,102 +1,93 @@
-import { createExistingOwnerNativeQuoteReader } from '../src/ai/reservationist-evaluation-composition.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { createExistingOwnerNativeQuoteReader } from '../src/ai/reservationist-evaluation-composition.js';
+import type { QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 
-// Stands in for the fetch-quote process. A non-zero exit carries stdout with the evidence line, as the CLI prints it.
-const cliExit = vi.hoisted(() => ({ failure: null as null | { stdout: string } }));
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    execFile: (...args: unknown[]) => {
-      const callback = args.at(-1) as (error: unknown) => void;
-      if (!cliExit.failure) {
-        return (actual.execFile as unknown as (...rest: unknown[]) => unknown)(...args);
-      }
-      callback(Object.assign(new Error('Command failed'), { code: 2, ...cliExit.failure }));
-    },
-  };
-});
+const cloud = vi.hoisted(() => ({ fetchQuote: vi.fn(), capability: vi.fn() }));
+vi.mock('../tooling/hms-cloud/fetch-quote.mjs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tooling/hms-cloud/fetch-quote.mjs')>()),
+  fetchQuote: cloud.fetchQuote,
+}));
+vi.mock('../src/hms/hms-service.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/hms/hms-service.js')>()),
+  nativeReadCapabilityAvailable: cloud.capability,
+}));
 
-// The reader only accepts output under the repo's private quote directory.
-const privateRoot = fileURLToPath(new URL('../../../.private/playwright-quote', import.meta.url));
-const owner = {
-  cdpUrl: 'http://127.0.0.1:9222',
-  browserOwnership: 'borrowed' as const,
-  propertyCode: 'HRCEN',
-  secretPath: '/srv/owner/secret.json',
-};
-const request = {
-  propertyCode: 'HRCEN',
-  arrivalDate: '2026-11-12',
-  departureDate: '2026-11-14',
+const privateRoot = fileURLToPath(new URL('../../../.private/hms-cloud', import.meta.url));
+const owner = { propertyCode: 'HRCEN', transportId: 'transport-centurion' };
+const request: QuoteSourceRecord['request'] = {
+  propertyCode: 'HRCEN', requestedCurrency: 'ZAR',
+  arrivalDate: '2026-11-12', departureDate: '2026-11-14',
   rooms: [{ id: 'room-1', quantity: 1, adults: 2, children: 0, childAges: [] }],
-} as never;
-
+};
 let root = '';
 afterEach(async () => {
-  cliExit.failure = null;
   if (root) await rm(root, { recursive: true, force: true });
   root = '';
+  vi.resetAllMocks();
 });
 
-// Writes the capture the CLI leaves in its evidence directory and returns the stdout line that names it.
-async function savedCapture(result: Record<string, unknown>): Promise<string> {
+async function savedCapture(result: Record<string, unknown>) {
   root = join(privateRoot, `test-${randomUUID()}`);
-  const evidence = join(root, 'out', 'evidence');
+  const evidence = join(root, 'out', 'run');
   await mkdir(evidence, { recursive: true });
   await writeFile(join(evidence, 'result.json'), JSON.stringify(result));
-  return `Evidence: ${evidence}\n`;
+  cloud.capability.mockResolvedValue(true);
+  cloud.fetchQuote.mockResolvedValue({ evidenceDirectory: evidence });
+  return evidence;
 }
 
-describe('createExistingOwnerNativeQuoteReader default dispatch', () => {
-  it('reports the saved execution failure and its phase when the CLI exits non-zero', async () => {
-    cliExit.failure = {
-      stdout: await savedCapture({ outcome: 'execution_failure', phase: 'hotel_availability' }),
-    };
-    const read = createExistingOwnerNativeQuoteReader({ owner, outputDir: join(root, 'out') });
-    await expect(read(request, new AbortController().signal)).rejects.toMatchObject({
-      code: 'EXECUTION_FAILURE',
-      phase: 'hotel_availability',
+function read() {
+  return createExistingOwnerNativeQuoteReader({ owner, outputDir: join(root, 'out') });
+}
+
+describe('Cloud native quote reader', () => {
+  it('dispatches the selected owner and reports the saved execution failure phase', async () => {
+    const evidence = await savedCapture({ outcome: 'execution_failure', phase: 'hotel_availability' });
+    const signal = new AbortController().signal;
+    await expect(read()(request, signal)).rejects.toMatchObject({ code: 'EXECUTION_FAILURE', phase: 'hotel_availability' });
+    expect(cloud.fetchQuote).toHaveBeenCalledWith(expect.objectContaining({
+      propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: join(root, 'out'), signal,
+      request: expect.objectContaining({ schemaVersion: 2, propertyCode: 'HRCEN' }),
+    }));
+    expect(evidence.startsWith(join(root, 'out'))).toBe(true);
+  });
+
+  it('sanitizes an execution failure from Cloud evidence', async () => {
+    await savedCapture({ outcome: 'execution_failure', phase: 'attach', error: {
+      name: 'TimeoutError', message: 'browserType.connectOverCDP: Timeout 20000ms exceeded. http://127.0.0.1:19223',
+    } });
+    await expect(read()(request, new AbortController().signal)).rejects.toMatchObject({
+      code: 'EXECUTION_FAILURE', phase: 'attach', errorName: 'TimeoutError',
+      errorMessage: expect.not.stringMatching(/http:|127\.0\.0\.1/),
     });
   });
 
-  it('carries the sanitized attach error name and message from result.json', async () => {
-    cliExit.failure = {
-      stdout: await savedCapture({
-        outcome: 'execution_failure',
-        phase: 'attach',
-        error: {
-          name: 'TimeoutError',
-          message: 'browserType.connectOverCDP: Timeout 20000ms exceeded. http://127.0.0.1:19223',
-        },
-      }),
-    };
-    const read = createExistingOwnerNativeQuoteReader({ owner, outputDir: join(root, 'out') });
-    await read(request, new AbortController().signal).then(
-      () => {
-        throw new Error('expected EXECUTION_FAILURE');
-      },
-      (error: { errorMessage?: string }) => {
-        expect(error).toMatchObject({
-          code: 'EXECUTION_FAILURE',
-          phase: 'attach',
-          errorName: 'TimeoutError',
-          errorMessage: expect.stringMatching(/Timeout 20000ms exceeded/),
-        });
-        expect(error.errorMessage).not.toMatch(/http:|127\.0\.0\.1/);
-      },
-    );
+  it('rejects output and owner outside the authenticated Cloud scope', () => {
+    expect(() => createExistingOwnerNativeQuoteReader({ owner, outputDir: '/tmp/quote' }))
+      .toThrow('native_cloud_quote_scope_or_private_output_invalid');
+    expect(() => createExistingOwnerNativeQuoteReader({ owner, outputDir: join(privateRoot, '..', 'playwright-quote', 'out') }))
+      .toThrow('native_cloud_quote_scope_or_private_output_invalid');
+    expect(() => createExistingOwnerNativeQuoteReader({ owner: { propertyCode: 'HRDAVS', transportId: owner.transportId },
+      outputDir: join(privateRoot, 'out') })).toThrow('hms_property_switch_unauthorized');
+    expect(cloud.fetchQuote).not.toHaveBeenCalled();
   });
 
-  it('keeps native_quote_read_unavailable when a non-zero exit saved something other than a failure', async () => {
-    cliExit.failure = { stdout: await savedCapture({ outcome: 'partial', phase: 'run' }) };
-    const read = createExistingOwnerNativeQuoteReader({ owner, outputDir: join(root, 'out') });
-    await expect(read(request, new AbortController().signal)).rejects.toThrow(
-      'native_quote_read_unavailable',
-    );
+  it('refuses evidence outside the requested output and capability denial', async () => {
+    await savedCapture({ outcome: 'execution_failure' });
+    cloud.fetchQuote.mockResolvedValue({ evidenceDirectory: join(privateRoot, 'other', 'run') });
+    await expect(read()(request, new AbortController().signal)).rejects.toThrow('native_quote_capture_unavailable');
+    cloud.capability.mockResolvedValue(false);
+    await expect(read()(request, new AbortController().signal)).rejects.toThrow('native_quote_capability_unavailable');
+  });
+
+  it('rejects a request for a different property before fetching', async () => {
+    await savedCapture({ outcome: 'execution_failure' });
+    await expect(read()({ ...request, propertyCode: 'HRDAVS' }, new AbortController().signal))
+      .rejects.toThrow('native_quote_owner_scope_mismatch');
+    expect(cloud.fetchQuote).not.toHaveBeenCalled();
   });
 });

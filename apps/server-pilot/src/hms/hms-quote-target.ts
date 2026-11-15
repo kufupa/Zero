@@ -6,6 +6,7 @@ import {
   assertPropertyQuoteReady,
   hmsReadTargetForProperty,
   hmsReadTargetForTransport,
+  ownerRefBelongsToProperty,
   type HmsReadTarget,
 } from './hms-read-target.js';
 import {
@@ -14,7 +15,8 @@ import {
   type MailboxHmsOriginFields,
   type MailboxHmsOriginLoadInput,
 } from './mailbox-hms-origin-bind.js';
-import { resolvePropertyScope, type PropertySwitch } from './property-registry.js';
+import { resolvePropertyScope, type PropertyCode, type PropertySwitch } from './property-registry.js';
+import { refuseProperty } from './property-refusal.js';
 
 /** Same staff copy as the Centurion refuse. Quote flag off keeps that refuse. */
 export const DAVINCI_QUOTE_REFUSED_MESSAGE = DAVINCI_ORIGIN_REFUSED_MESSAGE;
@@ -68,14 +70,23 @@ export function quoteTargetForHmsJob(input: {
  * An explicit Da Vinci selection is validated against the authenticated mailbox.
  */
 export async function resolveHmsQuoteJobTarget(
-  input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string>; propertySwitch?: PropertySwitch },
+  input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string>; propertySwitch?: PropertySwitch; propertyCode?: PropertyCode },
 ): Promise<HmsQuoteJobTargetResult> {
-  const target = input.propertySwitch
-    ? hmsReadTargetForProperty(resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch }).propertyCode)
-    : hmsReadTargetForTransport(input.transportId);
+  const switchedProperty = input.propertySwitch
+    ? resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch }).propertyCode
+    : undefined;
+  if (input.propertyCode && !ownerRefBelongsToProperty(input.transportId, input.propertyCode)) {
+    return refuseProperty({ code: 'property_unknown', transportId: input.transportId });
+  }
+  if (switchedProperty && input.propertyCode && switchedProperty !== input.propertyCode) {
+    return refuseProperty({ code: 'property_unknown', transportId: input.transportId });
+  }
+  const propertyCode = switchedProperty ?? input.propertyCode;
+  const target = propertyCode ? hmsReadTargetForProperty(propertyCode) : hmsReadTargetForTransport(input.transportId);
   if (target.browserSlot === 'davinci') return davinciQuoteOrRefuse(input.env, target.propertyCode);
   const guard = await guardCenturionHmsMailboxOrigin(input);
   if (guard.ok) return { ok: true, target };
+  if (input.propertyCode) return refuseProperty({ code: 'property_unknown', transportId: input.transportId });
   return davinciQuoteOrRefuse(input.env);
 }
 

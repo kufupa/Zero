@@ -43,7 +43,7 @@ export type RecordSenderPartyInput = {
 
 const HOUR_MS = 60 * 60 * 1000;
 const FAIL_RETRY_MS = 30_000;
-const FREEMAIL = new Set([
+export const FREEMAIL_DOMAINS = new Set([
   'gmail.com',
   'googlemail.com',
   'yahoo.com',
@@ -52,7 +52,14 @@ const FREEMAIL = new Set([
   'icloud.com',
   'live.com',
   'msn.com',
+  'me.com', 'aol.com', 'protonmail.com', 'proton.me', 'mail.com',
+  'gmx.com', 'gmx.net', 'yandex.com', 'mweb.co.za', 'telkomsa.net', 'webmail.co.za',
 ]);
+export function isFreemailHost(domainOrEmail: string): boolean {
+  const host = domainOrEmail.trim().toLowerCase().split('@').pop()?.replace(/\.+$/, '') ?? '';
+  return [...FREEMAIL_DOMAINS].some(domain => host === domain || host.endsWith(`.${domain}`)) ||
+    /(?:^|\.)(?:yahoo|hotmail|gmx|yandex)\.(?:[a-z]{2,}|[a-z]{2,}\.[a-z]{2})$/.test(host);
+}
 export const OWNED_HOTEL_HOSTS = new Set([
   'legacyhotels.co.za',
   'legacyhotels.com',
@@ -97,7 +104,7 @@ function rowOf(r: LearnedSenderRow, fallbackProperty?: string | null): StoredLea
   if (
     !propertyCode ||
     !host ||
-    FREEMAIL.has(host) ||
+    isFreemailHost(host) ||
     !name ||
     (r.kind !== 'organization' && r.kind !== 'bookingAgency')
   ) {
@@ -143,8 +150,7 @@ export function isOwnedHotelHost(host: string): boolean {
 
 function senderHostExcluded(host: string): boolean {
   return (
-    FREEMAIL.has(host) ||
-    [...FREEMAIL].some((domain) => host.endsWith(`.${domain}`)) ||
+    isFreemailHost(host) ||
     isOwnedHotelHost(host)
   );
 }

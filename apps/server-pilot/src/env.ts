@@ -285,6 +285,11 @@ export function hmsDavinciMakeQuoteEnabled(input: NodeJS.Dict<string> = process.
   return input.HMS_DAVINCI_MAKE_QUOTE === 'on';
 }
 
+/** REST availability is opt-in until its native session and response are verified. */
+export function hmsQuoteRestFastPathEnabled(input: NodeJS.Dict<string> = process.env): boolean {
+  return input.HMS_QUOTE_REST_FAST_PATH === 'on';
+}
+
 /**
  * Da Vinci pane create. Same three values as PANE_WRITE_CREATE: `lab` = Labtest only,
  * `on` = real guests, unset/`off`/anything else = refuse. Independent of

@@ -19,6 +19,18 @@ const request = {
   sendHmsConfirmation: { kind: 'never' },
 };
 
+test('limits the Create booker name to the native 50 characters', () => {
+  for (const length of [50, 51, 300, 301]) {
+    const result = normalizeCloudCreateRequest({ ...request, booker: { name: 'N'.repeat(length) } });
+    assert.equal(result.outcome, length <= 50 ? 'ok' : 'unsupported');
+  }
+});
+
+test('limits Billing Reference to 50 characters', () => {
+  assert.equal(normalizeCloudCreateRequest({ ...request, billingReference: 'R'.repeat(50) }).outcome, 'ok');
+  assert.equal(normalizeCloudCreateRequest({ ...request, billingReference: 'R'.repeat(51) }).issue, 'CREATE_BILLING_REFERENCE_INVALID');
+});
+
 test('normalizes property-bound, one-room create request including independent parties', () => {
   const result = normalizeCloudCreateRequest(request);
   assert.equal(result.outcome, 'ok');

@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('node:fs/promises', async importOriginal => {
+  const fs = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...fs, mkdtemp: (prefix: string) => fs.mkdtemp(prefix.replace('/var/tmp/', '/tmp/')) };
+});
 import { projectCloudAvailability, probeCloudRateAvailability, runCloudAvailability, type CloudAvailabilityGroupRead } from '../src/ai/hms-cloud-availability-reader.js';
 import { classifyHmsLoginOutage } from '../src/hms/property-outage.js';
 import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
@@ -230,6 +234,14 @@ describe('Cloud HMS read result projection', () => {
     expect(result.groups[0]?.coverage).toEqual(expect.objectContaining({
       rateCatalog: { complete: false, loaded: 50, total: 95 },
     }));
+  });
+
+  it('does not accept a REST price marker without the REST evidence envelope', () => {
+    const result = projectCloudAvailability(request, [{ outcome: 'ok', view: readView('unverified_no_dom') }]);
+    if (result.outcome !== 'read') throw new Error('expected read result');
+    expect(result.groups[0]?.options[0]?.nightly[0]?.price).toEqual({
+      status: 'unknown', amount: null, currency: null,
+    });
   });
 
 });

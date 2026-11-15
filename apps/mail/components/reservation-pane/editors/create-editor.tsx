@@ -11,6 +11,7 @@ type Editor = WorkbenchEditorProps;
 type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
   { key: 'requestedMealPlan', label: 'Meal Plan request', maxLength: 120, hint: 'Customer meal plan request. Confirm it against the Infor rate.' },
+  { key: 'requestedRoomDescription', label: 'Room Request', maxLength: 1000, hint: 'Customer room wording. Select the matching Infor Room Type below.' },
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
   { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
   { key: 'ratePlan', label: 'Rate Plan', picker: 'rate_plan' },
@@ -31,7 +32,7 @@ const stayFields: BookingField[] = [
 ];
 const trackField: BookingField = { key: 'track', label: 'Track / Sub Segment', picker: 'track' };
 const otherFields: BookingField[] = [
-  { key: 'bookerName', label: 'Booker name', maxLength: 50 },
+  { key: 'bookerName', label: 'Booker name', maxLength: 300, hint: 'Preserves long names for review; Infor Create accepts at most 50 characters.' },
   { key: 'bookerEmail', label: 'Booker email', maxLength: 320, type: 'email' },
   { key: 'bookerMobile', label: 'Booker mobile', maxLength: 120 },
   { key: 'reservationNote', label: 'Reservation Note', maxLength: 2000, type: 'textarea' },
@@ -58,7 +59,7 @@ function BookingControl({ field, path, editor, defaultValue, emptyState }: {
   return field.picker || field.party
     ? <NativePicker label={field.label} path={path} editor={editor} kind={field.picker} allowNone={field.party || field.key === 'roomTypeForCharge'} hint={field.hint} compact />
     : <Field label={field.label} path={path} editor={editor} type={field.type} hint={field.hint} maxLength={field.maxLength}
-      defaultValue={defaultValue} emptyState={emptyState} nativeMaxLength={field.key === 'billingReference' ? 50 : undefined} compact />;
+      defaultValue={defaultValue} emptyState={emptyState} nativeMaxLength={field.key === 'billingReference' || field.key === 'bookerName' ? 50 : undefined} compact />;
 }
 
 function UnsupportedTerms({ editor, path }: { editor: Editor; path: string }) {

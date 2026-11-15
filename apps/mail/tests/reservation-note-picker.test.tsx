@@ -33,7 +33,66 @@ function editor(note = 'Staff-entered note', kind: 'create' | 'amend' = 'create'
 }
 
 describe('Reservation Note quick-picker', () => {
-  afterEach(cleanup);
+  afterEach(() => { cleanup(); window.sessionStorage.clear(); });
+
+  function guidance(value: any, state = 'set') {
+    const draft = value.snapshot.session.draft;
+    Object.assign(draft, { generationId: 'generation-1', propertyCode: 'HRCEN', source: { messageId: 'message-1', sourceHash: 'hash-1' },
+      observations: [{ ref: 'note-1', kind: 'source', status: 'complete', generationId: 'generation-1', propertyCode: 'HRCEN',
+        sourceMessageId: 'message-1', criteria: { kind: 'reservation_note_composition', workflow: 'create', requestId: 'request-1',
+          fieldPath: '/note', generationId: 'generation-1', sourceHash: 'hash-1', propertyCode: 'HRCEN' },
+        result: { path: '/note', existing: { state, text: state === 'set' ? draft.note : '' }, sourceClauses: [{ text: 'Parking requested', sourceRefs: ['src-1'] }],
+          memory: { dinnerCap: { value: '350', text: 'Dinner allowance R350', support: 1, denominator: 1, purity: 1,
+            autoApplied: false, blockedReason: 'support_below_min' } }, conflicts: [], compositionStatus: state === 'none' ? 'blocked_none' : 'clean' } }] });
+  }
+
+  it('shows source and single-stay guidance and adds only on an explicit click', () => {
+    const { edit, value } = editor(); guidance(value);
+    render(<ReservationNote path="/note" editor={value} />);
+    expect(screen.getByText('Source: Parking requested')).toBeTruthy();
+    expect(screen.getByText(/1\/1 · 100% · support below min/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Add dinnerCap suggestion' }));
+    expect(edit).toHaveBeenCalledWith('/note', 'Staff-entered note\nDinner allowance R350', 'set');
+    expect(screen.queryByText(/History dinnerCap/)).toBeNull();
+  });
+
+  it('does not resurrect dismissed guidance after a staff edit', () => {
+    const { value } = editor(); guidance(value);
+    const view = render(<ReservationNote path="/note" editor={value} />);
+    fireEvent.change(screen.getByLabelText('Reservation Note'), { target: { value: 'Staff change' } });
+    view.rerender(<ReservationNote path="/note" editor={value} />);
+    expect(screen.queryByText(/History dinnerCap/)).toBeNull();
+    expect((screen.getByLabelText('Reservation Note') as HTMLTextAreaElement).value).toBe('Staff change');
+  });
+
+  it('keeps dismissal when the editor is remounted for the same source and path', () => {
+    const { value } = editor(); guidance(value);
+    const view = render(<ReservationNote path="/note" editor={value} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss note guidance' }));
+    view.unmount();
+    render(<ReservationNote path="/note" editor={value} />);
+    expect(screen.queryByText(/History dinnerCap/)).toBeNull();
+  });
+
+  it('protects an explicit none from memory suggestions', () => {
+    const { value } = editor(''); guidance(value, 'none');
+    value.snapshot.session.draft.fieldOverrides['/note'] = { state: 'none' };
+    render(<ReservationNote path="/note" editor={value} />);
+    expect((screen.getByRole('button', { name: 'Add dinnerCap suggestion' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('blocks conflicting guidance and ignores stale observations', () => {
+    const { value } = editor(); guidance(value);
+    const observation = value.snapshot.session.draft.observations[0];
+    observation.result.compositionStatus = 'conflict';
+    observation.result.conflicts = ['Dinner allowance differs from the current note.'];
+    const view = render(<ReservationNote path="/note" editor={value} />);
+    expect(screen.getByText('Dinner allowance differs from the current note.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Add dinnerCap suggestion' }) as HTMLButtonElement).disabled).toBe(true);
+    value.snapshot.session.draft.source.sourceHash = 'new-source';
+    view.rerender(<ReservationNote path="/note" editor={value} />);
+    expect(screen.queryByText(/History dinnerCap/)).toBeNull();
+  });
 
   it('offers seven presets and explicitly replaces editable note text', () => {
     const { edit, value } = editor();

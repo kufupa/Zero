@@ -9,13 +9,19 @@ import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import type { ReservationWorkflowV2Observation, ReservationWorkflowV2Proposal,
   ReservationWorkflowV2Source } from './reservation-workflow-v2-contract.js';
 import { partyMatchSearchTerms } from './party-match-v2.js';
+import { isFreemailHost } from './party-sender-map.js';
 
 type PartyRole = 'agency' | 'organization' | 'ar_account';
 type SourceParty = { role: 'bookingAgency' | 'organization' | 'arAccount'; name: string;
   fieldPath: string; suggestedRef: string | null };
 type Lead = { value: string; label: string; basis: 'exact_sender' | 'normalized_entity';
   sourceParty: SourceParty | null; sourceSender: string | null; support: number; confirmations: string[];
-  denominator: number; confidence: number | null; autoSelectable: boolean };
+  denominator: number; confidence: number | null; purity: number | null; autoSelectable: boolean;
+  blockedReason: 'support_below_min' | 'purity_below_threshold' | 'purity_unknown' | 'multi_client_domain' |
+    'webmail_domain' | 'refund_account_excluded' | 'role_basis_not_auto' | null };
+export function isExcludedRefundArAccount(value: string): boolean {
+  return /^refund\s+account\b/i.test(value.trim());
+}
 const partyFields = [
   { role: 'agency', field: 'bookingAgency' },
   { role: 'organization', field: 'organization' },
@@ -218,7 +224,8 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
   excludedConfirmations?: readonly string[]; sourceThreadMessageIds?: readonly string[]; db?: DB; transportId?: string;
   env?: NodeJS.ProcessEnv }): Promise<
   { status: 'available'; denominator: number; notes: MemoryGuidanceValue[]; guarantees: MemoryGuidanceValue[];
-    tracks: MemoryGuidanceValue[]; complete: boolean; multiClientDomain: boolean } |
+    tracks: MemoryGuidanceValue[]; complete: boolean; multiClientDomain: boolean; webmailDomain?: boolean;
+    scope?: 'sender' | 'party' | 'sender_and_party' } |
   { status: 'unavailable'; issue: string }
 > {
   try {
@@ -248,6 +255,7 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
     const addresses = [...new Set((input.fromAddress?.match(/[^\s@,;<>]+@[^\s@,;<>]+/g) ?? [])
       .map(value => value.replace(/^mailto:/i, '').replace(/[.!?]+$/, '').toLocaleLowerCase('en-US')))];
     const address = addresses.length === 1 ? addresses[0] : '';
+    const webmailDomain = addresses.some(isFreemailHost);
     const verifiedAddresses = memory.addressEvidence.filter(row => row.sentAt && Number.isFinite(Date.parse(row.sentAt)) &&
       Date.parse(row.sentAt) < cutoff && row.linkMethod === 'attachment-id' && row.linkProvenance?.ambiguousAttachment === false &&
       row.linkProvenance.labeledConfirmationMatch === true && row.linkProvenance.subjectHasOtherConfirmation !== true &&
@@ -296,7 +304,8 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
     const notes = aggregate(row => row.historicalNoteFields), guarantees = aggregate(row => row.historicalHints.guaranteeType),
       tracks = aggregate(row => row.historicalHints.track);
     return { status: 'available', denominator, notes: notes.slice(0, 200), guarantees: guarantees.slice(0, 200),
-      tracks: tracks.slice(0, 200), complete: notes.length <= 200 && guarantees.length <= 200 && tracks.length <= 200, multiClientDomain };
+      tracks: tracks.slice(0, 200), complete: notes.length <= 200 && guarantees.length <= 200 && tracks.length <= 200, multiClientDomain, webmailDomain,
+      scope: senderKeys.size ? hasEntity ? 'sender_and_party' : 'sender' : 'party' };
   } catch { return { status: 'unavailable', issue: 'booking_memory_invalid' }; }
 }
 
@@ -350,11 +359,13 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
       return parsed.success ? parsed.data : null;
     };
     const common = await import(new URL('../../tooling/hms-cloud/hms-booking-memory-common.mjs', import.meta.url).href);
-    const addresses = z.array(z.string().email()).safeParse(common.emailsIn(input.fromAddress));
+    const rawAddresses: string[] = common.emailsIn(input.fromAddress);
+    const addresses = z.array(z.string().email()).safeParse(rawAddresses);
     const email = addresses.success && addresses.data.length === 1 ? addresses.data[0] : null;
     const sender = email
       ? [query({ email, role: 'inbound-sender' }), query({ email, role: 'outbound-recipient' })].filter(row => row !== null) : [];
     const domain = email?.split('@')[1];
+    const webmailDomain = rawAddresses.some(isFreemailHost);
     const domainResults = domain ? [query({ domain, role: 'inbound-sender' }), query({ domain, role: 'outbound-recipient' })]
       .filter(row => row !== null) : [];
     const organizations = new Set(domainResults.flatMap(result => result.candidates.flatMap(candidate => {
@@ -482,14 +493,15 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
           const bindingKey = (sourceParty: SourceParty | null) => sourceParty ? JSON.stringify(sourceParty) : 'exact_sender';
           const add = (value: string, basis: Lead['basis'], sourceParty: SourceParty | null, confirmations: Array<string | null>) => {
             const ids = confirmations.filter((id): id is string => Boolean(id));
-            if (!value.trim() || !ids.length || (role === 'ar_account' && /^refund\s+account\b/i.test(value.trim()))) return;
+            if (!value.trim() || !ids.length) return;
             const nameKey = role === 'rate_plan' || role === 'room_type' ? value.toUpperCase() : normalizedPartyName(value);
             if (!nameKey) return;
             const key = JSON.stringify([nameKey, bindingKey(sourceParty)]);
             const prior = leads.get(key);
             const combined = [...new Set([...(prior?.basis === basis ? prior.confirmations : []), ...ids])];
             leads.set(key, { value, label: value, basis, sourceParty, sourceSender: basis === 'exact_sender' ? email : null,
-              support: combined.length, confirmations: combined, denominator: 0, confidence: null, autoSelectable: false });
+              support: combined.length, confirmations: combined, denominator: 0, confidence: null, purity: null,
+              autoSelectable: false, blockedReason: 'purity_unknown' });
           };
           const accept = (result: z.infer<typeof querySchema>, basis: Lead['basis'], sourceParty: SourceParty | null) => {
             const conflicts = new Set(result.conflicts.flatMap(conflict => conflict.evidence.confirmationNumber ? [conflict.evidence.confirmationNumber] : []));
@@ -531,9 +543,16 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
             const sourceKey = bindingKey(lead.sourceParty);
             lead.denominator = denominators.get(sourceKey)?.size ?? 0;
             lead.confidence = lead.denominator && !incomplete.has(sourceKey) ? lead.support / lead.denominator : null;
-            lead.autoSelectable = lead.confidence !== null && lead.confidence >= 0.8 &&
-              (lead.basis === 'exact_sender' && (role === 'agency' || role === 'organization' && !multiClientDomain) ||
-                role === 'agency' && lead.sourceParty?.role === 'bookingAgency' && Boolean(lead.sourceParty.suggestedRef));
+            lead.purity = lead.confidence;
+            const eligibleRoleBasis = lead.basis === 'exact_sender' && (role === 'agency' || role === 'organization') ||
+              role === 'agency' && lead.sourceParty?.role === 'bookingAgency' && Boolean(lead.sourceParty.suggestedRef);
+            const refundExcluded = role === 'ar_account' && isExcludedRefundArAccount(lead.value);
+            lead.blockedReason = refundExcluded ? 'refund_account_excluded' : lead.support < 2 ? 'support_below_min' :
+              lead.basis === 'exact_sender' && webmailDomain ? 'webmail_domain'
+              : lead.basis === 'exact_sender' && multiClientDomain ? 'multi_client_domain'
+              : lead.confidence === null ? 'purity_unknown'
+              : lead.confidence < 0.8 ? 'purity_below_threshold' : !eligibleRoleBasis ? 'role_basis_not_auto' : null;
+            lead.autoSelectable = lead.blockedReason === null;
           }
           const ranked = [...leads.values()].sort((a, b) => (role === 'ar_account' ? -1 : 1) *
             (Number(b.basis === 'exact_sender') - Number(a.basis === 'exact_sender')) ||
@@ -552,7 +571,7 @@ async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { sa
               slotPath: slot.path, scopeKind: slot.scopeKind, dateSectionId: slot.dateSectionId,
               allocationId: slot.allocationId, groupId: slot.groupId,
               query: sourceQuery, fieldPath, fieldPaths: [fieldPath], rankBasis: ['exact_sender', 'normalized_entity'],
-              multiClientDomain, snapshotTimes: [...snapshotTimes.values()] },
+              multiClientDomain, webmailDomain, snapshotTimes: [...snapshotTimes.values()] },
             coverage: { complete: false, notes: ['Historical names/codes require a current Infor search and staff selection.',
               'Support counts observed confirmations; journey/room grouping is unavailable where source links are missing.'] },
             result: { leads: ranked.map(lead => ({ ...lead, confirmations: lead.confirmations.slice(0, 3) })),

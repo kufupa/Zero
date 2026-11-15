@@ -222,3 +222,21 @@ describe('Cloud saved-stay projection', () => {
   });
 
 });
+
+it('requires complete validated search evidence before returning not_found', () => {
+  const range = { from: '2027-01-01', to: '2027-01-31' };
+  const completeness = { searchedDateRange: range, searchedRanges: [range], requestedDateHorizon: range,
+    displayed: 0, total: 0, gridComplete: true, requestedDatesCovered: true, allChunksSearched: true, truncated: false };
+  const find = (value: unknown, issue = 'CONFIRMATION_NOT_FOUND') => projectCloudStayFind({ confirmation: '123456-1' },
+    { outcome: 'read_failed', issue, completeness: value });
+  expect(find(completeness)).toMatchObject({ outcome: 'not_found', reason: 'CONFIRMATION_NOT_FOUND',
+    searchedDateRange: range, searchedRanges: [range], completeness });
+  expect(find({ ...completeness, requestedDatesCovered: false, allChunksSearched: false }))
+    .toMatchObject({ outcome: 'ambiguous', reason: 'CONFIRMATION_NOT_FOUND_IN_SEARCH_WINDOW' });
+  for (const flags of [{ truncated: true }, { gridComplete: false }, { allChunksSearched: false }]) {
+    expect(find({ ...completeness, ...flags })).toMatchObject({ outcome: 'ambiguous', reason: 'SEARCH_INCOMPLETE' });
+  }
+  expect(find({ ...completeness, searchedDateRange: { from: '2027-02-30', to: '2027-03-01' } }))
+    .toMatchObject({ outcome: 'ambiguous', reason: 'CONFIRMATION_NOT_FOUND_IN_SEARCH_WINDOW' });
+  expect(find(completeness, 'SEARCH_RESULTS_CAPPED')).toMatchObject({ outcome: 'ambiguous', reason: 'SEARCH_RESULTS_CAPPED', completeness });
+});

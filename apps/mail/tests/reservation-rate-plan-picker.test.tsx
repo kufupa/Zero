@@ -77,6 +77,26 @@ function rateOptionsObservation() {
 describe('reservation Rate Plan picker', () => {
   afterEach(cleanup);
 
+  it('shows ranked history and searches Infor when staff chooses a suggestion', async () => {
+    const lookupChoices = vi.fn().mockResolvedValue(undefined);
+    const historical = { ref: 'history', generationId: 'generation-1', propertyCode: 'HRCEN', sourceMessageId: 'message-1',
+      kind: 'rate_availability', status: 'partial', coverage: { complete: false, notes: [] },
+      criteria: { kind: 'historical_lookup_leads', workflow: 'quote', requestId: 'quote-1', role: 'rate_plan',
+        sourceHash: 'source-hash-1', fieldPath: path, query: '' },
+      result: { leads: [{ value: 'BAR', label: 'BAR', basis: 'exact_sender', support: 4, denominator: 4,
+        purity: 1, autoSelectable: false, blockedReason: 'role_basis_not_auto' }] } };
+    const value = { snapshot: snapshot([historical]), configuration, request: { id: 'quote-1', kind: 'quote' },
+      view: { busy: false }, commands: { lookupChoices, lookup: vi.fn(), edit: vi.fn().mockResolvedValue(undefined),
+        stageEdit: vi.fn(), setUncommitted: vi.fn() } } as any;
+    render(<NativePicker label="Rate Plan" path={path} editor={value} kind="rate_plan" />);
+    fireEvent.focus(screen.getByLabelText('Rate Plan'));
+    expect(screen.getByText('4/4 · 100%')).toBeTruthy();
+    expect(screen.getByText('Requires staff selection')).toBeTruthy();
+    lookupChoices.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: /BAR.*From previous bookings/ }));
+    await waitFor(() => expect(lookupChoices).toHaveBeenCalledWith(path));
+  });
+
   it('merges configured rate codes behind priced offers and lets the offer win duplicate codes', () => {
     const choices = nativeChoices(snapshot([rateOptionsObservation()]), path, 'rate_plan', configuration);
 

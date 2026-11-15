@@ -25,12 +25,17 @@ export type CloudSessionOptions = {
   headless?: boolean;
   prepareContext?: (context: BrowserContext) => void | Promise<void>;
   readRequestPolicy?: (request: Request) => boolean;
+  requireBoundCredentialVersion?: boolean;
   startScreen?: 'BSSTRT' | 'OSRESV' | 'OSRESS';
   loadSecret?: CloudSecretLoader;
   credentialLease?: CloudCredentialLease;
   cloudTargetKey?: string;
   cloudTargetKeys?: readonly string[];
 };
+export declare function installCloudReadGuard(context: BrowserContext, property: { origin: string; propertyCode: string; expectedTenant: string }, state: {
+  writer: boolean; verified: boolean; authenticated: boolean; switching: string | null; ownedPage: Page | null;
+  readRequestPolicy?: (request: Request) => boolean;
+}): Promise<void>;
 export declare function cloudCredentialLeaseKey(propertyCode: string): string;
 export declare function verifyCloudCredentialVersion(input: {
   propertyCode: string;
@@ -53,7 +58,9 @@ export declare function switchCloudProperty(page: Page, input: {
   landingPropertyCode: string;
   tenantId?: string;
 }): Promise<CloudPropertyIdentity>;
-export declare function withCloudReadSession<T>(operation: (page: Page, identity: CloudSessionIdentity) => T | Promise<T>,
+export declare function withCloudReadSession<T>(operation: (page: Page, identity: CloudSessionIdentity, session: Readonly<{
+  credentialVersionHmacSha256: string | null; signal: AbortSignal;
+}>) => T | Promise<T>,
   options: CloudSessionOptions): Promise<T>;
 export declare function withCloudWriterSession<T>(operation: (page: Page, identity: CloudSessionIdentity) => T | Promise<T>,
   options: CloudSessionOptions): Promise<T>;

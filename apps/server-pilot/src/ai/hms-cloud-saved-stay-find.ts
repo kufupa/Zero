@@ -1,3 +1,5 @@
+import { coversStaySearchHorizon, isStaySearchComplete, parseStaySearchCompleteness, type StaySearchCompleteness } from './stay-search-completeness.js';
+export type { StaySearchCompleteness } from './stay-search-completeness.js';
 import type {
   PaneStayCommercial,
   PaneStayFields,
@@ -77,6 +79,9 @@ export type HmsCloudFindResult = PaneStayFindResult & {
   reservationObservations?: HmsCloudReservationObservations;
   observedAt: string | null;
   searchedDateRange?: { from: string; to: string };
+  searchedRanges?: Array<{ from: string; to: string }>;
+  completeness?: StaySearchCompleteness;
+  requestedDateHorizon?: { from: string; to: string };
 };
 
 type RecordValue = Record<string, unknown>;
@@ -310,6 +315,21 @@ function paneStayCommercial(stay: PaneStayFields, rawNative: unknown, verifiedNa
 /** Exact-confirmation projection; raw Record View fields never enter the persisted job result. */
 export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown, propertyCode = CENTURION_HMS_READ_TARGET.propertyCode): HmsCloudFindResult {
   const root = record(raw);
+  const completeness = parseStaySearchCompleteness(root?.completeness);
+  const range = record(root?.searchedDateRange) ?? record(completeness?.searchedDateRange);
+  const searchedDateRange = realDay(range?.from) && realDay(range?.to) && range.from <= range.to
+    ? { from: range.from, to: range.to } : undefined;
+  const rawRanges = Array.isArray(root?.searchedRanges) ? root.searchedRanges : completeness?.searchedRanges;
+  const searchedRanges = rawRanges?.flatMap((item) => {
+    const value = record(item);
+    return realDay(value?.from) && realDay(value?.to) && value.from <= value.to ? [{ from: value.from, to: value.to }] : [];
+  });
+  const horizon = record(root?.requestedDateHorizon) ?? record(completeness?.requestedDateHorizon);
+  const requestedDateHorizon = realDay(horizon?.from) && realDay(horizon?.to) && horizon.from <= horizon.to
+    ? { from: horizon.from, to: horizon.to } : undefined;
+  const evidence = { ...(searchedDateRange ? { searchedDateRange } : {}),
+    ...(requestedDateHorizon ? { requestedDateHorizon } : {}),
+    ...(searchedRanges ? { searchedRanges } : {}), ...(completeness ? { completeness } : {}) };
   const shallow = record(root?.shallow);
   if (root?.outcome === 'ok' && shallow) {
     const confirmation = text(shallow.confirmation);
@@ -338,7 +358,7 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown, p
       return { state: 'unknown' as const, nativeId: null, name: visible.value };
     };
     return {
-      outcome: 'found', reason: null, stay, nativePreimage: verifiedNative,
+      outcome: 'found', reason: null, stay, nativePreimage: verifiedNative, ...evidence,
       ...(commercial ? { commercial } : {}),
       ...(verifiedNative ? { rateLookup: {
         native: verifiedNative, observedAt: observationTimestamp(root.observedAt),
@@ -360,17 +380,18 @@ export function projectCloudStayFind(request: PaneStayFindInput, raw: unknown, p
   }
   const issue = text(root?.issue) ?? 'SAVED_STAY_READ_FAILED';
   if (issue === 'CONFIRMATION_NOT_FOUND') {
-    const range = record(root?.searchedDateRange);
-    const searchedDateRange = realDay(range?.from) && realDay(range?.to) && range.from <= range.to
-      ? { from: range.from, to: range.to } : undefined;
-    return { outcome: 'ambiguous', reason: 'CONFIRMATION_NOT_FOUND_IN_SEARCH_WINDOW', stay: null, arrivalMismatch: false,
-      requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null,
-      ...(searchedDateRange ? { searchedDateRange } : {}),
+    const complete = completeness && isStaySearchComplete(completeness) && coversStaySearchHorizon(completeness);
+    const incomplete = completeness && (completeness.truncated || !completeness.gridComplete ||
+      (!completeness.allChunksSearched && completeness.requestedDatesCovered));
+    return { outcome: complete ? 'not_found' : 'ambiguous',
+      reason: complete ? issue : incomplete ? 'SEARCH_INCOMPLETE' : 'CONFIRMATION_NOT_FOUND_IN_SEARCH_WINDOW',
+      stay: null, arrivalMismatch: false, requestedArrival: request.arrival ?? null, hmsArrival: null,
+      screenshots: [], runId: null, ...evidence,
       source: 'hms_cloud_saved_stay', guestName: null, observedAt: observationTimestamp(root?.observedAt) };
   }
   if (['AMBIGUOUS_CONFIRMATION', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_HINT_MISMATCH', 'CONFIRMATION_HINT_UNVERIFIED', 'SEARCH_RESULTS_CHANGED'].includes(issue)) {
     return { outcome: 'ambiguous', reason: issue, stay: null, arrivalMismatch: false,
-      requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null,
+      requestedArrival: request.arrival ?? null, hmsArrival: null, screenshots: [], runId: null, ...evidence,
       source: 'hms_cloud_saved_stay', guestName: null, observedAt: observationTimestamp(root?.observedAt) };
   }
   if (root?.outcome === 'input_gap' || issue.startsWith('INVALID_')) {
