@@ -91,6 +91,8 @@ const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value.trim() : null;
 const sha256 = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
+// HMS dialogs break penalty text over several lines. Staff review and the second Go bind one-line text.
+const penaltyLine = (value: unknown): unknown => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : value;
 const ptr = (...parts: Array<string | number>) => `/${parts.map((part) => encodeURIComponent(String(part))).join('/')}`;
 const sameName = (left: unknown, right: unknown): boolean => typeof left === 'string' && typeof right === 'string' &&
   left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
@@ -458,7 +460,7 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
       ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(signal ? { signal } : {}) }) as NativeCancelResult;
     const expected = cancelPreimageSchema.safeParse(native.expected), reasons = reasonOptionsSchema.safeParse(native.reasons),
       policyFacts = z.array(z.string().trim().min(1).max(260)).max(12).safeParse(native.policyFacts ?? []),
-      penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(native.penaltyText ?? null);
+      penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(penaltyLine(native.penaltyText ?? null));
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
         !expected.success || !reasons.success || !policyFacts.success || !penaltyText.success ||
         expected.data.propertyCode !== target.propertyCode || expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
@@ -1277,7 +1279,7 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           cancellationNote: compiled.cancellationNote, continuationAllowed, commitBudgetMs: 15 * 60_000,
           beforeDispatch: async () => continuationAllowed(),
           awaitChargeApproval: async (dialog: { text: string; button: string }) => {
-            const dialogText = typeof dialog?.text === 'string' ? dialog.text.trim() : '';
+            const dialogText = typeof dialog?.text === 'string' ? penaltyLine(dialog.text) as string : '';
             const button = typeof dialog?.button === 'string' ? dialog.button.trim() : '';
             if (!fresh.penaltyText || dialogText !== fresh.penaltyText || !/^(?:OK|Yes|Accept)$/i.test(button) ||
                 !continuationAllowed()) return false;
@@ -1330,17 +1332,18 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       const financialStateMatches = fresh.penaltyText === null ?
         native.chargeApproved === false && native.chargeDispatched === false :
         acceptedPenaltyText === fresh.penaltyText && native.chargeApproved === true && native.chargeDispatched === false;
-      const noNewFinancialState = native.penaltyText === fresh.penaltyText && native.zeroPenaltyNotice == null &&
+      const nativePenaltyText = penaltyLine(native.penaltyText);
+      const noNewFinancialState = nativePenaltyText === fresh.penaltyText && native.zeroPenaltyNotice == null &&
         financialStateMatches && native.outcome !== 'cancel_penalty_pending';
       const completed = Boolean(activeHandle && native.outcome === 'cancelled' && native.requestDispatched === true &&
         native.writerSessionClosed === true && native.dispatchCallbacksDrained === true && exactReadback && noNewFinancialState);
       if (!completed || !activeHandle) {
         const nativePenaltyObserved = Object.prototype.hasOwnProperty.call(native, 'penaltyText') &&
-          (native.penaltyText === null || (typeof native.penaltyText === 'string' && native.penaltyText.length <= 2000 &&
-            native.penaltyText === native.penaltyText.trim() && !/[\p{Cc}]/u.test(native.penaltyText)));
+          (nativePenaltyText === null || (typeof nativePenaltyText === 'string' && nativePenaltyText.length <= 2000 &&
+            !/[\p{Cc}]/u.test(nativePenaltyText)));
         if (!activeHandle && !claimError && native.requestDispatched === false && native.writerSessionClosed === true &&
-            native.dispatchCallbacksDrained === true && nativePenaltyObserved && native.penaltyText !== fresh.penaltyText) {
-          const changedFresh = { ...fresh, penaltyText: native.penaltyText as string | null };
+            native.dispatchCallbacksDrained === true && nativePenaltyObserved && nativePenaltyText !== fresh.penaltyText) {
+          const changedFresh = { ...fresh, penaltyText: nativePenaltyText as string | null };
           const changedApproval = approvalDigest(compiled, changedFresh);
           const changed = preparedObservation(loaded.draft, input, compiled, changedFresh, changedApproval, true);
           const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, changed, 'prepared',

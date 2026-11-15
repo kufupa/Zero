@@ -1,7 +1,7 @@
 import { getPropertyRegistration } from './property-registry.mjs';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const HMS_PROPERTIES = Object.freeze(['HRCEN', 'HRDAV', 'HRDAVS']);
@@ -114,14 +114,13 @@ const writerSources = Object.freeze({
 });
 const writerDigests = new Map();
 
-/** Hash the installed writer and its local source dependencies, independently of UI commits. */
+/** Hash only the workflow's listed writer sources plus the tooling/hms-cloud files they import, so other backend changes keep its canary. */
 export function hmsWriterDependencyDigest(workflow) {
   if (!writerSources[workflow]) throw new Error('hms_writer_workflow_invalid');
   if (writerDigests.has(workflow)) return writerDigests.get(workflow);
   const root = fileURLToPath(new URL('../../', import.meta.url));
-  const pending = [...writerSources[workflow], 'src/ai/hms-approval.ts', 'src/ai/worker.ts',
-    'src/hms/staff-go-authority.ts', 'src/hms/property-read-lock.ts', 'package.json',
-    ...HMS_PROPERTIES.map(property => `tooling/hms-cloud/${getPropertyRegistration(property).profileFile}`)];
+  const toolLayer = resolve(root, 'tooling/hms-cloud') + sep;
+  const pending = [...writerSources[workflow]];
   const sources = new Map();
   const findSource = path => {
     const candidates = [path, path.replace(/\.js$/, '.ts'), path.replace(/\.js$/, '.tsx'),
@@ -139,12 +138,11 @@ export function hmsWriterDependencyDigest(workflow) {
     const imports = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\bnew\s+URL\s*\(\s*|\brequire\s*\(\s*)['"](\.[^'"]+)['"]/g;
     for (const match of bytes.toString('utf8').matchAll(imports)) {
       if (/^new\s+URL/.test(match[0]) && !/\.(?:[cm]?js|tsx?)$/.test(match[1])) continue;
-      pending.push(relative(root, resolve(dirname(path), match[1])));
+      const imported = resolve(dirname(path), match[1]);
+      if (imported.startsWith(toolLayer)) pending.push(relative(root, imported));
     }
   }
-  const hash = createHash('sha256').update('zero/hms-writer-dependencies/v2\0');
-  const lockfile = readFileSync(resolve(root, '../../pnpm-lock.yaml'));
-  hash.update('pnpm-lock.yaml\0').update(String(lockfile.length)).update('\0').update(lockfile);
+  const hash = createHash('sha256').update('zero/hms-writer-dependencies/v3\0');
   for (const [name, bytes] of [...sources].sort(([left], [right]) => left.localeCompare(right))) {
     hash.update(name).update('\0').update(String(bytes.length)).update('\0').update(bytes);
   }
