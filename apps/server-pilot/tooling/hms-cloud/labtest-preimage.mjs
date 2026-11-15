@@ -1,7 +1,7 @@
 // A same-page, read-only census before a guarded HRCEN create.
 import { randomUUID } from 'node:crypto';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
-import { sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
+import { blockingCreateMatches, sameCreateGuest, validCreateDates, validCreateGuest } from './cloud-create-policy.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
@@ -244,9 +244,10 @@ export async function searchLabtestPreimage(page, { arrival, departure, property
       throw new Error('SEARCH_RESULTS_INCOMPLETE');
     }
     const sameArrival = candidates.filter((row) => sameCreateGuest(row, guest) && row.arrival === arrival);
-    const result = { outcome: sameArrival.length ? 'existing_matches' : 'clear', propertyCode, firstName, lastName, arrival, departure,
+    const blockingMatches = blockingCreateMatches(sameArrival);
+    const result = { outcome: blockingMatches.length ? 'existing_matches' : 'clear', propertyCode, firstName, lastName, arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
-    if (sameArrival.length && !verifyExisting) return result;
+    if (blockingMatches.length && !verifyExisting) return result;
     const observedAt = Date.now();
     const proof = { id: randomUUID(), propertyCode, firstName, lastName, arrival, departure, expiresAt: observedAt + 5 * 60_000 };
     proof.invalidate = (request) => {
@@ -266,7 +267,7 @@ export async function searchLabtestPreimage(page, { arrival, departure, property
       try { verified = await verifyExisting(structuredClone(result)) === true; } catch { /* fail closed */ }
       if (!verified || proofs.get(page) !== proof || Date.now() >= proof.expiresAt) {
         forget(page);
-        return sameArrival.length ? result : { outcome: 'incomplete', issue: 'EXISTING_VERIFICATION_FAILED' };
+        return blockingMatches.length ? result : { outcome: 'incomplete', issue: 'EXISTING_VERIFICATION_FAILED' };
       }
     }
     return { ...result, outcome: 'clear', ...(verifyExisting ? { verifiedExisting: true } : {}),

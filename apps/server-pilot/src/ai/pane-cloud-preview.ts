@@ -9,7 +9,8 @@ import type { DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
-import { CREATE_GUARANTEES, createGuaranteeCode, isLabtestGuest, sameCreateGuest, validCreateDates } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
+import { CREATE_GUARANTEES, blockingCreateMatches, createGuaranteeCode, isLabtestGuest, sameCreateGuest, validCreateDates } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
+import { isCancelledStatus } from '../../tooling/hms-cloud/cancel-stay-rules.mjs';
 import { cloudWriterCurrent, withCloudCredentialLease, type CloudCredentialLease } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
@@ -544,7 +545,7 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
     coverage: z.object({ displayed: z.number().int().nonnegative().safe(), total: z.number().int().nonnegative().safe(),
       complete: z.literal(true) }),
     sameArrival: z.array(z.object({ confirmation: z.string().regex(/^\d{6,10}-\d{1,2}$/), firstName: z.string().min(1), lastName: z.string().min(1),
-      arrival: isoDate, departure: isoDate, status: z.literal('Reserved') }).passthrough()),
+      arrival: isoDate, departure: isoDate, status: z.string().refine(value => value === 'Reserved' || isCancelledStatus(value)) }).passthrough()),
     verifiedExisting: z.literal(true).optional(),
   }).passthrough(), writer: z.unknown().optional(), guaranteeDisplay: z.string().min(1).max(200) }).strict().safeParse(value);
   const matchingSiblings = siblings.filter((sibling) => {
@@ -552,6 +553,7 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
     return sameCreateGuest(request.guest, input.stay) && request.stay?.arrival === input.stay.arrival;
   });
   const guarantee = createGuaranteeCode(input.stay.guaranteeType);
+  const blockingMatches = parsed.success ? blockingCreateMatches(parsed.data.preimage.sameArrival) : [];
   if (!parsed.success || parsed.data.preimage.firstName !== input.stay.firstName ||
       parsed.data.preimage.lastName !== input.stay.lastName || parsed.data.preimage.arrival !== input.stay.arrival ||
       parsed.data.preimage.departure !== input.stay.departure || input.stay.arrival >= input.stay.departure ||
@@ -563,11 +565,11 @@ async function createRecoveryEvidence(value: unknown, input: Input, siblings: Ba
       !guarantee || (input.stay.propertyCode === 'HRCEN' && parsed.data.guaranteeDisplay !== CREATE_GUARANTEES[guarantee]) ||
       (input.stay.propertyCode !== 'HRCEN' && input.stay.guaranteeType !== guarantee && parsed.data.guaranteeDisplay !== input.stay.guaranteeType) ||
       !cloudWriterCurrent(parsed.data.writer) ||
-      parsed.data.preimage.sameArrival.length !== matchingSiblings.length ||
+      blockingMatches.length !== matchingSiblings.length ||
       (siblings.length > 0 && parsed.data.preimage.verifiedExisting !== true) ||
-      new Set(parsed.data.preimage.sameArrival.map((row) => row.confirmation)).size !== matchingSiblings.length ||
-      parsed.data.preimage.sameArrival.some((row) => !sameCreateGuest(row, input.stay) || row.arrival !== input.stay.arrival ||
-        !matchingSiblings.some((sibling) => sibling.confirmation === row.confirmation))) {
+      new Set(parsed.data.preimage.sameArrival.map((row) => row.confirmation)).size !== parsed.data.preimage.sameArrival.length ||
+      parsed.data.preimage.sameArrival.some((row) => !sameCreateGuest(row, input.stay) || row.arrival !== input.stay.arrival) ||
+      blockingMatches.some((row) => !matchingSiblings.some((sibling) => sibling.confirmation === row.confirmation))) {
     throw new Error('cloud_create_preimage_unavailable');
   }
   const before = parsed.data.beforeScreenshot, dir = dirname(before);

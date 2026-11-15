@@ -3922,6 +3922,7 @@ export async function executeHmsJob(input: {
         transportId: run.transportId,
         threadId: run.threadId,
         messageId: run.triggerMessageId,
+        propertySwitch: request.input.propertySwitch,
       });
       if (!resolved.ok) {
         await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);

@@ -175,7 +175,7 @@ describe('assertHmsQuoteOriginAllowed', () => {
     });
   });
 
-  it('returns HRDAV for a Da Vinci transport when the quote flag is on', async () => {
+  it('returns the selected Da Vinci property when its quote installation is ready', async () => {
     await expect(
       assertHmsQuoteOriginAllowed({
         transportId: 'transport-ayanda',
@@ -184,5 +184,16 @@ describe('assertHmsQuoteOriginAllowed', () => {
         env: HRDAV_QUOTE_READY_ENV,
       }),
     ).resolves.toEqual(DAVINCI_HMS_READ_TARGET);
+    await expect(assertHmsQuoteOriginAllowed({
+      transportId: 'transport-ayanda', threadId: 'thread-dv', messageId: 'msg-dv',
+      propertySwitch: 'HRDAVS', env: {
+        HMS_DAVINCI_MAKE_QUOTE: 'on',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAVS: '/tmp/hrdavs-quote.json',
+      },
+    })).resolves.toMatchObject({ propertyCode: 'HRDAVS', browserSlot: 'davinci' });
+    await expect(assertHmsQuoteOriginAllowed({
+      transportId: 'transport-centurion', threadId: 'thread-cen', messageId: 'msg-cen',
+      propertySwitch: 'HRDAVS', env: HRDAV_QUOTE_READY_ENV,
+    })).rejects.toMatchObject({ message: 'hms_property_switch_unauthorized' });
   });
 });

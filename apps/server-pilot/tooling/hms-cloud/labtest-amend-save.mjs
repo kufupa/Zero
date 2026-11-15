@@ -10,6 +10,7 @@ import { parseNativePricingJson } from './saved-stay-nightly-rates.mjs';
 import { isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
 import { isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
+import { nativeReadExtrasAreSafe } from './saved-stay-read-guard.mjs';
 
 /** Native loadVault only initializes the card iframe. This POST remains aborted. */
 export function isNativeCardEntryInitialization(request) {
@@ -23,7 +24,7 @@ export function isNativeCardEntryInitialization(request) {
   } catch { return false; }
 }
 
-/** Native hdr_getTaxRelatedValues refreshes five UI parameters; it remains aborted. */
+/** Native hdr_getTaxRelatedValues reads the verified stay's tax parameters. */
 export function isNativeTaxValuesRead(request, frame, expected) {
   try {
     const keys = ['reservationstayid', 'propertycode', 'arrivaldate', 'departuredate', 'currency'];
@@ -36,6 +37,7 @@ export function isNativeTaxValuesRead(request, frame, expected) {
       !url.username && !url.password && !url.search && !url.hash && url.pathname === '/web/base/OSRESV.HDR.gettaxrelatedvalues' &&
       /^application\/x-www-form-urlencoded(?:;|$)/i.test(headers['content-type'] || '') &&
       headers['request-type'] === 'XMLHTTP' && headers['request-source'] === 'XMLHTTP' &&
+      nativeReadExtrasAreSafe(body, new Set(keys)) &&
       keys.every(key => body.getAll(key).length === 1 && body.get(key) === expected[key]);
   } catch { return false; }
 }

@@ -31,6 +31,8 @@ const readParties = async ({ organization }) => {
 test('only a matching approved sibling with fresh record and party reads permits the next room', async () => {
   const { census, sibling } = fixture();
   assert.equal(await verifyBatchSiblings(census, [sibling], { read, readParties }), true);
+  census.sameArrival.push({ ...census.sameArrival[0], confirmation: '999999-1', status: 'Cancelled' });
+  assert.equal(await verifyBatchSiblings(census, [sibling], { read, readParties }), true);
 });
 
 test('an incomplete census, extra guest, duplicate or changed identity never permits another save', async () => {

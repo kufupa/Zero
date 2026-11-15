@@ -170,7 +170,7 @@ export async function reconcileLabtestCreate({ stay, expected }, { census = read
   let result;
   try { result = await census(stay, expected, cloudTargetKey, { propertyCode, transportId, signal, credentialLease }); } catch { result = { outcome: 'incomplete', issue: 'census_unverified' }; }
   const candidates = [];
-  const rows = result?.outcome === 'existing_matches' && result.coverage?.complete && Array.isArray(result.sameArrival) ? result.sameArrival : [];
+  const rows = ['clear', 'existing_matches'].includes(result?.outcome) && result.coverage?.complete && Array.isArray(result.sameArrival) ? result.sameArrival : [];
   for (const row of rows) {
     try { candidates.push({ confirmation: row.confirmation, readback: await readLabtestCreate({ confirmation: row.confirmation, stay, expected }, { withSavedSession, propertyCode, transportId, signal, credentialLease, cloudTargetKey }) }); }
     catch { candidates.push({ confirmation: row.confirmation, issue: 'readback_unverified' }); }

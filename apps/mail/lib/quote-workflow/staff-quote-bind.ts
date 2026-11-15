@@ -92,6 +92,7 @@ export type StaffRowPriceWire =
 
 export type ExecuteStaffQuoteInput = {
   messageId: string;
+  propertySwitch?: 'HRDAV' | 'HRDAVS';
   sourceHash: string;
   selectionEpoch: number;
   inputRevision: number;
@@ -221,7 +222,7 @@ function staffQuoteStayTermsMatch(
         roomCodes: [...(group.roomCodes ?? [])].sort(),
       })),
     );
-  return terms(request.input.groups) === terms(expected.groups);
+  return request.input.propertySwitch === expected.propertySwitch && terms(request.input.groups) === terms(expected.groups);
 }
 
 type StaffQuoteCallOptions = {
@@ -1122,7 +1123,6 @@ function staffQuoteRequest(
       args.configuration !== undefined || args.propertyCode !== HRCEN_PROPERTY_CODE) {
     return { error: 'Could not identify the hotel for this mailbox. Refresh the pane before running the quote.' };
   }
-  if (args.propertyCode === 'HRDAVS') return { error: 'Quotes for this hotel are not available in this pane yet.' };
   const capability = args.configuration?.capabilities?.quote;
   if (args.configuration && (!capability || !['prepare-only', 'lab', 'staff-enabled'].includes(capability.status)))
     return { error: capability?.reason || 'Quotes are not available for this hotel yet.' };
@@ -1145,6 +1145,7 @@ function staffQuoteRequest(
     return {
       input: {
         messageId: args.source.messageId,
+        ...(args.propertyCode === 'HRDAVS' ? { propertySwitch: 'HRDAVS' as const } : {}),
         sourceHash: args.source.sourceHash,
         selectionEpoch: args.selectionEpoch,
         inputRevision: args.inputRevision,
@@ -1520,7 +1521,8 @@ export async function bindAutoStartStaffQuote(
       settled.prefetch &&
       settled.request?.kind === 'staff_quote' &&
       settled.request.input.messageId === built.input.messageId &&
-      settled.request.input.sourceHash === built.input.sourceHash;
+      settled.request.input.sourceHash === built.input.sourceHash &&
+      settled.request.input.propertySwitch === built.input.propertySwitch;
     const rebased = (preparedForSource || staffQuoteRequestMatches(settled.request, built.input)) && settled.result
       ? {
           ...settled,

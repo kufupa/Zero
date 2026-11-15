@@ -589,14 +589,14 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
       const averageRate = fieldValue(checked.fields,'averagerate'), totalRate = fieldValue(checked.fields,'totalrate');
       const averageAmount = observedPrice(averageRate), totalAmount = observedPrice(totalRate);
-      priceUnconfirmed = averageAmount === null || averageAmount <= 0 || totalAmount === null || totalAmount <= 0;
+      priceUnconfirmed = averageAmount === null || totalAmount === null;
       const currencyValues = [fieldValue(checked.fields,'averageratecurr'), fieldValue(checked.fields,'totalratecurr'),
         ...checked.currencies.map(clean)].filter(Boolean).map(value => /^r$/i.test(value) ? 'ZAR' : value.toUpperCase());
       if (!currencyValues.length && [averageRate,totalRate].every(value => /^(?:R|ZAR)\s*\d/i.test(value) || /\bZAR$/i.test(value))) {
         currencyValues.push('ZAR');
       }
       const currency = currencyValues.length && currencyValues.every(value => value === currencyValues[0]) ? currencyValues[0] : null;
-      if (fieldValue(checked.fields, 'roomtypecharge')) {
+      if (fieldValue(checked.fields, 'roomtypecharge') || averageAmount === 0 || totalAmount === 0) {
         const values = nativeAvailability.values;
         const responseFields = values && typeof values === 'object' && !Array.isArray(values)
           ? Object.entries(values).map(([name, value]) => ({ name: name.toLowerCase(), value })) : [];

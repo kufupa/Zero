@@ -55,7 +55,7 @@ import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-po
 import { propertyCodeSchema } from '../hms/property-registry.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
-import { createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
+import { blockingCreateMatches, createCloudTargetKey, isLabtestGuest } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { lockCreateActorSession } from './pane-create-actor-lock.js';
 import { stayCommitsOf } from './work-items.js';
 import { sameGuestName } from './guest-name-match.js';
@@ -2586,8 +2586,9 @@ export async function reservationWorkflowV2Execute(ctx: ReservationWorkflowV2Ser
       if (priorSiblings.length) {
         const sameArrival = Array.isArray(preimage?.sameArrival) ? preimage.sameArrival.map(record)
           .filter((row): row is Record<string, unknown> => row !== null) : [];
-        if (!priorSiblingsVerified || preimage?.verifiedExisting !== true || sameArrival.length !== priorSiblings.length ||
-            priorSiblings.some((sibling) => !sameArrival.some((row) => row.confirmation === sibling.confirmation))) {
+        const blockingMatches = blockingCreateMatches(sameArrival);
+        if (!priorSiblingsVerified || preimage?.verifiedExisting !== true || blockingMatches.length !== priorSiblings.length ||
+            priorSiblings.some((sibling) => !blockingMatches.some((row) => row.confirmation === sibling.confirmation))) {
           throw new Error('reservation_workflow_v2_prior_rooms_unverified');
         }
       }

@@ -96,6 +96,11 @@ test('recovery excludes sealed earlier rooms and requires one uniquely new match
   const result = await provePositiveCreateRecovery(batchIntent, fixture({ listing }).options);
   assert.equal(result.outcome, 'verified');
   assert.equal(result.confirmation, candidate.confirmation);
+  const historical = { ...prior, status: 'Cancelled' };
+  const cancelledIntent = structuredClone(batchIntent);
+  cancelledIntent.recovery.preimage.sameArrival = [historical];
+  assert.equal((await provePositiveCreateRecovery(cancelledIntent,
+    fixture({ listing: { ...listing, sameArrival: [historical, candidate] } }).options)).outcome, 'verified');
   for (const sameArrival of [[candidate], [prior, prior], [{ ...prior, status: 'Cancelled' }, candidate],
     [prior, candidate, { ...candidate, confirmation: '1234568-1' }]]) {
     assert.equal((await provePositiveCreateRecovery(batchIntent, fixture({ listing: { ...listing, sameArrival } }).options)).outcome,

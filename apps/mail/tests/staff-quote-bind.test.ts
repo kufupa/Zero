@@ -263,6 +263,16 @@ describe('HRDAV native room and board maps', () => {
       propertyCode: HRDAV_PROPERTY_CODE, configuration: davinci, mutate,
     })).toMatchObject({ status: 'unavailable', reason: 'Not available' });
     expect(mutate).not.toHaveBeenCalled();
+    const suites: QuotePaneConfig = { ...davinci, propertyCode: 'HRDAVS', capabilities: {
+      ...davinci.capabilities!, quote: { status: 'prepare-only', reason: 'Ready' },
+    } };
+    mutate.mockRejectedValue(new Error('Stop after inspecting request'));
+    await bindExecuteStaffQuote({
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+      selectionEpoch: 1, inputRevision: 1, groups, header: emptyStaffQuoteHeader(),
+      propertyCode: 'HRDAVS', configuration: suites, mutate,
+    });
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ propertySwitch: 'HRDAVS' }));
   });
 
   it('normalizes each HRDAV room label as staff spellings and keeps HRCEN normalization', () => {

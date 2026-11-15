@@ -10,6 +10,8 @@ import {
   matchesLabtestBody as bodyMatchesSnapshot,
 } from './labtest-record.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { isNativeTaxValuesRead } from './labtest-amend-save.mjs';
+import { nativeReadExtrasAreSafe } from './saved-stay-read-guard.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const OPEN_PATH = '/web/base/OSCNRS';
@@ -235,7 +237,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
         if (request.method() !== 'GET' || url.origin !== ORIGIN || url.username || url.password || url.hash ||
             url.pathname !== policyPath) return false;
         if (!url.search) return true;
-        return [...query].length === 3 && query.getAll('requestedLanguage').length === 1 &&
+        return nativeReadExtrasAreSafe(query, new Set(['requestedlanguage', 'forceapplycxlpolicy', '_dc'])) && query.getAll('requestedLanguage').length === 1 &&
           query.get('requestedLanguage') === 'EN' && query.getAll('forceApplyCxlPolicy').length === 1 &&
           query.get('forceApplyCxlPolicy') === 'false' && query.getAll('_dc').length === 1 &&
           /^\d{13}$/.test(query.get('_dc'));
@@ -488,7 +490,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     },
   });
   const work = (async () => { try {
-    fence = await installPageRequestFence(page, ['/web/base/OSRESV.HDR']);
+    fence = await installPageRequestFence(page, ['/web/base/OSRESV.HDR', '/web/base/OSRESV.HDR.gettaxrelatedvalues']);
     action.check();
     if (fence !== opened.fence || fence.isQuarantined()) throw new Error('PAGE_ACTION_UNCERTAIN');
     scope = fence.open();
@@ -497,6 +499,10 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       throw new Error('CANCEL_REASON_STALE');
     }
     const state = await currentCancellationRecord(page, expected), frame = state.frame;
+    const taxSnapshot = await recordSnapshot(frame);
+    const taxReadValues = { reservationstayid: String(taxSnapshot.data.reservationstayid ?? ''), propertycode: expected.propertyCode,
+      arrivaldate: `${taxSnapshot.data.arrivaldate} 00:00`, departuredate: `${taxSnapshot.data.departuredate} 00:00`,
+      currency: String(taxSnapshot.values.currency || taxSnapshot.data.currency || taxSnapshot.values.grandtotalcurr || taxSnapshot.data.grandtotalcurr || '') };
     if (bindDepositReceived && !await depositDisplayMatches(frame, expected)) throw new Error('CANCEL_DEPOSIT_CHANGED');
     if (frame !== opened.frame || JSON.stringify(state.native) !== JSON.stringify(opened.native) || state.track !== opened.track) {
       throw new Error('LABTEST_RECORD_CHANGED');
@@ -534,6 +540,10 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       let pathname = '', action = '';
       try { const url = new URL(request.url()); pathname = url.pathname; action = url.searchParams.get('pageaction') || ''; }
       catch { /* Block unparseable targets. */ }
+      if (dispatched && !fence.isQuarantined() && isNativeTaxValuesRead(request, frame, taxReadValues) && scope.allow(request)) {
+        opened.forwarded.add(request);
+        return route.fallback();
+      }
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && pathname &&
           !/save|delete|cancel|checkin|checkout|send|email|mail|crs|charge|fee|penalt|payment/i.test(pathname) &&
           !(pathname === '/web/base/OSRESV.HDR' && /^(SAVE|DELETE)$/i.test(action))) return route.fallback();

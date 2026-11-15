@@ -1,4 +1,5 @@
 export const CREATE_GUARANTEES: Readonly<Record<string, string>>;
+export function blockingCreateMatches<T extends { status?: unknown }>(rows: readonly T[]): T[];
 export function createGuaranteeCode(value: unknown): string | null;
 export function validCreateGuest(guest: unknown): boolean;
 export function isLabtestGuest(guest: unknown): boolean;

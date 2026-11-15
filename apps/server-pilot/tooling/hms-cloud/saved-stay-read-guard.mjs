@@ -44,6 +44,13 @@ function uniqueParams(params) {
   return values;
 }
 
+// Extra ExtJS transport/display metadata cannot change the native read action or scope.
+export function nativeReadExtrasAreSafe(params, knownKeys = new Set()) {
+  const values = uniqueParams(params);
+  return Boolean(values && [...values].every(([key, value]) => value.length <= 2048 && !/[\p{Cc}]/u.test(value) &&
+    (knownKeys.has(key) || !/action|save|delete|create|insert|update|commit|submit|override|charge|payment|function|property|tenant|confirmation|reservation|guestid|profile|filter|maddon|account/i.test(key))));
+}
+
 const validConfirmation = (value, allowBaseConfirmation = false) =>
   /^\d+-\d+$/.test(value || '') || (allowBaseConfirmation && /^\d{6,10}$/.test(value || ''));
 
@@ -51,17 +58,17 @@ function isSelectedRecordNavigation(url, confirmation, allowBaseConfirmation) {
   if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
       url.hash || url.pathname !== '/web/base/loadmain' || !validConfirmation(confirmation, allowBaseConfirmation)) return false;
   const query = uniqueParams(url.searchParams);
-  if (!query || query.size !== recordQuery.size + 2 ||
+  if (!query || !nativeReadExtrasAreSafe(url.searchParams, new Set([...recordQuery.keys(), 'requesttoken', 'initparams'])) ||
       [...recordQuery].some(([key, value]) => query.get(key) !== value) ||
       !/^(?:[a-z0-9]|%[a-f0-9]{2}){1,180}&browserTabID=[a-z0-9]{1,40}$/i.test(query.get('requesttoken') || '')) return false;
   const initial = uniqueParams(new URLSearchParams(query.get('initparams')));
-  return initial?.size === 2 && initial.get('startupview') === 'right' &&
+  return initial && nativeReadExtrasAreSafe(new URLSearchParams(query.get('initparams')), new Set(['startupview', 'autotracepopupskipconfnum'])) && initial.get('startupview') === 'right' &&
     initial.get('autotracepopupskipconfnum') === confirmation;
 }
 
 function isSelectedStaySearch(url, request, confirmation, allowBaseConfirmation) {
   if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-      url.search || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
+      !nativeReadExtrasAreSafe(url.searchParams) || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
       !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
   const body = uniqueParams(new URLSearchParams(request.postData));
   if (!body) return false;
@@ -80,7 +87,7 @@ function isSelectedStaySearch(url, request, confirmation, allowBaseConfirmation)
         body.get(keys[3]) !== String(n) ||
         (index < 2 ? !/^[+-]?\d{1,4}$/.test(value || '') || Math.abs(Number(value)) > 3660 : value !== confirmation)) return false;
   }
-  return body.size === expected.size && [...expected].every((key) => body.has(key));
+  return nativeReadExtrasAreSafe(new URLSearchParams(request.postData), expected) && [...expected].every((key) => body.has(key));
 }
 
 export function savedStayReadMayRequest(request, { confirmation, propertyCode = 'HRCEN', allowBaseConfirmation = false } = {}) {
@@ -92,38 +99,37 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV.LST') {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-          url.search || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
+          !nativeReadExtrasAreSafe(url.searchParams) || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
-      return body?.size === recordListFields.size + 1 && body.get('filtervalue') === confirmation &&
+      return body && nativeReadExtrasAreSafe(new URLSearchParams(request.postData), new Set([...recordListFields.keys(), 'filtervalue'])) && body.get('filtervalue') === confirmation &&
         [...recordListFields].every(([key, value]) => body.get(key) === value);
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV.HDR') {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password ||
-          url.search || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
+          !nativeReadExtrasAreSafe(url.searchParams) || url.hash || !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
       if (!body) return false;
-      const chrome = body.size === recordHeaderKeys.size + 2 && body.get('menu_module_key') === '0' &&
-        body.get('removescreenflows') === 'yes';
-      const recordReturn = body.size === recordHeaderKeys.size + 2 && body.get('scrollrow') === 'YES' &&
-        body.get('only_data_required') === 'true';
-      if (body.size !== recordHeaderKeys.size && !chrome && !recordReturn) return false;
-      return [...recordHeaderKeys].every((key) => body.has(key)) && [...body].every(([key, value]) =>
-        (recordHeaderKeys.has(key) || (chrome && ['menu_module_key', 'removescreenflows'].includes(key)) ||
-          (recordReturn && ['scrollrow', 'only_data_required'].includes(key))) &&
-        value.length <= 256 && !/[\p{Cc}]/u.test(value)) &&
+      if ((body.has('menu_module_key') || body.has('removescreenflows')) &&
+          (body.get('menu_module_key') !== '0' || body.get('removescreenflows') !== 'yes')) return false;
+      if ((body.has('scrollrow') || body.has('only_data_required')) &&
+          (body.get('scrollrow') !== 'YES' || body.get('only_data_required') !== 'true')) return false;
+      return nativeReadExtrasAreSafe(new URLSearchParams(request.postData), new Set([...recordHeaderKeys,
+        'menu_module_key', 'removescreenflows', 'scrollrow', 'only_data_required'])) &&
+        [...body.values()].every(value => value.length <= 256) &&
         body.get('system_function_name') === 'OSRESV' && body.get('user_function_name') === 'OSRESV' &&
         body.get('current_tab_name') === 'HDR' && body.get('confirmationnumber') === confirmation &&
         body.get('propertycode') === propertyCode && /^\d{1,100}$/.test(body.get('reservationstayid') || '') &&
         /^\d{1,100}$/.test(body.get('guestid') || '');
     }
-    if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV' && !url.search) {
+    if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESV' && nativeReadExtrasAreSafe(url.searchParams)) {
       if (url.origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com' || url.username || url.password || url.hash ||
           !validConfirmation(confirmation, allowBaseConfirmation) || typeof request.postData !== 'string' ||
           !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.contentType || '')) return false;
       const body = uniqueParams(new URLSearchParams(request.postData));
-      return body?.size === 6 && body.get('system_function_name') === 'OSRESV' &&
+      return body && nativeReadExtrasAreSafe(new URLSearchParams(request.postData), new Set(['system_function_name',
+        'user_function_name', 'startupview', 'autotracepopupskipconfnum', 'menu_module_key', 'removescreenflows'])) && body.get('system_function_name') === 'OSRESV' &&
         body.get('user_function_name') === 'OSRESV' && body.get('startupview') === 'right' &&
         body.get('autotracepopupskipconfnum') === confirmation && body.get('menu_module_key') === '0' &&
         body.get('removescreenflows') === 'yes';
@@ -137,16 +143,7 @@ export function savedStayReadMayRequest(request, { confirmation, propertyCode = 
     }
     if (String(request.method).toUpperCase() === 'POST' && url.pathname === '/web/base/OSRESS.search' &&
         typeof request.postData === 'string') {
-      if (!isSelectedStaySearch(url, request, confirmation, allowBaseConfirmation)) return false;
-      const body = new URLSearchParams(request.postData);
-      const userKeys = [...body.keys()].filter((key) => key.toLowerCase() === 'user_function_name');
-      const gridKeys = [...body.keys()].filter((key) => key.toLowerCase() === 'grid_name');
-      if (userKeys.length !== 1 || body.get(userKeys[0]) !== 'OSRESS' ||
-          gridKeys.length !== 1 || body.get(gridKeys[0]) !== 'OSRESS') return false;
-      // Same observed read/search shape as the surname finder, but the Stay
-      // 360 confirmation search identifies its user function as OSRESS.
-      body.set(userKeys[0], 'OSRESV');
-      return guestLookupMayRequest({ ...request, postData: body.toString(), propertyCode });
+      return isSelectedStaySearch(url, request, confirmation, allowBaseConfirmation);
     }
     if (!guestLookupMayRequest({ ...request, propertyCode })) return false;
     if (String(request.method).toUpperCase() === 'GET') return true;

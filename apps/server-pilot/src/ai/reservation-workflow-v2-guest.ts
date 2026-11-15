@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { canonicalJson } from './draft-approval.js';
-import { paneWriteMode } from './pane-stay-save.js';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { bindHmsMailboxProperty, guardCenturionHmsMailboxOrigin, loadThreadMailboxHmsOriginScan }
   from '../hms/mailbox-hms-origin-bind.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
@@ -122,12 +122,14 @@ async function validGuestPreview(preview: NonNullable<ReturnType<typeof prepared
   return preview.previewDigest === (extended ? native.profileReviewDigest(preview.review) : native.profilePreviewDigest(fields, confirmed, propertyCode));
 }
 
-function writeAllowed(business: Record<string, any>): boolean {
+function writeAllowed(business: Record<string, unknown>): boolean {
   const guest = record(business.guest);
-  if (!guest || process.env.PANE_CLOUD_CREATE_DISPATCH !== 'on') return false;
-  const mode = paneWriteMode('create');
+  const propertyCode = business.propertyCode;
+  const property = typeof propertyCode === 'string' ? getPropertyRegistration(propertyCode) : null;
+  if (!guest || !property?.active) return false;
+  const mode = effectiveWorkflowPolicy(process.env, property.propertyCode, 'guest_profile_create').admittedMode;
   const lab = guest.firstName === 'Proof' && guest.lastName === 'Labtest';
-  return lab ? mode === 'lab' || mode === 'on' : mode === 'on' && process.env.PANE_WRITE_CREATE === 'on';
+  return lab ? mode === 'lab' || mode === 'on' : mode === 'on';
 }
 
 // Match the runner's intent grouping; optional fields and duplicate decision
