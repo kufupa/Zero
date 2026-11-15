@@ -462,8 +462,8 @@ async function main() {
       const { cancellationNativePreimage } = await load('tooling/hms-cloud/pane-cancel-session.mjs');
       const { verifySingleCancellationScope } = await load('tooling/hms-cloud/cancel-association-scope.mjs');
       const { openLabtestCancellation, confirmLabtestCancellation } = await load('tooling/hms-cloud/guest-stay-cancel.mjs');
-      assert(effective.room.ratePlan === (args.cancelScenario === 'zero' ? 'CMPRO' : 'BAR'), 'CANCEL_SCENARIO_RATE_MISMATCH');
       const own = journal.created, effective = requestSchema.parse(journal.effectiveRequest);
+      assert(effective.room.ratePlan === (args.cancelScenario === 'zero' ? 'CMPRO' : 'BAR'), 'CANCEL_SCENARIO_RATE_MISMATCH');
       assert(own?.freshReadbackVerified === true && /^\d+-\d+$/.test(own.confirmation ?? '') && /^\d+$/.test(own.nativeStayId ?? '') &&
         own.note === effective.note && own.guestId === effective.guest.profileId, 'CANCEL_TARGET_INVALID');
       const lookup = async page => {
