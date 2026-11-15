@@ -2,21 +2,22 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { selectionFixture } from './fetch-quote-fixtures.mjs';
-import { normalizeQuoteRestAvailability, quoteRestSessionCacheKey, readQuoteRestAvailability,
+import { normalizeQuoteRestAvailability, readQuoteRestAvailability,
   validateDirectAvailabilityInquiryRequest } from './quote-rest-availability.mjs';
 
 const property = getPropertyRegistration('HRCEN');
 const body = {
   propertyCodes: 'HRCEN', startDate: '2026-09-24T00:00:00', numberOfDays: '3', lengthOfStay: 'DY',
-  adultCount: 1, childCount: 0, childAges: [], salesStrategy: null, roomTypeCodes: '', ratePlanCodes: '', currency: null,
+  adultCount: 1, childCount: 0, childAges: [], salesStrategy: 'BAR', roomTypeCodes: '', ratePlanCodes: '', currency: null,
   convertFromPropertyCurrency: false, shopByDay: false, showCollapsedByProperty: false, showCollapsedByRoomType: false,
   excludeOverbookingLimits: false, showRestrictedSellOptions: false, showExclusiveRates: false, launchedFrom: 'hotelavailability',
   showCollapsedByBuilding: false, buildingCodes: [], showArrivalDepartureCount: false, showSubGroupView: false,
-  groupID: '', organizationID: '', travelAgencyID: '', bookingSessionID: 'secret-session',
+  groupID: '', organizationID: '', travelAgencyID: '', bookingSessionID: '',
 };
 const url = `${property.origin}/api/internalBooking/rateshop/inquiryForGrid?houseAvailabilityOnly=false`;
 const request = () => ({ method: 'POST', url, redirect: 'manual', signal: new AbortController().signal,
-  headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  headers: { 'content-type': 'application/json', accept: 'application/json', cookie: 'session=secret',
+    authorization: `Bearer ${'a'.repeat(43)}=` }, body: JSON.stringify(body) });
 
 test('REST flag is strict and checked before session or input setup', async () => {
   for (const flag of [undefined, '', 'ON', 'true', 'off']) {
@@ -26,12 +27,41 @@ test('REST flag is strict and checked before session or input setup', async () =
   }
 });
 
+test('live response without an echo preserves effective cell restrictions and marks departure unknown', () => {
+  const fixture = selectionFixture();
+  fixture.data.datesList.pop();
+  fixture.data.children[0].columns = Object.fromEntries([1, 2, 3].map(i => [`col${i}`, {
+    restricted: false, closed: null, combClosed: null,
+  }]));
+  for (const col of Object.values(fixture.rate.columns)) Object.assign(col, {
+    closed: null, closedToArrival: null, closedToDeparture: null,
+  });
+  const result = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
+  assert.ok(result);
+  assert.equal(result.criteriaEchoVerified, false);
+  assert.equal(result.observations[0].departure.verified, false);
+  assert.deepEqual(result.observations[0].nightly[0].restrictions.unknownRestrictionFlags, []);
+  delete fixture.rate.columns.col1.combClosedToArrival;
+  const missing = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
+  assert.ok(missing.observations[0].nightly[0].restrictions.unknownRestrictionFlags.includes('isclosetoarrival'));
+  fixture.rate.columns.col1.combClosedToArrival = false;
+  fixture.rate.columns.col1.newRestriction = null;
+  const unknown = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
+  assert.ok(unknown.observations[0].nightly[0].restrictions.unknownRestrictionFlags.includes('newRestriction'));
+});
+
 test('direct guard rejects malformed, redirected, duplicate, unscoped and write-intent requests', () => {
   assert.equal(validateDirectAvailabilityInquiryRequest(request(), 'HRCEN'), true);
   const cases = [
     { method: 'GET' }, { redirect: 'follow' }, { signal: null },
     { url: `${url}&x=1` }, { url: `${url}#x` }, { url: url.replace('https://', 'https://a:b@') },
     { url: url.replace('false', 'true') }, { headers: { 'content-type': 'text/html' } },
+    { headers: { ...request().headers, authorization: 'Bearer bad' } },
+    { headers: { ...request().headers, 'x-extra': '1' } },
+    { body: JSON.stringify({ ...body, salesStrategy: null }) },
+    { body: JSON.stringify({ ...body, bookingSessionID: 'other' }) },
+    { body: JSON.stringify({ ...body, extra: 'unknown' }) },
+    { headers: { ...request().headers, cookie: 'a=1; a=2' } },
     { body: JSON.stringify({ ...body, propertyCodes: 'HRDAV' }) },
     { body: JSON.stringify({ ...body, adultCount: 0 }) },
     { body: JSON.stringify({ ...body, childAges: [3] }) },
@@ -41,18 +71,6 @@ test('direct guard rejects malformed, redirected, duplicate, unscoped and write-
   ];
   for (const change of cases) assert.equal(validateDirectAvailabilityInquiryRequest({ ...request(), ...change }, 'HRCEN'), false);
   assert.equal(validateDirectAvailabilityInquiryRequest(request(), 'HRDAVS'), false);
-});
-
-test('cache identity separates landing, selected property, credential version and capability', () => {
-  const identity = { tenantId: 'tenant', landingPropertyCode: 'HRDAV', selectedPropertyCode: 'HRDAV',
-    origin: property.origin, credentialVersionHmacSha256: 'a'.repeat(64), capabilityScope: 'read:transport-a' };
-  const original = quoteRestSessionCacheKey(identity);
-  assert.ok(original);
-  for (const change of [{ selectedPropertyCode: 'HRDAVS' }, { tenantId: 'other' }, { landingPropertyCode: 'other' },
-    { origin: 'https://other.example' }, { credentialVersionHmacSha256: 'b'.repeat(64) }, { capabilityScope: 'read:transport-b' }]) {
-    assert.notEqual(quoteRestSessionCacheKey({ ...identity, ...change }), original);
-  }
-  assert.equal(quoteRestSessionCacheKey({ ...identity, credentialVersionHmacSha256: null }), null);
 });
 
 test('REST observations retain nightly values and restrictions without claiming DOM or Quote evidence', () => {
@@ -111,7 +129,7 @@ test('retains departure restrictions and marks a missing departure column unveri
   assert.equal(normalize().outcome, 'partial');
 });
 
-test('REST response must echo all criteria and the selected property and dates', () => {
+test('REST response validates any echo and the selected property and dates', () => {
   const fixture = selectionFixture();
   const response = { appliedCriteria: { ...body }, availabilitydata: fixture.data };
   assert.ok(normalizeQuoteRestAvailability(response, body));
@@ -119,11 +137,16 @@ test('REST response must echo all criteria and the selected property and dates',
     { childAges: [1] }, { adultCount: 2 }, { numberOfDays: '2' }, { startDate: '2026-09-25T00:00:00' }]) {
     assert.equal(normalizeQuoteRestAvailability({ ...response, appliedCriteria: { ...body, ...change } }, body), null);
   }
-  assert.equal(normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body), null);
+  assert.equal(normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body).criteriaEchoVerified, false);
   const bad = structuredClone(response);
   bad.availabilitydata.children[0].code = 'HRDAV';
   assert.equal(normalizeQuoteRestAvailability(bad, body), null);
   bad.availabilitydata.children[0].code = 'HRCEN';
   bad.availabilitydata.datesList[1] = '09/26/2026';
   assert.equal(normalizeQuoteRestAvailability(bad, body), null);
+  assert.equal(normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, { ...body, roomTypeCodes: 'OTHER' }), null);
+  const empty = structuredClone(response);
+  empty.availabilitydata.children[0].children = [];
+  assert.equal(normalizeQuoteRestAvailability({ availabilitydata: empty.availabilitydata }, { ...body, roomTypeCodes: 'STQN' }), null);
+  assert.equal(normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, { ...body, startDate: 'invalid' }), null);
 });

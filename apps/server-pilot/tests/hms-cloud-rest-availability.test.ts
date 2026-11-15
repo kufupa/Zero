@@ -7,6 +7,7 @@ import { hmsReadTargetForProperty } from '../src/hms/hms-read-target.js';
 import { projectCloudAvailability, runCloudAvailability } from '../src/ai/hms-cloud-availability-reader.js';
 import { readQuoteRestAvailability } from '../tooling/hms-cloud/quote-rest-availability.mjs';
 import { selectionFixture } from '../tooling/hms-cloud/fetch-quote-fixtures.mjs';
+import { createHash } from 'node:crypto';
 
 const session = vi.hoisted(() => ({ open: vi.fn() }));
 vi.mock('../tooling/hms-cloud/cloud-session.mjs', () => ({ withCloudReadSession: session.open }));
@@ -20,14 +21,14 @@ const cookies = vi.fn(async () => [
   { name: 'BSSTRT', value: 'http-only-session', httpOnly: true },
   { name: 'OTHER', value: 'session-cookie', httpOnly: false },
 ]);
-const page = { context: () => ({ cookies }), evaluate: vi.fn(async () => 'booking-secret') };
+const page = { context: () => ({ cookies }), evaluate: vi.fn(async () => ({ loginToken: 'booking-secret' })) };
 const identity = { propertyCode: 'HRCEN', tenantId: 'THECENTURION_PRD', landingPropertyCode: 'HRCEN', origin: target.origin };
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   session.open.mockReset();
   cookies.mockClear();
-  page.evaluate.mockReset().mockResolvedValue('booking-secret');
+  page.evaluate.mockReset().mockResolvedValue({ loginToken: 'booking-secret' });
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
   vi.stubEnv('HMS_QUOTE_REST_FAST_PATH', 'on');
@@ -45,6 +46,27 @@ function validResponse(_url: string, options: RequestInit) {
 }
 
 describe('opt-in REST availability', () => {
+  it('uses the BSSTRT login token and an empty booking session for public BAR requests', async () => {
+    page.evaluate.mockResolvedValueOnce({ loginToken: 'login-token' });
+    fetchMock.mockImplementation((_url: string, _options: RequestInit) => {
+      const fixture = selectionFixture();
+      fixture.data.datesList.pop();
+      return new Response(JSON.stringify({ availabilitydata: fixture.data }),
+        { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const result = await readQuoteRestAvailability({ propertyCode: 'HRCEN', criteria: [criteria] });
+    expect(result.outcome).toBe('partial');
+    const options = fetchMock.mock.calls[0]?.[1];
+    expect(options.headers.authorization).toBe(`Bearer ${createHash('sha256').update('login-token').digest('base64')}`);
+    expect(JSON.parse(options.body)).toMatchObject({ bookingSessionID: '', salesStrategy: 'BAR', numberOfDays: '3' });
+    expect(session.open.mock.calls[0]?.[1].requireBoundCredentialVersion).not.toBe(true);
+    const reads = await runCloudAvailability({ request, target });
+    expect(reads[0]?.view).not.toHaveProperty('appliedCriteria');
+    const projected = projectCloudAvailability(request, reads);
+    if (projected.outcome !== 'read') throw new Error('expected REST read');
+    expect(projected.groups[0]?.coverage).toMatchObject({ criteriaEchoVerified: false, criteriaSource: 'submitted_request' });
+    expect(projected.groups[0]?.options[0]?.nightly[0]?.stockStatus).toBe('unknown');
+  });
   it.each(['', 'off', 'ON', 'true'])('does no REST session work for flag %s', async flag => {
     vi.stubEnv('HMS_QUOTE_REST_FAST_PATH', flag);
     await runCloudAvailability({ request, target });
@@ -58,7 +80,7 @@ describe('opt-in REST availability', () => {
     fetchMock.mockImplementation(validResponse);
     const reads = await runCloudAvailability({ request, target, transportId: 'transport-centurion' });
     expect(session.open).toHaveBeenCalledTimes(1);
-    expect(session.open.mock.calls[0]?.[1]).toMatchObject({ startScreen: 'BSSTRT', requireBoundCredentialVersion: true });
+    expect(session.open.mock.calls[0]?.[1]).toMatchObject({ startScreen: 'BSSTRT', allowUnboundCredentialVersion: true });
     expect(cookies).toHaveBeenCalledWith(target.origin);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0]!;
@@ -167,14 +189,27 @@ describe('opt-in REST availability', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('bypasses BAR for typed rate plans', async () => {
+    const scoped = { ...request, rooms: [{ ...request.rooms[0]!, roomType: 'STQN' }],
+      rateContext: { propertyCode: 'HRCEN', workflow: 'quote' as const, arrival: request.arrival, departure: request.departure,
+        roomCode: 'STQN', quantity: 2, adults: 1, childAges: [], mealPlan: null, currency: 'ZAR',
+        organizationId: null, bookingAgencyId: null, guestProfileId: null, sourceOfBusiness: null, track: null,
+        guaranteeType: null, typedRatePlan: 'CORP', savedTarget: null, retainRates: null } };
+    await runCloudAvailability({ request: scoped, target });
+    expect(session.open.mock.calls[0]?.[1]).toMatchObject({ startScreen: 'OSRESS' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['redirect', () => new Response(null, { status: 302, headers: { location: 'https://other.invalid' } })],
+    ['location header on success', () => new Response(JSON.stringify({ availabilitydata: selectionFixture().data }),
+      { status: 200, headers: { 'content-type': 'application/json', location: '/elsewhere' } })],
     ['unauthorized', () => new Response('denied', { status: 401 })],
     ['forbidden', () => new Response('denied', { status: 403 })],
     ['server error', () => new Response('denied', { status: 503 })],
     ['HTML shell', () => new Response('<html>login</html>', { status: 200, headers: { 'content-type': 'text/html' } })],
     ['malformed JSON', () => new Response('{', { status: 200, headers: { 'content-type': 'application/json' } })],
-    ['missing echo', () => new Response(JSON.stringify({ availabilitydata: selectionFixture().data }),
+    ['empty response', () => new Response('',
       { status: 200, headers: { 'content-type': 'application/json' } })],
   ])('falls back after a %s response', async (_name, response) => {
     fetchMock.mockImplementation(response);
@@ -185,8 +220,8 @@ describe('opt-in REST availability', () => {
     expect(JSON.stringify(reads)).not.toContain('session-cookie');
   });
 
-  it('does not send HTTP for missing booking session or unsafe cookies', async () => {
-    page.evaluate.mockResolvedValueOnce('');
+  it('does not send HTTP for missing login token or unsafe cookies', async () => {
+    page.evaluate.mockResolvedValueOnce({ loginToken: '' });
     const missing = await readQuoteRestAvailability({ propertyCode: 'HRCEN', criteria: [criteria] });
     expect(missing).toMatchObject({ outcome: 'unsupported_context', issue: 'REST_SESSION_UNAVAILABLE' });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -197,7 +232,7 @@ describe('opt-in REST availability', () => {
   });
 
   it('falls back to the browser when REST session context is unavailable', async () => {
-    page.evaluate.mockResolvedValueOnce('');
+    page.evaluate.mockResolvedValueOnce({ loginToken: '' });
     const reads = await runCloudAvailability({ request, target });
     expect(session.open.mock.calls.map(call => call[1].startScreen)).toEqual(['BSSTRT', 'OSRESS']);
     expect(fetchMock).not.toHaveBeenCalled();

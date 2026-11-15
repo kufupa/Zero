@@ -321,10 +321,12 @@ async function loadCloudEvidenceKey({ secretArn, keyVersion, signal }) {
 }
 
 /** Bind authenticated reads and every writer to freshly fetched credential metadata. */
-export async function verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret, signal, requireBoundVersion = false } = {}) {
+export async function verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret, signal, requireBoundVersion = false, allowUnboundVersion = false } = {}) {
   const property = registeredProperty(propertyCode);
   const expected = process.env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${propertyCode}`];
-  if (!requireBoundVersion && (transportId === undefined || property.group === 'centurion' && !expected)) return null;
+  // A leased, uncached read may opt out only when no catalog binding is configured.
+  if (!requireBoundVersion && allowUnboundVersion && !expected) return null;
+  if (!requireBoundVersion && !allowUnboundVersion && (transportId === undefined || property.group === 'centurion' && !expected)) return null;
   if (typeof transportId !== 'string' || !property.transportIds.includes(transportId)) throw new Error('HMS_SESSION_OPTIONS_INVALID');
   const versionId = typeof loadedSecret?.versionId === 'string' ? loadedSecret.versionId.trim() : '';
   if (!versionId) throw new Error('HMS_CREDENTIAL_VERSION_MISSING');
@@ -691,14 +693,14 @@ export function withCloudWriterSession(operation, options = {}) {
 
 async function withCloudSession(operation, { propertyCode, transportId, signal, headless = true,
   prepareContext, readRequestPolicy, startScreen = 'BSSTRT', loadSecret = loadCloudSecret, credentialLease, cloudTargetKey, cloudTargetKeys,
-  requireBoundCredentialVersion = false } = {}, writer) {
+  requireBoundCredentialVersion = false, allowUnboundCredentialVersion = false } = {}, writer) {
   const property = registeredProperty(propertyCode);
   if (typeof operation !== 'function' || typeof headless !== 'boolean' ||
       (transportId !== undefined && (typeof transportId !== 'string' || !property.transportIds.includes(transportId))) ||
       !['BSSTRT', 'OSRESV', 'OSRESS'].includes(startScreen) || typeof loadSecret !== 'function' ||
       (prepareContext !== undefined && typeof prepareContext !== 'function') ||
       (readRequestPolicy !== undefined && typeof readRequestPolicy !== 'function') ||
-      typeof requireBoundCredentialVersion !== 'boolean' ||
+      typeof requireBoundCredentialVersion !== 'boolean' || typeof allowUnboundCredentialVersion !== 'boolean' ||
       (cloudTargetKeys !== undefined && (!Array.isArray(cloudTargetKeys) || !cloudTargetKeys.length ||
         cloudTargetKeys.length > 16 || cloudTargetKeys.some(key => typeof key !== 'string')))) throw new Error('HMS_SESSION_OPTIONS_INVALID');
   const aliases = [...new Set([...(cloudTargetKeys ?? []), ...(cloudTargetKey === undefined ? [] : [cloudTargetKey])])];
@@ -777,7 +779,8 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
     }
     secret = validateSecret(property, loaded, transportId);
     const credentialVersionHmacSha256 = await verifyCloudCredentialVersion({ propertyCode, transportId, loadedSecret: loaded,
-      signal: sessionSignal, requireBoundVersion: writer || requireBoundCredentialVersion });
+      signal: sessionSignal, requireBoundVersion: writer || requireBoundCredentialVersion,
+      allowUnboundVersion: !writer && allowUnboundCredentialVersion });
     sessionSignal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
     const launch = { headless, executablePath: process.env.HMS_CHROMIUM_EXECUTABLE_PATH?.trim() || undefined };

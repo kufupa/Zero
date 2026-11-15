@@ -1,6 +1,5 @@
-// Offline only: BSSTRT HttpOnly cookies, shell/empty bookingSessionID, cold-session
-// CSRF initialization, and selected-property response parity are unverified in live HMS.
 // A rejected or unprovable session/response must fall back to the browser reader.
+import { createHash } from 'node:crypto';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { withCloudReadSession } from './cloud-session.mjs';
 import { isReviewedAvailabilityInquiry, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
@@ -24,15 +23,6 @@ const amount = value => (typeof value === 'string' || typeof value === 'number')
   /^\d{1,15}(?:\.\d{1,4})?$/.test(String(value)) ? String(value) : null;
 const currency = value => typeof value === 'string' && /^[A-Z]{3}$/.test(value) ? value : null;
 
-/** The cache is private to one leased Cloud session, and scoped to the selected property. */
-export function quoteRestSessionCacheKey(identity) {
-  if (!object(identity) || !['tenantId', 'landingPropertyCode', 'selectedPropertyCode', 'origin', 'capabilityScope']
-    .every(key => typeof identity[key] === 'string' && identity[key].length > 0) ||
-    !/^[a-f0-9]{64}$/.test(identity.credentialVersionHmacSha256 ?? '')) return null;
-  return JSON.stringify([identity.tenantId, identity.landingPropertyCode, identity.selectedPropertyCode,
-    identity.origin, identity.credentialVersionHmacSha256, identity.capabilityScope]);
-}
-
 /** Admission for direct HTTP is independent of Playwright's route guard. */
 export function validateDirectAvailabilityInquiryRequest(request, propertyCode) {
   try {
@@ -40,7 +30,27 @@ export function validateDirectAvailabilityInquiryRequest(request, propertyCode) 
     if (!property?.active || !object(request) || request.method !== 'POST' || request.redirect !== 'manual' ||
         request.url !== `${property.origin}${path}` || !(request.signal instanceof AbortSignal)) return false;
     const headers = new Headers(request.headers);
-    if (headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') return false;
+    const cookie = headers.get('cookie');
+    const cookieParts = cookie?.split('; ').map(pair => {
+      const separator = pair.indexOf('=');
+      return { name: pair.slice(0, separator), value: pair.slice(separator + 1) };
+    });
+    if ([...headers.keys()].some(key => !['content-type', 'accept', 'cookie', 'authorization'].includes(key)) ||
+        headers.get('content-type')?.trim().toLowerCase() !== 'application/json' ||
+        headers.get('accept') !== 'application/json' || !cookie || cookieHeader(cookieParts) !== cookie ||
+        typeof request.body !== 'string' || Buffer.byteLength(request.body) > 8192 ||
+        !/^Bearer [A-Za-z0-9+/]{43}=$/.test(headers.get('authorization') ?? '')) return false;
+    const body = JSON.parse(request.body);
+    const keys = ['propertyCodes', 'startDate', 'numberOfDays', 'lengthOfStay', 'adultCount', 'childCount', 'childAges',
+      'salesStrategy', 'roomTypeCodes', 'ratePlanCodes', 'currency', 'convertFromPropertyCurrency', 'shopByDay',
+      'showCollapsedByProperty', 'showCollapsedByRoomType', 'excludeOverbookingLimits', 'showRestrictedSellOptions',
+      'showExclusiveRates', 'launchedFrom', 'showCollapsedByBuilding', 'buildingCodes', 'showArrivalDepartureCount',
+      'showSubGroupView', 'groupID', 'organizationID', 'travelAgencyID', 'bookingSessionID'];
+    if (!object(body) || Object.keys(body).length !== keys.length || keys.some(key => !Object.hasOwn(body, key)) ||
+        body.salesStrategy !== 'BAR' || body.bookingSessionID !== '' || body.groupID !== '' ||
+        body.organizationID !== '' || body.travelAgencyID !== '' || body.currency !== null ||
+        body.buildingCodes?.length !== 0 || body.showRestrictedSellOptions !== false ||
+        body.convertFromPropertyCurrency !== false || Number(body.numberOfDays) > 30) return false;
     const nativeRequest = { url: () => request.url, method: () => request.method, resourceType: () => 'fetch',
       headers: () => ({ 'content-type': headers.get('content-type') }), postData: () => request.body };
     return isReviewedAvailabilityInquiry(nativeRequest, { origin: property.origin, propertyCode,
@@ -58,7 +68,7 @@ function requestBody(criteria, bookingSessionID) {
   return {
     propertyCodes: criteria.propertyCode, startDate: `${criteria.arrivalDate}T00:00:00`, numberOfDays: String(nights),
     lengthOfStay: 'DY', adultCount: criteria.adults, childCount: criteria.childAges.length,
-    childAges: [...criteria.childAges], salesStrategy: null, roomTypeCodes: criteria.roomTypeCodes.join(','),
+    childAges: [...criteria.childAges], salesStrategy: 'BAR', roomTypeCodes: criteria.roomTypeCodes.join(','),
     ratePlanCodes: criteria.ratePlanCodes.join(','), currency: null, convertFromPropertyCurrency: false,
     shopByDay: false, showCollapsedByProperty: false, showCollapsedByRoomType: false,
     excludeOverbookingLimits: false, showRestrictedSellOptions: false, showExclusiveRates: false,
@@ -86,34 +96,54 @@ function restrictionEvidence(...values) {
   };
   const flags = {};
   const unknown = new Set();
+  const neutralLimits = new Set(['minLOS', 'maxLOS', 'minLeadTime', 'maxLeadTime',
+    'combMinLOSToArrival', 'combMinLOSToDeparture', 'combMinLOSToThrough',
+    'combMaxLOSToArrival', 'combMaxLOSToDeparture', 'combMaxLOSToThrough']);
   for (const [name, aliases] of Object.entries(known)) {
-    const values = sources.flatMap(source => aliases.filter(key => Object.hasOwn(source, key)).map(key => source[key]));
+    const values = sources.flatMap(source => aliases.filter(key => Object.hasOwn(source, key))
+      .filter(key => !(source[key] === null && (typeof source[aliases[2]] === 'boolean' ||
+        key === aliases[1] && source[aliases[2]] === null || key === aliases[2] && source[aliases[1]] === null)))
+      .map(key => source[key]));
     flags[name] = values.length && values.every(value => typeof value === 'boolean') ? values.some(Boolean) : null;
     if (flags[name] === null) unknown.add(name);
   }
   for (const source of sources) for (const [key, value] of Object.entries(source)) {
     if (!/restrict|closed|los|leadtime|israteavailable|maxnights|availablelimitnightcount|externalselloptionnotavailablereason/i.test(key) ||
         Object.values(known).some(list => list.includes(key))) continue;
-    if (['restricted', 'isRestrictedByRevenueManagement', 'israteavailable'].includes(key) &&
-        value != null && typeof value !== 'boolean') {
+    if (['restricted', 'isRestrictedByRevenueManagement', 'israteavailable'].includes(key) && typeof value !== 'boolean') {
       unknown.add(key);
     } else if ((key === 'restricted' || key === 'isRestrictedByRevenueManagement') && typeof value === 'boolean') {
       // Known restrictions are retained in closedOrRestricted.
     } else if (key === 'israteavailable' && typeof value === 'boolean') {
       // A true rate-available flag does not prove the missing restrictions.
-    } else if (typeof value === 'boolean' || (value !== null && value !== false && value !== 0 && value !== '')) unknown.add(key);
+    } else if (!neutralLimits.has(key) || (value !== null && value !== 0 && value !== '')) unknown.add(key);
   }
   return { ...flags, closedOrRestricted, unknownRestrictionFlags: [...unknown].sort() };
 }
 
-/** Requires a server echo; the submitted body alone cannot prove HMS applied the criteria. */
+function columnRestrictions(property, propertyColumn, room, roomColumn, rate, rateColumn) {
+  const restrictions = restrictionEvidence(property, propertyColumn, room, roomColumn, rate, rateColumn);
+  for (const [name, value] of [['property.restricted', propertyColumn?.restricted], ['rate.restricted', rate.restricted],
+    ['rateCell.restricted', rateColumn?.restricted], ['rateCell.combClosed', rateColumn?.combClosed],
+    ['rateCell.combClosedToArrival', rateColumn?.combClosedToArrival],
+    ['rateCell.combClosedToDeparture', rateColumn?.combClosedToDeparture], ['rateCell.israteavailable', rateColumn?.israteavailable]]) {
+    if (typeof value !== 'boolean') restrictions.unknownRestrictionFlags.push(name);
+  }
+  restrictions.unknownRestrictionFlags.sort();
+  return restrictions;
+}
+
+/** Validate the response scope; a missing server echo remains explicitly unverified. */
 export function normalizeQuoteRestAvailability(response, body) {
-  if (!object(body) || !object(response) || !matchingEcho(response.appliedCriteria, body)) return null;
+  if (!object(body) || !object(response) ||
+      (Object.hasOwn(response, 'appliedCriteria') && !matchingEcho(response.appliedCriteria, body))) return null;
   const data = response.availabilitydata;
   if (!object(data) || !Array.isArray(data.datesList) || !Array.isArray(data.children)) return null;
   const nights = Number(body.numberOfDays);
-  if (!Number.isInteger(nights) || nights < 1 || nights > 30) return null;
-  const start = Date.parse(`${String(body.startDate).slice(0, 10)}T00:00:00Z`);
+  if (typeof body.numberOfDays !== 'string' || !/^[1-9]\d?$/.test(body.numberOfDays) ||
+      !Number.isInteger(nights) || nights < 1 || nights > 30 || typeof body.startDate !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T00:00:00$/.test(body.startDate) || !day(body.startDate.slice(0, 10))) return null;
+  const start = Date.parse(`${body.startDate}Z`);
   const expectedDates = Array.from({ length: nights }, (_, i) => new Date(start + i * 86400000).toISOString().slice(0, 10));
   if (data.datesList.length !== nights && data.datesList.length !== nights + 1) return null;
   if (data.datesList.some((value, i) => isoDay(value) !== new Date(start + i * 86400000).toISOString().slice(0, 10))) return null;
@@ -141,13 +171,7 @@ export function normalizeQuoteRestAvailability(response, body) {
         const propertyColumn = properties[0].columns?.[`col${i + 1}`];
         const count = object(roomColumn) && Number.isSafeInteger(roomColumn.value) && roomColumn.value >= 0 ? roomColumn.value : null;
         const value = object(rateColumn) ? amount(rateColumn.value) : null;
-        const restrictions = restrictionEvidence(properties[0], propertyColumn, room, roomColumn, rate, rateColumn);
-        for (const [name, value] of [['property.restricted', propertyColumn?.restricted], ['rate.restricted', rate.restricted],
-          ['rateCell.restricted', rateColumn?.restricted], ['rateCell.combClosed', rateColumn?.combClosed],
-          ['rateCell.israteavailable', rateColumn?.israteavailable]]) {
-          if (typeof value !== 'boolean') restrictions.unknownRestrictionFlags.push(name);
-        }
-        restrictions.unknownRestrictionFlags.sort();
+        const restrictions = columnRestrictions(properties[0], propertyColumn, room, roomColumn, rate, rateColumn);
         if (count === null || value === null || !serverCurrency || restrictions.unknownRestrictionFlags.length) partial = true;
         return { date, availableCount: count, rate: value, currency: serverCurrency, restrictions };
       });
@@ -156,13 +180,7 @@ export function normalizeQuoteRestAvailability(response, body) {
       const propertyColumn = hasDeparture ? properties[0].columns?.[departureColumn] : null;
       const roomColumn = hasDeparture ? room.columns[departureColumn] : null;
       const rateColumn = hasDeparture ? rate.columns[departureColumn] : null;
-      const restrictions = restrictionEvidence(properties[0], propertyColumn, room, roomColumn, rate, rateColumn);
-      for (const [name, value] of [['property.restricted', propertyColumn?.restricted], ['rate.restricted', rate.restricted],
-        ['rateCell.restricted', rateColumn?.restricted], ['rateCell.combClosed', rateColumn?.combClosed],
-        ['rateCell.israteavailable', rateColumn?.israteavailable]]) {
-        if (typeof value !== 'boolean') restrictions.unknownRestrictionFlags.push(name);
-      }
-      restrictions.unknownRestrictionFlags.sort();
+      const restrictions = columnRestrictions(properties[0], propertyColumn, room, roomColumn, rate, rateColumn);
       const departure = { date: new Date(start + nights * 86400000).toISOString().slice(0, 10),
         verified: hasDeparture && restrictions.unknownRestrictionFlags.length === 0, restrictions };
       if (!departure.verified) partial = true;
@@ -171,9 +189,10 @@ export function normalizeQuoteRestAvailability(response, body) {
       if (observations.length > 1000) return null;
     }
   }
-  const appliedCriteria = Object.fromEntries(appliedFields.map(key => [key, structuredClone(body[key])]));
+  if ((roomFilter || rateFilter) && !seen.size) return null;
+  const submittedCriteria = Object.fromEntries(appliedFields.map(key => [key, structuredClone(body[key])]));
   return { ...evidence, outcome: partial ? 'partial' : 'rest_observed', observedAt: new Date().toISOString(),
-    appliedCriteria, criteriaEchoVerified: true, observations };
+    submittedCriteria, criteriaEchoVerified: Object.hasOwn(response, 'appliedCriteria'), observations };
 }
 
 function cookieHeader(cookies) {
@@ -223,8 +242,6 @@ export async function readQuoteRestAvailability({ propertyCode, transportId, cri
   const property = getPropertyRegistration(propertyCode);
   if (!property?.active || !Array.isArray(criteria) || !criteria.length || criteria.length > 8 ||
       criteria.some(item => item?.propertyCode !== propertyCode)) return failure('unsupported_context', 'REST_CRITERIA_UNSUPPORTED');
-  const cache = new Map();
-  let cacheKey = null;
   try {
     return await withCloudReadSession(async (page, identity, session) => {
       session.signal.throwIfAborted();
@@ -232,37 +249,28 @@ export async function readQuoteRestAvailability({ propertyCode, transportId, cri
           identity.landingPropertyCode !== property.landingPropertyCode || identity.origin !== property.origin) {
         return failure('unsupported_context', 'REST_SESSION_IDENTITY_UNVERIFIED');
       }
-      cacheKey = quoteRestSessionCacheKey({ tenantId: identity.tenantId, landingPropertyCode: identity.landingPropertyCode,
-        selectedPropertyCode: identity.propertyCode, origin: identity.origin,
-        credentialVersionHmacSha256: session.credentialVersionHmacSha256,
-        capabilityScope: `rateshop-read:${transportId ?? 'unbound'}` });
-      if (!cacheKey) return failure('unsupported_context', 'REST_CREDENTIAL_VERSION_UNVERIFIED');
       const cookies = await page.context().cookies(property.origin);
       const cookie = cookieHeader(cookies);
-      const bookingSessionID = await page.evaluate(() => {
+      const sessionState = await page.evaluate(() => {
         const app = globalThis.EAM?.AppData?.getRawAppData?.() ?? {};
-        const values = [app.bookingSessionID, app.bookingsessionid,
-          ...Array.from(document.querySelectorAll('input[name="bookingsessionid"]'), element => element.value)];
-        const unique = [...new Set(values.filter(value => typeof value === 'string' && value.trim()))];
-        return unique.length === 1 ? unique[0] : null;
+        return { loginToken: app.HMSLoginSessionCookieName };
       });
-      if (!cookie || typeof bookingSessionID !== 'string' || !bookingSessionID.trim() ||
-          !/^[\x20-\x7e]{1,128}$/.test(bookingSessionID)) return failure('unsupported_context', 'REST_SESSION_UNAVAILABLE');
-      cache.set(cacheKey, { cookie, bookingSessionID });
+      if (!cookie || typeof sessionState?.loginToken !== 'string' || !sessionState.loginToken.trim() ||
+          sessionState.loginToken.length > 4096) return failure('unsupported_context', 'REST_SESSION_UNAVAILABLE');
+      const authorization = `Bearer ${createHash('sha256').update(sessionState.loginToken).digest('base64')}`;
       const observations = [];
       for (const item of criteria) {
         session.signal.throwIfAborted();
-        const sessionState = cache.get(cacheKey);
-        const body = requestBody(item, sessionState.bookingSessionID);
+        const body = requestBody(item, '');
         const requestSignal = AbortSignal.any([session.signal, AbortSignal.timeout(30000)]);
         const request = { method: 'POST', url: `${property.origin}${path}`, redirect: 'manual', signal: requestSignal,
-          headers: { 'content-type': 'application/json', accept: 'application/json', cookie: sessionState.cookie },
+          headers: { 'content-type': 'application/json', accept: 'application/json', cookie, authorization },
           body: JSON.stringify(body) };
         if (!body || !validateDirectAvailabilityInquiryRequest(request, propertyCode)) throw new Error('REST_REQUEST_REJECTED');
         const response = await fetch(request.url, { method: 'POST', headers: request.headers,
           body: request.body, redirect: request.redirect, signal: request.signal });
         requestSignal.throwIfAborted();
-        if (response.status !== 200 || response.redirected ||
+        if (response.status !== 200 || response.redirected || response.headers.has('location') ||
             (response.url && response.url !== request.url) ||
             response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
           throw new Error('REST_RESPONSE_REJECTED');
@@ -277,12 +285,9 @@ export async function readQuoteRestAvailability({ propertyCode, transportId, cri
       }
       return { ...evidence, outcome: observations.some(item => item.outcome === 'partial') ? 'partial' : 'rest_observed',
         groups: observations };
-    }, { propertyCode, transportId, signal, headless: true, startScreen: 'BSSTRT', requireBoundCredentialVersion: true });
+    }, { propertyCode, transportId, signal, headless: true, startScreen: 'BSSTRT', allowUnboundCredentialVersion: true });
   } catch {
     if (signal?.aborted) signal.throwIfAborted();
     return failure('execution_failure', 'REST_AVAILABILITY_FAILED');
-  } finally {
-    if (cacheKey) cache.delete(cacheKey);
-    cache.clear();
   }
 }

@@ -14,7 +14,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { hmsWriterDependencyDigest } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
+import { hmsWriterDependencyDigest, SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } from '../tooling/hms-cloud/hms-workflow-policy.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const jobScript = join(here, '..', 'deploy', 'hms-job.sh');
@@ -22,6 +22,12 @@ const opsScript = join(here, '..', 'deploy', 'ops-deploy.sh');
 const writerScript = join(here, '..', 'deploy', 'write-ec2-remote-env.sh');
 
 const harnesses: string[] = [];
+
+it('validates the REST fast path as a scoped off/on control', () => {
+  expect(SCOPED_RUNTIME_CONTROL_KEYS).toContain('HMS_QUOTE_REST_FAST_PATH');
+  expect(() => validateRuntimeControl('HMS_QUOTE_REST_FAST_PATH', 'on')).not.toThrow();
+  expect(() => validateRuntimeControl('HMS_QUOTE_REST_FAST_PATH', 'true')).toThrow();
+});
 
 afterEach(() => {
   while (harnesses.length > 0) {

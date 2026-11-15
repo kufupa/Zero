@@ -210,18 +210,20 @@ function restGroupView(group: RestAvailabilityGroup, quantity: number): CloudAva
     }),
   }));
   return { outcome: 'ok', view: {
-    evidenceKind: group.evidenceKind, observedAt: group.observedAt, appliedCriteria: group.appliedCriteria,
+    evidenceKind: group.evidenceKind, observedAt: group.observedAt,
+    ...(group.criteriaEchoVerified ? { appliedCriteria: group.submittedCriteria } : { submittedCriteria: group.submittedCriteria }),
     domCalendarVerified: group.domCalendarVerified, screenshotsVerified: group.screenshotsVerified,
     displayedRounding: group.displayedRounding, payableTotal: group.payableTotal,
     roomQuantity: { requested: quantity, basis: 'one_room_type_per_night', combinedAvailability: 'unknown' },
     options,
     coverage: {
       evidenceKind: group.evidenceKind, criteriaEchoVerified: group.criteriaEchoVerified,
+      criteriaSource: group.criteriaEchoVerified ? 'server_echo' : 'submitted_request',
       domCalendarVerified: false, screenshotsVerified: false, displayedRounding: group.displayedRounding,
       payableTotal: group.payableTotal, completeForRequestedScope: false,
       checkedCriteriaMatch: { property: true, dates: true, occupancy: true, partyContext: true,
-        roomTypes: group.appliedCriteria.roomTypeCodes ? true : null,
-        ratePlans: group.appliedCriteria.ratePlanCodes ? true : null },
+        roomTypes: group.submittedCriteria.roomTypeCodes ? true : null,
+        ratePlans: group.submittedCriteria.ratePlanCodes ? true : null },
       roomCatalog: { complete: false }, rateCatalog: { complete: false },
       page: { returned: options.length, nextOffset: null },
       nights: { matchesAppliedCriteria: true, nextOffset: null },
@@ -296,7 +298,7 @@ function unappliedStayContext(context: RateContext | undefined): string[] {
 function appliedContextMatches(request: AvailabilityRequest, view: RecordValue, unavailable: boolean): boolean {
   const context = request.rateContext;
   if (!context) return true;
-  const applied = record(view.appliedCriteria);
+  const applied = record(view.appliedCriteria) ?? (view.evidenceKind === 'rest_availability_read' ? record(view.submittedCriteria) : null);
   const coverage = record(view.coverage);
   const nights = record(coverage?.nights);
   if (!applied || !coverage || (!unavailable && nights?.matchesAppliedCriteria !== true) ||
@@ -341,7 +343,9 @@ export function projectCloudAvailability(
         roomQuantity.combinedAvailability !== 'unknown') return null;
     const coverage = coverageFor(view);
     const criteriaMatch = record(coverage.checkedCriteriaMatch);
-    const rest = coverage.evidenceKind === 'rest_availability_read' && coverage.criteriaEchoVerified === true &&
+    const rest = coverage.evidenceKind === 'rest_availability_read' &&
+      (coverage.criteriaEchoVerified === true && coverage.criteriaSource === 'server_echo' ||
+       coverage.criteriaEchoVerified === false && coverage.criteriaSource === 'submitted_request') &&
       coverage.domCalendarVerified === false && coverage.screenshotsVerified === false &&
       coverage.displayedRounding === 'unverified_no_dom' && coverage.payableTotal === 'unverified';
     const criteriaVerified = criteriaMatch?.property === true && criteriaMatch.dates === true &&
@@ -439,6 +443,9 @@ export async function runCloudAvailability(input: CloudAvailabilityRunInput): Pr
   }
   // The job request drops picker provenance, so a bare party ID is not verified here.
   if (hmsQuoteRestFastPathEnabled() && input.details !== 'full' &&
+      (!context || !context.typedRatePlan && !context.organizationId && !context.bookingAgencyId &&
+        !context.guestProfileId && !context.sourceOfBusiness && !context.track && !context.guaranteeType &&
+        !context.savedTarget && context.retainRates !== 'yes') &&
       !Object.values(input.request.rateParties ?? {}).some(Boolean)) {
     try {
       const { readQuoteRestAvailability } = await import('../../tooling/hms-cloud/quote-rest-availability.mjs');
