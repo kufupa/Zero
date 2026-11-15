@@ -7,12 +7,13 @@
 # cancel: cancels the stay left by `proof.sh create` for the same property and sha, fresh readback.
 # Each then installs `CANARY PASS <workflow> <property> <sha>` and its writers.json row
 # (deploy/install-canary-ledger.mjs) unless --no-ledger is given.
-# Run order: create, guest_profile_create, amend, attach, addons, cancel.
-# Amend changes Booker Contact on the owned stay; date/room/rate changes need separate proof.
+# Run order: create, guest_profile_create, amend, attach, addons, optional amend_adults, cancel.
+# Amend changes Booker Contact; amend_adults separately changes 1 -> 2 on HRCEN CMPRO with Check Availability.
+# amend_adults requires --no-ledger and a passing contact proof; its failure cannot revoke that proof.
 # Other follow-ups only target the stay this harness created. Each prepares unsaved, saves once,
 # and reads back in a fresh session. Cancel may run early for cleanup.
 # The create request may include proof.addons: [{code, quantity, ...native item fields}].
-# Add-On dates use the owned stay's arrival; no catalogue code, quantity or price is guessed.
+# Add-On dates use the owned stay's arrival; native preview supplies the explicitly approved price, checked for drift.
 #
 # The stages run on the box through ssm-run-command.sh (tooling/hms-cloud/labtest-proof.mjs).
 # SSM stdout only carries short status lines; the journal and stage logs come back as a
@@ -30,7 +31,7 @@ REMOTE_SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
 CHUNK_CHARS=16000
 
 usage() {
-  echo "usage: $0 <create|cancel|amend|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--state-dir <absolute remote path>] [--no-ledger] [--cancel-scenario zero|penalty] [--approve-labtest-penalty <amount>]" >&2
+  echo "usage: $0 <create|cancel|amend|amend_adults|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--state-dir <absolute remote path>] [--no-ledger] [--cancel-scenario zero|penalty] [--approve-labtest-penalty <amount>]" >&2
   exit 2
 }
 [ "$#" -ge 3 ] || usage
@@ -49,9 +50,14 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$WORKFLOW" in
-  create|cancel|amend|attach|addons|guest_profile_create) ;;
+  create|cancel|amend|amend_adults|attach|addons|guest_profile_create) ;;
   *) usage ;;
 esac
+if [ "$WORKFLOW" = amend_adults ]; then
+  [ "$PROPERTY" = HRCEN ] && [ "$LEDGER" = 0 ] || {
+    echo "proof: amend_adults requires HRCEN --no-ledger; contact proof remains separate" >&2; exit 2;
+  }
+fi
 [[ "$PROPERTY" =~ ^(HRCEN|HRDAV|HRDAVS)$ ]] || usage
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$STATE_DIR" =~ ^/[A-Za-z0-9_./-]+$ ]] && [[ "/$STATE_DIR/" != *"/../"* ]] &&
@@ -182,14 +188,14 @@ fetch_artifacts() {
   local meta digest chars index=0 encoded="${ARTIFACTS}/.transfer.b64"
   if [ "$LOCAL" = 1 ]; then
     local file
-    for file in "${STATE_DIR}/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err}; do
+    for file in "${STATE_DIR}/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,amend_adults.out,amend_adults.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err}; do
       if [ -f "$file" ]; then cp "$file" "$ARTIFACTS/" || return 1; fi
     done
     [ -f "${ARTIFACTS}/${PROPERTY}-journal.json" ]
     return $?
   fi
   remote pack "${REMOTE_HEAD}cd \"\$RUN\"
-files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-{prepare,create,guest_profile_create,amend,attach,addons,cancel}.{out,err} 2>/dev/null || true)\"
+files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-{prepare,create,guest_profile_create,amend,amend_adults,attach,addons,cancel}.{out,err} 2>/dev/null || true)\"
 [ -n \"\$files\" ] || { echo 'proof: nothing to fetch' >&2; exit 20; }
 tar -czf .transfer-${PROPERTY}.tgz \$files
 base64 -w0 .transfer-${PROPERTY}.tgz >.transfer-${PROPERTY}.b64

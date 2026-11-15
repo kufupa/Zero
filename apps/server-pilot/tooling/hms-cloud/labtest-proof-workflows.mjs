@@ -16,6 +16,19 @@ const observed = () => new Date().toISOString();
 const itemFields = ['code', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio',
   'comment', 'currency', 'totalCost'];
 const values = item => Object.fromEntries(itemFields.map(key => [key, item?.[key]]));
+const decimal = value => {
+  const match = String(value ?? '').match(/^(\d+)(?:\.(\d+))?$/);
+  return match ? `${match[1].replace(/^0+(?=\d)/, '')}.${(match[2] ?? '').replace(/0+$/, '')}` : null;
+};
+
+function nativeAddOnPreview(result) {
+  const item = result?.outcome === 'prepared' && result.items?.length === 1 ? result.items[0]
+    : result?.outcome === 'needs_input' && result.issue === 'ADDONS_PRICE_REQUIRED' ? result.preview : null;
+  check(item?.status === 'VALID' && /^\d+$/.test(item.itemId ?? '') &&
+    /^[A-Z]{3}$/.test(item.currency ?? '') && decimal(item.unitPrice) !== null &&
+    decimal(item.totalCost) !== null, 'ADDONS_NATIVE_PRICE_UNVERIFIED');
+  return item;
+}
 
 function labtestPdf(propertyCode, sha) {
   const stream = `BT /F1 12 Tf 40 700 Td (Proof Labtest ${propertyCode} ${sha}) Tj ET\n`;
@@ -38,7 +51,7 @@ async function writePrivate(path, bytes) {
   try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
 }
 
-function ownedNative(record, journal) {
+function ownedNative(record, journal, adults = journal.effectiveRequest.stay.adults) {
   const own = journal.created, request = journal.effectiveRequest, native = record?.nativePreimage;
   const fields = record?.details?.fields;
   const field = name => {
@@ -52,7 +65,7 @@ function ownedNative(record, journal) {
     native.firstName === 'Proof' && native.lastName === 'Labtest' && native.status === 'Reserved' &&
     native.arrival >= '2027-01-01' && native.arrival === request.stay.arrival && native.departure === request.stay.departure &&
     native.roomType === request.room.roomType && native.ratePlan === request.room.ratePlan &&
-    native.adults === request.stay.adults && native.children === request.stay.childAges.length &&
+    native.adults === adults && native.children === request.stay.childAges.length &&
     native.guaranteeCode === request.guaranteeType &&
     (native.children === 0 || Array.isArray(native.childAges) &&
       equal([...native.childAges].sort((a, b) => a - b), [...request.stay.childAges].sort((a, b) => a - b))) &&
@@ -63,12 +76,13 @@ function ownedNative(record, journal) {
 export async function runLabtestWorkflow({ workflow, journal, property, transportId, options, root, journalDir,
   checkHold, markPossible, record }) {
   const own = journal.created, propertyCode = property.propertyCode;
+  let expectedAdults = journal.effectiveRequest.stay.adults;
   const scope = { ...options, propertyCode, transportId, startScreen: 'OSRESS' };
   const readOwned = () => withCloudReadSession(async page => {
     await checkHold(options.signal);
     await readShallow(page, own.confirmation, { guestName: 'Proof Labtest', arrivalDate: journal.effectiveRequest.stay.arrival });
     const result = await readRecord(page, own.confirmation, { nativePropertyCode: propertyCode });
-    ownedNative(result, journal);
+    ownedNative(result, journal, expectedAdults);
     return result;
   }, { ...scope, prepareContext: context => installSavedStayReadGuard(context, { propertyCode, confirmation: own.confirmation }) });
   const initial = await readOwned(), selected = ownedNative(initial, journal);
@@ -123,7 +137,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     check(matchesProfileReadback(proof.readback, proof.prepared.businessFields, proof.result.nativeId, proof.prepared.review),
       'PROFILE_READBACK_UNVERIFIED');
     proof.nativeGuestId = proof.result.nativeId;
-  } else if (workflow === 'amend') {
+  } else if (workflow === 'amend' || workflow === 'amend_adults') {
     const { prepareCloudPaneAmend, commitCloudPaneAmend } = await import('./pane-amend-session.mjs');
     const fields = initial.details.fields;
     const field = name => {
@@ -132,20 +146,31 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
       return matches[0].value;
     };
     check(selected.guaranteeCode === 'NGI', 'AMEND_LAB_GUARANTEE_UNSUPPORTED');
-    const changes = { bookerContact: `Labtest amend ${randomUUID().slice(0, 8)}`,
-      retainRates: 'yes', cmsSend: false, cmsMessageId: field('udfchar09'), cmsRecipient: field('udfchar13') };
-    check(field('udfchar06') !== changes.bookerContact, 'AMEND_CHANGE_REQUIRED');
+    const occupancy = workflow === 'amend_adults';
+    if (occupancy) {
+      verifyLabtestWorkflowProof(journal, 'amend', journal.workflowProofs?.amend);
+      check(propertyCode === 'HRCEN' && selected.ratePlan === 'CMPRO' && selected.adults === 1 &&
+        selected.children === 0, 'AMEND_OCCUPANCY_LAB_ONLY');
+    }
+    const changes = { ...(occupancy ? { adults: 2, retainRates: 'no' }
+      : { bookerContact: `Labtest amend ${randomUUID().slice(0, 8)}`, retainRates: 'yes' }),
+      cmsSend: false, cmsMessageId: field('udfchar09'), cmsRecipient: field('udfchar13') };
+    if (!occupancy) check(field('udfchar06') !== changes.bookerContact, 'AMEND_CHANGE_REQUIRED');
+    else proof.beforeBookerContact = field('udfchar06');
     proof.changes = changes;
+    proof.preimage = selected;
     const input = { ...scope, target: { propertyCode, origin: property.origin },
       selected: { ...selected, childAges: [...journal.effectiveRequest.stay.childAges] },
       childAgePreimage: [...journal.effectiveRequest.stay.childAges], allowRealGuest: false,
       confirmation: own.confirmation, arrival: selected.arrival, changes,
-      beforeScreenshot: join(journalDir, `${propertyCode}-amend-before.png`),
-      afterScreenshot: join(journalDir, `${propertyCode}-amend-after.png`) };
+      beforeScreenshot: join(journalDir, `${propertyCode}-${workflow}-before.png`),
+      afterScreenshot: join(journalDir, `${propertyCode}-${workflow}-after.png`) };
     proof.prepared = await prepareCloudPaneAmend(input);
     await checkpoint();
     check(proof.prepared.outcome === 'prepared' && /^[a-f0-9]{64}$/.test(proof.prepared.nativeDigest ?? '') &&
       proof.prepared.preserved?.cmsSend === false, 'AMEND_PREPARE_UNVERIFIED');
+    if (occupancy) check(proof.prepared.approvedPrices?.currency === 'ZAR' &&
+      proof.prepared.approvedPrices.totalCents === 0, 'AMEND_OCCUPANCY_PRICE_UNVERIFIED');
     await readOwned();
     const operationDigest = hash({ propertyCode, confirmation: own.confirmation, nativeStayId: own.nativeStayId,
       changes, nativeDigest: proof.prepared.nativeDigest, approvedPrices: proof.prepared.approvedPrices,
@@ -162,7 +187,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
         return proof.beforeEvidence;
       },
       authorizeFirst: async step => {
-        check(step.operationDigest === operationDigest && step.phase === 'amend.save' &&
+        check(step.operationDigest === operationDigest && step.phase === (occupancy ? 'amend.availability' : 'amend.save') &&
           /^[a-f0-9]{64}$/.test(step.requestDigest ?? '') && proof.beforeEvidence && !proof.dispatches.length &&
           cloudWriterCurrent(step.writer), 'AMEND_DISPATCH_UNVERIFIED');
         await claim({ phase: step.phase, requestDigest: step.requestDigest });
@@ -176,6 +201,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
       proof.result.dispatchCallbacksDrained === true && proof.result.businessFieldsMatched === true &&
       proof.dispatches.length === 1 && cloudWriterQuiesced(proof.dispatches[0].writer), 'AMEND_SAVE_UNVERIFIED');
     proof.readback = proof.result.readback;
+    if (occupancy) expectedAdults = changes.adults;
   } else if (workflow === 'attach') {
     const { prepareCloudPaneAttach, runCloudPaneAttach } = await import('./pane-attach-session.mjs');
     const bytes = labtestPdf(propertyCode, journal.sha), pdfSha256 = sha256(bytes);
@@ -218,10 +244,10 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
   } else if (workflow === 'addons') {
     const { withStay360AddOnSession } = await import('./stay360-addons-session.mjs');
     check(journal.proofRequest?.addons?.length === 1, 'ADDONS_EXPLICIT_ITEM_REQUIRED');
-    const items = journal.proofRequest.addons.map(item => ({ ...item,
+    const requestedItems = journal.proofRequest.addons.map(item => ({ ...item,
       startDate: selected.arrival, endDate: selected.arrival }));
-    proof.items = items;
-    let target;
+    const discoveryItems = requestedItems.map(({ unitPrice: _price, ...item }) => item);
+    let target, items;
     proof.result = await withStay360AddOnSession(async ({ runTool }) => {
       const read = await runTool({ tool: 'read', confirmation: own.confirmation, guestName: 'Proof Labtest', arrivalDate: selected.arrival });
       check(read.outcome === 'ok' && read.propertyCode === propertyCode && read.nativeStayId === own.nativeStayId &&
@@ -229,16 +255,33 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
         equal(nameParts(read.target?.guestName), nameParts(`${selected.firstName} ${selected.lastName}`)) &&
         read.coverage?.complete === true, 'ADDONS_TARGET_UNVERIFIED');
       target = read.target;
+      proof.priceDiscovery = await runTool({ tool: 'prepare', confirmation: own.confirmation, items: discoveryItems });
+      const native = nativeAddOnPreview(proof.priceDiscovery);
+      check(native.code === requestedItems[0].code && (requestedItems[0].unitPrice === undefined ||
+        decimal(requestedItems[0].unitPrice) === decimal(native.unitPrice)), 'ADDONS_APPROVED_PRICE_CHANGED');
+      proof.priceApproval = { source: 'native_preview', itemId: native.itemId, item: values(native) };
+      items = requestedItems.map(item => ({ ...item, unitPrice: native.unitPrice }));
+      proof.items = items;
+      await checkpoint();
       proof.prepared = await runTool({ tool: 'prepare', confirmation: own.confirmation, items });
       await checkpoint();
       check(proof.prepared.outcome === 'prepared' && proof.prepared.saved === false &&
-        proof.prepared.items?.length === 1, 'ADDONS_PREPARE_UNVERIFIED');
+        proof.prepared.items?.length === 1 &&
+        equal(values(proof.prepared.items[0]), proof.priceApproval.item) &&
+        proof.prepared.items[0].itemId === proof.priceApproval.itemId, 'ADDONS_PREPARE_UNVERIFIED');
       return runTool({ tool: 'save', confirmation: own.confirmation, preparedId: proof.prepared.preparedId });
     }, { ...scope,
       withWriteLock: async (confirmation, save) => {
         check(confirmation === own.confirmation, 'ADDONS_LOCK_TARGET_CHANGED');
         await checkHold(options.signal);
         await readOwned();
+        const fresh = await withStay360AddOnSession(async ({ runTool }) =>
+          runTool({ tool: 'prepare', confirmation: own.confirmation, items: discoveryItems }), scope);
+        const native = nativeAddOnPreview(fresh);
+        check(native.itemId === proof.priceApproval.itemId && equal(values(native), proof.priceApproval.item),
+          'ADDONS_APPROVED_PRICE_CHANGED');
+        proof.priceRecheck = { itemId: native.itemId, item: values(native), observedAt: observed() };
+        await checkpoint();
         return save();
       },
       authorize: async prepared => {
@@ -290,23 +333,29 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
   } else {
     check(proof.prepared?.outcome === 'prepared' && readback?.confirmation === own.confirmation &&
       readback.nativeStayId === own.nativeStayId, 'STAY_PROOF_IDENTITY_INVALID');
-    if (workflow === 'amend') {
+    if (workflow === 'amend' || workflow === 'amend_adults') {
       const selected = journal.effectiveRequest;
+      const occupancy = workflow === 'amend_adults';
       check(result?.outcome === 'amended' && result.writerSessionClosed === true &&
         result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true &&
-        proof.dispatches.length === 1 && proof.dispatches[0].phase === 'amend.save' &&
+        proof.dispatches.length === 1 && proof.dispatches[0].phase === (occupancy ? 'amend.availability' : 'amend.save') &&
         /^[a-f0-9]{64}$/.test(proof.dispatches[0].requestDigest ?? '') &&
         /^[a-f0-9]{64}$/.test(proof.beforeEvidence?.sha256 ?? '') &&
         /^[a-f0-9-]{36}$/i.test(proof.beforeEvidence?.eventId ?? '') &&
         readback.firstName === 'Proof' && readback.lastName === 'Labtest' &&
         readback.arrival === selected.stay.arrival && readback.departure === selected.stay.departure &&
         readback.roomType === selected.room.roomType && readback.ratePlan === selected.room.ratePlan &&
-        readback.adults === selected.stay.adults && readback.children === selected.stay.childAges.length &&
+        readback.adults === (occupancy ? 2 : selected.stay.adults) && readback.children === selected.stay.childAges.length &&
         Array.isArray(readback.childAges) && equal([...readback.childAges].sort((a, b) => a - b),
           [...selected.stay.childAges].sort((a, b) => a - b)) &&
         readback.guaranteeType === selected.guaranteeType && readback.reservationNote === own.note &&
-        typeof proof.changes?.bookerContact === 'string' && /^Labtest amend [a-f0-9]{8}$/.test(proof.changes.bookerContact) &&
-        readback.bookerContact === proof.changes.bookerContact && readback.cmsSend === false &&
+        (occupancy ? journal.propertyCode === 'HRCEN' && selected.room.ratePlan === 'CMPRO' &&
+          selected.stay.adults === 1 && proof.changes?.adults === 2 && proof.changes.retainRates === 'no' &&
+          proof.prepared.approvedPrices?.currency === 'ZAR' && proof.prepared.approvedPrices.totalCents === 0 &&
+          readback.bookerContact === proof.beforeBookerContact &&
+          proof.beforeBookerContact === journal.workflowProofs?.amend?.changes?.bookerContact
+          : typeof proof.changes?.bookerContact === 'string' && /^Labtest amend [a-f0-9]{8}$/.test(proof.changes.bookerContact) &&
+          readback.bookerContact === proof.changes.bookerContact) && readback.cmsSend === false &&
         readback.cmsMessageId === proof.prepared.preserved?.cmsMessageId &&
         readback.cmsRecipient === proof.prepared.preserved?.cmsRecipient, 'AMEND_PROOF_INVALID');
     } else if (workflow === 'attach') {
@@ -319,6 +368,9 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
       const reconciliation = result?.reconciliation, verified = reconciliation?.verified, receipts = result?.receipts;
       const prepared = proof.prepared.items?.[0];
       check(result?.outcome === 'saved' && result.requestedCount === 1 && proof.prepared.saved === false &&
+        proof.priceApproval?.source === 'native_preview' && proof.priceApproval.itemId === prepared?.itemId &&
+        equal(proof.priceApproval.item, values(prepared)) && proof.items?.[0]?.unitPrice === prepared?.unitPrice &&
+        proof.priceRecheck?.itemId === prepared?.itemId && equal(proof.priceRecheck?.item, values(prepared)) &&
         reconciliation?.outcome === 'verified' && reconciliation.mismatches?.length === 0 &&
         readback.propertyCode === journal.propertyCode && readback.coverage?.complete === true &&
         verified?.length === 1 && receipts?.length === 1 && typeof verified[0].nativeId === 'string' && verified[0].nativeId &&

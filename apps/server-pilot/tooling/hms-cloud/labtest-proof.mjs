@@ -77,7 +77,7 @@ function parseArgs(argv) {
   }
   assert(['HRCEN', 'HRDAV', 'HRDAVS'].includes(values['--property']) &&
     /^[a-f0-9]{40}$/.test(values['--expected-sha'] ?? '') &&
-    ['prepare', 'create', 'guest_profile_create', 'amend', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
+    ['prepare', 'create', 'guest_profile_create', 'amend', 'amend_adults', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
     values['--request'], 'ARGUMENTS_INVALID');
   assert(values['--stage'] === 'cancel' ? values['--property'] === 'HRCEN' &&
     ['zero', 'penalty'].includes(values['--cancel-scenario']) : !values['--cancel-scenario'] &&
@@ -292,7 +292,7 @@ async function main() {
     const profileHeld = journal?.status === 'guest_profile_create_possible' ||
       journal?.status === 'uncertain_held' && journal.workflowAttempt?.workflow === 'guest_profile_create';
     if (profileHeld && priorProfile && journal.created?.freshReadbackVerified === true &&
-        ['amend', 'attach', 'addons', 'cancel'].includes(args.stage)) {
+        ['amend', 'amend_adults', 'attach', 'addons', 'cancel'].includes(args.stage)) {
       journal = { ...journal, status: 'created',
         workflowHolds: { ...journal.workflowHolds, guest_profile_create: {
           status: 'uncertain_held', issue: journal.issue, attempt: priorProfile } } };
@@ -312,7 +312,7 @@ async function main() {
       assert(journal.status === (args.stage === 'create' ? 'prepared' : 'created'), 'STAGE_INVALID');
     }
     if (!['prepare', 'create', 'cancel'].includes(args.stage)) {
-      const order = ['amend', 'attach', 'addons'];
+      const order = ['amend', 'attach', 'addons', 'amend_adults'];
       assert(!journal.workflowHolds?.[args.stage], 'JOURNAL_HELD');
       assert(!journal.workflowProofs?.[args.stage] && !(args.stage === 'guest_profile_create' ? [] : order.slice(order.indexOf(args.stage) + 1))
         .some(workflow => journal.workflowProofs?.[workflow]), 'WORKFLOW_ALREADY_RUN_OR_OUT_OF_ORDER');
@@ -328,7 +328,7 @@ async function main() {
     let writerDependencyDigest;
     if (args.stage !== 'prepare') {
       const { hmsWriterDependencyDigest } = await load('tooling/hms-cloud/hms-workflow-policy.mjs');
-      writerDependencyDigest = hmsWriterDependencyDigest(args.stage);
+      writerDependencyDigest = hmsWriterDependencyDigest(args.stage === 'amend_adults' ? 'amend' : args.stage);
       assert(/^[a-f0-9]{64}$/.test(writerDependencyDigest), 'WRITER_DEPENDENCY_DIGEST_INVALID');
     }
     const provenance = { ...journal?.provenance, [args.stage]: Object.freeze({
