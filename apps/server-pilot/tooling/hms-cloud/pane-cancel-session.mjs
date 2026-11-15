@@ -314,7 +314,8 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
     result.chargeDispatched === false && result.browserSendRequests === 0 && Array.isArray(result.blockedRequests) &&
     result.blockedRequests.length === 0 &&
     result.zeroPenaltyNotice === 'Cancellation Penalty of 0.00 may be added to account.';
-  const outcome = chargeAuthorityAttempted || ['fee_dialog_pending', 'fee_accepted_unconfirmed'].includes(result.outcome) ||
+  const outcome = chargeAuthorityAttempted ||
+    ['fee_dialog_pending', 'fee_accepted_unconfirmed', 'approved_notice_awaiting_readback'].includes(result.outcome) ||
     (result.outcome === 'zero_notice_awaiting_readback' && !(zeroNotice && complete))
     ? 'cancel_penalty_pending' : (result.outcome === 'awaiting_readback' || zeroNotice) && complete ? 'cancelled' : 'cancel_unconfirmed';
   return { ...result, outcome, nativeReadback, runDir: root, screenshots, writerSessionClosed,

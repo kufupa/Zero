@@ -29,6 +29,7 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { runCloudCancellation } from './pane-cloud-cancel.js';
+import { cancellationPenaltyNotice } from '../../tooling/hms-cloud/cancel-penalty-notice.mjs';
 import { projectCloudCancellationPreview } from './hms-cloud-cancellation-preview.js';
 import {
   reservationWorkflowV2DraftSchema,
@@ -71,7 +72,8 @@ type NativeCancelResult = {
   outcome?: string; issue?: string; expected?: unknown; reasons?: unknown; policyFacts?: unknown; penaltyText?: unknown;
   requestDispatched?: boolean; writerSessionClosed?: boolean; dispatchCallbacksDrained?: boolean;
   nativeReadback?: unknown; runDir?: unknown; screenshots?: unknown; chargeApproved?: unknown; chargeDispatched?: unknown;
-  zeroPenaltyNotice?: unknown; neverDispatchedProof?: unknown;
+  zeroPenaltyNotice?: unknown; neverDispatchedProof?: unknown; penaltyAmount?: unknown; penaltyTiming?: unknown;
+  penaltyNoticeAcknowledged?: unknown;
 };
 type CancelHint = {
   id: string; confirmation?: string; guestName?: string; bookedArrival?: string; bookedDeparture?: string;
@@ -1333,7 +1335,10 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         native.chargeApproved === false && native.chargeDispatched === false :
         acceptedPenaltyText === fresh.penaltyText && native.chargeApproved === true && native.chargeDispatched === false;
       const nativePenaltyText = penaltyLine(native.penaltyText);
-      const noNewFinancialState = nativePenaltyText === fresh.penaltyText && native.zeroPenaltyNotice == null &&
+      const zeroNotice = native.zeroPenaltyNotice === 'Cancellation Penalty of 0.00 may be added to account.' &&
+        cancellationPenaltyNotice(native.penaltyText)?.amount === '0.00' && fresh.penaltyText === null &&
+        native.chargeApproved === false && native.chargeDispatched === false;
+      const noNewFinancialState = (zeroNotice || nativePenaltyText === fresh.penaltyText && native.zeroPenaltyNotice == null) &&
         financialStateMatches && native.outcome !== 'cancel_penalty_pending';
       const completed = Boolean(activeHandle && native.outcome === 'cancelled' && native.requestDispatched === true &&
         native.writerSessionClosed === true && native.dispatchCallbacksDrained === true && exactReadback && noNewFinancialState);
@@ -1422,12 +1427,17 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             prepareObservationRef: prepared.item.ref, dispatchHoldId: activeHandle.holdId },
           { outcome: native.outcome ?? 'unknown', issue, requestDispatched: native.requestDispatched ?? false,
             nativeReadback: native.nativeReadback ?? null, penaltyText: native.penaltyText ?? null,
+            penaltyAmount: cancellationPenaltyNotice(native.penaltyText)?.amount ?? null,
+            penaltyTiming: native.penaltyTiming ?? null, penaltyApprovalRequired: native.chargeApproved !== true,
             zeroPenaltyNotice: native.zeroPenaltyNotice ?? null, dispatchHoldId: activeHandle.holdId,
             claimRequestDigest, requestDigest: nativeRequestDigest, sourceRefs: compiled.sourceRefs },
           ['durable_cancel_hold_requires_reconciliation']);
         const saved = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, uncertain,
           'unknown', 'Native cancel may have dispatched; do not retry before reconciliation', input.idempotencyKey);
         return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: activeHandle.holdId,
+          penaltyText: native.penaltyText ?? null, penaltyAmount: cancellationPenaltyNotice(native.penaltyText)?.amount ?? null,
+          penaltyTiming: native.penaltyTiming ?? null, penaltyApprovalRequired: native.chargeApproved !== true,
+          cancellationStatus: readback.success ? readback.data.status : null,
           issue: saved.status === 'ok' ? issue : 'cancel_unknown_receipt_unavailable' };
       }
       const afterPath = screenshotPath(native, 'after.png');

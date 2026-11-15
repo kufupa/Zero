@@ -106,6 +106,14 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
   const reasons = warmIsNewer ? warmReasons : previewReasons.length ? previewReasons : warmReasons;
   const reasonsWarmed = reasons === warmReasons && warmReasons.length > 0;
   const reply = record(editor.snapshot.workflowReply);
+  const feeAttempt = [...draft.observations].reverse().find(item => item.kind === 'stay_candidate' &&
+    item.generationId === draft.generationId && item.propertyCode === draft.propertyCode &&
+    item.sourceMessageId === draft.source.messageId && item.criteria.workflow === 'cancel' &&
+    item.criteria.stage === 'execute' && item.criteria.requestId === editor.request.id &&
+    item.criteria.hintId === hintId && text(record(item.result).penaltyText));
+  const pendingFee = record(feeAttempt?.result);
+  const penaltyAmount = (value: unknown) => typeof value === 'string'
+    ? /Cancellation Penalty of (\d{1,12}\.\d{2}) may be added to account\./.exec(value)?.[1] : undefined;
   const refsValue = effectiveAt(editor.snapshot, `${body}/previewObservationRefs`);
   const refs = Array.isArray(refsValue) ? refsValue.map(text) : [];
   // The saved native preview retains its review identity across email reopen.
@@ -166,6 +174,14 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
     </Section>
     <Section title="Cancellation details">
+      <p className={styles.warning}>Infor can cancel the stay before showing its final penalty amount. An unknown fee is not zero or approved. Any new charge needs a separate review and Go; an unresolved result must not be retried.</p>
+      {text(pendingFee.penaltyText) && <div className={styles.warning} role="alert">
+        <strong>Cancellation penalty {text(pendingFee.penaltyAmount) || penaltyAmount(pendingFee.penaltyText) || '(amount unknown)'}</strong>
+        <p>{text(pendingFee.penaltyText)}</p>
+        <p>{text(record(pendingFee.nativeReadback).status) || 'Cancellation status needs verification'}.
+          {pendingFee.penaltyTiming === 'after_save' ? ' HMS showed this notice after Save.' : ''}
+          {' '}Fee approval and financial outcome need reconciliation in HMS. Do not repeat Cancel.</p>
+      </div>}
       <label className={styles.label}>Cancellation reason
         <select value={reasons.some(row => row.display === reason) ? reason : ''} disabled={editor.view.busy || !reasons.length}
           onChange={event => void editor.commands.edit(reasonPath, event.target.value, event.target.value ? 'set' : 'none')}>
@@ -197,6 +213,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
         <span>Scope: {text(record(result.target).confirmation)} · {text(record(result.target).arrival)} → {text(record(result.target).departure)}</span>
         <span>Fee status: {text(result.feeState).replaceAll('_', ' ') || 'Unknown'}</span>
         <span>Penalty: {text(result.penaltyText) || 'Not returned; check the policy and fee before deciding.'}</span>
+        {penaltyAmount(result.penaltyText) && <span>Penalty amount: {penaltyAmount(result.penaltyText)} (currency not returned)</span>}
         {Array.isArray(result.policyFacts) && [...new Set(result.policyFacts.map(text))].map(fact => <span key={fact}>{fact}</span>)}
         {Boolean(result.roomScope) && <span>Room scope: {typeof result.roomScope === 'string' ? result.roomScope : JSON.stringify(result.roomScope)}</span>}
       </div>

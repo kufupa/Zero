@@ -22,6 +22,7 @@ import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { cancellationPenaltyNotice } from './cancel-penalty-notice.mjs';
 
 process.umask(0o077);
 // A shell started from a PM2 process leaks its IPC channel and pm_exec_path; neither may reach this run.
@@ -64,7 +65,8 @@ async function assertNoTargetHold() {
 }
 
 function parseArgs(argv) {
-  const allowed = new Set(['--property', '--expected-sha', '--stage', '--request', '--state-dir']);
+  const allowed = new Set(['--property', '--expected-sha', '--stage', '--request', '--state-dir',
+    '--cancel-scenario', '--approve-labtest-penalty']);
   const values = {};
   for (let i = 0; i < argv.length; i += 2) {
     assert(allowed.has(argv[i]) && argv[i + 1] && !Object.hasOwn(values, argv[i]), 'ARGUMENTS_INVALID');
@@ -74,7 +76,14 @@ function parseArgs(argv) {
     /^[a-f0-9]{40}$/.test(values['--expected-sha'] ?? '') &&
     ['prepare', 'create', 'guest_profile_create', 'amend', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
     values['--request'], 'ARGUMENTS_INVALID');
+  assert(values['--stage'] === 'cancel' ? values['--property'] === 'HRCEN' &&
+    ['zero', 'penalty'].includes(values['--cancel-scenario']) : !values['--cancel-scenario'] &&
+    !values['--approve-labtest-penalty'], 'CANCEL_SCENARIO_REQUIRED');
+  const approvedPenalty = values['--approve-labtest-penalty'];
+  assert(approvedPenalty === undefined || values['--cancel-scenario'] === 'penalty' &&
+    /^\d{1,12}\.\d{2}$/.test(approvedPenalty) && !/^0+\.00$/.test(approvedPenalty), 'PENALTY_APPROVAL_INVALID');
   return { propertyCode: values['--property'], sha: values['--expected-sha'], stage: values['--stage'],
+    cancelScenario: values['--cancel-scenario'], approvedPenalty,
     requestPath: resolve(values['--request']),
     root: resolve(values['--state-dir'] ?? join(homedir(), '.local', 'state', 'nava-labtest-proof')) };
 }
@@ -199,7 +208,8 @@ async function bindCredentialMetadata(property, credentialVersionHmacSha256) {
 function safeNativeResult(result) {
   const safe = Object.fromEntries(['outcome', 'issue', 'confirmation', 'status', 'httpStatus', 'requestSeen',
     'requestDispatched', 'dispatchCallbacksDrained', 'blockedRequests', 'blockedRequestsAfterDispatch',
-    'browserSendRequests', 'chargeApproved', 'chargeDispatched', 'zeroPenaltyNotice'].filter(key =>
+    'browserSendRequests', 'chargeApproved', 'chargeDispatched', 'zeroPenaltyNotice',
+    'penaltyAmount', 'penaltyTiming', 'penaltyNoticeAcknowledged'].filter(key =>
       Object.hasOwn(result ?? {}, key) && ['string', 'number', 'boolean'].includes(typeof result[key])).map(key => [key, result[key]]));
   if (typeof result?.draftCheck === 'string' && /^DRAFT_[A-Z0-9_]{1,80}$/.test(result.draftCheck)) safe.draftCheck = result.draftCheck;
   for (const key of ['blockedRequests', 'blockedRequestsAfterDispatch']) {
@@ -453,6 +463,7 @@ async function main() {
       const { verifySingleCancellationScope } = await load('tooling/hms-cloud/cancel-association-scope.mjs');
       const { openLabtestCancellation, confirmLabtestCancellation } = await load('tooling/hms-cloud/guest-stay-cancel.mjs');
       const own = journal.created, effective = requestSchema.parse(journal.effectiveRequest);
+      assert(effective.room.ratePlan === (args.cancelScenario === 'zero' ? 'CMPRO' : 'BAR'), 'CANCEL_SCENARIO_RATE_MISMATCH');
       assert(own?.freshReadbackVerified === true && /^\d+-\d+$/.test(own.confirmation ?? '') && /^\d+$/.test(own.nativeStayId ?? '') &&
         own.note === effective.note && own.guestId === effective.guest.profileId, 'CANCEL_TARGET_INVALID');
       const lookup = async page => {
@@ -494,6 +505,17 @@ async function main() {
           cancelled = await confirmLabtestCancellation(page, expected, { reasonCode: reason.value, reasonLabel: reason.display,
             cancellationNote: CANCELLATION_NOTE,
             continuationAllowed: () => !options.signal.aborted,
+            awaitChargeApproval: async dialog => {
+              const notice = cancellationPenaltyNotice(dialog.text);
+              const approved = args.cancelScenario === 'penalty' && dialog.timing === 'after_save' &&
+                notice && !/^0+\.00$/.test(notice.amount) && notice.amount === args.approvedPenalty;
+              await persist({ ...journal, cancelApprovalGate: { required: true, approved: approved === true,
+                penaltyText: dialog.text, penaltyAmount: notice?.amount ?? null, timing: dialog.timing ?? 'unknown',
+                explicitLabtestApproval: args.approvedPenalty ?? null, observedAt: new Date().toISOString() },
+              updatedAt: new Date().toISOString() });
+              await checkHold(options.signal);
+              return approved === true;
+            },
             dispatchWithAuthority: async send => { await checkHold(options.signal); return send(); } });
           await persist({ ...journal, cancelResult: safeNativeResult(cancelled), updatedAt: new Date().toISOString() });
         }, { ...base, prepareContext: context => installSavedStayReadGuard(context, { propertyCode: args.propertyCode,
@@ -547,9 +569,24 @@ async function main() {
             status: native.status, reasonCode: verified.reasonCode, cancellationNote: verified.cancellationNote, freshReadbackVerified: true,
             readback: { fields: finalFields, native: nativeObservation, cancelModelVerified: true, observedAt: new Date().toISOString() } };
         }, { ...base, prepareContext: context => installSavedStayReadGuard(context, { propertyCode: args.propertyCode, confirmation: own.confirmation }) });
+        await persist({ ...journal, cancelReadback: readback, updatedAt: new Date().toISOString() });
         const zeroNotice = cancelled.outcome === 'zero_notice_awaiting_readback' && cancelled.zeroPenaltyNotice === ZERO_PENALTY_NOTICE;
-        assert((cancelled.outcome === 'awaiting_readback' || zeroNotice) && cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
-          cancelled.browserSendRequests === 0 && cancelled.chargeApproved === false && cancelled.chargeDispatched === false &&
+        const approvedNotice = args.cancelScenario === 'penalty' && cancelled.outcome === 'approved_notice_awaiting_readback' &&
+          cancelled.penaltyNoticeAcknowledged === true && cancelled.penaltyTiming === 'after_save' &&
+          cancelled.penaltyAmount === args.approvedPenalty && journal.cancelApprovalGate?.approved === true &&
+          journal.cancelApprovalGate.penaltyAmount === args.approvedPenalty && cancelled.chargeApproved === true;
+        if (approvedNotice && cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
+            cancelled.browserSendRequests === 0 && cancelled.chargeDispatched === false &&
+            Array.isArray(cancelled.blockedRequests) && !cancelled.blockedRequests.length) {
+          await persist({ ...journal, cancelApprovalProof: { gateVerified: true, approvedAmount: args.approvedPenalty,
+            noticeAcknowledged: true, freshReadback: readback, financialOutcome: 'unverified',
+            observedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() });
+          fail('CANCEL_FINANCIAL_OUTCOME_UNVERIFIED');
+        }
+        assert(args.cancelScenario === 'zero' && (cancelled.outcome === 'awaiting_readback' || zeroNotice) &&
+          cancelled.chargeApproved === false && !journal.cancelApprovalGate &&
+          cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
+          cancelled.browserSendRequests === 0 && cancelled.chargeDispatched === false &&
           Array.isArray(cancelled.blockedRequests) && !cancelled.blockedRequests.length, 'CANCEL_UNCERTAIN_HELD');
         return { status: 'cancelled', cancelled: { ...readback, nativeResult: safeNativeResult(cancelled) } };
       });
