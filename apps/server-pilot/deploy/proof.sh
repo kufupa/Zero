@@ -7,7 +7,13 @@
 # cancel: cancels the stay left by `proof.sh create` for the same property and sha, fresh readback.
 # Each then installs `CANARY PASS <workflow> <property> <sha>` and its writers.json row
 # (deploy/install-canary-ledger.mjs) unless --no-ledger is given.
-# amend, attach, addons and guest_profile_create have no committed Labtest runner: PROOF UNSUPPORTED.
+# Run order: create, guest_profile_create, amend, attach, addons, cancel.
+# Amend remains unsupported: pane-amend-session.mjs clones a credential lease containing release().
+# A writer fix is needed; this harness never modifies writers or bypasses their checks.
+# Other follow-ups only target the stay this harness created. Each prepares unsaved, saves once,
+# and reads back in a fresh session. Cancel may run early for cleanup.
+# The create request may include proof.addons: [{code, quantity, ...native item fields}].
+# Add-On dates use the owned stay's arrival; no catalogue code, quantity or price is guessed.
 #
 # The stages run on the box through ssm-run-command.sh (tooling/hms-cloud/labtest-proof.mjs).
 # SSM stdout only carries short status lines; the journal and stage logs come back as a
@@ -40,15 +46,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$WORKFLOW" in
-  create|cancel) ;;
-  amend|attach|addons|guest_profile_create)
-    echo "PROOF UNSUPPORTED $WORKFLOW: no committed Labtest Save and readback runner exists for it; tooling/hms-cloud/labtest-proof.mjs implements only create and cancel"
-    exit 3
-    ;;
+  create|cancel|amend|attach|addons|guest_profile_create) ;;
   *) usage ;;
 esac
 [[ "$PROPERTY" =~ ^(HRCEN|HRDAV|HRDAVS)$ ]] || usage
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || usage
+[ "$WORKFLOW" = create ] || [ -z "$REQUEST" ] || {
+  echo "proof: --request is accepted only by create; follow-ups use its bound request" >&2
+  exit 2
+}
+if [ "$WORKFLOW" = amend ]; then
+  echo "PROOF UNSUPPORTED amend: pane-amend-session.mjs cloudPaneAmendRunOptions structuredClone includes credentialLease.release(); writer fix required"
+  exit 3
+fi
 if [ "$LOCAL" = 1 ]; then
   [ "$(id -un)" = ubuntu ] && [ "$SERVER_PILOT" = "$REMOTE_SERVER_PILOT" ] || {
     echo "proof: --local requires ubuntu in ${REMOTE_SERVER_PILOT}" >&2
@@ -153,14 +163,14 @@ fetch_artifacts() {
   local meta digest chars index=0 encoded="${ARTIFACTS}/.transfer.b64"
   if [ "$LOCAL" = 1 ]; then
     local file
-    for file in "$HOME/.local/state/nava-labtest-proof/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,cancel.out,cancel.err}; do
+    for file in "$HOME/.local/state/nava-labtest-proof/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err}; do
       if [ -f "$file" ]; then cp "$file" "$ARTIFACTS/" || return 1; fi
     done
     [ -f "${ARTIFACTS}/${PROPERTY}-journal.json" ]
     return $?
   fi
   remote pack "${REMOTE_HEAD}cd \"\$RUN\"
-files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-prepare.out ${PROPERTY}-prepare.err ${PROPERTY}-create.out ${PROPERTY}-create.err ${PROPERTY}-cancel.out ${PROPERTY}-cancel.err 2>/dev/null || true)\"
+files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-{prepare,create,guest_profile_create,amend,attach,addons,cancel}.{out,err} 2>/dev/null || true)\"
 [ -n \"\$files\" ] || { echo 'proof: nothing to fetch' >&2; exit 20; }
 tar -czf .transfer-${PROPERTY}.tgz \$files
 base64 -w0 .transfer-${PROPERTY}.tgz >.transfer-${PROPERTY}.b64
@@ -204,7 +214,7 @@ if [ "$WORKFLOW" = create ]; then
   cp "$REQUEST" "${ARTIFACTS}/request.json"
   run_stage prepare && run_stage create || passed=0
 else
-  run_stage cancel || passed=0
+  run_stage "$WORKFLOW" || passed=0
 fi
 fetch_artifacts || {
   echo "proof: artifact fetch failed; journal remains on the box under ~/.local/state/nava-labtest-proof/${SHA}" >&2
