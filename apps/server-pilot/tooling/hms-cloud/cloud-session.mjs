@@ -646,6 +646,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
       // Queue reads in PostgreSQL instead of racing every 250 ms. Ownership remains exclusive.
       if (readOnly) {
         await runUntilAborted(() => connection.unsafe("SELECT set_config('lock_timeout', '70s', false)"), acquisitionSignal);
+        phase = 'contention';
         await runUntilAborted(() => connection.unsafe('SELECT pg_advisory_lock($1::bigint)', [key]), acquisitionSignal);
         acquired = true;
       }
