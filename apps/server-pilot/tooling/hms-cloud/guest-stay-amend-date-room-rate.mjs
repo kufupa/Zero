@@ -9,6 +9,7 @@ import { isLabtestAmendStageContext, runLabtestAmendSave } from './labtest-amend
 import { savedChildOccupancy } from './guest-stay-amend-children.mjs';
 import { prepareStayAmendmentAvailability, readStayAmendmentAvailability } from './guest-stay-amend-availability.mjs';
 import { parseSavedStayNativeResponse } from './saved-stay-native-response.mjs';
+import { inspectSavedRoomRateCatalogue } from './guest-stay-room-rate.mjs';
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const SPECS = Object.freeze({
@@ -499,10 +500,10 @@ export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, op
     const current = field(baseline, 'data', spec.name);
     if (current.state !== 'value' || String(current.value) !== expected[fieldName]) throw new Error('AMEND_PREIMAGE_UNVERIFIED');
     const input = await checkedControl(state.frame, baseline, spec, expected[fieldName]);
-    const result = await input.evaluate((element, { spec, offset, limit }) => {
+    let result = await input.evaluate((element, { spec, offset, limit }) => {
       const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
       const store = component?.store;
-      if (!store && component?.getXType?.() === 'lovfield') return { issue: 'SAVED_NATIVE_PICKER_UNVERIFIED' };
+      if (!store && component?.getXType?.() === 'lovfield') return { nativeLov: true };
       if (!store || typeof store.getCount !== 'function' || typeof store.getAt !== 'function' ||
           typeof store.isLoading !== 'function') return null;
       const loaded = store.getCount(), loading = store.isLoading();
@@ -520,6 +521,14 @@ export async function inspectLabtestSavedRoomRateOptions(page, expected = {}, op
         hasMoreLoaded: offset + candidates.length < loaded,
         possiblyTruncated: loading || !Number.isInteger(reportedTotal) || reportedTotal <= 0 || loaded < reportedTotal } };
     }, { spec, offset, limit });
+    if (result?.nativeLov) {
+      const native = await inspectSavedRoomRateCatalogue(page, state.frame, baseline, fieldName);
+      const after = await snapshotLabtestRecord(state.frame);
+      if (!cleanLabtestRecord(after) || !matchesStayPreimage(after, expected) ||
+          !unchangedLabtestBusinessParties(state.partyPreimage, after)) throw new Error('AMEND_DRAFT_CHANGED');
+      result = { ...native, candidates: native.candidates.slice(offset, offset + limit),
+        coverage: { ...native.coverage, offset, loading: false, hasMoreLoaded: offset + limit < native.candidates.length } };
+    }
     if (!result) return { outcome: 'unavailable', issue: 'SAVED_OPTIONS_UNAVAILABLE' };
     if (result.issue) return { outcome: 'unavailable', issue: result.issue };
     return { outcome: 'loaded_options', field: fieldName, ...result, availability: 'not_verified', quote: 'not_produced' };

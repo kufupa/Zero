@@ -37,7 +37,6 @@ import {
   NOT_APPLICABLE_MODEL_ID,
   enqueueAiRun,
   heartbeatAiRun,
-  labtestAttachEnabled,
   markAiRunDeadLetter,
   markAiRunPolicyRefused,
   type AiFailureClass,
@@ -244,10 +243,10 @@ export function nativeFilingDocumentName(sourceDocumentName: string, confirmatio
 
 /** Bind the selected POP3 PDF and stay; only server on-mode admits real guests. */
 function isBoundLabtestAttachment(state: Record<string, unknown>, sourceMessageId: string | null,
-  env: NodeJS.Dict<string> = process.env): boolean {
+  attachMode: 'off' | 'lab' | 'on'): boolean {
   const arrival = typeof state.arrival === 'string' ? state.arrival : '';
   const date = new Date(`${arrival}T00:00:00Z`);
-  const allowRealGuest = env.PANE_WRITE_ATTACH === 'on';
+  const allowRealGuest = attachMode === 'on';
   const selected = typeof state.sourceInternetMessageId === 'string' ? canonicalMessageId(state.sourceInternetMessageId) : null;
   let expectedDocumentName: string | null = null;
   try {
@@ -859,7 +858,7 @@ export async function approveHmsWrite(input: {
     const labtestAttach = !existingPreparation?.workflowContext && item.state.action === 'attach_document';
     const attachMode = effectiveWorkflowPolicy(env, scope.propertyCode, 'attach').admittedMode;
     if (labtestAttach && (!target.ok ||
-        attachMode === 'off' || !isBoundLabtestAttachment(item.state, item.sourceMessageId, { ...env, PANE_WRITE_ATTACH: attachMode }) ||
+        attachMode === 'off' || !isBoundLabtestAttachment(item.state, item.sourceMessageId, attachMode) ||
          !input.sessionId || !input.sessionProfile || !input.selectedInternetMessageId ||
          !boundFilingSelectionMatches(item.state, input.selectedSource) ||
          canonicalMessageId(input.selectedInternetMessageId.trim()) !== item.state.sourceInternetMessageId)) {
@@ -1507,7 +1506,7 @@ export async function authorizeConsumedLabtestAttach(tx: WorkTransaction, input:
   const verified = await verifyStaffGoForRun(tx, input.fence);
   const mode = effectiveWorkflowPolicy(input.env ?? process.env, verified.grant.propertyCode, 'attach').admittedMode;
   if (verified.grant.grantId !== input.grantId || verified.grant.operation !== 'attach_document' || mode === 'off' ||
-      !isBoundLabtestAttachment(item.state, item.sourceMessageId, { ...(input.env ?? process.env), PANE_WRITE_ATTACH: mode })) {
+      !isBoundLabtestAttachment(item.state, item.sourceMessageId, mode)) {
     throw new HmsApprovalError('filing_unavailable');
   }
   const snapshot = { digest: verified.preparation.nativeObservation.beforeDigest,
@@ -2208,6 +2207,7 @@ async function assertCancelStateSource(input: {
 export async function hmsWriteStateOf(input: {
   db?: DB;
   transportId: string;
+  propertySwitch?: PropertySwitch;
   workItemId: string;
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
@@ -2232,8 +2232,8 @@ export async function hmsWriteStateOf(input: {
   const storedValues = z
     .record(z.unknown())
     .safeParse((item.state[HMS_SNAPSHOT_KEY] as { values?: unknown } | undefined)?.values);
-  const target = paneStayHmsTargetForTransport(input.transportId);
-  const cloudFiling = item.state.action === 'attach_document' && target.ok && target.target.propertyCode === 'HRCEN';
+  const target = paneStayHmsTargetForTransport(input.transportId, input.propertySwitch);
+  const cloudFiling = item.state.action === 'attach_document' && target.ok;
   const run = await latestWriteRun(db, item.id);
   const grantFormDigest = currentFormDigest;
   const grantId = run ? grantIdForRun(run) : null;
@@ -2311,12 +2311,11 @@ export async function hmsWriteStateOf(input: {
           evidence: [], reviewed: null }
       : null;
   }
-  if (cloudFiling && run &&
-      (run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION || !grant?.fingerprintMatches)) {
+  const filingRun = run && [HMS_LABTEST_ATTACH_PROMPT_VERSION, HMS_V2_WRITE_PROMPT_VERSION].includes(run.promptVersion);
+  if (cloudFiling && run && (!filingRun || !grant?.fingerprintMatches)) {
     // A completed write for another workflow or form is history, not this upload.
     // If a Filing success lacks its grant, its relationship to this form is unknown.
-    const missingFilingGrant = run.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION &&
-      run.state === 'succeeded' && !grant;
+    const missingFilingGrant = filingRun && run.state === 'succeeded' && !grant;
     needsCheck ||= missingFilingGrant;
     grant = null;
     runView = (NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) || needsCheck
@@ -2329,11 +2328,14 @@ export async function hmsWriteStateOf(input: {
     selectedInternetMessageId: input.selectedInternetMessageId, cancelSource: input.cancelSource,
     initialFormDigest: currentFormDigest, initialPreview: currentCancelPreview, run, grantBound, needsCheck });
   const priorWriteIsHistory = Boolean(input.cancelSource && completedOtherHmsWrite(run, needsCheck));
+  const attachMode = target.ok
+    ? effectiveWorkflowPolicy(process.env, propertyCodeSchema.parse(target.target.propertyCode), 'attach').admittedMode : 'off';
   return {
     status: item.status,
-    ...(target.ok && target.target.propertyCode === 'HRCEN' ? { filingConfigured: labtestAttachEnabled() } : {}),
-    ...(item.state.action === 'attach_document' && (!target.ok || target.target.propertyCode === 'HRCEN')
-      ? { filingAvailable: target.ok && isBoundLabtestAttachment(item.state, item.sourceMessageId) && labtestAttachEnabled() &&
+    ...(target.ok ? { filingConfigured: attachMode !== 'off' } : {}),
+    ...(item.state.action === 'attach_document'
+      ? { filingAvailable: target.ok && attachMode !== 'off' &&
+          isBoundLabtestAttachment(item.state, item.sourceMessageId, attachMode) &&
           (!input.selectedSource || boundFilingSelectionMatches(item.state, input.selectedSource)),
         manualResolve: false } : {}),
     ...(item.state.action === 'cancel' && Object.hasOwn(item.state, 'cloudCancel') ? { manualResolve: false } : {}),

@@ -7,7 +7,7 @@ import postgres from 'postgres';
 import { readFileSync, readlinkSync, lstatSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { join } from 'node:path';
-import { consumePageRequestAuthorization } from './page-request-fence.mjs';
+import { consumePageRequestAuthorization, hasPageRequestAuthorization } from './page-request-fence.mjs';
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { credentialVersionHmacSha256 } from './credential-version.mjs';
@@ -234,6 +234,19 @@ export function cloudSessionIdentity(page) {
   return state?.verified && state.ownedPage === page && state.identity ? { ...state.identity } : null;
 }
 
+/** Carry a verified saved-form read through the outer guard without admitting a write. */
+export async function withCloudSavedRateReadScope(page, frame, reservationStayId, operation) {
+  const state = sessionState.get(page?.context?.());
+  if (!state?.verified || state.ownedPage !== page || frame?.page?.() !== page ||
+      !/^\d{1,100}$/.test(reservationStayId || '') || typeof operation !== 'function' || state.savedRateReadScope) {
+    throw new Error('SAVED_RATE_READ_SCOPE_INVALID');
+  }
+  const scope = Object.freeze({ frame, reservationStayId });
+  state.savedRateReadScope = scope;
+  try { return await operation(); }
+  finally { if (state.savedRateReadScope === scope) state.savedRateReadScope = null; }
+}
+
 export function cloudWriterCurrent(identity) {
   try {
     const host = hostIdentity(), node = processIdentity(process.pid), browser = processIdentity(identity?.browser?.pid, true);
@@ -401,10 +414,19 @@ export async function installCloudReadGuard(context, property, state) {
       return route.fallback();
     }
     if (path === '/api/internalBooking/rateshop/inquiryForGrid') {
+      let savedScope = null;
+      try {
+        if (state.verified && !state.writer && state.ownedPage && state.savedRateReadScope &&
+            request.frame() === state.savedRateReadScope.frame && hasPageRequestAuthorization(request, state.ownedPage)) {
+          savedScope = state.savedRateReadScope;
+        }
+      } catch { return route.abort(); }
       const options = { origin: property.origin, propertyCode: property.propertyCode,
-        rejectDuplicateJsonBodyKeys: rejectDuplicateAvailabilityJsonKeys };
+        rejectDuplicateJsonBodyKeys: rejectDuplicateAvailabilityJsonKeys,
+        reservationStayId: savedScope?.reservationStayId ?? '' };
       if (!isReviewedAvailabilityInquiry(request, options) &&
           !(state.verified && !state.writer && isReviewedGuestStayRatePlanInquiry(request, options))) return route.abort();
+      // Earlier context guards still need the read authorization; closing its page scope revokes it.
     }
     if (url.username || url.password || forbiddenPath.test(path) || hasWriteIntent(request.url()) || hasWriteIntent(body) ||
         !['GET', 'HEAD', 'OPTIONS', 'POST'].includes(method)) return route.abort();

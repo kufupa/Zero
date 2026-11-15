@@ -92,7 +92,8 @@ test('Cloud browser guard admits only the reviewed selected-property inquiry', a
     { writer: false, verified: true, authenticated: true, switching: null, ownedPage: null });
   const body = {
     propertyCodes: 'HRDAVS', startDate: '2027-01-10T00:00:00', numberOfDays: '2', lengthOfStay: 'DY',
-    adultCount: 2, childCount: 0, childAges: [], salesStrategy: null, roomTypeCodes: '', ratePlanCodes: '', currency: null,
+    adultCount: 2, childCount: 0, childAges: [], salesStrategy: null, roomTypeCodes: '',
+    ratePlanCodes: Array.from({ length: 100 }, (_, index) => `RATE${index}`).join(','), currency: null,
     convertFromPropertyCurrency: false, shopByDay: false, showCollapsedByProperty: false, showCollapsedByRoomType: false,
     excludeOverbookingLimits: false, showRestrictedSellOptions: false, showExclusiveRates: false, launchedFrom: 'hotelavailability',
     showCollapsedByBuilding: false, buildingCodes: [], showArrivalDepartureCount: false, showSubGroupView: false,
@@ -171,28 +172,32 @@ for (const propertyCode of ['HRCEN', 'HRDAV']) {
   });
 }
 
-test('Cloud guard preserves a page-fenced writer inquiry and rejects the same unfenced request', async () => {
+test('Cloud guard preserves page-fenced writer and scoped saved-read inquiries but rejects unfenced requests', async () => {
   const { installCloudReadGuard } = await import('./cloud-session.mjs');
   const { getPropertyRegistration } = await import('./property-registry.mjs');
   const { installPageRequestFence } = await import('./page-request-fence.mjs');
   const property = getPropertyRegistration('HRCEN');
-  let fenceHandler, cloudHandler;
-  const page = { route: async (_pattern, fn) => { fenceHandler = fn; } };
-  const fence = await installPageRequestFence(page, [cloudPath]);
-  await installCloudReadGuard({ routeWebSocket: async () => {}, route: async (_pattern, fn) => { cloudHandler = fn; } }, property,
-    { writer: true, verified: true, authenticated: true, switching: null, ownedPage: page });
-  const request = { method: () => 'POST', url: () => `${property.origin}${cloudPath}?houseAvailabilityOnly=true`,
-    postData: () => JSON.stringify({ propertyCodes: 'HRCEN', launchedFrom: 'gueststay' }),
-    resourceType: () => 'xhr', headers: () => ({ 'content-type': 'application/json' }),
-    isNavigationRequest: () => false, frame: () => ({ page: () => page }) };
-  let result;
-  const route = { request: () => request, abort: async () => { result = 'abort'; }, fallback: async () => { result = 'fallback'; } };
-  const scope = fence.open();
-  assert.equal(scope.allow(request), true);
-  await fenceHandler(route);
-  await cloudHandler(route);
-  assert.equal(result, 'fallback');
-  await cloudHandler(route);
-  assert.equal(result, 'abort');
-  scope.close();
+  for (const writer of [true, false]) {
+    let fenceHandler, cloudHandler;
+    const page = { route: async (_pattern, fn) => { fenceHandler = fn; } }, frame = { page: () => page };
+    const fence = await installPageRequestFence(page, [cloudPath]);
+    const state = { writer, verified: true, authenticated: true, switching: null, ownedPage: page,
+      savedRateReadScope: { frame, reservationStayId: '42' } };
+    await installCloudReadGuard({ routeWebSocket: async () => {}, route: async (_pattern, fn) => { cloudHandler = fn; } }, property, state);
+    const request = { method: () => 'POST', url: () => `${property.origin}${cloudPath}?houseAvailabilityOnly=true`,
+      postData: () => JSON.stringify({ propertyCodes: 'HRCEN', launchedFrom: 'gueststay', reservationStayID: '42' }),
+      resourceType: () => 'xhr', headers: () => ({ 'content-type': 'application/json' }),
+      isNavigationRequest: () => false, frame: () => frame };
+    let result;
+    const route = { request: () => request, abort: async () => { result = 'abort'; }, fallback: async () => { result = 'fallback'; } };
+    const scope = fence.open();
+    assert.equal(scope.allow(request), true);
+    await fenceHandler(route);
+    await cloudHandler(route);
+    assert.equal(result, 'fallback');
+    if (!writer) scope.close();
+    await cloudHandler(route);
+    assert.equal(result, 'abort');
+    scope.close();
+  }
 });

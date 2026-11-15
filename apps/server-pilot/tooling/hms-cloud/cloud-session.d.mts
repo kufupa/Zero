@@ -1,4 +1,4 @@
-import type { BrowserContext, Page, Request } from 'playwright';
+import type { BrowserContext, Frame, Page, Request } from 'playwright';
 import type { PropertyCode } from './property-registry.mjs';
 
 export type CloudPropertyIdentity = Readonly<{
@@ -73,6 +73,8 @@ export type CloudWriterIdentity = Readonly<{
 }>;
 export declare function cloudWriterIdentity(page: Page): CloudWriterIdentity | null;
 export declare function cloudSessionIdentity(page: Page): CloudSessionIdentity | null;
+export declare function withCloudSavedRateReadScope<T>(page: Page, frame: Frame, reservationStayId: string,
+  operation: () => T | Promise<T>): Promise<T>;
 export declare function cloudWriterCurrent(identity: unknown): boolean;
 export declare function cloudWriterQuiesced(identity: unknown): boolean;
 export declare function cloudHoldPath(propertyCode: string, alias: string, home?: string): string;
