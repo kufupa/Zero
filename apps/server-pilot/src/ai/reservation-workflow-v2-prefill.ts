@@ -2063,7 +2063,7 @@ function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): bool
 }
 
 // Room-only wordings, named as boardMeaning names them ('room_only').
-const ROOM_ONLY_BOARD = String.raw`\b(?:room\s*-?\s*only|accommodation\s+only|bed\s+only|r\/o|ro|(?:no|without|excluding)\s+meals?)\b`;
+const ROOM_ONLY_BOARD = String.raw`\b(?:room\s*-?\s*only|accommodation\s+only|(?<!\b(?:extra|additional|rollaway|sofa|bunk|spare)[\s-]+(?:single[\s-]+|double[\s-]+)?)bed\s+only|r\/o|ro|(?:no|without|excluding)\s+meals?)\b`;
 
 function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['requests'][number],
   evidence: ReservationWorkflowV2Evidence[], currentRefs: Set<string>, singleRequest: boolean) {
@@ -2186,8 +2186,10 @@ const OPERATIONAL_NOTE_CLASSES: RegExp[] = [
   // Celebrations.
   /\b(?:honeymoon(?:ers)?|anniversar(?:y|ies)|birthdays?|celebrat(?:e|es|ed|ing|ions?)|newly-?\s*weds?|surprise)\b/i,
 ];
-// Price talk and money movements ("bank transfer") are not stay instructions.
-const OPERATIONAL_NOTE_PRICING = /\b(?:rates?|prices?|pricing|costs?|tariffs?|quotations?|how\s+much)\b|(?:\b(?:R|ZAR|USD|EUR|GBP)\s?|[$€£]\s?)\d|\b(?:bank|eft|wire|money|funds?)\s+transfers?\b|\btransfer(?:s|red|ring)?\s+(?:the\s+)?(?:money|funds?|payment|deposit|amount|balance)\b/i;
+// Price enquiries and money movements are not stay instructions; agreed charges may be.
+const OPERATIONAL_NOTE_PRICING = /\b(?:rates?|prices?|pricing|costs?|tariffs?)\b/i;
+const OPERATIONAL_NOTE_PRICE_ENQUIRY = /\b(?:quot(?:e|es|ing|ations?)|how\s+much)\b/i;
+const OPERATIONAL_NOTE_MONEY_MOVEMENT = /\b(?:bank|eft|wire|money|funds?)\s+transfers?\b|\btransfer(?:s|red|ring)?\s+(?:the\s+)?(?:money|funds?|payment|deposit|amount|balance)\b/i;
 const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:morning|afternoon|evening|day))\b(?:[ \t]+(?!(?:please|kindly|arrange|book|reserve|confirm)\b)\p{L}[\p{L}'-]*){0,4}[ \t]*[,:!\-–—][ \t]*/iu;
 const OPERATIONAL_NOTE_REGARDS = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*(?:[ \t]+\S+){0,3}[ \t]*$/im;
 const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(?:very\s+much|in\s+advance|kindly))?|cheers)[ \t]*[,.!]*[ \t]*$/gim;
@@ -2203,8 +2205,10 @@ function operationalSourceNote(input: { selection: SyncedQuoteSelection }): stri
     : `${current.slice(0, signOff)}\n${postscript ? signature.slice(postscript.index + postscript[0].length) : ''}`;
   // Dropping a leading greeting keeps each clause a verbatim substring of the current email body.
   const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim()).filter((line) =>
+    !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(line) &&
     (Boolean(dinnerAmount(line)) || OPERATIONAL_NOTE_CLASSES.some((pattern) => pattern.test(line)) &&
-      !OPERATIONAL_NOTE_PRICING.test(line)) &&
+      !OPERATIONAL_NOTE_PRICE_ENQUIRY.test(line) &&
+      (!OPERATIONAL_NOTE_PRICING.test(line) || /\b(?:arrange|book|reserve|provide|include|agreed|approved)\b/i.test(line))) &&
     line.length > 3 && !/https?:\/\/|www\./i.test(line));
   return [...new Set(clauses)];
 }
@@ -2251,7 +2255,7 @@ function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extract
           (!claim?.raw.trim() || !message.text.includes(claim.raw));
         if (missing(booker.email)) booker.email = sourceClaim(address);
         if (missing(booker.name) && name && message.text.includes(name)) booker.name = sourceClaim(name);
-        if (!bookers.length && (booker.email || booker.name)) request.guests.push(booker);
+        if (!bookers.length && request.guests.length < 200 && (booker.email || booker.name)) request.guests.push(booker);
       }
     }
     for (const party of request.parties.filter((row) => row.role === 'organization')) {
@@ -2279,7 +2283,8 @@ function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extract
     }
     if (organizations.size === 1) {
       const organization = [...organizations][0]!;
-      if (message.text.includes(organization)) request.parties.push({ role: 'organization', name: sourceClaim(organization) });
+      if (request.parties.length < 100 && message.text.includes(organization))
+        request.parties.push({ role: 'organization', name: sourceClaim(organization) });
     }
   }
   return extraction;
@@ -2581,8 +2586,9 @@ function isPartialStayCancellation(text: string): boolean {
       const prefix = text.slice(0, match.index);
       if (isNegatedCancelInstruction(prefix)) return false;
       const clausePrefix = prefix.split(/[;,.!?\n]|\b(?:so|therefore|thus|hence)\b/iu).at(-1) ?? '';
-      const terminator = text.slice(match.index + match[0].length).match(/[;.!?\n]/u)?.[0];
-      return terminator !== '?' && CANCEL_BRIDGE_ONLY.test(clausePrefix);
+      const terminator = text.slice(match.index + match[0].length).match(/[;!?\n]|(?<!\d)\.|\.(?!\d)/u)?.[0];
+      const inquiry = /\b(?:if|whether|unless)\b|^\s*(?:can|could|would|should|may|might|do|does|did|is|are|was|were|how|what|why)\b/iu.test(clausePrefix);
+      return terminator !== '?' && !inquiry;
     });
   return partial && !whole;
 }
