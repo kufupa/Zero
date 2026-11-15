@@ -384,3 +384,11 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
   }
   return readback;
 }
+
+// Create evidence stays immutable; only a verified amendment can change the cleanup expectation.
+export function labtestProofStayAdults(journal) {
+  const occupancy = journal.workflowProofs?.amend_adults;
+  if (!occupancy) return journal.effectiveRequest.stay.adults;
+  verifyLabtestWorkflowProof(journal, 'amend', journal.workflowProofs?.amend);
+  return verifyLabtestWorkflowProof(journal, 'amend_adults', occupancy).adults;
+}
