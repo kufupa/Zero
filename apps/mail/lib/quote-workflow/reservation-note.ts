@@ -3,6 +3,7 @@ import { PANE_RESERVATION_NOTE_MAX } from './pane-stay-bind';
 import {
   HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
+  HRDAVS_PROPERTY_CODE,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
   type AvailabilityBoardRow,
@@ -16,7 +17,7 @@ import {
   type StayGroupRequirement,
 } from './types';
 
-const KNOWN_PROPERTY_CODES = new Set<string>([HRDAV_PROPERTY_CODE, HRCEN_PROPERTY_CODE]);
+const KNOWN_PROPERTY_CODES = new Set<string>([HRDAV_PROPERTY_CODE, HRDAVS_PROPERTY_CODE, HRCEN_PROPERTY_CODE]);
 const DAY_MS = 86_400_000;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
