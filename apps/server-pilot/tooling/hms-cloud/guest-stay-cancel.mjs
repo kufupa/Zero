@@ -547,7 +547,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       if ((dispatched || reasonSelected) && !fence.isQuarantined() && isNativeTaxValuesRead(request, frame, taxReadValues) && scope.allow(request)) {
         opened.forwarded.add(request);
         if (!dispatched) earlyTaxReads.push(page.waitForResponse((item) => item.request() === request, { timeout: timeoutMs })
-          .then((item) => item.finished()).catch(() => null));
+          .then(async (item) => item.status() === 200 && await item.finished() === null).catch(() => false));
         return route.fallback();
       }
       if (['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && pathname &&
@@ -605,18 +605,25 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       return route.abort();
     });
     action.check();
+    const visibleChargeText = async () => (await windows.evaluateAll((items) => items.map((item) => item.innerText.trim()))
+      .catch(() => [])).find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? null;
     // The penalty appears only after HMS has processed each tax read sent before Save.
+    // A read that fails or is still open leaves the dialog unknown, so the flow stops.
     const settleEarlyTaxReads = async () => {
       while (settledTaxReads < earlyTaxReads.length) {
-        const reads = earlyTaxReads.slice(settledTaxReads);
-        settledTaxReads = earlyTaxReads.length;
-        await Promise.race([Promise.all(reads), page.waitForTimeout(Math.min(10_000, timeoutMs)).catch(() => {})]);
+        const count = earlyTaxReads.length;
+        const finished = await Promise.race([
+          Promise.all(earlyTaxReads.slice(settledTaxReads, count)).then((results) => results.every((ok) => ok === true)),
+          page.waitForTimeout(Math.min(10_000, timeoutMs)).then(() => false, () => false)]);
+        if (!finished) {
+          chargeText = await visibleChargeText() ?? chargeText;
+          throw new Error('CANCEL_TAX_READ_UNFINISHED');
+        }
+        settledTaxReads = count;
         await page.waitForTimeout(1_000);
         action.check();
       }
     };
-    const visibleChargeText = async () => (await windows.evaluateAll((items) => items.map((item) => item.innerText.trim()))
-      .catch(() => [])).find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? null;
     interactionStarted = true;
     await arrow.click();
     action.check();
