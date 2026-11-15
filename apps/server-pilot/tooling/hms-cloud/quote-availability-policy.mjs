@@ -115,6 +115,49 @@ function hasAvailabilityWriteIntent(value) {
       !['', '0', 'false', '-'].includes(String(entry).trim().toLowerCase())) || hasAvailabilityWriteIntent(entry));
 }
 
+/** The saved Rate Shop field refresh operates on the active shop form, not rate selection. */
+export function isReviewedSavedRateShopRefresh(request, { origin, propertyCode, saved }) {
+  try {
+    if (!getPropertyRegistration(propertyCode)?.active || !saved || saved.propertyCode !== propertyCode ||
+        request.method() !== 'POST' || !['xhr', 'fetch'].includes(request.resourceType()) ||
+        request.url() !== `${origin}/web/base/OSRASD.RatePlanChange`) return false;
+    const contentType = request.headers()['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+    const raw = request.postData();
+    if (contentType !== 'application/x-www-form-urlencoded' || typeof raw !== 'string' || Buffer.byteLength(raw) > 8192) return false;
+    const body = new URLSearchParams(raw), entries = [...body];
+    const keys = entries.map(([key]) => key.toLowerCase());
+    const multiDisplay = new Set(['dates', 'guests', 'availabilitydata']);
+    if (keys.some((key, index) => keys.indexOf(key) !== index && !multiDisplay.has(key)) ||
+        keys.some(key => /^(?:action|pageaction|autosave)$/.test(key))) return false;
+    const values = name => entries.filter(([key]) => key.toLowerCase() === name).map(([, value]) => value);
+    const exact = (name, expected) => { const found = values(name); return found.length === 1 && found[0] === expected; };
+    const inactive = value => ['', '0', 'false', '-'].includes(value.trim().toLowerCase());
+    if (!exact('property', propertyCode) || !exact('propertycodes', propertyCode) ||
+        !exact('confirmationnumber', saved.confirmation) || !exact('reservationstayid', saved.reservationStayId) ||
+        !exact('guestid', saved.guestId) || !exact('bookingsessionid', saved.bookingSessionId) ||
+        !exact('launchedfrom', 'gueststay') || !exact('system_function_name', 'OSRASD') ||
+        !exact('user_function_name', 'OSRASD') || !exact('refresh_grid', 'false') ||
+        !exact('only_data_required', 'true') ||
+        ['confirmsaveselectedrates', 'confirmretainoverriderate', 'confirmapplyrateplanroomtypetoallshares']
+          .some(name => values(name).some(value => !inactive(value)))) return false;
+    for (const [name, expected] of [['propertycode', propertyCode], ['reservationid', saved.reservationId], ['recordid', saved.recordId]]) {
+      if (values(name).some(value => value !== expected)) return false;
+    }
+    for (const [key, value] of entries) {
+      if (/^(?:newprofileclick|confirmnewguestprofile|confirminactiveguestprofile|createinactiveprofileflag|linkprofileflag|savecctoprofile|savesettlementcctoprofile)$/i.test(key) && !inactive(value)) return false;
+      if (/^\s*(?:\[|[{])/.test(value)) {
+        // Check the wire text as well as parsed JSON so duplicate action keys cannot hide an earlier write intent.
+        if (/["'](?:pageaction|action|autosave)["']\s*:\s*["']?\s*(?:save|delete|update|cancel|duplicate|checkin|checkout|insert|commit|create|submit|post|amend|book|confirm|upload|send)/i.test(value)) return false;
+        const flags = /"(?:newprofileclick|confirmnewguestprofile|confirminactiveguestprofile|createinactiveprofileflag|linkprofileflag|savecctoprofile|savesettlementcctoprofile)"\s*:\s*(?:"([^"]*)"|([^,}\]\s]+))/ig;
+        if ([...value.matchAll(flags)].some(match => !inactive(match[1] ?? match[2]))) return false;
+        try { if (hasAvailabilityWriteIntent(JSON.parse(value))) return false; }
+        catch { /* Vendor display values can be non-JSON. */ }
+      }
+    }
+    return true;
+  } catch { return false; }
+}
+
 // Derive a snapshot, not a reference to the caller's mutable quote request.
 export function availabilityDetailsScope(request, propertyCode) {
   try {

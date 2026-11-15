@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { cloudSessionIdentity, withCloudSavedRateReadScope } from './cloud-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
-import { isReviewedGuestStayRatePlanInquiry, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
+import { isReviewedGuestStayRatePlanInquiry, isReviewedSavedRateShopRefresh, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const UNAVAILABLE_MESSAGE = 'Selected criteria is not available for these dates.';
@@ -223,6 +223,13 @@ function allowedSearch(request, kind, origin, propertyCode, rateShop = null, sav
     body.get('GRID_NAME') === spec.grid && body.get('LOV_TAGNAME') === roomField(kind) && propertyAlias(body, propertyCode);
   if (url.pathname === '/web/base/BSMSLV') return kind === 'ratePlan' &&
     matchesRatePlanPickerRequest(request, origin, propertyCode, rateShop);
+  if (url.pathname === '/web/base/OSRASD.RatePlanChange' && saved) {
+    return kind === 'ratePlan' && rateShop?.kind === kind && rateShop.propertyCode === propertyCode &&
+      rateShop.bookingSessionId === saved.bookingsessionid && isReviewedSavedRateShopRefresh(request, { origin, propertyCode,
+        saved: { propertyCode, confirmation: saved.confirmation, reservationStayId: saved.reservationstayid,
+          reservationId: saved.reservationid, recordId: saved.recordid, guestId: saved.guestid,
+          bookingSessionId: saved.bookingsessionid } });
+  }
   if (url.pathname === '/web/base/OSRASD' || url.pathname === '/web/base/OSRASD.RatePlanChange') {
     return body.getAll('property').length === 1 && body.getAll('confirmationnumber').length === 1 &&
       body.get('property') === propertyCode && body.get('confirmationnumber') === (saved?.confirmation ?? '');
@@ -610,7 +617,10 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
       if (url.pathname.startsWith('/web/base/')) {
         if (!/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
         const body = new URLSearchParams(raw), keys = [...body.keys()].map(key => key.toLowerCase());
-        if (new Set(keys).size !== keys.length || keys.some(key => /^(?:action|pageaction|autosave)$/.test(key))) return false;
+        const multiDisplay = url.pathname === '/web/base/OSRASD.RatePlanChange'
+          ? new Set(['dates', 'guests', 'availabilitydata']) : new Set();
+        if (keys.some((key, index) => keys.indexOf(key) !== index && !multiDisplay.has(key)) ||
+            keys.some(key => /^(?:action|pageaction|autosave)$/.test(key))) return false;
         for (const [key, value] of body) {
           const name = key.toLowerCase();
           if (Object.hasOwn(saved, name) && value !== saved[name]) return false;
@@ -637,7 +647,9 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
       return result;
     }, fence.open(), () => fence.quarantine(), `/api/internalBooking/${propertyCode}/rateshop/selectedRates`);
     const captured = kind === 'ratePlan'
-      ? await withCloudSavedRateReadScope(page, frame, saved.reservationstayid, read) : await read();
+      ? await withCloudSavedRateReadScope(page, frame, { propertyCode, confirmation: saved.confirmation,
+        reservationStayId: saved.reservationstayid, reservationId: saved.reservationid, recordId: saved.recordid,
+        guestId: saved.guestid, bookingSessionId: saved.bookingsessionid }, read) : await read();
     // Closing a saved Rate Shop can POST rateSelection. Leave it fenced; end the owning session instead.
     if (kind === 'roomType') searches.delete(page);
     return { candidates: captured.result.candidates.map(({ code, nativeId, name }) => ({ code, nativeId, display: name })),
