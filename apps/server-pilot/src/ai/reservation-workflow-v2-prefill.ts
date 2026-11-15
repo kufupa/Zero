@@ -251,6 +251,15 @@ function recoverSynthesisEntities(value: unknown): unknown {
         ? { ...entry, body: { ...entry.body, groups: entry.body.groups.map((group) =>
           isRecord(group) ? { ...group, mealPlan: null } : group) } } : entry;
       let parsed = schema.safeParse(hostEntry);
+      if (key === 'requests' && isRecord(entry) && entry.kind === 'filing' && isRecord(entry.body)) {
+        // Cancel-only siblings must not discard an otherwise valid document/target request.
+        for (const field of ['reason', 'cancellationNote', 'previewObservationRefs']) {
+          if (!Object.hasOwn(entry.body, field)) continue;
+          delete entry.body[field];
+          dropped.push(`requests[${index}].body.${field}`);
+        }
+        parsed = schema.safeParse(entry);
+      }
       if (key === 'requests' && isRecord(entry) && entry.kind === 'create' && isRecord(entry.body)) {
         const body = entry.body;
         if (Array.isArray(body.dateSections)) for (const section of body.dateSections) {
@@ -2198,6 +2207,70 @@ function operationalSourceNote(input: { selection: SyncedQuoteSelection }): stri
       !OPERATIONAL_NOTE_PRICING.test(line)) &&
     line.length > 3 && !/https?:\/\/|www\./i.test(line));
   return [...new Set(clauses)];
+}
+
+/** Recover explicit requester/party text only; none of these claims select a native identity. */
+function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extraction; selection: SyncedQuoteSelection;
+  evidence: ReservationWorkflowV2Evidence[] }): ReservationWorkflowV2Extraction {
+  const message = input.evidence.find((row) => row.relation === 'current_message');
+  if (!message) return input.extraction;
+  const extraction = structuredClone(input.extraction);
+  const body = (input.selection.currentBodyText ?? input.selection.bodyText);
+  const authored = body.split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+  const sender = input.selection.fromAddress?.trim() ?? '';
+  const address = /^[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+$/u.test(sender) ? sender
+    : /<([^\s<>@]+@[^\s<>@]+\.[^\s<>@]+)>/u.exec(sender)?.[1];
+  const display = /^["']?([^<>"']+?)["']?\s*</u.exec(sender)?.[1]?.trim();
+  const signoff = OPERATIONAL_NOTE_REGARDS.exec(authored.replace(/\u00a0/gu, ' '));
+  const signatureName = signoff ? authored.slice(signoff.index + signoff[0].length).split(/\r?\n/u)
+    .map((line) => line.trim()).find(Boolean) : undefined;
+  const personName = (value: string | undefined) => value && value.length <= 120 &&
+    /^(?:[A-Z][\p{L}'-]+\.?\s+){1,4}[A-Z][\p{L}'-]+\.?$/u.test(value) &&
+    !/\b(?:team|desk|hotel|reservations?|bookings?|travel|tours?|agency|company|limited|ltd|department)\b/iu.test(value) ? value : undefined;
+  const name = personName(signatureName) ?? personName(display);
+  const sourceClaim = (text: string) => ({ raw: text, value: text, sourceRefs: [message.ref] });
+  const stayRequests = extraction.requests.filter((request) => request.kind === 'create' || request.kind === 'quote');
+  for (const request of stayRequests) {
+    const bookers = request.guests.filter((guest) => guest.role === 'booker');
+    if (bookers.length <= 1 && address && message.text.includes(address)) {
+      const booker = bookers[0] ?? { role: 'booker' as const };
+      const matchesSender = !booker.email?.value || normalizedFact(booker.email.value) === normalizedFact(address);
+      if (matchesSender) {
+        const missing = (claim: typeof booker.name) => !claim?.value &&
+          (!claim?.raw.trim() || !message.text.includes(claim.raw));
+        if (missing(booker.email)) booker.email = sourceClaim(address);
+        if (missing(booker.name) && name && message.text.includes(name)) booker.name = sourceClaim(name);
+        if (!bookers.length && (booker.email || booker.name)) request.guests.push(booker);
+      }
+    }
+    for (const party of request.parties.filter((row) => row.role === 'organization')) {
+      const text = typeof party.name.value === 'string' ? party.name.value : '';
+      const affiliation = /^(.+?),\s*a\s+(?:division|subsidiary)\s+of\s+(.+)$/iu.exec(text);
+      if (affiliation && request.parties.some((row) => row.role === 'bookingAgency' &&
+          normalizedFact(row.name.value) === normalizedFact(affiliation[1])) &&
+          message.text.includes(text) && message.text.includes(affiliation[2]!.trim())) {
+        party.name = sourceClaim(affiliation[2]!.trim());
+      }
+    }
+    if (extraction.requests.filter((row) => row.kind !== 'other' && row.kind !== 'services').length !== 1 ||
+        request.parties.some((row) => row.role === 'organization')) continue;
+    const organizations = new Set<string>();
+    for (const match of authored.matchAll(/^[ \t]*From[ \t]+([^<>\n@:]{2,300})[ \t]*:[ \t]*$/gimu)) {
+      const following = authored.slice(match.index + match[0].length);
+      if (/^\s*[-*]\s*\p{L}/u.test(following)) organizations.add(match[1]!.trim());
+    }
+    for (const match of body.matchAll(/\b(?:company|organi[sz]ation)\s+(?:details|name)\s*:\s*\r?\n([^\r\n]{2,300})/giu)) {
+      const context = body.slice(Math.max(0, match.index - 1200), match.index);
+      const dated = request.dates.length === 1 && request.dates.some((date) => date.arrival?.raw && date.departure?.raw &&
+        context.indexOf(date.arrival.raw) >= 0 && context.indexOf(date.departure.raw) >= 0);
+      if (dated) organizations.add(match[1]!.trim());
+    }
+    if (organizations.size === 1) {
+      const organization = [...organizations][0]!;
+      if (message.text.includes(organization)) request.parties.push({ role: 'organization', name: sourceClaim(organization) });
+    }
+  }
+  return extraction;
 }
 
 /** Exact date identity first; a single wholly empty slot may be filled by the only remaining source date. */
@@ -4482,6 +4555,9 @@ function projectCurrentExtraction(input: {
         `/requests/${request.id}/body/dateSections`, 'synthesized_date_without_source',
         'A synthesized date section had no unique current source date; its dates were cleared while allocation associations were retained for staff review.',
         request.sourceRefs.filter((ref) => knownRefs.has(ref)));
+      // A source-cited room count defines empty editable rooms even when synthesis emitted none.
+      // The existing helper requires one exact stay and never assigns guests by array order.
+      projectSourceCreateAllocations({ request, extracted, currentRefs });
       const bookingRoot = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
       const bookingFields = [{ target: request.body.shared as Record<string, unknown>, path: `${bookingRoot}/shared` },
         ...request.body.dateSections.map((row, index) => ({ target: row.defaults as Record<string, unknown>, path: `${bookingRoot}/dateSections/${index}/defaults` })),
@@ -4784,8 +4860,10 @@ function addUnresolvedTargetHints(
 ): void {
   if (!hints.length) return;
   const request = proposal.content.requests[requestIndex];
-  if (!request || request.kind !== 'amend' && request.kind !== 'cancel') return;
-  const targets = request.body.targets;
+  if (!request || request.kind !== 'amend' && request.kind !== 'cancel' && request.kind !== 'filing' ||
+      request.kind === 'filing' && request.body.allocationTarget) return;
+  const targets = request.body.targets ?? { mode: 'unresolved' as const, include: [], exclude: [], sourceRefs: [] };
+  request.body.targets = targets;
   const include = [...targets.include];
   const issueRefs: string[] = [];
   let omittedAtCap = false;
@@ -5792,7 +5870,7 @@ function addRequestConfirmationSafety(input: {
   });
   proposal.issues = proposal.issues.filter((issue) => !issue.kind.startsWith('existing_confirmation_'));
   for (const [requestIndex, request] of proposal.content.requests.entries()) {
-    if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel') continue;
+    if (request.kind !== 'create' && request.kind !== 'amend' && request.kind !== 'cancel' && request.kind !== 'filing') continue;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
       input.extractionIdByProposalRequestId);
     const exceptionRefs = request.kind === 'cancel' ? cancelExceptionEvidence({
@@ -5802,7 +5880,7 @@ function addRequestConfirmationSafety(input: {
     }) : [];
     if (request.kind === 'cancel') holdAmbiguousCancelTargets({ proposal, request, exceptionRefs });
     if (extracted) {
-      const allowedRefs = request.kind === 'amend' || request.kind === 'cancel' ? input.admittedRefs : input.currentRefs;
+      const allowedRefs = request.kind !== 'create' ? input.admittedRefs : input.currentRefs;
       const hints = exactConfirmationHints(extracted, allowedRefs);
       if (request.kind === 'create') {
         const ask = currentClaim(extracted.requestText, input.currentRefs)?.raw ?? '';
@@ -6410,7 +6488,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     const reason = `Typed extraction cited ${unknownRefs.length} evidence reference(s) outside the admitted source registry; source remains editable.`;
     return fallback(reason, { stage: 'extract', code: 'unknown_evidence_refs', message: reason });
   }
-  const recoveredExtraction = selfPreStay ? parsedExtraction.data : recoverSourceIntent({ extraction: parsedExtraction.data,
+  const sourceContacts = recoverSourceContacts({ extraction: parsedExtraction.data, selection: input.selection, evidence });
+  const recoveredExtraction = selfPreStay ? sourceContacts : recoverSourceIntent({ extraction: sourceContacts,
     source: input.source, selection: input.selection, evidence });
   const extraction = anchorCurrentExtractionDates({ extraction: recoveredExtraction, source: input.source, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
