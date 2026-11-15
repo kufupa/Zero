@@ -54,5 +54,5 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
   - Change them via `apps/server-pilot/deploy/write-ec2-remote-env.sh --m1-only` + `ops-restart.sh`.
   - Verify the effective env in all four PM2 processes (`http`, `worker`, `ai-worker`, `remote-http`).
   - `write-ec2-remote-env.sh` requires `CANARY PASS <workflow> HRCEN <sha>` only when enabling or widening a flag to `on`. Run fresh Labtest Save + readback for workflows whose HMS writer changed plus one smoke Create/Amend Save on the final deployed SHA; skip multi-workflow Labtest ceremony for pure prefill/UI/memory changes.
-- **HMS sessions:** reads and unsaved previews may run in parallel in separate browser sessions. Serialize writes to the same confirmation or Labtest stay.
+- **HMS sessions:** reads, unsaved previews, and Labtest confirmations may run in parallel in separate browser sessions.
 - **GitHub Actions** are reserved for the Outlook installer workflows. Never add, enable or trigger others. Never run repo-wide lint or format.
