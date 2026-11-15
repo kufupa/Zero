@@ -100,6 +100,7 @@ function restrictionEvidence(...values) {
   const flags = {};
   const unknown = new Set();
   const neutralLimits = new Set(['minLOS', 'maxLOS', 'minLeadTime', 'maxLeadTime',
+    'maxNights', 'availableLimitNightCount', 'limitedRatePlanRestriction',
     'combMinLOSToArrival', 'combMinLOSToDeparture', 'combMinLOSToThrough',
     'combMaxLOSToArrival', 'combMaxLOSToDeparture', 'combMaxLOSToThrough']);
   for (const [name, aliases] of Object.entries(known)) {
@@ -120,7 +121,7 @@ function restrictionEvidence(...values) {
       // Known restrictions are retained in closedOrRestricted.
     } else if (key === 'israteavailable' && typeof value === 'boolean') {
       // A true rate-available flag does not prove the missing restrictions.
-    } else if (!neutralLimits.has(key) || (value !== null && value !== 0 && value !== '')) unknown.add(key);
+    } else if (!neutralLimits.has(key) || (value !== null && value !== false && value !== 0 && value !== '')) unknown.add(key);
   }
   return { ...flags, closedOrRestricted, unknownRestrictionFlags: [...unknown].sort() };
 }
