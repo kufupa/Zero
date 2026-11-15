@@ -101,10 +101,12 @@ mkdir -p \"\$RUN\" \"\$STATE/requests\"
 run_stage() {
   local stage="$1" upload="" keep="" line
   if [ "$stage" = prepare ]; then
-    # A refused prepare must not replace the request an earlier created stay is bound to.
-    upload="REQUEST_FILE=\"\$REQUEST_FILE.next\"
+    # Each call uploads to its own file; only a prepare that passed publishes it, so a refused or
+    # overlapping call cannot replace the request an earlier journal is bound to.
+    upload="PUBLISHED_REQUEST=\"\$REQUEST_FILE\"
+REQUEST_FILE=\"\$(mktemp \"\$PUBLISHED_REQUEST.XXXXXX\")\"
 printf '%s' '$(base64 -w0 "$REQUEST")' | base64 -d >\"\$REQUEST_FILE\""
-    keep="[ \"\$rc\" != 0 ] || mv -f \"\$REQUEST_FILE\" \"\${REQUEST_FILE%.next}\""
+    keep="if [ \"\$rc\" = 0 ]; then mv -f \"\$REQUEST_FILE\" \"\$PUBLISHED_REQUEST\"; else rm -f \"\$REQUEST_FILE\"; fi"
   fi
   remote "$stage" "${REMOTE_HEAD}${upload}
 [ -f \"\$REQUEST_FILE\" ] || { echo 'proof: no request on the box; run proof.sh create first' >&2; exit 20; }

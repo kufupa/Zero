@@ -91,24 +91,32 @@ async function privateDirectory(path) {
 }
 
 // A killed run (for example an SSM timeout) leaves its lock behind; a hold file, not the lock, guards an uncertain write.
+// Only one run at a time may replace a dead owner's lock, and a run only ever removes the lock it created.
 async function acquireLock(path) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const file = await open(path, 'wx', 0o600);
-      await file.writeFile(`${process.pid}\n`);
-      return file;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const owner = Number((await readFile(path, 'utf8').catch(() => '')).trim());
-      let alive = true;
-      if (Number.isInteger(owner) && owner > 0) {
-        try { process.kill(owner, 0); } catch (probe) { alive = probe.code !== 'ESRCH'; }
-      }
-      assert(!alive && attempt === 0, 'OPERATION_LOCKED');
-      await unlink(path);
+  const create = async () => {
+    const file = await open(path, 'wx', 0o600);
+    await file.writeFile(`${process.pid}\n`);
+    const stat = await file.stat();
+    return { file, path, dev: stat.dev, ino: stat.ino };
+  };
+  try { return await create(); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+  const takeover = await open(`${path}.takeover`, 'wx', 0o600).catch(() => fail('OPERATION_LOCKED'));
+  try {
+    const owner = Number((await readFile(path, 'utf8').catch(() => '')).trim());
+    let alive = true;
+    if (Number.isInteger(owner) && owner > 0) {
+      try { process.kill(owner, 0); } catch (probe) { alive = probe.code !== 'ESRCH'; }
     }
-  }
-  return fail('OPERATION_LOCKED');
+    assert(!alive, 'OPERATION_LOCKED');
+    await unlink(path);
+    return await create().catch(() => fail('OPERATION_LOCKED'));
+  } finally { await takeover.close(); await unlink(`${path}.takeover`).catch(() => {}); }
+}
+
+async function releaseLock(lock) {
+  await lock.file.close().catch(() => {});
+  const stat = await lstat(lock.path).catch(() => null);
+  if (stat?.dev === lock.dev && stat.ino === lock.ino) await unlink(lock.path).catch(() => {});
 }
 
 async function persist(value) {
@@ -379,6 +387,10 @@ async function main() {
         expected.lastName === 'Labtest' && expected.arrival === effective.stay.arrival && expected.departure === effective.stay.departure &&
         expected.confirmation === own.confirmation && expected.nativeStayId === own.nativeStayId &&
         expected.guestId === own.guestId && expected.note === own.note, 'CANCEL_PREIMAGE_INVALID');
+      // The readback after the cancel compares exact child ages; refuse before any write when Record View hides them.
+      const sortedAges = ages => hash([...ages].sort((a, b) => a - b));
+      assert(Array.isArray(initial?.nativePreimage?.childAges) &&
+        sortedAges(initial.nativePreimage.childAges) === sortedAges(effective.stay.childAges), 'CANCEL_CHILD_AGES_UNVERIFIED');
       result = await withTarget({ propertyCode: args.propertyCode, kind: 'saved', confirmation: own.confirmation, nativeStayId: own.nativeStayId }, async options => {
         let ownedPage, cancelled, reason;
         const base = { ...options, propertyCode: args.propertyCode, transportId, startScreen: 'OSRESS' };
@@ -411,8 +423,7 @@ async function main() {
             native.firstName === 'Proof' && native.lastName === 'Labtest' && native.arrival === expected.arrival &&
             native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan &&
             native.adults === effective.stay.adults && native.children === effective.stay.childAges.length &&
-            Array.isArray(native.childAges) && hash([...native.childAges].sort((a, b) => a - b)) ===
-              hash([...effective.stay.childAges].sort((a, b) => a - b)) &&
+            Array.isArray(native.childAges) && sortedAges(native.childAges) === sortedAges(effective.stay.childAges) &&
             (effective.guestoptin4 === undefined || field('guestoptin4')?.value === effective.guestoptin4) &&
             (effective.marketSegment === undefined || native.marketSegmentCode === effective.marketSegment) &&
             (effective.track === undefined || field('track')?.value === journal.prepared.applied.track) &&
@@ -463,7 +474,7 @@ async function main() {
       journalPath, stay: { arrival: journal.effectiveRequest.stay.arrival, departure: journal.effectiveRequest.stay.departure },
       confirmation: journal.created?.confirmation ?? null, nativeStayId: journal.created?.nativeStayId ?? null,
       requestBindingDigest: journal.prepared?.requestBinding?.digest ?? null })}\n`);
-  } finally { await fileLock.close(); await unlink(lockPath).catch(() => {}); }
+  } finally { await releaseLock(fileLock); }
 }
 
 const resultLine = verdict => `PROOF ${verdict} ${args?.stage ?? '-'} ${args?.propertyCode ?? '-'} ${args?.sha ?? '-'} ` +

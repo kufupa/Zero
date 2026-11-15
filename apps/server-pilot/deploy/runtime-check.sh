@@ -36,8 +36,14 @@ if (expected && expected !== head) problems.push(`expected ${expected} is not de
 const names = ['http', 'worker', 'ai-worker', 'remote-http'];
 // pm2 jlist carries every process environment; it is parsed here and never printed.
 const apps = JSON.parse(cp.execFileSync('pm2', ['jlist'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+let fixtureMail = false;
 for (const name of names) {
   const matches = apps.filter(app => app.name === name);
+  if (matches.length === 0 && name === 'worker' && fixtureMail) {
+    // deploy-ec2.sh does not start the ingest worker in fixture mail mode.
+    console.log(JSON.stringify({ process: name, status: 'not_started_in_fixture_mail_mode' }));
+    continue;
+  }
   if (matches.length !== 1) { console.log(JSON.stringify({ process: name, status: 'missing' })); problems.push(`${name} missing`); continue; }
   const app = matches[0], status = String(app.pm2_env?.status ?? 'unknown');
   let env = null;
@@ -48,6 +54,7 @@ for (const name of names) {
   const flags = Object.fromEntries(Object.keys(env ?? {}).filter(key => FLAG.test(key)).sort()
     .map(key => [key, SAFE_VALUE.test(env[key]) ? env[key] : '<unprintable>']));
   const buildMatchesDeployed = env ? env.NAVA_BUILD_COMMIT === head : false;
+  if (name === 'http' && env) fixtureMail = (env.MAIL_TRANSPORT_MODE ?? 'fixture') === 'fixture';
   console.log(JSON.stringify({ process: name, pid: app.pid, status, restarts: app.pm2_env?.restart_time ?? null,
     unstableRestarts: app.pm2_env?.unstable_restarts ?? null, buildMatchesDeployed, flags }));
   if (status !== 'online') problems.push(`${name} is ${status}`);
