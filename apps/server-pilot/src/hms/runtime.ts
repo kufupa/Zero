@@ -26,7 +26,6 @@ import {
   HMS_BROWSER_ARTIFACT_MIN_LIVE_FREE_BYTES,
   HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS,
   HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS,
-  HMS_CREDENTIAL_MODES,
   collectHmsStorageStateSecretValues,
   type HmsBrowserAuditSpec,
   type HmsBrowserCaptureHandle,
@@ -36,6 +35,7 @@ import type {
   HmsSecretVersionMetadata,
 } from './evidence-runtime.js';
 import { revalidateEvidenceBindings } from './evidence-runtime.js';
+import { HMS_CREDENTIAL_MODES } from './credential-mode.js';
 
 export const hmsSecretSchema = z
   .object({
