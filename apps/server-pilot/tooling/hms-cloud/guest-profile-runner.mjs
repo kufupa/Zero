@@ -359,7 +359,9 @@ export function createGuestProfileRunner({ runtimeDir = join(homedir(), '.nava-h
     try {
       result = await create(business, { ...sessionOptions, attemptId, authorizeCandidate: context => tracked(async () =>
         executionOpen && authorized(context) && (!authorizeStaffWrite || await authorizeStaffWrite(Object.freeze({ ...context, attemptId })) === true) && executionOpen),
-        dispatchCandidate, recordResponse, recordFailureDiagnostics: diagnostics => { privateFailureDiagnostics = diagnostics; } });
+        dispatchCandidate, recordResponse, recordFailureDiagnostics: diagnostics => {
+          privateFailureDiagnostics = { ...privateFailureDiagnostics, ...diagnostics };
+        } });
     } catch { result = { outcome: 'uncertain', issue: 'PROFILE_EXECUTION_FAILED', attemptId }; }
     finally { executionOpen = false; }
     result = { ...result, attemptId, phase: result.phase ?? observed.phase,

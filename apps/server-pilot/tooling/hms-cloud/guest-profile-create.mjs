@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { cloudWriterIdentity, withCloudCredentialLease, withCloudWriterSession } from './cloud-session.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
-import { hasPageRequestAuthorization, installPageRequestFence } from './page-request-fence.mjs';
+import { consumePageRequestAuthorization, installPageRequestFence } from './page-request-fence.mjs';
 import { shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
 import { prepareGuardedContext, isGuardedPage } from './pre-navigation-context-guard.mjs';
 import { guestLookupMayRequest } from './pane-guest-search.mjs';
@@ -377,10 +377,25 @@ async function boundedResponseText(response, timeout = 15000) {
   } finally { clearTimeout(timer); }
 }
 
+async function recordProfileException(write, error, operation) {
+  // Playwright messages can contain request bodies, URLs and locator values.
+  // Retain fixed runtime messages only, never their appended call logs.
+  const firstLine = typeof error?.message === 'string' ? error.message.split('\n', 1)[0] : '';
+  const safe = /^[A-Z][A-Z0-9_]{2,100}$/.test(firstLine) ||
+    /^(?:(?:route\.(?:fetch|fulfill|fallback)|page\.waitForResponse|locator\.click): )?(?:net::ERR_[A-Z_]+|Timeout \d+ms exceeded\.?|Request timed out after \d+ms|socket hang up|Target page, context or browser has been closed)$/.test(firstLine);
+  const exception = { operation,
+    errorClass: ['Error', 'TypeError', 'SyntaxError', 'TimeoutError', 'AbortError', 'DataCloneError',
+      'AggregateError', 'ReferenceError', 'RangeError', 'URIError', 'EvalError'].includes(error?.name) ? error.name : 'Error',
+    message: safe ? firstLine : null, messageOmitted: safe ? null : 'exception_may_contain_guest_or_request_data' };
+  write.exceptions = [...(write.exceptions || []), exception].slice(-5);
+  try { await write.recordFailureDiagnostics?.({ exceptions: [...write.exceptions] }); }
+  catch { /* A failed diagnostic journal never grants another dispatch. */ }
+}
+
 async function handleProfileSave(route, state, writer) {
   const write = state.write, request = route.request();
   const confirmed = write.phase === 'confirm';
-  let forwarded = false, pending;
+  let forwarded = false, pending, operation = 'authorize';
   try {
     if (state.blocked || state.dialog || !['initial', 'confirm'].includes(write.phase) || !isGuardedPage(request.frame().page()) ||
         !profileSaveMatches(request, write.fields, confirmed, write.review, state.propertyCode)) throw new Error('PROFILE_SAVE_REQUEST_MISMATCH');
@@ -405,11 +420,13 @@ async function handleProfileSave(route, state, writer) {
       write.dispatched = true;
       write.dispatchedPhases.push(phase);
       forwarded = true;
-      const responsePromise = request.frame().page().waitForResponse(value => value.request() === request, { timeout: 30_000 });
-      void responsePromise.catch(() => {});
       pending = (async () => {
-        await route.fallback();
-        const response = await responsePromise;
+        // This exact request has passed the page fence and trusted dispatch.
+        // Own transport here: the shared fallback transport swallows fetch errors
+        // and releases responses before this writer can journal their receipt.
+        operation = 'fetch';
+        const response = await route.fetch({ maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
+        operation = 'response_body';
         const text = await boundedResponseText(response);
         let data, parseError, parseStatus = 'parse_failed';
         try {
@@ -439,9 +456,13 @@ async function handleProfileSave(route, state, writer) {
           const parseFailure = profileParseFailureDiagnostics(text, response, parseError);
           if (parseFailure) diagnostics.parseFailure = parseFailure;
         }
+        operation = 'record_response';
         await write.recordResponse(context, Object.freeze({ ...write.response, ...(diagnostics && { diagnostics }) }));
         // Retain only in memory, after the original response has been journaled.
         if (write.diagnosticFailure && typeof write.recordFailureDiagnostics === 'function') write.diagnosticSource = text;
+        operation = 'fulfill';
+        if (response.status() >= 300 && response.status() < 400) await route.abort('blockedbyclient');
+        else await route.fulfill({ response, body: text });
         if (write.phase !== 'closed') write.phase = question ? 'question' : 'finished';
         return true;
       })();
@@ -453,6 +474,7 @@ async function handleProfileSave(route, state, writer) {
     write.callbackDrained = true;
   } catch (error) {
     write.issue = forwarded || write.dispatched ? 'PROFILE_SAVE_UNCERTAIN' : issue(error);
+    await recordProfileException(write, error, operation);
     if (write.phase !== 'closed') write.phase = 'failed';
     if (pending) await pending.catch(() => {});
     try { await route.abort('blockedbyclient'); } catch { /* A dispatched request remains uncertain. */ }
@@ -585,7 +607,7 @@ async function withReadSession(operation, state, options = {}) {
         if (state.write && profileSave) {
           let page;
           try { page = request.frame().page(); } catch { return route.abort('blockedbyclient'); }
-          if (!hasPageRequestAuthorization(request, page)) return route.abort('blockedbyclient');
+          if (!consumePageRequestAuthorization(request, page)) return route.abort('blockedbyclient');
           const handler = handleProfileSave(route, state, cloudWriterIdentity(page));
           state.write.handlers.add(handler);
           try { return await handler; } finally { state.write.handlers.delete(handler); }
@@ -864,7 +886,10 @@ async function runStaged(input, options, operation) {
     }
     return result;
   } catch (error) {
-    if (state.write?.dispatched) return failureEvidence(state.write, 'PROFILE_SAVE_UNCERTAIN');
+    if (state.write?.dispatched) {
+      await recordProfileException(state.write, error, 'session_cleanup');
+      return failureEvidence(state.write, 'PROFILE_SAVE_UNCERTAIN');
+    }
     const problem = issue(error);
     const outcome = ['PROFILE_OPTION_INVALID', 'PROFILE_OPTION_AMBIGUOUS'].includes(problem) ? 'needs_input'
       : ['PROFILE_OPTIONS_INCOMPLETE', 'PROFILE_DEFAULT_UNVERIFIED'].includes(problem) ? 'unsupported' : 'unavailable';
@@ -971,7 +996,10 @@ async function savePreparedProfile(page, state, staged, commit) {
       await yes.click({ timeout: 10000 });
       await waitForDispatch(write);
     }
-  } catch (error) { write.issue ??= issue(error); }
+  } catch (error) {
+    write.issue ??= issue(error);
+    await recordProfileException(write, error, 'save_control_or_dispatch_wait');
+  }
   finally { write.phase = 'closed'; }
   if (write.diagnosticFailure && write.callbackDrained && write.lastPhase === 'confirm_distinct' &&
       typeof commit.recordFailureDiagnostics === 'function') {

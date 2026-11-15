@@ -78,9 +78,6 @@ async function guardedPage() {
     routeWebSocket: async () => {} };
   await prepareGuardedContext(context);
   const page = { context: () => context }; pages.push(page);
-  page.waitForResponse = predicate => new Promise(resolve => {
-    page.deliverResponse = response => { if (predicate(response)) resolve(response); };
-  });
   return page;
 }
 
@@ -106,9 +103,9 @@ test('only the recognized duplicate prompt can dispatch a reviewed confirmation'
       msg: scenario === 'unexpected' ? 'A different question' : 'Profile name already exists. Continue?' };
     const route = (confirmed, data) => {
       const req = request({}, confirmed); req.frame = () => ({ page: () => page });
-      return { request: () => req, fallback: async () => { fetches++;
-        page.deliverResponse({ request: () => req, status: () => 200, text: async () => JSON.stringify({ pageData: data }) });
-      }, abort: async () => {} };
+      return { request: () => req, fetch: async () => { fetches++;
+        return { status: () => 200, text: async () => JSON.stringify({ pageData: data }) };
+      }, fulfill: async () => {}, abort: async () => {} };
     };
     const initial = route(false, { success: false, messages: [question] });
     const confirmed = route(true, { success: true, values: { profileid: '123' } });
@@ -141,12 +138,12 @@ test('only the recognized duplicate prompt can dispatch a reviewed confirmation'
 test('delayed response persists its ID before browser fulfillment and completion', async () => {
   const page = await guardedPage(), events = [];
   const req = request(); req.frame = () => ({ page: () => page });
-  const route = { request: () => req, fallback: async () => {
+  const route = { request: () => req, fetch: async options => {
+    assert.deepEqual(options, { maxRedirects: 0, maxRetries: 0, timeout: 30_000 });
     await new Promise(resolve => setTimeout(resolve, 1700));
     events.push('fetched');
-    page.deliverResponse({ request: () => req, status: () => 200,
-      text: async () => '{"pageData":{"success":true,"values":{"profileid":"123"}}}' });
-  }, abort: async () => events.push('aborted') };
+    return { status: () => 200, text: async () => '{"pageData":{"success":true,"values":{"profileid":"123"}}}' };
+  }, fulfill: async () => events.push('fulfilled'), abort: async () => events.push('aborted') };
   const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
     dispatchedPhases: [], callbackDrained: false, authorizeCandidate: async () => true,
     dispatchCandidate: async (_context, proceed) => proceed(),
@@ -154,7 +151,7 @@ test('delayed response persists its ID before browser fulfillment and completion
   const handler = hooks.handleProfileSave(route, { write }, { fixture: true });
   await hooks.waitForDispatch(write, 3000);
   await handler;
-  assert.deepEqual(events, ['fetched', 'recorded']);
+  assert.deepEqual(events, ['fetched', 'recorded', 'fulfilled']);
   assert.equal(write.dispatched, true);
 });
 
@@ -162,7 +159,7 @@ test('late authorization cannot dispatch after the operation closes', async () =
   const page = await guardedPage();
   const req = request(); req.frame = () => ({ page: () => page });
   let resolveAuthorization, fetches = 0;
-  const route = { request: () => req, fallback: async () => { fetches++; }, abort: async () => {} };
+  const route = { request: () => req, fetch: async () => { fetches++; }, abort: async () => {} };
   const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
     dispatchedPhases: [], authorizeCandidate: () => new Promise(resolve => { resolveAuthorization = resolve; }),
     dispatchCandidate: async (_context, proceed) => proceed(), recordResponse: async () => {} };
@@ -180,7 +177,7 @@ test('a blocked request or unexpected dialog during authorization prevents Save'
       const page = await guardedPage();
       const req = request(); req.frame = () => ({ page: () => page });
       let fetches = 0;
-      const route = { request: () => req, fallback: async () => { fetches++; }, abort: async () => {} };
+      const route = { request: () => req, fetch: async () => { fetches++; }, abort: async () => {} };
       const state = { blocked: false, dialog: false };
       const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
         dispatchedPhases: [], authorizeCandidate: async () => { if (moment === 'authorize') state[flag] = true; return true; },
@@ -197,15 +194,20 @@ test('a blocked request or unexpected dialog during authorization prevents Save'
 test('response persistence failure retains the known ID and does not fulfill the browser', async () => {
   const page = await guardedPage(), events = [];
   const req = request(); req.frame = () => ({ page: () => page });
-  const route = { request: () => req, fallback: async () => page.deliverResponse({ request: () => req, status: () => 200,
+  let diagnostics;
+  const route = { request: () => req, fetch: async () => ({ status: () => 200,
     text: async () => '{"pageData":{"success":true,"values":{"profileid":"123"}}}' }),
+  fulfill: async () => events.push('fulfilled'),
   abort: async () => events.push('aborted') };
   const write = { fields, previewDigest: 'digest', confirmDuplicateName: false, phase: 'initial', dispatched: false,
     dispatchedPhases: [], authorizeCandidate: async () => true,
-    dispatchCandidate: async (_context, proceed) => proceed(), recordResponse: async () => { throw new Error('DISK_FAILED'); } };
+    dispatchCandidate: async (_context, proceed) => proceed(), recordResponse: async () => { throw new Error('DISK_FAILED'); },
+    recordFailureDiagnostics: async value => { diagnostics = value; } };
   await hooks.handleProfileSave(route, { write }, { fixture: true });
   assert.equal(write.dispatched, true);
   assert.equal(write.response.nativeId, '123');
   assert.equal(write.issue, 'PROFILE_SAVE_UNCERTAIN');
+  assert.deepEqual(diagnostics.exceptions, [{ operation: 'record_response', errorClass: 'Error',
+    message: 'DISK_FAILED', messageOmitted: null }]);
   assert.deepEqual(events, ['aborted']);
 });
