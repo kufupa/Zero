@@ -7,7 +7,7 @@
 //     --property HRCEN|HRDAV|HRDAVS --expected-sha <40-hex> --request <private json> [--state-dir <dir>]
 //
 // prepare: a read-only census picks the first arrival without a live Proof Labtest stay
-//          (the request dates are the preference), then one unsaved Prepare.
+//          (the request dates are the preference), then unsaved Prepare.
 // create:  one Save of the prepared request, then a fresh readback.
 // cancel:  cancels the stay this journal created, then a fresh readback.
 //
@@ -23,6 +23,9 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { cancellationPenaltyNotice } from './cancel-penalty-notice.mjs';
+import { withBookingLookupSession } from './booking-lookup-session.mjs';
+import { readGuestStayForm } from './guest-stay-form.mjs';
+import { listTrackSubSegments } from './guest-stay-track-catalog.mjs';
 
 process.umask(0o077);
 // A shell started from a PM2 process leaks its IPC channel and pm_exec_path; neither may reach this run.
@@ -382,8 +385,35 @@ async function main() {
       }
       const note = request.note ?? `Labtest proof ${args.propertyCode} ${args.sha}`;
       result = await withTarget({ propertyCode: args.propertyCode, kind: 'create', ...guest, arrival: stay.arrival }, async options => {
-        const prepared = await createReservation({ ...request, stay, note, mode: 'prepare' }, { ...options, transportId,
-          allowRealGuest: false, expectedGuest: guest, capturePrepareScreenshot: true });
+        let trackResolution;
+        let prepareInput = { ...request, stay, note, mode: 'prepare' };
+        const prepareOptions = { ...options, transportId, allowRealGuest: false, expectedGuest: guest,
+          capturePrepareScreenshot: true };
+        // Resolve only an omitted Labtest Track from the rate's native draft and complete catalogue.
+        const observeTrack = (operation, sessionOptions) => withBookingLookupSession(async session => {
+          const result = await operation(session);
+          const form = await readGuestStayForm(session.page, { propertyCode: args.propertyCode });
+          const fields = form.fields?.filter(field => field.name === 'track');
+          assert(form.outcome === 'ok' && fields?.length === 1 && typeof fields[0].value === 'string' &&
+            fields[0].value.trim(), 'NATIVE_TRACK_UNVERIFIED');
+          const catalogue = await listTrackSubSegments(session.page, { propertyCode: args.propertyCode });
+          const rows = catalogue.candidates ?? [];
+          const matches = rows.filter(row => row.description === fields[0].value && /^[A-Z0-9]{1,12}$/.test(row.code));
+          assert(catalogue.outcome === 'ok' && catalogue.coverage?.complete === true &&
+            catalogue.coverage.nativeResponseCorrelated === true && catalogue.coverage.loaded === rows.length &&
+            matches.length === 1, 'NATIVE_TRACK_UNVERIFIED');
+          trackResolution = { ...matches[0], source: 'native_rate_prepare', ratePlan: request.room.ratePlan,
+            coverage: catalogue.coverage, observedAt: new Date().toISOString() };
+          return result;
+        }, sessionOptions);
+        let prepared = await createReservation(prepareInput, { ...prepareOptions,
+          ...(request.track === undefined ? { withSession: observeTrack } : {}) });
+        if (request.track === undefined && prepared.outcome === 'needs_input' &&
+            prepared.appliedVerification?.visibleFields === true && prepared.missing?.length === 1 &&
+            prepared.missing[0] === 'track' && trackResolution) {
+          prepareInput = { ...prepareInput, track: trackResolution.code };
+          prepared = await createReservation(prepareInput, prepareOptions);
+        }
         const nativePrepare = Object.fromEntries(['outcome', 'issue', 'field', 'stage', 'missing', 'invalidFields',
           'unsupportedFields', 'applied', 'appliedVerification', 'warnings', 'guestNameDraft', 'guestSearchOutcome',
           'guestCandidates', 'guestCoverage', 'guestCorrelation', 'partySearches', 'roomCandidates', 'coverage',
@@ -394,13 +424,14 @@ async function main() {
           'code', 'actual', 'candidates', 'coverage', 'rateAvailability'].filter(key => Object.hasOwn(prepared.detail, key))
           .map(key => [key, prepared.detail[key]]));
         await persist({ version: 1, propertyCode: args.propertyCode, sha: args.sha, request, requestDigest: hash(request),
-          provenance, census, proofRequest, status: 'prepare_observed', nativePrepare, updatedAt: new Date().toISOString() });
+          provenance, census, proofRequest, trackResolution, status: 'prepare_observed', nativePrepare,
+          updatedAt: new Date().toISOString() });
         assert(prepared.outcome === 'prepared' && prepared.appliedVerification?.visibleFields === true &&
           prepared.applied?.guest?.firstName === guest.firstName && prepared.applied?.guest?.lastName === guest.lastName &&
           /^\d+$/.test(String(prepared.applied.guest.nativeId)) && /^[a-f0-9]{64}$/.test(prepared.requestBinding?.digest ?? '') &&
           prepared.requestBinding.request?.sendHmsConfirmation?.kind === 'never' &&
           !prepared.requestBinding.request?.parties && !prepared.requestBinding.request?.nativeCommissionPercent, 'PREPARE_UNVERIFIED');
-        const effectiveRequest = requestSchema.parse({ ...request, stay,
+        const effectiveRequest = requestSchema.parse({ ...request, ...(prepareInput.track ? { track: prepareInput.track } : {}), stay,
           guest: { profileId: String(prepared.applied.guest.nativeId) }, note: prepared.applied.note });
         return { status: 'prepared', effectiveRequest, prepared: { applied: prepared.applied,
           requestBinding: prepared.requestBinding, ratePlanAvailability: prepared.ratePlanAvailability,
