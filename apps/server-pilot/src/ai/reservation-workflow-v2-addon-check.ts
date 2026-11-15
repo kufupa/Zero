@@ -10,7 +10,10 @@ import { reservationWorkflowV2ServicesForAllocation, reservationWorkflowV2Compil
 import { runCloudStayFind, projectCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
-import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { propertyCodeSchema } from '../hms/property-registry.js';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 
 export type AddOnObservationInput = { draft: ReservationWorkflowV2Draft; input: ReservationWorkflowV2ServicesInput | ReservationWorkflowV2SavedServicesInput; transportId: string; signal: AbortSignal };
 export type AddOnObservationResult = { status: string; observations: ReservationWorkflowV2Observation[]; issue?: string };
@@ -25,22 +28,36 @@ const nativeServiceControls = (value: unknown): Record<string, unknown> | undefi
   return Object.keys(selected).length ? selected : undefined;
 };
 
+/** Add-On reads and unsaved checks need an active registered property whose Add-Ons policy is available. */
+export function addOnPropertyAdmitted(propertyCode: string): boolean {
+  const property = propertyCodeSchema.safeParse(propertyCode);
+  if (!property.success || !getPropertyRegistration(property.data)?.active) return false;
+  try {
+    const policy = effectiveWorkflowPolicy(process.env, property.data, 'addons');
+    return policy.readEnabled && policy.capability !== 'unavailable';
+  } catch { return false; }
+}
+
+/** The registry target for this property, only when the mailbox may use it. */
+export function addOnPropertyTarget(transportId: string, propertyCode: string): HmsReadTarget | null {
+  const resolved = paneStayHmsTargetForTransport(transportId, propertyCode);
+  return resolved.ok && resolved.target.propertyCode === propertyCode ? resolved.target : null;
+}
+
 function validate({ draft, input, transportId, signal }: AddOnObservationInput): AddOnObservationResult | null {
   signal.throwIfAborted();
   if (!reservationWorkflowV2DraftSchema.safeParse(draft).success || !input || draft.workItemId !== input.workItemId ||
       draft.transportId !== transportId || canonicalJson(draft.source) !== canonicalJson(input.source) || draft.revision !== input.expectedRevision)
     return { status: 'stale_revision', issue: 'service_draft_context_mismatch', observations: [] };
-  if (draft.propertyCode !== 'HRCEN') return { status: 'unsupported', issue: 'service_property_not_supported', observations: [] };
-  const resolved = paneStayHmsTargetForTransport(transportId);
-  if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
-    .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key]))
+  if (!addOnPropertyAdmitted(draft.propertyCode)) return { status: 'unsupported', issue: 'service_property_not_supported', observations: [] };
+  if (!addOnPropertyTarget(transportId, draft.propertyCode))
     return { status: 'unsupported', issue: 'service_property_session_unavailable', observations: [] };
   if (!text(input.requestId) || ('allocationId' in input ? !text(input.allocationId) : input.targetRef?.kind !== 'saved_target' || !text(input.targetRef.hintId)))
     return { status: 'invalid_input', issue: 'service_input_invalid', observations: [] };
   return null;
 }
 
-/** Caller holds the resolved HRCEN property lock for the entire awaited call, including cleanup. */
+/** Caller holds the resolved property lock for the entire awaited call, including cleanup. */
 export async function lookupAddOns(args: AddOnObservationInput): Promise<AddOnObservationResult> {
   const invalid = validate(args); if (invalid) return invalid;
   const { draft, input, transportId, signal } = args;
@@ -49,7 +66,7 @@ export async function lookupAddOns(args: AddOnObservationInput): Promise<AddOnOb
   return result;
 }
 
-/** Caller holds the resolved HRCEN property lock for the entire awaited call, including cleanup. */
+/** Caller holds the resolved property lock for the entire awaited call, including cleanup. */
 export async function previewAddOns(args: AddOnObservationInput): Promise<AddOnObservationResult> {
   const invalid = validate(args); if (invalid) return invalid;
   const { draft, input, signal } = args;
@@ -111,7 +128,7 @@ async function lookupUnsaved(draft: ReservationWorkflowV2Draft, input: Reservati
     const coverage = record(listing?.coverage);
     const complete = native.outcome === 'prepared' && typeof record(native.requestBinding)?.digest === 'string' &&
       record(native.ratePlanAvailability) !== null && listing?.outcome === 'ok' && listing.unsaved === true &&
-      listing.saved !== true && listing.propertyCode === 'HRCEN' && coverage?.complete === true;
+      listing.saved !== true && listing.propertyCode === draft.propertyCode && coverage?.complete === true;
     const observations: ReservationWorkflowV2Observation[] = [];
     const serviceRows = new Map(addRows.map(row => [row.service.id, row]));
     for (const row of serviceRows.values()) {
@@ -185,14 +202,14 @@ async function previewUnsaved(draft: ReservationWorkflowV2Draft, input: Reservat
       const priceMatches = Boolean(expectedPrice && actualPrice === expectedPrice && actual?.totalCost && actual?.currency &&
         actual?.status === 'VALID');
       const complete = createBound && preview?.outcome === 'prepared' && preview.unsaved === true && preview.saved === false &&
-        preview.propertyCode === 'HRCEN' && nativeItem?.outcome === 'prepared' &&
+        preview.propertyCode === draft.propertyCode && nativeItem?.outcome === 'prepared' &&
         itemIdMatches && priceMatches && actual?.code === plan.candidate.code &&
         actualQuantity === expectedQuantity && actual?.startDate === plan.items.startDate && actual?.endDate === plan.items.endDate;
       const businessItem = actual ? Object.fromEntries(['code', 'name', 'itemId', 'quantity', 'startDate', 'endDate',
         'unitPrice', 'frequency', 'pricingControl', 'folio', 'comment', 'currency', 'averageDaily', 'totalCost', 'status']
         .filter(key => Object.hasOwn(actual, key)).map(key => [key, actual[key]])) : null;
       const controls = nativeServiceControls(actual);
-      const nativeControls = createBound && preview?.propertyCode === 'HRCEN' && preview.unsaved === true && preview.saved === false &&
+      const nativeControls = createBound && preview?.propertyCode === draft.propertyCode && preview.unsaved === true && preview.saved === false &&
         itemIdMatches && actual?.code === plan.candidate.code ? controls : undefined;
       const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: loaded.draft!.generationId,
         kind: 'service_preview', status: complete ? 'complete' : 'partial', observedAt: new Date().toISOString(),
@@ -233,14 +250,13 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
   if (typeof arrival === 'string' && arrival && (!/^\d{4}-\d{2}-\d{2}$/.test(arrival) ||
       !Number.isFinite(Date.parse(`${arrival}T00:00:00Z`)) || new Date(`${arrival}T00:00:00Z`).toISOString().slice(0, 10) !== arrival))
     return { status: 'refused_input_invalid', issue: 'service_target_arrival_invalid', observations };
-  const resolved = paneStayHmsTargetForTransport(transportId);
-  if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
-    .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key])) return { status: 'unsupported', issue: 'service_property_session_unavailable', observations };
+  const propertyTarget = addOnPropertyTarget(transportId, draft.propertyCode);
+  if (!propertyTarget) return { status: 'unsupported', issue: 'service_property_session_unavailable', observations };
   const query = Object.fromEntries(['confirmation', 'guestName', 'bookedArrival', 'bookedDeparture'].map(key => [key, found.hint[key] || null]));
   const request = { confirmation: String(confirmation), ...(typeof arrival === 'string' && arrival ? { arrival } : {}) };
   let result: ReturnType<typeof projectCloudStayFind> | null = null;
   try {
-    result = projectCloudStayFind(request, await runCloudStayFind({ request, target: resolved.target, transportId, signal }));
+    result = projectCloudStayFind(request, await runCloudStayFind({ request, target: propertyTarget, transportId, signal }), draft.propertyCode);
     signal.throwIfAborted();
   } catch { signal.throwIfAborted(); }
   const stay = record(result?.stay), selectedStay = amendSelection?.stay;
@@ -288,7 +304,7 @@ async function lookupSaved(draft: ReservationWorkflowV2Draft, input: Reservation
       };
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
-      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || !target || target.confirmation !== stay.confirmation ||
+      if (read?.outcome !== 'ok' || read.propertyCode !== draft.propertyCode || !target || target.confirmation !== stay.confirmation ||
           target.status !== 'Reserved' || target.arrival !== stay.arrival || target.departure !== stay.departure || !nativeServiceGuestNameMatches(target.guestName, guestName) ||
           record(read.coverage)?.complete !== true) return null;
       if (!Array.isArray(read.items)) return null;
@@ -357,13 +373,13 @@ async function previewSaved(draft: ReservationWorkflowV2Draft, input: Reservatio
       };
       const read = record(await runTool({ tool: 'read', confirmation: stay.confirmation, guestName, arrivalDate: stay.arrival }));
       const target = record(read?.target);
-      if (read?.outcome !== 'ok' || read.propertyCode !== 'HRCEN' || record(read.coverage)?.complete !== true ||
+      if (read?.outcome !== 'ok' || read.propertyCode !== draft.propertyCode || record(read.coverage)?.complete !== true ||
           !target || target.confirmation !== stay.confirmation || target.status !== 'Reserved' || target.arrival !== stay.arrival ||
           target.departure !== stay.departure || !nativeServiceGuestNameMatches(target.guestName, guestName)) return null;
       const prepared = record(await runTool(operation === 'add'
         ? { tool: 'prepare', confirmation: stay.confirmation, items: [requested] }
         : { tool: 'prepareChanges', confirmation: stay.confirmation, changes: [requested] }));
-      if (prepared?.outcome !== 'prepared' || prepared.saved !== false || prepared.propertyCode !== 'HRCEN') return null;
+      if (prepared?.outcome !== 'prepared' || prepared.saved !== false || prepared.propertyCode !== draft.propertyCode) return null;
       if (operation === 'add') {
         const actual = Array.isArray(prepared.items) ? prepared.items[0] : null;
         const native = savedServiceBusiness(actual);

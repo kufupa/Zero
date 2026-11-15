@@ -3,14 +3,12 @@ import { getReservationWorkflowV2Draft } from './reservation-workflow-v2-state.j
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { savedTarget,
   type ReservationWorkflowV2ServicesInput, type ReservationWorkflowV2SavedServicesInput } from './reservation-workflow-v2-services.js';
-import { lookupAddOns } from './reservation-workflow-v2-addon-check.js';
+import { addOnPropertyAdmitted, addOnPropertyTarget, lookupAddOns } from './reservation-workflow-v2-addon-check.js';
 import { canonicalJson } from './draft-approval.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
 import { sourceEvidence } from './reservation-workflow-v2-prefill.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
-import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
-import { CENTURION_HMS_READ_TARGET } from '../hms/hms-read-target.js';
 import { acquisitionWithin, PANE_PROPERTY_LOCK_WAIT_MS } from '../hms/property-read-lock.js';
 
 type Input = ReservationWorkflowV2ServicesInput | ReservationWorkflowV2SavedServicesInput;
@@ -30,7 +28,7 @@ function containsCode(source: string, value: string): boolean {
 export async function reservationArrivalAddOnLookup(ctx: ReservationWorkflowV2SystemReadContext, input: Input):
   Promise<{ status: string; issue?: string }> {
   const batch = ctx.nativeBatch;
-  if (!batch || !input.serviceId || ctx.property.propertyCode !== 'HRCEN')
+  if (!batch || !input.serviceId || !addOnPropertyAdmitted(ctx.property.propertyCode))
     return { status: 'unsupported', issue: 'service_arrival_context_required' };
   const scoped = { db: ctx.db, transportId: ctx.transport.id, userId: null, propertyCode: ctx.property.propertyCode, nativeBatch: batch };
   const current = async () => {
@@ -69,11 +67,9 @@ export async function reservationArrivalAddOnLookup(ctx: ReservationWorkflowV2Sy
         typeof guestName === 'string' && guestName.trim() && text.includes(normal(guestName.trim()))))
       return { status: 'needs_input', issue: 'service_saved_target_source_required' };
   }
-  const resolved = paneStayHmsTargetForTransport(ctx.transport.id);
-  if (!resolved.ok || (['propertyCode', 'secretId', 'browserSlot', 'origin', 'installationEnvName'] as const)
-    .some(key => resolved.target[key] !== CENTURION_HMS_READ_TARGET[key]))
-    return { status: 'unsupported', issue: 'service_property_session_unavailable' };
-  const lock = paneStayPropertyLock(resolved.target);
+  const propertyTarget = addOnPropertyTarget(ctx.transport.id, ctx.property.propertyCode);
+  if (!propertyTarget) return { status: 'unsupported', issue: 'service_property_session_unavailable' };
+  const lock = paneStayPropertyLock(propertyTarget);
   if (!lock) return { status: 'needs_input', issue: 'service_property_lock_unavailable' };
   const result = await lock.withLock(async () => {
     batch.signal.throwIfAborted();
@@ -82,6 +78,7 @@ export async function reservationArrivalAddOnLookup(ctx: ReservationWorkflowV2Sy
     if (!latest) return { status: 'needs_input', issue: 'service_draft_changed', observations: [] };
     // A matching cursor is required for the whole source-checked snapshot, not just the helper's revision check.
     if (canonicalJson(latest) !== canonicalJson(draft)) return { status: 'needs_input', issue: 'service_draft_changed', observations: [] };
+    if (latest.propertyCode !== ctx.property.propertyCode) return { status: 'unsupported', issue: 'service_property_not_supported', observations: [] };
     return lookupAddOns({ draft: latest, input, transportId: ctx.transport.id, signal: batch.signal });
   }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: batch.signal });
   batch.signal.throwIfAborted();
