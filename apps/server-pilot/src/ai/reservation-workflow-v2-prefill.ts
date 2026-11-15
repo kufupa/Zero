@@ -2551,10 +2551,12 @@ const CANCEL_NEARBY_NEGATION = /\b(?:not|never|no|cannot|\w+n['’]t)(?:\s+\w+){
 function isNegatedCancelInstruction(prefix: string): boolean {
   const segments = (prefix.split(/[;.!?\n]/u).at(-1) ?? '').split(',');
   const adjacent = segments.pop() ?? '';
-  // Retain the previous nearby-negation coverage for ordinary complements such as
-  // "not asked you to", without carrying a completed coordinated clause across "and".
-  if (CANCEL_NEGATED_TAIL.test(adjacent) ||
-      CANCEL_NEARBY_NEGATION.test(adjacent.split(/\b(?:and|but)\b/iu).at(-1) ?? '')) return true;
+  if (CANCEL_NEGATED_TAIL.test(adjacent)) return true;
+  // Nearby complements such as "not asked you to" still govern cancel. A causal
+  // transition ("no meeting tomorrow so cancel") completes the unrelated clause.
+  const nearby = /\b(?:so|therefore|thus|hence)(?:\s+(?:please|kindly|now|then))*\s*$/iu.test(adjacent)
+    ? '' : adjacent.split(/\b(?:and|but)\b/iu).at(-1) ?? '';
+  if (CANCEL_NEARBY_NEGATION.test(nearby)) return true;
   // Another predicate sits between any earlier negation and this instruction ("No dinner is required, so cancel ...").
   if (!CANCEL_BRIDGE_ONLY.test(adjacent)) return false;
   // A negation left hanging before a comma aside still governs the instruction
@@ -2578,11 +2580,9 @@ function isPartialStayCancellation(text: string): boolean {
     .some((match) => {
       const prefix = text.slice(0, match.index);
       if (isNegatedCancelInstruction(prefix)) return false;
-      const sentencePrefix = prefix.split(/[;.!?\n]/u).at(-1) ?? '';
-      const question = /\b(?:can|could|may|might|should|would)\s+(?:we|i)\b/iu.test(sentencePrefix) ||
-        /^\s*(?:what|how|when|why|whether)\b/iu.test(sentencePrefix);
+      const clausePrefix = prefix.split(/[;,.!?\n]|\b(?:so|therefore|thus|hence)\b/iu).at(-1) ?? '';
       const terminator = text.slice(match.index + match[0].length).match(/[;.!?\n]/u)?.[0];
-      return !question || terminator !== '?';
+      return terminator !== '?' && CANCEL_BRIDGE_ONLY.test(clausePrefix);
     });
   return partial && !whole;
 }
