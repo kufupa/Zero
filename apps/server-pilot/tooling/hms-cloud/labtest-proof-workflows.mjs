@@ -1,6 +1,6 @@
 // Trusted outside-app adapters. Native writers own request fencing and independent readback.
 import { createHash, randomUUID } from 'node:crypto';
-import { open } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { withCloudReadSession, cloudWriterCurrent, cloudWriterQuiesced } from './cloud-session.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
@@ -136,12 +136,14 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     proof.prepared = await prepareCloudPaneAttach({ ...input, bytes });
     await checkpoint();
     check(proof.prepared.outcome === 'prepared', 'ATTACH_PREPARE_UNVERIFIED');
+    await readOwned();
     proof.result = await runCloudPaneAttach({ ...input, file, documentCode: proof.prepared.documentCode,
       beforeDispatch: async () => { await checkHold(options.signal); return true; },
       finalAuthority: async code => {
         check(code === proof.prepared.documentCode, 'ATTACH_DOCUMENT_CHANGED');
-        await readOwned();
-        return true;
+        // The native writer reopens the stay; its active credential lease cannot host another session.
+        await checkHold(options.signal);
+        return sha256(await readFile(file)) === pdfSha256;
       },
       continuationAllowed: () => !options.signal.aborted,
       dispatchWithAuthority: async (code, guestId, stayId, requestDigest, proceed, writer) => {
