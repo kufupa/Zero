@@ -231,6 +231,12 @@ describe('reservation workflow host projection', () => {
     ['room', "Don't book BAR, but use DLX and STQN.", 'STQN', 'STQN', 'STQN'],
     ['room', 'Room BAR and DLX are unavailable.', 'BAR', 'BAR', null],
     ['room', 'Room BAR and DLX are unavailable.', 'DLX', 'DLX', null],
+    ['rate', 'BAR or PROMO cannot be quoted', 'BAR', 'BAR', null],
+    ['rate', 'BAR or PROMO cannot be quoted', 'PROMO', 'PROMO', null],
+    ['room', 'STQN, DLX are all unavailable', 'STQN', 'STQN', null],
+    ['room', "STQN and DLX aren't available", 'STQN', 'STQN', null],
+    ['room', 'Neither STQN nor DLX', 'DLX', 'DLX', null],
+    ['room', 'STQN and room code dlx are currently not available', 'room code dlx', 'DLX', null],
     ['room', 'room code stqn', 'room code stqn', 'STQN', 'STQN'],
     ['rate', 'rate code promo', 'rate code promo', 'PROMO', 'PROMO'],
     ['room', 'avoid room code stqn', 'room code stqn', 'STQN', null],
@@ -253,7 +259,7 @@ describe('reservation workflow host projection', () => {
     expect((kind === 'room' ? request.body.shared.roomType : request.body.shared.ratePlan) ?? null).toBe(expected);
   });
 
-  it.each([
+  it.each(([
     ['Avoid STQN, DLX', ['DLX'], []],
     ['Do not book STQN, DLX, or STE', ['DLX'], []],
     ['Do not book STQN, DLX, or STE', ['STE'], []],
@@ -265,25 +271,80 @@ describe('reservation workflow host projection', () => {
     ['STQN, room DLX, room code STE are unavailable', ['STQN'], []],
     ['STQN, DLX not wanted', ['STQN'], []],
     ['STQN, DLX are closed/sold out', ['STQN'], []],
+    ['STQN, DLX are all unavailable', ['STQN', 'DLX'], []],
+    ["STQN and DLX aren't available", ['STQN', 'DLX'], []],
+    ['Neither STQN nor DLX', ['STQN', 'DLX'], []],
+    ['Please quote neither STQN nor DLX', ['STQN', 'DLX'], []],
+    ['STQN and DLX are both unavailable', ['STQN', 'DLX'], []],
+    ['STQN and DLX are currently not valid', ['STQN', 'DLX'], []],
+    ['STQN and DLX are now unavailable', ['STQN', 'DLX'], []],
+    ['STQN and DLX are still not offered', ['STQN', 'DLX'], []],
+    ['STQN and DLX are no longer available', ['STQN', 'DLX'], []],
+    ['STQN and DLX cannot be quoted', ['STQN', 'DLX'], []],
+    ["STQN and DLX can't be used", ['STQN', 'DLX'], []],
+    ['STQN and DLX should not be quoted', ['STQN', 'DLX'], []],
+    ['STQN and DLX are not wanted', ['STQN', 'DLX'], []],
+    ["STQN and DLX isn't available", ['STQN', 'DLX'], []],
+    ["STQN and DLX wasn't available", ['STQN', 'DLX'], []],
+    ["STQN and DLX weren't available", ['STQN', 'DLX'], []],
+    ["STQN and DLX don't work", ['STQN', 'DLX'], []],
+    ["STQN and DLX doesn't work", ['STQN', 'DLX'], []],
+    ["STQN and DLX didn't work", ['STQN', 'DLX'], []],
+    ["STQN and DLX couldn't be booked", ['STQN', 'DLX'], []],
+    ["STQN and DLX won't be available", ['STQN', 'DLX'], []],
+    ["STQN and DLX wouldn't be available", ['STQN', 'DLX'], []],
+    ["STQN and DLX shouldn't be used", ['STQN', 'DLX'], []],
+    ['STQN and DLX are unable to be booked', ['STQN', 'DLX'], []],
+    ['STQN, DLX, STE are all unavailable', ['STQN', 'DLX', 'STE'], []],
+    ['STQN and room code dlx are currently not available', ['STQN'], []],
+    ['Unable to book STQN or DLX', ['STQN', 'DLX'], []],
+    ['Neither STQN nor DLX, please book STE', ['STQN', 'DLX', 'STE'], ['STE']],
+    ['STQN and DLX can no longer be booked', ['STQN', 'DLX'], []],
+    ['STQN and DLX are both currently unable to be booked', ['STQN', 'DLX'], []],
+    ['STQN and DLX shouldn’t be offered', ['STQN', 'DLX'], []],
     ['Avoid STQN. Book DLX', ['DLX'], ['DLX']],
     ['BAR is unavailable, please quote PROMO.', ['PROMO'], ['PROMO']],
     ['BAR is unavailable, DLX', ['DLX'], ['DLX']],
     ['Please quote STQN, DLX', ['STQN'], ['STQN']],
     ['Please quote STQN, DLX', ['DLX'], ['DLX']],
+    ['Please quote STQN, DLX instead of STE', ['STQN', 'DLX', 'STE'], ['STQN', 'DLX']],
+    ['Please quote STQN, DLX rather than STE', ['STQN', 'DLX', 'STE'], ['STQN', 'DLX']],
+    ['STQN and DLX are available', ['STQN', 'DLX'], ['STQN', 'DLX']],
+    ['STQN is unavailable, please quote DLX and STE', ['DLX', 'STE'], ['DLX', 'STE']],
+    ['STQN and DLX are all unavailable, please quote STE', ['STQN', 'DLX', 'STE'], ['STE']],
     ['Avoid STQN, please quote DLX', ['DLX'], ['DLX']],
-  ] as const)('projects only requested room codes from list: %s', async (body, codes, expected) => {
+  ] as const).flatMap(([body, codes, expected]) => codes.map(code =>
+    [body, code, expected.some(item => item === code) ? [code] : []] as const)))('projects only requested room code from list: %s (%s)', async (body, code, expected) => {
     const envelope = { status: 'available', coverage: { scope: 'whole_catalog', complete: true } };
     vi.spyOn(nativeCatalog, 'preloadNativeCatalogLookup').mockResolvedValue({ propertyCode: 'HRCEN',
       roomsEnvelope: () => envelope, ratesEnvelope: () => envelope,
       lookupVerifiedCode: () => ({ status: 'unique' }),
     } as never);
     const result = await project(ref => ({ requests: [{ ...quoteFixture(ref),
-      requestText: claim(body, body, ref), roomTypeHints: codes.map(code => claim(code, code, ref)),
+      requestText: claim(body, body, ref), roomTypeHints: [claim(code, code, ref)],
       dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }] }], issues: [] }),
     undefined, `${body} 2027-01-10 to 2027-01-12`);
     const request = result.proposal.content.requests.find(row => row.kind === 'quote');
     if (request?.kind !== 'quote') throw new Error('expected Quote');
     expect(request.body.groups[0]?.roomCodes).toEqual(expected);
+  });
+
+  it('retains both requested code claims when Quote needs scope review', async () => {
+    const envelope = { status: 'available', coverage: { scope: 'whole_catalog', complete: true } };
+    vi.spyOn(nativeCatalog, 'preloadNativeCatalogLookup').mockResolvedValue({ propertyCode: 'HRCEN',
+      roomsEnvelope: () => envelope, ratesEnvelope: () => envelope,
+      lookupVerifiedCode: () => ({ status: 'unique' }),
+    } as never);
+    const body = 'Please quote STQN, DLX';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: ['STQN', 'DLX'].map(code => claim(code, code, ref)),
+      dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }] }], issues: [] }),
+    undefined, `${body} 2027-01-10 to 2027-01-12`);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (request?.kind !== 'quote') throw new Error('expected Quote');
+    expect(request.body.groups[0]?.roomCodes).toEqual([]);
+    expect(result.proposal.issues).toContainEqual(expect.objectContaining({ kind: 'quote_room_code_scope_ambiguous',
+      explanation: expect.stringContaining('Multiple current room codes') }));
   });
 
   it.each([

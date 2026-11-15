@@ -1955,9 +1955,11 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
   const context = options.rawContext ?? raw;
   if (!context.includes(raw) || !new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'i' : '').test(raw)) return null;
   if (/^(?:A|AN|AND|AS|AT|BE|BOOK|FOR|FROM|IN|IS|IT|NO|NOT|OF|ON|OR|PLEASE|THE|TO|WE|WITH)$/u.test(code)) return null;
-  const negative = /\b(?:no|not|never|without|avoid|avoided|except|exclude|excluded|unavailable|unwanted|sold\s+out|fully\s+booked|closed|isn['’]t|aren['’]t|don['’]t|doesn['’]t|cannot|can['’]t|instead\s+of|rather\s+than)\b/i;
-  const boundaries = [...context.matchAll(/[,/\n;.!?]|\b(?:and|but|or|however)\b/gi)];
-  const listSeparator = (value: string) => /^(?:,|\/|and|or)$/i.test(value);
+  const negativePredicate = /\b(?:no|not|never|neither|unavailable|unwanted|unable|sold\s+out|fully\s+booked|closed|(?:is|are|was|were|do|does|did|ca|could|wo|would|should)n['’]t|cannot)\b/i;
+  const negative = new RegExp(`${negativePredicate.source}|\\b(?:without|avoid|avoided|except|exclude|excluded|instead\\s+of|rather\\s+than)\\b`, 'i');
+  const listNegativePredicate = new RegExp(`^(.*?)\\s+(?:(?:is|are|was|were|be|been|being|do|does|did|have|has|had|can|could|will|would|should|shall|must|may|might|all|both|currently|now|still)\\s+)*${negativePredicate.source}`, 'i');
+  const boundaries = [...context.matchAll(/[,/\n;.!?]|\b(?:and|but|or|nor|however)\b/gi)];
+  const listSeparator = (value: string) => /^(?:,|\/|and|or|nor)$/i.test(value);
   const listLabel = (value: string) => /^(?:(?:the|a|an)(?:\s+|$))?(?:(?:room|rate)(?:\s+(?:type|plan))?(?:\s+code)?|code)?$/i.test(value.trim());
   const splitListItem = (value: string) => {
     const words = value.trim().split(/\s+/);
@@ -1988,7 +1990,7 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
         const following: RegExpExecArray | undefined = boundaries.find(item => item.index > boundaryIndex);
         const continuation = context.slice(boundary.index + boundary[0].length, following?.index).trim();
         if (continuation) {
-          const predicate = continuation.match(/^(.*?)\s+(?:(?:is|are|was|were)\s+)?(?:(?:currently|both)\s+)*(?:not\b|never\b|no\s+longer\b|unavailable\b|unwanted\b|sold\s+out\b|fully\s+booked\b|closed\b)/i);
+          const predicate = continuation.match(listNegativePredicate);
           if (predicate && bareListItem(predicate[1] ?? '')) return null;
           if (!bareListItem(continuation)) break;
         }
