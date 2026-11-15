@@ -12,6 +12,9 @@ const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const ratePath = propertyCode => `/api/internalBooking/${propertyCode}/rateshop/rateDetails`;
 const object = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+// HMS omits childAges for an explicitly child-free availability inquiry.
+const sameQuoteChildren = (applied, ages) => applied.childCount === ages.length &&
+  (same(applied.childAges, ages) || (ages.length === 0 && !Object.hasOwn(applied, 'childAges')));
 const unique = (value) => object(value) && new Set(Object.keys(value).map((key) => key.toLowerCase())).size === Object.keys(value).length;
 
 export function nativeMoneyTenThousandths(raw) {
@@ -205,7 +208,7 @@ export function projectAmendNightlyQuote(raw, { selected, changes, partyPreimage
       requested.adults !== (changes.adults ?? selected.adults) || !same(requested.childAges, childAges) || requested.roomQuantity !== 1 ||
       !same(requested.roomTypes, [roomType]) || !same(requested.ratePlans, [ratePlan]) ||
       applied.propertyCodes !== selected.propertyCode || applied.startDate !== `${dates[0]}T00:00:00` || String(applied.numberOfDays) !== String(dates.length) ||
-      applied.adultCount !== requested.adults || applied.childCount !== childAges.length || !same(applied.childAges, childAges) ||
+      applied.adultCount !== requested.adults || !sameQuoteChildren(applied, childAges) ||
       applied.roomTypeCodes !== roomType || applied.ratePlanCodes !== ratePlan || applied.shopByDay !== false ||
       String(applied.groupID ?? '') !== String(partyPreimage.groupid ?? '') ||
       String(applied.organizationID ?? '') !== String(partyPreimage.companyid ?? '') ||
@@ -249,7 +252,7 @@ export function projectAmendRateOptions(raw, { selected, changes, partyPreimage 
       requested.roomQuantity !== 1 || !same(requested.roomTypes, [roomType]) || requested.ratePlans !== 'all' ||
       applied.propertyCodes !== selected.propertyCode || applied.roomTypeCodes !== roomType ||
       applied.startDate !== `${dates[0]}T00:00:00` || String(applied.numberOfDays) !== String(dates.length) ||
-      applied.adultCount !== requested.adults || applied.childCount !== childAges.length || !same(applied.childAges, childAges) ||
+      applied.adultCount !== requested.adults || !sameQuoteChildren(applied, childAges) ||
       String(applied.groupID ?? '') !== String(partyPreimage.groupid ?? '') ||
       String(applied.organizationID ?? '') !== String(partyPreimage.companyid ?? '') ||
       String(applied.travelAgencyID ?? '') !== String(partyPreimage.taid1 ?? '') ||
