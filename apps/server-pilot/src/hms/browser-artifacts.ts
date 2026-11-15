@@ -35,6 +35,10 @@ import type { DiscoveryOperationId, HmsReadToolId } from './read-tools.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { platform } from 'node:os';
+import type { HmsCredentialMode } from './credential-mode.js';
+
+export { HMS_CREDENTIAL_MODES } from './credential-mode.js';
+export type { HmsCredentialMode } from './credential-mode.js';
 
 export {
   collectHmsStorageStateSecretValues,
@@ -68,8 +72,6 @@ export function hmsProductionOriginForSlot(slot: string): string | null {
 }
 
 export type HmsExecutionClass = 'normal' | 'live_proof';
-export const HMS_CREDENTIAL_MODES = ['view_only', 'audited_write', 'write_capable'] as const;
-export type HmsCredentialMode = (typeof HMS_CREDENTIAL_MODES)[number];
 
 export type HmsBrowserAuditSpec = {
   operationId: string;
