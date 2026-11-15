@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { and, eq } from 'drizzle-orm';
+import type { DB } from '../db/client.js';
+import { workItem } from '../db/schema/work.js';
+import { recordHmsPrepareFailure, type HmsPrepareFailedValue } from '../ai/work-events.js';
 
 const nonFailures = new Set([
   'ok', 'ready', 'complete', 'prepared', 'succeeded', 'already_succeeded', 'priced', 'linked', 'verified',
@@ -38,7 +42,7 @@ function targetReference(value: unknown) {
 function failure(value: unknown) {
   const row = record(value);
   const status = label(row?.status ?? row?.outcome, 50);
-  if (!status || nonFailures.has(status)) return undefined;
+  if (!status || (nonFailures.has(status) && row?.issue !== 'batch_preparations_incomplete')) return undefined;
   const fields = Array.isArray(row?.fields)
     ? row.fields.map((field) => pathLabel(field)).filter((field): field is string => Boolean(field)).slice(0, 32)
     : [];
@@ -123,10 +127,53 @@ async function writeReproBundle(input: {
     { encoding: 'utf8', mode: 0o600, flag: 'wx' });
 }
 
+/** Only Prepare calls count; lookup and Go failures are different funnel stages. */
+const prepareFailureActions: Record<string, { stage: HmsPrepareFailedValue['stage'];
+  workflow?: HmsPrepareFailedValue['workflow'] }> = {
+  prepare: { stage: 'prepare' }, prepareServices: { stage: 'prepare', workflow: 'addons' },
+  prepareGuestProfile: { stage: 'prepare', workflow: 'guest_profile' },
+};
+
+type PrepareFailureOutcome = { status: string; issue?: string; details?: Array<{ code?: string }> };
+
+/** Keep one hms.prepare.failed event for a failed or blocked call, bound to the mailbox's own work item. */
+async function recordPrepareFailure(db: DB, input: {
+  action: string; raw: Record<string, unknown> | undefined; userId: string; transportId: string;
+  elapsedMs: number; errorCode?: string;
+  primary: PrepareFailureOutcome | undefined; nested: PrepareFailureOutcome[];
+}) {
+  const scope = prepareFailureActions[input.action];
+  const workItemId = input.raw?.workItemId;
+  const outcomes = [...(input.primary ? [input.primary] : []), ...input.nested];
+  if (!scope || (!input.errorCode && !outcomes.length) ||
+      typeof workItemId !== 'string' || !z.string().uuid().safeParse(workItemId).success) return;
+  const [item] = await db.select({ state: workItem.state }).from(workItem)
+    .where(and(eq(workItem.id, workItemId), eq(workItem.transportId, input.transportId))).limit(1);
+  if (!item) return;
+  const state = record(item.state);
+  const draft = record(state?.reservationWorkflowV2);
+  const requests = record(record(draft?.proposal)?.content)?.requests;
+  const requestId = input.raw?.requestId;
+  const request = typeof requestId === 'string' && Array.isArray(requests)
+    ? requests.map(record).find((row) => row?.id === requestId)
+    : Array.isArray(requests) && requests.length === 1 ? record(requests[0]) : undefined;
+  await recordHmsPrepareFailure(db, {
+    workItemId, actorUserId: input.userId,
+    workflow: scope.workflow ?? label(request?.kind, 50),
+    stage: scope.stage,
+    status: input.primary?.status ?? input.nested[0]?.status,
+    codes: [input.errorCode, ...outcomes.flatMap((outcome) =>
+      [outcome.issue, ...(outcome.details?.map((detail) => detail.code) ?? [])])],
+    propertyCode: label(draft?.propertyCode ?? state?.propertyCode, 10), durationMs: input.elapsedMs,
+  });
+}
+
 /** Record only bounded diagnostic metadata; draft state retains the underlying email and field values. */
 export async function logReservationWorkflowFailure(input: {
   path: string; rawInput: unknown; result?: unknown; error?: { code: string; cause?: unknown };
   userId: string; transportId: string; correlationId: string | null; elapsedMs: number;
+  /** When given, a failed Prepare is also kept as a bounded work event. */
+  db?: () => DB;
 }) {
   const response = record(input.result);
   const draft = record(response?.draft), prefill = record(draft?.prefill);
@@ -146,6 +193,19 @@ export async function logReservationWorkflowFailure(input: {
     .filter((row) => row !== undefined).slice(0, 32);
   if (!input.error && outcomes.length === 0 && draftErrors.length === 0) return;
   const raw = record(input.rawInput), source = record(raw?.source);
+  // The draft's earlier arrival checks and errors are not this call's failure.
+  const nestedOutcomes = [...(Array.isArray(response?.lookups) ? response.lookups.map(failure) : []),
+    ...(Array.isArray(response?.quotes) ? response.quotes.map(failure) : []), ...serviceObservations, ...serviceOutcomes]
+    .filter((row) => row !== undefined && row.status !== 'excluded').slice(0, 32);
+  if (input.db) {
+    try {
+      await recordPrepareFailure(input.db(), { action: input.path.slice(input.path.lastIndexOf('.') + 1), raw,
+        userId: input.userId, transportId: input.transportId, elapsedMs: input.elapsedMs,
+        errorCode: input.error?.code, primary: failure(response), nested: nestedOutcomes });
+    } catch {
+      console.warn('hms_prepare_failed_event_skipped', 'lookup');
+    }
+  }
   const workItemId = label(raw?.workItemId);
   if (input.path.endsWith('.get') && !input.error && workItemId) {
     const key = createHash('sha256').update(JSON.stringify([workItemId, raw?.expectedRevision, raw?.expectedSeq,

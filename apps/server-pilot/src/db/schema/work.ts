@@ -42,6 +42,7 @@ export const WORK_EVENT_TYPES = [
   'approval.granted',
   'approval.consumed',
   'hms.prepared',
+  'hms.prepare.failed',
   'hms.dispatch.started',
   'hms.dispatch.reviewed',
   'create.fence.started',
@@ -78,7 +79,7 @@ export const WORK_EVENT_TYPES = [
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 /**
- * User events that are not a person's decision on the item: pane telemetry (B1) and the dismissal. A plain field.accept
+ * User events that are not a person's decision on the item: pane telemetry (B1), the dismissal and a failed prepare. A plain field.accept
  * (an AI value confirmed as read without a correction) is not one either, but the follow-up suggestion's accept is. Every
  * reader of "touched" goes through personTouchSql (work-items.ts), which applies both rules.
  */
@@ -96,6 +97,7 @@ export const TELEMETRY_EVENT_TYPES = [
   'hms.lookup.finished',
   'item.dismissed',
   'pane.error',
+  'hms.prepare.failed',
 ] as const;
 /**
  * work_event field path of the quote follow-up suggestion as a whole (R10). Not a stay path, so the field-event route
