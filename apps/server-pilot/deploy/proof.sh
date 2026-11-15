@@ -236,7 +236,7 @@ else
   run_stage "$WORKFLOW" || passed=0
 fi
 fetch_artifacts || {
-  echo "proof: artifact fetch failed; journal remains on the box under ~/.local/state/nava-labtest-proof/${SHA}" >&2
+  echo "proof: artifact fetch failed; journal remains on the box under ${STATE_DIR}/${SHA}" >&2
   passed=0
 }
 [ "$passed" = 1 ] || finish FAIL
@@ -244,6 +244,7 @@ if [ "$LEDGER" = 1 ]; then
   install_ledger || { echo "proof: ledger install refused; see ${ARTIFACTS}/proof.log" >&2; finish FAIL; }
 fi
 if [ "$WORKFLOW" = create ]; then
-  echo "proof: Labtest stay ${CONFIRMATION} is still reserved; clean up with: $0 cancel ${PROPERTY} ${SHA}" >&2
+  echo "proof: Labtest stay ${CONFIRMATION} is still reserved; CMPRO cleanup: $0 cancel ${PROPERTY} ${SHA} --state-dir ${STATE_DIR} --cancel-scenario zero" >&2
+  echo "proof: BAR requires --cancel-scenario penalty --no-ledger; fee approval is never implicit. Keep any uncertain hold." >&2
 fi
 finish PASS

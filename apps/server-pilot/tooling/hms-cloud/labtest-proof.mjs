@@ -569,13 +569,22 @@ async function main() {
             status: native.status, reasonCode: verified.reasonCode, cancellationNote: verified.cancellationNote, freshReadbackVerified: true,
             readback: { fields: finalFields, native: nativeObservation, cancelModelVerified: true, observedAt: new Date().toISOString() } };
         }, { ...base, prepareContext: context => installSavedStayReadGuard(context, { propertyCode: args.propertyCode, confirmation: own.confirmation }) });
+        await persist({ ...journal, cancelReadback: readback, updatedAt: new Date().toISOString() });
         const zeroNotice = cancelled.outcome === 'zero_notice_awaiting_readback' && cancelled.zeroPenaltyNotice === ZERO_PENALTY_NOTICE;
         const approvedNotice = args.cancelScenario === 'penalty' && cancelled.outcome === 'approved_notice_awaiting_readback' &&
           cancelled.penaltyNoticeAcknowledged === true && cancelled.penaltyTiming === 'after_save' &&
           cancelled.penaltyAmount === args.approvedPenalty && journal.cancelApprovalGate?.approved === true &&
           journal.cancelApprovalGate.penaltyAmount === args.approvedPenalty && cancelled.chargeApproved === true;
-        assert((args.cancelScenario === 'zero' ? (cancelled.outcome === 'awaiting_readback' || zeroNotice) &&
-          cancelled.chargeApproved === false && !journal.cancelApprovalGate : approvedNotice) &&
+        if (approvedNotice && cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
+            cancelled.browserSendRequests === 0 && cancelled.chargeDispatched === false &&
+            Array.isArray(cancelled.blockedRequests) && !cancelled.blockedRequests.length) {
+          await persist({ ...journal, cancelApprovalProof: { gateVerified: true, approvedAmount: args.approvedPenalty,
+            noticeAcknowledged: true, freshReadback: readback, financialOutcome: 'unverified',
+            observedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() });
+          fail('CANCEL_FINANCIAL_OUTCOME_UNVERIFIED');
+        }
+        assert(args.cancelScenario === 'zero' && (cancelled.outcome === 'awaiting_readback' || zeroNotice) &&
+          cancelled.chargeApproved === false && !journal.cancelApprovalGate &&
           cancelled.requestDispatched === true && cancelled.httpStatus === 200 &&
           cancelled.browserSendRequests === 0 && cancelled.chargeDispatched === false &&
           Array.isArray(cancelled.blockedRequests) && !cancelled.blockedRequests.length, 'CANCEL_UNCERTAIN_HELD');
