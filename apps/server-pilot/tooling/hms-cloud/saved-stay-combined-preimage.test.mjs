@@ -117,6 +117,15 @@ test('preserves unknown ages and accepts an explicit requested child edit for na
   const unknown = binding(f); assert.match(unknown?.digest || '', /^[a-f0-9]{64}$/);
   f.changes = { childCount:1, childAges:[8] }; assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
   f.changes = { adults:2, departure:'2027-10-14' }; f.expected.childAges = [];
+  assert.match(binding(f)?.digest || '', /^[a-f0-9]{64}$/);
+  delete f.snapshot.data.childages;
+  assert.equal(binding(f), null);
+  f.snapshot.data.childages = '';
+  f.snapshot.values.childages = '8';
+  assert.equal(binding(f), null);
+  f.snapshot.values.childages = '';
+  f.snapshot.data.children = f.snapshot.values.children = '1';
+  f.snapshot.data.child2 = f.snapshot.values.child2 = '1';
   assert.equal(binding(f), null);
 });
 

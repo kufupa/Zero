@@ -109,8 +109,13 @@ export function labtestCombinedAmendPreimageBinding(expected, state, snapshot, c
           { allowModelOnlyPrimaryPartyIds: state.allowModelOnlyPrimaryPartyIds === true, allowRealGuest }) || !validChanges(expected, changes, minimumArrival)) return null;
     const prior = planSavedChildOccupancy({ childCount: expected.childCount, childAges: expected.childAges });
     const actual = savedChildOccupancy(snapshot);
+    // The native saved-stay reader represents explicit blank ages with zero children as [].
+    const zeroAges = actual.valid && actual.count === 0 &&
+      actual.fields.childages.model.present && actual.fields.childages.model.value === '' &&
+      (!actual.fields.childages.form.present || actual.fields.childages.form.value === '');
+    const actualAges = zeroAges && Array.isArray(prior.childAges) ? [] : actual.ages;
     if (prior.outcome !== 'planned' || prior.childCount === null || !actual.valid || actual.count !== prior.childCount ||
-        !same(actual.ages, prior.childAges) || !exact(snapshot.values, 'adults', expected.adults) ||
+        !same(actualAges, prior.childAges) || !exact(snapshot.values, 'adults', expected.adults) ||
         !exact(snapshot.data, 'adults', expected.adults)) return null;
     const formAges = actual.fields.childages.form;
     if (prior.childAges === null) {

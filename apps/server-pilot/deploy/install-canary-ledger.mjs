@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { verifyLabtestWorkflowProof } from '../tooling/hms-cloud/labtest-proof-workflows.mjs';
+import { labtestProofStayAdults, verifyLabtestWorkflowProof } from '../tooling/hms-cloud/labtest-proof-workflows.mjs';
 
 process.umask(0o077);
 const APP = fileURLToPath(new URL('../', import.meta.url));
@@ -99,7 +99,8 @@ function business(fields, journal, cancelled) {
   check(Array.isArray(fields), 'READBACK_FIELDS_MISSING');
   const request = journal.effectiveRequest, applied = journal.prepared.applied;
   const required = { firstname: 'Proof', lastname: 'Labtest', guestid: journal.created.guestId,
-    arrivaldate: wire(request.stay.arrival), departuredate: wire(request.stay.departure), adults: request.stay.adults,
+    arrivaldate: wire(request.stay.arrival), departuredate: wire(request.stay.departure),
+    adults: cancelled ? labtestProofStayAdults(journal) : request.stay.adults,
     children: request.stay.childAges.length, roomtype: request.room.roomType, rateplan: request.room.ratePlan,
     guaranteetype: applied.guaranteeType, ...(request.track ? { track: applied.track } : {}),
     ...(request.marketSegment ? { marketsegment: applied.marketSegment } : {}),
@@ -117,7 +118,8 @@ function nativeCancel(value, journal) {
   check(value && value.source === 'record_view_ext_model' && value.propertyCode === journal.propertyCode &&
     value.confirmation === journal.created.confirmation && value.reservationStayId === journal.created.nativeStayId && value.guestId === journal.created.guestId &&
     value.firstName === 'Proof' && value.lastName === 'Labtest' && value.arrival === request.stay.arrival && value.departure === request.stay.departure &&
-    value.roomType === request.room.roomType && value.ratePlan === request.room.ratePlan && value.adults === request.stay.adults && value.children === request.stay.childAges.length &&
+    value.roomType === request.room.roomType && value.ratePlan === request.room.ratePlan &&
+    value.adults === labtestProofStayAdults(journal) && value.children === request.stay.childAges.length &&
     Array.isArray(value.childAges) && hash([...value.childAges].sort((a, b) => a - b)) === hash([...request.stay.childAges].sort((a, b) => a - b)) &&
     /^cancel(?:l)?ed$/i.test(value.status ?? '') && value.cancelReasonCode === 'TEST' && value.cancellationNote === CANCELLATION_NOTE &&
     value.reservationStayStatus === 'CANCELED' && (request.marketSegment === undefined || value.marketSegmentCode === request.marketSegment), 'CANCEL_NATIVE_READBACK_INVALID');

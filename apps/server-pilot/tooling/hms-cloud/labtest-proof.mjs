@@ -77,7 +77,7 @@ function parseArgs(argv) {
   }
   assert(['HRCEN', 'HRDAV', 'HRDAVS'].includes(values['--property']) &&
     /^[a-f0-9]{40}$/.test(values['--expected-sha'] ?? '') &&
-    ['prepare', 'create', 'guest_profile_create', 'amend', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
+    ['prepare', 'create', 'guest_profile_create', 'amend', 'amend_adults', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
     values['--request'], 'ARGUMENTS_INVALID');
   assert(values['--stage'] === 'cancel' ? values['--property'] === 'HRCEN' &&
     ['zero', 'penalty'].includes(values['--cancel-scenario']) : !values['--cancel-scenario'] &&
@@ -292,7 +292,7 @@ async function main() {
     const profileHeld = journal?.status === 'guest_profile_create_possible' ||
       journal?.status === 'uncertain_held' && journal.workflowAttempt?.workflow === 'guest_profile_create';
     if (profileHeld && priorProfile && journal.created?.freshReadbackVerified === true &&
-        ['amend', 'attach', 'addons', 'cancel'].includes(args.stage)) {
+        ['amend', 'amend_adults', 'attach', 'addons', 'cancel'].includes(args.stage)) {
       journal = { ...journal, status: 'created',
         workflowHolds: { ...journal.workflowHolds, guest_profile_create: {
           status: 'uncertain_held', issue: journal.issue, attempt: priorProfile } } };
@@ -312,7 +312,7 @@ async function main() {
       assert(journal.status === (args.stage === 'create' ? 'prepared' : 'created'), 'STAGE_INVALID');
     }
     if (!['prepare', 'create', 'cancel'].includes(args.stage)) {
-      const order = ['amend', 'attach', 'addons'];
+      const order = ['amend', 'attach', 'addons', 'amend_adults'];
       assert(!journal.workflowHolds?.[args.stage], 'JOURNAL_HELD');
       assert(!journal.workflowProofs?.[args.stage] && !(args.stage === 'guest_profile_create' ? [] : order.slice(order.indexOf(args.stage) + 1))
         .some(workflow => journal.workflowProofs?.[workflow]), 'WORKFLOW_ALREADY_RUN_OR_OUT_OF_ORDER');
@@ -328,7 +328,7 @@ async function main() {
     let writerDependencyDigest;
     if (args.stage !== 'prepare') {
       const { hmsWriterDependencyDigest } = await load('tooling/hms-cloud/hms-workflow-policy.mjs');
-      writerDependencyDigest = hmsWriterDependencyDigest(args.stage);
+      writerDependencyDigest = hmsWriterDependencyDigest(args.stage === 'amend_adults' ? 'amend' : args.stage);
       assert(/^[a-f0-9]{64}$/.test(writerDependencyDigest), 'WRITER_DEPENDENCY_DIGEST_INVALID');
     }
     const provenance = { ...journal?.provenance, [args.stage]: Object.freeze({
@@ -494,7 +494,9 @@ async function main() {
       const { cancellationNativePreimage } = await load('tooling/hms-cloud/pane-cancel-session.mjs');
       const { verifySingleCancellationScope } = await load('tooling/hms-cloud/cancel-association-scope.mjs');
       const { openLabtestCancellation, confirmLabtestCancellation } = await load('tooling/hms-cloud/guest-stay-cancel.mjs');
+      const { labtestProofStayAdults } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
       const own = journal.created, effective = requestSchema.parse(journal.effectiveRequest);
+      const expectedAdults = labtestProofStayAdults(journal);
       assert(effective.room.ratePlan === (args.cancelScenario === 'zero' ? 'CMPRO' : 'BAR'), 'CANCEL_SCENARIO_RATE_MISMATCH');
       assert(own?.freshReadbackVerified === true && /^\d+-\d+$/.test(own.confirmation ?? '') && /^\d+$/.test(own.nativeStayId ?? '') &&
         own.note === effective.note && own.guestId === effective.guest.profileId, 'CANCEL_TARGET_INVALID');
@@ -510,7 +512,8 @@ async function main() {
       assert(expected && expected.allowRealGuest === false && expected.cmsSend === false && expected.firstName === 'Proof' &&
         expected.lastName === 'Labtest' && expected.arrival === effective.stay.arrival && expected.departure === effective.stay.departure &&
         expected.confirmation === own.confirmation && expected.nativeStayId === own.nativeStayId &&
-        expected.guestId === own.guestId && expected.note === own.note, 'CANCEL_PREIMAGE_INVALID');
+        expected.guestId === own.guestId && expected.note === own.note &&
+        initial.nativePreimage?.adults === expectedAdults, 'CANCEL_PREIMAGE_INVALID');
       // Zero children proves an empty age list even when Record View omits childages, as in Create readback.
       const observedAges = native => native?.children === 0 ? [] : native?.childAges;
       const sortedAges = ages => hash([...ages].sort((a, b) => a - b));
@@ -521,8 +524,10 @@ async function main() {
         const base = { ...options, propertyCode: args.propertyCode, transportId, startScreen: 'OSRESS' };
         await cloud.withCloudWriterSession(async page => {
           ownedPage = page;
-          const fresh = cancellationNativePreimage(await lookup(page), { propertyCode: args.propertyCode, allowRealGuest: false });
-          assert(fresh && hash(fresh) === hash(expected), 'CANCEL_PREIMAGE_CHANGED');
+          const freshRecord = await lookup(page);
+          const fresh = cancellationNativePreimage(freshRecord, { propertyCode: args.propertyCode, allowRealGuest: false });
+          assert(fresh && hash(fresh) === hash(expected) &&
+            freshRecord.nativePreimage?.adults === expectedAdults, 'CANCEL_PREIMAGE_CHANGED');
           await checkHold(options.signal);
           assert(await verifySingleCancellationScope(page, expected), 'CANCEL_SCOPE_UNVERIFIED');
           await markPossible('cancel_possible', { cancelExpected: expected });
@@ -561,7 +566,7 @@ async function main() {
             native.confirmation === own.confirmation && native.reservationStayId === own.nativeStayId && native.guestId === own.guestId &&
             native.firstName === 'Proof' && native.lastName === 'Labtest' && native.arrival === expected.arrival &&
             native.departure === expected.departure && native.roomType === expected.roomType && native.ratePlan === expected.ratePlan &&
-            native.adults === effective.stay.adults && native.children === effective.stay.childAges.length &&
+            native.adults === expectedAdults && native.children === effective.stay.childAges.length &&
             Array.isArray(observedAges(native)) && sortedAges(observedAges(native)) === sortedAges(effective.stay.childAges) &&
             (effective.guestoptin4 === undefined || field('guestoptin4')?.value === effective.guestoptin4) &&
             (effective.marketSegment === undefined || native.marketSegmentCode === effective.marketSegment) &&
