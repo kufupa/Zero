@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# VPS-side Labtest proof for one HMS workflow on the deployed box.
-#   bash apps/server-pilot/deploy/proof.sh <workflow> <property> <sha> [--request <file>] [--no-ledger]
+# Labtest proof for one HMS workflow on the deployed box.
+#   bash apps/server-pilot/deploy/proof.sh <workflow> <property> <sha> [--local] [--request <file>] [--no-ledger]
+# On EC2, run as ubuntu with --local; no SSM or artifact transfer is used.
 #
 # create: census + unsaved Prepare, one Labtest Save, fresh readback.
 # cancel: cancels the stay left by `proof.sh create` for the same property and sha, fresh readback.
@@ -24,15 +25,16 @@ REMOTE_SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
 CHUNK_CHARS=16000
 
 usage() {
-  echo "usage: $0 <create|cancel|amend|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--request <file>] [--no-ledger]" >&2
+  echo "usage: $0 <create|cancel|amend|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--no-ledger]" >&2
   exit 2
 }
 [ "$#" -ge 3 ] || usage
 WORKFLOW="$1"; PROPERTY="$2"; SHA="$3"; shift 3
-REQUEST=""; LEDGER=1
+REQUEST=""; LEDGER=1; LOCAL=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --request) [ "$#" -ge 2 ] || usage; REQUEST="$2"; shift 2 ;;
+    --local) LOCAL=1; shift ;;
     --no-ledger) LEDGER=0; shift ;;
     *) usage ;;
   esac
@@ -40,13 +42,19 @@ done
 case "$WORKFLOW" in
   create|cancel) ;;
   amend|attach|addons|guest_profile_create)
-    echo "PROOF UNSUPPORTED $WORKFLOW: no committed Labtest Save and readback runner exists for it; only create and cancel are proven by tooling/hms-cloud/labtest-proof.mjs"
+    echo "PROOF UNSUPPORTED $WORKFLOW: no committed Labtest Save and readback runner exists for it; tooling/hms-cloud/labtest-proof.mjs implements only create and cancel"
     exit 3
     ;;
   *) usage ;;
 esac
 [[ "$PROPERTY" =~ ^(HRCEN|HRDAV|HRDAVS)$ ]] || usage
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || usage
+if [ "$LOCAL" = 1 ]; then
+  [ "$(id -un)" = ubuntu ] && [ "$SERVER_PILOT" = "$REMOTE_SERVER_PILOT" ] || {
+    echo "proof: --local requires ubuntu in ${REMOTE_SERVER_PILOT}" >&2
+    exit 2
+  }
+fi
 
 hold="${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}"
 if [ -f "$hold" ]; then
@@ -71,6 +79,10 @@ finish() {
 # Runs one script on the box. Sets REMOTE_STDOUT; stderr and the raw SSM envelope go to the artifact log.
 remote() {
   local label="$1" script="$2" response rc=0
+  if [ "$LOCAL" = 1 ]; then
+    REMOTE_STDOUT="$(bash -s <<<"$script" 2>>"${ARTIFACTS}/proof.log")" || rc=$?
+    return "$rc"
+  fi
   response="$(SSM_EXECUTION_TIMEOUT_SECONDS="${PROOF_STAGE_TIMEOUT_SECONDS:-1800}" \
     SSM_MAX_POLL_SECONDS="$(( ${PROOF_STAGE_TIMEOUT_SECONDS:-1800} + 120 ))" \
     bash "${SCRIPT_DIR}/ssm-run-command.sh" "$script")" || rc=$?
@@ -99,7 +111,7 @@ mkdir -p \"\$RUN\" \"\$STATE/requests\"
 "
 
 run_stage() {
-  local stage="$1" upload="" keep="" line
+  local stage="$1" upload="" keep="" line rc=0
   if [ "$stage" = prepare ]; then
     # Each call uploads to its own file; only a prepare that passed publishes it, so a refused or
     # overlapping call cannot replace the request an earlier journal is bound to.
@@ -122,7 +134,7 @@ node tooling/hms-cloud/labtest-proof.mjs --stage ${stage} --property ${PROPERTY}
 ${keep}
 tail -c 1500 \"\$RUN/${PROPERTY}-${stage}.err\" >&2
 tail -n 2 \"\$RUN/${PROPERTY}-${stage}.out\" | cut -c1-2000
-exit \"\$rc\"" || true
+exit \"\$rc\"" || rc=$?
   printf '%s\n' "$REMOTE_STDOUT" >>"${ARTIFACTS}/proof.log"
   line="$(printf '%s\n' "$REMOTE_STDOUT" | grep -E "^PROOF (PASS|FAIL) ${stage} ${PROPERTY} ${SHA} conf=[0-9-]+$" | tail -n 1 || true)"
   case "$line" in
@@ -130,7 +142,7 @@ exit \"\$rc\"" || true
     ?*) CONFIRMATION="${line##*conf=}" ;;
   esac
   case "$line" in
-    "PROOF PASS "*) return 0 ;;
+    "PROOF PASS "*) [ "$rc" = 0 ] && return 0 ;;
   esac
   echo "proof: stage ${stage} did not pass; see ${ARTIFACTS}/proof.log" >&2
   return 1
@@ -139,6 +151,14 @@ exit \"\$rc\"" || true
 # Journal and stage logs: packed on the box, pulled in checked chunks, never as raw SSM stdout.
 fetch_artifacts() {
   local meta digest chars index=0 encoded="${ARTIFACTS}/.transfer.b64"
+  if [ "$LOCAL" = 1 ]; then
+    local file
+    for file in "$HOME/.local/state/nava-labtest-proof/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,cancel.out,cancel.err}; do
+      if [ -f "$file" ]; then cp "$file" "$ARTIFACTS/" || return 1; fi
+    done
+    [ -f "${ARTIFACTS}/${PROPERTY}-journal.json" ]
+    return $?
+  fi
   remote pack "${REMOTE_HEAD}cd \"\$RUN\"
 files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-prepare.out ${PROPERTY}-prepare.err ${PROPERTY}-create.out ${PROPERTY}-create.err ${PROPERTY}-cancel.out ${PROPERTY}-cancel.err 2>/dev/null || true)\"
 [ -n \"\$files\" ] || { echo 'proof: nothing to fetch' >&2; exit 20; }
@@ -186,7 +206,10 @@ if [ "$WORKFLOW" = create ]; then
 else
   run_stage cancel || passed=0
 fi
-fetch_artifacts || echo "proof: artifact fetch failed; journal remains on the box under ~/.local/state/nava-labtest-proof/${SHA}" >&2
+fetch_artifacts || {
+  echo "proof: artifact fetch failed; journal remains on the box under ~/.local/state/nava-labtest-proof/${SHA}" >&2
+  passed=0
+}
 [ "$passed" = 1 ] || finish FAIL
 if [ "$LEDGER" = 1 ]; then
   install_ledger || { echo "proof: ledger install refused; see ${ARTIFACTS}/proof.log" >&2; finish FAIL; }
