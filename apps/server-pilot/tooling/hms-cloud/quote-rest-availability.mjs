@@ -85,6 +85,9 @@ function matchingEcho(echo, body) {
     JSON.stringify(echo[key]) === JSON.stringify(body[key]));
 }
 
+const combinedFlagsKnown = cell => object(cell) &&
+  ['combClosed', 'combClosedToArrival', 'combClosedToDeparture'].every(key => typeof cell[key] === 'boolean');
+
 function restrictionEvidence(...values) {
   const sources = values.filter(object);
   const closedOrRestricted = sources.some(source => source.restricted === true || source.closed === true ||
@@ -110,6 +113,7 @@ function restrictionEvidence(...values) {
   for (const source of sources) for (const [key, value] of Object.entries(source)) {
     if (!/restrict|closed|los|leadtime|israteavailable|maxnights|availablelimitnightcount|externalselloptionnotavailablereason/i.test(key) ||
         Object.values(known).some(list => list.includes(key))) continue;
+    if ((key === 'restricted' || key === 'israteavailable') && value === null && combinedFlagsKnown(source)) continue;
     if (['restricted', 'isRestrictedByRevenueManagement', 'israteavailable'].includes(key) && typeof value !== 'boolean') {
       unknown.add(key);
     } else if ((key === 'restricted' || key === 'isRestrictedByRevenueManagement') && typeof value === 'boolean') {
@@ -123,11 +127,16 @@ function restrictionEvidence(...values) {
 
 function columnRestrictions(property, propertyColumn, room, roomColumn, rate, rateColumn) {
   const restrictions = restrictionEvidence(property, propertyColumn, room, roomColumn, rate, rateColumn);
-  for (const [name, value] of [['property.restricted', propertyColumn?.restricted], ['rate.restricted', rate.restricted],
-    ['rateCell.restricted', rateColumn?.restricted], ['rateCell.combClosed', rateColumn?.combClosed],
-    ['rateCell.combClosedToArrival', rateColumn?.combClosedToArrival],
-    ['rateCell.combClosedToDeparture', rateColumn?.combClosedToDeparture], ['rateCell.israteavailable', rateColumn?.israteavailable]]) {
-    if (typeof value !== 'boolean') restrictions.unknownRestrictionFlags.push(name);
+  // Live cells may leave restricted/israteavailable null or absent while their comb* flags are real booleans.
+  const propertyCombined = combinedFlagsKnown(propertyColumn);
+  const rateCombined = combinedFlagsKnown(rateColumn);
+  for (const [name, value, combined] of [['property.restricted', propertyColumn?.restricted, propertyCombined],
+    ['rate.restricted', rate.restricted, false],
+    ['rateCell.restricted', rateColumn?.restricted, rateCombined], ['rateCell.combClosed', rateColumn?.combClosed, false],
+    ['rateCell.combClosedToArrival', rateColumn?.combClosedToArrival, false],
+    ['rateCell.combClosedToDeparture', rateColumn?.combClosedToDeparture, false],
+    ['rateCell.israteavailable', rateColumn?.israteavailable, rateCombined]]) {
+    if (typeof value !== 'boolean' && !(value == null && combined)) restrictions.unknownRestrictionFlags.push(name);
   }
   restrictions.unknownRestrictionFlags.sort();
   return restrictions;
@@ -176,13 +185,15 @@ export function normalizeQuoteRestAvailability(response, body) {
         return { date, availableCount: count, rate: value, currency: serverCurrency, restrictions };
       });
       const departureColumn = `col${nights + 1}`;
-      const hasDeparture = data.datesList.length === nights + 1;
-      const propertyColumn = hasDeparture ? properties[0].columns?.[departureColumn] : null;
-      const roomColumn = hasDeparture ? room.columns[departureColumn] : null;
-      const rateColumn = hasDeparture ? rate.columns[departureColumn] : null;
+      const departureCells = [properties[0].columns?.[departureColumn], room.columns[departureColumn], rate.columns[departureColumn]];
+      // Live grids list the departure date but stop the row cells at the last night.
+      const departureColumnAbsent = data.datesList.length === nights + 1 && departureCells.every(cell => cell == null);
+      const hasDeparture = data.datesList.length === nights + 1 && !departureColumnAbsent;
+      const [propertyColumn, roomColumn, rateColumn] = hasDeparture ? departureCells : [null, null, null];
       const restrictions = columnRestrictions(properties[0], propertyColumn, room, roomColumn, rate, rateColumn);
       const departure = { date: new Date(start + nights * 86400000).toISOString().slice(0, 10),
-        verified: hasDeparture && restrictions.unknownRestrictionFlags.length === 0, restrictions };
+        verified: hasDeparture && restrictions.unknownRestrictionFlags.length === 0,
+        ...(departureColumnAbsent ? { departureColumnAbsent: true } : {}), restrictions };
       if (!departure.verified) partial = true;
       observations.push({ room: { code: room.code, label: label(room.desc) },
         rate: { code: rate.code, label: label(rate.desc), promotionCode }, nightly, departure });

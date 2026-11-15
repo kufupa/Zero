@@ -27,23 +27,38 @@ test('REST flag is strict and checked before session or input setup', async () =
   }
 });
 
-test('live response without an echo preserves effective cell restrictions and marks departure unknown', () => {
+test('live response without an echo preserves effective cell restrictions and marks the absent departure column', () => {
   const fixture = selectionFixture();
-  fixture.data.datesList.pop();
   fixture.data.children[0].columns = Object.fromEntries([1, 2, 3].map(i => [`col${i}`, {
     restricted: false, closed: null, combClosed: null,
   }]));
+  delete fixture.rate.columns.col4;
+  delete fixture.data.children[0].children[0].columns.col4;
   for (const col of Object.values(fixture.rate.columns)) Object.assign(col, {
     closed: null, closedToArrival: null, closedToDeparture: null,
   });
+  fixture.rate.columns.col1.restricted = null;
+  delete fixture.rate.columns.col1.israteavailable;
+  fixture.rate.columns.col2.israteavailable = null;
+  delete fixture.rate.columns.col2.restricted;
   const result = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
   assert.ok(result);
+  assert.equal(result.outcome, 'partial');
   assert.equal(result.criteriaEchoVerified, false);
+  assert.equal(result.observations[0].departure.date, '2026-09-27');
   assert.equal(result.observations[0].departure.verified, false);
-  assert.deepEqual(result.observations[0].nightly[0].restrictions.unknownRestrictionFlags, []);
+  assert.equal(result.observations[0].departure.departureColumnAbsent, true);
+  for (const night of result.observations[0].nightly) assert.deepEqual(night.restrictions.unknownRestrictionFlags, []);
+  assert.deepEqual(result.observations[0].nightly.map(night => [night.availableCount, night.rate, night.currency]),
+    Array(3).fill([3, '1780', 'ZAR']));
+  fixture.rate.columns.col2.israteavailable = 'Y';
+  const invalid = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
+  assert.ok(invalid.observations[0].nightly[1].restrictions.unknownRestrictionFlags.includes('rateCell.israteavailable'));
   delete fixture.rate.columns.col1.combClosedToArrival;
   const missing = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
   assert.ok(missing.observations[0].nightly[0].restrictions.unknownRestrictionFlags.includes('isclosetoarrival'));
+  assert.ok(missing.observations[0].nightly[0].restrictions.unknownRestrictionFlags.includes('rateCell.israteavailable'));
+  assert.ok(missing.observations[0].nightly[0].restrictions.unknownRestrictionFlags.includes('rateCell.restricted'));
   fixture.rate.columns.col1.combClosedToArrival = false;
   fixture.rate.columns.col1.newRestriction = null;
   const unknown = normalizeQuoteRestAvailability({ availabilitydata: fixture.data }, body);
@@ -99,6 +114,7 @@ test('property restrictions, missing native flags and invalid rate currency stay
   fixture.data.children[0].columns = Object.fromEntries([1, 2, 3].map(i => [`col${i}`, { restricted: false }]));
   fixture.data.children[0].columns.col1.restricted = true;
   delete fixture.rate.columns.col2.israteavailable;
+  delete fixture.rate.columns.col2.combClosed;
   fixture.rate.columns.col3.maxNights = 4;
   fixture.rate.currency = 'USD$';
   fixture.data.children[0].currency = 'ZAR';
@@ -124,6 +140,7 @@ test('retains departure restrictions and marks a missing departure column unveri
   result = normalize();
   assert.equal(result.outcome, 'partial');
   assert.equal(result.observations[0].departure.verified, false);
+  assert.equal(result.observations[0].departure.departureColumnAbsent, undefined);
   assert.ok(result.observations[0].departure.restrictions.unknownRestrictionFlags.length);
   fixture.data.children[0].children = [];
   assert.equal(normalize().outcome, 'partial');

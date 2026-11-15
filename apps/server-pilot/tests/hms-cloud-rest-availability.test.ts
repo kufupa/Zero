@@ -50,12 +50,20 @@ describe('opt-in REST availability', () => {
     page.evaluate.mockResolvedValueOnce({ loginToken: 'login-token' });
     fetchMock.mockImplementation((_url: string, _options: RequestInit) => {
       const fixture = selectionFixture();
-      fixture.data.datesList.pop();
+      fixture.data.children[0].columns = Object.fromEntries([1, 2, 3].map(i => [`col${i}`,
+        { restricted: false, closed: null, combClosed: null }]));
+      delete (fixture.rate.columns as Record<string, unknown>).col4;
+      delete (fixture.data.children[0].children[0].columns as Record<string, unknown>).col4;
+      for (const cell of Object.values(fixture.rate.columns) as Array<Record<string, unknown>>) {
+        Object.assign(cell, { closed: null, closedToArrival: null, closedToDeparture: null, restricted: null });
+        delete cell.israteavailable;
+      }
       return new Response(JSON.stringify({ availabilitydata: fixture.data }),
         { status: 200, headers: { 'content-type': 'application/json' } });
     });
     const result = await readQuoteRestAvailability({ propertyCode: 'HRCEN', criteria: [criteria] });
     expect(result.outcome).toBe('partial');
+    expect(result).toMatchObject({ domCalendarVerified: false, displayedRounding: 'unverified_no_dom' });
     const options = fetchMock.mock.calls[0]?.[1];
     expect(options.headers.authorization).toBe(`Bearer ${createHash('sha256').update('login-token').digest('base64')}`);
     expect(JSON.parse(options.body)).toMatchObject({ bookingSessionID: '', salesStrategy: 'BAR', numberOfDays: '3' });
@@ -64,8 +72,16 @@ describe('opt-in REST availability', () => {
     expect(reads[0]?.view).not.toHaveProperty('appliedCriteria');
     const projected = projectCloudAvailability(request, reads);
     if (projected.outcome !== 'read') throw new Error('expected REST read');
-    expect(projected.groups[0]?.coverage).toMatchObject({ criteriaEchoVerified: false, criteriaSource: 'submitted_request' });
-    expect(projected.groups[0]?.options[0]?.nightly[0]?.stockStatus).toBe('unknown');
+    expect(projected.groups[0]?.coverage).toMatchObject({ criteriaEchoVerified: false, criteriaSource: 'submitted_request',
+      departureColumnAbsent: true, domCalendarVerified: false, displayedRounding: 'unverified_no_dom' });
+    const option = projected.groups[0]?.options[0];
+    expect(option?.departure).toMatchObject({ date: '2026-09-27', verified: false, departureColumnAbsent: true });
+    expect(option?.reasons).toContain('REST_DEPARTURE_COLUMN_ABSENT');
+    expect(option?.availability).toBe('unknown');
+    expect(option?.nightly.map(night => night.stockStatus)).toEqual(['available', 'available', 'available']);
+    expect(option?.nightly.map(night => night.reasons)).toEqual([[], [], []]);
+    expect(option?.nightly[0]).toMatchObject({ availableCount: 3, price: { status: 'known', amount: '1780', currency: 'ZAR',
+      source: 'rest_availability_read', displayedRounding: 'unverified_no_dom' } });
   });
   it.each(['', 'off', 'ON', 'true'])('does no REST session work for flag %s', async flag => {
     vi.stubEnv('HMS_QUOTE_REST_FAST_PATH', flag);
@@ -107,10 +123,13 @@ describe('opt-in REST availability', () => {
   it('projects property closures and missing rate flags without claiming available stock', async () => {
     fetchMock.mockImplementation((_url: string, options: RequestInit) => {
       const fixture = selectionFixture();
-      fixture.data.children[0].columns = Object.fromEntries([1, 2, 3].map(i => [`col${i}`, { restricted: false }]));
+      fixture.data.children[0].columns = Object.fromEntries([1, 2, 3, 4].map(i => [`col${i}`, { restricted: false }]));
       fixture.data.children[0].columns.col1.restricted = true;
       delete fixture.rate.columns.col1.israteavailable;
+      delete fixture.rate.columns.col1.combClosed;
       delete fixture.rate.columns.col2.israteavailable;
+      delete fixture.rate.columns.col2.combClosed;
+      delete fixture.rate.columns.col3.israteavailable;
       return new Response(JSON.stringify({ appliedCriteria: JSON.parse(String(options.body)), availabilitydata: fixture.data }),
         { status: 200, headers: { 'content-type': 'application/json' } });
     });
@@ -121,6 +140,8 @@ describe('opt-in REST availability', () => {
       closedOrRestricted: true, unknownRestrictionFlags: expect.arrayContaining(['rateCell.israteavailable']),
     });
     expect(result.groups[0]?.options[0]?.nightly[1]?.stockStatus).toBe('unknown');
+    expect(result.groups[0]?.options[0]?.nightly[2]?.stockStatus).toBe('available');
+    expect(result.groups[0]?.options[0]?.nightly[2]?.restrictionEvidence).toMatchObject({ unknownRestrictionFlags: [] });
   });
 
   it.each(['occupied', 'arrival', 'departure'] as const)(
@@ -146,13 +167,18 @@ describe('opt-in REST availability', () => {
       expect(option?.departure).toMatchObject({ verified: true, restrictions: { isclosetedeparture: scenario === 'departure' } });
     });
 
-  it.each(['closed', 'missing', 'unknown', 'arrival_only', 'open'] as const)(
+  it.each(['closed', 'missing', 'absent', 'unknown', 'arrival_only', 'open'] as const)(
     'projects departure eligibility and preserves night evidence: %s', async scenario => {
       fetchMock.mockImplementation((_url: string, options: RequestInit) => {
         const fixture = selectionFixture();
         fixture.data.children[0].columns = Object.fromEntries([1, 2, 3, 4].map(i => [`col${i}`, { restricted: false }]));
         if (scenario === 'closed') fixture.rate.columns.col4.combClosedToDeparture = true;
         if (scenario === 'missing') fixture.data.datesList.pop();
+        if (scenario === 'absent') {
+          for (const row of [fixture.data.children[0], fixture.data.children[0].children[0], fixture.rate]) {
+            delete (row.columns as Record<string, unknown>).col4;
+          }
+        }
         if (scenario === 'unknown') fixture.rate.columns.col4.someNewRestriction = true;
         if (scenario === 'arrival_only') fixture.rate.columns.col4.combClosedToArrival = true;
         if (scenario === 'missing') {
@@ -165,7 +191,10 @@ describe('opt-in REST availability', () => {
       const result = projectCloudAvailability(request, await runCloudAvailability({ request, target }));
       if (result.outcome !== 'read') throw new Error('expected REST read');
       const option = result.groups[0]?.options[0];
-      expect(option?.departure).toMatchObject({ date: '2026-09-27', verified: !['missing', 'unknown'].includes(scenario) });
+      expect(option?.departure).toMatchObject({ date: '2026-09-27', verified: !['missing', 'absent', 'unknown'].includes(scenario) });
+      expect(option?.departure?.departureColumnAbsent).toBe(scenario === 'absent' ? true : undefined);
+      expect(result.groups[0]?.coverage.departureColumnAbsent).toBe(scenario === 'absent' ? true : undefined);
+      expect(option?.reasons.includes('REST_DEPARTURE_COLUMN_ABSENT')).toBe(scenario === 'absent');
       expect(option?.nightly[0]?.stockStatus).toBe(scenario === 'closed' ? 'restricted' :
         ['missing', 'unknown'].includes(scenario) ? 'unknown' : 'available');
       if (scenario === 'missing') {

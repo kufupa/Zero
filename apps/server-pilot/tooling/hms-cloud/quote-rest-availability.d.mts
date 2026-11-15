@@ -13,7 +13,7 @@ export type RestAvailabilityObservation = {
   rate: { code: string; label: string | null; promotionCode: string | null };
   nightly: Array<{ date: string; availableCount: number | null; rate: string | null; currency: string | null;
     restrictions: RestAvailabilityRestrictions }>;
-  departure: { date: string; verified: boolean; restrictions: RestAvailabilityRestrictions };
+  departure: { date: string; verified: boolean; departureColumnAbsent?: true; restrictions: RestAvailabilityRestrictions };
 };
 export type RestAvailabilityGroup = RestAvailabilityEvidence & {
   outcome: 'rest_observed' | 'partial'; observedAt: string; criteriaEchoVerified: boolean;

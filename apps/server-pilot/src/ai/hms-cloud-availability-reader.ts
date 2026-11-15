@@ -82,7 +82,7 @@ export type HmsCloudAvailabilityResult = ({
       availability: 'unknown';
       category: string;
       reasons: string[];
-      departure?: { date: string; verified: boolean; restrictions: Record<string, unknown> };
+      departure?: { date: string; verified: boolean; departureColumnAbsent?: true; restrictions: Record<string, unknown> };
       nightly: Array<{
         date: string;
         availableCount: number | null;
@@ -189,18 +189,22 @@ function mappedNight(value: unknown, requestedCount: number, restEvidence: boole
 }
 
 function restGroupView(group: RestAvailabilityGroup, quantity: number): CloudAvailabilityGroupRead {
+  const departureAbsent = (observation: RestAvailabilityGroup['observations'][number]) =>
+    observation.departure?.verified === false && observation.departure.departureColumnAbsent === true;
   const options = group.observations.map(observation => ({
     room: observation.room,
     rate: { ...observation.rate, promotioncode: observation.rate.promotionCode },
-    category: 'unknown', reasons: ['REST_AVAILABILITY_WITHOUT_DOM'],
+    category: 'unknown',
+    reasons: ['REST_AVAILABILITY_WITHOUT_DOM', ...(departureAbsent(observation) ? ['REST_DEPARTURE_COLUMN_ABSENT'] : [])],
     departure: observation.departure,
     nights: observation.nightly.map((night, nightIndex) => {
       const closed = night.restrictions.closedOrRestricted || night.restrictions.isclosed ||
         nightIndex === 0 && night.restrictions.isclosetoarrival === true;
       const departure = observation.departure;
-      const departureUnknown = !departure?.verified || !departure.restrictions ||
-        departure.restrictions.unknownRestrictionFlags.length > 0;
-      const departureClosed = !departureUnknown && (departure.restrictions.closedOrRestricted ||
+      // HMS sent no departure cell: reported on the option and coverage, not as unknown stock per night.
+      const departureUnknown = !departureAbsent(observation) && (!departure?.verified || !departure.restrictions ||
+        departure.restrictions.unknownRestrictionFlags.length > 0);
+      const departureClosed = departure.verified && !departureUnknown && (departure.restrictions.closedOrRestricted ||
         departure.restrictions.isclosed || departure.restrictions.isclosetedeparture);
       return { date: night.date, roomsAvailable: night.availableCount, restrictions: night.restrictions,
         reasons: [...(closed || departureClosed ? ['closed_or_restricted'] : []),
@@ -221,6 +225,7 @@ function restGroupView(group: RestAvailabilityGroup, quantity: number): CloudAva
       criteriaSource: group.criteriaEchoVerified ? 'server_echo' : 'submitted_request',
       domCalendarVerified: false, screenshotsVerified: false, displayedRounding: group.displayedRounding,
       payableTotal: group.payableTotal, completeForRequestedScope: false,
+      ...(group.observations.some(departureAbsent) ? { departureColumnAbsent: true } : {}),
       checkedCriteriaMatch: { property: true, dates: true, occupancy: true, partyContext: true,
         roomTypes: group.submittedCriteria.roomTypeCodes ? true : null,
         ratePlans: group.submittedCriteria.ratePlanCodes ? true : null },
@@ -255,7 +260,9 @@ function mapOption(value: unknown, requestedCount: number, restEvidence: boolean
     category,
     reasons,
     ...(restEvidence && realDay(departure?.date) && typeof departure?.verified === 'boolean' && departureRestrictions
-      ? { departure: { date: departure.date, verified: departure.verified, restrictions: departureRestrictions } } : {}),
+      ? { departure: { date: departure.date, verified: departure.verified,
+        ...(departure.verified === false && departure.departureColumnAbsent === true ? { departureColumnAbsent: true as const } : {}),
+        restrictions: departureRestrictions } } : {}),
     nightly,
   };
 }
