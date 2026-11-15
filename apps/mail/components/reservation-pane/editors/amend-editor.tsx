@@ -403,7 +403,7 @@ export function AmendEditor(editor: Editor) {
   const lunchRequested = [...shared, ...per.flatMap(target => rows(target.changes))].some(change =>
     change.op === 'set' && change.field === 'requestedMealPlan' && /\blunch\b/i.test(text(change.value)));
   return <div className={styles.stack}>
-    {lunchRequested && <p className={styles.warning} role="note">Centurion Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
+    {lunchRequested && <p className={styles.warning} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     <Section title="Find saved stays">
       <p className={styles.hint}>Select exact Infor stays. Unmentioned fields stay unchanged. Each stay is checked and saved separately.</p>
       {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Written or uncertain stays remain locked; untouched stays can still be corrected and checked. Reconcile before changing target scope.</div>}

@@ -126,7 +126,7 @@ export function partyNoCandidateNote(
   if (outcome === 'refused_flag_off') return 'Company and agency rates are switched off.';
   if (outcome === 'refused_input_invalid') return 'Type a company or agency name.';
   if (outcome === 'refused_origin_mismatch') {
-    return 'This email is Da Vinci mail. Centurion HMS will not look it up.';
+    return "This email is from another hotel's mailbox. Nava will not look it up in this HMS.";
   }
   if (outcome === 'external_system_unavailable') {
     return "Nava couldn't check HMS for this name. Try again, or quote at public rates.";
