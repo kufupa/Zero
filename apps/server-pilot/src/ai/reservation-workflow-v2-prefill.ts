@@ -5954,6 +5954,14 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
     const extracted = extractionRequestForProposal(request, proposal.content.requests, input.extraction,
       input.extractionIdByProposalRequestId);
     if (!extracted) continue;
+    const incompletePartyReads = input.observations.filter((row) => row.kind === 'party_candidate' &&
+      (row.status !== 'complete' || !row.coverage.complete) && extracted.parties.some((party) =>
+        party.role === row.criteria.role && norm(party.name.value) === norm(row.criteria.name) &&
+        party.name.sourceRefs.some((ref) => row.sourceRefs.includes(ref))));
+    if (incompletePartyReads.length) proposal.issues.push({
+      path: `/requests/${request.id}`, kind: 'party_lookup_incomplete',
+      explanation: 'Party lookup incomplete. Retry the Primary Booking Agency, Organization or A/R Account search before selecting a match.',
+      evidenceRefs: incompletePartyReads.map((row) => row.ref).slice(0, 100) });
     const slots: Array<{ party: Record<string, unknown>; role: string; extractedRole: string; path: string; allocationId?: string }> = [];
     const add = (fields: Record<string, unknown>, key: string, role: string, extractedRole: string, path: string, allocationId?: string) => {
       const party = fields[key];

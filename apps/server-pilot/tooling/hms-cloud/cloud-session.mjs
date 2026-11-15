@@ -620,11 +620,13 @@ export function cloudCredentialLeaseKey(propertyCode) {
 }
 
 /** A dedicated connection holds one credential lock across all participating processes. */
-export async function acquireCloudCredentialLease(propertyCode, { signal } = {}) {
+export async function acquireCloudCredentialLease(propertyCode, { signal, readOnly = false } = {}) {
   const property = registeredProperty(propertyCode);
+  if (typeof readOnly !== 'boolean') throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
   signal?.throwIfAborted();
   const loss = new AbortController();
-  const acquisitionSignal = AbortSignal.any([loss.signal, AbortSignal.timeout(20000), ...(signal ? [signal] : [])]);
+  const acquisitionTimeout = AbortSignal.timeout(readOnly ? 75000 : 20000);
+  const acquisitionSignal = AbortSignal.any([loss.signal, acquisitionTimeout, ...(signal ? [signal] : [])]);
   const state = { ref: property.credentialSecretRef, released: false, borrowers: 0 };
   let client;
   let connection;
@@ -632,6 +634,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal } = {})
   let heartbeat;
   let acquired = false;
   let closing = false;
+  let phase = 'connection';
   const fail = () => { if (!closing && !loss.signal.aborted) loss.abort(new Error('HMS_CREDENTIAL_LEASE_LOST')); };
   const key = cloudCredentialLeaseKey(propertyCode);
   try {
@@ -640,16 +643,28 @@ export async function acquireCloudCredentialLease(propertyCode, { signal } = {})
       client = postgres(process.env.DATABASE_URL, { max: 1, idle_timeout: 0, connect_timeout: 10,
         onclose: fail });
       connection = await runUntilAborted(() => client.reserve(), acquisitionSignal);
+      // Queue reads in PostgreSQL instead of racing every 250 ms. Ownership remains exclusive.
+      if (readOnly) {
+        await runUntilAborted(() => connection.unsafe("SELECT set_config('lock_timeout', '70s', false)"), acquisitionSignal);
+        await runUntilAborted(() => connection.unsafe('SELECT pg_advisory_lock($1::bigint)', [key]), acquisitionSignal);
+        acquired = true;
+      }
       while (!acquired) {
+        phase = 'connection';
         const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_try_advisory_lock($1::bigint) AS acquired', [key]), acquisitionSignal);
         if (loss.signal.aborted) throw loss.signal.reason;
         acquired = rows[0]?.acquired === true;
-        if (!acquired) await delay(250, undefined, { signal: acquisitionSignal });
+        if (!acquired) {
+          phase = 'contention';
+          await delay(250, undefined, { signal: acquisitionSignal });
+        }
       }
       signal?.throwIfAborted();
+      phase = 'connection';
       const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_backend_pid() AS pid'), acquisitionSignal);
       const pid = rows[0]?.pid;
       if (!Number.isInteger(pid) || loss.signal.aborted) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
+      phase = 'quiescence';
       await assertCredentialWriterQuiesced(propertyCode);
       timer = setInterval(() => {
         if (heartbeat || closing) return;
@@ -693,7 +708,9 @@ export async function acquireCloudCredentialLease(propertyCode, { signal } = {})
     try { await client?.end({ timeout: 5 }); } catch { throw new Error('HMS_CREDENTIAL_LEASE_RELEASE_FAILED'); }
     if (signal?.aborted) signal.throwIfAborted();
     if (error?.message === 'HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED') throw error;
-    throw new Error('HMS_CREDENTIAL_LEASE_UNAVAILABLE');
+    throw new Error(phase === 'quiescence' ? 'HMS_CREDENTIAL_LEASE_QUIESCENCE_FAILED' :
+      error?.code === '55P03' || (phase === 'contention' && acquisitionTimeout.aborted) ? 'HMS_CREDENTIAL_LEASE_CONTENDED' :
+        'HMS_CREDENTIAL_LEASE_CONNECTION_FAILED');
   }
 }
 
@@ -774,7 +791,7 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
     signal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
     if (!lease) {
-      lease = await acquireCloudCredentialLease(propertyCode, { signal });
+      lease = await acquireCloudCredentialLease(propertyCode, { signal, readOnly: !writer });
       ownedLease = true;
     }
     if (lease) {
