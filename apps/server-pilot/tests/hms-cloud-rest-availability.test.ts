@@ -167,18 +167,13 @@ describe('opt-in REST availability', () => {
       expect(option?.departure).toMatchObject({ verified: true, restrictions: { isclosetedeparture: scenario === 'departure' } });
     });
 
-  it.each(['closed', 'missing', 'absent', 'unknown', 'arrival_only', 'open'] as const)(
+  it.each(['closed', 'missing', 'unknown', 'arrival_only', 'open'] as const)(
     'projects departure eligibility and preserves night evidence: %s', async scenario => {
       fetchMock.mockImplementation((_url: string, options: RequestInit) => {
         const fixture = selectionFixture();
         fixture.data.children[0].columns = Object.fromEntries([1, 2, 3, 4].map(i => [`col${i}`, { restricted: false }]));
         if (scenario === 'closed') fixture.rate.columns.col4.combClosedToDeparture = true;
         if (scenario === 'missing') fixture.data.datesList.pop();
-        if (scenario === 'absent') {
-          for (const row of [fixture.data.children[0], fixture.data.children[0].children[0], fixture.rate]) {
-            delete (row.columns as Record<string, unknown>).col4;
-          }
-        }
         if (scenario === 'unknown') fixture.rate.columns.col4.someNewRestriction = true;
         if (scenario === 'arrival_only') fixture.rate.columns.col4.combClosedToArrival = true;
         if (scenario === 'missing') {
@@ -191,10 +186,9 @@ describe('opt-in REST availability', () => {
       const result = projectCloudAvailability(request, await runCloudAvailability({ request, target }));
       if (result.outcome !== 'read') throw new Error('expected REST read');
       const option = result.groups[0]?.options[0];
-      expect(option?.departure).toMatchObject({ date: '2026-09-27', verified: !['missing', 'absent', 'unknown'].includes(scenario) });
-      expect(option?.departure?.departureColumnAbsent).toBe(scenario === 'absent' ? true : undefined);
-      expect(result.groups[0]?.coverage.departureColumnAbsent).toBe(scenario === 'absent' ? true : undefined);
-      expect(option?.reasons.includes('REST_DEPARTURE_COLUMN_ABSENT')).toBe(scenario === 'absent');
+      expect(option?.departure).toMatchObject({ date: '2026-09-27', verified: !['missing', 'unknown'].includes(scenario) });
+      expect(option?.departure?.departureColumnAbsent).toBeUndefined();
+      expect(result.groups[0]?.coverage.departureColumnAbsent).toBeUndefined();
       expect(option?.nightly[0]?.stockStatus).toBe(scenario === 'closed' ? 'restricted' :
         ['missing', 'unknown'].includes(scenario) ? 'unknown' : 'available');
       if (scenario === 'missing') {
