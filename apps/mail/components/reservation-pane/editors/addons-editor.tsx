@@ -275,7 +275,8 @@ function ServiceRow({ editor, service, serviceIndex, target, targetIndex, multiT
       && (observation.criteria.kind === 'unsaved_addon_preview' ? observation.criteria.itemCandidateRef === selectedItem
         : observation.criteria.kind === 'saved_addon_fresh_prepare' && draft.observations.some(parent =>
           parent.ref === observation.criteria.unsavedPreviewRef && parent.criteria.itemCandidateRef === selectedItem))
-      : JSON.stringify(observation.criteria.targetRef) === JSON.stringify(ref)
+      : Boolean(savedTarget) && record(observation.criteria.targetRef).kind === 'saved_target'
+      && record(observation.criteria.targetRef).requestId === savedTarget?.requestId && record(observation.criteria.targetRef).hintId === savedTarget?.hintId
       && observation.criteria.targetObservationRef === selectedStay && observation.criteria.candidateRef === selectedItem));
   const preview = record(latest?.result), native = record(preview.native), before = record(preview.before), after = record(preview.after);
   const selectedCandidateCurrent = catalogue.some(row => row.observation.ref === selectedItem);

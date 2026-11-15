@@ -420,7 +420,7 @@ export function CreateEditor(editor: Editor) {
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
   return <div className={`${styles.editor} ${styles.compactCreate}`}>
     <SourceConfirmationNotice editor={editor} />
-    {lunchRequested && <p className={styles.notice} role="note">Centurion Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
+    {lunchRequested && <p className={styles.notice} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
     <Section title="Commercial">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
