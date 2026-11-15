@@ -48,9 +48,10 @@ export declare function verifyCloudCredentialVersion(input: {
 }): Promise<string | null>;
 export declare function acquireCloudCredentialLease(propertyCode: string, options?: {
   signal?: AbortSignal;
+  readOnly?: boolean;
 }): Promise<CloudCredentialLease>;
 export declare function withCloudCredentialLease<T>(propertyCode: string,
-  operation: (lease: CloudCredentialLease) => T | Promise<T>, options?: { signal?: AbortSignal }): Promise<T>;
+  operation: (lease: CloudCredentialLease) => T | Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean }): Promise<T>;
 export declare function verifyCloudProperty(page: Page, input: {
   propertyCode: string;
   tenantId?: string;

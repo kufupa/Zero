@@ -32,18 +32,19 @@ test('target browser quarantine clears under the credential lease only after its
     import assert from 'node:assert/strict';
     import { mock } from 'node:test';
     import * as os from 'node:os';
+    import { syncBuiltinESMExports } from 'node:module';
     import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
     import { join } from 'node:path';
     import { createHash } from 'node:crypto';
     import { spawn } from 'node:child_process';
     import { once } from 'node:events';
     const home = mkdtempSync(join(os.tmpdir(), 'zero-cloud-hold-'));
-    const { constants, default: osDefault, ...osNames } = os;
-    mock.module('node:os', { defaultExport: { ...osDefault, homedir: () => home }, namedExports: { ...osNames, homedir: () => home } });
+    mock.method(os.default, 'homedir', () => home);
+    syncBuiltinESMExports();
     let held = false, credentialReads = 0;
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async (sql) => {
-        if (sql.includes('pg_try_advisory_lock')) { held = true; return [{ acquired: true }]; }
+        if (/pg_(?:try_)?advisory_lock/.test(sql)) { held = true; return [{ acquired: true }]; }
         if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
         return [{ pid: 42 }];
       } }), end: async () => { held = false; },
@@ -110,35 +111,32 @@ test('owned writer cleanup separates close API errors from physical exit and lea
     import * as os from 'node:os';
     import * as fs from 'node:fs';
     import * as timers from 'node:timers/promises';
+    import { syncBuiltinESMExports } from 'node:module';
     import { join } from 'node:path';
     import { spawn } from 'node:child_process';
     import { once } from 'node:events';
     const mode = process.argv[1], home = fs.mkdtempSync(join(os.tmpdir(), 'zero-writer-cleanup-'));
     const children = []; let held = false, round = 0, tamperIdentity = false, releaseCallback;
-    const { constants, default: osDefault, ...osNames } = os;
-    mock.module('node:os', { defaultExport: { ...osDefault, homedir: () => home }, namedExports: { ...osNames, homedir: () => home } });
-    mock.module('node:timers/promises', { namedExports: { ...timers,
-      setTimeout: (ms, ...args) => timers.setTimeout(ms === 30000 ? 100 : ms, ...args),
-    } });
-    const { constants: fsConstants, default: fsDefault, ...fsNames } = fs;
-    mock.module('node:fs', { defaultExport: { ...fsDefault }, namedExports: { ...fsNames,
-      readFileSync: (path, ...args) => {
-        const value = fs.readFileSync(path, ...args), child = children.at(-1)?.child;
-        if (mode === 'unknown-owner' && tamperIdentity && path === '/proc/' + child?.pid + '/stat') {
-          const split = value.lastIndexOf(')'), fields = value.slice(split + 1).trim().split(/\s+/);
-          fields[19] = String(BigInt(fields[19]) + 1n);
-          return value.slice(0, split + 1) + ' ' + fields.join(' ');
-        }
-        return value;
-      },
-      unlinkSync: path => {
-        if (mode === 'hold-release' && path.includes('credential-browser-hold-')) throw new Error('TEST_HOLD_RELEASE_FAILED');
-        return fs.unlinkSync(path);
-      },
-    } });
+    const timeout = timers.setTimeout, readFileSync = fs.readFileSync, unlinkSync = fs.unlinkSync;
+    mock.method(os.default, 'homedir', () => home);
+    mock.method(timers.default, 'setTimeout', (ms, ...args) => timeout(ms === 30000 ? 100 : ms, ...args));
+    mock.method(fs.default, 'readFileSync', (path, ...args) => {
+      const value = readFileSync(path, ...args), child = children.at(-1)?.child;
+      if (mode === 'unknown-owner' && tamperIdentity && path === '/proc/' + child?.pid + '/stat') {
+        const split = value.lastIndexOf(')'), fields = value.slice(split + 1).trim().split(/\s+/);
+        fields[19] = String(BigInt(fields[19]) + 1n);
+        return value.slice(0, split + 1) + ' ' + fields.join(' ');
+      }
+      return value;
+    });
+    mock.method(fs.default, 'unlinkSync', path => {
+      if (mode === 'hold-release' && path.includes('credential-browser-hold-')) throw new Error('TEST_HOLD_RELEASE_FAILED');
+      return unlinkSync(path);
+    });
+    syncBuiltinESMExports();
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async sql => {
-        if (sql.includes('pg_try_advisory_lock')) { held = true; return [{ acquired: true }]; }
+        if (/pg_(?:try_)?advisory_lock/.test(sql)) { held = true; return [{ acquired: true }]; }
         if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
         return [{ pid: 42 }];
       } }), end: async () => { held = false; },
@@ -236,6 +234,7 @@ test('owned writer cleanup separates close API errors from physical exit and lea
         if (child.exitCode === null && child.signalCode === null) process.kill(-child.pid,'SIGKILL');
         await exited;
       }
+      mock.restoreAll(); syncBuiltinESMExports();
       fs.rmSync(home,{ recursive:true,force:true });
     }
   `;
@@ -252,17 +251,18 @@ test('fresh credential versions and evidence key metadata are checked under the 
     import assert from 'node:assert/strict';
     import { mock } from 'node:test';
     import * as os from 'node:os';
+    import { syncBuiltinESMExports } from 'node:module';
     import { mkdtempSync, rmSync } from 'node:fs';
     import { join } from 'node:path';
     const home = mkdtempSync(join(os.tmpdir(), 'zero-cloud-credential-'));
-    const { constants, default: osDefault, ...osNames } = os;
-    mock.module('node:os', { defaultExport: { ...osDefault, homedir: () => home }, namedExports: { ...osNames, homedir: () => home } });
+    mock.method(os.default, 'homedir', () => home);
+    syncBuiltinESMExports();
     process.on('exit', () => rmSync(home, { recursive: true, force: true }));
     let held = false, launches = 0, keyReads = 0, mode = '', controller;
     const key = Buffer.alloc(32, 83), encodedKey = key.toString('base64');
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async (sql) => {
-        if (sql.includes('pg_try_advisory_lock')) { held = true; return [{ acquired: true }]; }
+        if (/pg_(?:try_)?advisory_lock/.test(sql)) { held = true; return [{ acquired: true }]; }
         if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
         return [{ pid: 42 }];
       } }), end: async () => { held = false; },
