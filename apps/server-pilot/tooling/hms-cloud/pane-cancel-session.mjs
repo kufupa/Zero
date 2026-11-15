@@ -6,7 +6,7 @@ import { withCloudCredentialLease, withCloudReadSession, withCloudWriterSession 
 import { getPropertyRegistration } from './property-registry.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
-import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
+import { openLabtestCancellation, confirmLabtestCancellation, cancellationPenaltyNotice } from './guest-stay-cancel.mjs';
 import { verifySingleCancellationScope } from './cancel-association-scope.mjs';
 
 const phaseSignal = (signal, timeout) => signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);
@@ -211,9 +211,15 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
   }) };
   let writerSessionClosed = false, dispatched = false, confirmAttempted = false, result;
   let chargeAuthorityAttempted = false, chargeDecisionRequested = false, chargeDispatchAttempted = false, pendingChargeAuthority = 0;
+  let approvedNoticeText = null;
   const awaitCharge = typeof input.awaitChargeApproval === 'function' ? async (...args) => {
     chargeDecisionRequested = true;
-    return input.awaitChargeApproval(...args);
+    approvedNoticeText = null;
+    const approved = await input.awaitChargeApproval(...args);
+    if (approved === true && args[0]?.timing === 'after_save') {
+      approvedNoticeText = cancellationPenaltyNotice(args[0]?.text)?.text ?? null;
+    }
+    return approved;
   } : undefined;
   const dispatchCharge = typeof input.dispatchChargeWithAuthority === 'function' ? async (...args) => {
     chargeDispatchAttempted = true;
@@ -314,9 +320,18 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
     result.chargeDispatched === false && result.browserSendRequests === 0 && Array.isArray(result.blockedRequests) &&
     result.blockedRequests.length === 0 &&
     result.zeroPenaltyNotice === 'Cancellation Penalty of 0.00 may be added to account.';
+  const approvedNotice = result.outcome === 'approved_notice_awaiting_readback' && writerSessionClosed &&
+    result.dispatchCallbacksDrained === true && !chargeAuthorityAttempted && chargeDecisionRequested && !chargeDispatchAttempted &&
+    result.requestDispatched === true && result.httpStatus === 200 && result.chargeApproved === true &&
+    result.chargeDispatched === false && result.penaltyNoticeAcknowledged === true &&
+    result.penaltyTiming === 'after_save' && cancellationPenaltyNotice(result.penaltyText)?.amount === result.penaltyAmount &&
+    approvedNoticeText !== null && cancellationPenaltyNotice(result.penaltyText)?.text === approvedNoticeText &&
+    typeof result.penaltyAmount === 'string' && !/^0+\.00$/.test(result.penaltyAmount) &&
+    result.browserSendRequests === 0 && Array.isArray(result.blockedRequests) && result.blockedRequests.length === 0;
   const outcome = chargeAuthorityAttempted || ['fee_dialog_pending', 'fee_accepted_unconfirmed'].includes(result.outcome) ||
-    (result.outcome === 'zero_notice_awaiting_readback' && !(zeroNotice && complete))
-    ? 'cancel_penalty_pending' : (result.outcome === 'awaiting_readback' || zeroNotice) && complete ? 'cancelled' : 'cancel_unconfirmed';
+    (result.outcome === 'zero_notice_awaiting_readback' && !(zeroNotice && complete)) ||
+    (result.outcome === 'approved_notice_awaiting_readback' && !(approvedNotice && complete))
+    ? 'cancel_penalty_pending' : (result.outcome === 'awaiting_readback' || zeroNotice || approvedNotice) && complete ? 'cancelled' : 'cancel_unconfirmed';
   return { ...result, outcome, nativeReadback, runDir: root, screenshots, writerSessionClosed,
     dispatchCallbacksDrained: pendingChargeAuthority === 0 && (confirmAttempted ? result.dispatchCallbacksDrained === true : true) };
 }

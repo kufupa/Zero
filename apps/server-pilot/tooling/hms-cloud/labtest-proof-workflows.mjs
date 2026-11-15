@@ -10,6 +10,8 @@ const check = (value, issue) => { if (!value) throw new Error(issue); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const equal = (a, b) => hash(a) === hash(b);
+const nameParts = value => typeof value === 'string' ? value.normalize('NFKC').toLowerCase()
+  .split(/[\s,]+/u).filter(Boolean).sort() : [];
 const observed = () => new Date().toISOString();
 const itemFields = ['code', 'quantity', 'startDate', 'endDate', 'unitPrice', 'frequency', 'pricingControl', 'folio',
   'comment', 'currency', 'totalCost'];
@@ -131,7 +133,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     };
     check(selected.guaranteeCode === 'NGI', 'AMEND_LAB_GUARANTEE_UNSUPPORTED');
     const changes = { bookerContact: `Labtest amend ${randomUUID().slice(0, 8)}`,
-      retainRates: 'no', cmsSend: false, cmsMessageId: field('udfchar09'), cmsRecipient: field('udfchar13') };
+      retainRates: 'yes', cmsSend: false, cmsMessageId: field('udfchar09'), cmsRecipient: field('udfchar13') };
     check(field('udfchar06') !== changes.bookerContact, 'AMEND_CHANGE_REQUIRED');
     proof.changes = changes;
     const input = { ...scope, target: { propertyCode, origin: property.origin },
@@ -224,7 +226,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
       const read = await runTool({ tool: 'read', confirmation: own.confirmation, guestName: 'Proof Labtest', arrivalDate: selected.arrival });
       check(read.outcome === 'ok' && read.propertyCode === propertyCode && read.nativeStayId === own.nativeStayId &&
         read.target?.propertyCode === propertyCode && read.target?.confirmation === own.confirmation &&
-        read.target?.guestName === `${selected.lastName}, ${selected.firstName}` &&
+        equal(nameParts(read.target?.guestName), nameParts(`${selected.firstName} ${selected.lastName}`)) &&
         read.coverage?.complete === true, 'ADDONS_TARGET_UNVERIFIED');
       target = read.target;
       proof.prepared = await runTool({ tool: 'prepare', confirmation: own.confirmation, items });

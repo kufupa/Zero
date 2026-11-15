@@ -2,10 +2,11 @@
   "propertyCode": "HRCEN",
   "guest": { "profileId": "46343" },
   "stay": { "arrival": "2027-03-09", "departure": "2027-03-10", "adults": 1, "childAges": [] },
-  "room": { "roomType": "STQN", "ratePlan": "BAR" },
+  "room": { "roomType": "STQN", "ratePlan": "CMPRO" },
   "guaranteeType": "NGI",
   "sourceOfBusiness": "EMA",
   "track": "BAR",
   "guestoptin4": false,
-  "cms": { "send": false }
+  "cms": { "send": false },
+  "proof": { "addons": [{ "code": "ADDINA", "quantity": "1" }] }
 }

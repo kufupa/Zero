@@ -30,17 +30,21 @@ REMOTE_SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
 CHUNK_CHARS=16000
 
 usage() {
-  echo "usage: $0 <create|cancel|amend|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--no-ledger]" >&2
+  echo "usage: $0 <create|cancel|amend|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--state-dir <absolute remote path>] [--no-ledger] [--cancel-scenario zero|penalty] [--approve-labtest-penalty <amount>]" >&2
   exit 2
 }
 [ "$#" -ge 3 ] || usage
 WORKFLOW="$1"; PROPERTY="$2"; SHA="$3"; shift 3
-REQUEST=""; LEDGER=1; LOCAL=0
+REQUEST=""; LEDGER=1; LOCAL=0; STATE_DIR=/home/ubuntu/.local/state/nava-labtest-proof
+CANCEL_SCENARIO=zero; APPROVED_PENALTY=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --request) [ "$#" -ge 2 ] || usage; REQUEST="$2"; shift 2 ;;
     --local) LOCAL=1; shift ;;
     --no-ledger) LEDGER=0; shift ;;
+    --state-dir) [ "$#" -ge 2 ] || usage; STATE_DIR="$2"; shift 2 ;;
+    --cancel-scenario) [ "$#" -ge 2 ] || usage; CANCEL_SCENARIO="$2"; shift 2 ;;
+    --approve-labtest-penalty) [ "$#" -ge 2 ] || usage; APPROVED_PENALTY="$2"; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -50,6 +54,19 @@ case "$WORKFLOW" in
 esac
 [[ "$PROPERTY" =~ ^(HRCEN|HRDAV|HRDAVS)$ ]] || usage
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || usage
+[[ "$STATE_DIR" =~ ^/[A-Za-z0-9_./-]+$ ]] && [[ "/$STATE_DIR/" != *"/../"* ]] &&
+  [[ "/$STATE_DIR/" != *"/./"* ]] || usage
+[[ "$CANCEL_SCENARIO" =~ ^(zero|penalty)$ ]] || usage
+if [ "$WORKFLOW" = cancel ]; then
+  [ "$PROPERTY" = HRCEN ] || usage
+  [ "$CANCEL_SCENARIO" != penalty ] || [ "$LEDGER" = 0 ] || {
+    echo "proof: penalty scenario requires --no-ledger; only zero-fee proof publishes a canary" >&2; exit 2;
+  }
+else
+  [ "$CANCEL_SCENARIO" = zero ] && [ -z "$APPROVED_PENALTY" ] || usage
+fi
+[ -z "$APPROVED_PENALTY" ] || { [ "$CANCEL_SCENARIO" = penalty ] &&
+  [[ "$APPROVED_PENALTY" =~ ^[0-9]{1,12}\.[0-9]{2}$ ]] && [[ ! "$APPROVED_PENALTY" =~ ^0+\.00$ ]]; } || usage
 [ "$WORKFLOW" = create ] || [ -z "$REQUEST" ] || {
   echo "proof: --request is accepted only by create; follow-ups use its bound request" >&2
   exit 2
@@ -68,6 +85,9 @@ if [ -f "$hold" ]; then
 fi
 
 ARTIFACTS="${NAVA_PROOF_ARTIFACT_ROOT:-$HOME/.local/share/zero/proofs}/${SHA}/${PROPERTY}/${WORKFLOW}"
+if [ "$STATE_DIR" != /home/ubuntu/.local/state/nava-labtest-proof ]; then
+  ARTIFACTS="${ARTIFACTS}/$(printf '%s' "$STATE_DIR" | sha256sum | cut -c1-12)"
+fi
 mkdir -p "$ARTIFACTS"
 CONFIRMATION="-"
 
@@ -109,14 +129,18 @@ export NVM_DIR=/home/ubuntu/.nvm
 [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"
 cd ${REMOTE_SERVER_PILOT}
 [ \"\$(git rev-parse --verify 'HEAD^{commit}')\" = ${SHA} ] || { echo 'proof: box checkout is not ${SHA}' >&2; exit 20; }
-STATE=\"\$HOME/.local/state/nava-labtest-proof\"
+STATE=${STATE_DIR}
 RUN=\"\$STATE/${SHA}\"
 REQUEST_FILE=\"\$STATE/requests/${PROPERTY}-${SHA}.json\"
 mkdir -p \"\$RUN\" \"\$STATE/requests\"
 "
 
 run_stage() {
-  local stage="$1" upload="" keep="" line rc=0
+  local stage="$1" upload="" keep="" line cancel_args="" rc=0
+  if [ "$stage" = cancel ]; then
+    cancel_args="--cancel-scenario ${CANCEL_SCENARIO}"
+    [ -z "$APPROVED_PENALTY" ] || cancel_args="$cancel_args --approve-labtest-penalty ${APPROVED_PENALTY}"
+  fi
   if [ "$stage" = prepare ]; then
     # Each call uploads to its own file; only a prepare that passed publishes it, so a refused or
     # overlapping call cannot replace the request an earlier journal is bound to.
@@ -135,7 +159,7 @@ set +a
 export NAVA_BUILD_COMMIT=${SHA} NODE_EXTRA_CA_CERTS=${REMOTE_SERVER_PILOT}/deploy/rds-ca-global.pem
 rc=0
 node tooling/hms-cloud/labtest-proof.mjs --stage ${stage} --property ${PROPERTY} --expected-sha ${SHA} \\
-  --request \"\$REQUEST_FILE\" --state-dir \"\$STATE\" >\"\$RUN/${PROPERTY}-${stage}.out\" 2>\"\$RUN/${PROPERTY}-${stage}.err\" || rc=\$?
+  --request \"\$REQUEST_FILE\" --state-dir \"\$STATE\" ${cancel_args} >\"\$RUN/${PROPERTY}-${stage}.out\" 2>\"\$RUN/${PROPERTY}-${stage}.err\" || rc=\$?
 ${keep}
 tail -c 1500 \"\$RUN/${PROPERTY}-${stage}.err\" >&2
 tail -n 2 \"\$RUN/${PROPERTY}-${stage}.out\" | cut -c1-2000
@@ -158,7 +182,7 @@ fetch_artifacts() {
   local meta digest chars index=0 encoded="${ARTIFACTS}/.transfer.b64"
   if [ "$LOCAL" = 1 ]; then
     local file
-    for file in "$HOME/.local/state/nava-labtest-proof/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err}; do
+    for file in "${STATE_DIR}/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err}; do
       if [ -f "$file" ]; then cp "$file" "$ARTIFACTS/" || return 1; fi
     done
     [ -f "${ARTIFACTS}/${PROPERTY}-journal.json" ]

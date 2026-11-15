@@ -32,6 +32,18 @@ const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStay
   'recordId', 'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType',
   'ratePlan', 'adults', 'children', 'childAges'];
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const safeReadCodes = new Set(['BROWSER_CONTEXT_UNSAFE', 'APPROVED_STAY_MISMATCH', 'NATIVE_GUARANTEE_UNVERIFIED',
+  'AMEND_PARTY_PREIMAGE_UNVERIFIED', 'AMEND_PARTY_PREIMAGE_CHANGED', 'NATIVE_QUOTE_OCCUPANCY_UNVERIFIED',
+  'PROPERTY_OR_ORIGIN_MISMATCH', 'NATIVE_QUOTE_UNVERIFIED', 'NATIVE_CATALOG_UNAVAILABLE', 'NATIVE_PRICE_READ_FAILED',
+  'NATIVE_PRICE_TARGET_UNVERIFIED', 'NATIVE_NIGHTLY_PRICE_UNVERIFIED', 'AMEND_PRICE_UNVERIFIED']);
+const safeReadError = (error, phase) => ({
+  phase,
+  errorClass: ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'DOMException', 'TimeoutError',
+    'DataCloneError', 'AbortError'].includes(error?.name) ? error.name : 'Error',
+  message: safeReadCodes.has(error?.message) ? error.message :
+    /Timeout \d+ms exceeded/i.test(error?.message ?? '') ? 'Native read timed out' :
+      error?.name === 'DataCloneError' ? 'Native read options could not be cloned' : 'Native read failed; unsafe details suppressed',
+});
 const portableBusinessImage = snapshot => {
   const image = savedPartyBeforeImage(snapshot);
   if (!image?.data || !image?.values) return null;
@@ -355,13 +367,15 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
       selected.confirmation !== input.confirmation || selected.arrival !== input.arrival) {
     return { outcome: 'refused', issue: 'AMEND_INPUT_INVALID' };
   }
+  let phase = 'credential_lease';
   try {
     if (!input.credentialLease && openSession === withCloudWriterSession) {
       return await withCloudCredentialLease(selected.propertyCode, credentialLease =>
         prepareCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal });
     }
     let stageQuote = quote;
-    if (openSession === withCloudWriterSession && quote === readAmendNightlyQuote) {
+    if (input.changes.retainRates !== 'yes' && openSession === withCloudWriterSession && quote === readAmendNightlyQuote) {
+      phase = 'party_preimage';
       const preliminary = guardedSession(input, guard);
       const partyPreimage = await openSession(async page => {
         if (!preliminary.hasGuard(page.context(), page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
@@ -376,12 +390,14 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
       }, preliminary.options);
       const quoteInput = Array.isArray(input.childAgePreimage)
         ? { ...input, selected: { ...selected, childAges: input.childAgePreimage } } : input;
+      phase = 'nightly_quote';
       const observedQuote = await quote(quoteInput, { partyPreimage });
       stageQuote = async (_input, state) => {
         if (!same(state?.partyPreimage, partyPreimage)) throw new Error('AMEND_PARTY_PREIMAGE_CHANGED');
         return observedQuote;
       };
     }
+    phase = 'native_prepare';
     const protectedSession = guardedSession(input, guard);
     return await openSession(async (page) => {
       if (!protectedSession.hasGuard(page.context(), page)) return { outcome: 'refused', issue: 'BROWSER_CONTEXT_UNSAFE' };
@@ -402,8 +418,8 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
       }
       return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
     }, protectedSession.options);
-  } catch {
-    return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE' };
+  } catch (error) {
+    return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE', diagnostic: safeReadError(error, phase) };
   }
 }
 
@@ -1056,10 +1072,10 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           throw new Error('BILLING_REFERENCE_REQUIRES_VERIFIED_AR');
         }
       }
-      if (prepareOnly) {
+      if (prepareOnly && changes.retainRates !== 'yes') {
         try { quoted = await bounded(quote(Array.isArray(input.childAgePreimage)
           ? { ...input, selected: { ...input.selected, childAges: input.childAgePreimage } } : input, state)); } catch { quoted = null; }
-      } else {
+      } else if (!prepareOnly) {
         if (changes.retainRates === 'yes') {
           assertApprovedAmendPrice(baseline, selected, input.approvedPrices, { requireAverage: false });
         }

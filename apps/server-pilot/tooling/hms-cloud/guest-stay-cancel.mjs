@@ -24,6 +24,13 @@ const preservedFields = ['arrivaldate', 'departuredate', 'roomtype', 'rateplan',
 const usedPages = new WeakSet();
 const pendingPages = new WeakMap();
 const zeroPenaltyNotice = 'Cancellation Penalty of 0.00 may be added to account.';
+/** A native notice is not evidence that HMS posted a charge. Keep the decimal as displayed. */
+export function cancellationPenaltyNotice(value) {
+  if (typeof value !== 'string' || value.length > 2000) return null;
+  const match = /^Cancellation Penalty of (\d{1,12}\.\d{2}) may be added to account\.(?: OK)?$/.exec(value.replace(/\s+/g, ' ').trim());
+  return match ? { text: `Cancellation Penalty of ${match[1]} may be added to account.`,
+    amount: match[1], currency: null } : null;
+}
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CANCEL_UNVERIFIED';
 // A missing field stays unknown; duplicate fields never establish a match.
 async function depositDisplayMatches(frame, expected) {
@@ -455,7 +462,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
   }
   let armed = false, dispatched = false, nativeDialog = null, response = null, authorizedRequest, sendRequests = 0;
   let chargeArmed = false, chargeApproved = opened.chargeApproved === true, chargeDispatched = false, chargeRequest, chargeResponse;
-  let chargeText = opened.penaltyText ?? null;
+  let chargeText = opened.penaltyText ?? null, penaltyTiming = chargeText ? 'before_save' : null;
+  let penaltyNoticeAcknowledged = false;
   let pendingDispatch = 0, preparedSnapshot = null;
   let fence, scope, interactionStarted = false, reasonSelected = false, settledTaxReads = 0;
   const blocked = [], earlyTaxReads = [];
@@ -474,6 +482,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       // A JS confirm pauses the verified form. Before Save, hold the target before accepting it;
       // after Save, the separate charge request must use its existing dispatch authority.
       const beforeSave = !dispatched;
+      penaltyTiming = beforeSave ? 'before_save' : 'after_save';
       if (typeof awaitChargeApproval !== 'function' || (beforeSave
         ? (!armed || !preparedSnapshot || typeof prepareChargeWithAuthority !== 'function')
         : typeof dispatchChargeWithAuthority !== 'function')) return false;
@@ -662,6 +671,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     const reasonText = (await dialog.innerText()).trim();
     if (/penalt|fee|charge|deposit/i.test(reasonText)) {
       chargeText = reasonText;
+      penaltyTiming = 'before_save';
       const label = (await ok.innerText()).trim();
       if (reasonText.length > 2000 || typeof awaitChargeApproval !== 'function' ||
           typeof prepareChargeWithAuthority !== 'function' || !await chargeTargetIsCurrent(frame, expected) ||
@@ -707,7 +717,10 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     action.check();
     let fee = dialogs.some((text) => /penalt|fee|charge|deposit/i.test(text)) ||
       Boolean(nativeDialog && /penalt|fee|charge|deposit/i.test(nativeDialog.message));
-    if (fee) chargeText = dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? nativeDialog?.message ?? null;
+    if (fee) {
+      chargeText = dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? nativeDialog?.message ?? null;
+      penaltyTiming = 'after_save';
+    }
     // Policy applicability is not a fee amount. Only this exact post-Save zero notice qualifies.
     // Do not click its button: the separate fresh readback still decides cancellation success.
     let zeroNotice = false;
@@ -719,7 +732,37 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       const buttons = windows.locator('.x-btn:visible');
       zeroNotice = await buttons.count() === 1 && (await buttons.innerText()).trim() === 'OK';
     }
-    if (fee && !zeroNotice && dispatched && !nativeDialog && typeof awaitChargeApproval === 'function' &&
+    const notice = cancellationPenaltyNotice(chargeText);
+    let noticeApprovalOffered = false;
+    if (fee && !zeroNotice && notice && !/^0+\.00$/.test(notice.amount) && dispatched &&
+        response?.status() === 200 && !nativeDialog && !chargeApproved && !chargeDispatched &&
+        !blocked.length && !opened.blocked.length && !sendRequests && pendingDispatch === 0 &&
+        dialogs.length === 1 && await windows.count() === 1 && typeof awaitChargeApproval === 'function') {
+      const buttons = windows.locator('.x-btn:visible');
+      const text = dialogs[0];
+      if (await buttons.count() === 1 && (await buttons.innerText()).trim() === 'OK' &&
+          await chargeTargetIsCurrent(frame, expected)) {
+        noticeApprovalOffered = true;
+        const approved = await awaitChargeApproval({ text, button: 'OK', amount: notice.amount, timing: 'after_save' });
+        action.check();
+        if (approved !== true) throw new Error('CANCEL_CHARGE_NOT_APPROVED');
+        if (continuationAllowed() !== true || await windows.count() !== 1 ||
+            (await windows.innerText()).trim() !== text || await buttons.count() !== 1 ||
+            (await buttons.innerText()).trim() !== 'OK' || !await chargeTargetIsCurrent(frame, expected)) {
+          throw new Error('CANCEL_CHARGE_CHANGED');
+        }
+        // Acknowledge only this single-OK notice. No charge/second Save request is armed.
+        chargeApproved = true;
+        await buttons.click({ timeout: timeoutMs, noWaitAfter: true });
+        await page.waitForTimeout(1_500);
+        action.check();
+        dialogs = await windows.evaluateAll(items => items.map(item => item.innerText.trim()));
+        fee = dialogs.some(value => /penalt|fee|charge|deposit/i.test(value));
+        penaltyNoticeAcknowledged = !dialogs.length && !blocked.length && !opened.blocked.length &&
+          !sendRequests && !chargeDispatched && pendingDispatch === 0;
+      }
+    }
+    if (fee && !zeroNotice && !noticeApprovalOffered && !chargeApproved && dispatched && !nativeDialog && typeof awaitChargeApproval === 'function' &&
         typeof dispatchChargeWithAuthority === 'function') {
       const charge = windows.filter({ hasText: /penalt|fee|charge|deposit/i });
       if (await charge.count() === 1) {
@@ -752,7 +795,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     action.check();
     // A dismissed dialog or a 200 response does not prove that HMS posted the charge.
     const chargeUnconfirmed = chargeApproved;
-    return { outcome: chargeUnconfirmed ? 'fee_accepted_unconfirmed' : zeroNotice ? 'zero_notice_awaiting_readback' : fee ? 'fee_dialog_pending' : dispatched && response?.status() === 200 &&
+    return { outcome: penaltyNoticeAcknowledged ? 'approved_notice_awaiting_readback' :
+      chargeUnconfirmed ? 'fee_accepted_unconfirmed' : zeroNotice ? 'zero_notice_awaiting_readback' : fee ? 'fee_dialog_pending' : dispatched && response?.status() === 200 &&
       !nativeDialog && !dialogs.length && !blocked.length && !sendRequests
       ? 'awaiting_readback' : dispatched ? 'uncertain' : 'not_dispatched',
     httpStatus: response?.status() || null, reason: reasonLabel, requestDispatched: dispatched,
@@ -770,6 +814,10 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     if (interactionStarted) fence?.quarantine();
     scope?.close();
   } })();
-  try { return await Promise.race([work, action.interrupted]); }
+  try {
+    const result = await Promise.race([work, action.interrupted]);
+    return { ...result, penaltyAmount: cancellationPenaltyNotice(result.penaltyText)?.amount ?? null,
+      penaltyTiming, penaltyNoticeAcknowledged };
+  }
   finally { action.finish(); }
 }
