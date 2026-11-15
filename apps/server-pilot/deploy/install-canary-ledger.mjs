@@ -212,7 +212,7 @@ async function main() {
   SHA = values['expected-sha'];
   const property = values.property, workflow = values.workflow;
   check(/^[a-f0-9]{40}$/.test(SHA ?? '') && ['HRCEN', 'HRDAV', 'HRDAVS'].includes(property) &&
-    ['create', 'guest_profile_create', 'attach', 'addons', 'cancel'].includes(workflow), 'ARGUMENTS_INVALID');
+    ['create', 'guest_profile_create', 'amend', 'attach', 'addons', 'cancel'].includes(workflow), 'ARGUMENTS_INVALID');
   // The service account owns the checkout, the journals and the published files.
   const app = await lstat(APP);
   ownerUid = app.uid; ownerGid = app.gid;
