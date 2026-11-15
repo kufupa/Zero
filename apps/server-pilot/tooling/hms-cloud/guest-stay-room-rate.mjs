@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { cloudSessionIdentity } from './cloud-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
+import { isReviewedGuestStayRatePlanInquiry, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
 const HMS_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const UNAVAILABLE_MESSAGE = 'Selected criteria is not available for these dates.';
@@ -210,11 +211,8 @@ function allowedSearch(request, kind, origin, propertyCode, rateShop = null) {
       body.get('property') === propertyCode && !clean(body.get('confirmationnumber'));
   }
   if (url.pathname === '/api/internalBooking/rateshop/inquiryForGrid') {
-    try {
-      const input = JSON.parse(request.postData() || '{}');
-      return clean(input.propertyCodes).toUpperCase() === propertyCode && !clean(input.reservationStayID) &&
-        clean(input.launchedFrom).toLowerCase() === 'gueststay';
-    } catch { return false; }
+    return isReviewedGuestStayRatePlanInquiry(request, { origin, propertyCode,
+      rejectDuplicateJsonBodyKeys: rejectDuplicateAvailabilityJsonKeys });
   }
   return false;
 }
@@ -510,7 +508,9 @@ async function search(page, kind, input = {}) {
       await assertCurrent(page, state, () => native);
     } else {
       let resetMetadata = null;
-      const nativeFence = await installPageRequestFence(page, ['/web/base/OSRASD.RatePlanChange']);
+      const nativeFence = await installPageRequestFence(page, [
+        '/web/base/OSRASD.RatePlanChange', '/api/internalBooking/rateshop/inquiryForGrid',
+      ]);
       const nativeScope = nativeFence.open();
       const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin, propertyCode, searches.get(page)) ||
         (roomKind(kind) && roomFilterResetRequest(req, origin, resetMetadata, kind, propertyCode)),
