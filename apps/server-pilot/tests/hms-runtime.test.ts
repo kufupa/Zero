@@ -553,11 +553,11 @@ describe('HMS runtime', () => {
     expect(searchPosts.some((r) => r.body.includes('NOTFOUND-CANARY'))).toBe(true);
   });
 
-  it('credential mode mismatch rejects non-view_only', async () => {
+  it.each(['audited_write', 'write_capable'] as const)('view-only runtime rejects %s credentials', async (credentialMode) => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
     const { runtime } = await boot(server, {
-      secret: { credentialMode: 'audited_write' },
+      secret: { credentialMode },
     });
     await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toMatchObject({
       code: 'credential_mode',
@@ -1652,7 +1652,7 @@ describe('HMS browser audit capture order', () => {
     await runDelayedProofCloseWithinFinalizationBudget('live_proof');
   }, 15_000);
 
-  it('withholds a successful session when capture finalizes incomplete', async () => {
+  it('withholds an incomplete capture and records the actual shared credential mode', async () => {
     const { randomUUID } = await import('node:crypto');
     const { rm } = await import('node:fs/promises');
     const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
@@ -1669,13 +1669,13 @@ describe('HMS browser audit capture order', () => {
       handle.finalize = (input) => finalize({ ...input, complete: false });
       return handle;
     };
-    const secret = fixtureSecret(server.origin);
+    const secret = fixtureSecret(server.origin, { credentialMode: 'write_capable' });
     const runtime = createHmsRuntime({
       manifest: fixtureManifest(server.origin),
       secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
       loadSecret: async () => secret,
       browserFactory: createFetchBrowserFactory(),
-      requireViewOnly: true,
+      requireViewOnly: false,
       runStartupCanary: false,
       artifactStore: store,
       requireAuditCapture: true,
@@ -1707,6 +1707,7 @@ describe('HMS browser audit capture order', () => {
       process.off('unhandledRejection', recordUnhandled);
       expect(unhandled).toEqual([]);
       expect(session.lastReceipt()?.artifactState).toBe('incomplete');
+      expect(session.lastReceipt()?.credentialMode).toBe('write_capable');
       expect(runtime.health().state).toBe('degraded');
       await expect(runtime.close()).rejects.toMatchObject({
         code: 'AUDIT_CAPTURE',

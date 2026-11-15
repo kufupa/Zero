@@ -68,6 +68,8 @@ export function hmsProductionOriginForSlot(slot: string): string | null {
 }
 
 export type HmsExecutionClass = 'normal' | 'live_proof';
+export const HMS_CREDENTIAL_MODES = ['view_only', 'audited_write', 'write_capable'] as const;
+export type HmsCredentialMode = (typeof HMS_CREDENTIAL_MODES)[number];
 
 export type HmsBrowserAuditSpec = {
   operationId: string;
@@ -83,6 +85,8 @@ export type HmsBrowserAuditSpec = {
   /** Closed branch identity for multi-branch audited readers. */
   requestBranchId?: string;
 };
+
+export type HmsBrowserCaptureSpec = HmsBrowserAuditSpec & { credentialMode: HmsCredentialMode };
 
 // V1 capture receipts are emitted by the registered normal browser read drivers that
 // currently supply an audit spec. Keep this closed to the registered read
@@ -111,7 +115,7 @@ export type HmsBrowserArtifactReceiptBaseV1 = {
   chromiumRevision: string;
   executionClass: HmsExecutionClass;
   inputClass: 'authorized_exact' | 'synthetic_not_found';
-  credentialMode: 'view_only';
+  credentialMode: HmsCredentialMode;
   roleProofSha256: string | null;
   roleProofExpiresAt: string | null;
   requestBranchId?: string | null;
@@ -337,7 +341,7 @@ const FORBIDDEN_RECEIPT_KEYS = new Set([
 export type HmsBrowserArtifactStore = {
   root: string;
   intermediateDir: string;
-  beginCapture(spec: HmsBrowserAuditSpec): Promise<HmsBrowserCaptureHandle>;
+  beginCapture(spec: HmsBrowserCaptureSpec): Promise<HmsBrowserCaptureHandle>;
   purgeExpired(now?: Date): Promise<number>;
 };
 
@@ -1259,7 +1263,7 @@ export async function createHmsBrowserArtifactStore(input: {
             chromiumRevision: effectiveInput.chromiumRevision,
             executionClass: spec.executionClass,
             inputClass: spec.inputClass,
-            credentialMode: 'view_only',
+            credentialMode: spec.credentialMode,
             roleProofSha256: spec.roleProofSha256 ?? null,
             roleProofExpiresAt: spec.roleProofExpiresAt ?? null,
             requestBranchId: spec.requestBranchId ?? null,
@@ -1718,7 +1722,7 @@ export async function createHmsBrowserArtifactStore(input: {
             chromiumRevision: 'unknown',
             executionClass: spec.executionClass,
             inputClass: spec.inputClass,
-            credentialMode: 'view_only',
+            credentialMode: spec.credentialMode,
             roleProofSha256: spec.roleProofSha256 ?? null,
             roleProofExpiresAt: spec.roleProofExpiresAt ?? null,
             requestBranchId: spec.requestBranchId ?? null,

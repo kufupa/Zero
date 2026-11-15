@@ -150,7 +150,7 @@ async function createAuditedGroupRuntime(transport: string): Promise<{
       auditSpec?: Parameters<typeof store.beginCapture>[0];
     }) => {
       if (!input.auditSpec) throw new Error('synthetic group audit spec missing');
-      const handle = await store.beginCapture(input.auditSpec);
+      const handle = await store.beginCapture({ ...input.auditSpec, credentialMode: 'view_only' });
       await writeFile(join(handle.stagingDir, 'trace.zip'), syntheticTraceZip());
       let receipt: unknown = null;
       let closed = false;
