@@ -2188,7 +2188,7 @@ const OPERATIONAL_NOTE_CLASSES: RegExp[] = [
 ];
 // Price talk and money movements ("bank transfer") are not stay instructions.
 const OPERATIONAL_NOTE_PRICING = /\b(?:rates?|prices?|pricing|costs?|tariffs?|quotations?|how\s+much)\b|(?:\b(?:R|ZAR|USD|EUR|GBP)\s?|[$€£]\s?)\d|\b(?:bank|eft|wire|money|funds?)\s+transfers?\b|\btransfer(?:s|red|ring)?\s+(?:the\s+)?(?:money|funds?|payment|deposit|amount|balance)\b/i;
-const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:morning|afternoon|evening|day))\b[^,:!\n]{0,60}[,:!]\s*/i;
+const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:morning|afternoon|evening|day))\b(?:[ \t]+(?!(?:please|kindly|arrange|book|reserve|confirm)\b)\p{L}[\p{L}'-]*){0,4}[ \t]*[,:!\-–—][ \t]*/iu;
 const OPERATIONAL_NOTE_REGARDS = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*(?:[ \t]+\S+){0,3}[ \t]*$/im;
 const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(?:very\s+much|in\s+advance|kindly))?|cheers)[ \t]*[,.!]*[ \t]*$/gim;
 
@@ -2235,7 +2235,8 @@ function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extract
     (!authored.trim() || signoff !== null && !authored.slice(0, signoff.index).trim()) &&
     !/\b(?:please|kindly|book|reserve|quote|confirm|cancel|amend|extend|arrange)\b/iu.test(authored);
   const organizationBody = bareForward ? (body.slice(authored.length)
-    .replace(/^\s*From:[^\n]*(?:\n|$)/imu, '')
+    .replace(/^[ \t\r\n]*-{2,}[ \t]*(?:Original Message|Forwarded message)[ \t]*-*[ \t]*(?:\r?\n|$)/iu, '')
+    .replace(/^\s*From:[^\n]*(?:\n|$)/iu, '')
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '') : authored;
   const sourceClaim = (text: string) => ({ raw: text, value: text, sourceRefs: [message.ref] });
   const stayRequests = extraction.requests.filter((request) => request.kind === 'create' || request.kind === 'quote');
@@ -2262,7 +2263,7 @@ function recoverSourceContacts(input: { extraction: ReservationWorkflowV2Extract
         party.name = sourceClaim(affiliation[2]!.trim());
       }
     }
-    if (extraction.requests.filter((row) => row.kind !== 'other' && row.kind !== 'services').length !== 1 ||
+    if (extraction.requests.filter((row) => row.kind !== 'other').length !== 1 ||
         request.parties.some((row) => row.role === 'organization')) continue;
     const organizations = new Set<string>();
     for (const match of authored.matchAll(/^[ \t]*From[ \t]+([^<>\n@:]{2,300})[ \t]*:[ \t]*$/gimu)) {
@@ -2544,19 +2545,24 @@ function currentPdfEvidence(input: {
 const CANCEL_BRIDGE = String.raw`(?:go\s+ahead(?:\s+and)?|under\s+any\s+circumstances?|in\s+any\s+(?:case|event|way)|at\s+all|please|kindly|ever|just|only|simply|actually|really|yet|now|longer|circumstances?|to|needs?|wants?|wish(?:es)?|like|going|intend|plan(?:ning)?|have|has|proceed|try|us|you|we|i|they|them|then|however|repeat|again|\w+ly)`;
 const CANCEL_NEGATED_TAIL = new RegExp(String.raw`\b(?:not|never|no|cannot|\w+n['’]t|rather\s+than|instead\s+of)(?:\s+${CANCEL_BRIDGE})*\s*$`, 'iu');
 const CANCEL_BRIDGE_ONLY = new RegExp(String.raw`^(?:\s*\b${CANCEL_BRIDGE}\b)*\s*$`, 'iu');
+const CANCEL_NEARBY_NEGATION = /\b(?:not|never|no|cannot|\w+n['’]t)(?:\s+\w+){0,4}\s*$/iu;
 
 /** True when the text right before a "cancel ..." match negates that instruction within its own sentence. */
 function isNegatedCancelInstruction(prefix: string): boolean {
   const segments = (prefix.split(/[;.!?\n]/u).at(-1) ?? '').split(',');
   const adjacent = segments.pop() ?? '';
-  if (CANCEL_NEGATED_TAIL.test(adjacent)) return true;
+  // Retain the previous nearby-negation coverage for ordinary complements such as
+  // "not asked you to", without carrying a completed coordinated clause across "and".
+  if (CANCEL_NEGATED_TAIL.test(adjacent) ||
+      CANCEL_NEARBY_NEGATION.test(adjacent.split(/\b(?:and|but)\b/iu).at(-1) ?? '')) return true;
   // Another predicate sits between any earlier negation and this instruction ("No dinner is required, so cancel ...").
   if (!CANCEL_BRIDGE_ONLY.test(adjacent)) return false;
   // A negation left hanging before a comma aside still governs the instruction
   // ("Do not, under any circumstances, cancel ..."); a completed clause does not.
   while (segments.length) {
     const segment = segments.pop()!;
-    if (CANCEL_NEGATED_TAIL.test(segment))
+    if ((CANCEL_NEGATED_TAIL.test(segment) || /\bto\s*$/iu.test(segment) && CANCEL_NEARBY_NEGATION.test(segment)) &&
+        !/^\s*no\s*$/iu.test(segment))
       return !/^\s*(?:if|when|unless|should|otherwise|whether|because|since|in\s+case)\b/iu.test(segment);
     if (!CANCEL_BRIDGE_ONLY.test(segment) &&
         !/^\s*(?:under|in|at|on|for|by|as|regardless|whatever|with|without|until)\b(?:\s+\S+){0,7}\s*$/iu.test(segment)) return false;
@@ -2569,7 +2575,15 @@ function isPartialStayCancellation(text: string): boolean {
     .some((match) => !isNegatedCancelInstruction(text.slice(0, match.index)));
   // Apply the same clause-level negation to whole-stay and partial instructions.
   const whole = [...text.matchAll(/\bcancel\s+(?:(?:the|this|our|my|their)\s+)?(?:entire|whole|full|complete)\s+(?:reservation|booking|stay)\b/giu)]
-    .some((match) => !isNegatedCancelInstruction(text.slice(0, match.index)));
+    .some((match) => {
+      const prefix = text.slice(0, match.index);
+      if (isNegatedCancelInstruction(prefix)) return false;
+      const sentencePrefix = prefix.split(/[;.!?\n]/u).at(-1) ?? '';
+      const question = /\b(?:can|could|may|might|should|would)\s+(?:we|i)\b/iu.test(sentencePrefix) ||
+        /^\s*(?:what|how|when|why|whether)\b/iu.test(sentencePrefix);
+      const terminator = text.slice(match.index + match[0].length).match(/[;.!?\n]/u)?.[0];
+      return !question || terminator !== '?';
+    });
   return partial && !whole;
 }
 
@@ -2970,7 +2984,15 @@ function occupancyRowsByAllocation(input: {
   const used = new Set<number>();
   const assigned = input.allocations.map((allocation) => {
     const section = input.dateSections.find((candidate) => candidate.id === allocation.dateSectionId);
-    const oneRoom = input.allocations.filter((other) => other.dateSectionId === allocation.dateSectionId).length === 1;
+    const sourceDates = section ? input.extracted.dates.filter((date) =>
+      datePairKey(citedText(currentClaim(date.arrival, input.currentRefs)),
+        citedText(currentClaim(date.departure, input.currentRefs))) === datePairKey(section.arrival, section.departure) &&
+        datePairKey(section.arrival, section.departure) !== null) : [];
+    const sourceRooms = sourceDates.length === 1 ? sourceDates[0]!.roomCount
+      ? citedInteger(currentClaim(sourceDates[0]!.roomCount, input.currentRefs))
+      : input.extracted.dates.length === 1 ? citedInteger(currentClaim(input.extracted.roomCount, input.currentRefs)) : null : null;
+    const oneRoom = sourceRooms === 1 &&
+      input.allocations.filter((other) => other.dateSectionId === allocation.dateSectionId).length === 1;
     const name = normalizedFact([allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' '));
     const candidates = mapped.flatMap((entry, index) => {
       if (used.has(index) || entry.row.scope !== 'per_room' && !oneRoom) return [];
