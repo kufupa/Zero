@@ -391,12 +391,13 @@ async function main() {
           capturePrepareScreenshot: true };
         // Resolve only an omitted Labtest Track from the rate's native draft and complete catalogue.
         const observeTrack = (operation, sessionOptions) => withBookingLookupSession(async session => {
+          // Opening this picker after rate selection filters it by the populated Track.
+          const catalogue = await listTrackSubSegments(session.page, { propertyCode: args.propertyCode });
           const result = await operation(session);
           const form = await readGuestStayForm(session.page, { propertyCode: args.propertyCode });
           const fields = form.fields?.filter(field => field.name === 'track');
           if (form.outcome !== 'ok' || fields?.length !== 1 || fields[0].required !== true) return result;
           assert(typeof fields[0].value === 'string' && fields[0].value.trim(), 'NATIVE_TRACK_UNVERIFIED');
-          const catalogue = await listTrackSubSegments(session.page, { propertyCode: args.propertyCode });
           const rows = catalogue.candidates ?? [];
           const matches = rows.filter(row => row.description === fields[0].value && /^[A-Z0-9]{1,12}$/.test(row.code));
           assert(catalogue.outcome === 'ok' && catalogue.coverage?.complete === true &&
