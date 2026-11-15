@@ -232,8 +232,9 @@ export async function propertyConfigurationForScope(
   }
   const capability = (workflow: 'reads' | 'quote' | 'create' | 'amend' | 'cancel' | 'attach' | 'addons' | 'guest_profile_create') => {
     const proven = scope.group === 'centurion' ||
-      (['reads', 'quote'].includes(workflow) && effectiveWorkflowPolicy(env, scope.propertyCode, workflow).readEnabled) ||
-      (!['reads', 'quote'].includes(workflow) && catalogue.identity !== null &&
+      (workflow === 'reads' && effectiveWorkflowPolicy(env, scope.propertyCode, workflow).readEnabled) ||
+      (workflow !== 'reads' && catalogue.identity !== null &&
+        (workflow !== 'quote' || salesStrategies.length > 0) &&
         effectiveWorkflowPolicy(env, scope.propertyCode, workflow).readEnabled);
     const policy = effectiveWorkflowPolicy(env, scope.propertyCode, workflow);
     const status = proven ? policy.capability : 'unavailable';

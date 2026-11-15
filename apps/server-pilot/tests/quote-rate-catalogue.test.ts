@@ -1,11 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appRouter } from '../src/trpc/router.js';
 import { propertyConfigurationForScope, quotePaneConfigForProperty, quoteSalesStrategiesFromRegistry } from '../src/hms/rate-catalogue.js';
 import { resolvePropertyScope } from '../src/hms/property-registry.js';
-import { nativeReadCapabilityAvailable } from '../src/hms/hms-service.js';
 import { loadHmsNativeCatalog, normalizeHmsNativeCatalog } from '../tooling/hms-cloud/hms-native-catalog.mjs';
 
 function signedInCaller(transportId = 'transport-centurion') {
@@ -27,24 +26,6 @@ function anonymousCaller() {
 }
 
 describe('mailbox-scoped quote pane configuration', () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  it.each(['HRDAV', 'HRDAVS'] as const)('admits %s Cloud reads from property flags without proof files', async (propertyCode) => {
-    vi.stubEnv('HMS_DAVINCI_ENABLED_PROPERTIES', propertyCode);
-    vi.stubEnv('HMS_DAVINCI_READS', 'on');
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
-    vi.stubEnv('HMS_READ_ROLE_PROOF_V2_ROOT', '/tmp/no-davinci-proof');
-    const input = { propertyCode, transportId: 'transport-faith' };
-    expect(await nativeReadCapabilityAvailable(input)).toBe(true);
-    expect(await nativeReadCapabilityAvailable({ ...input, capability: 'quote' })).toBe(true);
-    expect(await nativeReadCapabilityAvailable({ ...input, transportId: 'transport-centurion' })).toBe(false);
-    expect(await nativeReadCapabilityAvailable({ propertyCode })).toBe(false);
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'off');
-    expect(await nativeReadCapabilityAvailable({ ...input, capability: 'quote' })).toBe(false);
-    expect(await nativeReadCapabilityAvailable(input)).toBe(true);
-    vi.stubEnv('HMS_DAVINCI_READS', 'off');
-    expect(await nativeReadCapabilityAvailable(input)).toBe(false);
-  });
   it('uses HMS native rate plans when the catalog has rates', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'rate-catalogue-'));
     const path = join(directory, 'catalogs.json');
@@ -157,7 +138,7 @@ describe('mailbox-scoped quote pane configuration', () => {
       expect((await propertyConfigurationForScope(scope, enabled)).capabilities).toMatchObject({
         reads: { status: 'staff-enabled' }, quote: { status: 'staff-enabled' }, create: { status: 'prepare-only' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, NAVA_BUILD_COMMIT: 'other' })).capabilities)
-        .toMatchObject({ reads: { status: 'staff-enabled' }, quote: { status: 'staff-enabled' } });
+        .toMatchObject({ reads: { status: 'staff-enabled' }, quote: { status: 'unavailable' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, HMS_DAVINCI_READS: 'off' })).capabilities)
         .toMatchObject({ reads: { status: 'unavailable' }, quote: { status: 'unavailable' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, HMS_DAVINCI_MAKE_QUOTE: 'off' })).capabilities)

@@ -45,6 +45,7 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
   - After a passing remote typecheck for the same SHA and app, `SKIP_TYPECHECK=1` skips the duplicate typecheck in `remote-vitest.sh`.
 - **Review:** launch Greptile Apex on each PR's final head; if it fails or stalls, use another reviewer instead of waiting. Fix valid P0/P1 findings and note why the others are invalid.
 - **Merge:** Never use `--no-verify` and never bypass hooks.
+- **Evidence:** Never fabricate `CANARY PASS`, read-role proofs, or real-email intent. Cloud reads do not require V2 read-role-proof manifests; native catalogue and write-canary checks still apply.
 - **Entity-literal baseline:** from `apps/server-pilot`, run `node scripts/check-entity-literals.mjs --print-baseline` into a temp file, then replace `scripts/entity-literals-baseline.json`. Never redirect straight into it, because the script reads that file.
 
 ## Runtime and HMS
