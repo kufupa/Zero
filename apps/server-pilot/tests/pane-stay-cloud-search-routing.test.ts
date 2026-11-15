@@ -65,7 +65,7 @@ it('uses one verified HRDAVS session for serial guest searches and rejects misma
   const queries = [{ lastName: 'One', arrival: '2027-09-14' }, { lastName: 'Two', arrival: '2027-09-14' }];
   expect((await searchGuestCloudBatch(queries, target, undefined, 'transport-faith')).map((result) => result.outcome)).toEqual(['ok', 'ok']);
   expect(configuration).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRDAVS', transportId: 'transport-faith' }),
-    expect.anything(), expect.anything());
+    expect.anything());
   expect(cloud.session).toHaveBeenCalledOnce();
   expect(cloud.guard).toHaveBeenCalledWith({}, 'HRDAVS');
   expect(cloud.search).toHaveBeenCalledTimes(2);
@@ -81,7 +81,7 @@ it('uses one verified HRDAVS session for serial guest searches and rejects misma
   expect(cloud.session).not.toHaveBeenCalled();
 });
 
-it('rechecks selected batch read proof and transport before opening any Cloud session', async () => {
+it('rechecks selected batch read capability and transport before opening any Cloud session', async () => {
   const target = hmsReadTargetForProperty('HRDAVS');
   let selectedProofAvailable = false;
   const configuration = vi.spyOn(rateCatalogue, 'propertyConfigurationForScope').mockImplementation(async (scope) => ({
@@ -98,12 +98,12 @@ it('rechecks selected batch read proof and transport before opening any Cloud se
   expect(cloud.session).not.toHaveBeenCalled();
   expect(configuration).toHaveBeenCalledTimes(1);
   expect(configuration).toHaveBeenCalledWith(expect.objectContaining({ propertyCode: 'HRDAVS', transportId: 'transport-faith' }),
-    expect.anything(), expect.anything());
+    expect.anything());
 });
 
-it('requires installed selected-property evidence at all three direct native stay seams', async () => {
-  vi.stubEnv('HMS_DAVINCI_READS', 'on');
-  vi.stubEnv('HMS_READ_ROLE_PROOF_V2_ROOT', '/tmp/nava-no-installed-p2-role-proof');
+it('requires the selected property read flag at all three direct native stay seams', async () => {
+  vi.stubEnv('HMS_DAVINCI_READS', 'off');
+  vi.stubEnv('HMS_DAVINCI_ENABLED_PROPERTIES', 'HRDAVS');
   const target = hmsReadTargetForProperty('HRDAVS');
   const query = { lastName: 'Labtest', arrival: '2027-09-14' };
   const deps = { target, transportId: 'transport-faith', lock: () => ({ withLock: async <T>(operation: () => Promise<T>) => operation() }) };

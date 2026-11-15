@@ -129,13 +129,9 @@ describe('reservation workflow host projection', () => {
     expect(withLock).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses native prefill and historical parties after selected proof loss while reads remain enabled', async () => {
-    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+  it('refuses native prefill and historical parties when selected property reads are disabled', async () => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'off');
     vi.stubEnv('HMS_DAVINCI_ENABLED_PROPERTIES', 'HRDAV,HRDAVS');
-    vi.stubEnv('NAVA_BUILD_COMMIT', 'a'.repeat(40));
-    vi.stubEnv('HMS_EVIDENCE_HMAC_KEY_VERSION', 'proof-loss-test');
-    vi.stubEnv('HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAVS', 'b'.repeat(64));
-    vi.stubEnv('HMS_READ_ROLE_PROOF_V2_ROOT', '/tmp/davinci-p2-no-installed-proofs');
     const run = vi.spyOn(cloudStay, 'runCloudStayFind');
     const withLock = vi.fn(async <T>(operation: () => Promise<T>) => operation());
     vi.spyOn(paneStaySave, 'paneStayPropertyLock').mockReturnValue({ withLock } as never);

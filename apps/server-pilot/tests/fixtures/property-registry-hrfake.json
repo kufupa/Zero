@@ -8,7 +8,7 @@
     "username": "HRFAKE_TEST",
     "mailboxTransportId": "transport-hrfake",
     "credentialSecretRef": "test-only/hrfake",
-    "credentialMode": "view_only", "browserSlot": "davinci",
+    "credentialUse": "shared", "browserSlot": "davinci",
     "profileFile": null
   },
   "profile": {

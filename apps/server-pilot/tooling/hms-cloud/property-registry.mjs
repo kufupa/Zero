@@ -15,7 +15,7 @@ export const PROPERTY_REGISTRY_SCHEMA = Object.freeze({
         additionalProperties: false,
         required: [
           'propertyCode', 'active', 'transportIds', 'expectedTenant', 'expectedPropertyName',
-          'username', 'mailboxTransportId', 'credentialSecretRef', 'credentialMode', 'browserSlot',
+          'username', 'mailboxTransportId', 'credentialSecretRef', 'credentialUse', 'browserSlot',
           'profileFile', 'group', 'landingPropertyCode', 'origin',
         ],
         properties: {
@@ -30,7 +30,7 @@ export const PROPERTY_REGISTRY_SCHEMA = Object.freeze({
           username: { type: 'string', minLength: 1 },
           mailboxTransportId: { type: 'string', minLength: 1 },
           credentialSecretRef: { type: 'string', minLength: 1 },
-          credentialMode: { const: 'view_only' },
+          credentialUse: { const: 'shared' },
           browserSlot: { type: 'string', minLength: 1 },
           profileFile: { type: ['string', 'null'] },
           group: { enum: ['centurion', 'davinci'] },
@@ -60,7 +60,7 @@ export const PROPERTY_REGISTRY = Object.freeze({
       username: 'NAVAAI',
       mailboxTransportId: 'transport-centurion',
       credentialSecretRef: 'nava-zero/server-pilot/infor-hms-read',
-      credentialMode: 'view_only',
+      credentialUse: 'shared',
       browserSlot: 'centurion',
       profileFile: 'property-profiles/HRCEN.json',
     }),
@@ -82,7 +82,7 @@ export const PROPERTY_REGISTRY = Object.freeze({
       username: 'NAVAAI',
       mailboxTransportId: 'transport-davinci',
       credentialSecretRef: 'nava-zero/server-pilot/infor-hms-read-davinci',
-      credentialMode: 'view_only',
+      credentialUse: 'shared',
       browserSlot: 'davinci',
       profileFile: 'property-profiles/HRDAV.json',
     }),
@@ -100,7 +100,7 @@ export const PROPERTY_REGISTRY = Object.freeze({
       username: 'NAVAAI',
       mailboxTransportId: 'transport-davinci',
       credentialSecretRef: 'nava-zero/server-pilot/infor-hms-read-davinci',
-      credentialMode: 'view_only',
+      credentialUse: 'shared',
       browserSlot: 'davinci',
       profileFile: 'property-profiles/HRDAVS.json',
     }),
@@ -112,7 +112,7 @@ export const PROPERTY_REGISTRY = Object.freeze({
 export function validatePropertyRegistry(registry) {
   const propertyKeys = new Set([
     'propertyCode', 'active', 'transportIds', 'expectedTenant', 'expectedPropertyName',
-    'username', 'mailboxTransportId', 'credentialSecretRef', 'credentialMode', 'browserSlot', 'profileFile',
+    'username', 'mailboxTransportId', 'credentialSecretRef', 'credentialUse', 'browserSlot', 'profileFile',
     'group', 'landingPropertyCode', 'origin',
   ]);
   const isRecord = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -145,7 +145,7 @@ export function validatePropertyRegistry(registry) {
         .some((field) => !isString(property[field])) ||
       !['centurion', 'davinci'].includes(property.group) ||
       !isString(property.landingPropertyCode) || !isString(property.origin) ||
-      property.credentialMode !== 'view_only' ||
+      property.credentialUse !== 'shared' ||
       (property.profileFile !== null && typeof property.profileFile !== 'string')
     ) {
       throw new Error('hms_property_registry_invalid');
@@ -238,14 +238,13 @@ export function validateHmsPropertySecret(property, secret) {
     secret.expectedTenant !== property.expectedTenant ||
     secret.expectedPropertyName !== property.expectedPropertyName ||
     secret.username !== property.username ||
-    secret.credentialMode !== property.credentialMode ||
+    !['view_only', 'audited_write', 'write_capable'].includes(secret.credentialMode) ||
     (property.transportId && !ids.includes(property.transportId))
   ) throw new Error('hms_property_credential_mismatch');
   return secret;
 }
 
 export async function installRegisteredAvailabilityReadOnlyGuard(context, transportId, origin) {
-  const property = getHmsPropertyRegistration(transportId);
-  if (property.credentialMode !== 'view_only') throw new Error('hms_property_not_view_only');
+  getHmsPropertyRegistration(transportId);
   return installAvailabilityReadOnlyGuard(context, origin);
 }

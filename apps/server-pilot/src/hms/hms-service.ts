@@ -13,13 +13,6 @@ import { reservationFindResultSchema, reservationContextReadResultSchema } from 
 import { staffSessionSchema, loadHmsPreparation, type StaffSession } from './hms-preparation.js';
 import { verifyStaffGoForRun, type VerifiedStaffGo } from './staff-go-authority.js';
 import { hmsPropertyReadEnabled } from './mailbox-hms-origin-bind.js';
-import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { loadWorkerActiveReadSet, DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT } from './active-read-runtime.js';
-import { loadHmsReadRoleProofV2ForTool } from './release-kernel.js';
-import { runtimeFingerprintSha256 } from './evidence-runtime.js';
-import { READ_TOOLS } from './read-tools.js';
 
 async function executeVerifiedRun(db: DB, go: VerifiedStaffGo, request: { runId: string; fence: AiRunFence; signal?: AbortSignal }) {
   if (go.preparation.workflowContext) {
@@ -46,33 +39,6 @@ export async function executeHmsWorkerRun(input: { db: DB; fence: AiRunFence; si
   input.signal?.throwIfAborted();
   const go = await input.db.transaction((tx) => verifyStaffGoForRun(tx, input.fence));
   return executeVerifiedRun(input.db, go, { runId: input.fence.runId, fence: input.fence, signal: input.signal });
-}
-
-async function validatedReadCapabilities(scope: ResolvedPropertyScope) {
-  const unavailable = { reads: false, quote: false };
-  const sourceRevision = process.env.NAVA_BUILD_COMMIT?.trim();
-  const credentialDigest = process.env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${scope.propertyCode}`];
-  const keyVersion = process.env.HMS_EVIDENCE_HMAC_KEY_VERSION?.trim();
-  if (!sourceRevision || !keyVersion || !/^[a-f0-9]{64}$/.test(credentialDigest ?? '')) return unavailable;
-  const root = process.env.HMS_READ_ROLE_PROOF_V2_ROOT?.trim() || DEFAULT_HMS_READ_ROLE_PROOF_V2_ROOT;
-  const runtimeFingerprint = runtimeFingerprintSha256({ sourceRevision, playwrightRevision: '1.63.0', chromiumRevision: '1243' });
-  try {
-    const active = await loadWorkerActiveReadSet({ propertyCode: scope.propertyCode,
-      registryPath: join(root, scope.propertyCode, 'active-registry.v2.json'),
-      releaseRoot: join(root, scope.propertyCode, 'releases'), runtimeFingerprintSha256: runtimeFingerprint });
-    const valid = async (toolId: 'hms_find_reservation' | 'hms_quote_stay') => {
-      const release = active.releases.get(toolId);
-      if (!release || release.evidenceKind !== 'hms' || release.sourceRevision !== sourceRevision ||
-          release.privateDigestKeyVersion !== keyVersion || release.credentialVersionHmacSha256 !== credentialDigest) return false;
-      const proof = await loadHmsReadRoleProofV2ForTool(root, READ_TOOLS[toolId], new Date(), scope.propertyCode);
-      const bytes = await readFile(join(root, scope.propertyCode, `${toolId}.v2.json`));
-      return createHash('sha256').update(bytes).digest('hex') === release.roleProofSha256 &&
-        proof.observerSourceRevision === sourceRevision && proof.privateDigestKeyVersion === keyVersion &&
-        proof.runtimeFingerprintSha256 === runtimeFingerprint && proof.credentialVersionHmacSha256 === credentialDigest;
-    };
-    const reads = await valid('hms_find_reservation');
-    return { reads, quote: reads && await valid('hms_quote_stay') };
-  } catch { return unavailable; }
 }
 
 export type HmsReadQuery = ReadRequest;
@@ -109,8 +75,7 @@ export function createHmsService(input: {
   const database = () => input.db ?? getDb();
   return {
     propertyCode: scope.propertyCode,
-    configuration: async () => propertyConfigurationForScope(scope, process.env,
-      scope.group === 'davinci' ? await validatedReadCapabilities(scope) : undefined),
+    configuration: async () => propertyConfigurationForScope(scope, process.env),
     read<Q extends HmsReadQuery>(query: Q, signal?: AbortSignal): Promise<ReadResult<Q>> {
       if (!input.readAdapter || !hmsPropertyReadEnabled({ propertyCode: scope.propertyCode, toolId: query.toolId })) {
         throw new Error('hms_read_capability_unavailable');

@@ -106,7 +106,7 @@ describe('read-only HMS property registry', () => {
       username: 'NAVAAI',
       mailboxTransportId: 'transport-davinci',
       credentialSecretRef: 'nava-zero/server-pilot/infor-hms-read-davinci',
-      credentialMode: 'view_only',
+      credentialUse: 'shared',
     });
     expect(resolveSecretSource({ HMS_PROPERTY_TRANSPORT_ID: 'transport-davinci' })).toMatchObject({
       source: 'aws',
@@ -142,7 +142,7 @@ describe('read-only HMS property registry', () => {
     ).toThrow('hms_property_credential_mismatch');
   });
 
-  it('fails closed for unknown transports, conflicting secret sources, or a non-view-only secret', () => {
+  it('fails closed for unknown transports, conflicting secret sources, or an invalid credential mode', () => {
     expect(() => getHmsPropertyRegistration('transport-unknown')).toThrow('hms_property_unknown');
     expect(() =>
       resolveSecretSource({
@@ -164,9 +164,12 @@ describe('read-only HMS property registry', () => {
       .toMatchObject({ mailboxTransportId: 'transport-davinci' });
     expect(() => validateHmsPropertySecret(getHmsPropertyRegistration('transport-faith'),
       { ...DAVINCI_SECRET, mailboxTransportIds: undefined })).toThrow('hms_property_credential_mismatch');
-    expect(() =>
-      validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'write_capable' }),
-    ).toThrow('hms_property_credential_mismatch');
+    expect(validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'write_capable' }))
+      .toMatchObject({ credentialMode: 'write_capable' });
+    expect(validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'audited_write' }))
+      .toMatchObject({ credentialMode: 'audited_write' });
+    expect(() => validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'invalid' }))
+      .toThrow('hms_property_credential_mismatch');
     expect(() =>
       validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, expectedTenant: 'THECENTURION_PRD' }),
     ).toThrow('hms_property_credential_mismatch');
