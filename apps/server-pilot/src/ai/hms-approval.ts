@@ -2207,6 +2207,7 @@ async function assertCancelStateSource(input: {
 export async function hmsWriteStateOf(input: {
   db?: DB;
   transportId: string;
+  propertySwitch?: PropertySwitch;
   workItemId: string;
   selectedInternetMessageId?: string;
   selectedSource?: HmsSelectedSource;
@@ -2231,7 +2232,7 @@ export async function hmsWriteStateOf(input: {
   const storedValues = z
     .record(z.unknown())
     .safeParse((item.state[HMS_SNAPSHOT_KEY] as { values?: unknown } | undefined)?.values);
-  const target = paneStayHmsTargetForTransport(input.transportId);
+  const target = paneStayHmsTargetForTransport(input.transportId, input.propertySwitch);
   const cloudFiling = item.state.action === 'attach_document' && target.ok;
   const run = await latestWriteRun(db, item.id);
   const grantFormDigest = currentFormDigest;
@@ -2310,12 +2311,11 @@ export async function hmsWriteStateOf(input: {
           evidence: [], reviewed: null }
       : null;
   }
-  if (cloudFiling && run &&
-      (run.promptVersion !== HMS_LABTEST_ATTACH_PROMPT_VERSION || !grant?.fingerprintMatches)) {
+  const filingRun = run && [HMS_LABTEST_ATTACH_PROMPT_VERSION, HMS_V2_WRITE_PROMPT_VERSION].includes(run.promptVersion);
+  if (cloudFiling && run && (!filingRun || !grant?.fingerprintMatches)) {
     // A completed write for another workflow or form is history, not this upload.
     // If a Filing success lacks its grant, its relationship to this form is unknown.
-    const missingFilingGrant = run.promptVersion === HMS_LABTEST_ATTACH_PROMPT_VERSION &&
-      run.state === 'succeeded' && !grant;
+    const missingFilingGrant = filingRun && run.state === 'succeeded' && !grant;
     needsCheck ||= missingFilingGrant;
     grant = null;
     runView = (NONTERMINAL_AI_RUN_STATES as readonly string[]).includes(run.state) || needsCheck

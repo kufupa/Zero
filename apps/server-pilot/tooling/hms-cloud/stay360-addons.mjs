@@ -133,6 +133,21 @@ function matches(request, state, pending) {
           (key.toLowerCase() === 'pageaction' && key !== 'pageaction') ||
           (body.has(key) && !exact(body, key, value)))) return false;
   }
+  if (pending.kind === 'more' && url.pathname === '/web/base/GETCACHE') {
+    const keys = [...body.keys()].map(key => key.toLowerCase()), a = aliases(body);
+    const expected = { propertycode: state.propertyCode, reservationstayid: state.native.stayId, account: state.native.account,
+      itemtype: pending.itemType || 'ITEM', lov_tagname: 'itemorbundlecode' };
+    return request.frame() === state.catalogueFrame && exact(body, 'GRID_NAME', 'LVENHANCEDEXPERIENCE') &&
+      /^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '') &&
+      Buffer.byteLength(request.postData() || '') <= 8192 && new Set(keys).size === keys.length &&
+      !keys.some(key => /^(?:pageaction|action|autosave)$/i.test(key)) && a !== null &&
+      [...body].every(([key, value]) => !Object.hasOwn(expected, key.toLowerCase()) || value === expected[key.toLowerCase()]) &&
+      Object.entries({ GRID_ID: 'GRIDID', DATASPY_ID: 'DATASPYID' }).every(([name, key]) => !body.has(name) ||
+        exact(body, name, String(pending.metadata[key]))) &&
+      Object.entries({ 'param.propertycode': state.propertyCode, 'param.itemtype': pending.itemType || 'ITEM',
+        'param.reservationstayid': state.native.stayId, 'param.account': state.native.account })
+        .every(([name, value]) => !a.has(name) || a.get(name) === value);
+  }
   if (pending.kind === 'lookup' || pending.kind === 'more') {
     if (!['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) ||
         body.get('GRID_NAME') !== 'LVENHANCEDEXPERIENCE' || body.get('LOV_TAGNAME') !== 'itemorbundlecode') return false;
@@ -216,7 +231,7 @@ async function initializeState(page, propertyCode) {
     const request = route.request(), url = new URL(request.url());
     const body = new URLSearchParams(request.postData() || '');
     const addon = url.origin === ORIGIN && url.pathname.toLowerCase().startsWith('/web/base/osenex');
-    const lookup = url.origin === ORIGIN && ['/web/base/LOVPOP', '/web/base/GRIDDATA'].includes(url.pathname) &&
+    const lookup = url.origin === ORIGIN && ['/web/base/LOVPOP', '/web/base/GRIDDATA', '/web/base/GETCACHE'].includes(url.pathname) &&
       (body.get('LOV_TAGNAME') === 'itemorbundlecode' || body.get('GRID_NAME') === 'LVENHANCEDEXPERIENCE');
     if (!addon && !lookup) return route.fallback();
     if (['GET', 'HEAD', 'OPTIONS'].includes(request.method())) return route.fallback();
@@ -226,6 +241,7 @@ async function initializeState(page, propertyCode) {
     }
     if (addon && !pending.scope.allow(request)) return route.abort();
     pending.request = request;
+    if (pending.kind === 'lookup') state.catalogueFrame = request.frame();
     if (pending.kind === 'open' || pending.kind === 'open_unsaved') {
       state.native = { stayId: body.get('reservationstayid'), account: body.get('account') };
     }

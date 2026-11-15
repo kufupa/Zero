@@ -103,6 +103,7 @@ export const hmsApprovalRouter = router({
     try {
       const scope = resolvePropertyScope({ transportId: ctx.activeTransportId, propertySwitch: input.propertySwitch });
       const view = await hmsWriteStateOf({ transportId: ctx.activeTransportId, workItemId: input.workItemId,
+        propertySwitch: input.propertySwitch,
         selectedInternetMessageId: input.internetMessageId, selectedSource: input.selectedSource });
       if (!view || (view.form.propertyCode ?? 'HRCEN') !== scope.propertyCode ||
           view.formDigest !== input.formDigest || view.form.confirmation !== input.confirmation ||
@@ -294,6 +295,7 @@ export const hmsApprovalRouter = router({
     try {
       const view = await hmsWriteStateOf({
         transportId: ctx.activeTransportId,
+        propertySwitch: input.propertySwitch,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
         selectedSource: input.selectedSource,
@@ -326,6 +328,7 @@ export const hmsApprovalRouter = router({
       }
       const view = await hmsWriteStateOf({
         transportId: ctx.activeTransportId,
+        propertySwitch: input.propertySwitch,
         workItemId: input.workItemId,
         selectedInternetMessageId: input.internetMessageId,
         selectedSource: input.selectedSource,
