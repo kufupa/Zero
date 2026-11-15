@@ -13,19 +13,15 @@ export type RestAvailabilityObservation = {
   rate: { code: string; label: string | null; promotionCode: string | null };
   nightly: Array<{ date: string; availableCount: number | null; rate: string | null; currency: string | null;
     restrictions: RestAvailabilityRestrictions }>;
-  departure: { date: string; verified: boolean; restrictions: RestAvailabilityRestrictions };
+  departure: { date: string; verified: boolean; departureColumnAbsent?: true; restrictions: RestAvailabilityRestrictions };
 };
 export type RestAvailabilityGroup = RestAvailabilityEvidence & {
-  outcome: 'rest_observed' | 'partial'; observedAt: string; criteriaEchoVerified: true;
-  appliedCriteria: Record<string, unknown>; observations: RestAvailabilityObservation[];
+  outcome: 'rest_observed' | 'partial'; observedAt: string; criteriaEchoVerified: boolean;
+  submittedCriteria: Record<string, unknown>; observations: RestAvailabilityObservation[];
 };
 export type RestAvailabilityResult = (RestAvailabilityEvidence & {
   outcome: 'rest_observed' | 'partial'; groups: RestAvailabilityGroup[];
 }) | (RestAvailabilityEvidence & { outcome: 'execution_failure' | 'unsupported_context'; issue: string });
-export declare function quoteRestSessionCacheKey(identity: {
-  tenantId: string; landingPropertyCode: string; selectedPropertyCode: string; origin: string;
-  credentialVersionHmacSha256: string | null; capabilityScope: string;
-}): string | null;
 export declare function validateDirectAvailabilityInquiryRequest(request: {
   method: string; url: string; redirect: string; signal: AbortSignal; headers: HeadersInit; body: string;
 }, propertyCode: string): boolean;

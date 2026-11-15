@@ -26,6 +26,7 @@ export type CloudSessionOptions = {
   prepareContext?: (context: BrowserContext) => void | Promise<void>;
   readRequestPolicy?: (request: Request) => boolean;
   requireBoundCredentialVersion?: boolean;
+  allowUnboundCredentialVersion?: boolean;
   startScreen?: 'BSSTRT' | 'OSRESV' | 'OSRESS';
   loadSecret?: CloudSecretLoader;
   credentialLease?: CloudCredentialLease;
@@ -43,6 +44,7 @@ export declare function verifyCloudCredentialVersion(input: {
   loadedSecret: unknown;
   signal?: AbortSignal;
   requireBoundVersion?: boolean;
+  allowUnboundVersion?: boolean;
 }): Promise<string | null>;
 export declare function acquireCloudCredentialLease(propertyCode: string, options?: {
   signal?: AbortSignal;
