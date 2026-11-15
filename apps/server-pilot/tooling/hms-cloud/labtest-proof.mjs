@@ -48,10 +48,9 @@ async function assertNoTargetHold() {
     const stat = await lstat(legacyPath);
     assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === process.getuid() &&
       !(stat.mode & 0o077) && stat.size <= 128, 'JOURNAL_HELD');
-    // Old profile holds remain intact. Only an independently owned stay may
-    // proceed; unknown legacy holds still stop every workflow.
-    assert(['amend', 'attach', 'addons', 'cancel'].includes(args.stage) &&
-      journal?.created?.freshReadbackVerified === true &&
+    // Stay preparation/creation use existing profiles, not this master insert.
+    // Keep old profile holds intact; unknown legacy holds stop every workflow.
+    assert(args.stage !== 'guest_profile_create' &&
       (await readFile(legacyPath, 'utf8')).trim() === 'guest_profile_create_possible', 'JOURNAL_HELD');
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const paths = [holdPath];
