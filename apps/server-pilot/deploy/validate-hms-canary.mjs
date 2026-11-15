@@ -16,6 +16,7 @@ const workflows = {
 };
 const configuredPropertyFlags = new Set(['HMS_JOB_QUEUE', 'HMS_QUOTE_PREPARE', 'HMS_PREFETCH_ENABLED', 'HMS_AVAILABILITY_PREFETCH', 'PARTY_MATCH_V2']);
 const isOn = value => /^(on|true|1)$/i.test(value ?? '');
+const davinciEnabled = env => (env.HMS_DAVINCI_ENABLED_PROPERTIES || '').split(',').filter(Boolean);
 function parse(path) {
   const values = {};
   if (!path || !existsSync(path)) return values;
@@ -52,7 +53,11 @@ try {
     const changedLegacyScope = configuredPropertyFlags.has(flag) && isOn(value) && isOn(prev[flag]) &&
       ((next.HMS_EXPECTED_PROPERTY_CODE || 'HRCEN') !== (prev.HMS_EXPECTED_PROPERTY_CODE || 'HRCEN') ||
        next.HMS_EXPECTED_TENANT !== prev.HMS_EXPECTED_TENANT || next.HMS_EXPECTED_TRANSPORT_ID !== prev.HMS_EXPECTED_TRANSPORT_ID);
-    if (!widensAmend && !changedLegacyScope && (!isOn(value) || isOn(prev[flag]))) continue;
+    // The REST quote read is one global flag, used by HRCEN and by every enabled DaVinci property.
+    const restQuoteProperties = flag === 'HMS_QUOTE_REST_FAST_PATH' && isOn(value)
+      ? ['HRCEN', ...davinciEnabled(next)].filter(property => !isOn(prev[flag]) ||
+        (property !== 'HRCEN' && !davinciEnabled(prev).includes(property))) : [];
+    if (!widensAmend && !changedLegacyScope && !restQuoteProperties.length && (!isOn(value) || isOn(prev[flag]))) continue;
     if ((flag === 'PANE_CLOUD_CREATE_DISPATCH' && next.PANE_WRITE_CREATE === 'lab') ||
         (flag === 'PANE_HMS_LAB_CREATE_WORKER' && next.PANE_WRITE_CREATE === 'lab') ||
         (flag === 'PANE_HMS_LAB_AMEND_WORKER' && next.PANE_WRITE_AMEND === 'lab') ||
@@ -61,6 +66,8 @@ try {
       const enabled = (next.HMS_DAVINCI_ENABLED_PROPERTIES || '').split(',').filter(Boolean);
       // Legacy DaVinci entry points predate the explicit property set.
       for (const property of enabled.length ? enabled : ['HRDAV']) add(workflow, property);
+    } else if (flag === 'HMS_QUOTE_REST_FAST_PATH') {
+      for (const property of restQuoteProperties) add(workflow, property);
     } else {
       add(workflow, configuredPropertyFlags.has(flag) ? (next.HMS_EXPECTED_PROPERTY_CODE || 'HRCEN') : 'HRCEN');
     }

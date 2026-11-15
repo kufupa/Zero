@@ -11,6 +11,7 @@ import { reservationWorkflowV2CancelLookup } from './reservation-workflow-v2-can
 import { reservationWorkflowV2FilingLookup } from './reservation-workflow-v2-filing.js';
 import { paneStayLookupEnabled } from './pane-stay-lookup.js';
 import { reservationArrivalAddOnLookup } from './reservation-workflow-v2-arrival-addons.js';
+import { recordHmsPrepareFailure } from './work-events.js';
 
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type Step = { key: string; run: (ctx: ReservationWorkflowV2SystemReadContext, item: ReservationWorkflowV2ItemInput) => Promise<Outcome> };
@@ -133,6 +134,7 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
     const dependency = step.key.startsWith('quote:prepare:')
       ? step.key.replace(':prepare:', ':lookup:') : null;
     const dependencyResult = dependency ? draft.prefill?.nativeChecks?.find((entry) => entry.key === dependency) : undefined;
+    const startedAt = Date.now();
     try {
       phaseSignal.throwIfAborted();
       outcome = dependency && dependencyResult?.status !== 'ok'
@@ -140,12 +142,19 @@ export async function runReservationArrivalChecks(input: { scoped: ReservationWo
       phaseSignal.throwIfAborted();
     } catch {
       input.signal.throwIfAborted();
-      if (phaseSignal.aborted) break;
-      outcome = { status: 'failed', issue: 'native_check_failed' };
+      outcome = { status: 'failed', issue: phaseSignal.aborted ? 'prepared_deadline_exceeded' : 'native_check_failed' };
+    }
+    const check = { key: step.key, ...checkOutcome(outcome, batch) };
+    if (step.key.split(':')[1] === 'prepare' &&
+        !['ok', 'prepared', 'priced', 'found', 'matches', 'candidate', 'excluded'].includes(check.status)) {
+      const [workflow] = step.key.split(':');
+      await recordHmsPrepareFailure(input.scoped.db, { workItemId: item.workItemId, actorUserId: null,
+        workflow: workflow === 'service' ? 'addons' : workflow, stage: 'check',
+        status: check.status, codes: [check.issue],
+        propertyCode: input.scoped.propertyCode, durationMs: Date.now() - startedAt });
     }
     input.signal.throwIfAborted();
     if (phaseSignal.aborted) break;
-    const check = { key: step.key, ...checkOutcome(outcome, batch) };
     if (phaseSignal.aborted) { input.signal.throwIfAborted(); break; }
     let saved;
     try { saved = await commitReservationNativeCheck(input.scoped, { ...item, batch, check }); }

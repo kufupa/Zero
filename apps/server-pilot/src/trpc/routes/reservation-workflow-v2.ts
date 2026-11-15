@@ -89,6 +89,7 @@ export const reservationWorkflowV2Procedure = mailboxProcedure.use(async ({ ctx,
     await logReservationWorkflowFailure({ path, rawInput: await getRawInput(),
       ...(result.ok ? { result: result.data } : { error: result.error }),
       userId: ctx.sessionUser.id, transportId: ctx.activeTransportId,
+      db: getDb,
       correlationId: ctx.reqHeaders.get('x-nava-action-id'), elapsedMs: Date.now() - startedAt });
   } catch {
     // Diagnostics must never change the result of a staff operation.

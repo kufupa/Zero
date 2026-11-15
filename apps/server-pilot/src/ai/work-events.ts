@@ -4,6 +4,7 @@ import type { DB } from '../db/client.js';
 import { workEvent, workItem, WORK_EVENT_TYPES, type WorkEventType } from '../db/schema/work.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
+import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.js';
 import { maskCardNumbers } from './card-mask.js';
 import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from './reservation-workflow-v2-contract.js';
 
@@ -79,6 +80,72 @@ export async function recordPaneActions(
     await tx.insert(workEvent).values(rows);
     return 'recorded' as const;
   });
+}
+
+/** Fixed vocabularies keep failure telemetry free of guest text, including code-shaped native messages. */
+export const HMS_PREPARE_FAILED_WORKFLOWS = ['quote', 'create', 'amend', 'cancel', 'filing', 'addons', 'guest_profile', 'unknown'] as const;
+export const HMS_PREPARE_FAILED_STAGES = ['prepare', 'check'] as const;
+const HMS_PREPARE_FAILURE_CODES = [
+  ...PANE_ERROR_CODES,
+  'needs_input', 'needs_prepare', 'needs_review', 'needs_reconcile', 'failed', 'refused', 'unsupported',
+  'partial', 'stale', 'not_found', 'wrong_property', 'invalid_input', 'unknown',
+  'native_create_prepare_failed', 'native_quote_prepare_failed', 'native_amend_prepare_failed',
+  'guest_profile_prepare_failed', 'guest_profile_prepare_incomplete', 'saved_addon_prepare_failed',
+  'native_check_failed', 'prior_native_lookup_incomplete', 'amend_lock_busy', 'prepare_screenshot_not_persisted',
+  'native_meal_plan_mismatch_or_unknown', 'batch_preparations_incomplete', 'allocation_required',
+  'guest_fields_incomplete', 'guest_fields_require_review', 'guest_profile_intent_requires_new',
+  'guest_profile_preparation_changed', 'reviewed_service_preparation_changed', 'service_required',
+  'service_target_required', 'service_dates_required', 'guest_name_required', 'create_request_required',
+  'filing_preview_requires_staff_document_review', 'prepared_deadline_exceeded',
+] as const;
+export type HmsPrepareFailedValue = {
+  workflow: (typeof HMS_PREPARE_FAILED_WORKFLOWS)[number];
+  stage: (typeof HMS_PREPARE_FAILED_STAGES)[number];
+  failureCode: (typeof HMS_PREPARE_FAILURE_CODES)[number];
+  propertyCode: PropertyCode | null;
+  durationMs: number;
+};
+
+/**
+ * Appends one failure without changing the staff operation if telemetry fails. Unknown native codes fall back to
+ * a fixed result status; no request fields, native messages, action ids or build metadata enter the value.
+ */
+export async function recordHmsPrepareFailure(
+  db: DB,
+  input: {
+    workItemId: string;
+    /** The staff member who ran it; null for a check the system ran. */
+    actorUserId: string | null;
+    workflow: string | undefined;
+    stage: HmsPrepareFailedValue['stage'];
+    status: string | undefined;
+    codes: readonly unknown[];
+    propertyCode: string | null | undefined;
+    durationMs: number;
+  },
+): Promise<void> {
+  try {
+    if (!/^[0-9a-f-]{36}$/i.test(input.workItemId)) return;
+    const failureCode = [...input.codes, input.status].map((code) =>
+      HMS_PREPARE_FAILURE_CODES.find((allowed) => allowed === code)).find(Boolean) ?? 'unknown';
+    const property = propertyCodeSchema.safeParse(input.propertyCode);
+    const value: HmsPrepareFailedValue = {
+      workflow: HMS_PREPARE_FAILED_WORKFLOWS.find((workflow) => workflow === input.workflow) ?? 'unknown',
+      stage: HMS_PREPARE_FAILED_STAGES.find((stage) => stage === input.stage) ?? 'prepare',
+      failureCode,
+      propertyCode: property.success ? property.data : null,
+      durationMs: Number.isFinite(input.durationMs) ? Math.min(86_400_000, Math.max(0, Math.round(input.durationMs))) : 0,
+    };
+    await db.insert(workEvent).values({
+      workItemId: input.workItemId,
+      actorKind: input.actorUserId ? 'user' : 'system',
+      actorUserId: input.actorUserId,
+      type: 'hms.prepare.failed',
+      value,
+    });
+  } catch {
+    console.warn('hms_prepare_failed_event_skipped', 'insert');
+  }
 }
 
 /** The longest staff note kept as a work event. Longer text is cut after masking. */
