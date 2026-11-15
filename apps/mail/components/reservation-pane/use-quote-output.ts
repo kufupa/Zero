@@ -49,9 +49,24 @@ function writeMarker(value: string | null): boolean {
   try { if (value === null) sessionStorage.removeItem(MARKER); else sessionStorage.setItem(MARKER, value); return true; }
   catch { return false; }
 }
+// Same rule as canonicalMessageId in apps/server-pilot/src/mail/ingest/message-id.ts: strip angle
+// brackets, unquote a quoted local part, lowercase. Outlook gives the raw header; the server returns this form.
+function canonicalMessageId(raw: string | null | undefined): string | null {
+  const id = raw?.trim().replace(/^<+|>+$/g, '').trim();
+  if (!id) return null;
+  if (!id.startsWith('"')) return id.toLowerCase();
+  let local = '';
+  for (let index = 1; index < id.length; index++) {
+    const character = id[index]!;
+    if (character === '\\' && index + 1 < id.length) { local += id[++index]!; continue; }
+    if (character === '"') return (local + id.slice(index + 1)).toLowerCase() || null;
+    local += character;
+  }
+  return id.toLowerCase();
+}
 function sameEmail(left: WorkstationEmailPayload | null, right: WorkstationEmailPayload): boolean {
   return !!left && left.entryId === right.entryId && left.storeId === right.storeId && left.folderEntryId === right.folderEntryId &&
-    (!right.internetMessageId || left.internetMessageId === right.internetMessageId);
+    (!right.internetMessageId || canonicalMessageId(left.internetMessageId) === canonicalMessageId(right.internetMessageId));
 }
 function address(value: string): string { return value.trim().toLowerCase(); }
 function replySubject(subject: string): string {
@@ -145,7 +160,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
           (output.artifacts.length && !host.supportsAction('ADD_ATTACHMENT_TO_DRAFT'))) throw new Error('Connect Outlook and update the add-in before creating this draft.');
       if (output.artifacts.length && host.capabilities?.preservesAttachmentFilenames !== true) throw new Error('Update the Outlook add-in to attach correctly named PDF and Excel files. The files remain available to download.');
       if (output.artifacts.some(item => item.sizeBytes > MAX_OUTLOOK_ATTACHMENT_BYTES)) throw new Error('A quotation file exceeds the Outlook add-in limit. Download and attach it manually; no reply was created.');
-      if (source.internetMessageId && email.internetMessageId !== source.internetMessageId) throw new Error('The selected Outlook email changed. Select it again.');
+      if (source.internetMessageId && canonicalMessageId(email.internetMessageId) !== canonicalMessageId(source.internetMessageId)) throw new Error('The selected Outlook email changed. Select it again.');
       if (!output.cover?.to.trim() || address(output.cover.to) !== address(email.senderEmail)) throw new Error('Outlook replies to the original sender. Check the quote recipient before creating this draft.');
       const fingerprint = JSON.stringify([key, output.operationId, html, output.artifacts.map((item) => [item.fileName, item.sha256])]);
       let attempt = pending.current;

@@ -52,11 +52,15 @@ const guestCreatesInFlight = new Set<string>();
 const sourceKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.propertySelectionEpoch ?? 0, source.selectionEpoch, source.messageId, source.sourceHash]);
 const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId]);
 const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
-  source.propertyId === 'HRCEN'
-    ? `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`
-    : `nava:guest-profile:${source.mailboxId}:${source.propertyId}:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
+  `nava:guest-profile:${source.mailboxId}:${source.propertyId}:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}`;
+// HRCEN attempts saved before the key carried mailbox and property stay readable until they are cleared.
+const legacyGuestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
+  source.propertyId === 'HRCEN' ? `nava:guest-profile:${source.messageId}:${source.sourceHash}:${requestId}:${allocationId}` : null;
 function readGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string): string | null {
-  try { return window.localStorage.getItem(guestAttemptKey(source, requestId, allocationId)); } catch { return null; }
+  try {
+    const legacyKey = legacyGuestAttemptKey(source, requestId, allocationId);
+    return window.localStorage.getItem(guestAttemptKey(source, requestId, allocationId)) ?? (legacyKey ? window.localStorage.getItem(legacyKey) : null);
+  } catch { return null; }
 }
 function saveGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string, operationId: string): boolean {
   try {
@@ -66,7 +70,11 @@ function saveGuestAttempt(source: ReservationSourceContext, requestId: string, a
   } catch { return false; }
 }
 function clearGuestAttempt(source: ReservationSourceContext, requestId: string, allocationId: string) {
-  try { window.localStorage.removeItem(guestAttemptKey(source, requestId, allocationId)); } catch { /* A terminal result still remains in the draft. */ }
+  try {
+    window.localStorage.removeItem(guestAttemptKey(source, requestId, allocationId));
+    const legacyKey = legacyGuestAttemptKey(source, requestId, allocationId);
+    if (legacyKey) window.localStorage.removeItem(legacyKey);
+  } catch { /* A terminal result still remains in the draft. */ }
 }
 
 function notify(buffer: Buffer) { buffer.listeners.forEach(listener => listener()); }
