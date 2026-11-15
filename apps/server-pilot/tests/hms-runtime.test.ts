@@ -556,12 +556,14 @@ describe('HMS runtime', () => {
   it('credential mode mismatch rejects non-view_only', async () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
-    const { runtime } = await boot(server, {
-      secret: { credentialMode: 'audited_write' },
-    });
-    await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toMatchObject({
-      code: 'credential_mode',
-    });
+    for (const credentialMode of ['audited_write', 'write_capable'] as const) {
+      const { runtime } = await boot(server, {
+        secret: { credentialMode },
+      });
+      await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toMatchObject({
+        code: 'credential_mode',
+      });
+    }
   });
 
   it('transport mismatch rejects wrong mailbox id', async () => {
@@ -781,10 +783,10 @@ describe('Task 2 production composition + browser guards', () => {
       const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
       const events: string[] = [];
       const contextOptions: unknown[] = [];
-      const originalAcquireLease = cloud.acquireCloudCredentialLease;
-      const acquireLease = vi.spyOn(cloud, 'acquireCloudCredentialLease').mockImplementation(async (propertyCode, options) => {
+      const releaseLease = vi.fn(async () => {});
+      const acquireLease = vi.spyOn(cloud, 'acquireCloudCredentialLease').mockImplementation(async (propertyCode) => {
         expect(propertyCode).toBe('HRDAVS');
-        return originalAcquireLease('HRCEN', options);
+        return { signal: new AbortController().signal, release: releaseLease } as Awaited<ReturnType<typeof cloud.acquireCloudCredentialLease>>;
       });
       let selectedProperty: 'HRDAV' | 'HRDAVS' = 'HRDAV';
       const nativePages: object[] = [];
@@ -871,10 +873,12 @@ describe('Task 2 production composition + browser guards', () => {
           expect(contextOptions).toHaveLength(2);
           for (const options of contextOptions) expect(options).not.toHaveProperty('storageState');
           expect(switchProperty).toHaveBeenCalledTimes(2);
+          expect(releaseLease).toHaveBeenCalledTimes(2);
         } else {
           await expect(open()).rejects.toBeInstanceOf(HmsRuntimeError);
           expect(runtime.health().activeSessions).toBe(0);
           expect(runtime.stats()).toMatchObject({ contextsCreated: 1, contextsClosed: 1 });
+          expect(releaseLease).toHaveBeenCalledOnce();
           if (scenario === 'wrong_landing') expect(switchProperty).not.toHaveBeenCalled();
         }
       } finally {
@@ -1650,7 +1654,7 @@ describe('HMS browser audit capture order', () => {
     await runDelayedProofCloseWithinFinalizationBudget('live_proof');
   }, 15_000);
 
-  it('withholds a successful session when capture finalizes incomplete', async () => {
+  it('withholds an incomplete capture and records the actual shared credential mode', async () => {
     const { randomUUID } = await import('node:crypto');
     const { rm } = await import('node:fs/promises');
     const { createHmsBrowserArtifactStore, ensureHmsBrowserArtifactRoot } = await import(
@@ -1667,13 +1671,13 @@ describe('HMS browser audit capture order', () => {
       handle.finalize = (input) => finalize({ ...input, complete: false });
       return handle;
     };
-    const secret = fixtureSecret(server.origin);
+    const secret = fixtureSecret(server.origin, { credentialMode: 'write_capable' });
     const runtime = createHmsRuntime({
       manifest: fixtureManifest(server.origin),
       secretArn: 'arn:aws:secretsmanager:eu-west-1:000000000000:secret:fixture-test',
       loadSecret: async () => secret,
       browserFactory: createFetchBrowserFactory(),
-      requireViewOnly: true,
+      requireViewOnly: false,
       runStartupCanary: false,
       artifactStore: store,
       requireAuditCapture: true,
@@ -1705,6 +1709,7 @@ describe('HMS browser audit capture order', () => {
       process.off('unhandledRejection', recordUnhandled);
       expect(unhandled).toEqual([]);
       expect(session.lastReceipt()?.artifactState).toBe('incomplete');
+      expect(session.lastReceipt()?.credentialMode).toBe('write_capable');
       expect(runtime.health().state).toBe('degraded');
       await expect(runtime.close()).rejects.toMatchObject({
         code: 'AUDIT_CAPTURE',

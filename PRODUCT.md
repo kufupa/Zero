@@ -75,6 +75,7 @@ One primary action per step. No dead controls. Use Infor HMS field labels across
 - **Deploy main:** from a clean worktree at fetched `origin/main`, run that checkout's `apps/server-pilot/deploy/ops-deploy.sh`. Verify the runtime SHA, effective flags on all PM2 processes, and health.
 
 Engineering and verification rules live in `AGENTS.md`.
+DB-backed Vitest suites may be skipped on the VPS; report skips honestly and run `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL` before tests. Never run local `tsc`/`tsgo`; use `bash /home/orca/bin/remote-typecheck.sh <clean worktree> --app <mail|server-pilot>`. Never use `--no-verify` or fabricate canary passes, read-role proofs, or real-email intent.
 
 ## Done
 

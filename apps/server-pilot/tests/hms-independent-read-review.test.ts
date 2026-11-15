@@ -9,6 +9,7 @@ import { executeRead, type ReadExecutionContext } from '../src/hms/read-service.
 import { readResultSchema } from '../src/hms/read-service-contracts.js';
 import { readInputDigest } from '../src/hms/read-service-contracts.js';
 import { requireHmsReadRuntimeConfig } from '../src/env.js';
+import { getPropertyRegistration } from '../tooling/hms-cloud/property-registry.mjs';
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 
@@ -340,6 +341,7 @@ describe('U8 independent review RED contracts', () => {
   });
 
   it('admits a model-free read runtime while drafting remains off', () => {
+    const property = getPropertyRegistration('HRCEN')!;
     expect(
       requireHmsReadRuntimeConfig({
         HMS_DRAFT_ENRICHMENT_MODE: 'off',
@@ -348,8 +350,8 @@ describe('U8 independent review RED contracts', () => {
         HMS_READ_SECRET_ARN: 'arn:aws:secretsmanager:synthetic:u8-read',
         HMS_CHROMIUM_EXECUTABLE_PATH: '/usr/bin/chromium',
         HMS_READ_ROLE_PROOF_PATH: '/private/u8-role-proof.json',
-        HMS_EXPECTED_TENANT: 'synthetic-tenant',
-        HMS_EXPECTED_TRANSPORT_ID: 'synthetic-transport',
+        HMS_EXPECTED_TENANT: property.expectedTenant,
+        HMS_EXPECTED_TRANSPORT_ID: property.transportIds[0],
         HMS_EVIDENCE_HMAC_SECRET_ARN: 'arn:aws:secretsmanager:synthetic:u8-evidence',
         HMS_EVIDENCE_HMAC_KEY_VERSION: 'synthetic-v1',
       }).expectedPropertyCode,

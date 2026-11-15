@@ -168,7 +168,6 @@ async function legacyQuotePaneConfigForProperty(
 export async function propertyConfigurationForScope(
   scope: ResolvedPropertyScope,
   env: NodeJS.ProcessEnv = process.env,
-  validatedReadCapabilities?: { reads: boolean; quote: boolean },
 ): Promise<PropertyConfiguration> {
   const legacy = await legacyQuotePaneConfigForProperty(scope.propertyCode, scope.transportId, env);
   let ratePlans = legacy?.ratePlans ?? [];
@@ -221,9 +220,9 @@ export async function propertyConfigurationForScope(
   }
   const capability = (workflow: 'reads' | 'quote' | 'create' | 'amend' | 'cancel' | 'attach' | 'addons' | 'guest_profile_create') => {
     const proven = scope.group === 'centurion' ||
-      (workflow === 'reads' && validatedReadCapabilities?.reads === true) ||
-      (workflow === 'quote' && validatedReadCapabilities?.quote === true && catalogue.identity !== null) ||
-      (!['reads', 'quote'].includes(workflow) && catalogue.identity !== null &&
+      (workflow === 'reads' && effectiveWorkflowPolicy(env, scope.propertyCode, workflow).readEnabled) ||
+      (workflow !== 'reads' && catalogue.identity !== null &&
+        (workflow !== 'quote' || salesStrategies.length > 0) &&
         effectiveWorkflowPolicy(env, scope.propertyCode, workflow).readEnabled);
     const policy = effectiveWorkflowPolicy(env, scope.propertyCode, workflow);
     const status = proven ? policy.capability : 'unavailable';

@@ -26,6 +26,7 @@ import {
   HMS_BROWSER_ARTIFACT_MIN_LIVE_FREE_BYTES,
   HMS_BROWSER_CAPTURE_FINALIZE_TIMEOUT_MS,
   HMS_BROWSER_LIVE_PROOF_FINALIZE_TIMEOUT_MS,
+  HMS_CREDENTIAL_MODES,
   collectHmsStorageStateSecretValues,
   type HmsBrowserAuditSpec,
   type HmsBrowserCaptureHandle,
@@ -46,7 +47,7 @@ export const hmsSecretSchema = z
     expectedPropertyName: z.string().min(1),
     mailboxTransportId: z.string().min(1).optional(),
     mailboxTransportIds: z.array(z.string().min(1)).min(1).optional(),
-    credentialMode: z.enum(['audited_write', 'view_only']),
+    credentialMode: z.enum(HMS_CREDENTIAL_MODES),
   })
   .strict()
   .refine((secret) => Boolean(secret.mailboxTransportId || secret.mailboxTransportIds?.length), 'credential transport membership required');
@@ -2868,7 +2869,7 @@ function createHmsRuntimeInternal(
       }
       if (store && input.auditSpec) {
         try {
-          capture = await store.beginCapture(input.auditSpec);
+          capture = await store.beginCapture({ ...input.auditSpec, credentialMode: currentSecret.credentialMode });
           capture.addSecretValues([currentSecret.username, currentSecret.password]);
         } catch (err) {
           state = 'degraded';

@@ -10,6 +10,7 @@ import {
   collectHmsStorageStateSecretValues,
   sanitizePlaywrightTraceFile,
   type HmsBrowserAuditSpec,
+  type HmsBrowserCaptureSpec,
   type HmsBrowserCaptureHandle,
 } from '../src/hms/browser-artifacts.js';
 import {
@@ -83,7 +84,7 @@ async function tempRoot(): Promise<string> {
   return root;
 }
 
-function baseSpec(overrides: Partial<HmsBrowserAuditSpec> = {}): HmsBrowserAuditSpec {
+function baseSpec(overrides: Partial<HmsBrowserCaptureSpec> = {}): HmsBrowserCaptureSpec {
   return {
     operationId: randomUUID(),
     toolId: 'hms_find_reservation',
@@ -91,6 +92,7 @@ function baseSpec(overrides: Partial<HmsBrowserAuditSpec> = {}): HmsBrowserAudit
     dependencyRevision: 'playwright-1.52.0-chromium-1169',
     executionClass: 'normal',
     inputClass: 'authorized_exact',
+    credentialMode: 'view_only',
     roleProofSha256: 'a'.repeat(64),
     roleProofExpiresAt: '2026-09-01T00:00:00.000Z',
     ...overrides,
@@ -1338,6 +1340,7 @@ describe('hms browser artifacts store', () => {
       baseSpec({
         toolId: 'hms_quote_stay' as HmsBrowserAuditSpec['toolId'],
         toolVersion: '2.0.0',
+        credentialMode: 'audited_write',
       }),
     );
     await writeFile(
@@ -1363,7 +1366,7 @@ describe('hms browser artifacts store', () => {
       complete: true,
     });
     expect(quoteReceipt.toolId).toBe('hms_quote_stay');
-    expect(quoteReceipt.credentialMode).toBe('view_only');
+    expect(quoteReceipt.credentialMode).toBe('audited_write');
     expect(quoteReceipt.inputClass).toBe('authorized_exact');
     expect(quoteReceipt.mutationRequests).toBe(0);
     expect(Date.parse(quoteReceipt.expiresAt)).toBeGreaterThan(Date.now());
@@ -1372,6 +1375,7 @@ describe('hms browser artifacts store', () => {
       baseSpec({
         toolId: 'hms_read_folio',
         requestBranchId: 'folio_summary',
+        credentialMode: 'write_capable',
       }),
     );
     await writeFile(
@@ -1397,6 +1401,7 @@ describe('hms browser artifacts store', () => {
       complete: true,
     });
     expect(folioReceipt.toolId).toBe('hms_read_folio');
+    expect(folioReceipt.credentialMode).toBe('write_capable');
     expect(folioReceipt.requestBranchId).toBe('folio_summary');
     const groupHandle = await store.beginCapture(
       baseSpec({

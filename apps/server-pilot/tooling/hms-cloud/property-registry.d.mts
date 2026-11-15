@@ -12,7 +12,7 @@ export type PropertyRegistryProperty = Readonly<{
   username: string;
   mailboxTransportId: string;
   credentialSecretRef: string;
-  credentialMode: 'view_only';
+  credentialUse: 'shared';
   browserSlot: PropertyGroup;
   profileFile: string | null;
 }>;
