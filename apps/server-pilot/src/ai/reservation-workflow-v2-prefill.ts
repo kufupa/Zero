@@ -11,7 +11,7 @@ import { maskCardNumbers } from './card-mask.js';
 import { classifyMailSource } from './mail-source.js';
 import { buildReservationWorkflowV2MailQuery, selectReservationWorkflowV2MailCandidates } from './reservation-workflow-v2-mail-context.js';
 import { selectReservationWorkflowV2Guidance, type WorkflowGuidanceCatalog, type WorkflowGuidanceProjection, type WorkflowGuidanceReceipt } from './reservation-workflow-v2-memory.js';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { currentAuthoredMessageText, groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
@@ -27,9 +27,9 @@ import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.
 import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-read-lock.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { isExcludedRefundArAccount, loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
-import { loadAgencyCommission, loadNativeBookingCodes } from './booking-code-rules.js';
-import { RESERVATION_NOTE_MAX, RESERVATION_NOTE_PRESETS } from './reservation-note-presets.js';
+import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
+import { loadNativeBookingCodes } from './booking-code-rules.js';
+import { RESERVATION_NOTE_MAX } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
 import { paneStayLookupEnabled, searchGuestCloudBatch, type GuestSearchQuery } from './pane-stay-lookup.js';
 import { coversStaySearchHorizon, isStaySearchComplete } from './stay-search-completeness.js';
@@ -1728,7 +1728,10 @@ function mergeSourceNote(existing: string, sourceNotes: string[], evidence: Rese
       sourceNotes.some((clause) => normalizedFact(clause) === normalizedFact(fragment)) ||
       !sourceNotes.some((clause) => normalizedFact(clause).includes(normalizedFact(fragment)));
   }).join('\n');
-  const additions = sourceNotes.filter((clause) => !normalizedFact(retained).includes(normalizedFact(clause)));
+  const completeClauses = sourceNotes.filter((clause, index) => !sourceNotes.some((other, otherIndex) =>
+    normalizedFact(other).includes(normalizedFact(clause)) &&
+    (normalizedFact(other).length > normalizedFact(clause).length || otherIndex < index)));
+  const additions = completeClauses.filter((clause) => !normalizedFact(retained).includes(normalizedFact(clause)));
   return { fullNote: [retained, ...additions].filter(Boolean).join('\n'), additions };
 }
 
@@ -2194,9 +2197,8 @@ const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:mor
 const OPERATIONAL_NOTE_REGARDS = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*(?:[ \t]+\S+){0,3}[ \t]*$/im;
 const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(?:very\s+much|in\s+advance|kindly))?|cheers)[ \t]*[,.!]*[ \t]*$/gim;
 
-function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
-  const current = (input.selection.currentBodyText ?? input.selection.bodyText)
-    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
+function authoredSourceNoteClauses(input: { selection: SyncedQuoteSelection }): string[] {
+  const current = currentAuthoredMessageText(input.selection.currentBodyText ?? input.selection.bodyText);
   // Everything from the sign-off down is signature, not a stay instruction, except an explicit postscript.
   const signOff = OPERATIONAL_NOTE_REGARDS.exec(current)?.index ?? [...current.matchAll(OPERATIONAL_NOTE_THANKS)].at(-1)?.index;
   const signature = signOff === undefined ? '' : current.slice(signOff);
@@ -2204,12 +2206,19 @@ function operationalSourceNote(input: { selection: SyncedQuoteSelection }): stri
   const body = signOff === undefined ? current
     : `${current.slice(0, signOff)}\n${postscript ? signature.slice(postscript.index + postscript[0].length) : ''}`;
   // Dropping a leading greeting keeps each clause a verbatim substring of the current email body.
-  const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim()).filter((line) =>
+  return body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim())
+    .filter((line) => line.length > 3 && !/https?:\/\/|www\./i.test(line));
+}
+
+function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
+  const clauses = authoredSourceNoteClauses(input).filter((line) =>
     !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(line) &&
-    (Boolean(dinnerAmount(line)) || OPERATIONAL_NOTE_CLASSES.some((pattern) => pattern.test(line)) &&
+    (Boolean(dinnerAmount(line)) ||
+      /\b(?:rates?|tariff|quotation|availability|pro[\s-]?forma|invoice|shuttle|transfer)\b/i.test(line) &&
+      /\b(?:please|kindly|request(?:ed)?|need|require|advise|send|provide|quote|confirm|arrange)\b/i.test(line) ||
+      OPERATIONAL_NOTE_CLASSES.some((pattern) => pattern.test(line)) &&
       !OPERATIONAL_NOTE_PRICE_ENQUIRY.test(line) &&
-      (!OPERATIONAL_NOTE_PRICING.test(line) || /\b(?:arrange|book|reserve|provide|include|agreed|approved)\b/i.test(line))) &&
-    line.length > 3 && !/https?:\/\/|www\./i.test(line));
+      (!OPERATIONAL_NOTE_PRICING.test(line) || /\b(?:arrange|book|reserve|provide|include|agreed|approved)\b/i.test(line))));
   return [...new Set(clauses)];
 }
 
@@ -3879,9 +3888,16 @@ function projectCurrentExtraction(input: {
     const ownMarkers = new Set(noteMarkers(extracted).filter((marker) => !otherMarkers.has(marker)));
     const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row),
       normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
+    const authoredNoteClauses = authoredSourceNoteClauses(input);
+    const sourceNoteCandidates = [...operationalSourceNote(input), ...extracted.rateHints.flatMap((claim) =>
+      currentClaim(claim, currentRefs) && /\brate\b/i.test(claim.raw) &&
+      !exactSourceCode(claim, 'rate', { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode }) &&
+      input.evidence.some(row => row.relation === 'current_message' && claim.sourceRefs.includes(row.ref) &&
+        row.text.includes(claim.raw)) ? authoredNoteClauses.filter(clause =>
+        clause.includes(claim.raw) && !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(clause)) : [])];
     const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
       currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1
-      ? operationalSourceNote(input).filter((clause) => {
+      ? [...new Set(sourceNoteCandidates)].filter((clause) => {
         const text = normalizedFact(clause);
         return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
           !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
@@ -5337,9 +5353,6 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
   propertyCode: PropertyCode; generationId: string; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[];
   db?: DB; transportId: string; env: NodeJS.ProcessEnv }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
   const proposal = structuredClone(input.proposal), observations: ReservationWorkflowV2Observation[] = [];
-  const currentText = (input.selection.currentBodyText ?? input.selection.bodyText)
-    .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
-  const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
   const excludedConfirmations = [...new Set(JSON.stringify(proposal).match(/\b\d{6,10}-\d{1,2}\b/g) ?? [])];
   const catalog = await loadNativeBookingCodes({ propertyCode: input.propertyCode, kind: 'guaranteeTypes', env: input.env })
     .catch(() => ({ status: 'unavailable' as const, issue: 'guarantee_catalog_unavailable' }));
@@ -5353,109 +5366,21 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
       excludedConfirmations, db: input.db, transportId: input.transportId,
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []), env: input.env });
     if (memory.status !== 'available' || !memory.complete || !memory.denominator || memory.multiClientDomain && !organizationName) continue;
-    const payerCounts = new Map<string, number>(), capCounts = new Map<string, number>(), mealCounts = new Map<string, number>();
-    for (const note of memory.notes) {
-      const payers = [
-        /\bto\s+agent\b/i.test(note.value) ? 'agent' : null,
-        /\bto\s+company\b/i.test(note.value) ? 'organization' : null,
-        /\bprepaid\b/i.test(note.value) ? 'prepaid' : null,
-        /\bsettle\s+direct\b/i.test(note.value) ? 'direct' : null,
-      ].filter((value): value is string => value !== null);
-      if (payers.length === 1) payerCounts.set(payers[0]!, (payerCounts.get(payers[0]!) ?? 0) + note.support);
-      const meals = [
-        /\bDBB\b/i.test(note.value) || /\bdinner\b/i.test(note.value) && /\bbreakfast\b/i.test(note.value) ? 'dinner_bb' : null,
-        /\bBB\b|\bB\s*&\s*B\b/i.test(note.value) && !/\bDBB\b|\bdinner\b/i.test(note.value) ? 'bb' : null,
-      ].filter((value): value is string => value !== null);
-      if (meals.length === 1) mealCounts.set(meals[0]!, (mealCounts.get(meals[0]!) ?? 0) + note.support);
-      const amount = dinnerAmount(note.value);
-      if (amount) capCounts.set(amount, (capCounts.get(amount) ?? 0) + note.support);
-    }
-    const leader = (counts: Map<string, number>) => {
-      const ranked = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      return !memory.webmailDomain && ranked[0] && ranked[0][1] >= 2 && ranked[0][1] / memory.denominator >= 0.8 && (!ranked[1] || ranked[0][1] > ranked[1][1])
-        ? ranked[0] : null;
-    };
-    const existing = typeof request.body.shared.reservationNote === 'string' ? request.body.shared.reservationNote : '';
-    const path = `/proposal/content/requests/${request.id}/body/shared/reservationNote`;
-    const sourceOverLimit = proposal.issues.some(issue => issue.path === path && issue.kind === 'source_note_exceeds_native_limit');
-    const sourcePayer = /\b(?:settle(?:ment|d)?|pay(?:ment|s|ing|able)?|bill(?:ing|ed)?|charg(?:e|ed|es|ing)|pre[-\s]?paid|pre[-\s]?pay(?:ment)?|to\s+(?:the\s+)?(?:agent|agency|company))\b/i
-      .test(`${currentText}\n${existing}`);
-    const payer = sourcePayer ? null : leader(payerCounts), rememberedCap = leader(capCounts);
     const guarantees = [...memory.guarantees].sort((a, b) => b.support - a.support);
-    const guarantee = !memory.webmailDomain && guarantees[0] && guarantees[0].support >= 2 && guarantees[0].confidence >= 0.8 &&
-      (!guarantees[1] || guarantees[0].support > guarantees[1].support) ? guarantees[0] : null;
+    const guarantee = guarantees[0];
     const matchingGuarantees = guarantee && catalog.status === 'available' ? catalog.records.filter((row) =>
-      row.code && (normalizedFact(row.code) === normalizedFact(guarantee.value) ||
-        normalizedFact(row.meaning) === normalizedFact(guarantee.value))) : [];
-    const guaranteeCode = !sourcePayer && request.body.shared.guaranteeType == null && matchingGuarantees.length === 1
-      ? matchingGuarantees[0]?.code ?? null : null;
-    const currentMeal = request.body.shared.mealPlan ?? request.body.shared.requestedMealPlan;
-    const namedMeal = typeof currentMeal === 'string' && /\bdinner\b/i.test(currentMeal) && /\bbreakfast\b/i.test(currentMeal)
-      ? 'dinner_bb' : typeof currentMeal === 'string' && /\bbed\b/i.test(currentMeal) && /\bbreakfast\b/i.test(currentMeal)
-        ? 'bb' : boardMeaning(currentMeal);
-    const meal = currentMeal == null ? leader(mealCounts)?.[0] ?? '' : namedMeal;
-    const presetId = payer?.[0] === 'direct' ? 'settle-direct' : ['bb', 'dinner_bb'].includes(meal) && payer
-      ? `${meal === 'dinner_bb' ? 'dbb' : 'bb'}-${payer[0]}` : null;
-    const candidatePayer = [...payerCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
-    const candidateMeal = meal || [...mealCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
-    const candidatePresetId = candidatePayer === 'direct' ? 'settle-direct' : candidatePayer && ['bb', 'dinner_bb'].includes(candidateMeal ?? '')
-      ? `${candidateMeal === 'dinner_bb' ? 'dbb' : 'bb'}-${candidatePayer}` : null;
-    const candidatePreset = RESERVATION_NOTE_PRESETS.find(row => row.id === candidatePresetId);
-    const noteExplicitlyNone = isRecord(request.body.shared.reservationNote) && request.body.shared.reservationNote.kind === 'none';
-    const preset = noteExplicitlyNone ? undefined : RESERVATION_NOTE_PRESETS.find((row) => row.id === presetId);
-    const explicitCap = meal === 'dinner_bb' ? dinnerAmount(currentText) : null;
-    const cap = !noteExplicitlyNone && meal === 'dinner_bb' ? explicitCap ?? rememberedCap?.[0] ?? null : null;
-    const existingCap = dinnerAmount(existing);
-    const candidateCap = [...capCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
-    const capConflict = Boolean(existingCap && (explicitCap && explicitCap !== existingCap ||
-      candidateCap && candidateCap !== existingCap));
-    const sourcePayerValue = /\bto\s+(?:the\s+)?(?:agent|agency)\b/i.test(`${currentText}\n${existing}`) ? 'agent'
-      : /\bto\s+(?:the\s+)?company\b/i.test(`${currentText}\n${existing}`) ? 'organization'
-      : /\bpre[-\s]?paid\b/i.test(`${currentText}\n${existing}`) ? 'prepaid'
-      : /\bsettle\s+direct\b/i.test(`${currentText}\n${existing}`) ? 'direct' : null;
-    const payerConflict = Boolean(sourcePayerValue && candidatePayer && sourcePayerValue !== candidatePayer);
-    const conflicts = [...(capConflict ? ['Dinner allowance differs from the current note.'] : []),
-      ...(payerConflict ? ['Payer history differs from the source or current note.'] : [])];
-    const conflict = conflicts.length > 0;
-    const noteExisting = existing;
-    const containsCap = cap && noteExisting.split(/[;\n!?]|\.(?!\d)/u).some((clause) => {
-      const present = dinnerAmount(clause);
-      return explicitCap ? present === cap : present !== null;
-    });
-    const parts = [preset?.text, cap && !containsCap && !conflict ? `Dinner allowance R${cap}` : null, noteExisting]
-      .filter((part): part is string => Boolean(part));
-    const note = parts.filter((part, index) => !parts.slice(index + 1).some((other) => normalizedFact(other).includes(normalizedFact(part)))).join('\n');
-    if (note.length > RESERVATION_NOTE_MAX) {
-      addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
-        `The composed note exceeds HMS's ${RESERVATION_NOTE_MAX}-character limit. Review and shorten it before saving.`, sourceRefs);
-    }
+      normalizedFact(row.code) === normalizedFact(guarantee.value)) : [];
+    const guaranteeCode = matchingGuarantees.length === 1 ? matchingGuarantees[0]?.code ?? null : null;
+    // Historical billing templates are not current requests. Keep history advisory, with no note/guarantee mutation.
     const ref = `obs_${randomUUID()}`;
     observations.push({ ref, generationId: input.generationId, kind: 'source', status: 'complete',
       observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
       sourceRefs: [], criteria: { kind: 'historical_note_guidance', requestId: request.id, sourceCutoff: input.source.arrivedAt },
       coverage: { complete: true, notes: [] }, result: { denominator: memory.denominator,
-        payer: (() => { const row = [...payerCounts].sort((a, b) => b[1] - a[1])[0]; return row ? {
-          value: row[0], text: candidatePreset?.text ?? '', support: row[1], denominator: memory.denominator,
-          purity: row[1] / memory.denominator, scope: memory.scope ?? 'sender_or_party', autoApplied: Boolean(preset && note !== existing && !sourceOverLimit && !conflict && note.length <= RESERVATION_NOTE_MAX),
-          blockedReason: row[1] < 2 ? 'support_below_min' : memory.webmailDomain ? 'webmail_domain' : row[1] / memory.denominator < 0.8 ? 'purity_below_threshold' :
-            noteExplicitlyNone ? 'blocked_none' : sourceOverLimit || note.length > RESERVATION_NOTE_MAX ? 'over_limit' : sourcePayer ? 'source_conflict' : conflict ? 'conflict' : preset ? null : 'no_matching_meal' } : null; })(),
-        dinnerCap: (() => { const row = [...capCounts].sort((a, b) => b[1] - a[1])[0]; return row ? {
-          value: row[0], text: `Dinner allowance R${row[0]}`, support: row[1], denominator: memory.denominator,
-          purity: row[1] / memory.denominator, scope: memory.scope ?? 'sender_or_party', autoApplied: Boolean(cap && !explicitCap && !containsCap && !sourceOverLimit && !conflict && note.length <= RESERVATION_NOTE_MAX),
-          blockedReason: row[1] < 2 ? 'support_below_min' : memory.webmailDomain ? 'webmail_domain' : row[1] / memory.denominator < 0.8 ? 'purity_below_threshold' :
-            noteExplicitlyNone ? 'blocked_none' : sourceOverLimit || note.length > RESERVATION_NOTE_MAX ? 'over_limit' : conflict ? 'conflict' : null } : null; })(),
+        payer: null, dinnerCap: null,
         guarantee: guarantees[0] ? { value: guarantees[0].value, code: guaranteeCode, support: guarantees[0].support,
-          denominator: guarantees[0].denominator, purity: guarantees[0].confidence, scope: memory.scope ?? 'sender_or_party', autoApplied: Boolean(guaranteeCode),
-          blockedReason: guarantees[0].support < 2 ? 'support_below_min' : memory.webmailDomain ? 'webmail_domain' : guarantees[0].confidence < 0.8 ? 'purity_below_threshold' :
-            guaranteeCode ? null : 'not_applicable' } : null, conflicts, proposedLength: note.length } });
-    if ((preset || cap) && !sourceOverLimit && !conflict && note.length <= RESERVATION_NOTE_MAX) {
-      request.body.shared.reservationNote = note;
-      proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [ref] });
-    }
-    if (guaranteeCode) {
-      request.body.shared.guaranteeType = guaranteeCode;
-      proposal.annotations.push({ path: `/proposal/content/requests/${request.id}/body/shared/guaranteeType`, basis: 'native_read', evidenceRefs: [ref] });
-    }
+          denominator: guarantees[0].denominator, purity: guarantees[0].confidence, scope: memory.scope ?? 'sender_or_party', autoApplied: false,
+          blockedReason: 'staff_confirmation_required' } : null, conflicts: [] } });
     proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ref])].slice(0, 1000);
   }
   return { proposal, observations };
@@ -5766,126 +5691,6 @@ function rankHistoricalRoomLeads(input: { proposal: ReservationWorkflowV2Proposa
     ranked.sort((left, right) => left.rank - right.rank);
     return { ...lead, result: { ...lead.result, leads: ranked.map((row) => row.item) } };
   });
-}
-
-async function applyHistoricalPartySuggestions(input: { proposal: ReservationWorkflowV2Proposal;
-  observations: ReservationWorkflowV2Observation[]; leads: ReservationWorkflowV2Observation[];
-  source: ReservationWorkflowV2Source; propertyCode: PropertyCode; transportId: string; generationId: string; env: NodeJS.ProcessEnv;
-  allowNativeRead: boolean; signal?: AbortSignal }): Promise<{ proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
-  const proposal = structuredClone(input.proposal), added: ReservationWorkflowV2Observation[] = [];
-  for (const request of proposal.content.requests) {
-    if (request.kind !== 'create' && request.kind !== 'quote') continue;
-    if (request.kind === 'create' && !hasUniformSharedCreateScope(request.body, false)) continue;
-    const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
-    const fields: Record<string, unknown> = request.kind === 'create' ? request.body.shared : request.body.parties;
-    const slotPath = `${root}/${request.kind === 'create' ? 'shared' : 'parties'}`;
-    for (const role of ['agency', 'organization', 'ar_account'] as const) {
-      if (request.kind === 'quote' && role === 'ar_account') continue;
-      if (request.kind === 'create' && !hasUniformSharedCreateScope(request.body, false)) break;
-      const field = role === 'agency' ? 'bookingAgency' : role === 'organization' ? 'organization' : 'arAccount';
-      const path = `${slotPath}/${field}/nativeSelectionRef`;
-      const leadObservation = input.leads.find((row) => row.kind === 'party_candidate' && row.generationId === input.generationId &&
-        row.propertyCode === input.propertyCode && row.sourceMessageId === input.source.messageId &&
-        row.criteria.kind === 'historical_lookup_leads' && row.criteria.workflow === request.kind &&
-        row.criteria.requestId === request.id && row.criteria.sourceHash === input.source.sourceHash &&
-        row.criteria.slotPath === slotPath && row.criteria.fieldPath === path &&
-        row.criteria.role === (role === 'agency' ? 'bookingAgency' : role) &&
-        row.criteria.scopeKind === (request.kind === 'create' ? 'shared' : 'quote_parties'));
-      const leads = Array.isArray(leadObservation?.result.leads) ? leadObservation.result.leads.filter(isRecord) : [];
-      const sourceSelected = (value: unknown): boolean => {
-        if (!isRecord(value) || (value.role !== 'bookingAgency' && value.role !== 'organization') ||
-            typeof value.name !== 'string' || !normalizedFact(value.name) ||
-            value.suggestedRef !== null && typeof value.suggestedRef !== 'string' ||
-            value.fieldPath !== `${slotPath}/${value.role}`) return false;
-        const party = fields[value.role], selectionPath = `${value.fieldPath}/nativeSelectionRef`;
-        if (!isRecord(party) || typeof party.suggestedRef !== 'string' ||
-            typeof value.suggestedRef === 'string' && party.suggestedRef !== value.suggestedRef ||
-            normalizedFact(party.name) !== normalizedFact(value.name)) return false;
-        const observations = [...input.observations, ...added].filter((row) => row.ref === party.suggestedRef);
-        if (observations.length !== 1) return false;
-        const row = observations[0]!;
-        const candidates = Array.isArray(row.result.candidates) ? row.result.candidates : [row.result];
-        return row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
-          row.generationId === input.generationId && row.propertyCode === input.propertyCode &&
-          row.sourceMessageId === input.source.messageId && row.criteria.workflow === request.kind &&
-          row.criteria.requestId === request.id && row.criteria.role === value.role &&
-          row.criteria.nativeCandidateCount === 1 &&
-          (request.kind !== 'create' || typeof row.criteria.allocationId === 'string' &&
-            request.body.allocations.some((allocation) => allocation.id === row.criteria.allocationId)) &&
-          (row.criteria.fieldPath === selectionPath || Array.isArray(row.criteria.fieldPaths) &&
-            row.criteria.fieldPaths.includes(selectionPath)) && candidates.length === 1 && isRecord(candidates[0]) &&
-          typeof candidates[0].nativeId === 'string' && /^\d{1,30}$/.test(candidates[0].nativeId) &&
-          normalizedFact(candidates[0].name) === normalizedFact(value.name);
-      };
-      const eligible = leads.filter((lead) => typeof lead.value === 'string' && (role !== 'ar_account' || !isExcludedRefundArAccount(lead.value)) &&
-        typeof lead.support === 'number' && lead.support >= 2 && typeof lead.confidence === 'number' && lead.confidence >= 0.8 &&
-        typeof lead.purity === 'number' && lead.purity >= 0.8 && (role === 'ar_account' ? lead.basis === 'normalized_entity' && sourceSelected(lead.sourceParty)
-          : lead.autoSelectable === true && (lead.basis === 'normalized_entity' ? sourceSelected(lead.sourceParty)
-            : lead.basis === 'exact_sender' && lead.sourceParty === null && typeof lead.sourceSender === 'string')));
-      if (!eligible.length || new Set(eligible.map((lead) => normalizedFact(lead.value))).size !== 1) continue;
-      const leadName = String(eligible[0]!.value);
-      const leadKey = normalizedFact(leadName);
-      if (!leadKey) continue;
-      const matchesLead = (candidate: unknown): boolean => isRecord(candidate) && typeof candidate.nativeId === 'string' &&
-        (request.kind === 'quote' ? /^[A-Za-z0-9._-]{1,64}$/ : /^\d{1,30}$/).test(candidate.nativeId) &&
-        normalizedFact(candidate.name) === leadKey;
-      const fieldValue = fields[field];
-      const existing = isRecord(fieldValue) ? fieldValue : null;
-      if (existing && typeof existing.name === 'string' && normalizedFact(existing.name) !== leadKey) continue;
-      const candidateRefs = existing && Array.isArray(existing.candidateRefs)
-        ? existing.candidateRefs.filter((ref): ref is string => typeof ref === 'string') : [];
-      const matching = candidateRefs.flatMap((ref) => [...input.observations, ...added].filter((row) => row.ref === ref &&
-        row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
-        row.generationId === input.generationId && row.propertyCode === input.propertyCode &&
-        row.sourceMessageId === input.source.messageId && row.criteria.workflow === request.kind &&
-        row.criteria.requestId === request.id && row.criteria.role === (role === 'agency' ? 'bookingAgency' : role) &&
-        row.criteria.nativeCandidateCount === 1 &&
-        (request.kind !== 'create' || typeof row.criteria.allocationId === 'string' &&
-          request.body.allocations.some((allocation) => allocation.id === row.criteria.allocationId)) &&
-        (row.criteria.fieldPath === path || Array.isArray(row.criteria.fieldPaths) && row.criteria.fieldPaths.includes(path)) &&
-        Array.isArray(row.result.candidates) && row.result.candidates.length === 1 && matchesLead(row.result.candidates[0])));
-      let chosen = matching.length === 1 ? matching[0] : undefined;
-      if (!chosen && !matching.length && input.allowNativeRead && !input.signal?.aborted) {
-        let read: Awaited<ReturnType<typeof lookupNativeParty>> | null = null;
-        try { read = await lookupNativeParty({ role, name: leadName, target: hmsReadTargetForProperty(input.propertyCode), transportId: input.transportId, signal: input.signal }); }
-        catch { input.signal?.throwIfAborted(); }
-        const rows = read?.status === 'complete' && read.coverage.complete && Array.isArray(read.result.candidates) &&
-          read.result.candidates.length === 1 && matchesLead(read.result.candidates[0])
-          ? read.result.candidates.filter(isRecord) : [];
-        if (rows.length === 1 && read) {
-          const ref = `obs_${randomUUID()}`;
-          chosen = { ref, generationId: input.generationId, kind: 'party_candidate', status: 'complete',
-            observedAt: new Date().toISOString(), propertyCode: input.propertyCode, sourceMessageId: input.source.messageId,
-            sourceRefs: [], criteria: { kind: 'historical_party_native_confirmation', workflow: request.kind, requestId: request.id,
-              role: role === 'agency' ? 'bookingAgency' : role, fieldPath: path, fieldPaths: [path], nativeCandidateCount: 1,
-              ...(request.kind === 'create' && request.body.allocations[0] ? { allocationId: request.body.allocations[0].id } : {}) },
-            coverage: read.coverage, result: { ...read.result, kind: role === 'agency' ? 'bookingAgency' : role, candidates: rows } };
-          added.push(chosen);
-        }
-      }
-      if (!chosen) continue;
-      fields[field] = { name: leadName, candidateRefs: [...new Set([chosen.ref, ...candidateRefs])].slice(0, 3), suggestedRef: chosen.ref };
-      proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, chosen.ref, leadObservation!.ref])].slice(0, 1000);
-      proposal.annotations.push({ path, basis: 'native_read', evidenceRefs: [chosen.ref, leadObservation!.ref] });
-      if (role === 'agency' && request.kind === 'create' && request.body.shared.taCommission == null) {
-        const candidate = Array.isArray(chosen.result.candidates) ? chosen.result.candidates.find(isRecord) : undefined;
-        if (candidate && typeof candidate.nativeId === 'string') {
-          const commission = await loadAgencyCommission({ propertyCode: input.propertyCode, nativeId: candidate.nativeId, env: input.env })
-            .catch(() => ({ status: 'unavailable' as const, issue: 'commission_catalog_unavailable' }));
-          if (commission.status === 'verified') {
-            request.body.shared.taCommission = commission.percent;
-            const commissionRef = `obs_${randomUUID()}`;
-            added.push({ ...chosen, ref: commissionRef, criteria: { kind: 'agency_commission', requestId: request.id,
-              nativeId: candidate.nativeId }, result: { percent: commission.percent, confidence: commission.confidence,
-              numerator: commission.numerator, denominator: commission.denominator, capturedAt: commission.capturedAt } });
-            proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, commissionRef])].slice(0, 1000);
-            proposal.annotations.push({ path: `${root}/shared/taCommission`, basis: 'native_read', evidenceRefs: [commissionRef] });
-          }
-        }
-      }
-    }
-  }
-  return { proposal, observations: added };
 }
 
 function addRequestConfirmationSafety(input: {
@@ -6795,11 +6600,8 @@ export async function runReservationWorkflowV2Prefill(input: {
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
     const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
-    const partyResult = await applyHistoricalPartySuggestions({ proposal, observations: finalObservations, leads: historicalLeads,
-      source: input.source, propertyCode, transportId: input.transportId, generationId, env, signal: input.signal,
-      allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
-    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
-      proposal: partyResult.proposal, fieldReviewRequirements: { ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(partyResult.proposal) },
+    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+      proposal, fieldReviewRequirements: { ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(proposal) },
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
   const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
@@ -6808,13 +6610,10 @@ export async function runReservationWorkflowV2Prefill(input: {
     sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
   const historicalLeads = rankHistoricalRoomLeads({ proposal: finalProposal!, leads: nativeLeads, observations: finalObservations,
     extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map() });
-  const partyResult = await applyHistoricalPartySuggestions({ proposal: finalProposal!, observations: finalObservations, leads: historicalLeads,
-    source: input.source, propertyCode, transportId: input.transportId, generationId, env, signal: input.signal,
-    allowNativeRead: Boolean(input.db && input.lookupFixtures === undefined && !input.readCandidate) });
-  return { ...base, observations: [...finalObservations, ...historicalLeads, ...partyResult.observations].slice(0, MAX_DRAFT_OBSERVATIONS),
+  return { ...base, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||
       Boolean(extractionProjection?.addedRequests || extractionProjection?.addedIssues) ? 'partial' : 'ready',
-    proposal: partyResult.proposal, fieldReviewRequirements: { ...finalReviewRequirements, ...inferredQuoteQuantityRequirements(partyResult.proposal) }, errors: readErrors };
+    proposal: finalProposal!, fieldReviewRequirements: { ...finalReviewRequirements, ...inferredQuoteQuantityRequirements(finalProposal!) }, errors: readErrors };
 }
 
 /** Route-level ensure: existing drafts are reused, except for a bounded untouched-fallback retry. */
