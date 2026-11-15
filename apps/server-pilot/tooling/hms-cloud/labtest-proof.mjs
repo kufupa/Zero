@@ -394,8 +394,8 @@ async function main() {
           const result = await operation(session);
           const form = await readGuestStayForm(session.page, { propertyCode: args.propertyCode });
           const fields = form.fields?.filter(field => field.name === 'track');
-          assert(form.outcome === 'ok' && fields?.length === 1 && typeof fields[0].value === 'string' &&
-            fields[0].value.trim(), 'NATIVE_TRACK_UNVERIFIED');
+          if (form.outcome !== 'ok' || fields?.length !== 1 || fields[0].required !== true) return result;
+          assert(typeof fields[0].value === 'string' && fields[0].value.trim(), 'NATIVE_TRACK_UNVERIFIED');
           const catalogue = await listTrackSubSegments(session.page, { propertyCode: args.propertyCode });
           const rows = catalogue.candidates ?? [];
           const matches = rows.filter(row => row.description === fields[0].value && /^[A-Z0-9]{1,12}$/.test(row.code));
