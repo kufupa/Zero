@@ -359,7 +359,6 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       !blocked.length && !fence.isQuarantined();
     if (reasonReady) pendingPages.set(page, { frame, expected: { ...expected }, native: { ...state.native }, track: state.track,
       blocked, baseline: afterOpen, fence, forwarded, reasons, partyPreimage: state.partyPreimage,
-      noCancelPolicy: policy?.applyCancelPolicy === false && policy?.allowCancelPolicyOverride === false,
       chargeApproved: preChargeStarted, penaltyText: preChargeText, dialogSeen: () => nativeDialog });
     openedReady = reasonReady;
     return { outcome: preChargeStarted && !reasonReady ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' : reasonReady ? 'reason_ready' : policy && !policyReady ? 'policy_requires_review' :
@@ -709,10 +708,10 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     let fee = dialogs.some((text) => /penalt|fee|charge|deposit/i.test(text)) ||
       Boolean(nativeDialog && /penalt|fee|charge|deposit/i.test(nativeDialog.message));
     if (fee) chargeText = dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? nativeDialog?.message ?? null;
-    // This one native post-Save notice was observed without any policy or charge action.
+    // Policy applicability is not a fee amount. Only this exact post-Save zero notice qualifies.
     // Do not click its button: the separate fresh readback still decides cancellation success.
     let zeroNotice = false;
-    if (fee && opened.noCancelPolicy && !opened.chargeApproved && typeof dispatchWithAuthority === 'function' &&
+    if (fee && !opened.chargeApproved && typeof dispatchWithAuthority === 'function' &&
         dispatched && authorizedRequest && response?.status() === 200 && pendingDispatch === 0 &&
         !chargeApproved && !chargeDispatched && !nativeDialog && !blocked.length && !opened.blocked.length &&
         !sendRequests && dialogs.length === 1 &&

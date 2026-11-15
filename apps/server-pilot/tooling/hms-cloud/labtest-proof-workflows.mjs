@@ -121,6 +121,59 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     check(matchesProfileReadback(proof.readback, proof.prepared.businessFields, proof.result.nativeId, proof.prepared.review),
       'PROFILE_READBACK_UNVERIFIED');
     proof.nativeGuestId = proof.result.nativeId;
+  } else if (workflow === 'amend') {
+    const { prepareCloudPaneAmend, commitCloudPaneAmend } = await import('./pane-amend-session.mjs');
+    const fields = initial.details.fields;
+    const field = name => {
+      const matches = fields.filter(value => value.name === name);
+      check(matches.length === 1 && typeof matches[0].value === 'string', 'AMEND_FIELD_UNVERIFIED');
+      return matches[0].value;
+    };
+    check(selected.guaranteeCode === 'NGI', 'AMEND_LAB_GUARANTEE_UNSUPPORTED');
+    const changes = { bookerContact: `Labtest amend ${randomUUID().slice(0, 8)}`,
+      retainRates: 'no', cmsSend: false, cmsMessageId: field('udfchar09'), cmsRecipient: field('udfchar13') };
+    check(field('udfchar06') !== changes.bookerContact, 'AMEND_CHANGE_REQUIRED');
+    proof.changes = changes;
+    const input = { ...scope, target: { propertyCode, origin: property.origin },
+      selected: { ...selected, childAges: [...journal.effectiveRequest.stay.childAges] },
+      childAgePreimage: [...journal.effectiveRequest.stay.childAges], allowRealGuest: false,
+      confirmation: own.confirmation, arrival: selected.arrival, changes,
+      beforeScreenshot: join(journalDir, `${propertyCode}-amend-before.png`),
+      afterScreenshot: join(journalDir, `${propertyCode}-amend-after.png`) };
+    proof.prepared = await prepareCloudPaneAmend(input);
+    await checkpoint();
+    check(proof.prepared.outcome === 'prepared' && /^[a-f0-9]{64}$/.test(proof.prepared.nativeDigest ?? '') &&
+      proof.prepared.preserved?.cmsSend === false, 'AMEND_PREPARE_UNVERIFIED');
+    await readOwned();
+    const operationDigest = hash({ propertyCode, confirmation: own.confirmation, nativeStayId: own.nativeStayId,
+      changes, nativeDigest: proof.prepared.nativeDigest, approvedPrices: proof.prepared.approvedPrices,
+      preserved: proof.prepared.preserved });
+    proof.result = await commitCloudPaneAmend({ ...input, nativeDigest: proof.prepared.nativeDigest,
+      approvedPrices: proof.prepared.approvedPrices, preserved: proof.prepared.preserved }, {
+      operationDigest,
+      isEnabled: () => !options.signal.aborted,
+      sealBeforeEvidence: async () => {
+        await checkHold(options.signal);
+        check(!proof.beforeEvidence, 'AMEND_EVIDENCE_ALREADY_SEALED');
+        proof.beforeEvidence = { eventId: randomUUID(), sha256: sha256(await readFile(input.beforeScreenshot)) };
+        await checkpoint();
+        return proof.beforeEvidence;
+      },
+      authorizeFirst: async step => {
+        check(step.operationDigest === operationDigest && step.phase === 'amend.save' &&
+          /^[a-f0-9]{64}$/.test(step.requestDigest ?? '') && proof.beforeEvidence && !proof.dispatches.length &&
+          cloudWriterCurrent(step.writer), 'AMEND_DISPATCH_UNVERIFIED');
+        await claim({ phase: step.phase, requestDigest: step.requestDigest });
+        proof.dispatches.push({ phase: step.phase, requestDigest: step.requestDigest, writer: step.writer });
+        await checkpoint();
+        await checkHold(options.signal);
+        return { holdId: randomUUID(), ownerToken: randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '') };
+      } });
+    await checkpoint();
+    check(proof.result.outcome === 'amended' && proof.result.writerSessionClosed === true &&
+      proof.result.dispatchCallbacksDrained === true && proof.result.businessFieldsMatched === true &&
+      proof.dispatches.length === 1 && cloudWriterQuiesced(proof.dispatches[0].writer), 'AMEND_SAVE_UNVERIFIED');
+    proof.readback = proof.result.readback;
   } else if (workflow === 'attach') {
     const { prepareCloudPaneAttach, runCloudPaneAttach } = await import('./pane-attach-session.mjs');
     const bytes = labtestPdf(propertyCode, journal.sha), pdfSha256 = sha256(bytes);
@@ -232,7 +285,26 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
   } else {
     check(proof.prepared?.outcome === 'prepared' && readback?.confirmation === own.confirmation &&
       readback.nativeStayId === own.nativeStayId, 'STAY_PROOF_IDENTITY_INVALID');
-    if (workflow === 'attach') {
+    if (workflow === 'amend') {
+      const selected = journal.effectiveRequest;
+      check(result?.outcome === 'amended' && result.writerSessionClosed === true &&
+        result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true &&
+        proof.dispatches.length === 1 && proof.dispatches[0].phase === 'amend.save' &&
+        /^[a-f0-9]{64}$/.test(proof.dispatches[0].requestDigest ?? '') &&
+        /^[a-f0-9]{64}$/.test(proof.beforeEvidence?.sha256 ?? '') &&
+        /^[a-f0-9-]{36}$/i.test(proof.beforeEvidence?.eventId ?? '') &&
+        readback.firstName === 'Proof' && readback.lastName === 'Labtest' &&
+        readback.arrival === selected.stay.arrival && readback.departure === selected.stay.departure &&
+        readback.roomType === selected.room.roomType && readback.ratePlan === selected.room.ratePlan &&
+        readback.adults === selected.stay.adults && readback.children === selected.stay.childAges.length &&
+        Array.isArray(readback.childAges) && equal([...readback.childAges].sort((a, b) => a - b),
+          [...selected.stay.childAges].sort((a, b) => a - b)) &&
+        readback.guaranteeType === selected.guaranteeType && readback.reservationNote === own.note &&
+        typeof proof.changes?.bookerContact === 'string' && /^Labtest amend [a-f0-9]{8}$/.test(proof.changes.bookerContact) &&
+        readback.bookerContact === proof.changes.bookerContact && readback.cmsSend === false &&
+        readback.cmsMessageId === proof.prepared.preserved?.cmsMessageId &&
+        readback.cmsRecipient === proof.prepared.preserved?.cmsRecipient, 'AMEND_PROOF_INVALID');
+    } else if (workflow === 'attach') {
       check(result?.outcome === 'confirmed' && result.uploadSent === true && result.listed === true &&
         result.writerSessionClosed === true && result.dispatchCallbacksDrained === true &&
         readback.nativeGuestId === own.guestId && readback.uniqueFreshListing === true &&
