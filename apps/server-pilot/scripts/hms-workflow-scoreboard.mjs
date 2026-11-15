@@ -131,6 +131,17 @@ async function main() {
       add('review', 'ok', marks.oks);
       add('pane errors', 'all', marks.errors);
 
+      for (const row of await tx`select coalesce(e.value->>'workflow', 'unknown') as workflow,
+          coalesce(e.value->>'propertyCode', 'unknown') as property, coalesce(e.value->>'stage', 'unknown') as stage,
+          coalesce(e.value->>'failureCode', 'unknown') as code,
+          count(*)::int as failed, count(distinct e.work_item_id)::int as drafts,
+          percentile_cont(0.5) within group (order by case when jsonb_typeof(e.value->'durationMs') = 'number'
+            then (e.value->>'durationMs')::numeric end) as median_ms
+        from ${events}
+        where e.type = 'hms.prepare.failed' and e.at >= ${from} ${scope}
+        group by 1, 2, 3, 4 order by 5 desc, 1, 2, 3, 4 limit 15`)
+        add('failed prepares (top 15)', `${row.workflow} ${row.property} ${row.stage} ${row.code}`,
+          `${row.failed} failed, ${row.drafts} drafts, median ${row.median_ms === null ? 'n/a' : `${Math.round(Number(row.median_ms))} ms`}`);
       const [funnel] = await tx`select count(*)::int as opened, count(*) filter (where not exists (
           select 1 from work_event g where g.work_item_id = wi.id and g.type = 'approval.granted'))::int as no_go
         from work_item wi where wi.state ? ${V2_KEY} ${scope} and exists (select 1 from work_event e
