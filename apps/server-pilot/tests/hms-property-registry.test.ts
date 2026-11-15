@@ -135,6 +135,27 @@ describe('read-only HMS property registry', () => {
     ).toEqual({ source: 'file', path: '/private/centurion.json', property: null });
   });
 
+  it.each(['view_only', 'audited_write', 'write_capable'] as const)(
+    'accepts a Centurion shared secret in %s mode without relaxing its identity',
+    (credentialMode) => {
+      const centurion = getHmsPropertyRegistration('transport-centurion');
+      const secret = {
+        ...DAVINCI_SECRET,
+        expectedTenant: 'THECENTURION_PRD',
+        expectedPropertyCode: 'HRCEN',
+        expectedPropertyName: 'Centurion Hotel',
+        mailboxTransportId: 'transport-centurion',
+        mailboxTransportIds: undefined,
+        credentialMode,
+      };
+      expect(validateHmsPropertySecret(centurion, secret)).toEqual(secret);
+      expect(() => validateHmsPropertySecret(centurion, { ...secret, username: 'OTHER' }))
+        .toThrow('hms_property_credential_mismatch');
+      expect(() => validateHmsPropertySecret(centurion, { ...secret, expectedTenant: 'DAVINCI_PRD' }))
+        .toThrow('hms_property_credential_mismatch');
+    },
+  );
+
   it('rejects a Da Vinci secret bound to the Centurion property code', () => {
     const davinci = getHmsPropertyRegistration('transport-davinci');
     expect(() =>

@@ -781,10 +781,10 @@ describe('Task 2 production composition + browser guards', () => {
       const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
       const events: string[] = [];
       const contextOptions: unknown[] = [];
-      const originalAcquireLease = cloud.acquireCloudCredentialLease;
-      const acquireLease = vi.spyOn(cloud, 'acquireCloudCredentialLease').mockImplementation(async (propertyCode, options) => {
+      const releaseLease = vi.fn(async () => {});
+      const acquireLease = vi.spyOn(cloud, 'acquireCloudCredentialLease').mockImplementation(async (propertyCode) => {
         expect(propertyCode).toBe('HRDAVS');
-        return originalAcquireLease('HRCEN', options);
+        return { signal: new AbortController().signal, release: releaseLease } as Awaited<ReturnType<typeof cloud.acquireCloudCredentialLease>>;
       });
       let selectedProperty: 'HRDAV' | 'HRDAVS' = 'HRDAV';
       const nativePages: object[] = [];
@@ -871,10 +871,12 @@ describe('Task 2 production composition + browser guards', () => {
           expect(contextOptions).toHaveLength(2);
           for (const options of contextOptions) expect(options).not.toHaveProperty('storageState');
           expect(switchProperty).toHaveBeenCalledTimes(2);
+          expect(releaseLease).toHaveBeenCalledTimes(2);
         } else {
           await expect(open()).rejects.toBeInstanceOf(HmsRuntimeError);
           expect(runtime.health().activeSessions).toBe(0);
           expect(runtime.stats()).toMatchObject({ contextsCreated: 1, contextsClosed: 1 });
+          expect(releaseLease).toHaveBeenCalledOnce();
           if (scenario === 'wrong_landing') expect(switchProperty).not.toHaveBeenCalled();
         }
       } finally {
