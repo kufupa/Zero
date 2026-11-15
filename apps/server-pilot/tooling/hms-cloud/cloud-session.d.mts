@@ -74,7 +74,10 @@ export type CloudWriterIdentity = Readonly<{
 }>;
 export declare function cloudWriterIdentity(page: Page): CloudWriterIdentity | null;
 export declare function cloudSessionIdentity(page: Page): CloudSessionIdentity | null;
-export declare function withCloudSavedRateReadScope<T>(page: Page, frame: Frame, reservationStayId: string,
+export declare function withCloudSavedRateReadScope<T>(page: Page, frame: Frame, saved: Readonly<{
+  propertyCode: string; confirmation: string; reservationStayId: string; reservationId: string; recordId: string;
+  guestId: string; bookingSessionId: string;
+}>,
   operation: () => T | Promise<T>): Promise<T>;
 export declare function cloudWriterCurrent(identity: unknown): boolean;
 export declare function cloudWriterQuiesced(identity: unknown): boolean;
