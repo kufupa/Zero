@@ -37,10 +37,12 @@ The workflows:
    - Never name unrelated third-party organizations in a reply body; confirming the requesting client's own verified `Organization` back to a direct corporate booker is allowed.
    - Fully booked → one-line decline. Offer an alternative only if staff pick "Use this".
    - Price in the background when the email opens (reads only).
-3. **Create**: uses an existing HMS guest profile.
+3. **Create**: uses an existing HMS guest profile, or creates one when the guest has none.
    - Staff confirm stay, room, rate plan, meal plan, booking agency/organization, A/R account / billing reference, guarantee, note and CMS.
    - HMS prices the stay (Check Availability), and Nava shows that price before Go.
-   - Missing profile → never blindly auto-create duplicate Guest Profiles on Save; rank top existing matches and prefill clean hints (staff create in HMS or via an explicit later staged action).
+   - Missing profile → Nava prefills a new Guest Profile from the email and creates it from the pane on the staff's own click (the same click that checks the price). Staff never go to HMS for a profile.
+     - When HMS has likely matches, or raises its duplicate question, Nava ranks the matches and staff pick one or choose New. It never creates a duplicate silently.
+   - Typed nightly rate: on the property's override rate codes staff may type the nightly rate, and a quote row staff priced by hand carries its rate into Create. Nava stages it, shows HMS's total before Go, requires a note saying who approved it, and reads the rate back after Save.
    - Multi-room = sequential single-room creates (1–8 rooms) under one Go.
 4. **Amend**: find the confirmation, then change what the guest asked for: dates/nights, room type, room type for charge, adults/children and ages, rate plan, booking agency/organization, reservation note, billing reference, guest/booker details, and CMS. HMS reprices, and Nava shows the new price and the common rate options before Go.
 5. **Cancel**: find the confirmation and cancel with a reason. If HMS shows a penalty or charge, show it to staff; staff decide with a second Go.
@@ -48,7 +50,7 @@ The workflows:
 
 **CMS confirmation (Create and Amend)** is a staff control: a tick box (default on), a CMS message ID and a recipient email, all editable. HMS sends its confirmation only when staff leave it ticked. Nava never sends email itself; it saves unsent drafts.
 
-**Deferred (later scope):** blind/automatic New Profile creation on Save, typed numeric rate overrides (comps), folio billing/refunds and an Auto-Transfer Playwright writer (surface memory hint badge only), native groups and XLSX imports, new OCR.
+**Deferred (later scope):** typed rates on Amend and complimentary (zero-rate) stays until typed rates on Create are proven live, folio billing/refunds and an Auto-Transfer Playwright writer (surface memory hint badge only), native groups and XLSX imports, new OCR.
 
 HMS supplies live booking, rate, and availability facts, and staff decide. Don't invent fake rate math or credit-eligibility rules; DO deterministically prefill Organization/Agency -> A/R Account, billing reference, guarantee, and Reservation Note payer routing from verified HMS memory and directories (never prefill a post-checkout `Refund Account` on new stays).
 

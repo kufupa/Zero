@@ -4,13 +4,28 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { chromium } from 'playwright';
 import { bookingSessionPageOptions, createBookingToolQueue, runBookingLookupTool, runPartyTool } from './booking-lookup-session.mjs';
-import { acquireCloudCredentialLease, cloudCredentialLeaseKey, switchCloudProperty, verifyCloudProperty,
+import { acquireCloudCredentialLease, cloudCredentialLeaseKey, switchCloudProperty, verifyCloudProperty, verifyCloudCredentialVersion,
   withCloudReadSession } from './cloud-session.mjs';
 import { createCloudLookupReadTools } from './hms-lookup-read-session.mjs';
 import { matchesGuestProfileReadRequest } from './guest-profile.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { searchGuestInCloud } from './pane-guest-search.mjs';
 import { matchesRatePlanPickerRequest } from './guest-stay-room-rate.mjs';
+
+test('explicit unbound reads tolerate a missing digest but reject configured invalid digests and strict reads', async () => {
+  const key = 'HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAVS';
+  const previous = process.env[key];
+  try {
+    delete process.env[key];
+    const input = { propertyCode: 'HRDAVS', transportId: 'transport-faith', loadedSecret: {}, allowUnboundVersion: true };
+    assert.equal(await verifyCloudCredentialVersion(input), null);
+    await assert.rejects(verifyCloudCredentialVersion({ ...input, requireBoundVersion: true }), /HMS_CREDENTIAL_VERSION_MISSING/);
+    process.env[key] = 'invalid';
+    await assert.rejects(verifyCloudCredentialVersion(input), /HMS_CREDENTIAL_VERSION_MISSING/);
+  } finally {
+    if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
+  }
+});
 
 test('target browser quarantine clears under the credential lease only after its exact owner is quiescent', async () => {
   const script = String.raw`
@@ -23,7 +38,8 @@ test('target browser quarantine clears under the credential lease only after its
     import { spawn } from 'node:child_process';
     import { once } from 'node:events';
     const home = mkdtempSync(join(os.tmpdir(), 'zero-cloud-hold-'));
-    mock.module('node:os', { namedExports: { ...os, homedir: () => home } });
+    const { constants, default: osDefault, ...osNames } = os;
+    mock.module('node:os', { defaultExport: { ...osDefault, homedir: () => home }, namedExports: { ...osNames, homedir: () => home } });
     let held = false, credentialReads = 0;
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async (sql) => {
@@ -99,11 +115,13 @@ test('owned writer cleanup separates close API errors from physical exit and lea
     import { once } from 'node:events';
     const mode = process.argv[1], home = fs.mkdtempSync(join(os.tmpdir(), 'zero-writer-cleanup-'));
     const children = []; let held = false, round = 0, tamperIdentity = false, releaseCallback;
-    mock.module('node:os', { namedExports: { ...os, homedir: () => home } });
+    const { constants, default: osDefault, ...osNames } = os;
+    mock.module('node:os', { defaultExport: { ...osDefault, homedir: () => home }, namedExports: { ...osNames, homedir: () => home } });
     mock.module('node:timers/promises', { namedExports: { ...timers,
       setTimeout: (ms, ...args) => timers.setTimeout(ms === 30000 ? 100 : ms, ...args),
     } });
-    mock.module('node:fs', { namedExports: { ...fs,
+    const { constants: fsConstants, default: fsDefault, ...fsNames } = fs;
+    mock.module('node:fs', { defaultExport: { ...fsDefault }, namedExports: { ...fsNames,
       readFileSync: (path, ...args) => {
         const value = fs.readFileSync(path, ...args), child = children.at(-1)?.child;
         if (mode === 'unknown-owner' && tamperIdentity && path === '/proc/' + child?.pid + '/stat') {
@@ -237,7 +255,8 @@ test('fresh credential versions and evidence key metadata are checked under the 
     import { mkdtempSync, rmSync } from 'node:fs';
     import { join } from 'node:path';
     const home = mkdtempSync(join(os.tmpdir(), 'zero-cloud-credential-'));
-    mock.module('node:os', { namedExports: { ...os, homedir: () => home } });
+    const { constants, default: osDefault, ...osNames } = os;
+    mock.module('node:os', { defaultExport: { ...osDefault, homedir: () => home }, namedExports: { ...osNames, homedir: () => home } });
     process.on('exit', () => rmSync(home, { recursive: true, force: true }));
     let held = false, launches = 0, keyReads = 0, mode = '', controller;
     const key = Buffer.alloc(32, 83), encodedKey = key.toString('base64');
