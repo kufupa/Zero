@@ -22,6 +22,7 @@ import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { cancellationPenaltyNotice } from './cancel-penalty-notice.mjs';
 
 process.umask(0o077);
 // A shell started from a PM2 process leaks its IPC channel and pm_exec_path; neither may reach this run.
@@ -460,7 +461,7 @@ async function main() {
       const { installSavedStayReadGuard } = await load('tooling/hms-cloud/saved-stay-read-guard.mjs');
       const { cancellationNativePreimage } = await load('tooling/hms-cloud/pane-cancel-session.mjs');
       const { verifySingleCancellationScope } = await load('tooling/hms-cloud/cancel-association-scope.mjs');
-      const { openLabtestCancellation, confirmLabtestCancellation, cancellationPenaltyNotice } = await load('tooling/hms-cloud/guest-stay-cancel.mjs');
+      const { openLabtestCancellation, confirmLabtestCancellation } = await load('tooling/hms-cloud/guest-stay-cancel.mjs');
       assert(effective.room.ratePlan === (args.cancelScenario === 'zero' ? 'CMPRO' : 'BAR'), 'CANCEL_SCENARIO_RATE_MISMATCH');
       const own = journal.created, effective = requestSchema.parse(journal.effectiveRequest);
       assert(own?.freshReadbackVerified === true && /^\d+-\d+$/.test(own.confirmation ?? '') && /^\d+$/.test(own.nativeStayId ?? '') &&

@@ -6,7 +6,8 @@ import { withCloudCredentialLease, withCloudReadSession, withCloudWriterSession 
 import { getPropertyRegistration } from './property-registry.mjs';
 import { readShallow, readRecord } from './hms-readers.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
-import { openLabtestCancellation, confirmLabtestCancellation, cancellationPenaltyNotice } from './guest-stay-cancel.mjs';
+import { openLabtestCancellation, confirmLabtestCancellation } from './guest-stay-cancel.mjs';
+import { cancellationPenaltyNotice } from './cancel-penalty-notice.mjs';
 import { verifySingleCancellationScope } from './cancel-association-scope.mjs';
 
 const phaseSignal = (signal, timeout) => signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout);

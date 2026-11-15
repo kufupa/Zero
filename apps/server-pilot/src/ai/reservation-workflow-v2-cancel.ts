@@ -29,7 +29,7 @@ import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDisp
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
 import { persistHmsShots, verifyStoredHmsShot } from './hms-shots-store.js';
 import { runCloudCancellation } from './pane-cloud-cancel.js';
-import { cancellationPenaltyNotice } from '../../tooling/hms-cloud/guest-stay-cancel.mjs';
+import { cancellationPenaltyNotice } from '../../tooling/hms-cloud/cancel-penalty-notice.mjs';
 import { projectCloudCancellationPreview } from './hms-cloud-cancellation-preview.js';
 import {
   reservationWorkflowV2DraftSchema,

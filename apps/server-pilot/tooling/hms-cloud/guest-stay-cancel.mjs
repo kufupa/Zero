@@ -12,6 +12,7 @@ import {
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isNativeTaxValuesRead } from './labtest-amend-save.mjs';
 import { nativeReadExtrasAreSafe } from './saved-stay-read-guard.mjs';
+import { cancellationPenaltyNotice } from './cancel-penalty-notice.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const OPEN_PATH = '/web/base/OSCNRS';
@@ -24,13 +25,6 @@ const preservedFields = ['arrivaldate', 'departuredate', 'roomtype', 'rateplan',
 const usedPages = new WeakSet();
 const pendingPages = new WeakMap();
 const zeroPenaltyNotice = 'Cancellation Penalty of 0.00 may be added to account.';
-/** A native notice is not evidence that HMS posted a charge. Keep the decimal as displayed. */
-export function cancellationPenaltyNotice(value) {
-  if (typeof value !== 'string' || value.length > 2000) return null;
-  const match = /^Cancellation Penalty of (\d{1,12}\.\d{2}) may be added to account\.(?: OK)?$/.exec(value.replace(/\s+/g, ' ').trim());
-  return match ? { text: `Cancellation Penalty of ${match[1]} may be added to account.`,
-    amount: match[1], currency: null } : null;
-}
 const issue = (error) => /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'CANCEL_UNVERIFIED';
 // A missing field stays unknown; duplicate fields never establish a match.
 async function depositDisplayMatches(frame, expected) {
@@ -477,7 +471,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       dispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
     requestDispatched: dispatched, httpStatus: response?.status() || null, nativeDialog,
     penaltyText: dialog?.message ?? chargeText, blockedRequests: [...blocked],
-    browserSendRequests: sendRequests, dispatchCallbacksDrained: pendingDispatch === 0 }),
+    chargeApproved, chargeDispatched, browserSendRequests: sendRequests, dispatchCallbacksDrained: pendingDispatch === 0 }),
     onNativeCharge: async (dialog) => {
       // A JS confirm pauses the verified form. Before Save, hold the target before accepting it;
       // after Save, the separate charge request must use its existing dispatch authority.
@@ -808,7 +802,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     return { outcome: chargeText ? chargeApproved ? 'fee_accepted_unconfirmed' : 'fee_dialog_pending'
       : dispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), penaltyText: chargeText,
       httpStatus: response?.status() || null, requestDispatched: dispatched, dispatchCallbacksDrained: pendingDispatch === 0,
-      nativeDialog, blockedRequests: blocked, browserSendRequests: sendRequests };
+      chargeApproved, chargeDispatched, nativeDialog, blockedRequests: blocked, browserSendRequests: sendRequests };
   } finally {
     page.off?.('response', captureChargeResponse);
     if (interactionStarted) fence?.quarantine();
