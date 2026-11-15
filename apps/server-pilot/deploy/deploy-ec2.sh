@@ -649,6 +649,8 @@ fi
 
 echo "== pm2 =="
 nava_load_build_commit "$REPO_ROOT"
+NAVA_LIVE_SHA="$NAVA_BUILD_COMMIT" \
+  bash "${SERVER_PILOT}/deploy/set-ec2-runtime-controls.sh" --bind-installed-canaries
 
 # Always keep HMS off on generic deploy — ops-hms-shadow.sh start is sole HMS starter.
 # Invalidate canary/shadow proofs on build identity change.
