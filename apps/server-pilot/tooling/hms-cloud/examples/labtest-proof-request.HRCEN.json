@@ -5,7 +5,6 @@
   "room": { "roomType": "STQN", "ratePlan": "CMPRO" },
   "guaranteeType": "NGI",
   "sourceOfBusiness": "EMA",
-  "track": "BAR",
   "guestoptin4": false,
   "cms": { "send": false },
   "proof": { "addons": [{ "code": "ADDINA", "quantity": "1" }] }
