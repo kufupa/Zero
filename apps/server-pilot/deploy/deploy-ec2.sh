@@ -193,6 +193,9 @@ if [ "$QUIESCED" != "1" ]; then
   SERVER_BUILD_SHA="$(git -C "$REPO_ROOT" rev-parse --verify 'HEAD^{commit}')"
   nava_write_build_marker "$REPO_ROOT" BUILD_IN_PROGRESS
   pnpm --filter @zero/server build
+  echo "== boot smoke: every PM2 entrypoint must import =="
+  # Fails here, with the build still marked incomplete, before nginx or PM2 is touched.
+  (cd "$SERVER_PILOT" && node deploy/boot-smoke.mjs)
   nava_finish_server_build "$REPO_ROOT" "$SERVER_BUILD_SHA"
   echo "== install quote trace and HMS screenshot retention =="
   REPO_ROOT="$REPO_ROOT" SERVER_PILOT="$SERVER_PILOT" \
