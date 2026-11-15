@@ -203,7 +203,18 @@ export function matchesRatePlanPickerRequest(request, origin, propertyCode, rate
 
 function allowedSearch(request, kind, origin, propertyCode, rateShop = null, saved = null) {
   const url = new URL(request.url());
-  if (url.origin !== origin || request.method() !== 'POST') return false;
+  if (url.origin !== origin) return false;
+  if (request.method() === 'GET') {
+    const query = [...url.searchParams];
+    return kind === 'ratePlan' && saved && rateShop?.kind === kind && rateShop.propertyCode === propertyCode &&
+      typeof saved.bookingsessionid === 'string' && Boolean(saved.bookingsessionid.trim()) &&
+      rateShop.bookingSessionId === saved.bookingsessionid &&
+      request.headers().bookingclientsessionid === saved.bookingsessionid &&
+      url.pathname === `/api/internalBooking/${propertyCode}/rateshop/selectedRates` &&
+      !url.username && !url.password && !url.hash && !request.postData() &&
+      (query.length === 0 || (query.length === 1 && query[0][0] === '_dc' && /^\d+$/.test(query[0][1])));
+  }
+  if (request.method() !== 'POST') return false;
   if (url.search && (url.pathname !== '/api/internalBooking/rateshop/inquiryForGrid' || url.search !== '?houseAvailabilityOnly=true')) return false;
   const body = new URLSearchParams(request.postData() || '');
   const spec = SPECS[kind];
@@ -236,7 +247,7 @@ function roomFilterResetRequest(request, origin, metadata, kind, propertyCode) {
     Object.entries(expected).every(([key, value]) => body.getAll(key).length === 1 && body.get(key) === value &&
       [...body.keys()].filter(name => name.toLowerCase() === key.toLowerCase()).length === 1);
 }
-async function withFence(page, allowed, action, scope = null, quarantine = null) {
+async function withFence(page, allowed, action, scope = null, quarantine = null, selectedRatesPath = null) {
   const effects = [];
   const requests = new Map();
   const inFlight = new Set();
@@ -253,9 +264,10 @@ async function withFence(page, allowed, action, scope = null, quarantine = null)
   const handler = async (route) => {
     const request = route.request();
     const method = request.method().toUpperCase();
-    if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return route.fallback();
     const path = new URL(request.url()).pathname;
-    const permitted = method === 'POST' && allowed(request, origin);
+    const selectedRates = path === selectedRatesPath;
+    if (['GET', 'HEAD', 'OPTIONS'].includes(method) && !selectedRates) return route.fallback();
+    const permitted = ['GET', 'POST'].includes(method) && allowed(request, origin);
     const effect = { method, path, permitted };
     effects.push(effect);
     requests.set(request, effect);
@@ -322,12 +334,14 @@ async function collectCatalog(page, kind, nativeDialog, allowReset, surface = pa
     const shop = picker(surface, 'Rate Shop');
     await shop.waitFor({ state: 'visible', timeout: 20000 });
     const shopId = await shop.getAttribute('id'); if (!shopId) throw new Error('PICKER_UNAVAILABLE');
-    searches.set(page, { kind, propertyCode, shopId, formState, cleanupOnly: true });
+    searches.set(page, { kind, propertyCode, shopId, formState, cleanupOnly: true,
+      ...(saved ? { bookingSessionId: saved.bookingsessionid } : {}) });
     const response = await inquiry;
     if (!response || response.status() !== 200) throw new Error('RATE_SHOP_INQUIRY_UNVERIFIED');
     await responseText(response);
     const inquiryInput = JSON.parse(response.request().postData() || '{}');
     if (typeof inquiryInput.bookingSessionID !== 'string' || !inquiryInput.bookingSessionID.trim()) throw new Error('BOOKING_SESSION_UNVERIFIED');
+    if (saved && inquiryInput.bookingSessionID !== saved.bookingsessionid) throw new Error('BOOKING_SESSION_UNVERIFIED');
     searches.set(page, { ...searches.get(page), bookingSessionId: inquiryInput.bookingSessionID });
     if (await dismissUnavailable(1000)) return { criteriaUnavailable: true };
     try { await assertWindows(surface, ['Rate Shop'], nativeDialog); }
@@ -571,8 +585,11 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
     throw new Error('AMEND_PREIMAGE_UNVERIFIED');
   }
   if (busy.has(page) || searches.has(page)) throw new Error('PICKER_CLOSE_REQUIRED');
+  if (kind === 'ratePlan' && (typeof data.bookingsessionid !== 'string' || !data.bookingsessionid.trim())) {
+    throw new Error('BOOKING_SESSION_UNVERIFIED');
+  }
   busy.add(page);
-  const saved = Object.fromEntries(['propertycode', 'confirmationnumber', 'guestid', 'reservationstayid', 'reservationid', 'recordid']
+  const saved = Object.fromEntries(['propertycode', 'confirmationnumber', 'guestid', 'reservationstayid', 'reservationid', 'recordid', 'bookingsessionid']
     .map(name => [name, String(data[name])]));
   saved.confirmation = saved.confirmationnumber;
   let native = false, resetMetadata = null, fence;
@@ -582,6 +599,7 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
     const before = formSignature(await formFields(page, frame, saved));
     const paths = ['/web/base/LOVPOP', '/web/base/GRIDDATA', '/web/base/GETCACHE', '/web/base/BSMSLV',
       '/web/base/OSRASD', '/web/base/OSRASD.RatePlanChange', '/api/internalBooking/rateshop/inquiryForGrid',
+      `/api/internalBooking/${propertyCode}/rateshop/selectedRates`,
       `/api/internalBooking/${propertyCode}/rateshop/rateSelection`];
     fence = await installPageRequestFence(page, paths);
     const read = () => withFence(page, (request, origin) => {
@@ -616,7 +634,7 @@ export async function inspectSavedRoomRateCatalogue(page, frame, baseline, kind)
       await win.waitFor({ state: 'hidden', timeout: 10000 });
       if (formSignature(await formFields(page, frame, saved)) !== before) throw new Error('AMEND_DRAFT_CHANGED');
       return result;
-    }, fence.open(), () => fence.quarantine());
+    }, fence.open(), () => fence.quarantine(), `/api/internalBooking/${propertyCode}/rateshop/selectedRates`);
     const captured = kind === 'ratePlan'
       ? await withCloudSavedRateReadScope(page, frame, saved.reservationstayid, read) : await read();
     // Closing a saved Rate Shop can POST rateSelection. Leave it fenced; end the owning session instead.

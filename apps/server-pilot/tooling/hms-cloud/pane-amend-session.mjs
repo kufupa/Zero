@@ -267,7 +267,11 @@ function matchesAmendBusiness(snapshot, selected, changes, baseline, state) {
   const children = savedChildOccupancy(snapshot);
   if (!children.valid || children.count !== target.children) return false;
   if (Array.isArray(target.childAges)) {
-    const ages = children.ages;
+    const zeroAges = children.count === 0 && children.fields.childages.model.present &&
+      children.fields.childages.model.value === '' &&
+      (!Object.keys(values).some(key => key.toLowerCase() === 'childages') ||
+        (children.fields.childages.form.present && children.fields.childages.form.value === ''));
+    const ages = zeroAges ? [] : children.ages;
     if (!sameChildAgeMultiset(ages, target.childAges) && !(ages === null &&
         sameChildAgeMultiset(state.verifiedChildAges, target.childAges))) return false;
   }
