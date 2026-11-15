@@ -13,8 +13,8 @@
 //
 // State under --state-dir (default ~/.local/state/nava-labtest-proof):
 //   <sha>/<property>-journal.json  evidence for deploy/install-canary-ledger.mjs
-//   <property>-hold                 left behind when a write may have reached HMS;
-//                                   re-read HMS before removing it, never blind-retry
+//   <property>-<target>-hold        left behind when a write may have reached HMS;
+//                                  re-read HMS before removing it, never blind-retry
 //   <property>-operation.lock       one stage per property at a time
 // The last stdout line is `PROOF PASS|FAIL <stage> <property> <sha> conf=<confirmation>`.
 import { createHash, randomUUID } from 'node:crypto';
@@ -40,6 +40,28 @@ const guest = Object.freeze({ firstName: 'Proof', lastName: 'Labtest' });
 const addDays = (iso, days) => new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
 let journal, journalPath, journalDir, holdPath, args;
 let mutationPossible = false;
+let resumeStatus;
+
+async function assertNoTargetHold() {
+  const legacyPath = join(args.root, `${args.propertyCode}-hold`);
+  try {
+    const stat = await lstat(legacyPath);
+    assert(stat.isFile() && !stat.isSymbolicLink() && stat.uid === process.getuid() &&
+      !(stat.mode & 0o077) && stat.size <= 128, 'JOURNAL_HELD');
+    // Stay preparation/creation use existing profiles, not this master insert.
+    // Keep old profile holds intact; unknown legacy holds stop every workflow.
+    assert(args.stage !== 'guest_profile_create' &&
+      (await readFile(legacyPath, 'utf8')).trim() === 'guest_profile_create_possible', 'JOURNAL_HELD');
+  } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const paths = [holdPath];
+  if (args.stage !== 'guest_profile_create' && journal?.created && journal.effectiveRequest?.stay) {
+    paths.push(join(args.root, `${args.propertyCode}-create-${hash([journal.effectiveRequest.stay.arrival, guest])}-hold`));
+  }
+  for (const path of new Set(paths)) {
+    try { await lstat(path); fail('JOURNAL_HELD'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+}
 
 function parseArgs(argv) {
   const allowed = new Set(['--property', '--expected-sha', '--stage', '--request', '--state-dir']);
@@ -134,9 +156,11 @@ async function persist(value) {
 
 async function markPossible(status, extra = {}) {
   await checkHold();
+  await assertNoTargetHold();
   const file = await open(holdPath, 'wx', 0o600);
   try { await file.writeFile(`${status}\n`); await file.sync(); } finally { await file.close(); }
   mutationPossible = true;
+  resumeStatus = journal.status;
   await persist({ ...journal, ...extra, status, updatedAt: new Date().toISOString() });
 }
 
@@ -236,16 +260,29 @@ async function main() {
   await privateDirectory(args.root);
   await privateDirectory(journalDir);
   journalPath = join(journalDir, `${args.propertyCode}-journal.json`);
-  holdPath = join(args.root, `${args.propertyCode}-hold`);
   const lockPath = join(args.root, `${args.propertyCode}-operation.lock`);
   const fileLock = await acquireLock(lockPath);
   try {
-    try { await lstat(holdPath); fail('JOURNAL_HELD'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
     journal = await privateFile(journalPath, true);
     if (journal) {
       assert(journal.version === 1 && journal.propertyCode === args.propertyCode && journal.sha === args.sha &&
         hash(journal.request) === journal.requestDigest, 'JOURNAL_BINDING_MISMATCH');
       if (args.stage !== 'prepare') assert(hash(journal.proofRequest ?? {}) === hash(proofRequest), 'PROOF_REQUEST_CHANGED');
+    }
+    const target = args.stage === 'guest_profile_create' ? 'guest_profile_create'
+      : journal?.created ? `stay-${hash([journal.created.confirmation, journal.created.nativeStayId])}`
+        : `create-${hash([journal?.effectiveRequest?.stay.arrival ?? request.stay.arrival, guest])}`;
+    holdPath = join(args.root, `${args.propertyCode}-${target}-hold`);
+    await assertNoTargetHold();
+    const priorProfile = journal?.workflowAttempts?.guest_profile_create ??
+      (journal?.workflowAttempt?.workflow === 'guest_profile_create' ? journal.workflowAttempt : null);
+    const profileHeld = journal?.status === 'guest_profile_create_possible' ||
+      journal?.status === 'uncertain_held' && journal.workflowAttempt?.workflow === 'guest_profile_create';
+    if (profileHeld && priorProfile && journal.created?.freshReadbackVerified === true &&
+        ['amend', 'attach', 'addons', 'cancel'].includes(args.stage)) {
+      journal = { ...journal, status: 'created',
+        workflowHolds: { ...journal.workflowHolds, guest_profile_create: {
+          status: 'uncertain_held', issue: journal.issue, attempt: priorProfile } } };
     }
     let finished;
     if (args.stage === 'prepare' && journal) {
@@ -262,8 +299,9 @@ async function main() {
       assert(journal.status === (args.stage === 'create' ? 'prepared' : 'created'), 'STAGE_INVALID');
     }
     if (!['prepare', 'create', 'cancel'].includes(args.stage)) {
-      const order = ['guest_profile_create', 'amend', 'attach', 'addons'];
-      assert(!journal.workflowProofs?.[args.stage] && !order.slice(order.indexOf(args.stage) + 1)
+      const order = ['amend', 'attach', 'addons'];
+      assert(!journal.workflowHolds?.[args.stage], 'JOURNAL_HELD');
+      assert(!journal.workflowProofs?.[args.stage] && !(args.stage === 'guest_profile_create' ? [] : order.slice(order.indexOf(args.stage) + 1))
         .some(workflow => journal.workflowProofs?.[workflow]), 'WORKFLOW_ALREADY_RUN_OR_OUT_OF_ORDER');
     }
     const cloud = await load('tooling/hms-cloud/cloud-session.mjs');
@@ -287,8 +325,12 @@ async function main() {
     if (journal) await persist({ ...journal, provenance, updatedAt: new Date().toISOString() });
     const withTarget = async (target, action) => {
       await checkHold();
+      if (target.kind === 'create') {
+        holdPath = join(args.root, `${args.propertyCode}-create-${hash([target.arrival, guest])}-hold`);
+      }
+      await assertNoTargetHold();
       const aliases = target.kind === 'guest_profile'
-        ? hmsGuestProfileTargetKeys({ propertyCode: args.propertyCode, ...guest }) : hmsDispatchTargetKeys(target);
+        ? hmsGuestProfileTargetKeys({ propertyCode: args.propertyCode, ...target.guest }) : hmsDispatchTargetKeys(target);
       const lock = createPostgresTargetAliasLock({ tenantId: property.expectedTenant, propertyCode: args.propertyCode,
         targetAliases: aliases, databaseUrl: process.env.DATABASE_URL });
       return lock.withLock(async (_connection, signal) => {
@@ -386,13 +428,20 @@ async function main() {
       });
     } else if (args.stage !== 'cancel') {
       const { runLabtestWorkflow, verifyLabtestWorkflowProof } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
-      const target = args.stage === 'guest_profile_create' ? { kind: 'guest_profile' } :
+      if (args.stage === 'guest_profile_create' && !journal.profileProofGuest) {
+        await persist({ ...journal, profileProofGuest: {
+          firstName: `Proof${randomUUID().replaceAll('-', '').slice(0, 12)}`, lastName: 'Labtest',
+          mobile: `+2700${String(BigInt(`0x${randomUUID().replaceAll('-', '')}`) % 10000000n).padStart(7, '0')}`, email: '',
+        } });
+      }
+      const target = args.stage === 'guest_profile_create' ? { kind: 'guest_profile', guest: journal.profileProofGuest } :
         { propertyCode: args.propertyCode, kind: 'saved', confirmation: journal.created.confirmation,
           nativeStayId: journal.created.nativeStayId };
       result = await withTarget(target, async options => {
         const proof = await runLabtestWorkflow({ workflow: args.stage, journal, property, transportId, options,
           root: args.root, journalDir, checkHold, markPossible,
           record: async evidence => persist({ ...journal, workflowAttempt: { workflow: args.stage, ...evidence },
+            workflowAttempts: { ...journal.workflowAttempts, [args.stage]: { workflow: args.stage, ...evidence } },
             updatedAt: new Date().toISOString() }) });
         verifyLabtestWorkflowProof(journal, args.stage, proof);
         return { status: 'created', workflowProofs: { ...journal.workflowProofs, [args.stage]: proof } };
@@ -525,7 +574,10 @@ main().then(() => {
 }, async error => {
   const issue = /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message ?? '') ? error.message : 'PROOF_FAILED';
   if (mutationPossible && journal) {
-    await persist({ ...journal, status: 'uncertain_held', issue, updatedAt: new Date().toISOString() }).catch(() => {});
+    await persist({ ...journal,
+      status: args.stage === 'guest_profile_create' ? resumeStatus : 'uncertain_held', issue,
+      workflowHolds: { ...journal.workflowHolds, [args.stage]: { status: 'uncertain_held', issue, holdPath } },
+      updatedAt: new Date().toISOString() }).catch(() => {});
   }
   process.stderr.write(`${JSON.stringify({ outcome: mutationPossible ? 'uncertain_held' : 'refused', issue,
     propertyCode: args?.propertyCode ?? null, journalPath: journalPath ?? null })}\n`);
