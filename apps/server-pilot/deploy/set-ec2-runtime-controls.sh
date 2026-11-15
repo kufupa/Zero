@@ -26,12 +26,12 @@ fi
 flock -x 9
 if [ "${1:-}" = "--bind-installed-canaries" ]; then
   [ "$#" -eq 1 ] || exit 2
-  bindings="$(node --input-type=module - "$POLICY_MODULE" "$ENV_FILE" "$REPO_ROOT" <<'NODE'
+  bindings="$(node --input-type=module - "$POLICY_MODULE" "$ENV_FILE" "$REPO_ROOT" "$COMMON" <<'NODE'
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { parseEnv } from 'node:util';
 import { pathToFileURL } from 'node:url';
-const [policyPath, envPath, root] = process.argv.slice(2);
+const [policyPath, envPath, root, commonPath] = process.argv.slice(2);
 try {
   const policy = await import(pathToFileURL(policyPath).href);
   const sha = execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -51,6 +51,7 @@ try {
   const data = JSON.parse(fs.readFileSync(`${ledger}.writers.json`, 'utf8'));
   if (data.version !== 2 || !Array.isArray(data.writers)) throw Error();
   const env = parseEnv(fs.readFileSync(envPath, 'utf8'));
+  const environments = [env, parseEnv(fs.readFileSync(commonPath, 'utf8'))];
   const updates = new Map();
   for (const row of data.writers) {
     if (row?.sourceRevision !== sha || !policy.HMS_PROPERTIES.includes(row.propertyCode) ||
@@ -59,16 +60,29 @@ try {
     const candidate = { ...env, NAVA_CANARY_PASS_FILE: ledger, [key]: row.writerDependencyDigest };
     // Readiness checks the real PASS, writer sources, credential identity and fresh-readback metadata.
     if (policy.hmsWriterReady(candidate, row.propertyCode, row.workflow, sha)) {
-      updates.set(key, row.writerDependencyDigest);
+      // Digests are shared across properties; do not make the M1 promotion guard abort startup.
+      const scopeReady = environments.every(current => policy.HMS_PROPERTIES.every(property =>
+        current[key] === row.writerDependencyDigest ||
+        policy.effectiveWorkflowPolicy(current, property, row.workflow).mode !== 'on' ||
+        policy.hmsWriterReady({ ...current, NAVA_CANARY_PASS_FILE: ledger, [key]: row.writerDependencyDigest },
+          property, row.workflow, sha)));
+      if (scopeReady) updates.set(key, row.writerDependencyDigest);
     }
   }
   if (updates.size) {
-    const candidate = { ...env, ...Object.fromEntries(updates), NAVA_CANARY_PASS_FILE: ledger };
     // A shared-path migration must not discard another workflow/property's valid custom proof.
-    const losesProof = policy.HMS_PROPERTIES.some(property => policy.HMS_WRITE_WORKFLOWS.some(workflow =>
-      policy.hmsWriterReady(env, property, workflow) && !policy.hmsWriterReady(candidate, property, workflow)));
-    if (losesProof) {
-      console.error('installed canary binding skipped: canonical ledger would remove existing writer readiness');
+    const unsafeMigration = environments.some(current => {
+      const candidate = { ...current, ...Object.fromEntries(updates), NAVA_CANARY_PASS_FILE: ledger };
+      return policy.HMS_PROPERTIES.some(property => policy.HMS_WRITE_WORKFLOWS.some(workflow => {
+        const before = policy.effectiveWorkflowPolicy(current, property, workflow);
+        const after = policy.effectiveWorkflowPolicy(candidate, property, workflow);
+        return (policy.hmsWriterReady(current, property, workflow) && !policy.hmsWriterReady(candidate, property, workflow)) ||
+          (after.capability === 'staff-enabled' && before.capability !== 'staff-enabled' &&
+            !policy.hmsWriterReady(candidate, property, workflow, sha));
+      }));
+    });
+    if (unsafeMigration) {
+      console.error('installed canary binding skipped: unsafe writer readiness change');
       process.exit(0);
     }
     console.log(`NAVA_CANARY_PASS_FILE=${ledger}`);
