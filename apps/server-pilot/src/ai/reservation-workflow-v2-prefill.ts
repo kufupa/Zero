@@ -2053,6 +2053,9 @@ function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): bool
   return Boolean(scopes[0]) && scopes.every((scope) => scope === scopes[0]);
 }
 
+// Room-only wordings, named as boardMeaning names them ('room_only').
+const ROOM_ONLY_BOARD = String.raw`\b(?:room\s*-?\s*only|accommodation\s+only|bed\s+only|r\/o|ro|(?:no|without|excluding)\s+meals?)\b`;
+
 function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['requests'][number],
   evidence: ReservationWorkflowV2Evidence[], currentRefs: Set<string>, singleRequest: boolean) {
   const rows = request.roomTypeHints.flatMap((hint) => {
@@ -2080,7 +2083,7 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
   }));
   const text = normalizedFact(source ? bodyText(source) : '');
   const starts = rows.map((row) => text.indexOf(normalizedFact(row.claim.raw)));
-  const mealForClause = (clause: string) => {
+  const mealForClause = (clause: string, boardText = clause) => {
     const affirmativeMeal = (pattern: RegExp) => {
       const mentions = clause.split(/[;,/.!?]|\bbut\b/iu).flatMap((fragment) => {
         const meals = [...fragment.matchAll(/\b(?:dinner|breakfast|dbb|b&b)\b/giu)];
@@ -2099,6 +2102,12 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
       return mentions.length > 0 && mentions.every(Boolean);
     };
     const dinner = affirmativeMeal(/\bdinner\b|\bdbb\b/iu), breakfast = affirmativeMeal(/\bbreakfast\b|\bb&b\b|\bdbb\b/iu);
+    const roomOnlyMentions = boardText.split(/[;,.!?]|\bbut\b/iu).flatMap((fragment) =>
+      [...fragment.matchAll(new RegExp(ROOM_ONLY_BOARD, 'giu'))].map((mention) =>
+        !/\b(?:not|never|declin(?:e|ed|ing)|exclud(?:e|ed|ing)|(?:don|isn|aren|won|needn)['’]t|unwanted|rather\s+than|instead\s+of)\b/iu.test(fragment.slice(0, mention.index))));
+    const roomOnly = roomOnlyMentions.length > 0 && roomOnlyMentions.every(Boolean);
+    // Room only beside an affirmative meal in one clause is two alternatives, not one board.
+    if (roomOnly) return dinner || breakfast ? null : 'room_only';
     return dinner && breakfast ? 'dinner_bb' : breakfast ? 'bb' : dinner ? 'Dinner' : null;
   };
   const paragraphs = source && singleRequest ? bodyText(source).split(/\r?\n\s*\r?\n/u) : [];
@@ -2112,40 +2121,76 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
   const paragraph = roomIndex < 0 ? '' : `${sameScopeHeader ? `${preceding} ` : ''}${normalizedFact(paragraphs[roomIndex])}`;
   const firstRoom = paragraph ? Math.min(...rows.map((row) => paragraph.indexOf(normalizedFact(row.claim.raw)))) : -1;
   const header = firstRoom >= 0 ? paragraph.slice(0, firstRoom) : '';
+  const roomOnlyBoard = new RegExp(ROOM_ONLY_BOARD, 'giu');
+  const boardMention = new RegExp(String.raw`\b(?:dinner|breakfast|dbb|b&b)\b|${ROOM_ONLY_BOARD}`, 'giu');
   const scopedHeaders = header.split(/[;.!?]/u).filter((clause) =>
     /\b(?:all|each|every)\s+(?:the\s+)?(?:rooms?|guests?)\b/iu.test(clause) &&
-    /\b(?:dinner|breakfast|dbb|b&b)\b/iu.test(clause));
+    clause.search(boardMention) >= 0);
   const outsideScope = scopedHeaders.length === 1 ? header.replace(scopedHeaders[0]!, '') : header;
-  const unresolvedException = /\b(?:except|excluding|other\s+than|apart\s+from|unless|but|not|no|without|declined|excluded|only)\b/iu.test(header);
-  const competingMeal = /\b(?:dinner|breakfast|dbb|b&b|room\s+only|meals?)\b/iu.test(outsideScope);
+  // "only", "no" and "without" inside a room-only wording name the board; they are not an exception.
+  const unresolvedException = /\b(?:except|excluding|other\s+than|apart\s+from|unless|but|not|no|without|declined|excluded|only)\b/iu
+    .test(header.replace(roomOnlyBoard, ' '));
+  const competingMeal = outsideScope.search(boardMention) >= 0 || /\bmeals?\b/iu.test(outsideScope);
   const mentions = scopedHeaders[0]?.replace(/\bdinner\s+and\s+breakfast(?:\s*\(\s*dbb\s*\))?/giu, 'DBB')
-    .match(/\b(?:dinner|breakfast|dbb|b&b)\b/giu) ?? [];
+    .match(boardMention) ?? [];
   const sharedBoard = scopedHeaders.length === 1 && mentions.length === 1 && !unresolvedException && !competingMeal ? mealForClause(scopedHeaders[0]!) : null;
   const orderedRows = rows.map((row, index) => ({ row, start: starts[index] ?? -1 })).sort((a, b) => a.start - b.start);
   const ambiguousBetweenRooms = orderedRows.some(({ row, start }, index) => {
     const next = orderedRows[index + 1];
     if (start < 0 || !next || next.start < 0) return false;
     const between = text.slice(start + normalizedFact(row.claim.raw).length, next.start);
-    return /\b(?:but|except|excluding|unless|however|instead)\b/iu.test(between) ||
-      (/\b(?:breakfast|dinner|dbb|b&b|meals?|room\s+only)\b/iu.test(between) && !/\b(?:and|&)\s*$/iu.test(between));
+    return /\b(?:but|except|excluding|unless|however|instead)\b/iu.test(between.replace(roomOnlyBoard, ' ')) ||
+      ((between.search(boardMention) >= 0 || /\bmeals?\b/iu.test(between)) && !/\b(?:and|&)\s*$/iu.test(between));
   });
   return rows.map((row, index) => {
     const start = starts[index] ?? -1;
     const end = starts.filter((position) => position > start).sort((a, b) => a - b)[0] ?? text.length;
     const clause = source && start >= 0 ? text.slice(start, Math.min(end, start + 500)).split(
       /\b(?:check\s*-?\s*(?:in|out)|arrival|departure|regards|sincerely|thank\s+you|notes?|comments?|payment|I|we|please\s+note|however|also)\b/iu)[0] ?? '' : '';
-    const specificMeal = /\b(?:dinner|breakfast|dbb|b&b|room\s+only|(?:no|without)\s+meals?)\b/iu.test(clause);
-    const board = ambiguousBetweenRooms ? null : specificMeal ? mealForClause(clause) : sharedBoard;
+    // The counted room wording itself ("1 double room" + " only") is not a board.
+    const afterRoom = clause.slice(normalizedFact(row.claim.raw).length);
+    const specificMeal = /\b(?:dinner|breakfast|dbb|b&b)\b/iu.test(clause) || afterRoom.search(roomOnlyBoard) >= 0;
+    const board = ambiguousBetweenRooms ? null : specificMeal ? mealForClause(clause, afterRoom) : sharedBoard;
     return { ...row, board };
   });
 }
 
+// Operational request classes staff copy into the HMS reservation note. Each entry is a
+// general class of stay instruction, never a guest-, client- or property-specific phrase.
+const OPERATIONAL_NOTE_CLASSES: RegExp[] = [
+  // Documents, security, access and diet.
+  /\b(?:passports?|firearms?|safe\s+storage|parking|halaal|halal|kosher|wheelchairs?|water|dietary|allerg(?:y|ies|ic)|special\s+requests?|vegetarian|vegan|gluten|lactose|diabetic|disabled|mobility|accessible)\b/i,
+  // Transport to and from the property.
+  /\b(?:shuttles?|transfers?|pick(?:ed|ing)?\s*-?\s*ups?|drop\s*-?\s*offs?|collect(?:ed|ion)?\s+(?:from|at)|airport|chauffeur|taxi|flight\s+(?:number|no\.?|details?))\b/i,
+  // Early/late arrival or departure, and arrival/departure with a time of day.
+  /\b(?:early|late)\s+(?:check\s*-?\s*(?:in|out)|arrivals?|departures?)\b|\b(?:earlier|later)\s+check\s*-?\s*(?:in|out)\b/i,
+  /\b(?:arriv\w+|depart\w+|leav(?:e|ing)|land(?:s|ing)?|check(?:ing)?\s*-?\s*(?:in|out)|eta|etd|flight)\b[^.!?\n]{0,60}?(?:\b\d{1,2}[:h]\d{2}\b|\b\d{1,2}\s?[ap]\.?m\b|\b(?:late|early|midnight|noon|midday|morning|afternoon|evening|tonight)\b)/i,
+  // Floor and room position.
+  /\b(?:ground|first|second|top|upper|lower|higher?|same)\s+(?:floor|level)s?\b|\b(?:near|close\s+to|next\s+to|away\s+from)\s+(?:the\s+)?(?:lift|elevator|stairs|pool|entrance|reception|restaurant|each\s+other)\b|\bnext\s+door\b|\bside\s+by\s+side\b/i,
+  /\binter-?\s*(?:leading|connecting)\b|\b(?:connecting|adjoining|adjacent)\b/i,
+  // Bed configuration, cots and extra beds.
+  /\b(?:twin|double|king|queen|single|separate|extra|additional|sofa|bunk|rollaway)\s*-?\s*(?:sized?\s+)?beds?\b(?!\s*(?:and|&|n)\s*breakfast)|\bbed(?:ding)?\s+(?:configuration|type|set-?\s*up|arrangement)\b|\b(?:cots?|cribs?|rollaway|extra\s+mattress|baby\s+(?:bed|bath)|high\s*chairs?)\b/i,
+  // Room environment.
+  /\bquiet\b|\b(?:non-?\s*)?smok(?:ing|ers?)\b/i,
+  // Celebrations.
+  /\b(?:honeymoon(?:ers)?|anniversar(?:y|ies)|birthdays?|celebrat(?:e|es|ed|ing|ions?)|newly-?\s*weds?|surprise)\b/i,
+];
+const OPERATIONAL_NOTE_PRICING = /\b(?:rates?|prices?|pricing|costs?|tariffs?|invoices?|deposits?|refunds?|payments?|how\s+much|bank|eft)\b|(?:\b(?:R|ZAR|USD|EUR|GBP)\s?|[$€£]\s?)\d/i;
+const OPERATIONAL_NOTE_CONTACT = /[^\s@]+@[^\s@]+\.[^\s@]+|\b(?:tel|telephone|cell|mobile|fax|phone)\s*(?:no\.?|number)?\s*:/i;
+const OPERATIONAL_NOTE_GREETING = /^(?:hi|hello|hey|dear|greetings|good\s+(?:morning|afternoon|evening|day))\b[^,:!\n]{0,60}[,:!]\s*/i;
+const OPERATIONAL_NOTE_REGARDS = /^[ \t]*(?:(?:(?:kind|warm|best|many|with)\s+)?(?:regards|wishes)|yours\s+(?:sincerely|faithfully|truly)|sincerely)\b(?![ \t]+(?:to|for|on|from)\b)[ \t]*[,.!]*(?:[ \t]+\S+){0,3}[ \t]*$/im;
+const OPERATIONAL_NOTE_THANKS = /^[ \t]*(?:(?:many\s+)?thanks|thank\s+you(?:\s+(?:very\s+much|in\s+advance|kindly))?|cheers)[ \t]*[,.!]*[ \t]*$/gim;
+
 function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
-  const body = (input.selection.currentBodyText ?? input.selection.bodyText)
+  const current = (input.selection.currentBodyText ?? input.selection.bodyText)
     .split(/^\s*(?:From:|On .+ wrote:|-{2,}\s*(?:Original Message|Forwarded message))\s*/im)[0] ?? '';
-  const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim()).filter((line) =>
-    (/\b(?:passport|firearms?|safe\s+storage|parking|shuttle|transfer|halaal|halal|kosher|wheelchair|water|dietary|allerg(?:y|ies)|special\s+requests?)\b/i.test(line) ||
-      Boolean(dinnerAmount(line))) &&
+  // Everything from the sign-off down is signature, not a stay instruction.
+  const signOff = OPERATIONAL_NOTE_REGARDS.exec(current)?.index ?? [...current.matchAll(OPERATIONAL_NOTE_THANKS)].at(-1)?.index;
+  const body = signOff === undefined ? current : current.slice(0, signOff);
+  // Dropping a leading greeting keeps each clause a verbatim substring of the current email body.
+  const clauses = body.split(/\r?\n|(?<=[.!?])\s+/u).map((line) => line.trim().replace(OPERATIONAL_NOTE_GREETING, '').trim()).filter((line) =>
+    (Boolean(dinnerAmount(line)) || OPERATIONAL_NOTE_CLASSES.some((pattern) => pattern.test(line)) &&
+      !OPERATIONAL_NOTE_PRICING.test(line) && !OPERATIONAL_NOTE_CONTACT.test(line)) &&
     line.length > 3 && !/https?:\/\/|www\./i.test(line));
   return [...new Set(clauses)];
 }
@@ -2406,11 +2451,36 @@ function currentPdfEvidence(input: {
   return result;
 }
 
+// Words that may stand between a negation and the "cancel" it governs ("do not ever want to cancel").
+const CANCEL_BRIDGE = String.raw`(?:go\s+ahead(?:\s+and)?|under\s+any\s+circumstances?|in\s+any\s+(?:case|event|way)|at\s+all|please|kindly|ever|just|only|simply|actually|really|yet|now|longer|circumstances?|to|needs?|wants?|wish(?:es)?|like|going|intend|plan(?:ning)?|have|has|proceed|try|us|you|we|i|they|them|then|however|repeat|again)`;
+const CANCEL_NEGATED_TAIL = new RegExp(String.raw`\b(?:not|never|no|cannot|\w+n['’]t|rather\s+than|instead\s+of)(?:\s+${CANCEL_BRIDGE})*\s*$`, 'iu');
+const CANCEL_BRIDGE_ONLY = new RegExp(String.raw`^(?:\s*\b${CANCEL_BRIDGE}\b)*\s*$`, 'iu');
+
+/** True when the text right before a "cancel ..." match negates that instruction within its own sentence. */
+function isNegatedCancelInstruction(prefix: string): boolean {
+  const segments = (prefix.split(/[;.!?\n]/u).at(-1) ?? '').split(',');
+  const adjacent = segments.pop() ?? '';
+  if (CANCEL_NEGATED_TAIL.test(adjacent)) return true;
+  // Another predicate sits between any earlier negation and this instruction ("No dinner is required, so cancel ...").
+  if (!CANCEL_BRIDGE_ONLY.test(adjacent)) return false;
+  // A negation left hanging before a comma aside still governs the instruction
+  // ("Do not, under any circumstances, cancel ..."); a completed clause does not.
+  while (segments.length) {
+    const segment = segments.pop()!;
+    if (/\b(?:(?:do|must|should|shall|will|would|may|can|could)\s+not|never|cannot|(?:don|mustn|shouldn|won|wouldn|can|couldn)['’]t)\s*$/iu.test(segment))
+      return !/^\s*(?:if|when|unless|should|otherwise|whether|because|since|in\s+case)\b/iu.test(segment);
+    if (!CANCEL_BRIDGE_ONLY.test(segment) &&
+        !/^\s*(?:under|in|at|on|for|by|as|regardless|whatever|with|without|until)\b(?:\s+\S+){0,7}\s*$/iu.test(segment)) return false;
+  }
+  return false;
+}
+
 function isPartialStayCancellation(text: string): boolean {
-  return [...text.matchAll(/\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/giu)].some((match) => {
-    const prefix = text.slice(0, match.index).split(/[;,.!?\n]|\b(?:but|and)\b/iu).at(-1) ?? '';
-    return !/\b(?:not|never|no|don['’]t|do\s+not|must\s+not|should\s+not)\b(?:\s+\w+){0,4}\s*$/iu.test(prefix);
-  });
+  const affirmative = (pattern: RegExp) => [...text.matchAll(pattern)].some((match) =>
+    !isNegatedCancelInstruction(text.slice(0, match.index)));
+  // An affirmative whole-stay instruction beside the partial one is not an unambiguous departure change.
+  return affirmative(/\bcancel\s+(?:(?:only|just)\s+)?(?:the\s+)?(?:last|final)\s+(?:day|night)\b/giu) &&
+    !affirmative(/\bcancel\s+(?:(?:the|this|our|my|their)\s+)?(?:entire|whole|full|complete)\s+(?:reservation|booking|stay)\b/giu);
 }
 
 function recoverSourceIntent(input: {
@@ -2781,6 +2851,36 @@ function isPaymentProofOnlyCreate(extracted: ReservationWorkflowV2Extraction['re
   return paymentProof && !newBookingIntent;
 }
 
+type CreateAllocationOccupancy = { adults: number | null; childCount: number | null; childAges: Array<number | null> | null };
+
+/**
+ * One current occupancy row per Create allocation, in source order. Returns null unless every
+ * row is cited in the current message, is scoped to a room (or to a stay holding a single room)
+ * and agrees with whatever occupancy synthesis already placed on that allocation.
+ */
+function occupancyRowsByAllocation(input: {
+  extracted: ReservationWorkflowV2Extraction['requests'][number];
+  allocations: Array<{ dateSectionId: string; occupancy: CreateAllocationOccupancy }>;
+  currentRefs: Set<string>;
+}): Array<{ row: ReservationWorkflowV2Extraction['requests'][number]['occupancy'][number]; occupancy: CreateAllocationOccupancy }> | null {
+  const rows = input.extracted.occupancy;
+  if (rows.length < 2 || rows.length !== input.allocations.length) return null;
+  const mapped = rows.flatMap((row, index) => {
+    const allocation = input.allocations[index]!;
+    const ageClaims = row.childAges?.filter((claim) => currentClaim(claim, input.currentRefs)) ?? [];
+    const adults = citedInteger(currentClaim(row.adults, input.currentRefs)) ?? null;
+    const childCount = citedInteger(currentClaim(row.childCount, input.currentRefs)) ?? null;
+    const roomScoped = row.scope === 'per_room' || row.scope === 'whole_group' &&
+      input.allocations.filter((other) => other.dateSectionId === allocation.dateSectionId).length === 1;
+    const contradicts = adults !== null && allocation.occupancy.adults !== null && allocation.occupancy.adults !== adults ||
+      childCount !== null && allocation.occupancy.childCount !== null && allocation.occupancy.childCount !== childCount;
+    if (!roomScoped || contradicts || adults === null && childCount === null) return [];
+    const childAges = ageClaims.length ? ageClaims.map((claim) => citedInteger(claim) ?? null) : childCount === 0 ? [] : null;
+    return [{ row, occupancy: { adults, childCount, childAges } }];
+  });
+  return mapped.length === rows.length ? mapped : null;
+}
+
 function projectSourceCreateAllocations(input: {
   request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'create' }>;
   extracted: ReservationWorkflowV2Extraction['requests'][number];
@@ -2813,6 +2913,7 @@ function projectSourceCreateAllocations(input: {
   }
 
   const occupiedIds = new Set(input.request.body.allocations.map((allocation) => allocation.id));
+  const addedAllocations = input.request.body.allocations.length < roomCount;
   while (input.request.body.allocations.length < roomCount) {
     const index = input.request.body.allocations.length;
     let id = stableId(input.request.id, 'source_allocation', String(index));
@@ -2825,6 +2926,15 @@ function projectSourceCreateAllocations(input: {
       occupancy: { adults: null, childCount: null, childAges: null }, priceObservationRefs: [] });
   }
 
+  // Create projection already decided occupancy for the allocations it was given. Only rooms
+  // added here from the cited room count can newly line up one-to-one with the occupancy rows.
+  const occupancyByAllocation = addedAllocations ? occupancyRowsByAllocation({ extracted: input.extracted,
+    allocations: input.request.body.allocations, currentRefs: input.currentRefs }) : null;
+  if (occupancyByAllocation) {
+    input.request.body.allocations = input.request.body.allocations.map((allocation, index) =>
+      ({ ...allocation, occupancy: occupancyByAllocation[index]!.occupancy }));
+    return { allocations: input.request.body.allocations };
+  }
   const occupancy = input.extracted.occupancy.length === 1 ? input.extracted.occupancy[0] : undefined;
   if (!occupancy) return { allocations: input.request.body.allocations };
   const adults = currentClaim(occupancy.adults, input.currentRefs);
@@ -3615,7 +3725,10 @@ function projectCurrentExtraction(input: {
           [...new Set(mealClaims.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
     }
-    const sourceNotes = currentExtraction.requests.length === 1 ? operationalSourceNote(input) : [];
+    // A lone Create or lone Quote owns the email's operational notes even when the same
+    // email also carries requests of other kinds (for example a Cancel beside the Create).
+    const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
+      currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1 ? operationalSourceNote(input) : [];
     if (request.kind === 'create' || request.kind === 'quote') {
       const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
       const limit = request.kind === 'create' ? 2000 : 4000;
@@ -4346,6 +4459,8 @@ function projectCurrentExtraction(input: {
       request.body.dateSections.forEach((section) => { section.requestedTotals = { ...occupancyEmpty }; });
       const synthesizedAllocationOccupancy = request.body.allocations.some((allocation) =>
         allocation.occupancy.adults !== null || allocation.occupancy.childCount !== null || allocation.occupancy.childAges !== null);
+      const synthesizedOccupancyByAllocation = request.body.allocations.map((allocation) =>
+        ({ dateSectionId: allocation.dateSectionId, occupancy: allocation.occupancy }));
       request.body.allocations.forEach((allocation) => { allocation.occupancy = { ...occupancyEmpty }; });
       if (request.body.dateSections.length === 1) {
         const section = request.body.dateSections[0]!;
@@ -4396,6 +4511,11 @@ function projectCurrentExtraction(input: {
           request.body.allocations.every((allocation) => allocation.dateSectionId === section.id) &&
           dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
           datePairKey(section.arrival, section.departure) === currentDatePair);
+        // Several occupancy rows: one row per allocation, in source order, when the dates
+        // themselves mapped cleanly and a single stay's room count agrees with its allocations.
+        const occupancyByAllocation = exactPerRoomScope || dateLinks.unlinkedDates.length > 0 ||
+          section && typeof quantity === 'number' && quantity !== request.body.allocations.length ? null
+          : occupancyRowsByAllocation({ extracted, allocations: synthesizedOccupancyByAllocation, currentRefs });
         if (exactPerRoomScope) request.body.allocations.forEach((allocation, index) => {
           allocation.occupancy = { adults: occupancy.occupancy.adults, childCount: occupancy.occupancy.childCount,
             childAges: occupancy.occupancy.childAges };
@@ -4403,6 +4523,16 @@ function projectCurrentExtraction(input: {
             appendProjectedSource(proposal, `${bookingRoot}/allocations/${index}/occupancy/${field}`, sourceOccupancyRow?.[field], currentRefs);
           sourceOccupancyRow?.childAges?.filter(claim => currentClaim(claim, currentRefs)).forEach((claim, age) => {
             if (allocation.occupancy.childAges?.[age] != null)
+              appendProjectedSource(proposal, `${bookingRoot}/allocations/${index}/occupancy/childAges/${age}`, claim, currentRefs);
+          });
+        });
+        else if (occupancyByAllocation) request.body.allocations.forEach((allocation, index) => {
+          const { row, occupancy: rowOccupancy } = occupancyByAllocation[index]!;
+          allocation.occupancy = rowOccupancy;
+          for (const field of ['adults', 'childCount'] as const) if (rowOccupancy[field] !== null)
+            appendProjectedSource(proposal, `${bookingRoot}/allocations/${index}/occupancy/${field}`, row[field], currentRefs);
+          row.childAges?.filter(claim => currentClaim(claim, currentRefs)).forEach((claim, age) => {
+            if (rowOccupancy.childAges?.[age] != null)
               appendProjectedSource(proposal, `${bookingRoot}/allocations/${index}/occupancy/childAges/${age}`, claim, currentRefs);
           });
         });

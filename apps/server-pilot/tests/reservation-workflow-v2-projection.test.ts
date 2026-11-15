@@ -869,4 +869,85 @@ describe('reservation workflow host projection', () => {
       result.proposal.issues.some((issue) => issue.kind === 'quote_board_scope_ambiguous'),
     ).toBe(false);
   });
+
+  it('keeps general operational requests in a lone Create note beside a request of another kind', async () => {
+    const body = ['Good morning team,', '', 'Please cancel 123456-1.', 'Please book 2027-01-10 to 2027-01-12 instead.',
+      'He will be arriving late, around 22:30.', 'Please arrange a late check-out if possible.',
+      'A quiet room on the ground floor would be appreciated.', 'Twin beds please, and a cot for the baby.',
+      'They are celebrating their anniversary.', 'Hi Sam, please arrange an airport pick-up for flight SA123.',
+      'What is the rate for parking per night?', 'Non-smoking room.', 'Two interleading rooms if available.',
+      '', 'Kind regards,', 'Jane Booker', 'Shuttle and Transfer Desk'].join('\n');
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'create',
+      requestText: claim('Please book 2027-01-10 to 2027-01-12 instead.', 'Please book 2027-01-10 to 2027-01-12 instead.', ref),
+      dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }] },
+    { ...quoteFixture(ref), id: 'cancel_request', kind: 'cancel', requestText: claim('Please cancel 123456-1.', 'Please cancel 123456-1.', ref),
+      confirmationHints: [claim('123456-1', '123456-1', ref)] }], issues: [] }), ref => allocatedCreate(ref), body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'create');
+    if (request?.kind !== 'create') throw new Error('expected Create');
+    const note = request.body.shared.reservationNote;
+    if (typeof note !== 'string') throw new Error('expected a source note');
+    expect(note.split('\n')).toEqual(['He will be arriving late, around 22:30.', 'Please arrange a late check-out if possible.',
+      'A quiet room on the ground floor would be appreciated.', 'Twin beds please, and a cot for the baby.',
+      'They are celebrating their anniversary.', 'please arrange an airport pick-up for flight SA123.',
+      'Non-smoking room.', 'Two interleading rooms if available.']);
+    for (const clause of note.split('\n')) expect(body).toContain(clause);
+  }, 12_000);
+
+  it.each([
+    ['Cancel the entire reservation 123456-1.', 'cancel'],
+    ['Cancel the last night only for 123456-1.', 'amend'],
+    ['Do not cancel the last night only; cancel the entire reservation 123456-1.', 'cancel'],
+    ['Do not, under any circumstances, cancel the last night only; cancel the entire reservation 123456-1.', 'cancel'],
+    ['No dinner is required, cancel the last night for 123456-1.', 'amend'],
+    ['We are not able to travel on the 12th, please cancel the last night for 123456-1.', 'amend'],
+    ['Please do not go ahead and cancel the last night for 123456-1.', 'cancel'],
+    ['Please cancel the last night only for 123456-1. Do not cancel the entire reservation.', 'amend'],
+  ])('reads cancellation negation within its own clause: %s', async (text, kind) => {
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'cancel',
+      requestText: claim(text, text, ref), confirmationHints: [claim('123456-1', '123456-1', ref)] }], issues: [] }), undefined, text);
+    expect(result.proposal.content.requests.map(row => row.kind)).toEqual([kind]);
+  }, 12_000);
+
+  it.each([
+    ['3 double rooms with breakfast and 2 twin rooms room only.', ['bb', 'room_only'], false],
+    ['3 double rooms on bed and breakfast and 2 twin rooms without meals.', ['bb', 'room_only'], false],
+    ['all rooms accommodation only: 3 double rooms and 2 twin rooms.', ['room_only', 'room_only'], false],
+    ['3 double rooms bed and breakfast or room only and 2 twin rooms with breakfast.', [null, 'bb'], true],
+  ] as const)('binds room only to counted quote room clauses: %s', async (rooms, boards, ambiguous) => {
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref),
+      dates: [{ arrival: claim('14 November', '2026-11-14', ref), departure: claim('16 November', '2026-11-16', ref) }],
+      roomCount: claim('5 rooms', 5, ref),
+      roomTypeHints: [claim('3 double rooms', '3 double rooms', ref), claim('2 twin rooms', '2 twin rooms', ref)],
+      mealPlanHints: [claim('breakfast', 'bb', ref), claim('room only', 'room_only', ref)] }], issues: [] }), undefined,
+    `Please quote 14 November to 16 November for 5 rooms, ${rooms}`);
+    const request = result.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('expected quote');
+    expect(request.body.groups.map(group => [group.quantity, group.requestedMealPlan])).toEqual([[3, boards[0]], [2, boards[1]]]);
+    expect(result.proposal.issues.some(issue => issue.kind === 'quote_board_scope_ambiguous')).toBe(ambiguous);
+  }, 12_000);
+
+  it.each([
+    ['one per-room row per allocation', 'per_room', null, true],
+    ['rows that contradict synthesized occupancy', 'per_room', 3, false],
+    ['whole-group rows sharing one stay', 'whole_group', null, false],
+  ] as const)('maps Create occupancy rows to allocations only when exact: %s', async (_scenario, scope, synthesizedAdults, mapped) => {
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), kind: 'create',
+      requestText: claim('Please book two rooms', 'Please book two rooms', ref), roomCount: claim('two rooms', 2, ref),
+      dates: [{ arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref) }],
+      occupancy: [{ scope, adults: claim('2 adults', 2, ref) },
+        { scope, adults: claim('1 adult', 1, ref), childCount: claim('1 child', 1, ref), childAges: [claim('aged 5', 5, ref)] }] }], issues: [] }),
+    (ref) => {
+      const seed = allocatedCreate(ref);
+      const create = seed.proposal.content.requests[0]!.body;
+      create.allocations = [{ ...create.allocations[0]!, occupancy: { adults: synthesizedAdults, childCount: null, childAges: null } },
+        { ...create.allocations[0]!, id: 'allocation_2' }] as never;
+      return seed;
+    }, 'Please book two rooms 2027-01-10 to 2027-01-12. Room 1: 2 adults. Room 2: 1 adult and 1 child aged 5.');
+    const request = result.proposal.content.requests.find(row => row.kind === 'create');
+    if (request?.kind !== 'create') throw new Error('expected Create');
+    const empty = { adults: null, childCount: null, childAges: null };
+    expect(request.body.allocations.map(allocation => allocation.occupancy)).toEqual(mapped
+      ? [{ adults: 2, childCount: null, childAges: null }, { adults: 1, childCount: 1, childAges: [5] }] : [empty, empty]);
+    expect(result.proposal.issues.some(issue => issue.kind === 'create_occupancy_scope_ambiguous')).toBe(!mapped);
+  }, 12_000);
 });
