@@ -553,15 +553,17 @@ describe('HMS runtime', () => {
     expect(searchPosts.some((r) => r.body.includes('NOTFOUND-CANARY'))).toBe(true);
   });
 
-  it.each(['audited_write', 'write_capable'] as const)('view-only runtime rejects %s credentials', async (credentialMode) => {
+  it('credential mode mismatch rejects non-view_only', async () => {
     const server = await startHmsFixtureServer();
     cleanup.push(server.close);
-    const { runtime } = await boot(server, {
-      secret: { credentialMode },
-    });
-    await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toMatchObject({
-      code: 'credential_mode',
-    });
+    for (const credentialMode of ['audited_write', 'write_capable'] as const) {
+      const { runtime } = await boot(server, {
+        secret: { credentialMode },
+      });
+      await expect(runtime.start(AbortSignal.timeout(5_000))).rejects.toMatchObject({
+        code: 'credential_mode',
+      });
+    }
   });
 
   it('transport mismatch rejects wrong mailbox id', async () => {

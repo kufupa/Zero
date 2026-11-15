@@ -135,10 +135,16 @@ describe('read-only HMS property registry', () => {
     ).toEqual({ source: 'file', path: '/private/centurion.json', property: null });
   });
 
-  it.each(['view_only', 'audited_write', 'write_capable'] as const)(
-    'accepts a Centurion shared secret in %s mode without relaxing its identity',
-    (credentialMode) => {
-      const centurion = getHmsPropertyRegistration('transport-centurion');
+  it('rejects a Da Vinci secret bound to the Centurion property code', () => {
+    const davinci = getHmsPropertyRegistration('transport-davinci');
+    expect(() =>
+      validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, expectedPropertyCode: 'HRCEN' }),
+    ).toThrow('hms_property_credential_mismatch');
+  });
+
+  it('fails closed for unknown transports, conflicting secret sources, or an invalid credential mode', () => {
+    const centurion = getHmsPropertyRegistration('transport-centurion');
+    for (const credentialMode of ['view_only', 'audited_write', 'write_capable'] as const) {
       const secret = {
         ...DAVINCI_SECRET,
         expectedTenant: 'THECENTURION_PRD',
@@ -153,17 +159,7 @@ describe('read-only HMS property registry', () => {
         .toThrow('hms_property_credential_mismatch');
       expect(() => validateHmsPropertySecret(centurion, { ...secret, expectedTenant: 'DAVINCI_PRD' }))
         .toThrow('hms_property_credential_mismatch');
-    },
-  );
-
-  it('rejects a Da Vinci secret bound to the Centurion property code', () => {
-    const davinci = getHmsPropertyRegistration('transport-davinci');
-    expect(() =>
-      validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, expectedPropertyCode: 'HRCEN' }),
-    ).toThrow('hms_property_credential_mismatch');
-  });
-
-  it('fails closed for unknown transports, conflicting secret sources, or an invalid credential mode', () => {
+    }
     expect(() => getHmsPropertyRegistration('transport-unknown')).toThrow('hms_property_unknown');
     expect(() =>
       resolveSecretSource({
