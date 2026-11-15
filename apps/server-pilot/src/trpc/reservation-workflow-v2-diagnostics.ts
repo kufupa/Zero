@@ -196,7 +196,7 @@ export async function logReservationWorkflowFailure(input: {
   // The draft's earlier arrival checks and errors are not this call's failure.
   const nestedOutcomes = [...(Array.isArray(response?.lookups) ? response.lookups.map(failure) : []),
     ...(Array.isArray(response?.quotes) ? response.quotes.map(failure) : []), ...serviceObservations, ...serviceOutcomes]
-    .filter((row) => row !== undefined && row.status !== 'excluded').slice(0, 32);
+    .filter((row) => row !== undefined).filter((row) => row.status !== 'excluded').slice(0, 32);
   if (input.db) {
     try {
       await recordPrepareFailure(input.db(), { action: input.path.slice(input.path.lastIndexOf('.') + 1), raw,
