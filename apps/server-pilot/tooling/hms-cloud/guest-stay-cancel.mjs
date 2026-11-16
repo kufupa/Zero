@@ -232,7 +232,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     httpStatus: response?.status() || null, nativeDialog,
     chargeApproved: preChargeStarted, chargeDispatched: false,
     penaltyText: dialog?.message ?? preChargeText ?? seenChargeText, blockedRequests: [...blocked] }),
-    onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK' }),
+    onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK', timing: 'before_save' }),
   });
   const work = (async () => { try {
     const policyPath = `/api/booking/${encodeURIComponent(expected.propertyCode)}/cancelPolicy/${encodeURIComponent(expected.confirmation)}`;
@@ -333,7 +333,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
             await chargeTargetIsCurrent(frame, expected)) {
           const label = (await button.innerText()).trim();
           preChargeText = text;
-          const approved = await awaitChargeApproval({ text, button: label });
+          const approved = await awaitChargeApproval({ text, button: label, timing: 'before_save' });
           action.check();
           if (approved === true && continuationAllowed() === true && await charge.count() === 1 &&
               (await charge.innerText()).trim() === text && await button.count() === 1 &&
@@ -491,7 +491,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
         ? (!armed || !preparedSnapshot || typeof prepareChargeWithAuthority !== 'function')
         : typeof dispatchChargeWithAuthority !== 'function')) return false;
       chargeText = dialog.message;
-      if (await awaitChargeApproval({ text: dialog.message, button: 'OK' }) !== true ||
+      if (await awaitChargeApproval({ text: dialog.message, button: 'OK', timing: beforeSave ? 'before_save' : 'after_save' }) !== true ||
           action.isStopped() || continuationAllowed() !== true) return false;
       if (beforeSave) {
         if (dispatched || !armed || !preparedSnapshot || !fence || fence.isQuarantined()) return false;
@@ -706,7 +706,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       const label = (await ok.innerText()).trim();
       if (reasonText.length > 2000 || typeof awaitChargeApproval !== 'function' ||
           typeof prepareChargeWithAuthority !== 'function' || !await chargeTargetIsCurrent(frame, expected) ||
-          await awaitChargeApproval({ text: reasonText, button: label }) !== true || continuationAllowed() !== true) {
+          await awaitChargeApproval({ text: reasonText, button: label, timing: 'before_save' }) !== true || continuationAllowed() !== true) {
         throw new Error('CANCEL_CHARGE_NOT_APPROVED');
       }
       action.check();
@@ -803,7 +803,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
             await chargeTargetIsCurrent(frame, expected)) {
           const label = (await button.innerText()).trim();
           chargeText = text;
-          const approved = await awaitChargeApproval({ text, button: label });
+          const approved = await awaitChargeApproval({ text, button: label, timing: 'after_save' });
           action.check();
           if (approved === true && continuationAllowed() === true && await charge.count() === 1 &&
               (await charge.innerText()).trim() === text && await button.count() === 1 &&

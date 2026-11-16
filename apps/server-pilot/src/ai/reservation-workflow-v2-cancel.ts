@@ -150,6 +150,7 @@ const chargeDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const cancelChargeSchema = z.object({ version: z.literal(1), id: z.string().uuid(), runId: z.string().uuid(),
   dialogDigest: chargeDigestSchema, text: z.string().trim().min(1).max(2000),
   button: z.string().trim().min(1).max(40), timing: z.enum(['before_save', 'after_save']),
+  matchesReviewed: z.boolean(),
   confirmation: z.string().regex(/^\d+-\d+$/), nativeStayId: z.string().regex(/^\d{1,100}$/),
   propertyCode: z.enum(['HRCEN', 'HRDAV', 'HRDAVS']), requestId: z.string().min(1).max(80),
   hintId: z.string().min(1).max(80), approvalDigest: chargeDigestSchema, grantId: z.string().uuid(),
@@ -1258,7 +1259,7 @@ function reviewRequestFor(previewRefs: string[], reviewPath: string, item: Reser
     reviewFieldPath: `${reviewPath}/${index}`, reviewNote: reviewNote(item.ref, approval), issue: note };
 }
 
-/** Recheck one reviewed cancellation; a native fee prompt is accepted only when it matches that reviewed preview. */
+/** Recheck one reviewed cancellation; any native fee prompt becomes its own staff challenge, matched or not. */
 /** Only the cancellation preview accepted by staff can become a durable Go receipt. */
 export async function reservationWorkflowV2CancelPreparation(ctx: ReservationWorkflowV2CancelContext,
   input: ReservationWorkflowV2PrepareInput) {
@@ -1476,13 +1477,19 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           awaitChargeApproval: async (dialog: { text: string; button: string; timing?: string }) => {
             const dialogText = typeof dialog?.text === 'string' ? penaltyLine(dialog.text) as string : '';
             const button = typeof dialog?.button === 'string' ? dialog.button.trim() : '';
+            const timing = dialog?.timing === 'after_save' ? 'after_save' as const : 'before_save' as const;
             const fence = ctx.writeRunFence;
-            if (!fresh.penaltyText || dialogText !== fresh.penaltyText || !/^(?:OK|Yes|Accept)$/i.test(button) ||
+            // The challenge itself carries the exact dialog observed now, not the reviewed preview
+            // text: a fee newly revealed before or after Save must still reach staff under this hold.
+            // An after-Save charge additionally requires the claimed Save dispatch. Reject only when
+            // the dialog, the live lease or the native charge identity cannot be verified.
+            if (!dialogText || dialogText.length > 2000 || /[\p{Cc}]/u.test(dialogText) ||
+                !/^(?:OK|Yes|Accept)$/i.test(button) || (timing === 'after_save' && !handle) ||
                 !fence || !continuationAllowed()) return false;
             const expiresAt = Math.min(Date.now() + 3 * 60_000, fence.deadlineAt.getTime() - 60_000);
             if (expiresAt <= Date.now() + 15_000) return false;
             const body = { version: 1 as const, id: randomUUID(), runId: fence.runId, text: dialogText, button,
-              timing: dialog?.timing === 'after_save' ? 'after_save' as const : 'before_save' as const,
+              timing, matchesReviewed: dialogText === fresh.penaltyText,
               confirmation: fresh.preimage.confirmation, nativeStayId: fresh.preimage.nativeStayId,
               propertyCode: expectedTarget.propertyCode, requestId: compiled.requestId, hintId: compiled.hintId,
               approvalDigest: approval, grantId: input.idempotencyKey, sourceDigest: input.source.sourceHash,
@@ -1538,7 +1545,9 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           },
           prepareChargeWithAuthority: async (beforePath: string) => {
             const approved = chargeApproval;
-            if (!approved || approved.text !== fresh.penaltyText || !continuationAllowed()) {
+            // Pre-Save charge authority is bound to a consumed before_save challenge, whatever its
+            // relation to the reviewed preview: the approved dialog text is the authority, not the preview.
+            if (!approved || approved.timing !== 'before_save' || !continuationAllowed()) {
               throw new Error('cancel_fee_review_binding_missing');
             }
             const chargeApprovalDigest = sha256({ action: 'cancel_charge_dialog', approval, penaltyText: approved.text,
@@ -1557,7 +1566,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           // challenge's own exact request-bound authority, never under the cancellation Save's.
           dispatchChargeWithAuthority: async (send: () => Promise<unknown>, requestDigest: string) => {
             const approved = chargeApproval;
-            if (!approved || !handle || !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
+            if (!approved || approved.timing !== 'after_save' || !handle ||
+                !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
                 !continuationAllowed()) throw new Error('cancel_charge_authority_unavailable');
             const fence = ctx.writeRunFence!;
             await chargeRun(async (tx, metrics) => {
@@ -1928,7 +1938,8 @@ export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflow
     : charge.status === 'declined' ? 'declined' as const
     : charge.status === 'expired' ? 'expired' as const : 'submitted' as const;
   return { status, challengeId: charge.id, dialogDigest: charge.dialogDigest, penaltyText: charge.text,
-    button: charge.button, timing: charge.timing, expiresAt: new Date(charge.expiresAt).toISOString() };
+    button: charge.button, timing: charge.timing, matchesReviewed: charge.matchesReviewed,
+    expiresAt: new Date(charge.expiresAt).toISOString() };
 }
 
 /** The staff fee Go: records accept/decline once; the writer re-checks the exact dialog before acting. */
