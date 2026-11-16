@@ -25,6 +25,9 @@ export function SelectedEmailBlock({ activeEmail }: { activeEmail: PaneBridge['a
     <section
       id="quote-selected-message"
       aria-label="Selected email"
+      data-nava-entry-id={activeEmail.entryId}
+      data-nava-store-id={activeEmail.storeId}
+      data-nava-internet-message-id={activeEmail.internetMessageId}
       className="mx-3 mt-2 flex shrink-0 items-start gap-2 rounded-[4px] border border-[#e2e8f0] bg-white px-2.5 py-2"
     >
       <Mail className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#64748b]" />
