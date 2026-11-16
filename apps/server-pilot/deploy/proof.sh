@@ -13,6 +13,8 @@
 # Other follow-ups only target the stay this harness created. Each prepares unsaved, saves once,
 # and reads back in a fresh session. Cancel may run early for cleanup.
 # The create request may include proof.addons: [{code, quantity, ...native item fields}].
+# The create request may instead include proof.amend: {arrival?, departure?, roomType, adults};
+# the amend stage then reprices and saves that combined dates/room/adults change instead of contact.
 # Add-On dates use the owned stay's arrival; native preview supplies the explicitly approved price, checked for drift.
 #
 # The stages run on the box through ssm-run-command.sh (tooling/hms-cloud/labtest-proof.mjs).

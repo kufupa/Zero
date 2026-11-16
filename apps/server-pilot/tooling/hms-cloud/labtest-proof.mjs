@@ -264,7 +264,10 @@ async function main() {
     quantity: z.union([text(30), z.number().positive()]),
     unitPrice: z.union([text(30), z.number().nonnegative()]).optional(),
     frequency: text(100).optional(), pricingControl: text(100).optional(), folio: text(100).optional(),
-    comment: z.string().max(200).optional() }).strict()).length(1).optional() }).strict().parse(proof);
+    comment: z.string().max(200).optional() }).strict()).length(1).optional(),
+    amend: z.object({ arrival: date.optional(), departure: date.optional(), roomType: code,
+      adults: z.number().int().min(1).max(16) }).strict().refine(value =>
+        value.arrival !== undefined || value.departure !== undefined).optional() }).strict().parse(proof);
   const parsed = requestSchema.safeParse(createInput);
   assert(parsed.success, 'REQUEST_INVALID');
   const request = parsed.data;
