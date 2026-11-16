@@ -14,7 +14,7 @@
 import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { parseArgs } from 'node:util';
+import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { and, asc, gte, inArray, or, sql } from 'drizzle-orm';
 import { createDb } from '../src/db/client.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
@@ -147,7 +147,11 @@ function scopeOf(draft: Draft, path: string): { workflow: string; requestId: str
   }
   if (collection === 'services') {
     const service = draft.proposal.content.services.find((row) => row.id === rowId);
-    return { workflow: 'addons', requestId: service?.ownerRequestId ?? rowId };
+    const targetIndex = /\/targets\/(\d+)(?:\/|$)/u.exec(path)?.[1];
+    const targets = service?.targets.filter((_, index) => targetIndex === undefined || index === Number(targetIndex)) ?? [];
+    const requests = [...new Set(targets.map((row) => row.target.requestId))];
+    return { workflow: 'addons', requestId: targetIndex !== undefined ? requests[0] ?? null
+      : service?.ownerRequestId ?? (requests.length === 1 ? requests[0]! : null) };
   }
   if (collection === 'documents') {
     const document = draft.proposal.content.documents.find((row) => row.id === rowId);
@@ -201,6 +205,12 @@ function paneAtRevision(draft: Draft, events: TraceEvent[], operation: Draft['op
   return next.length === 1 ? pane(evidence(next[0]!)!.previousPaneState) : null;
 }
 
+function eventValueAt(event: TraceEvent, stateKey: 'previousPaneState' | 'paneState', path: string): unknown {
+  const pane = object(object(object(event.evidence)?.[stateKey])?.[KEY]);
+  return pane?.proposal ? effectiveValueAt({ proposal: pane.proposal,
+    fieldOverrides: (object(pane.fieldOverrides) ?? {}) as Overrides }, path) : undefined;
+}
+
 export function fieldTraceRows(input: {
   item: { id: string; threadId: string | null; sourceMessageId: string | null; transportId: string; createdAt: Date };
   draft: Draft; events: TraceEvent[]; users: Map<string, string>;
@@ -241,8 +251,12 @@ export function fieldTraceRows(input: {
   const rows: Record<string, unknown>[] = [];
   for (const path of [...paths].sort()) {
     const scope = scopeOf(draft, path);
-    const mine = (eventPath: string | null) => Boolean(eventPath && rowPath(eventPath.slice(PREFIX.length)) === path);
-    const own = fieldEvents.filter((event) => mine(event.fieldPath));
+    const own = fieldEvents.filter((event) => {
+      const eventPath = rowPath(event.fieldPath!.slice(PREFIX.length));
+      return eventPath === path || event.type !== 'field.accept' && path.startsWith(`${eventPath}/`) &&
+        !isDeepStrictEqual(comparable(eventValueAt(event, 'previousPaneState', path)),
+          comparable(eventValueAt(event, 'paneState', path)));
+    });
     const edits = own.filter((event) => event.type !== 'field.accept');
     const ticks = own.filter((event) => event.type === 'field.accept');
     const firstTraced = own.find((event) => object(object(event.evidence)?.trace));
@@ -267,8 +281,15 @@ export function fieldTraceRows(input: {
     const targetId = request?.kind === 'create' && allocation ? request.body.allocations[Number(allocation)]?.id
       : request?.kind === 'amend' && perTarget ? request.body.perTarget[Number(perTarget)]?.hintId : null;
     const sectionId = request?.kind === 'create' && section ? request.body.dateSections[Number(section)]?.id : null;
+    const service = path.startsWith('/proposal/content/services/')
+      ? draft.proposal.content.services.find((row) => row.id === decode(path.split('/')[4] ?? '')) : null;
+    const serviceTargetIndex = /\/targets\/(\d+)(?:\/|$)/u.exec(path)?.[1];
+    const serviceTargets = service?.targets.filter((_, index) => serviceTargetIndex === undefined || index === Number(serviceTargetIndex)) ?? [];
     const relatedOperations = operations.filter((row) => row.workflow === (scope.workflow === 'addons' ? 'services' : scope.workflow) &&
-      row.requestId === scope.requestId &&
+      (service ? draft.observations.some((observation) => row.observationRefs.includes(observation.ref) &&
+        observation.criteria.workflow === 'services' && observation.criteria.serviceId === service.id &&
+        serviceTargets.some((target) => isDeepStrictEqual(target.target, observation.criteria.targetRef)))
+        : row.requestId === scope.requestId) &&
       (!targetId || row.allocationId === targetId) && (!sectionId || request?.kind === 'create' &&
         request.body.allocations.some((item) => item.id === row.allocationId && item.dateSectionId === sectionId)));
     const op = relatedOperations.at(-1);
@@ -295,14 +316,9 @@ export function fieldTraceRows(input: {
         first_edit_at: edits[0]?.at.toISOString() ?? null, last_edit_at: edits.at(-1)?.at.toISOString() ?? null,
         edited_by: [...new Set(edits.map((event) => who(event.actorUserId)).filter(Boolean))],
         edited_value: overridden ? final ?? null : null,
-        edits: edits.map((event) => {
-          const evidence = object(event.evidence), before = object(object(evidence?.previousPaneState)?.[KEY]),
-            after = object(object(evidence?.paneState)?.[KEY]);
-          const state = (pane: Record<string, unknown> | null) => pane?.proposal
-            ? effectiveValueAt({ proposal: pane.proposal, fieldOverrides: (object(pane.fieldOverrides) ?? {}) as Overrides }, path) ?? null : null;
-          return { event_id: event.id, field_path: event.fieldPath?.slice(PREFIX.length), at: event.at.toISOString(),
-            by: who(event.actorUserId), value: event.value, before: state(before), after: state(after) };
-        }),
+        edits: edits.map((event) => ({ event_id: event.id, field_path: event.fieldPath?.slice(PREFIX.length), at: event.at.toISOString(),
+          by: who(event.actorUserId), value: event.value, before: eventValueAt(event, 'previousPaneState', path) ?? null,
+          after: eventValueAt(event, 'paneState', path) ?? null })),
       },
       final_value: final ?? null,
       outcome: !changed ? (accepted || ticks.length ? 'accepted' : 'unchanged') : prefillComparable === null ? 'filled_by_staff' : 'changed',
@@ -346,7 +362,7 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
   let items = 0, skipped = 0;
   try {
     await db.transaction(async (tx) => {
-      await tx.execute(sql`set transaction read only`);
+      await tx.execute(sql`set transaction isolation level repeatable read, read only`);
       const filters = [sql`(${workItem.state} -> ${KEY}) is not null`];
       if (since) filters.push(gte(workItem.updatedAt, since));
       if (values['work-item']) filters.push(sql`${workItem.id} = ${values['work-item']}::uuid`);
