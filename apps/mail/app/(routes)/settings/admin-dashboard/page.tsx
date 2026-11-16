@@ -35,12 +35,23 @@ import {
   Search,
   ShieldCheck,
 } from 'lucide-react';
+import {
+  previousScopeBeforeSwitch,
+  runAccountSwitchCacheCleanup,
+} from '@/lib/mail/account-switch-cache';
+import { getMailCacheScope, setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useConnections } from '@/hooks/use-connections';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useTRPC } from '@/providers/query-provider';
 import { useRetroRoi } from '@/hooks/use-retro-roi';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
-import { Link } from 'react-router';
+import { useNavigate } from 'react-router';
+import { del } from 'idb-keyval';
+import { toast } from 'sonner';
 
 const panel = 'rounded-2xl border border-border bg-background';
 const disclosure =
@@ -287,6 +298,69 @@ function EvidenceGroup({ title, evidence }: { title: string; evidence: RetroTask
   );
 }
 
+function SourceEmailAction({ to }: { to: string }) {
+  const { data, isLoading } = useConnections();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [opening, setOpening] = useState(false);
+  const { mutateAsync: setDefaultConnection } = useMutation(
+    trpc.connections.setDefault.mutationOptions({ meta: { noGlobalError: true } }),
+  );
+  const openEmail = async () => {
+    if (opening || isFrontendOnlyDemo()) return;
+    const centurion = data?.connections.find(
+      (connection) =>
+        connection.id === 'transport-centurion' ||
+        connection.email.toLowerCase() === 'centurion@legacyhotels.co.za',
+    );
+    if (!centurion) {
+      toast.error('Centurion mailbox access is unavailable for this account.');
+      return;
+    }
+    setOpening(true);
+    try {
+      const previousScope = previousScopeBeforeSwitch({
+        current: getMailCacheScope(),
+        nextTransportId: centurion.id,
+      });
+      if (previousScope.activeTransportId !== centurion.id) {
+        await setDefaultConnection({ connectionId: centurion.id });
+        if (getMailCacheScope().userId !== previousScope.userId) return;
+        setMailCacheScope({ userId: previousScope.userId, activeTransportId: centurion.id });
+        await runAccountSwitchCacheCleanup({ previousScope, queryClient, deleteIdbKey: del });
+        const currentScope = getMailCacheScope();
+        if (
+          currentScope.userId !== previousScope.userId ||
+          currentScope.activeTransportId !== centurion.id
+        )
+          return;
+        queryClient.setQueryData(trpc.connections.getDefault.queryKey(), centurion);
+      }
+      if (getMailCacheScope().activeTransportId !== centurion.id) return;
+      void navigate(to);
+    } catch {
+      toast.error('Could not open the Centurion mailbox. Please try again.');
+    } finally {
+      setOpening(false);
+    }
+  };
+  return (
+    <Button
+      variant="link"
+      className="min-h-[44px] px-0 text-xs"
+      disabled={isLoading || opening}
+      isLoading={opening}
+      loadingText="Opening Centurion…"
+      onClick={() => {
+        void openEmail();
+      }}
+    >
+      Open email <ArrowUpRight className="size-3" aria-hidden="true" />
+    </Button>
+  );
+}
+
 function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assumptions }) {
   const [expanded, setExpanded] = useState(false);
   const credit = taskCredit(task, assumptions);
@@ -396,15 +470,17 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
                       <p className="text-muted-foreground mt-1 break-words text-xs">
                         {source.from} · {formatReportDate(source.receivedAt)} SAST
                       </p>
+                      {source.timestampBasis && source.timestampBasis !== 'received_at' ? (
+                        <p className="text-muted-foreground mt-1 text-xs">
+                          {source.timestampBasis === 'sent_at_confirmed_outbound'
+                            ? 'Hotel sent timestamp.'
+                            : source.timestampBasis === 'sent_at_fallback'
+                              ? 'Sent timestamp; receipt time was not retained.'
+                              : 'Storage timestamp; the original receipt time is unknown.'}
+                        </p>
+                      ) : null}
                     </div>
-                    {link ? (
-                      <Link
-                        className="text-primary flex min-h-[44px] items-center gap-1 text-xs underline-offset-4 hover:underline focus-visible:outline-2"
-                        to={link}
-                      >
-                        Open email <ArrowUpRight className="size-3" aria-hidden="true" />
-                      </Link>
-                    ) : null}
+                    {link ? <SourceEmailAction to={link} /> : null}
                   </div>
                   <blockquote className="text-muted-foreground mt-3 whitespace-pre-wrap break-words border-l-2 pl-3 text-sm">
                     {source.quote || 'No source excerpt retained.'}
@@ -438,7 +514,10 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
                   {task.replay.replayId}
                 </p>
                 {task.replay.checks.map((check) => (
-                  <div key={`${check.requirement}:${check.evidenceIds.join('|')}`} className="rounded-lg border p-3 text-sm">
+                  <div
+                    key={`${check.requirement}:${check.evidenceIds.join('|')}`}
+                    className="rounded-lg border p-3 text-sm"
+                  >
                     <p className="font-medium">
                       {check.requirement}{' '}
                       <span className="text-muted-foreground font-normal">· {check.status}</span>

@@ -14,6 +14,7 @@ const sourceSchema = z.object({
   subject: text,
   from: z.string(),
   receivedAt: instant,
+  timestampBasis: z.enum(['received_at', 'sent_at_confirmed_outbound', 'sent_at_fallback', 'created_at', 'missing']).optional(),
   quote: text,
   duplicateMessageIds: z.array(z.string()).default([]),
 });
@@ -117,6 +118,9 @@ export const retroReportSchema = z.object({
     if (task.replay.status === 'replayed' && task.replay.checks.some(check =>
       check.evidenceIds.some(id => !evidenceIds.has(id)))) issue('Missing check evidence');
     if (task.outcome === 'correct_complete') {
+      if (!task.sources.some(source => Date.parse(source.receivedAt) === at && source.timestampBasis === 'received_at')) {
+        issue('Correct complete requires a known request receipt timestamp');
+      }
       if (task.replay.status !== 'replayed' || task.replay.nativeEvidence !== 'complete' ||
           task.replay.checks.length === 0 || task.replay.checks.some(check => check.status !== 'matched') ||
           task.remainingWork.length > 0 || !task.evidence.some(e => e.kind === 'preparation') ||
@@ -132,13 +136,13 @@ export type RetroReportResponse =
   | { status: 'unavailable'; reason: 'not_available' | 'invalid_report' };
 
 const DEFAULT_REPORT_PATH = '/home/ubuntu/.local/share/zero/centurion-retro-roi/report.json';
-const MAX_REPORT_BYTES = 32 * 1024 * 1024;
+export const RETRO_ROI_MAX_REPORT_BYTES = 32 * 1024 * 1024;
 
 export async function loadCenturionRetroRoiReport(): Promise<RetroReportResponse> {
   const reportPath = process.env.CENTURION_RETRO_ROI_REPORT_PATH || DEFAULT_REPORT_PATH;
   try {
     const info = await stat(reportPath);
-    if (!info.isFile() || info.size > MAX_REPORT_BYTES) return { status: 'unavailable', reason: 'invalid_report' };
+    if (!info.isFile() || info.size > RETRO_ROI_MAX_REPORT_BYTES) return { status: 'unavailable', reason: 'invalid_report' };
     const parsed = retroReportSchema.safeParse(JSON.parse(await readFile(reportPath, 'utf8')));
     return parsed.success
       ? { status: 'ready', report: parsed.data }

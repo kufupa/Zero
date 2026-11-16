@@ -8,7 +8,7 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ModelAdapter, ModelInvokeResult } from '../src/ai/bedrock/adapter.js';
 import { reservationWorkflowV2ExtractionSchema, reservationWorkflowV2ProposalSchema, reservationWorkflowV2ObservationSchema } from '../src/ai/reservation-workflow-v2-contract.js';
 import type { SyncedQuoteAttachment, SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
-import { RETRO_WORKFLOWS, retroReportSchema, retroTaskSchema, type RetroTask } from '../src/metrics/centurion-retro-roi.js';
+import { RETRO_WORKFLOWS, RETRO_ROI_MAX_REPORT_BYTES, retroReportSchema, retroTaskSchema, type RetroTask } from '../src/metrics/centurion-retro-roi.js';
 
 const VERSION = 'centurion-retro-roi-runner/1';
 const START = '2026-10-17T04:17:49Z', END = '2026-11-16T04:17:49Z';
@@ -21,7 +21,7 @@ const attachment = z.object({ id: z.string(), messageId: z.string(), filename: z
   byteSize: z.number(), inline: z.union([z.boolean(), z.string()]).optional(),
   textArtifact: z.object({ status: z.string(), artifact: artifact.nullable() }).nullable(),
   bytesArtifact: z.object({ status: z.string(), artifact: artifact.nullable() }).nullable().optional() });
-const rowSchema = z.object({ sourceRowId: z.string().min(1), receivedAt: z.string(), threadId: z.string().nullable(),
+const rowSchema = z.object({ sourceRowId: z.string().min(1), receivedAt: z.string(), timestampBasis: z.enum(['received_at', 'sent_at_confirmed_outbound', 'sent_at_fallback', 'created_at', 'missing']).default('received_at'), threadId: z.string().nullable(),
   messageId: z.string().nullable(), body: z.string(), privateMessage: z.object({ subject: z.string(), direction: z.enum(['inbound', 'outbound']),
     sentAt: z.string().nullable(), addresses: z.object({ from: z.array(z.string()), to: z.array(z.string()), cc: z.array(z.string()), bcc: z.array(z.string()) }),
     sourceMetadata: z.object({ transportId: z.literal('transport-centurion') }), attachments: z.array(attachment) }) });
@@ -134,7 +134,7 @@ function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, ac
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
-    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--concurrency 2] [--limit N] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
+    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--concurrency 2] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
       sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 2 }, model: 'gpt-6-luna via approved Azure extraction adapter', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
@@ -164,7 +164,7 @@ async function main(): Promise<void> {
     for (const mail of messages) { const key = sourceIdentity(mail.messageId, mail.businessDirection, mail.from, mail.subject, mail.id); grouped.set(key, [...(grouped.get(key) ?? []), mail]); }
     for (const [key, copies] of grouped) {
       const first = copies[0]; if (!first) continue;
-      const rows = copies.filter(mail => mail.businessDirection !== 'unknown').map(mail => ({ sourceRowId: mail.id, receivedAt: mail.receivedAt ?? '', threadId: mail.threadId, messageId: mail.messageId,
+      const rows = copies.filter(mail => mail.businessDirection !== 'unknown').map(mail => ({ sourceRowId: mail.id, receivedAt: mail.eventAt ?? '', timestampBasis: mail.eventAtSource, threadId: mail.threadId, messageId: mail.messageId,
         body: mail.textBody.trim() ? mail.textBody : mail.htmlBody, privateMessage: { subject: mail.subject, direction: mail.businessDirection === 'outbound' ? 'outbound' : 'inbound', sentAt: mail.sentAt,
           addresses: { from: mail.from, to: mail.to, cc: mail.cc, bcc: mail.bcc }, sourceMetadata: { transportId: 'transport-centurion' }, attachments: mail.attachmentDescriptors.map(item => ({ ...item, textArtifact: null })) } }));
       if (!rows.length) continue;
@@ -198,10 +198,19 @@ async function main(): Promise<void> {
   mails.sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt));
   const population = mails.filter(mail => Date.parse(mail.receivedAt) >= Date.parse(start) && Date.parse(mail.receivedAt) < Date.parse(end));
   const inbound = population.filter(mail => mail.privateMessage.direction === 'inbound');
-  const selectedInbound = inbound.slice(0, limit), allowedIds = new Set(selectedInbound.map(mail => mail.sourceRowId));
+  const selectors = process.argv.includes('--message-id') ? option('--message-id').split(',').map(id => id.trim()).filter(Boolean) : [];
+  const selectedIds = new Set<string>();
+  for (const id of selectors) {
+    const source = inbound.find(mail => mail.sourceRowId === id || mail.duplicates.includes(id));
+    if (!source) throw new Error(`Requested message ID is not an in-window canonical inbound source: ${id}`);
+    selectedIds.add(source.sourceRowId);
+  }
+  const selectedInbound = (selectors.length ? inbound.filter(mail => selectedIds.has(mail.sourceRowId)) : inbound).slice(0, limit), allowedIds = new Set(selectedInbound.map(mail => mail.sourceRowId));
+  const classifierEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--classifier-effort', 'medium'));
+  const classifierOutputTokens = z.coerce.number().int().min(1000).max(32000).parse(option('--classifier-output-tokens', '16000'));
   const productSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const codeDelta = execFileSync('git', ['-C', repo, 'diff', 'HEAD', '--', 'apps/server-pilot/src/ai', 'apps/server-pilot/tooling', 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'], { encoding: 'utf8' });
-  const fingerprint = hash(JSON.stringify({ version: VERSION, productSha, code: hash(codeDelta), runner: hash(await readFile(fileURLToPath(import.meta.url))), source: hash(corpusBytes), manifest: hash(manifestBytes), start, end, classifyOnly: process.argv.includes('--classify-only'), nativeIndex: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, prompts: hash(CLASSIFY + ASSESS), model: 'gpt-6-luna', reasoningEffort: process.env.EXTRACTION_REASONING_EFFORT ?? 'max', contract: hash(await readFile(join(repo, 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'))), classifyBatch: option('--classify-batch', '12') }));
+  const fingerprint = hash(JSON.stringify({ version: VERSION, productSha, code: hash(codeDelta), runner: hash(await readFile(fileURLToPath(import.meta.url))), source: hash(corpusBytes), manifest: hash(manifestBytes), start, end, classifyOnly: process.argv.includes('--classify-only'), nativeIndex: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, prompts: hash(CLASSIFY + ASSESS), model: 'gpt-6-luna', classifierEffort, classifierOutputTokens, reasoningEffort: process.env.EXTRACTION_REASONING_EFFORT ?? 'max', contract: hash(await readFile(join(repo, 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'))), classifyBatch: option('--classify-batch', '12') }));
   const memory = await mkdtemp(join(dirname(out), 'retro-empty-memory-')); await chmod(memory, 0o700);
   const env: NodeJS.ProcessEnv = { AZURE_OPENAI_BASE_URL: process.env.AZURE_OPENAI_BASE_URL, AZURE_FOUNDRY_API_KEY: process.env.AZURE_FOUNDRY_API_KEY,
     EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT, HMS_MEMORY_DATA_DIR: memory,
@@ -213,7 +222,7 @@ async function main(): Promise<void> {
   const rawAdapter = createAzureExtractionAdapter(env);
   if (process.argv.includes('--preflight')) { info({ mode: 'preflight', sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, fingerprint,
     sourceThrough: sourceThrough, sourceCoversWindow: Date.parse(sourceThrough) >= Date.parse(end), providerCoverageProven: sourceComplete, sourceScope, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0),
-    canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
+    canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, selectedMessageIds: selectors.length ? selectedInbound.map(mail => mail.sourceRowId) : undefined, classifierEffort, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
   if (!rawAdapter) throw new Error('APPROVED_MODEL_ADAPTER_UNAVAILABLE');
   const { runReservationWorkflowV2Prefill } = await import('../src/ai/reservation-workflow-v2-prefill.js');
   const { staffQuoteSourceHash } = await import('../src/ai/staff-quote-workflow.js');
@@ -240,14 +249,18 @@ async function main(): Promise<void> {
     }
     await chmod(checkpointPath, 0o600);
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
-  const adapter: ModelAdapter = { ...(rawAdapter.reserveCalls ? { reserveCalls: rawAdapter.reserveCalls.bind(rawAdapter) } : {}), async invoke(input) {
+  const trackedAdapter = (model: ModelAdapter, purpose: string): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
     const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
-    const key = hash(JSON.stringify(stableInput)), cached = cache.get(key); if (cached) return cached;
-    const result = modelResultSchema.parse(await rawAdapter.invoke(input));
+    const key = hash(JSON.stringify({ purpose, input: stableInput })), cached = cache.get(key); if (cached) return cached;
+    const result = modelResultSchema.parse(await model.invoke(input));
     await save({ kind: 'model', fingerprint, key, result }); cache.set(key, result); return result;
-  } };
-  const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown): Promise<z.infer<T>> => {
-    const result = await adapter.invoke({ modelId: 'gpt-6-luna', systemPrompt, userPrompt: JSON.stringify(payload), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: 12000, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
+  } });
+  const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`);
+  const classificationModel = createAzureExtractionAdapter({ ...env, EXTRACTION_REASONING_EFFORT: classifierEffort });
+  if (!classificationModel) throw new Error('APPROVED_CLASSIFIER_ADAPTER_UNAVAILABLE');
+  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierEffort}`);
+  const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown, purpose: 'classify' | 'assess' = 'assess'): Promise<z.infer<T>> => {
+    const result = await (purpose === 'classify' ? classifierAdapter : adapter).invoke({ modelId: 'gpt-6-luna', systemPrompt, userPrompt: JSON.stringify(payload), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : 12000, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
     return schema.parse(result.output);
   };
   const body = (mail: Mail) => /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(mail.body) ? htmlToPlainText(mail.body) : mail.body;
@@ -288,7 +301,7 @@ async function main(): Promise<void> {
         const payload = await Promise.all(batch.map(async mail => ({ selectedMessageId: mail.sourceRowId, window: { start, end }, priorTasks: [], messages: await Promise.all([mail, ...mails.filter(row => mail.threadId !== null && row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt))].map(async row => ({ messageId: row.sourceRowId, receivedAt: row.receivedAt, direction: row.privateMessage.direction,
           subject: row.privateMessage.subject, from: row.privateMessage.addresses.from.join(', '), bodyText: row === mail ? currentAuthoredMessageText(row.body) : body(row), attachments: (await attachments(row)).map(item => ({ id: item.id, filename: item.filename, text: item.text ?? '', readFailure: item.readFailure })) }))) })));
         try {
-          const result = await invoke(batchSchema, `${CLASSIFY} Classify each input independently, using only its own messages. No two selected messages share a thread. Output one messages entry for every selectedMessageId, wrapping the classification in result.`, payload);
+          const result = await invoke(batchSchema, `${CLASSIFY} Classify each input independently, using only its own messages. No two selected messages share a thread. Output one messages entry for every selectedMessageId, wrapping the classification in result.`, payload, 'classify');
           const ids = new Set(result.messages.map(item => item.selectedMessageId));
           if (ids.size !== batch.length || result.messages.length !== batch.length || batch.some(mail => !ids.has(mail.sourceRowId))) throw new Error('Batch classification identity mismatch');
           for (const item of result.messages) batched.set(item.selectedMessageId, item.result);
@@ -312,14 +325,14 @@ async function main(): Promise<void> {
           const context = [mail, ...earlier].map(row => ({ messageId: row.sourceRowId, receivedAt: row.receivedAt, direction: row.privateMessage.direction,
             subject: row.privateMessage.subject, from: row.privateMessage.addresses.from.join(', '), bodyText: row === mail ? currentAuthoredMessageText(row.body) : body(row),
             attachments: (row === mail ? currentAttachments : previousAttachments.filter(item => item.messageId === row.sourceRowId)).map(item => ({ id: item.id, filename: item.filename, text: item.text ?? '', readFailure: item.readFailure })) }));
-          const priorTasks = [...tasks.values()].filter(task => task.sources.some(source => source.threadId === mail.threadId)).map(task => ({ id: task.id, originalAsk: task.originalAsk, workflow: task.workflow, requestedAt: task.requestedAt }));
-          const classified = classifications.get(mail.sourceRowId) ?? batched.get(mail.sourceRowId) ?? await invoke(classificationSchema, CLASSIFY, { selectedMessageId: mail.sourceRowId, window: { start, end }, messages: context, priorTasks });
+          const priorTasks = [...tasks.values()].filter(task => Date.parse(task.requestedAt) < Date.parse(mail.receivedAt) && task.sources.some(source => source.threadId === mail.threadId)).map(task => ({ id: task.id, originalAsk: task.originalAsk, workflow: task.workflow, requestedAt: task.requestedAt }));
+          const classified = classifications.get(mail.sourceRowId) ?? batched.get(mail.sourceRowId) ?? await invoke(classificationSchema, CLASSIFY, { selectedMessageId: mail.sourceRowId, window: { start, end }, messages: context, priorTasks }, 'classify');
           const keys = new Set<string>();
           for (const action of classified.tasks) {
             if (keys.has(action.key)) throw new Error('Repeated classifier action key'); keys.add(action.key);
             const origin = context.find(row => row.messageId === action.originMessageId);
             if (!origin || origin.direction !== 'inbound') throw new Error('Invalid task origin');
-            if (action.repeatTaskId && !priorTasks.some(task => task.id === action.repeatTaskId)) throw new Error('Unknown repeated task');
+            if (action.repeatTaskId && !priorTasks.some(task => task.id === action.repeatTaskId && Date.parse(task.requestedAt) < Date.parse(mail.receivedAt))) throw new Error('Unknown repeated task');
             const quoteTexts = [origin.bodyText, ...origin.attachments.map(item => item.text)];
             if (!quoteTexts.some(text => text.includes(action.quote))) throw new Error('Ungrounded task quote');
             for (const requirement of action.requirements) { const source = context.find(row => row.messageId === requirement.messageId);
@@ -397,16 +410,16 @@ async function main(): Promise<void> {
               const native = pointerValue(receipt.result, check.nativePointer), prepared = pointerValue(replay, check.preparedPointer);
               const stringify = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value);
               const fieldKinds: Record<string, string[]> = { 'guest and party identity': ['guest_candidate', 'party_candidate'], 'room type and rate plan': ['rate_availability'], 'availability and native price': ['rate_availability'], 'guarantee and billing fields': ['stay_candidate'],
-                'existing stay identity': ['stay_candidate'], 'current stay fields and dates': ['stay_candidate'], 'amendment eligibility and rate handling': ['stay_candidate', 'rate_availability'], 'room and rate identity': ['rate_availability'], 'availability and native prices': ['rate_availability'], 'cancellation policy and financial state': ['stay_candidate'], 'current Documents inventory and document targets': ['documents'], 'supported native workflow and validated action': ['service_preview'] };
-              const actualFact = /^(?:\/candidates\/\d+\/(?:nativeId|firstName|lastName|name|code|email|phoneNumber)|\/stay\/|\/commercial\/|\/groups\/\d+\/|\/documents\/\d+\/|\/items\/\d+\/)/.test(check.nativePointer);
+                'existing stay identity': ['stay_candidate'], 'current stay fields and dates': ['stay_candidate'], 'amendment eligibility and rate handling': ['stay_candidate', 'rate_availability'], 'room and rate identity': ['rate_availability'], 'availability and native prices': ['rate_availability'], 'cancellation policy and financial state': ['stay_candidate'], 'current Documents inventory and document targets': ['document'], 'supported native workflow and validated action': ['service_preview'] };
+              const actualFact = receipt.kind === 'document' ? /^\/documents\/\d+\/(?:name|documentCode|label|description)$/.test(check.nativePointer) : /^(?:\/candidates\/\d+\/(?:nativeId|firstName|lastName|name|code|email|phoneNumber)|\/stay\/|\/commercial\/|\/groups\/\d+\/|\/documents\/\d+\/|\/items\/\d+\/)/.test(check.nativePointer);
               if (!fieldKinds[check.requirement]?.includes(receipt.kind) || !actualFact || !preparedForAction(replay, action, check.preparedPointer) || native == null || prepared == null || stringify(native) !== check.nativeValue || stringify(prepared) !== check.preparedValue || check.nativeValue !== check.preparedValue || !check.nativeValue.trim()) throw new Error('Native check value/pointer mismatch');
               verifiedNative.add(check.requirement); checks.push({ requirement: check.requirement, status: 'matched', sourceValue: check.nativeValue, preparedValue: check.preparedValue, evidenceIds: [`${id}-native-${check.nativeReadIndex}`, `${id}-preparation`] });
             }
             const nativeComplete = verifiedNative.size === requiredNative.length;
-            const complete = assessment?.outcome === 'correct_complete' && nativeComplete && replay && !replay.errors?.length && !replay.proposal.issues.length && assessment.remainingWork.length === 0 && checks.every(check => check.status === 'matched');
+            const complete = mail.timestampBasis === 'received_at' && assessment?.outcome === 'correct_complete' && nativeComplete && replay && !replay.errors?.length && !replay.proposal.issues.length && assessment.remainingWork.length === 0 && checks.every(check => check.status === 'matched');
             const outcome = assessment?.outcome === 'correct_complete' && !complete ? 'partial' : assessment?.outcome ?? 'unknown';
             const task = retroTaskSchema.parse({ id, workflow: action.workflow, requestedAt: mail.receivedAt,
-              sources: [mail, ...earlier.filter(row => action.requirements.some(requirement => requirement.messageId === row.sourceRowId))].slice(0, 32).map(row => ({ messageId: row.sourceRowId, threadId: row.threadId, subject: row.privateMessage.subject.slice(0, 8000), from: row.privateMessage.addresses.from.join(', '), receivedAt: row.receivedAt, quote: (row === mail ? action.quote : body(row)).slice(0, 8000), duplicateMessageIds: row.duplicates })),
+              sources: [mail, ...earlier.filter(row => action.requirements.some(requirement => requirement.messageId === row.sourceRowId))].slice(0, 32).map(row => ({ messageId: row.sourceRowId, threadId: row.threadId, subject: row.privateMessage.subject.slice(0, 8000), from: row.privateMessage.addresses.from.join(', '), receivedAt: row.receivedAt, timestampBasis: row.timestampBasis, quote: (row === mail ? action.quote : body(row)).slice(0, 8000), duplicateMessageIds: row.duplicates })),
               originalAsk: action.originalAsk, navaPreparation: assessment?.navaPreparation ?? 'Classification only; actual Nava preparation was not run.',
               remainingWork: complete ? [] : [...(assessment?.remainingWork ?? []), ...(nativeComplete ? [] : ['Historical native requirements remain unverified as of the request.']), ...(assessment ? [] : [STAFF_WORK[action.workflow]])].slice(0, 40),
               outcome, reason: assessment?.reason ?? 'Classification establishes demand only and earns no completion or savings credit.',
@@ -432,7 +445,7 @@ async function main(): Promise<void> {
   });
   for (const { mail, action } of missingReplay) {
     const id = `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`;
-    tasks.set(id, retroTaskSchema.parse({ id, workflow: action.workflow, requestedAt: mail.receivedAt, sources: [{ messageId: mail.sourceRowId, threadId: mail.threadId, subject: mail.privateMessage.subject.slice(0, 8000), from: mail.privateMessage.addresses.from.join(', '), receivedAt: mail.receivedAt, quote: action.quote, duplicateMessageIds: mail.duplicates }],
+    tasks.set(id, retroTaskSchema.parse({ id, workflow: action.workflow, requestedAt: mail.receivedAt, sources: [{ messageId: mail.sourceRowId, threadId: mail.threadId, subject: mail.privateMessage.subject.slice(0, 8000), from: mail.privateMessage.addresses.from.join(', '), receivedAt: mail.receivedAt, timestampBasis: mail.timestampBasis, quote: action.quote, duplicateMessageIds: mail.duplicates }],
       originalAsk: action.originalAsk, navaPreparation: 'Replay or grounded assessment failed; no verified preparation.', remainingWork: [STAFF_WORK[action.workflow]], outcome: 'unknown', reason: 'Unresolved runner failure; see private checkpoint receipt.', complexity: action.complexity, workItemId: null, bookingReferences: action.bookingReferences, evidence: [], replay: { status: 'not_run', reason: 'Replay or grounded assessment did not complete' } }));
   }
   const report = retroReportSchema.parse({ version: 'centurion-retro-roi/1', reportId: `retro-${fingerprint.slice(0, 32)}`, propertyCode: 'HRCEN', generatedAt: new Date().toISOString(), period: { start, end, timezone: 'Africa/Johannesburg' },
@@ -445,9 +458,11 @@ async function main(): Promise<void> {
         'Source completeness and classification completeness are independent of preparation success. Live HMS, current catalog and booking memory excluded; only exact indexed observations strictly before request may verify native requirements. Sparse/missing historical facts remain partial with zero credit.',
         `Selected ${selectedInbound.length}/${inbound.length} inbound messages; ${replayFailures.size} replay/assessment failures; ${successful.filter(id => classifications.get(id)?.disposition === 'unknown').length} unknown classifications.`,
         `Private resumable checkpoint ${checkpointPath}; fingerprint ${fingerprint}; ${process.argv.includes('--classify-only') ? 'classification only' : 'real product prefill'}; no DB/native writes or live HMS calls.`,
-        'Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
-    tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
-  const temporary = `${out}.${process.pid}.tmp`; await writeFile(temporary, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 }); await rename(temporary, out);
+        'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
+    tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
+  const serialized = `${JSON.stringify(report, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, 'utf8') > RETRO_ROI_MAX_REPORT_BYTES) throw new Error('REPORT_TOO_LARGE: previous report preserved; use private checkpoints to narrow output');
+  const temporary = `${out}.${process.pid}.tmp`; await writeFile(temporary, serialized, { mode: 0o600 }); await rename(temporary, out);
   const usage = [...cache.values()].reduce((sum, result) => ({ calls: sum.calls + 1, inputTokens: sum.inputTokens + result.usage.inputTokens, outputTokens: sum.outputTokens + result.usage.outputTokens, costUsd: sum.costUsd + result.usage.estimatedCostUsd }), { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 });
   info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayFailures: replayFailures.size, model: 'gpt-6-luna', usage });
 }
