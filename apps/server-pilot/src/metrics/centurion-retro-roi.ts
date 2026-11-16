@@ -175,6 +175,7 @@ export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
       const preparation = staffExplanation(task.navaPreparation, 'No preparation recorded.', sourceNames);
       return {
         ...task,
+        originalAsk: staffExplanation(task.originalAsk, 'See the source email for the request.', sourceNames),
         navaPreparation: preparation,
         remainingWork: task.remainingWork.map(work => staffExplanation(work, 'Staff verification is required.', sourceNames)),
         reason: staffExplanation(task.reason, 'See the requested and prepared values for this assessment.', sourceNames),
@@ -189,7 +190,14 @@ export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
         })),
         replay: task.replay.status === 'not_run'
           ? { ...task.replay, reason: staffExplanation(task.replay.reason, 'Preparation has not been assessed.', sourceNames) }
-          : { ...task.replay, replayId: task.id },
+          : {
+            ...task.replay,
+            replayId: task.id,
+            checks: task.replay.checks.map(check => ({
+              ...check,
+              requirement: staffExplanation(check.requirement, 'See the source email for this requirement.', sourceNames),
+            })),
+          },
       };
     }),
   };

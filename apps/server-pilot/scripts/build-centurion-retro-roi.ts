@@ -349,10 +349,10 @@ async function main(): Promise<void> {
   const acceptedFingerprints = new Set([...(reviewedCompatibleFingerprint ? [reviewedCompatibleFingerprint] : []), fingerprint, ...(reviewedCompatibleProducer ? [legacyFingerprint, terraLegacyFingerprint] : [])]);
   const measurementPending = new Set<string>();
   const failedMeasurement = (replay: z.infer<typeof replayResultSchema>) => replay.errors?.some(error => error.code === 'model_timeout' || error.code === 'model_error') ?? false;
-  const reviewedProducers = new Set<string>(reviewedCompatibleProducer ? [reviewedCompatibleProducer, 'unknown'] : []);
+  const reviewedProducers = new Set<string>(reviewedCompatibleProducer ? [reviewedCompatibleProducer] : []);
   try {
     const previous = (await readFile(checkpointPath, 'utf8')).split('\n');
-    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); reviewedProducers.add('unknown'); if (record.reviewedCompatibleFingerprint) acceptedFingerprints.add(record.reviewedCompatibleFingerprint); acceptedFingerprints.add(legacyFingerprint); acceptedFingerprints.add(terraLegacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
+    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); if (record.reviewedCompatibleFingerprint) acceptedFingerprints.add(record.reviewedCompatibleFingerprint); acceptedFingerprints.add(legacyFingerprint); acceptedFingerprints.add(terraLegacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
     for (let index = 0; index < previous.length; index++) {
       const line = previous[index]; if (!line) continue;
       let record: z.infer<typeof checkpointSchema>;
