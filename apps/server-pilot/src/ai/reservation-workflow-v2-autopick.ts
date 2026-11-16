@@ -56,6 +56,18 @@ export function emailQuote(text: string, name: string, role: EntityRole): string
   return match?.[0] ?? null;
 }
 
+/** Native names often carry a short form: "Long Name (ABC)" or "Long Name - ABC". Try each written form. */
+export function emailQuoteAny(text: string, name: string, role: EntityRole): string | null {
+  const bracketed = [...name.matchAll(/\(([^()]+)\)/g)].map((match) => match[1]!);
+  const unbracketed = name.replace(/\([^()]*\)/g, ' ');
+  const dashed = unbracketed.split(/\s+[-–]\s+/);
+  for (const variant of [name, unbracketed, ...dashed, ...bracketed]) {
+    const quote = variant.trim() ? emailQuote(text, variant, role) : null;
+    if (quote) return quote;
+  }
+  return null;
+}
+
 function historyEvidence(key: AutopickHistoryKey, row: AutopickHistoryValue | undefined, total: number): Evidence {
   return { kind: key.kind, count: row?.count ?? 0, total, lastSeen: row?.lastSeen ?? null, key: key.key };
 }
@@ -102,7 +114,7 @@ export function planAutopickPartyReads(input: { extraction: ReservationWorkflowV
       const stats = key?.fields[field];
       if (!key || !stats || !stats.values[0]?.value) continue;
       const named = stats.values.filter((row) => row.value);
-      const quoted = named.filter((row) => emailQuote(text, row.value, entityRole[field]));
+      const quoted = named.filter((row) => emailQuoteAny(text, row.value, entityRole[field]));
       if (quoted.length === 1) { add(partyRole[field], quoted[0]!.value, request.id); continue; }
       const ambiguous = field === 'organization' && key.kind === 'agency_domain' && named.length > 1 &&
         !gateFor(stats, named[0]!.value, (a, b) => norm(a) === norm(b));
@@ -168,6 +180,8 @@ export function withAutopickResponseSchema(schema: Record<string, unknown>, slot
 
 const modelEntrySchema = z.object({ slot: z.string().min(1).max(200), choice: z.string().min(1).max(40),
   quote: z.string().max(300).nullable() }).strict();
+const STOP_WORDS = new Set(['the', 'and', 'for', 'our', 'from', 'with', 'team', 'group', 'company', 'pty', 'ltd', 'limited',
+  'travel', 'travels', 'tours', 'agency', 'services', 'department', 'south', 'african', 'africa']);
 const squash = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
 
 /** Deterministic check of model output: parse failures and hallucinations are recorded separately, never merged. */
@@ -193,6 +207,10 @@ export function validateAutopickModelOutput(raw: unknown, slots: AutopickModelSl
     if (!quote?.trim()) return { ...result, outcome: problems.length ? 'hallucination' as const : 'parse_failure' as const,
       problems: problems.length ? problems : ['quote_missing'] };
     if (!text.includes(squash(quote))) problems.push('quote_not_in_email');
+    // The quote must name the choice: share a significant word with it (an acronym counts as a word).
+    const words = (value: string) => new Set((squash(value).match(/[\p{L}\p{N}]{3,}/gu) ?? []).filter((word) => !STOP_WORDS.has(word)));
+    const labelWords = candidate ? words(candidate.label) : new Set<string>();
+    if (candidate && ![...words(quote)].some((word) => labelWords.has(word))) problems.push('quote_not_about_choice');
     return problems.length ? { ...result, outcome: 'hallucination' as const, problems }
       : { ...result, outcome: 'chosen' as const, problems, nativeId: candidate!.nativeId };
   });
@@ -281,7 +299,7 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
         const score = (row: { name: string }) => (statFor(row.name)?.count ?? 0) * 2 + Number(norm(row.name) === norm(party.name));
         candidates = candidates.map((row, index) => ({ row, index })).sort((a, b) => score(b.row) - score(a.row) || a.index - b.index).map(({ row }) => row);
         pickIndex = 0;
-        const quote = emailQuote(text, party.name, role) ?? undefined;
+        const quote = emailQuoteAny(text, party.name, role) ?? undefined;
         if (quote) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote });
         if (key && stats && statFor(candidates[0]!.name)) evidence.unshift(historyEvidence(key, statFor(candidates[0]!.name), stats.total));
         if (!evidence.length) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote: party.name });
@@ -296,15 +314,16 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
         if (!matched.length) continue;
         const extractionId = input.extractionIdByProposalRequestId.get(request.id) ?? request.id;
         const model = input.modelResults.find((row) => row.requestId === extractionId && row.field === field && row.outcome === 'chosen');
-        const quoted = matched.filter((row) => emailQuote(text, row.stat.value, role));
+        const quoted = matched.filter((row) => emailQuoteAny(text, row.stat.value, role));
         const chosen = model ? matched.find((row) => row.native.some((native) => native.nativeId === model.nativeId))
           : quoted.length === 1 ? quoted[0] : matched[0];
         if (!chosen) continue;
         const ordered = [chosen, ...matched.filter((row) => row !== chosen)];
-        const bound = ordered.flatMap((row) => row.native.map((native) => ({ native, stat: row.stat })))
-          .filter((row, index, all) => all.findIndex((other) => other.native.nativeId === row.native.nativeId) === index)
+        // History-matched rows first, then the other rows HMS returned for the same searches (e.g. branches).
+        const bound = [...ordered.flatMap((row) => row.native), ...rows]
+          .filter((row, index, all) => all.findIndex((other) => other.nativeId === row.nativeId) === index)
           .slice(0, AUTOPICK_MAX_ALTERNATIVES + 1);
-        candidates = bound.map(({ native }) => {
+        candidates = bound.map((native) => {
           const fieldPath = selectionPath;
           const ref = `obs_autopick_${hash(input.generationId, request.id, fieldPath, native.nativeId)}`;
           const result = { ...native.read.result, ...(request.kind === 'quote' ? { nativeId: native.nativeId, name: native.name } : {}),
@@ -317,7 +336,7 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
         });
         pickIndex = 0;
         evidence.push(historyEvidence(key, chosen.stat, stats.total));
-        const quote = quoted.length === 1 && quoted[0] === chosen ? emailQuote(text, chosen.stat.value, role) : null;
+        const quote = quoted.length === 1 && quoted[0] === chosen ? emailQuoteAny(text, chosen.stat.value, role) : null;
         if (model?.quote) evidence.unshift({ kind: 'model_choice', count: null, total: null, lastSeen: null, quote: model.quote });
         else if (quote) evidence.unshift({ kind: 'email_text', count: null, total: null, lastSeen: null, quote });
         owner[field] = { name: candidates[0]!.name, candidateRefs: [], suggestedRef: null };
