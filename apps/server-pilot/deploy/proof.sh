@@ -5,6 +5,7 @@
 #
 # create: census + unsaved Prepare, one Labtest Save, fresh readback.
 # cancel: cancels the stay left by `proof.sh create` for the same property and sha, fresh readback.
+# cancel-stage-observe: on that created HRCEN stay, observes fee/reason staging without approving a fee or saving; requires --no-ledger.
 # Each then installs `CANARY PASS <workflow> <property> <sha>` and its writers.json row
 # (deploy/install-canary-ledger.mjs) unless --no-ledger is given.
 # Run order: create, guest_profile_create, amend, attach, addons, optional amend_adults, cancel.
@@ -31,7 +32,7 @@ REMOTE_SERVER_PILOT=/home/ubuntu/repos/zero/apps/server-pilot
 CHUNK_CHARS=16000
 
 usage() {
-  echo "usage: $0 <create|cancel|amend|amend_adults|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--state-dir <absolute remote path>] [--no-ledger] [--cancel-scenario zero|penalty] [--approve-labtest-penalty <amount>]" >&2
+  echo "usage: $0 <create|cancel|cancel-stage-observe|amend|amend_adults|attach|addons|guest_profile_create> <HRCEN|HRDAV|HRDAVS> <40-hex sha> [--local] [--request <file>] [--state-dir <absolute remote path>] [--no-ledger] [--cancel-scenario zero|penalty] [--approve-labtest-penalty <amount>]" >&2
   exit 2
 }
 [ "$#" -ge 3 ] || usage
@@ -50,7 +51,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$WORKFLOW" in
-  create|cancel|amend|amend_adults|attach|addons|guest_profile_create) ;;
+  create|cancel|cancel-stage-observe|amend|amend_adults|attach|addons|guest_profile_create) ;;
   *) usage ;;
 esac
 if [ "$WORKFLOW" = amend_adults ]; then
@@ -70,6 +71,11 @@ if [ "$WORKFLOW" = cancel ]; then
   }
 else
   [ "$CANCEL_SCENARIO" = zero ] && [ -z "$APPROVED_PENALTY" ] || usage
+fi
+if [ "$WORKFLOW" = cancel-stage-observe ]; then
+  [ "$PROPERTY" = HRCEN ] && [ "$LEDGER" = 0 ] || {
+    echo "proof: cancel-stage-observe requires HRCEN --no-ledger; it is not a canary" >&2; exit 2;
+  }
 fi
 [ -z "$APPROVED_PENALTY" ] || { [ "$CANCEL_SCENARIO" = penalty ] &&
   [[ "$APPROVED_PENALTY" =~ ^[0-9]{1,12}\.[0-9]{2}$ ]] && [[ ! "$APPROVED_PENALTY" =~ ^0+\.00$ ]]; } || usage
@@ -188,14 +194,14 @@ fetch_artifacts() {
   local meta digest chars index=0 encoded="${ARTIFACTS}/.transfer.b64"
   if [ "$LOCAL" = 1 ]; then
     local file
-    for file in "${STATE_DIR}/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,amend_adults.out,amend_adults.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err}; do
+    for file in "${STATE_DIR}/${SHA}/${PROPERTY}-"{journal.json,prepare.out,prepare.err,create.out,create.err,guest_profile_create.out,guest_profile_create.err,amend.out,amend.err,amend_adults.out,amend_adults.err,attach.out,attach.err,addons.out,addons.err,cancel.out,cancel.err,cancel-stage-observe.out,cancel-stage-observe.err}; do
       if [ -f "$file" ]; then cp "$file" "$ARTIFACTS/" || return 1; fi
     done
     [ -f "${ARTIFACTS}/${PROPERTY}-journal.json" ]
     return $?
   fi
   remote pack "${REMOTE_HEAD}cd \"\$RUN\"
-files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-{prepare,create,guest_profile_create,amend,amend_adults,attach,addons,cancel}.{out,err} 2>/dev/null || true)\"
+files=\"\$(ls ${PROPERTY}-journal.json ${PROPERTY}-{prepare,create,guest_profile_create,amend,amend_adults,attach,addons,cancel,cancel-stage-observe}.{out,err} 2>/dev/null || true)\"
 [ -n \"\$files\" ] || { echo 'proof: nothing to fetch' >&2; exit 20; }
 tar -czf .transfer-${PROPERTY}.tgz \$files
 base64 -w0 .transfer-${PROPERTY}.tgz >.transfer-${PROPERTY}.b64
