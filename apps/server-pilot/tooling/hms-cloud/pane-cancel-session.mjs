@@ -21,6 +21,8 @@ const name = (value) => typeof value === 'string' && value.length > 0 && value.l
   value === value.trim() && !/[\p{Cc}]/u.test(value);
 const READ_BUDGET_MS = 15 * 60_000;
 const COMMIT_BUDGET_MS = 20 * 60_000;
+const FEE_OBSERVATION_REASON = 'Test Reservations';
+const FEE_OBSERVATION_NOTE = 'Labtest fee stage observation';
 const neverDispatchedCancelProofs = new WeakMap();
 const lookupOptions = (firstName, lastName, arrival) => {
   const guestName = firstName && lastName ? `${firstName} ${lastName}` : '';
@@ -187,14 +189,18 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
   read = readRecord, open = openLabtestCancellation, confirm = confirmLabtestCancellation,
   scope = verifySingleCancellationScope, freshRead = cancellationReadback, now = () => performance.now() } = {}) {
   const previewStage = input.previewStage;
+  const observeFeeBeforeReason = input.observeFeeBeforeReason === true;
   const stageValid = previewStage === undefined || (input.mode === 'preview' && previewStage && typeof previewStage === 'object' &&
     typeof previewStage.reasonLabel === 'string' && previewStage.reasonLabel === previewStage.reasonLabel.trim() &&
     previewStage.reasonLabel.length > 0 && previewStage.reasonLabel.length <= 120 && !/[\p{Cc}]/u.test(previewStage.reasonLabel) &&
     typeof previewStage.cancellationNote === 'string' && previewStage.cancellationNote.length <= 200 &&
     !/[\p{Cc}]/u.test(previewStage.cancellationNote));
+  const feeObservationValid = !observeFeeBeforeReason || input.mode === 'preview' && input.target?.propertyCode === 'HRCEN' &&
+    input.allowRealGuest === false && previewStage?.reasonLabel === FEE_OBSERVATION_REASON &&
+    previewStage?.cancellationNote === FEE_OBSERVATION_NOTE;
   if (!validScope(input?.target?.propertyCode, input.transportId) || !['read', 'preview', 'commit'].includes(input.mode) ||
       !/^\d+-\d+$/.test(input.confirmation || '') || !day(input.arrival) || typeof input.allowRealGuest !== 'boolean' ||
-      !stageValid ||
+      !stageValid || !feeObservationValid ||
       (input.mode === 'commit' && (!input.expected || typeof input.beforeDispatch !== 'function' ||
         typeof input.dispatchWithAuthority !== 'function' || typeof input.continuationAllowed !== 'function' ||
         !Number.isSafeInteger(input.commitBudgetMs) || input.commitBudgetMs < 1 || input.commitBudgetMs > COMMIT_BUDGET_MS))) {
@@ -247,7 +253,9 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
       }
       if (!await scope(page, expected)) return { outcome: 'refused_scope_unverified', requestDispatched: false };
       if (input.mode === 'read') return { outcome: 'read', expected, requestDispatched: false };
-      await writeFile(join(root, 'before.png'), await page.screenshot({ fullPage: true }), { mode: 0o600 });
+      if (!observeFeeBeforeReason) {
+        await writeFile(join(root, 'before.png'), await page.screenshot({ fullPage: true }), { mode: 0o600 });
+      }
       const remaining = Math.floor(Math.min(sessionBudget, input.commitBudgetMs ?? sessionBudget) - (now() - started));
       if (input.mode === 'commit' && (remaining < 1 || !continuationAllowed())) {
         return { outcome: 'not_dispatched', requestDispatched: false, dispatchCallbacksDrained: true };
@@ -255,7 +263,17 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
       const opened = await open(page, expected, input.mode === 'commit' ? {
         timeoutMs: remaining, continuationAllowed, awaitChargeApproval: awaitCharge,
         prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true,
-      } : {});
+      } : observeFeeBeforeReason ? { observeFeeBeforeReason: true } : {});
+      if (input.mode === 'preview' && observeFeeBeforeReason && opened.outcome !== 'reason_ready') {
+        return { outcome: opened.outcome === 'fee_dialog_pending' ? 'fee_stage_observation' : 'fee_stage_inconclusive',
+          issue: opened.issue ?? null, openRequestDispatched: opened.openRequestDispatched === true,
+          httpStatus: opened.httpStatus ?? null, reasonOptionCount: opened.reasonOptionCount ?? 0,
+          testReasonAvailable: opened.testReasonAvailable === true, blockedRequestCount: opened.blockedRequestCount ?? 0,
+          nativeDialogObserved: opened.nativeDialogObserved === true,
+          feeApprovalPerformed: false, feeButtonClicked: false, nativeDialogAction: 'none',
+          chargeApprovalHandlerSupplied: false, chargeDispatchHandlerSupplied: false,
+          feeStageObservation: opened.feeStageObservation ?? { state: 'unavailable' }, requestDispatched: false };
+      }
       if (input.mode === 'preview' && opened.outcome === 'fee_dialog_pending' &&
           opened.cancellationSaveDispatched === false && opened.chargeApproved === false && opened.chargeDispatched === false) {
         return { outcome: 'preview_ok', expected, feeDialogPending: true,
@@ -276,9 +294,22 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
           reasons: opened.reasons, policyFacts: opened.policyFacts ?? [], requestDispatched: false };
         const staged = await confirm(page, expected, { reasonCode: matching[0].value, reasonLabel: matching[0].display,
           cancellationNote: previewStage.cancellationNote, timeoutMs: Math.floor(Math.min(sessionBudget, READ_BUDGET_MS) - (now() - started)),
-          continuationAllowed, stageOnly: true });
+          continuationAllowed, stageOnly: true, observeFeeBeforeReason });
         if (staged.outcome !== 'staged' || staged.requestDispatched !== false || staged.chargeApproved !== false ||
-            staged.chargeDispatched !== false) {
+            staged.chargeDispatched !== false || observeFeeBeforeReason &&
+              (staged.dispatchCallbacksDrained !== true || staged.browserSendRequests !== 0 ||
+                !Array.isArray(staged.blockedRequests) || staged.blockedRequests.length !== 0)) {
+          if (observeFeeBeforeReason) return { outcome: staged.outcome === 'fee_dialog_pending'
+            ? 'fee_stage_observation' : 'fee_stage_inconclusive', issue: staged.issue ?? null,
+            openRequestDispatched: opened.openRequestDispatched === true,
+            httpStatus: staged.httpStatus ?? opened.httpStatus ?? null,
+            reasonOptionCount: opened.reasonOptionCount ?? 0, testReasonAvailable: opened.testReasonAvailable === true,
+            blockedRequestCount: (opened.blockedRequestCount ?? 0) + (staged.blockedRequests?.length ?? 0),
+            nativeDialogObserved: staged.nativeDialogObserved === true,
+            feeApprovalPerformed: false, feeButtonClicked: false, nativeDialogAction: 'none',
+            chargeApprovalHandlerSupplied: false, chargeDispatchHandlerSupplied: false,
+            feeStageObservation: staged.feeStageObservation ?? opened.feeStageObservation ?? { state: 'unavailable' },
+            requestDispatched: false };
           if (staged.outcome === 'fee_dialog_pending' && staged.requestDispatched === false &&
               staged.chargeApproved === false && staged.chargeDispatched === false &&
               staged.dispatchCallbacksDrained === true) {
@@ -293,11 +324,22 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
         }
         return { outcome: 'preview_ok', expected, reasons: opened.reasons, policyFacts: opened.policyFacts ?? [],
           penaltyText: staged.penaltyText ?? null,
+          openRequestDispatched: opened.openRequestDispatched === true,
+          reasonOptionCount: opened.reasonOptionCount ?? opened.reasons?.length ?? 0,
+          testReasonAvailable: opened.testReasonAvailable === true || opened.reasons?.filter(item =>
+            item.value === 'TEST' && item.display === 'Test Reservations').length === 1,
+          blockedRequestCount: (opened.blockedRequestCount ?? 0) + (staged.blockedRequests?.length ?? 0),
+          blockedRequests: staged.blockedRequests ?? [], browserSendRequests: staged.browserSendRequests,
+          dispatchCallbacksDrained: staged.dispatchCallbacksDrained === true,
+          chargeApproved: false, chargeDispatched: false,
+          feeStageObservation: staged.feeStageObservation ?? opened.feeStageObservation ?? null,
           staged: { reasonCode: matching[0].value, reasonLabel: matching[0].display,
             cancellationNote: previewStage.cancellationNote,
             dialogText: typeof staged.stagedDialogText === 'string' ? staged.stagedDialogText : null,
             penaltyText: staged.penaltyText ?? null },
-          requestDispatched: false };
+          requestDispatched: false,
+          ...(observeFeeBeforeReason ? { feeApprovalPerformed: false, feeButtonClicked: false,
+            nativeDialogAction: 'none', chargeApprovalHandlerSupplied: false, chargeDispatchHandlerSupplied: false } : {}) };
       }
       if (input.mode === 'preview') return { outcome: 'preview_ok', expected, reasons: opened.reasons,
         policyFacts: opened.policyFacts ?? [], penaltyText: opened.penaltyText ?? null, requestDispatched: false };
@@ -327,7 +369,7 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
   } catch {
     result = { outcome: dispatched ? 'uncertain' : 'execution_failure', requestDispatched: dispatched };
   }
-  const screenshots = input.mode === 'read' ? [] : [join(root, 'before.png')];
+  const screenshots = input.mode === 'read' || observeFeeBeforeReason ? [] : [join(root, 'before.png')];
   if (!result.requestDispatched && !chargeAuthorityAttempted) {
     const dispatchCallbacksDrained = pendingChargeAuthority === 0 &&
       (confirmAttempted ? result.dispatchCallbacksDrained === true : true);
