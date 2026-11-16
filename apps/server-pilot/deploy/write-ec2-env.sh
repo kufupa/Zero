@@ -42,6 +42,7 @@ for key in PANE_HMS_LAB_CREATE_WORKER PANE_HMS_LAB_ATTACH_WORKER PANE_HMS_LAB_AM
   case "${!key:-}" in ''|off|on) ;; *) echo "invalid $key" >&2; exit 2 ;; esac
 done
 case "${PANE_BRAIN:-}" in ''|agent|classifier) ;; *) echo 'invalid PANE_BRAIN' >&2; exit 2 ;; esac
+case "${RESERVATION_PREFILL_MODEL_PROVIDER:-}" in ''|azure|bedrock) ;; *) echo 'invalid RESERVATION_PREFILL_MODEL_PROVIDER' >&2; exit 2 ;; esac
 quote_rate_context="${QUOTE_RATE_CONTEXT:-}"
 quote_rate_context="${quote_rate_context#"${quote_rate_context%%[![:space:]]*}"}"
 quote_rate_context="${quote_rate_context%"${quote_rate_context##*[![:space:]]}"}"
@@ -231,6 +232,7 @@ append_env HMS_JOB_QUEUE "${HMS_JOB_QUEUE:-}"
 append_env HMS_LANE_PAUSED "${HMS_LANE_PAUSED:-}"
 append_env LEGACY_INBOUND_TRIAGE_PIPELINE "${LEGACY_INBOUND_TRIAGE_PIPELINE:-}"
 append_env RESERVATION_V2_ARRIVAL_PREFILL "${RESERVATION_V2_ARRIVAL_PREFILL:-}"
+append_env RESERVATION_PREFILL_MODEL_PROVIDER "${RESERVATION_PREFILL_MODEL_PROVIDER:-}"
 append_env PANE_STAY_LOOKUP "${PANE_STAY_LOOKUP:-}"
 append_env QUOTE_RATE_CONTEXT "${QUOTE_RATE_CONTEXT:-}"
 append_env HMS_QUOTE_PREPARE "${HMS_QUOTE_PREPARE:-}"

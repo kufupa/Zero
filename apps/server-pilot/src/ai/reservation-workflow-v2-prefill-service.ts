@@ -14,7 +14,7 @@ import type { ReservationPrefillJobFence, ReservationWorkflowV2Context } from '.
 import { checkpointReservationWorkflowV2Extraction, claimReservationWorkflowV2Prefill,
   finishReservationWorkflowV2Prefill } from './reservation-workflow-v2-state.js';
 import { runReservationWorkflowV2Prefill } from './reservation-workflow-v2-prefill.js';
-import { createAzureExtractionAdapter } from './extraction/extract.js';
+import { createReservationPrefillAdapter } from './extraction/extract.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
 import { runReservationArrivalChecks } from './reservation-workflow-v2-arrival-checks.js';
@@ -72,7 +72,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
-      signal: operationSignal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
+      signal: operationSignal, adapter: observedPrefillAdapter(createReservationPrefillAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
       onValidatedExtraction: async (generationId, extraction) => {
         const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...input, claim: activeClaim,
           generationId, extraction, jobFence });
