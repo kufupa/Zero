@@ -260,11 +260,34 @@ function originalForwardSender(
   };
 }
 
+/** The envelope subject minus Re:/Fw:/Fwd:/Forwarded: chains, trimmed. */
+function transportStrippedSubject(subject: string): string {
+  const trimmed = subject.trim();
+  const prefix = ENVELOPE_SUBJECT_PREFIX.exec(trimmed);
+  return prefix ? trimmed.slice(prefix[0].length).trim() : trimmed;
+}
+
 /**
- * A human-origin routine notice is suppressed only by an unannotated re-send:
- * a bare template subject is a system send, but a Re:/Fwd: envelope may carry
- * a current staff ask. It stays a notice only while nothing was authored ahead
- * of the forwarded content and the staff subject restates the embedded one.
+ * The staff envelope subject must restate the embedded subject once transport
+ * prefixes are stripped. Any difference can carry a current ask, and a missing
+ * embedded subject proves nothing, so both keep the mail reviewable.
+ */
+function envelopeSubjectAnnotated(outerSubject: string, embeddedSubject: string | null | undefined): boolean {
+  const embedded = embeddedSubject?.trim();
+  if (!embedded) return true;
+  return transportStrippedSubject(outerSubject) !== embedded;
+}
+
+function forwardSubjectGuardReason(embeddedSubject: string | null | undefined): string {
+  return embeddedSubject?.trim() ? 'forwarded_rewritten_subject' : 'forwarded_subject_unknown';
+}
+
+/**
+ * A human-origin routine notice is suppressed only by a proven unannotated
+ * send: an envelope re-send whose staff subject restates the embedded one, or
+ * a bare template subject over an empty body. Any authored content — ahead of
+ * the forwarded material or as the whole body — stays reviewable, because the
+ * notice template itself cannot be told apart from a current staff ask.
  */
 function humanOriginNoticeSuppressed(input: {
   subject?: string | null;
@@ -272,12 +295,13 @@ function humanOriginNoticeSuppressed(input: {
   plainBody: string;
 }): boolean {
   const subject = input.subject?.trim() ?? '';
-  const prefix = ENVELOPE_SUBJECT_PREFIX.exec(subject);
-  if (!prefix) return true;
   const lines = input.plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
   if (forwardedSubjectAuthoredText(lines)) return false;
-  const inner = forwardedHeaderBlock(lines)?.subject?.trim();
-  return inner !== undefined && inner !== null && subject.slice(prefix[0].length).trim() === inner;
+  const block = forwardedHeaderBlock(lines);
+  if (block || ENVELOPE_SUBJECT_PREFIX.test(subject)) {
+    return !envelopeSubjectAnnotated(subject, block?.subject);
+  }
+  return !input.plainBody.trim();
 }
 
 function forwardedSubject(subject: string): string | null {
@@ -327,6 +351,15 @@ export function classifyMailSource(input: {
       if (forwardedSender.authoredText) {
         return { kind: 'direct', source: null, reason: `forwarded_authored_content:${forwardedSender.rule.id}` };
       }
+      // A rewritten envelope subject can carry the whole ask: it must restate
+      // the embedded subject once transport prefixes are stripped.
+      if (envelopeSubjectAnnotated(input.subject ?? '', forwardedSender.subject)) {
+        return {
+          kind: 'direct',
+          source: null,
+          reason: `${forwardSubjectGuardReason(forwardedSender.subject)}:${forwardedSender.rule.id}`,
+        };
+      }
       if (forwardedSender.rule.directWhenForwarded) {
         return { kind: 'direct', source: null, reason: `forwarded_skip_exempt:${forwardedSender.rule.id}` };
       }
@@ -346,6 +379,18 @@ export function classifyMailSource(input: {
           const authoredText = forwardedSubjectAuthoredText(plainBody.split(/\r?\n/));
           if (authoredText) {
             return { kind: 'direct', source: null, reason: `forwarded_authored_content:${rule.id}` };
+          }
+          // The branded subject template alone cannot prove the forward is
+          // unannotated; it must restate an embedded subject to still skip.
+          const embeddedSubject = forwardedHeaderBlock(
+            plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/),
+          )?.subject;
+          if (envelopeSubjectAnnotated(input.subject ?? '', embeddedSubject)) {
+            return {
+              kind: 'direct',
+              source: null,
+              reason: `${forwardSubjectGuardReason(embeddedSubject)}:${rule.id}`,
+            };
           }
           return matchedSource(rule, `forwarded_subject:${rule.id}`);
         }

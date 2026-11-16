@@ -5,6 +5,7 @@ import { load } from 'cheerio';
 const PRE_STAY_SUBJECT = /\bpre[\s-]?(?:stay|arrival)\b/i;
 const SUBJECT_CONFIRMATION_NUMBER =
   /\b(?:confirmation|conf(?:irmation)?\.?)\s*(?:number|no\.?|#)?\s*[:#]?\s*\d+(?:-\d+)*\b/i;
+const BODY_CONFIRMATION_NUMBER = /\b\d{6,10}-\d{1,4}\b/;
 
 /** Owner rule: a self-sent pre-stay confirmation describes an existing stay, never a new booking. */
 export function isSelfSentPreStaySubject(input: {
@@ -31,6 +32,25 @@ export function isSelfSentPreStayInformationMail(input: {
   return (
     SUBJECT_CONFIRMATION_NUMBER.test(input.subject ?? '') ||
     input.confirmationNumbers?.some((number) => number.trim().length > 0) === true
+  );
+}
+
+/**
+ * One self-prestay candidate gate for live admission, V2 arrival and the pane:
+ * the hotel's own mailbox, a pre-stay subject and a confirmation number in the
+ * subject or the current body. A missing mailbox or confirmation is never
+ * evidence, so the exemption simply does not apply.
+ */
+export function selfSentPreStayCandidate(input: {
+  fromAddress?: string | null;
+  mailboxAddress?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
+}): boolean {
+  if (!isSelfSentPreStaySubject(input)) return false;
+  return (
+    SUBJECT_CONFIRMATION_NUMBER.test(input.subject ?? '') ||
+    BODY_CONFIRMATION_NUMBER.test(`${input.subject ?? ''}\n${input.bodyText ?? ''}`)
   );
 }
 

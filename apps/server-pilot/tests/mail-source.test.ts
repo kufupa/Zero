@@ -134,17 +134,6 @@ const systemExamples = [
 
 const forwardedExamples = [
   {
-    name: 'internal forward with original Sender header',
-    input: {
-      fromAddress: 'reservations@legacyhotels.co.za',
-      subject: 'Fwd: New reservation',
-      bodyText: 'Forwarded message:\nSender: Guest Messaging <notice@property.booking.com>',
-    },
-    kind: 'channel',
-    source: 'Booking.com',
-    reason: 'forwarded_sender:booking.com',
-  },
-  {
     name: 'internal forward of review-system email',
     input: {
       fromAddress: 'ops@legacyhotels.co.za',
@@ -233,6 +222,24 @@ const directExamples = [
     },
     reason: 'forwarded_authored_content:synxis',
   },
+  {
+    name: 'internal forward whose embedded Subject line is absent',
+    input: {
+      fromAddress: 'reservations@legacyhotels.co.za',
+      subject: 'Fwd: New reservation',
+      bodyText: 'Forwarded message:\nSender: Guest Messaging <notice@property.booking.com>',
+    },
+    reason: 'forwarded_subject_unknown:booking-com',
+  },
+  {
+    name: 'internal FW whose envelope subject adds an ask to the embedded subject',
+    input: {
+      fromAddress: 'reservations@legacyhotels.co.za',
+      subject: 'FW: SynXis Res Confirmed — please amend dates',
+      bodyText: 'Forwarded message:\nFrom: SynXis Reservations <noreply@synxis.com>\nSubject: SynXis Res Confirmed',
+    },
+    reason: 'forwarded_rewritten_subject:synxis',
+  },
 ] as const;
 
 describe('classifyMailSource', () => {
@@ -249,7 +256,7 @@ describe('classifyMailSource', () => {
     ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'forwarded_sender:profitroom.com' });
   });
 
-  it('skips a renamed forward of a Profitroom contact form, from its original Subject line', () => {
+  it('keeps a renamed forward of a Profitroom contact form reviewable: the envelope subject no longer restates the embedded one', () => {
     expect(
       classifyMailSource({
         fromAddress: 'reservations@legacyhotels.co.za',
@@ -257,13 +264,13 @@ describe('classifyMailSource', () => {
         bodyText:
           'From: Profitroom <noreply@profitroom.com>\nSent: Monday\nTo: reservations\nSubject: Default contact form\n\nHello',
       }),
-    ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'forwarded_sender:profitroom.com' });
+    ).toEqual({ kind: 'direct', source: null, reason: 'forwarded_rewritten_subject:profitroom' });
   });
 
   it('reads the original Subject of an HTML forward whose header fields are blank-line separated', () => {
     const result = classifyMailSource({
       fromAddress: 'reservations@legacyhotels.co.za',
-      subject: 'FW: please check',
+      subject: 'FW: Secure payment link',
       bodyText:
         'From: H-Pay <noreply@hospitality.cloud>\n\nSent: Monday\n\nTo: reservations\n\nCc: finance\n\nSubject: Secure payment link\n\nHello',
     });
@@ -342,6 +349,7 @@ describe('classifyMailSource', () => {
           '<div>Forwarded message</div>',
           '<div>From: SynXis&nbsp;&amp; &quot;Reservations&quot; &#39;desk&#39; ',
           '&lt;noreply@synxis.com&gt;</div>',
+          '<div>Subject: Guest message</div>',
         ].join(''),
       }),
     ).toEqual({
