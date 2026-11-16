@@ -165,25 +165,30 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         if (catalogueField || quoteName) editor.commands.setUncommitted(path, false);
         setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1);
       } }
-    catch { if (quoteName && !dirty && editVersion.current === before) editor.commands.setUncommitted(path, false); }
+    catch { if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); } }
     finally { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } }
   };
   const saveSearch = async () => {
     if (!dirty || amendTrack || applyingNameRef.current) return;
     const before = editVersion.current;
-    await editor.commands.edit(editPath, editValue(query), editState(query));
-    if (editVersion.current === before) { setDirty(false); if (catalogueField || quoteName) editor.commands.setUncommitted(path, false); }
+    try {
+      await editor.commands.edit(editPath, editValue(query), editState(query));
+      if (editVersion.current === before) { setDirty(false); if (catalogueField || quoteName) editor.commands.setUncommitted(path, false); }
+    } catch (error) {
+      if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); }
+      throw error;
+    }
   };
   const useTypedName = async () => {
     if (applyingNameRef.current) return;
     const before = ++editVersion.current;
     applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true);
     try {
-      await editor.commands.edit(editPath, editValue(query), editState(query));
-      if (editVersion.current !== before) return;
+      editor.commands.stageEdit(editPath, editValue(query), editState(query));
+      editor.commands.stageEdit(selectionPath, null, 'none');
       await editor.commands.edit(selectionPath, null, 'none');
       if (editVersion.current === before) { setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false); }
-    } catch { setDirty(true); }
+    } catch { if (editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); } }
     finally { applyingNameRef.current = false; setApplyingName(false); }
   };
   const searchRecommendation = async (value: string) => {
@@ -326,7 +331,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         if (quoteName) { applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true); }
         void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => {
           if (editVersion.current === before) { setQuery(''); setDirty(false); setOpen(false); if (catalogueField || quoteName) editor.commands.setUncommitted(path, false); }
-        }).catch(() => {}).finally(() => { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } });
+        }).catch(() => {
+          if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); }
+        }).finally(() => { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } });
       }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" disabled={quoteName && applyingName} aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value, row.label); }}><strong>{choiceKind === 'reason_for_stay' ? row.label : row.value}</strong>{choiceKind !== 'reason_for_stay' && row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}

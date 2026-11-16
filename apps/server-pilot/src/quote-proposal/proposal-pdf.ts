@@ -81,7 +81,7 @@ import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, extraDisplayDescription, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
 import { assertProposalLineLimit, brandQuoteWorkbookBytes, quoteDateLabel, quoteOutputPropertyCode, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
-export type RevisionProposalHeader = {attention:string;organization:string;clientEmail:string;clientTelephone:string;bookingAgency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
+export type RevisionProposalHeader = {attention:string;organization:string;clientEmail:string;clientTelephone:string;bookingAgency:string;signerName:string;signerEmail:string;displayBookingAgency?:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
@@ -145,7 +145,8 @@ export function renderRevisionProposalHtml(revision: QuoteRevision, header: Revi
     const totalBlock = last
       ? `<p class="subtotal" data-proposal-subtotal="${totalMinor}">subtotal ${moneyMinor(totalMinor, revision.currency)}</p><p class="vat">15% vat <span>Included</span></p><p class="total" data-proposal-total="${totalMinor}">total of displayed line amounts ${moneyMinor(totalMinor, revision.currency)}</p>${header.notes?.trim() ? `<p class="staff-note"><strong>Note:</strong> ${htmlText(header.notes.trim()).replace(/\n/g, '<br>')}</p>` : ''}${rateBenefits}`
       : '<p>Continued on the following page. Final proposal total appears on the last page.</p>';
-    const clientBlock = `<div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Organization:</strong> ${htmlText(header.organization)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div>`;
+    const agency = header.displayBookingAgency?.trim() ? `<br><strong>Agency:</strong> ${htmlText(header.displayBookingAgency.trim())}` : '';
+    const clientBlock = `<div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Organization:</strong> ${htmlText(header.organization)}${agency}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div>`;
     const headerBlock = start === 0
       ? identity.letterhead === 'none'
         ? `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p>${clientBlock}`
@@ -232,6 +233,7 @@ export async function buildStaysProposalPdf(
         header: {
           attention: header.attention,
           organization: header.organization,
+          displayBookingAgency: header.displayBookingAgency,
           clientEmail: header.clientEmail,
           clientTelephone: header.clientTelephone,
           signerName: header.signerName,

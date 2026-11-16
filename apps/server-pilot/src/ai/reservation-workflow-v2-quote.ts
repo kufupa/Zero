@@ -1430,6 +1430,8 @@ async function quoteArtifacts(
   const header = {
     attention: compiled.input.attention,
     organization: compiled.input.organization,
+    bookingAgency: compiled.input.bookingAgency,
+    displayBookingAgency: compiled.input.bookingAgency,
     clientEmail: compiled.input.clientEmail,
     clientTelephone: compiled.input.clientTelephone,
     signerName: actor?.name ?? '',
@@ -1457,7 +1459,7 @@ async function quoteArtifacts(
     else if (!gotenbergUrl) failures.push('pdf_converter_unavailable');
     else {
       try {
-        const pdf = await buildStaysProposalPdf(stays, { ...header, bookingAgency: compiled.input.bookingAgency, notes: compiled.input.notes },
+        const pdf = await buildStaysProposalPdf(stays, { ...header, notes: compiled.input.notes },
           { url: gotenbergUrl });
         const bytes = Buffer.from(pdf.pdf);
         artifacts.push({ kind: 'pdf_quote', fileName: pdf.fileName, mimeType: 'application/pdf',
