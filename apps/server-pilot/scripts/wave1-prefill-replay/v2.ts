@@ -29,6 +29,15 @@ import { assertReplayIsolation } from './runtime.js';
 const PREFILL_TIMEOUT_MS = 9 * 60_000;
 const NATIVE_CHECK_TIMEOUT_MS = 7 * 60_000;
 
+export const SIMPLE_SYNTHESIS_FLAG_ENV = 'PREFILL_SIMPLE_SYNTHESIS';
+/** Diagnostic flag shared by both arms; only an explicit on-value enables the medium-effort channel. */
+export function simpleSynthesisDiagnosticEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env[SIMPLE_SYNTHESIS_FLAG_ENV]?.trim();
+  if (raw === undefined || raw === '' || raw === 'off' || raw === 'false' || raw === '0') return false;
+  if (raw === 'on' || raw === 'true' || raw === '1') return true;
+  throw new Error(`env ${SIMPLE_SYNTHESIS_FLAG_ENV} must be on|off|true|false|1|0, got: ${raw}`);
+}
+
 type CandidateTrace = {
   candidate: ReservationWorkflowV2CandidateRead;
   raw: ReservationWorkflowV2ReadResult | null;
@@ -43,6 +52,13 @@ type ModelCall = {
   callNumber: number;
   startedAt: string;
   finishedAt?: string;
+  /** Which harness-built adapter served the call; 'primary' covers extraction and baseline synthesis. */
+  channel: 'primary' | 'simple_synthesis';
+  /** Configured reasoning effort of that channel, not a property of the response. */
+  reasoningEffort: 'high' | 'medium';
+  /** Actual route copied from result provenance; absent on error. */
+  routeId?: string;
+  protocol?: string;
   input: unknown;
   result?: unknown;
   error?: string;
@@ -87,16 +103,20 @@ function describeModelInput(input: ModelInvokeInput) {
   };
 }
 
-function traceModel(adapter: ModelAdapter | null, calls: ModelCall[]): ModelAdapter | null {
+function traceModel(adapter: ModelAdapter | null, calls: ModelCall[], channel: ModelCall['channel'],
+  reasoningEffort: ModelCall['reasoningEffort']): ModelAdapter | null {
   if (!adapter) return null;
   return {
     ...(adapter.reserveCalls ? { reserveCalls: adapter.reserveCalls.bind(adapter) } : {}),
     async invoke(input) {
-      const call: ModelCall = { callNumber: calls.length + 1, startedAt: new Date().toISOString(), input: describeModelInput(input) };
+      const call: ModelCall = { callNumber: calls.length + 1, startedAt: new Date().toISOString(), channel,
+        reasoningEffort, input: describeModelInput(input) };
       calls.push(call);
       try {
         const result = await adapter.invoke(input);
         call.result = result;
+        call.routeId = result.provenance?.routeId;
+        call.protocol = result.provenance?.protocol;
         return result;
       } catch (error) {
         call.error = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -117,6 +137,7 @@ export async function runCurrentV2Case(input: {
   gateway: EvidenceGateway;
   privateDir: string;
   signal: AbortSignal;
+  simpleSynthesisDiagnostic: boolean;
 }) {
   await assertReplayIsolation(input.db, input.privateDir);
   const [row] = await input.db.select({
@@ -200,13 +221,21 @@ export async function runCurrentV2Case(input: {
       throw new Error('REPLAY_SOURCE_SELECTION_UNAVAILABLE');
     }
 
-    const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: 'high' };
-    const model = traceModel(createAzureExtractionAdapter(modelEnv), trace.modelCalls);
+    const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: 'high',
+      ...(input.simpleSynthesisDiagnostic ? { [SIMPLE_SYNTHESIS_FLAG_ENV]: 'on' } : {}) };
+    const model = traceModel(createAzureExtractionAdapter(modelEnv), trace.modelCalls, 'primary', 'high');
+    // A second adapter instance on a separate trace channel; high and medium responses can never be shared.
+    const simpleSynthesisAdapter = input.simpleSynthesisDiagnostic
+      ? traceModel(createAzureExtractionAdapter({ ...modelEnv, EXTRACTION_REASONING_EFFORT: 'medium' }),
+          trace.modelCalls, 'simple_synthesis', 'medium')
+      : null;
     trace.nativeReaderMode = 'production-default';
     const generated = await runReservationWorkflowV2Prefill({
       db: input.db, transportId: scoped.transportId, propertyCode: scoped.propertyCode,
       source, selection, mailboxAddress: input.mailboxAddress, env: modelEnv,
       signal: operationSignal, adapter: model,
+      // Optional on the candidate core, ignored by the baseline; spread keeps baseline TS compatible.
+      ...(input.simpleSynthesisDiagnostic && simpleSynthesisAdapter ? { simpleSynthesisAdapter } : {}),
       // Omit readCandidate: production shares its reader across the bounded full plan.
       onValidatedExtraction: async (generationId, extraction) => {
         const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...item,
@@ -295,6 +324,9 @@ export async function runCurrentV2Case(input: {
       currentNativeObservations: fresh.draft.observations,
       currentOperationResults: fresh.draft.operationResults,
       modelCalls: trace.modelCalls,
+      modelChannelCalls: { primary: trace.modelCalls.filter(call => call.channel === 'primary').length,
+        simpleSynthesis: trace.modelCalls.filter(call => call.channel === 'simple_synthesis').length },
+      simpleSynthesisDiagnostic: input.simpleSynthesisDiagnostic,
       candidateReads: trace.candidateReads,
       nativeReaderMode: trace.nativeReaderMode,
       candidateReadTraceSemantics: 'Final production observations; counts are observations, not native calls. Raw/delivered copy the admitted observation, not recovered wire payloads.',

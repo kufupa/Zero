@@ -13,7 +13,9 @@ import { MESSAGE_ARRIVED_AT } from '../../src/ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../src/ai/staff-quote-workflow.js';
 import { createEvidenceGateway } from './cache.js';
 import { createReplayStorage, seedAllRecoveredAttachments, seedMailbox, type RecoveredAttachment } from './runtime.js';
-import { ReplayExecutionError, runCurrentV2Case } from './v2.js';
+import { ReplayExecutionError, runCurrentV2Case, simpleSynthesisDiagnosticEnabled,
+  SIMPLE_SYNTHESIS_FLAG_ENV } from './v2.js';
+import { lunaCallBudget } from '../../src/ai/bedrock/luna.js';
 
 const CAPTURED_SOURCE_VERSION = 'cdb59e4d10a7379dd26d5a648ebec6883c40a0ab';
 const SOURCE_VERSION = process.env.NAVA_BUILD_COMMIT ?? '';
@@ -35,6 +37,11 @@ const CACHE_CATALOG = join(ORIGINAL_ROOT, 'cache-catalog-v7.jsonl');
 const CACHE_PROOF = join(ORIGINAL_ROOT, 'cache-catalog-v7-proof.json');
 const MAILBOX_FIDELITY = join(WAVE1_ROOT, 'isolation/mailbox-fidelity.json');
 const MAILBOX_ADDRESS = 'centurion@legacyhotels.co.za';
+/** The only files the identical per-arm harness patch may touch; paths are worktree-root relative. */
+const HARNESS_DIFF_FILES = ['apps/server-pilot/scripts/wave1-prefill-replay/run.ts',
+  'apps/server-pilot/scripts/wave1-prefill-replay/v2.ts'] as const;
+const HARNESS_DIFF_FILE_SET: ReadonlySet<string> = new Set(HARNESS_DIFF_FILES);
+const EXECUTION_FILTER_SIZE = 6;
 
 const caseSchema = z.object({
   decisionId: z.string().min(1),
@@ -165,6 +172,24 @@ async function assertLaunchEnvironment(preflight: boolean, shard: Shard) {
   const trackedDiff = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'],
     { cwd: worktree, encoding: 'utf8' }).trim();
   if (trackedDiff) throw new Error('TRACKED_SOURCE_DIFF_PRESENT');
+  // Provenance: HEAD stays the harness commit; HEAD^ is the product parent. The normalized top-commit
+  // diff (index lines stripped) lets a coordinator attest the per-arm patch is byte-identical in scope.
+  let productParent: string | null = null;
+  let harnessDiff: { files: string[]; normalizedSha256: string | null; onlyHarnessFiles: boolean } =
+    { files: [], normalizedSha256: null, onlyHarnessFiles: false };
+  try {
+    const parent = execFileSync('git', ['rev-parse', 'HEAD^'], { cwd: worktree, encoding: 'utf8' }).trim();
+    if (/^[a-f0-9]{40}$/.test(parent)) {
+      productParent = parent;
+      const files = execFileSync('git', ['diff', '--name-only', parent, 'HEAD'],
+        { cwd: worktree, encoding: 'utf8' }).split('\n').map(line => line.trim()).filter(Boolean);
+      const raw = execFileSync('git', ['diff', parent, 'HEAD', '--', ...HARNESS_DIFF_FILES],
+        { cwd: worktree, encoding: 'utf8' });
+      const normalized = raw.split('\n').filter(line => !line.startsWith('index ')).join('\n');
+      harnessDiff = { files, normalizedSha256: createHash('sha256').update(normalized).digest('hex'),
+        onlyHarnessFiles: files.length > 0 && files.every(file => HARNESS_DIFF_FILE_SET.has(file)) };
+    }
+  } catch { productParent = null; }
   const appRoot = await realpath(process.cwd());
   if (!isWithin(worktree, appRoot)) throw new Error('RUNNER_NOT_IN_CURRENT_WORKTREE');
   const privateRoot = process.env.FRESH_REPLAY_ROOT;
@@ -175,13 +200,15 @@ async function assertLaunchEnvironment(preflight: boolean, shard: Shard) {
   if (process.env.TZ !== 'UTC') throw new Error('REPLAY_TIMEZONE_MUST_BE_UTC');
   if (process.env.NAVA_BUILD_COMMIT !== SOURCE_VERSION) throw new Error('RUNNER_COMMIT_ENV_MISMATCH');
   if (process.env.EXTRACTION_REASONING_EFFORT !== 'high') throw new Error('HISTORICAL_REASONING_EFFORT_MUST_BE_HIGH');
+  const simpleSynthesis = simpleSynthesisDiagnosticEnabled();
   const database = safeDatabaseIdentity(process.env.DATABASE_URL, shard);
   if (!database && !preflight) throw new Error('REPLAY_DATABASE_URL_REQUIRED');
   const shots = process.env.HMS_SHOTS_DIR;
   let shotPath: string | null = null;
   if (shots) { try { shotPath = await realpath(shots); } catch { /* checked below */ } }
   if (!shotPath || !isWithin(expectedPrivateRoot, shotPath)) throw new Error('PRIVATE_SCREENSHOT_DIR_REQUIRED');
-  return { sourceVersion, database, privateRoot: expectedPrivateRoot, shots: shotPath };
+  return { sourceVersion, productParent, harnessDiff, simpleSynthesis, database,
+    privateRoot: expectedPrivateRoot, shots: shotPath };
 }
 
 async function loadInputs(selectionPath: string, sealPath?: string): Promise<LoadedInputs> {
@@ -382,6 +409,8 @@ async function runPreflight(selectionPath: string, sealPath: string | undefined,
     artifacts: inputs.artifactHashes, sourceHashes: inputs.sourceHashes, routeIdentityHash: inputs.routeIdentityHash,
     cacheMode: 'production default native reader; current state; historical validity unresolved',
       nativeReaderMode: 'production-default',
+    productParent: environment.productParent, harnessDiff: environment.harnessDiff,
+    simpleSynthesis: { flagEnv: SIMPLE_SYNTHESIS_FLAG_ENV, enabled: environment.simpleSynthesis },
     imports, database: environment.database ?? 'launcher identity verified by parent; no connection made',
     databaseConnected: false, databaseSeeded: false, modelCalls: 0, nativeCalls: 0,
     sourceCutoffsMatched: true, packetHashesVerified: true };
@@ -389,16 +418,31 @@ async function runPreflight(selectionPath: string, sealPath: string | undefined,
 }
 
 async function runCohort(selectionPath: string, sealPath: string | undefined, confirmSelection: string | undefined,
-  confirmSeal: string | undefined, concurrency: number, shard: Shard) {
+  confirmSeal: string | undefined, concurrency: number, shard: Shard, executeIds: string[] | undefined) {
   const environment = await assertLaunchEnvironment(false, shard);
   if (!sealPath) throw new Error('SEALED_CASE_ID_FILE_REQUIRED');
   const inputs = await loadInputs(selectionPath, sealPath);
   if (inputs.cases.length < 40 || inputs.cases.length > 60) throw new Error('FINAL_COHORT_MUST_HAVE_40_TO_60_CASES');
   if (confirmSelection !== inputs.selectionSha256 || confirmSeal !== inputs.sealSha256) throw new Error('FINAL_SELECTION_HASH_CONFIRMATION_MISMATCH');
+  // Execution filter runs strictly after cohort validation and hash confirmation; selection and seal are never rewritten.
+  let executionCases = inputs.cases;
+  let executionFilter: { kind: 'explicit-six-id'; decisionIds: string[]; cohortCaseCount: number } | null = null;
+  if (executeIds !== undefined) {
+    if (executeIds.length !== EXECUTION_FILTER_SIZE) throw new Error('EXECUTION_FILTER_REQUIRES_EXACTLY_SIX_IDS');
+    if (new Set(executeIds).size !== EXECUTION_FILTER_SIZE) throw new Error('EXECUTION_FILTER_IDS_NOT_DISTINCT');
+    const selectedIds = new Set(inputs.cases.map(row => row.decisionId));
+    if (executeIds.some(id => !selectedIds.has(id))) throw new Error('EXECUTION_FILTER_ID_OUTSIDE_VALIDATED_SELECTION');
+    if (concurrency !== 1 || shard.count !== 1) throw new Error('EXECUTION_FILTER_REQUIRES_CONCURRENCY_1_AND_SINGLE_SHARD');
+    if (!environment.productParent || !environment.harnessDiff.onlyHarnessFiles)
+      throw new Error('HARNESS_DIFF_SCOPE_VIOLATION');
+    const picked = new Set(executeIds);
+    executionCases = inputs.cases.filter(row => picked.has(row.decisionId));
+    executionFilter = { kind: 'explicit-six-id', decisionIds: executeIds, cohortCaseCount: inputs.cases.length };
+  }
   const base = process.env.FRESH_REPLAY_ROOT!;
-  const { threadLaneCount, laneQueue, shardCases } = shardLanes(inputs.cases, shard);
+  const { threadLaneCount, laneQueue, shardCases } = shardLanes(executionCases, shard);
   const runId = `wave1-${new Date().toISOString().replace(/[:.]/g, '-')}-${inputs.selectionSha256.slice(0, 12)}${
-    shard.count > 1 ? `-shard-${shard.index}-of-${shard.count}` : ''}`;
+    executionFilter ? '-six-id' : ''}${shard.count > 1 ? `-shard-${shard.index}-of-${shard.count}` : ''}`;
   const runDir = join(base, 'runs', runId);
   await mkdir(runDir, { recursive: true, mode: 0o700 });
   const shotsDir = join(runDir, 'shots');
@@ -431,6 +475,18 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
       nativeReaderMode: 'production-default',
       selectionSha256: inputs.selectionSha256, sealSha256: inputs.sealSha256, artifactHashes: inputs.artifactHashes,
       sourceHashes: inputs.sourceHashes,
+      productParent: environment.productParent,
+      productParentLabel: 'exact HEAD^ of the harness commit; sourceVersion remains the harness HEAD',
+      harnessDiff: environment.harnessDiff,
+      harnessDiffLabel: 'normalized HEAD^..HEAD diff, index lines stripped; onlyHarnessFiles requires the top commit to touch only run.ts+v2.ts',
+      execution: executionFilter ?? { kind: 'full-cohort', caseCount: inputs.cases.length },
+      simpleSynthesis: { flagEnv: SIMPLE_SYNTHESIS_FLAG_ENV, enabled: environment.simpleSynthesis,
+        modelId: 'gpt-6-luna', routeId: 'azure_gpt6_luna_extraction', protocol: 'azure-openai-responses',
+        channels: { primary: { reasoningEffort: 'high', budget: lunaCallBudget('high'),
+            serves: 'extraction and baseline synthesis' },
+          simpleSynthesis: { reasoningEffort: 'medium', referenceBudget: lunaCallBudget('medium'),
+            note: 'the core assigns per-call budgets; actual maxOutputTokens/deadlineAt land in modelCalls[].input' } },
+        responseSharing: 'none: distinct adapter instances and trace channels; no harness or adapter response cache' },
       routeIdentityHash: inputs.routeIdentityHash, cases: inputs.cases.map(row => ({ decisionId: row.decisionId,
         selectedSourceRowId: row.selectedSourceRowId, workflow: row.workflow, journeyId: row.journeyId,
         cutoff: row.cutoff, packetPath: row.packetPath, packetSha256: row.packetSha256,
@@ -467,7 +523,7 @@ async function runCohort(selectionPath: string, sealPath: string | undefined, co
           throw new Error(`SOURCE_CASE_BINDING_MISMATCH:${item.decisionId}`);
         const result = await runCurrentV2Case({ db, sourceMessageId: actual.id, expectedCutoff: item.cutoff,
           mailboxAddress: MAILBOX_ADDRESS, gateway, privateDir: process.env.FRESH_REPLAY_ROOT!,
-          signal: AbortSignal.timeout(16 * 60_000) });
+          signal: AbortSignal.timeout(16 * 60_000), simpleSynthesisDiagnostic: environment.simpleSynthesis });
         const attachmentSources = inputs.sourceAttachments.filter(file => {
           const source = originalById.get(file.message_id);
           return source?.thread_id === item.threadId && source.received_at !== null && source.received_at !== undefined &&
@@ -534,6 +590,9 @@ async function main() {
   const sealPath = readArg('--seal', DEFAULT_SEAL);
   const concurrency = Number(readArg('--concurrency', '4'));
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('CONCURRENCY_MUST_BE_1_TO_4');
+  const executeArg = readArg('--execute-ids');
+  const executeIds = executeArg === undefined ? undefined : executeArg.split(',').map(id => id.trim());
+  if (executeIds?.some(id => !id)) throw new Error('EXECUTE_IDS_EMPTY_ELEMENT');
   const shardArg = readArg('--shard'), shardsArg = readArg('--shards');
   if ((shardArg === undefined) !== (shardsArg === undefined)) throw new Error('SHARD_AND_SHARDS_REQUIRED_TOGETHER');
   const shard: Shard = { index: Number(shardArg ?? '1'), count: Number(shardsArg ?? '1') };
@@ -543,7 +602,7 @@ async function main() {
   if (modes !== 1) throw new Error('CHOOSE_EXACTLY_ONE_OF_PRELIGHT_OR_RUN');
   if (hasFlag('--preflight')) return runPreflight(selectionPath, sealPath, shard);
   return runCohort(selectionPath, sealPath, readArg('--confirm-selection-sha256'),
-    readArg('--confirm-seal-sha256'), concurrency, shard);
+    readArg('--confirm-seal-sha256'), concurrency, shard, executeIds);
 }
 
 main().catch(error => {
