@@ -416,7 +416,13 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
             ...(picked ? { ...(pickedGuest ? { guestName: pickedGuest } : {}),
               ...(picked.arrival ? { bookedArrival: picked.arrival } : {}),
               ...(picked.departure ? { bookedDeparture: picked.departure } : {}) } : {}) };
-          void editor.commands.configureFiling(attachmentId, target, kind);
+          void editor.commands.configureFiling(attachmentId, target, kind).then(() => {
+            // The command resolves only after the service persisted this exact
+            // choice and a fresh snapshot was applied; failures, stale revisions
+            // and unresolved replies reject and keep the pending row. Clear by
+            // identity so a newer pick or source is never dropped.
+            setPickedRow(current => current === picked ? null : current);
+          }).catch(() => {});
         }}>Apply PDF and destination</button>
         <button type="button" disabled={editor.view.busy || dirty || docs.length !== 1 || !hint || !doc || exclude.length > 0 || !canRunLookup}
           onClick={() => void editor.commands.lookup()}>{useCreateTarget ? 'Find created stay and check PDF' : 'Find stay and check PDF'}</button></div>
