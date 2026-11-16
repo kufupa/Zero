@@ -52,9 +52,10 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
     setLoadError(null);
     const earlySkipped = source.skippedSource ?? null;
     setSkippedSource(earlySkipped);
-    if (!earlySkipped && request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
     if (earlySkipped) return () => { live = false; };
-    const initialRequest = request.current;
+    const matching = request.current?.key === key ? request.current : null;
+    const initialRequest = matching ?? { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
+    request.current = initialRequest;
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
       if (!live || activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
       setBoundSnapshot(bound => {
