@@ -257,14 +257,19 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
         prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true,
       } : {});
       if (input.mode === 'preview' && opened.outcome === 'fee_dialog_pending' &&
-          opened.requestDispatched !== true && opened.chargeApproved !== true && opened.chargeDispatched !== true) {
+          opened.cancellationSaveDispatched === false && opened.chargeApproved === false && opened.chargeDispatched === false) {
         return { outcome: 'preview_ok', expected, feeDialogPending: true,
+          dialogOpenRequestDispatched: opened.dialogOpenRequestDispatched, cancellationSaveDispatched: false,
+          chargeApproved: false, chargeDispatched: false,
           reasons: opened.reasons ?? [], penaltyText: opened.penaltyText,
           policyFacts: opened.policyFacts ?? [], requestDispatched: false };
       }
+      if (opened.cancellationSaveDispatched !== false) {
+        return { ...opened, outcome: 'uncertain', expected, requestDispatched: true };
+      }
       if (opened.outcome !== 'reason_ready') return { ...opened,
         outcome: opened.outcome === 'fee_dialog_pending' ? 'refused_penalty' : opened.outcome,
-        expected, requestDispatched: opened.requestDispatched === true };
+        expected, requestDispatched: false };
       if (input.mode === 'preview' && previewStage) {
         const matching = (opened.reasons ?? []).filter((item) => item.display === previewStage.reasonLabel);
         if (matching.length !== 1) return { outcome: 'refused_reason_missing', expected,
@@ -277,12 +282,14 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
           if (staged.outcome === 'fee_dialog_pending' && staged.requestDispatched === false &&
               staged.chargeApproved === false && staged.chargeDispatched === false &&
               staged.dispatchCallbacksDrained === true) {
-            return { outcome: 'preview_ok', expected, feeDialogPending: true, reasons: opened.reasons ?? [],
+            return { outcome: 'preview_ok', expected, feeDialogPending: true,
+              dialogOpenRequestDispatched: opened.dialogOpenRequestDispatched, cancellationSaveDispatched: false,
+              chargeApproved: false, chargeDispatched: false, reasons: opened.reasons ?? [],
               penaltyText: staged.penaltyText ?? opened.penaltyText ?? null,
               policyFacts: opened.policyFacts ?? [], requestDispatched: false };
           }
           return { ...staged, outcome: staged.outcome === 'fee_dialog_pending' ? 'refused_penalty' : staged.outcome,
-            expected, requestDispatched: false };
+            expected, requestDispatched: staged.requestDispatched !== false };
         }
         return { outcome: 'preview_ok', expected, reasons: opened.reasons, policyFacts: opened.policyFacts ?? [],
           penaltyText: staged.penaltyText ?? null,

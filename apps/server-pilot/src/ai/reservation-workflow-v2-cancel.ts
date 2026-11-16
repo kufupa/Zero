@@ -70,7 +70,7 @@ type CancelOutcome = { status: string; issue?: string; [key: string]: unknown };
 type Tx = Parameters<Parameters<DB['transaction']>[0]>[0];
 type NativeCancelResult = {
   outcome?: string; issue?: string; expected?: unknown; reasons?: unknown; policyFacts?: unknown; penaltyText?: unknown;
-  feeDialogPending?: unknown;
+  feeDialogPending?: unknown; dialogOpenRequestDispatched?: unknown; cancellationSaveDispatched?: unknown;
   requestDispatched?: boolean; writerSessionClosed?: boolean; dispatchCallbacksDrained?: boolean;
   nativeReadback?: unknown; runDir?: unknown; screenshots?: unknown; chargeApproved?: unknown; chargeDispatched?: unknown;
   staged?: unknown;
@@ -508,7 +508,9 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
     }
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
         !expected.success || !reasons.success || !policyFacts.success || !penaltyText.success ||
-        (feeDialogPending && (penaltyText.data === null || native.staged !== undefined)) ||
+        (feeDialogPending && (typeof native.dialogOpenRequestDispatched !== 'boolean' ||
+          native.cancellationSaveDispatched !== false || native.chargeApproved !== false || native.chargeDispatched !== false ||
+          penaltyText.data === null || native.staged !== undefined)) ||
         expected.data.propertyCode !== target.propertyCode || expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
         (!expected.data.allowRealGuest && (expected.data.firstName !== 'Proof' || expected.data.lastName !== 'Labtest' ||
           expected.data.arrival < '2027-01-01' || expected.data.cmsSend !== false))) {
@@ -1002,8 +1004,8 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
     financialHandling: fresh.preflight.financialHandling,
     feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', scope: fresh.preflight.roomScope,
     sourceRefs: compiled.sourceRefs, approvalDigest: approval,
-    financialReview: { required: true, accepted: binding.accepted, observationRef: item.ref,
-      approvalDigest: approval, reviewFieldPath: `${compiled.reviewPath}/${index}`, reviewNote: reviewNote(item.ref, approval) },
+    ...(ready ? { financialReview: { required: true, accepted: binding.accepted, observationRef: item.ref,
+      approvalDigest: approval, reviewFieldPath: `${compiled.reviewPath}/${index}`, reviewNote: reviewNote(item.ref, approval) } } : {}),
     ...(!ready ? { issue: charge ? 'cancel_charge_finish_in_hms' :
       compiled.reasonText === null ? 'cancel_reason_required' : 'cancel_reason_must_match_native_option' } : {}) };
 }
