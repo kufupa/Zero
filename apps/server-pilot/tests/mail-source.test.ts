@@ -275,10 +275,14 @@ describe('classifyMailSource', () => {
     expect(result.source).toBe('H-Pay');
   });
 
-  it('skips only H-Pay payment-link notices; other H-Pay mail stays direct for finance triage', () => {
+  it('skips all exact-host H-Pay mail; the skip is not subject-limited, and subdomains stay direct', () => {
     expect(
       classifyMailSource({ fromAddress: 'finance@hospitality.cloud', subject: 'Payment confirmation', bodyText: '' }),
-    ).toEqual({ kind: 'direct', source: null, reason: 'unskipped_subject:h-pay' });
+    ).toEqual({ kind: 'system', source: 'H-Pay', reason: 'sender_domain:hospitality.cloud' });
+    for (const fromAddress of ['staff@mail.profitroom.com', 'noreply@mail.tiket.com',
+      'alerts@mail.ratetiger.com', 'finance@h-pay.hospitality.cloud']) {
+      expect(classifyMailSource({ fromAddress, subject: 'Question', bodyText: '' }).kind).toBe('direct');
+    }
   });
 
   it('does not skip an internal forward on a brand-prefixed subject alone', () => {

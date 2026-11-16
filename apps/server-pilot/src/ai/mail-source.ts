@@ -22,8 +22,9 @@ export function isMailSourceClassification(value: unknown): value is MailSourceC
 
 type MailSourceRule = Omit<
   MailSourceRuleData,
-  'forwardedSubjectPatterns' | 'directSubjectPatterns' | 'skipSubjectPatterns'
+  'forwardedSubjectPatterns' | 'directSubjectPatterns' | 'skipSubjectPatterns' | 'exactHost'
 > & {
+  exactHost?: boolean;
   forwardedSubjectPatterns?: readonly RegExp[];
   directSubjectPatterns?: readonly RegExp[];
   skipSubjectPatterns?: readonly RegExp[];
@@ -41,6 +42,7 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
     kind: rule.kind,
     source: rule.source,
     domains: rule.domains,
+    ...(rule.exactHost === undefined ? {} : { exactHost: rule.exactHost }),
     ...(rule.forwardedSubjectPatterns === undefined
       ? {}
       : { forwardedSubjectPatterns: compilePatterns(rule.forwardedSubjectPatterns) }),
@@ -77,13 +79,13 @@ function extractDomain(rawAddress: string | null | undefined): string {
   return address.slice(address.lastIndexOf('@') + 1).replace(/\.+$/, '').toLowerCase();
 }
 
-function domainMatches(domain: string, registeredDomain: string): boolean {
-  return domain === registeredDomain || domain.endsWith(`.${registeredDomain}`);
+function domainMatches(domain: string, registeredDomain: string, exactHost?: boolean): boolean {
+  return domain === registeredDomain || (!exactHost && domain.endsWith(`.${registeredDomain}`));
 }
 
 function ruleForDomain(domain: string): { rule: MailSourceRule; registeredDomain: string } | null {
   for (const rule of MAIL_SOURCE_RULES) {
-    const registeredDomain = rule.domains.find((candidate) => domainMatches(domain, candidate));
+    const registeredDomain = rule.domains.find((candidate) => domainMatches(domain, candidate, rule.exactHost));
     if (registeredDomain) return { rule, registeredDomain };
   }
   return null;

@@ -118,6 +118,7 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Tiket.com',
     domains: ['tiket.com'],
+    exactHost: true,
     otaChip: true,
     bookingPhrase: 'tiket(?:\\.com)?',
   },
@@ -126,15 +127,22 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Profitroom',
     domains: ['profitroom.com'],
+    exactHost: true,
     directSubjectPatterns: [{ source: '\\bcontact\\s+form\\b', flags: 'i' }],
+  },
+  {
+    id: 'ratetiger',
+    kind: 'system',
+    source: 'RateTiger',
+    domains: ['ratetiger.com'],
+    exactHost: true,
   },
   {
     id: 'h-pay',
     kind: 'system',
     source: 'H-Pay',
     domains: ['hospitality.cloud'],
-    // Payment-link notices only; finance mail still reaches money-billing triage.
-    skipSubjectPatterns: [{ source: '\\bsecure\\s+payment\\s+link\\b', flags: 'i' }],
+    exactHost: true,
   },
   {
     id: 'reviewpro',

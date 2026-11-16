@@ -3,6 +3,8 @@ export type MailSourceRuleData = {
   readonly kind: 'channel' | 'system';
   readonly source: string;
   readonly domains: readonly string[];
+  /** Owner-listed skip hosts match only the exact sender host; subdomains stay direct. */
+  readonly exactHost?: boolean;
   readonly forwardedSubjectPatterns?: readonly {
     readonly source: string;
     readonly flags: string;

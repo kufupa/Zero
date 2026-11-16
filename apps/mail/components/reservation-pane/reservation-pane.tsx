@@ -6,8 +6,9 @@ import { attentionFieldPath, inputFieldLabel } from '@/lib/reservation-workflow/
 import { knownFailureCopy, staffFailureCopy } from '@/lib/reservation-workflow/failure-copy';
 import { derivePaneStage, quoteReplyLabel } from '@/lib/reservation-workflow/pane-stage';
 import { getQuoteOutput } from '@/lib/reservation-workflow/quote-output';
-import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
+import type { ReservationPaneSnapshot, ReservationSkippedSource, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
 import { cancelChargeForSelection, effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { MailSourceNoActionCard } from '@/components/nava-pane/blocks/mail-source-no-action';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
@@ -22,6 +23,7 @@ import styles from './reservation-pane.module.css';
 export type ReservationPaneProps = {
   source: ReservationSourceContext; activeProperty: import('@/lib/reservation-workflow/types').PropertyConfiguration['propertyCode'] | undefined; configuration: import('@/lib/reservation-workflow/types').PropertyConfiguration | null; snapshot: ReservationPaneSnapshot | null; loadError: string | null;
   client: ReservationWorkflowClient; onSnapshot(snapshot: ReservationPaneSnapshot): void;
+  skippedSource?: ReservationSkippedSource | null;
   onOpenEvidence?: (ref: string) => void; onOpenAttachment?: (ref: string) => void; preview?: boolean; onSaveQuoteOutput?: SaveQuoteOutput;
 };
 const labels: Record<ReservationWorkflowKind, string> = { create: 'Create', quote: 'Quote', amend: 'Amend', cancel: 'Cancel', services: 'Add-Ons', filing: 'Filing', other: 'Other' };
@@ -644,7 +646,14 @@ export function ReservationPane(props: ReservationPaneProps) {
         {[...new Set(currentIssues.map(issueText))].map(reason => <p key={reason}>{reason}</p>)}
         {reviewButtons.length > 0 && <div>{reviewButtons.map(({ field, label, target }) => <button type="button" key={label} onClick={() => { if (target) activeTarget.current = target; focusField(field); }}>{label}</button>)}</div>}
       </div>}
-      {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>
+      {props.skippedSource ? (props.skippedSource.kind === 'channel' || props.skippedSource.kind === 'system') && props.skippedSource.source
+        ? <MailSourceNoActionCard kind={props.skippedSource.kind} source={props.skippedSource.source} />
+        : <div className={styles.notice} role="status"><p>Nava takes no action on this email.</p></div>
+      : null}
+      {source.selfPreStay && <div className={styles.notice} role="status">
+        <p>This pre-stay email describes an existing reservation. It cannot create a new booking.</p>
+      </div>}
+      {!snapshot ? (props.skippedSource ? null : <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>)
         : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
         : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={sourceChanged || Boolean(pendingDispatch)}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>

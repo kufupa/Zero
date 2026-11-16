@@ -206,6 +206,8 @@ async function requireCreateSource(scoped: ReturnType<typeof context>, source: R
   }
   const classification = classifyReservationWorkflowV2Source({ fromAddress: row.fromAddress, subject: row.subject,
     bodyText: preStaySourceText(row.textBody, row.htmlBody), mailboxAddress });
+  if (classification.skippedReason) throw new TRPCError({ code: 'FORBIDDEN',
+    message: 'This email comes from an automated source; it cannot create a booking.' });
   if (classification.selfPreStay) throw new TRPCError({ code: 'FORBIDDEN',
     message: 'This pre-stay email describes an existing reservation. Choose another action.' });
 }
@@ -377,12 +379,15 @@ export const reservationWorkflowV2Router = router({
       .from(attachment).where(eq(attachment.messageId, selected.id)).limit(50);
     logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'ready',
       matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
+    const admission = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
+      bodyText: preStaySourceText(selected.textBody, selected.htmlBody), mailboxAddress: ctx.transportEmail });
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
       sourceSubject: selected.subject ?? '', sourceSender: selected.fromAddress,
-      selfPreStay: classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
-        bodyText: preStaySourceText(selected.textBody, selected.htmlBody), mailboxAddress: ctx.transportEmail }).selfPreStay,
+      selfPreStay: admission.selfPreStay,
+      skippedSource: admission.skippedReason
+        ? { kind: admission.skippedReason, source: admission.classification.source } : null,
       attachments,
       source: { propertyId: scoped.propertyCode, threadId: selected.threadId, messageId: selected.id,
         sourceHash: staffQuoteSourceHash(selected), arrivedAt: selected.arrivedAt.toISOString() } };
@@ -406,7 +411,8 @@ export const reservationWorkflowV2Router = router({
     const canonicalSource = { ...input.source, propertyId: scoped.propertyCode, arrivedAt: source.arrivedAt.toISOString() };
     const admission = classifyReservationWorkflowV2Source({ fromAddress: source.fromAddress, subject: source.subject,
       bodyText: preStaySourceText(source.textBody, source.htmlBody), mailboxAddress: ctx.transportEmail });
-    if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.` };
+    if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.`,
+      skippedSource: { kind: admission.skippedReason, source: admission.classification.source } };
     const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource, { allowSourceChanged: true });
     // Staff opened an email whose arrival job is still waiting: move that job ahead of newly admitted mail.
     const waitingJobId = initialized.status === 'ok' && !initialized.sourceChanged &&

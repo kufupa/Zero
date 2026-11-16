@@ -6,8 +6,9 @@ import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { useQuoteOutput } from './use-quote-output';
 import type { SaveQuoteOutput } from './quote-output-panel';
 import { snapshotMatchesSource } from '@/lib/reservation-workflow/views';
+import { ReservationSourceSkippedError } from '@/lib/reservation-workflow/client';
 import { ReservationPane } from './reservation-pane';
-import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, PropertyConfiguration } from '@/lib/reservation-workflow/types';
+import type { ReservationPaneSnapshot, ReservationSkippedSource, ReservationSourceContext, ReservationWorkflowClient, PropertyConfiguration } from '@/lib/reservation-workflow/types';
 
 export type ReservationWorkspaceProps = {
   source: ReservationSourceContext;
@@ -23,6 +24,7 @@ export type ReservationWorkspaceProps = {
 export function ReservationWorkspace({ source, activeProperty, configuration, client, onOpenEvidence, onOpenAttachment, bridge, hostType = 'webmail' }: ReservationWorkspaceProps) {
   const [boundSnapshot, setBoundSnapshot] = useState<{ key: string; value: ReservationPaneSnapshot } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [skippedSource, setSkippedSource] = useState<ReservationSkippedSource | null>(null);
   const activeSource = useRef('');
   const refreshCount = useRef(0);
   const request = useRef<{ key: string; promise: Promise<ReservationPaneSnapshot>; prefill: Promise<ReservationPaneSnapshot> | null } | null>(null);
@@ -48,7 +50,10 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
     activeSource.current = key;
     setBoundSnapshot(current => current?.key === key ? current : null);
     setLoadError(null);
-    if (request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
+    const earlySkipped = source.skippedSource ?? null;
+    setSkippedSource(earlySkipped);
+    if (!earlySkipped && request.current?.key !== key) request.current = { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
+    if (earlySkipped) return () => { live = false; };
     const initialRequest = request.current;
     const acceptPrefill = (next: ReservationPaneSnapshot) => {
       if (!live || activeSource.current !== key || !snapshotMatchesSource(next, source)) return;
@@ -84,6 +89,10 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
       } else if (next.session.draft.prefill?.status === 'running' || next.session.draft.prefill?.status === 'queued') acceptPrefill(next);
     }).catch((error: unknown) => {
       if (!live || activeSource.current !== key) return;
+      if (error instanceof ReservationSourceSkippedError) {
+        setSkippedSource(error.skippedSource);
+        return;
+      }
       setLoadError(error instanceof Error ? error.message : 'The source-bound reservation draft could not be opened.');
     });
     return () => { live = false; };
@@ -159,7 +168,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
     return () => { live = false; clearTimeout(timer); };
   }, [client, key, snapshot, source]);
 
-  return <><ReservationPane source={source} activeProperty={activeProperty} configuration={configuration} client={client} snapshot={snapshotMatchesSource(snapshot, source) ? snapshot : null} loadError={loadError} onSnapshot={acceptSnapshot}
+  return <><ReservationPane source={source} activeProperty={activeProperty} configuration={configuration} client={client} snapshot={snapshotMatchesSource(snapshot, source) ? snapshot : null} loadError={loadError} skippedSource={skippedSource} onSnapshot={acceptSnapshot}
     onOpenEvidence={onOpenEvidence} onOpenAttachment={onOpenAttachment} onSaveQuoteOutput={saveQuoteOutput} />
     <Dialog open={Boolean(confirmation)} onOpenChange={open => { if (!open) finishConfirmation(false); }}>
       <DialogContent showOverlay><DialogTitle>Save quotation reply</DialogTitle><DialogDescription>{confirmation?.message}</DialogDescription>
