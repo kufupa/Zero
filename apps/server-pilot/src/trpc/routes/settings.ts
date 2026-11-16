@@ -6,6 +6,7 @@
  * upsert a `userSettings` row for the caller.
  */
 import { eq, sql } from 'drizzle-orm';
+import { z } from 'zod';
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { userSettings } from '../../db/schema/app.js';
@@ -15,6 +16,16 @@ import {
 } from '../../lib/schemas.js';
 
 export const settingsSaveInput = userSettingsSchema.partial();
+
+/**
+ * Remembered CMS confirmation recipient, per user and property. Stored in
+ * `user_settings.settings.cmsRecipientDefaults[propertyCode]`. The key is kept
+ * out of `userSettingsSchema`, so `settings.save` strips it and never clobbers it.
+ */
+const cmsPropertyInput = z.object({ propertyCode: z.string().regex(/^[A-Z0-9]{2,16}$/) }).strict();
+const cmsRecipientDefaultInput = cmsPropertyInput.extend({
+  address: z.string().trim().max(255).email().nullable(),
+}).strict();
 
 export const settingsRouter = tRouter({
   get: privateProcedure.query(async ({ ctx }) => {
@@ -54,6 +65,48 @@ export const settingsRouter = tRouter({
           },
         });
       return { success: true as const };
+    }),
+
+  cmsRecipientDefault: privateProcedure
+    .input(cmsPropertyInput)
+    .query(async ({ input, ctx }) => {
+      const rows = await getDb()
+        .select({ settings: userSettings.settings })
+        .from(userSettings)
+        .where(eq(userSettings.userId, ctx.sessionUser.id))
+        .limit(1);
+      const parsed = z.object({ cmsRecipientDefaults: z.record(z.string().email()).optional() })
+        .safeParse(rows[0]?.settings);
+      return { address: parsed.success ? parsed.data.cmsRecipientDefaults?.[input.propertyCode] ?? null : null };
+    }),
+
+  setCmsRecipientDefault: privateProcedure
+    .input(cmsRecipientDefaultInput)
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      const userId = ctx.sessionUser.id;
+      const current = sql`coalesce(${userSettings.settings}, ${JSON.stringify(defaultUserSettings)}::jsonb)`;
+      if (input.address === null) {
+        await db.update(userSettings)
+          .set({ settings: sql`${current} #- array['cmsRecipientDefaults', ${input.propertyCode}::text]`, updatedAt: new Date() })
+          .where(eq(userSettings.userId, userId));
+        return { address: null };
+      }
+      const address = input.address;
+      const settings = { ...defaultUserSettings, cmsRecipientDefaults: { [input.propertyCode]: address } };
+      await db
+        .insert(userSettings)
+        .values({ id: `settings-${userId}`, userId,
+          settings })
+        .onConflictDoUpdate({
+          target: userSettings.userId,
+          set: {
+            settings: sql`jsonb_set(${current}, '{cmsRecipientDefaults}',
+              coalesce(${current} -> 'cmsRecipientDefaults', '{}'::jsonb) || jsonb_build_object(${input.propertyCode}::text, ${address}::text), true)`,
+            updatedAt: new Date(),
+          },
+        });
+      return { address };
     }),
 });
 

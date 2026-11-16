@@ -9,6 +9,7 @@ import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, t
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
+import { useCmsRecipientDefault } from './shared/cms-recipient-default';
 import { QuoteEditor } from './editors/quote-editor';
 import { AmendEditor, isExactConfirmation } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
@@ -132,6 +133,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   const activeTarget = useRef<string | null>(null);
   const { source, preview = false } = props;
   const { snapshot, request, commands, busy } = workbench;
+  const rememberedRecipient = useCmsRecipientDefault(snapshot?.session.draft.propertyCode).address;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
   const capabilityKind = request?.kind === 'filing' ? 'attach' : request?.kind === 'services' ? 'addons' : request?.kind;
   const scopedConfiguration = props.configuration?.propertyCode === source.propertyId &&
@@ -410,7 +412,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           };
           return inherited('cmsSend') === true && !text(inherited('cmsRecipient')).trim();
         });
-        const recipient = resolveCreateCmsRecipientDefault(snapshot, request.id, source.sender);
+        const recipient = resolveCreateCmsRecipientDefault(snapshot, request.id, source.sender, rememberedRecipient);
         if (needsRecipient && recipient && !text(effectiveAt(snapshot, `${shared}/cmsRecipient`)).trim()) {
           await commands.edit(`${shared}/cmsRecipient`, recipient);
         }

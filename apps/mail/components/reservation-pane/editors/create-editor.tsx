@@ -5,6 +5,7 @@ import { effectiveAt, guestProfileDefaultsToNew, guestProfileReceipt, nativeChoi
 import { Count, Field, FieldReview, Section } from '../shared/stay-fields';
 import { NativePicker } from '../shared/native-pickers';
 import { ReservationNote } from '../shared/reservation-note';
+import { CmsRecipientDefault, useCmsRecipientDefault } from '../shared/cms-recipient-default';
 import styles from './create-quote-editor.module.css';
 
 type Editor = WorkbenchEditorProps;
@@ -42,11 +43,13 @@ const otherFields: BookingField[] = [
 ];
 const allFields = [...partyFields, ...stayFields, ...roomFields, trackField, ...otherFields];
 
-export function resolveCreateCmsRecipientDefault(snapshot: Editor['snapshot'], requestId: string, _sender: string): string {
+/** Blank-recipient fallback: the user's remembered default for this property, else a staff-entered booker email. */
+export function resolveCreateCmsRecipientDefault(snapshot: Editor['snapshot'], requestId: string, _sender: string, remembered = ''): string {
   const email = (value: string) => {
     const candidate = value.trim();
     return candidate.length <= 255 && /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(candidate) ? candidate : '';
   };
+  if (email(remembered)) return email(remembered);
   const path = `${requestPath(requestId)}/body/shared/bookerEmail`;
   if (!staffEnteredAt(snapshot, path) && snapshot.session.draft.staffReviews[path]?.status !== 'accepted') return '';
   return email(text(valueAt(snapshot, path)));
@@ -116,8 +119,9 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
 }) {
   const own = hasOwn(editor, path);
   const inheritedValueAtParent = inheritedValue(editor, parentPaths);
+  const remembered = useCmsRecipientDefault(editor.snapshot.session.draft.propertyCode).address;
   const inherited = field.key === 'cmsRecipient' && !text(inheritedValueAtParent).trim()
-    ? resolveCreateCmsRecipientDefault(editor.snapshot, editor.request.id, editor.source.sender) || inheritedValueAtParent
+    ? resolveCreateCmsRecipientDefault(editor.snapshot, editor.request.id, editor.source.sender, remembered) || inheritedValueAtParent
     : inheritedValueAtParent;
   const label = text(inherited) || (typeof inherited === 'boolean' ? (inherited ? 'Yes' : 'No') : 'Not set');
   return <div className={styles.scopeField} data-field-path={own ? undefined : path}>
@@ -425,7 +429,8 @@ export function CreateEditor(editor: Editor) {
   const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
   const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
   const shared = `${bodyPath}/shared`;
-  const defaultRecipient = resolveCreateCmsRecipientDefault(snapshot, request.id, editor.source.sender);
+  const rememberedRecipient = useCmsRecipientDefault(snapshot.session.draft.propertyCode).address;
+  const defaultRecipient = resolveCreateCmsRecipientDefault(snapshot, request.id, editor.source.sender, rememberedRecipient);
   const hasCompleted = allocations.some((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
   const allCompleted = allocations.length > 0 && allocations.every((allocation) => Boolean(completedRoom(editor, text(allocation.id))));
   const commission = partyFields.find(field => field.key === 'taCommission')!;
@@ -592,6 +597,7 @@ export function CreateEditor(editor: Editor) {
         {otherFields.map(field => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,
           hint: defaultRecipient ? `Blank uses ${defaultRecipient}.` : 'Enter an email when CMS Send Mail is enabled.' } : field} path={`${shared}/${field.key}`} editor={editor}
           defaultValue={field.key === 'cmsRecipient' ? defaultRecipient || undefined : undefined} />)}
+        <CmsRecipientDefault editor={editor} path={`${shared}/cmsRecipient`} />
       </fieldset>
     </Section>
   </div>;

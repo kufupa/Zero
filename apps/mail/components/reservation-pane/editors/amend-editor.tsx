@@ -8,6 +8,7 @@ import { NativePicker } from '../shared/native-pickers';
 import { ReservationNote } from '../shared/reservation-note';
 import paneStyles from '../reservation-pane.module.css';
 import styles from './other-editors.module.css';
+import { CmsRecipientDefault, useCmsRecipientDefault } from '../shared/cms-recipient-default';
 
 type Editor = WorkbenchEditorProps;
 const fields = [
@@ -277,12 +278,13 @@ export function TargetSearch({ editor, body, hint, index, workflow, locked = fal
 
 function ChangeList({ editor, path, label }: { editor: Editor; path: string; label: string }) {
   const changes = rows(effectiveAt(editor.snapshot, path));
+  const rememberedRecipient = useCmsRecipientDefault(editor.snapshot.session.draft.propertyCode).address;
   const add = (choice: string) => {
     if (!choice) return;
     const spec = fields.find(field => field[0] === choice);
     const value = spec?.[2] === 'count' ? (choice === 'adults' || choice === 'roomCount' ? 1 : 0) : spec?.[2] === 'ages' ? [] : spec?.[2] === 'boolean' || spec?.[2] === 'terms' ? false : spec?.[2] === 'party' ? { name: null, candidateRefs: [], suggestedRef: null } : '';
     const change = choice === 'shift_dates' || choice === 'shift_departure'
-      ? { op: choice, days: 0, sourceRefs: [] } : { op: 'set', field: choice, value, sourceRefs: [] };
+      ? { op: choice, days: 0, sourceRefs: [] } : { op: 'set', field: choice, value: choice === 'cmsRecipient' ? rememberedRecipient : value, sourceRefs: [] };
     const raw = valueAt(editor.snapshot, path);
     void editor.commands.edit(path, [...(Array.isArray(raw) ? raw : []), change]);
   };
@@ -385,6 +387,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
             kind={field === 'roomType' ? 'room_type' : field === 'roomTypeForCharge' ? 'room_type_for_charge' : field === 'cmsMessageId' ? 'cms_message' : field === 'guaranteeType' ? 'guarantee' : field === 'track' ? 'track' : 'rate_plan'} compact /> :
           <Field label={spec?.[1] || 'Value'} path={valuePath} editor={editor} compact type={spec?.[2] === 'date' ? 'date' : spec?.[2] === 'email' ? 'email' : field === 'taCommission' ? 'percentage' : 'text'} emptyState={field === 'taCommission' ? 'unknown' : undefined} maxLength={field === 'billingReference' ? 50 : field === 'requestedMealPlan' ? 120 : undefined} nativeMaxLength={field === 'billingReference' ? 50 : undefined} hint={field === 'billingReference' ? 'Select an A/R Account. Infor accepts at most 50 characters.' : field === 'guestEmail' ? 'Use the guest’s own email only when explicitly stated.' : field === 'taCommission' ? 'Enter a percentage from 0 to 100.' : field === 'requestedMealPlan' ? 'Choose a Rate Plan that matches this request. Infor checks the Meal Plan.' : undefined} />}
       </>}
+    {!kept && known && op === 'set' && field === 'cmsRecipient' && <CmsRecipientDefault editor={editor} path={valuePath} />}
   </div>;
 }
 
