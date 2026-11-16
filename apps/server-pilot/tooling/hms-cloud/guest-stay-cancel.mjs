@@ -321,7 +321,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const policyReady = Boolean(reasons && (expected.allowRealGuest === true || reasons.some((item) =>
       item.value === 'TEST' && item.display === 'Test Reservations')));
     let afterOpen = await recordSnapshot(frame);
-    if (fee && !nativeDialog && policyReady && dispatched && response?.status() === 200 && !blocked.length &&
+    if (fee && !nativeDialog && policyReady && dialogOpenDispatched && response?.status() === 200 && !blocked.length &&
         readySnapshot(afterOpen, expected) && sameParties(state, afterOpen, expected) && unchangedExcept(baseline, afterOpen, {}) &&
         unchangedCancellationFields(baseline, afterOpen, expected) &&
         typeof awaitChargeApproval === 'function' && typeof prepareChargeWithAuthority === 'function') {
