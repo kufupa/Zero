@@ -4,6 +4,7 @@ import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from
 import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
+import { selfSentPreStayCandidate } from './existing-stay-information.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { enqueueAiRun, NOT_APPLICABLE_MODEL_ID } from './run-ledger.js';
@@ -37,9 +38,13 @@ export async function enqueueReservationArrival(db: DB, input: {
   const [fileAttachment] = await db.select({ id: attachment.id }).from(attachment)
     .where(and(eq(attachment.messageId, row.id), eq(attachment.isInline, false))).limit(1);
   // Source classification shares the canonical body and notice gates with
-  // ingest, admission and the pane, including routine automated notices.
+  // ingest, admission and the pane, including routine automated notices. The
+  // same self-prestay exemption admission and the pane apply keeps a real
+  // self-sent pre-stay mail eligible for prefill.
   if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body,
-    hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) }).kind !== 'direct') return null;
+    hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) }).kind !== 'direct' &&
+    !selfSentPreStayCandidate({ fromAddress: row.fromAddress, mailboxAddress: row.mailboxAddress,
+      subject: row.subject, bodyText: body })) return null;
   const sourceHash = staffQuoteSourceHash(row);
   const evidence = await reservationArrivalEvidence(db, row.id);
   const priority = input.requestedByPane ? PANE_REQUEST_PRIORITY : input.priority ?? 0;

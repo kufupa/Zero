@@ -65,7 +65,7 @@ describe('self-sent pre-stay information', () => {
     const noticeOnly = classifyMailSource({
       fromAddress,
       subject,
-      bodyText: 'From: Booking.com <noreply@messages.booking.com>\nSubject: Booking confirmation',
+      bodyText: `From: Booking.com <noreply@messages.booking.com>\nSubject: ${subject}`,
     });
     expect(noticeOnly.kind).toBe('channel');
     expect(admissionMailSource(noticeOnly, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({

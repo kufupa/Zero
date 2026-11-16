@@ -11,7 +11,7 @@ import { maskCardNumbers } from './card-mask.js';
 import { classifyMailSource } from './mail-source.js';
 import { buildReservationWorkflowV2MailQuery, selectReservationWorkflowV2MailCandidates } from './reservation-workflow-v2-mail-context.js';
 import { selectReservationWorkflowV2Guidance, type WorkflowGuidanceCatalog, type WorkflowGuidanceProjection, type WorkflowGuidanceReceipt } from './reservation-workflow-v2-memory.js';
-import { currentAuthoredMessageText, groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { currentAuthoredMessageText, groundedSeparateAsk, selfSentPreStayCandidate } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
@@ -6248,9 +6248,8 @@ export function classifyReservationWorkflowV2Source(input: { fromAddress?: strin
   bodyText: string; mailboxAddress?: string | null; isSpam?: boolean; hasAttachments?: boolean }) {
   const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject,
     bodyText: input.bodyText, hasAttachments: input.hasAttachments });
-  const confirmationNumbers = `${input.subject ?? ''}\n${input.bodyText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
-  const selfPreStay = isSelfSentPreStayInformationMail({ fromAddress: input.fromAddress,
-    mailboxAddress: input.mailboxAddress, subject: input.subject, confirmationNumbers });
+  const selfPreStay = selfSentPreStayCandidate({ fromAddress: input.fromAddress,
+    mailboxAddress: input.mailboxAddress, subject: input.subject, bodyText: input.bodyText });
   const skippedReason = input.isSpam ? 'spam' as const : !selfPreStay && classification.kind === 'channel' ? 'channel' as const :
     !selfPreStay && classification.kind === 'system' ? 'system' as const : undefined;
   return { classification, selfPreStay, skippedReason };

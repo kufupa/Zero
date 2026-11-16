@@ -27,7 +27,7 @@ import {
   classifyMailSource,
   type MailSourceClassification,
 } from '../../ai/mail-source.js';
-import { isSelfSentPreStaySubject } from '../../ai/existing-stay-information.js';
+import { selfSentPreStayCandidate } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { fileAttachmentPresence } from './attachment-evidence.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
@@ -92,9 +92,9 @@ export type NativeAdmissionEvidence = {
 /** Admit self-sent pre-stay candidates so extraction can verify body-only confirmations. */
 export function admissionMailSource(
   source: MailSourceClassification,
-  mail: { fromAddress: string; subject: string | null; mailboxAddress: string | null },
+  mail: { fromAddress: string; subject: string | null; mailboxAddress: string | null; bodyText?: string | null },
 ): MailSourceClassification {
-  return source.kind !== 'direct' && isSelfSentPreStaySubject(mail)
+  return source.kind !== 'direct' && selfSentPreStayCandidate(mail)
     ? { kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate' }
     : source;
 }
@@ -344,12 +344,13 @@ export async function admitLiveMessage(
           .where(and(eq(attachment.messageId, trigger.id), eq(attachment.isInline, false)))
           .limit(1)
       : [null];
+  const triggerBody = canonicalSourceBodyText({ textBody: trigger.textBody, htmlBody: trigger.htmlBody });
   let mailSourceDecision =
     trigger.direction === 'inbound'
       ? classifyMailSource({
           fromAddress: trigger.fromAddress,
           subject: trigger.subject,
-          bodyText: canonicalSourceBodyText({ textBody: trigger.textBody, htmlBody: trigger.htmlBody }),
+          bodyText: triggerBody,
           hasAttachments: fileAttachmentPresence(fileAttachment != null, trigger.sourceProvenance),
         })
       : null;
@@ -359,6 +360,7 @@ export async function admitLiveMessage(
     mailSourceDecision = admissionMailSource(mailSourceDecision, {
       fromAddress: trigger.fromAddress,
       subject: trigger.subject,
+      bodyText: triggerBody,
       mailboxAddress: mailbox?.email ?? null,
     });
   }

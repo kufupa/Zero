@@ -645,7 +645,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
         const fromAddress = 'reservations@legacyhotels.co.za';
         const subject = 'FW: Expedia Partner Central - New reservation';
         const textBody =
-          'Forwarded message:\nFrom: Expedia Partner Central <notice@m.expediapartnercentral.com>\nSubject: New reservation';
+          'Forwarded message:\nFrom: Expedia Partner Central <notice@m.expediapartnercentral.com>\nSubject: Expedia Partner Central - New reservation';
         const mailSourceDecision = classifyMailSource({ fromAddress, subject, bodyText: textBody });
         expect(mailSourceDecision.kind).toBe('channel');
 
