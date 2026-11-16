@@ -61,6 +61,7 @@ import {
   UNQUOTED_BOOKING_REVISION_REF,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  FRESH_PRIOR_QUOTE_MESSAGE,
   expiredPriorQuoteNotice,
   expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
@@ -1500,6 +1501,8 @@ export function NavaPane({
               },
             },
           });
+        } else if (notice === 'fresh_search') {
+          toast.warning(FRESH_PRIOR_QUOTE_MESSAGE);
         } else if (notice === 'mismatch') {
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }

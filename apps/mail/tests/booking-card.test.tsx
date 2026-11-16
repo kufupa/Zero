@@ -26,6 +26,7 @@ import {
   bindUsePriorQuoteForBooking,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
+  FRESH_PRIOR_QUOTE_MESSAGE,
   expiredPriorQuoteNotice,
   expiredPriorQuoteToastMessage,
   offerBoardFromRevision,
@@ -3430,6 +3431,13 @@ describe('expired prior re-quote', () => {
       }),
     ).toBe('requote');
     expect(expiredPriorQuoteNotice(['scope_mismatch'], null)).toBe('mismatch');
+  });
+
+  it('asks for a fresh search instead of restoring old stay details when reuse is held', () => {
+    expect(expiredPriorQuoteNotice(['expired', 'fresh_quote_required'], {
+      workflowRunId: 'run-old', revisionRef: 'rev-old',
+    })).toBe('fresh_search');
+    expect(FRESH_PRIOR_QUOTE_MESSAGE).toMatch(/check the stay details and search rates again/i);
   });
 
   it('sends prior groups and party header unchanged when staff has not edited stays', () => {
