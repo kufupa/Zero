@@ -136,7 +136,7 @@ function directExemption(
   if (rule.skipSubjectPatterns && !matches(rule.skipSubjectPatterns)) {
     return { kind: 'direct', source: null, reason: `unskipped_subject:${rule.id}` };
   }
-  if (rule.skipBodyPatterns && !rule.skipBodyPatterns.every((pattern) => pattern.test(evidence.bodyText ?? ''))) {
+  if (rule.skipBodyPatterns && !rule.skipBodyPatterns.every((pattern) => pattern.test(plainTextBody(evidence.bodyText ?? '')))) {
     return { kind: 'direct', source: null, reason: `unmatched_body:${rule.id}` };
   }
   if (rule.requiresNoAttachments && evidence.hasAttachments !== false) {
