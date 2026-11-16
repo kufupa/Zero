@@ -132,6 +132,59 @@ export const retroReportSchema = z.object({
   }
 });
 export type RetroReport = z.infer<typeof retroReportSchema>;
+export type StaffRetroReport = Omit<RetroReport, 'provenance'>;
+
+function staffExplanation(value: string, fallback: string, sourceNames: ReadonlySet<string>): string {
+  return value
+    .replace(/\s*Prior valid .*? grade retained from the compatible reviewed producer\.?/gi, '')
+    .replace(/\b(?:gpt-[a-z0-9_.-]+|luna|terra|sol|astra)\b/gi, name => sourceNames.has(name.toLowerCase()) ? name : 'Nava')
+    .replace(/(?<![\w:/])(?:\/[^\s"'<>]+|[a-z]:[\\/][^\s"'<>]+)/gi, 'supporting evidence')
+    .trim() || fallback;
+}
+
+export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
+  return {
+    version: report.version,
+    reportId: report.reportId,
+    propertyCode: report.propertyCode,
+    generatedAt: report.generatedAt,
+    period: report.period,
+    coverage: {
+      ...report.coverage,
+      notes: [
+        report.coverage.status === 'partial'
+          ? 'This is a partial retrospective. Assessed tasks are a subset of captured email; unresolved measurements remain pending or failed and are excluded from task outcomes.'
+          : 'Source coverage and classification are complete. Preparation quality is assessed separately for each task.',
+        'Email extraction is assessed against the request. HMS-dependent work without historical evidence is not measurable from history.',
+        'Effort minutes are estimates, not measured staff savings. There is no monthly savings extrapolation.',
+      ],
+    },
+    tasks: report.tasks.map(task => {
+      const sourceValues = [...task.sources.map(source => source.quote), ...(task.replay.status === 'replayed' ? task.replay.checks.map(check => check.sourceValue) : [])];
+      const sourceNames = new Set(sourceValues.flatMap(value => value.toLowerCase().match(/\b(?:luna|terra|sol|astra)\b/g) ?? []));
+      const preparation = staffExplanation(task.navaPreparation, 'No preparation recorded.', sourceNames);
+      return {
+        ...task,
+        navaPreparation: preparation,
+        remainingWork: task.remainingWork.map(work => staffExplanation(work, 'Staff verification is required.', sourceNames)),
+        reason: staffExplanation(task.reason, 'See the requested and prepared values for this assessment.', sourceNames),
+        evidence: task.evidence.map(evidence => ({
+          ...evidence,
+          reference: evidence.id,
+          detail: evidence.kind === 'preparation'
+            ? preparation
+            : evidence.kind === 'historical_native'
+              ? 'Historical HMS observation recorded; see the linked checks for its result.'
+              : evidence.detail,
+        })),
+        replay: task.replay.status === 'not_run'
+          ? { ...task.replay, reason: staffExplanation(task.replay.reason, 'Preparation has not been assessed.', sourceNames) }
+          : { ...task.replay, replayId: task.id },
+      };
+    }),
+  };
+}
+
 export type RetroReportResponse =
   | { status: 'ready'; report: RetroReport }
   | { status: 'unavailable'; reason: 'not_available' | 'invalid_report' };

@@ -302,13 +302,6 @@ export const ILLUSTRATIVE_RETRO_REPORT: RetroReport = {
     end: '2026-11-16T04:17:49Z',
     timezone: 'Africa/Johannesburg',
   },
-  provenance: {
-    sourceSnapshotId: 'illustrative-example',
-    sourceSha256: '0'.repeat(64),
-    productSha: '0'.repeat(40),
-    runnerVersion: 'illustrative-example',
-    model: 'illustrative-example',
-  },
   coverage: {
     status: 'partial',
     sourceExportedAt: '2026-11-16T04:17:49Z',

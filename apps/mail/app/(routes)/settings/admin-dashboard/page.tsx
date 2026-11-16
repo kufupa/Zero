@@ -218,7 +218,7 @@ function Coverage({ report }: { report: RetroReport }) {
           </div>
         </div>
         <span className="text-muted-foreground flex items-center gap-2 text-xs">
-          Coverage &amp; provenance <ChevronDown className="size-4" aria-hidden="true" />
+          Source coverage <ChevronDown className="size-4" aria-hidden="true" />
         </span>
       </summary>
       <div className="space-y-5 border-t px-5 py-5">
@@ -262,24 +262,8 @@ function Coverage({ report }: { report: RetroReport }) {
             </dd>
           </div>
           <div>
-            <dt className="text-muted-foreground">Source snapshot</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.sourceSnapshotId}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Nava version assessed</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.productSha}</dd>
-          </div>
-          <div>
             <dt className="text-muted-foreground">Report ID</dt>
             <dd className="mt-1 break-all font-mono">{report.reportId}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Assessment version</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.runnerVersion}</dd>
-          </div>
-          <div className="sm:col-span-2">
-            <dt className="text-muted-foreground">Source fingerprint</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.sourceSha256}</dd>
           </div>
         </dl>
       </div>
