@@ -23,7 +23,7 @@ const attachment = z.object({ id: z.string(), messageId: z.string(), filename: z
   byteSize: z.number(), inline: z.union([z.boolean(), z.string()]).optional(),
   textArtifact: z.object({ status: z.string(), artifact: artifact.nullable() }).nullable(),
   bytesArtifact: z.object({ status: z.string(), artifact: artifact.nullable() }).nullable().optional() });
-const rowSchema = z.object({ sourceRowId: z.string().min(1), receivedAt: z.string(), timestampBasis: z.enum(['received_at', 'sent_at_confirmed_outbound', 'sent_at_fallback', 'created_at', 'missing']).default('received_at'), threadId: z.string().nullable(),
+const rowSchema = z.object({ sourceRowId: z.string().min(1), receivedAt: z.string(), timestampBasis: z.enum(['received_at', 'sent_at_confirmed_outbound', 'sent_at_fallback', 'created_at', 'missing']).default('missing'), threadId: z.string().nullable(),
   messageId: z.string().nullable(), body: z.string(), privateMessage: z.object({ subject: z.string(), direction: z.enum(['inbound', 'outbound']),
     sentAt: z.string().nullable(), addresses: z.object({ from: z.array(z.string()), to: z.array(z.string()), cc: z.array(z.string()), bcc: z.array(z.string()) }),
     sourceMetadata: z.object({ transportId: z.literal('transport-centurion') }), attachments: z.array(attachment) }) });
@@ -136,12 +136,18 @@ function pointerValue(input: unknown, pointer: string): unknown {
 }
 
 function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, action: z.infer<typeof actionSchema>, pointer: string): boolean {
-  const match = /^\/proposal\/content\/requests\/(\d+)\/body\//.exec(pointer);
-  if (!match || !replay) return false;
-  const request = replay.proposal.content.requests[Number(match[1])];
-  if (!request || request.kind !== action.workflow) return false;
-  const preparedAsk = normalize(request.requestText), sourceAsk = normalize(action.quote);
-  return preparedAsk.length >= 8 && (sourceAsk.includes(preparedAsk) || preparedAsk.includes(sourceAsk));
+  if (!replay) return false;
+  const matchesAsk = (request: z.infer<typeof reservationWorkflowV2ProposalSchema>['content']['requests'][number]) => {
+    if (request.kind !== action.workflow) return false;
+    const preparedAsk = normalize(request.requestText), sourceAsk = normalize(action.quote);
+    return preparedAsk.length >= 8 && (sourceAsk.includes(preparedAsk) || preparedAsk.includes(sourceAsk));
+  };
+  const body = /^\/proposal\/content\/requests\/(\d+)\/body\//.exec(pointer);
+  if (body) { const request = replay.proposal.content.requests[Number(body[1])]; return Boolean(request && matchesAsk(request)); }
+  const linkedDocument = /^\/proposal\/content\/documents\/(\d+)\/(?:requestedName|requestedDescription|kind|handling|targetRefs|uploadArtifactRef|documentSourceRef)(?:\/.*)?$/.exec(pointer);
+  if (!linkedDocument || action.workflow !== 'filing') return false;
+  const document = replay.proposal.content.documents[Number(linkedDocument[1])];
+  return Boolean(document && replay.proposal.content.requests.some(request => request.kind === 'filing' && matchesAsk(request) && request.id === document.ownerRequestId && request.documentRefs.includes(document.id)));
 }
 
 async function main(): Promise<void> {
@@ -193,6 +199,7 @@ async function main(): Promise<void> {
         metadata[0].recordCount !== threads.length || threads.length !== manifest.counts.threads || threads.some(thread => thread.snapshotId !== manifest.snapshotId)) throw new Error('Canonical record integrity mismatch');
     sourceExportedAt = manifest.window.endExclusive; sourceThrough = manifest.window.endExclusive; sourceSnapshotId = manifest.snapshotId; sourceScope = manifest.scope.messagePredicate;
     expectedRows = manifest.counts.sourceRows; expectedMessages = manifest.counts.logicalMessages;
+    sourceFallbacks = threads.flatMap(thread => thread.messages.flatMap(message => message.sourceRows)).filter(row => row.privateMessage.direction === 'inbound' && Number.isFinite(Date.parse(row.receivedAt)) && row.timestampBasis !== 'received_at').length;
   }
   const mails: Mail[] = [], groupedRows = new Map<string, Row[]>(); let unknownTimestamps = sourceFallbacks, allRows = 0;
   for (const thread of threads) for (const message of thread.messages) for (const row of message.sourceRows) {
@@ -244,6 +251,7 @@ async function main(): Promise<void> {
   const replays = new Map<string, { result: z.infer<typeof replayResultSchema>; nativeReads: z.infer<typeof nativeReceiptSchema>[] }>();
   const nativeEntries = process.argv.includes('--native-index') ? (await readFile(resolve(option('--native-index')), 'utf8')).trim().split('\n').flatMap(line => { const parsed = nativeIndexSchema.safeParse(JSON.parse(line)); return parsed.success && parsed.data.kind === 'production_read' && parsed.data.propertyCode === 'HRCEN' && parsed.data.observedAt ? [parsed.data] : []; }) : [];
   const { nativeReadArgsKey } = await import('./wave1-prefill-replay/cache.js');
+  const dispatchFailures: Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>[] = [];
   const cache = new Map<string, ModelInvokeResult>(), classifications = new Map<string, z.infer<typeof classificationSchema>>(), tasks = new Map<string, RetroTask>();
   let checkpointQueue = Promise.resolve();
   const save = (record: z.infer<typeof checkpointSchema>) => { checkpointQueue = checkpointQueue.then(() => appendFile(checkpointPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })); return checkpointQueue; };
@@ -256,6 +264,7 @@ async function main(): Promise<void> {
       catch { if (index === previous.length - 1) { await writeFile(checkpointPath, `${previous.slice(0, index).join('\n')}\n`, { mode: 0o600 }); break; } throw new Error('Invalid checkpoint record'); }
       if (record.fingerprint !== fingerprint) throw new Error('Checkpoint fingerprint mismatch: choose a new checkpoint path');
       if (record.kind === 'model') cache.set(record.key, record.result);
+      if (record.kind === 'dispatch_failure') dispatchFailures.push(record);
       if (record.kind === 'classification') classifications.set(record.messageId, record.result);
       if (record.kind === 'replay') replays.set(record.messageId, { result: record.result, nativeReads: record.nativeReads });
       if (record.kind === 'task') tasks.set(record.task.id, record.task);
@@ -273,7 +282,8 @@ async function main(): Promise<void> {
       const message = error instanceof Error ? error.message : 'Unknown model dispatch failure';
       const errorMessage = (env.AZURE_FOUNDRY_API_KEY ? message.split(env.AZURE_FOUNDRY_API_KEY).join('[redacted credential]') : message).slice(0, 8000);
       const statusCode = error !== null && typeof error === 'object' && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : undefined;
-      await save({ kind: 'dispatch_failure', fingerprint, key, purpose, phase, errorName: error instanceof Error ? error.name : 'UnknownError', errorMessage, statusCode, latencyMs: Date.now() - startedAt, usage: 'unknown' });
+      const failure = { kind: 'dispatch_failure', fingerprint, key, purpose, phase, errorName: error instanceof Error ? error.name : 'UnknownError', errorMessage, statusCode, latencyMs: Date.now() - startedAt, usage: 'unknown' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>;
+      await save(failure); dispatchFailures.push(failure);
       throw error;
     }
     const result = modelResultSchema.parse(invoked);
@@ -305,6 +315,7 @@ async function main(): Promise<void> {
   const batchSize = z.coerce.number().int().min(1).max(20).parse(option('--classify-batch', '12'));
   if (batchSize > 1) {
     const batchSchema = z.object({ messages: z.array(z.object({ selectedMessageId: z.string(), result: classificationSchema })).max(20) });
+    const contextSizes = new Map(selectedInbound.map(mail => [mail.sourceRowId, mails.filter(row => row === mail || mail.threadId !== null && row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)).reduce((sum, row) => sum + row.body.length, 0)]));
     const remaining = selectedInbound.filter(mail => !classifications.has(mail.sourceRowId));
     const batches: Mail[][] = [];
     while (remaining.length) {
@@ -312,7 +323,7 @@ async function main(): Promise<void> {
       for (let index = 0; index < remaining.length && batch.length < batchSize;) {
         const mail = remaining[index]; if (!mail) break;
         const thread = mail.threadId ?? mail.sourceRowId;
-        const size = mails.filter(row => row === mail || row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)).reduce((sum, row) => sum + row.body.length, 0);
+        const size = contextSizes.get(mail.sourceRowId) ?? mail.body.length;
         if (threadIds.has(thread) || batch.length > 0 && chars + size > 140000) { index++; continue; }
         batch.push(mail); threadIds.add(thread); chars += size; remaining.splice(index, 1);
       }
@@ -496,6 +507,10 @@ async function main(): Promise<void> {
       replay: replay ? { status: 'replayed', replayId: replay.generationId, nativeEvidence: 'missing', checks: [] } : { status: 'not_run', reason: 'Actual replay did not complete' } }));
 
   }
+  const selectedReplays = selectedInbound.flatMap(mail => { const replay = replays.get(mail.sourceRowId); return replay ? [replay.result] : []; });
+  const replayDiagnostics = { replayedMessages: selectedReplays.length, prefillMessagesWithErrors: selectedReplays.filter(replay => replay.errors?.length).length, extractionTimeoutMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_timeout')).length, extractionErrorMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_error')).length, runnerOrAssessmentFailures: replayFailures.size };
+  const reportedCalls = [...cache.values()].filter(result => result.provenance?.usageSource === 'reported');
+  const usage = { successfulCalls: cache.size, callsWithReportedUsage: reportedCalls.length, successfulCallsWithUnknownUsage: cache.size - reportedCalls.length, inputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.inputTokens, 0), outputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.outputTokens, 0), reportedCostUsd: reportedCalls.reduce((sum, result) => sum + result.usage.estimatedCostUsd, 0), failedDispatchesWithUnknownUsage: dispatchFailures.length };
   const report = retroReportSchema.parse({ version: 'centurion-retro-roi/1', reportId: `retro-${fingerprint.slice(0, 32)}`, propertyCode: 'HRCEN', generatedAt: new Date().toISOString(), period: { start, end, timezone: 'Africa/Johannesburg' },
     provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna' },
     coverage: { status: sourceComplete && successful.length === inbound.length && unknownTimestamps === 0 && failedClassification.size === 0 && Date.parse(sourceThrough) >= Date.parse(end) ? 'complete' : 'partial',
@@ -504,15 +519,15 @@ async function main(): Promise<void> {
       duplicateMessages: population.reduce((sum, mail) => sum + mail.duplicates.length, 0), unknownTimestampMessages: unknownTimestamps, failedMessages: failedClassification.size,
       notes: [`Authoritative export manifest hash and source counts verified; scope ${sourceScope}; source cutoff is export snapshot cutoff, not latest mail.`,
         'Source completeness and classification completeness are independent of preparation success. Live HMS, current catalog and booking memory excluded; only exact indexed observations strictly before request may verify native requirements. Sparse/missing historical facts remain partial with zero credit.',
-        `Selected ${selectedInbound.length}/${inbound.length} inbound messages; ${replayFailures.size} replay/assessment failures; ${successful.filter(id => classifications.get(id)?.disposition === 'unknown').length} unknown classifications.`,
+        `Selected ${selectedInbound.length}/${inbound.length} inbound messages; ${replayFailures.size} runner/assessment failures; ${successful.filter(id => classifications.get(id)?.disposition === 'unknown').length} unknown classifications.`,
         `Private resumable checkpoint ${checkpointPath}; fingerprint ${fingerprint}; ${process.argv.includes('--classify-only') ? 'classification only' : 'real product prefill'}; no DB/native writes or live HMS calls.`,
+        `Actual replay diagnostics: ${JSON.stringify(replayDiagnostics)}. Checkpoint model usage: ${JSON.stringify(usage)}; failed dispatch billing is unknown, not zero.`,
         `Replay effort ${replayEffort}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
         'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
     tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > RETRO_ROI_MAX_REPORT_BYTES) throw new Error('REPORT_TOO_LARGE: previous report preserved; use private checkpoints to narrow output');
   const temporary = `${out}.${process.pid}.tmp`; await writeFile(temporary, serialized, { mode: 0o600 }); await rename(temporary, out);
-  const usage = [...cache.values()].reduce((sum, result) => ({ calls: sum.calls + 1, inputTokens: sum.inputTokens + result.usage.inputTokens, outputTokens: sum.outputTokens + result.usage.outputTokens, costUsd: sum.costUsd + result.usage.estimatedCostUsd }), { calls: 0, inputTokens: 0, outputTokens: 0, costUsd: 0 });
-  info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayFailures: replayFailures.size, model: 'gpt-6-luna', usage });
+  info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayDiagnostics, model: 'gpt-6-luna', usage });
 }
 main().catch(error => { process.stderr.write(`${error instanceof z.ZodError ? `INPUT_SCHEMA_REJECTED (${error.issues.length} fields)` : error instanceof Error ? error.message : 'RUN_FAILED'}\n`); process.exitCode = 1; });
