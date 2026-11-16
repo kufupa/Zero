@@ -55,7 +55,7 @@ const V2_ACTION_LABEL: Record<NonNullable<NeedsYouRow['actions']>[number], strin
   other: 'Other to do',
 };
 
-/** The row's action line: every distinct V2 ask, 'Needs review' on a review-only V2 row, or the kind's label. */
+/** The row's action line: every distinct V2 ask, 'Needs review' on a review-only row, or the kind's label. */
 function rowActionLabel(row: NeedsYouRow): string {
   if (row.reviewOnly) return 'Needs review';
   if (!row.actions?.length) return NAVA_READ_AS_LABEL[readAsForKind(row.kind)];

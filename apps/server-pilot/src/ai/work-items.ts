@@ -2986,15 +2986,11 @@ export async function listWorkItems(
           ) {
             return null;
           }
+          return { ...row, chip };
         }
-        const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
-        const reviewOnly = preStayAsk?.status === 'review';
-        return {
-          ...row,
-          kind: separateAsk ? 'other_actionable' : row.kind,
-          chip,
-          ...(reviewOnly ? { reviewOnly: true } : {}),
-        };
+        const separateAsk = preStayAsk.status === 'ask' ? preStayAsk.excerpt : null;
+        if (separateAsk) return { ...row, kind: 'other_actionable', chip };
+        return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
       },
     });
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
