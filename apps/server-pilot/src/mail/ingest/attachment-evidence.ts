@@ -74,16 +74,33 @@ export function mergeOptionalMissingGaps(input: {
   return [...merged.values()];
 }
 
+/**
+ * The gap list a provenance stands on. Once `linkedOptionalMissing` exists it
+ * is the canonical union across linked observations and wins over the owning
+ * observation's own `optionalMissing` — an empty list included, since links
+ * may resolve every gap. A recorded list with entries it cannot parse keeps
+ * one `attachment:unavailable` placeholder so the evidence stays unknown
+ * instead of reading as confirmed-empty.
+ */
+export function effectiveOptionalMissing(sourceProvenance: unknown): OptionalMissingItem[] {
+  if (!sourceProvenance || typeof sourceProvenance !== 'object') return [];
+  const record = sourceProvenance as Record<string, unknown>;
+  if (!(LINKED_OPTIONAL_MISSING_KEY in record) && !('optionalMissing' in record)) return [];
+  const gaps =
+    LINKED_OPTIONAL_MISSING_KEY in record
+      ? record[LINKED_OPTIONAL_MISSING_KEY]
+      : record.optionalMissing;
+  const items = optionalMissingItems(gaps);
+  return Array.isArray(gaps) && gaps.length === items.length
+    ? items
+    : [...items, { role: UNAVAILABLE_ROLE, fileName: null }];
+}
+
 export function attachmentEvidenceUnknown(sourceProvenance: unknown): boolean {
   if (!sourceProvenance || typeof sourceProvenance !== 'object') return false;
   const record = sourceProvenance as Record<string, unknown>;
-  if (LINKED_OPTIONAL_MISSING_KEY in record) {
-    const merged = record[LINKED_OPTIONAL_MISSING_KEY];
-    return !Array.isArray(merged) || merged.length > 0;
-  }
-  if ('optionalMissing' in record) {
-    return !Array.isArray(record.optionalMissing) || record.optionalMissing.length > 0;
-  }
+  if (LINKED_OPTIONAL_MISSING_KEY in record || 'optionalMissing' in record)
+    return effectiveOptionalMissing(record).length > 0;
   return SYNC_PROVENANCE_KEYS.some((key) => key in record);
 }
 
