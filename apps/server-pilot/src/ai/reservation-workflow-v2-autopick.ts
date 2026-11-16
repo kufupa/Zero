@@ -448,6 +448,9 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
       : request.body.groups.map((group, index) => ({ field: 'ratePlan' as const, fields: group as Record<string, unknown>, path: `${root}/groups/${index}/ratePlan` }));
     for (const slot of codeSlots) {
       if (slot.fields[slot.field] != null || !history || !catalog) continue;
+      if (slot.field === 'roomType' && request.kind === 'create' && [request.body.shared,
+        ...request.body.dateSections.map((section) => section.defaults), ...request.body.allocations.map((allocation) => allocation.overrides)]
+        .some((fields) => typeof fields.requestedRoomDescription === 'string' && fields.requestedRoomDescription.trim())) continue;
       const kind = slot.field === 'ratePlan' ? 'rate' : 'room';
       const native = (code: string) => {
         const found = catalog!.lookupVerifiedCode(kind, code);
