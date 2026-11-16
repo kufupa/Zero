@@ -664,6 +664,20 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       throw new Error('CANCEL_REASON_CHANGED');
     }
     preparedSnapshot = afterFields;
+    // The settled main-form snapshot excludes the reason dialog's controls. Re-read the staged
+    // reason and note now; a silent revert between selecting and settling must fail closed.
+    const stagedReason = await reason.evaluate((el, expectedReason) => {
+      const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      return component?.getValue?.() === expectedReason.value && el.value.trim() === expectedReason.display;
+    }, { value: reasonCode, display: reasonLabel });
+    const stagedNote = await note.evaluate((el, value) => {
+      const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      return component?.getValue?.() === value && el.value === value;
+    }, cancellationNote);
+    if (stagedReason !== true || stagedNote !== true) {
+      chargeText = await visibleChargeText() ?? chargeText;
+      throw new Error('CANCEL_REASON_CHANGED');
+    }
     const reasonText = (await dialog.innerText()).trim();
     if (stageOnly) {
       // Staging ends before the OK click: reason and note are set, the Save request is never armed, and any
