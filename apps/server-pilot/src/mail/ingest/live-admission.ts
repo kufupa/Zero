@@ -25,6 +25,7 @@ import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled, isLegacyInbound
 import { classifyMailSource, type MailSourceClassification } from '../../ai/mail-source.js';
 import { isSelfSentPreStaySubject } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
+import { fileAttachmentPresence } from './attachment-evidence.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
@@ -321,7 +322,7 @@ export async function admitLiveMessage(
     htmlBody: sql<string | null>`left(${message.htmlBody},16384)`,
   };
   const [trigger] = await db
-    .select(boundedColumns)
+    .select({ ...boundedColumns, sourceProvenance: message.sourceProvenance })
     .from(message)
     .where(
       and(eq(message.id, input.canonicalMessageId), eq(message.transportId, input.transportId)),
@@ -345,7 +346,7 @@ export async function admitLiveMessage(
           fromAddress: trigger.fromAddress,
           subject: trigger.subject,
           bodyText: trigger.textBody ?? trigger.htmlBody,
-          hasAttachments: fileAttachment != null,
+          hasAttachments: fileAttachmentPresence(fileAttachment != null, trigger.sourceProvenance),
         })
       : null;
   if (mailSourceDecision && mailSourceDecision.kind !== 'direct') {
