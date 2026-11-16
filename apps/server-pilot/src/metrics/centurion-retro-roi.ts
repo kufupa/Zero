@@ -26,6 +26,7 @@ const evidenceSchema = z.object({
   detail: text,
 });
 const checkSchema = z.object({
+  kind: z.enum(['email', 'hms']).optional(),
   requirement: text,
   status: z.enum(['matched', 'missing', 'mismatch']),
   sourceValue: text,
@@ -131,6 +132,77 @@ export const retroReportSchema = z.object({
   }
 });
 export type RetroReport = z.infer<typeof retroReportSchema>;
+export type StaffRetroReport = Omit<RetroReport, 'provenance'> & { provenance: Record<string, never> };
+
+function staffExplanation(value: string, fallback: string, sourceNames: ReadonlySet<string>): string {
+  return value
+    .replace(/\s*Prior valid (?:luna|terra|sol|astra|gpt-[a-z0-9_.-]+) assessment retained from owner-reviewed compatible producer\.?/gi, '')
+    .replace(/\s*Prior valid .*? grade retained from the compatible reviewed producer\.?/gi, '')
+    .replace(/\b(?:gpt-[a-z0-9_.-]+|luna|terra|sol|astra)\b/gi, name => sourceNames.has(name.toLowerCase()) ? name : 'Nava')
+    .replace(/(?<![\w:/])(?:\/(?:home|tmp|private|var|opt|usr|etc|root|mnt|srv|proc|sys|run)(?![\w.-])(?:\/[^\s"'<>]*)?|[a-z]:[\\/][^\s"'<>]+|(?:apps\/(?:server-pilot|mail)|tooling\/hms-cloud|docs\/(?:research|plans|solutions)|\.local|\.codex)\/[^\s"'<>]+)/gi, 'supporting evidence')
+    .trim() || fallback;
+}
+
+export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
+  const progressNotes = report.coverage.notes.flatMap(note => {
+    const progress = note.startsWith('Pending measurements:')
+      ? note.split('. ')[0]
+      : /^(?:PARTIAL LIVE SNAPSHOT:|Selected \d+\/\d+ inbound messages;)/.test(note) ? note : undefined;
+    return progress ? [staffExplanation(progress, '', new Set<string>())] : [];
+  });
+  return {
+    version: report.version,
+    reportId: report.reportId,
+    propertyCode: report.propertyCode,
+    generatedAt: report.generatedAt,
+    period: report.period,
+    // Older open dashboards read this object before their next page reload.
+    provenance: {},
+    coverage: {
+      ...report.coverage,
+      notes: [
+        report.coverage.status === 'partial'
+          ? 'This is a partial retrospective. Assessed tasks are a subset of captured email; unresolved measurements remain pending or failed and are excluded from task outcomes.'
+          : 'Source coverage and classification are complete. Preparation quality is assessed separately for each task.',
+        'Email extraction is assessed against the request. HMS-dependent work without historical evidence is not measurable from history.',
+        'Effort minutes are estimates, not measured staff savings. There is no monthly savings extrapolation.',
+        ...progressNotes,
+      ],
+    },
+    tasks: report.tasks.map(task => {
+      const sourceValues = [...task.sources.map(source => source.quote), ...(task.replay.status === 'replayed' ? task.replay.checks.flatMap(check => [check.sourceValue, check.preparedValue]) : [])];
+      const sourceNames = new Set(sourceValues.flatMap(value => value.toLowerCase().match(/\b(?:luna|terra|sol|astra)\b/g) ?? []));
+      const preparation = staffExplanation(task.navaPreparation, 'No preparation recorded.', sourceNames);
+      return {
+        ...task,
+        originalAsk: staffExplanation(task.originalAsk, 'See the source email for the request.', sourceNames),
+        navaPreparation: preparation,
+        remainingWork: task.remainingWork.map(work => staffExplanation(work, 'Staff verification is required.', sourceNames)),
+        reason: staffExplanation(task.reason, 'See the requested and prepared values for this assessment.', sourceNames),
+        evidence: task.evidence.map(evidence => ({
+          ...evidence,
+          reference: evidence.id,
+          detail: evidence.kind === 'preparation'
+            ? preparation
+            : evidence.kind === 'historical_native'
+              ? 'Historical HMS observation recorded; see the linked checks for its result.'
+              : evidence.detail,
+        })),
+        replay: task.replay.status === 'not_run'
+          ? { ...task.replay, reason: staffExplanation(task.replay.reason, 'Preparation has not been assessed.', sourceNames) }
+          : {
+            ...task.replay,
+            replayId: task.id,
+            checks: task.replay.checks.map(check => ({
+              ...check,
+              requirement: staffExplanation(check.requirement, 'See the source email for this requirement.', sourceNames),
+            })),
+          },
+      };
+    }),
+  };
+}
+
 export type RetroReportResponse =
   | { status: 'ready'; report: RetroReport }
   | { status: 'unavailable'; reason: 'not_available' | 'invalid_report' };

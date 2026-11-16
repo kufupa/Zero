@@ -5758,6 +5758,8 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
 
 export type RunAiWorkerOnceOptions = {
   shutdownSignal?: AbortSignal;
+  /** Owned by the serial default loop; scoped drains retain strict priority. */
+  fairness?: { backgroundPrefills: number };
   /** Lane hms claims wait on this until the restart sweep has succeeded. */
   hmsRecovery?: HmsRecoveryGate;
   readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
@@ -5783,6 +5785,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   const lane = env.AI_WORKER_LANE;
   const {
     shutdownSignal,
+    fairness,
     hmsRecovery,
     readToolExecutor,
     mailBaselineExtractionRoute,
@@ -5818,7 +5821,9 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     : scope;
   // Lane hms also claims HMS reads (jobs-only and read-service modes), so it waits for the restart sweep first.
   if (lane === 'hms' && hmsRecovery && !(await hmsRecovery.mayClaim())) return false;
-  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope });
+  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope,
+    preferDeferredWork: lane === 'default' && (fairness?.backgroundPrefills ?? 0) >= 5,
+  });
   if (!claimed) {
     // Jobs-only hms worker: no maintenance, as before this lane claimed jobs.
     if (hmsJobsOnly) return false;
@@ -5828,6 +5833,13 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     const purge = await purgeExpiredShadowDerivatives({ limit: 100 });
     const due = await assessDueShadowPredictions({ limit: 100 });
     return purge.deletedPredictions > 0 || purge.deletedAdmissions > 0 || due.processed > 0;
+  }
+  if (lane === 'default' && fairness) {
+    if (claimed.runKind === 'reservation_prefill' && claimed.priority === 1) {
+      fairness.backgroundPrefills = Math.min(5, fairness.backgroundPrefills + 1);
+    } else if (claimed.priority === 0) {
+      fairness.backgroundPrefills = 0;
+    }
   }
   // A stale run admitted under a policy that has since been unset is fenced
   // through executeAiRun's policy-block path without constructing any route
@@ -6194,12 +6206,16 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && labtestAmendWorkerEnabled() && !scope.idempotencyPrefix
       ? runLabtestAmendLoop(shutdown.signal, hmsRecovery)
       : null;
+  const fairness = !scope.transportId && !scope.runKind && !scope.promptVersion && !scope.idempotencyPrefix
+    ? { backgroundPrefills: 0 }
+    : undefined;
 
   try {
     while (!stopping) {
       const worked = await runAiWorkerOnce({
         ...scope,
         shutdownSignal: shutdown.signal,
+        fairness,
         hmsRecovery,
         mailBaselineExtractionRouteFactory,
       });

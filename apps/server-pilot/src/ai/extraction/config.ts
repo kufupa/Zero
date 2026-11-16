@@ -28,6 +28,11 @@ export function extractionPromptMaxChars(env: NodeJS.ProcessEnv = process.env): 
   return parsed;
 }
 
+/** Default-off opt-in for the reduced-effort simple-synthesis route; no approval policy. */
+export function prefillSimpleSynthesisEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.PREFILL_SIMPLE_SYNTHESIS?.trim() === 'on';
+}
+
 export function extractionVisionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env.EXTRACTION_VISION?.trim();
   if (raw === undefined || raw === '') return true;

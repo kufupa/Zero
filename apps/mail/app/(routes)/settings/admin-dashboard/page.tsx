@@ -9,6 +9,10 @@ import {
   forecastReport,
   formatCount,
   formatHours,
+  formatPercent,
+  extractionQuality,
+  preparationCheckKind,
+  taskProRataEstimate,
   formatReportDate,
   readAssumptions,
   sourceMailLink,
@@ -29,20 +33,19 @@ import {
   ArrowUpRight,
   CheckCircle2,
   ChevronDown,
-  Clock3,
   FileText,
   RefreshCw,
   Search,
   ShieldCheck,
 } from 'lucide-react';
 import {
-  previousScopeBeforeSwitch,
-  runAccountSwitchCacheCleanup,
-} from '@/lib/mail/account-switch-cache';
-import {
   beginMailSelectionIntent,
   isCurrentMailSelectionIntent,
 } from '@/lib/mail/source-message-navigation';
+import {
+  previousScopeBeforeSwitch,
+  runAccountSwitchCacheCleanup,
+} from '@/lib/mail/account-switch-cache';
 import { getMailCacheScope, setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -215,7 +218,7 @@ function Coverage({ report }: { report: RetroReport }) {
           </div>
         </div>
         <span className="text-muted-foreground flex items-center gap-2 text-xs">
-          Coverage &amp; provenance <ChevronDown className="size-4" aria-hidden="true" />
+          Source coverage <ChevronDown className="size-4" aria-hidden="true" />
         </span>
       </summary>
       <div className="space-y-5 border-t px-5 py-5">
@@ -259,24 +262,8 @@ function Coverage({ report }: { report: RetroReport }) {
             </dd>
           </div>
           <div>
-            <dt className="text-muted-foreground">Source snapshot</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.sourceSnapshotId}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Nava version assessed</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.productSha}</dd>
-          </div>
-          <div>
             <dt className="text-muted-foreground">Report ID</dt>
             <dd className="mt-1 break-all font-mono">{report.reportId}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Assessment version</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.runnerVersion}</dd>
-          </div>
-          <div className="sm:col-span-2">
-            <dt className="text-muted-foreground">Source fingerprint</dt>
-            <dd className="mt-1 break-all font-mono">{report.provenance.sourceSha256}</dd>
           </div>
         </dl>
       </div>
@@ -374,6 +361,8 @@ function SourceEmailAction({ to }: { to: string }) {
 function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assumptions }) {
   const [expanded, setExpanded] = useState(false);
   const credit = taskCredit(task, assumptions);
+  const quality = extractionQuality([task]);
+  const proRata = taskProRataEstimate(task, assumptions);
   return (
     <details
       className="rounded-xl border"
@@ -393,7 +382,8 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
         <div className="flex flex-wrap items-center gap-3">
           <OutcomeBadge outcome={task.outcome} />
           <span className="text-muted-foreground text-xs tabular-nums">
-            {formatCount(credit)} min credit
+            {formatCount(quality.matched)}/{formatCount(quality.total)} email checks ·{' '}
+            {formatCount(credit)} strict min · {formatCount(proRata)} pro-rata min (estimate)
           </span>
           <ChevronDown className="text-muted-foreground size-4" aria-hidden="true" />
         </div>
@@ -519,9 +509,11 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
             ) : (
               <>
                 <p className="text-muted-foreground text-xs">
-                  Request-time native evidence:{' '}
-                  {task.replay.nativeEvidence === 'complete' ? 'complete' : 'missing'} · Replay{' '}
-                  {task.replay.replayId}
+                  Historical HMS work:{' '}
+                  {task.replay.nativeEvidence === 'complete'
+                    ? 'verified from history'
+                    : 'not fully verified'}{' '}
+                  · Replay {task.replay.replayId}
                 </p>
                 {task.replay.checks.map((check) => (
                   <div
@@ -530,7 +522,12 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
                   >
                     <p className="font-medium">
                       {check.requirement}{' '}
-                      <span className="text-muted-foreground font-normal">· {check.status}</span>
+                      <span className="text-muted-foreground font-normal">
+                        · {preparationCheckKind(task, check) === 'email' ? 'email' : 'HMS'} ·{' '}
+                        {preparationCheckKind(task, check) === 'hms' && check.status === 'missing'
+                          ? 'unverified'
+                          : check.status}
+                      </span>
                     </p>
                     <dl className="mt-2 grid gap-2 sm:grid-cols-2">
                       <div>
@@ -630,7 +627,7 @@ function WorkflowDetails({
                 {formatHours(row.savedMinutes)}{' '}
                 <span className="text-muted-foreground text-xs font-normal">hours</span>
               </p>
-              <p className="text-muted-foreground text-xs">estimated savings</p>
+              <p className="text-muted-foreground text-xs">strict credit estimate</p>
             </div>
             <ChevronDown
               className="text-muted-foreground size-4 transition-transform group-open:rotate-180"
@@ -680,7 +677,7 @@ function WorkflowDetails({
                 {overridden
                   ? 'Custom values for this workflow.'
                   : 'Using the global assumptions. Apply values to override this workflow.'}{' '}
-                Correct &amp; complete tasks receive{' '}
+                Strict credit: correct &amp; complete tasks receive{' '}
                 {formatCount(timing.manualMinutes - timing.assistedMinutes)} minutes each.
               </p>
             </div>
@@ -813,21 +810,24 @@ function RetroDashboard({
           </div>
         </div>
         <div className="grid gap-6 px-5 py-6 sm:grid-cols-3 sm:px-6">
-          <div className="sm:col-span-1">
-            <div className="flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-300">
-              <Clock3 className="size-4" aria-hidden="true" />
-              <h2>Estimated hours saved</h2>
-            </div>
+          <div>
+            <h2 className="text-sm text-emerald-800 dark:text-emerald-300">
+              Email extraction quality
+            </h2>
             <p
               className="mt-3 text-5xl font-semibold tabular-nums tracking-tight"
               aria-live="polite"
               aria-atomic="true"
             >
-              {formatHours(forecast.savedMinutes)}{' '}
-              <span className="text-muted-foreground text-xl font-normal">hours</span>
+              {formatPercent(forecast.extraction.percent)}
             </p>
             <p className="text-muted-foreground mt-2 text-xs">
-              {formatCount(forecast.savedMinutes)} forecast minutes across credited tasks
+              {formatCount(forecast.extraction.matched)} of {formatCount(forecast.extraction.total)}{' '}
+              email requirements matched
+            </p>
+            <p className="text-muted-foreground mt-2 text-xs">
+              {formatCount(forecast.extraction.missing)} missing ·{' '}
+              {formatCount(forecast.extraction.mismatch)} incorrect
             </p>
           </div>
           <div>
@@ -836,24 +836,34 @@ function RetroDashboard({
               {formatCount(forecast.taskCount)}
             </p>
             <p className="text-muted-foreground mt-2 text-xs">
-              Requested staff actions, deduplicated across source emails
+              {formatCount(forecast.extraction.completeTasks)} of{' '}
+              {formatCount(forecast.extraction.measuredTasks)} tasks match every assessed email
+              requirement
+            </p>
+            <p className="text-muted-foreground mt-2 text-xs">
+              Pending and failed replays are excluded.
             </p>
           </div>
           <div>
-            <h2 className="text-muted-foreground text-sm">Correct &amp; complete preparation</h2>
+            <h2 className="text-muted-foreground text-sm">HMS-dependent work</h2>
             <p className="mt-3 text-4xl font-semibold tabular-nums tracking-tight">
-              {formatCount(forecast.outcomes.correct_complete)}
+              {formatCount(forecast.extraction.hmsUnverifiedTasks)}
             </p>
+            <p className="mt-2 text-sm font-medium">Tasks with unverified HMS requirements</p>
             <p className="text-muted-foreground mt-2 text-xs">
-              Evidence-backed tasks eligible for savings credit
+              {formatCount(forecast.extraction.hmsMatched)} verified ·{' '}
+              {formatCount(forecast.extraction.hmsUnverified)} unverified checks ·{' '}
+              {formatCount(forecast.extraction.hmsDependentTasks)} dependent tasks
             </p>
           </div>
         </div>
         <div className="border-t border-emerald-600/10 px-5 py-4 sm:px-6">
           <p className="text-muted-foreground text-xs leading-relaxed">
-            A forecast of what the assessed Nava version could have saved on past reservation work.
-            These are editable effort assumptions, not measured staff savings or adoption. Staff
-            review remains required.
+            Quality measures captured email requirements in valid replays, including details
+            retained in notes. It does not establish completed HMS work. Missing historical HMS
+            evidence is not measurable from history. Unverified checks can also reflect incomplete
+            preparation; staff still review and complete the task. These results
+            are not measured staff savings or adoption.
           </p>
           <p className="text-muted-foreground mt-2 text-xs">
             Report as of {formatReportDate(report.generatedAt)} SAST
@@ -864,6 +874,64 @@ function RetroDashboard({
               Negative savings mean your assumptions estimate additional assisted effort.
             </p>
           ) : null}
+        </div>
+      </section>
+      <section
+        className={`${panel} overflow-hidden`}
+        aria-label="Strict credit and pro-rata effort comparison"
+      >
+        <div className="space-y-2 p-5 sm:p-6">
+          <h2 className="font-semibold">Effort estimates, kept separate from extraction quality</h2>
+          <p className="text-muted-foreground text-sm">
+            Strict credit requires complete, verified preparation. Pro-rata is a hypothetical
+            equal-check estimate: the manual-minus-assisted difference × matched checks ÷ all email
+            and HMS checks, for partial preparation. Minor corrections, wrong preparation, unknown
+            and unsupported outcomes stay at zero. Checks differ in effort; staff timing has not
+            been measured. Totals cover assessed tasks only, with no monthly extrapolation.
+          </p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[620px] text-sm">
+            <caption className="sr-only">
+              Estimated effort by workflow; pro-rata is hypothetical, not strict credit
+            </caption>
+            <thead className="bg-muted/40 text-muted-foreground text-left text-xs">
+              <tr>
+                <th className="px-5 py-3">Workflow</th>
+                <th className="px-3 py-3">Tasks</th>
+                <th className="px-3 py-3">Email checks matched</th>
+                <th className="px-3 py-3">Strict credit (min)</th>
+                <th className="px-5 py-3">Pro-rata estimate (min)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {forecast.workflows.map((row) => (
+                <tr key={row.workflow} className="border-t">
+                  <th className="px-5 py-3 text-left font-medium">
+                    {WORKFLOW_LABELS[row.workflow]}
+                  </th>
+                  <td className="px-3 py-3 tabular-nums">{formatCount(row.tasks.length)}</td>
+                  <td className="px-3 py-3 tabular-nums">
+                    {formatCount(row.extraction.matched)} / {formatCount(row.extraction.total)}
+                  </td>
+                  <td className="px-3 py-3 tabular-nums">{formatCount(row.savedMinutes)}</td>
+                  <td className="px-5 py-3 tabular-nums">{formatCount(row.proRataMinutes)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot className="border-t font-semibold">
+              <tr>
+                <th className="px-5 py-3 text-left">Assessed tasks only</th>
+                <td className="px-3 py-3">{formatCount(forecast.taskCount)}</td>
+                <td className="px-3 py-3">
+                  {formatCount(forecast.extraction.matched)} /{' '}
+                  {formatCount(forecast.extraction.total)}
+                </td>
+                <td className="px-3 py-3">{formatCount(forecast.savedMinutes)}</td>
+                <td className="px-5 py-3">{formatCount(forecast.proRataMinutes)}</td>
+              </tr>
+            </tfoot>
+          </table>
         </div>
       </section>
       <Coverage report={report} />
@@ -893,7 +961,8 @@ function RetroDashboard({
         />
         <p className="text-muted-foreground mt-4 text-xs leading-relaxed">
           Default: 6 manual minutes − 2 assisted minutes = 4 minutes saved. Every other outcome
-          receives zero credit. Negative differences estimate additional effort. Workflow overrides
+          receives zero strict credit. The separate pro-rata column estimates matched checks for
+          partial tasks only. Negative differences estimate additional effort. Workflow overrides
           stay in effect when global values change. Your edits recalculate the same assessments and
           are saved for this viewer and mailbox.
         </p>
@@ -906,11 +975,12 @@ function RetroDashboard({
       <section className="space-y-4" aria-labelledby={`${filterId}-workflow-title`}>
         <div>
           <h2 id={`${filterId}-workflow-title`} className="text-lg font-semibold">
-            Where the time could be saved
+            Workflow detail and conservative credit
           </h2>
           <p className="text-muted-foreground mt-1 text-sm">
-            Preparation outcomes by workflow. Expand a row to adjust its timing or inspect each
-            task.
+            These outcomes include HMS requirements; missing historical evidence can keep a task
+            partial even when every email detail matches. Expand a workflow to inspect the evidence
+            or adjust effort assumptions.
           </p>
         </div>
         <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
