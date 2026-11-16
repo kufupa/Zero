@@ -179,8 +179,9 @@ describe('read-only HMS property registry', () => {
     expect(validateHmsPropertySecret(getHmsPropertyRegistration('transport-faith'), DAVINCI_SECRET)).toEqual(DAVINCI_SECRET);
     expect(validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, mailboxTransportIds: undefined }))
       .toMatchObject({ mailboxTransportId: 'transport-davinci' });
-    expect(() => validateHmsPropertySecret(getHmsPropertyRegistration('transport-faith'),
-      { ...DAVINCI_SECRET, mailboxTransportIds: undefined })).toThrow('hms_property_credential_mismatch');
+    expect(validateHmsPropertySecret(getHmsPropertyRegistration('transport-faith'),
+      { ...DAVINCI_SECRET, mailboxTransportIds: undefined }))
+      .toMatchObject({ mailboxTransportId: 'transport-davinci' });
     expect(validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'write_capable' }))
       .toMatchObject({ credentialMode: 'write_capable' });
     expect(validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'audited_write' }))

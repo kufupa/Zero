@@ -18,7 +18,7 @@ import {
   ensureHmsBrowserArtifactRoot,
   hmsProductionOriginForSlot,
 } from './browser-artifacts.js';
-import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { getPropertyRegistration, hmsSecretAllowsTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import {
   revalidateEvidenceBindings,
   type HmsEvidenceHmacConfig,
@@ -290,7 +290,7 @@ async function createProductionHmsRuntimeInternal(
       'secret tenant does not match worker config',
     );
   }
-  if (!registration || !secretTransportIds(secret).includes(config.expectedTransportId)) {
+  if (!registration || !hmsSecretAllowsTransport(registration, secretTransportIds(secret), config.expectedTransportId)) {
     throw new HmsRuntimeError(
       'transport_mismatch',
       'secret transport does not match worker config',

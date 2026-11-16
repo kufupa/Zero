@@ -231,6 +231,11 @@ export function normalizeHmsSecretTransportIds(property, secret) {
   return ids;
 }
 
+export function hmsSecretAllowsTransport(property, ids, transportId) {
+  return ids.includes(transportId) || Boolean(property?.transportIds.includes(transportId) &&
+    ids.includes(property.mailboxTransportId));
+}
+
 export function validateHmsPropertySecret(property, secret) {
   const ids = normalizeHmsSecretTransportIds(property, secret);
   if (
@@ -239,7 +244,7 @@ export function validateHmsPropertySecret(property, secret) {
     secret.expectedPropertyName !== property.expectedPropertyName ||
     secret.username !== property.username ||
     !['view_only', 'audited_write', 'write_capable'].includes(secret.credentialMode) ||
-    (property.transportId && !ids.includes(property.transportId))
+    (property.transportId && !hmsSecretAllowsTransport(property, ids, property.transportId))
   ) throw new Error('hms_property_credential_mismatch');
   return secret;
 }

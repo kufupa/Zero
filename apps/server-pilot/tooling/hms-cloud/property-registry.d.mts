@@ -37,5 +37,6 @@ export declare function resolvePropertyTransport(transportId: string | null | un
 export declare function getHmsPropertyRegistration(transportId: string): PropertyRegistration;
 export declare function resolveSecretSource(env?: Record<string, string | undefined>): SecretSource;
 export declare function normalizeHmsSecretTransportIds(property: PropertyRegistryProperty | PropertyRegistration, secret: unknown): string[];
+export declare function hmsSecretAllowsTransport(property: PropertyRegistryProperty | null | undefined, ids: readonly string[], transportId: string): boolean;
 export declare function validateHmsPropertySecret(property: PropertyRegistration | null | undefined, secret: unknown): unknown;
 export declare function installRegisteredAvailabilityReadOnlyGuard(context: unknown, transportId: string, origin: string): Promise<void>;
