@@ -6,6 +6,7 @@
 .warning { border-left: 3px solid #bd7325; background: #fff7e8; color: #52351b; padding: 7px 9px; font-size: 12px; line-height: 1.4; }
 .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .row button, .button { border: 1px solid #b7c2d0; background: var(--surface, white); border-radius: 4px; color: var(--ink, #1e344e); cursor: pointer; padding: 5px 8px; }
+.row .primary { color: white; background: #7256d8; border-color: #7256d8; }
 .row button:disabled, .button:disabled { opacity: .55; cursor: default; }
 .label { display: grid; gap: 3px; min-width: 0; font-size: 11.5px; font-weight: 500; }
 .label input, .label select, .label textarea { box-sizing: border-box; width: 100%; border: 1px solid #b7c2d0; border-radius: 3px; background: var(--surface, white); color: var(--ink, #1c2938); padding: 5px 6px; font: inherit; font-weight: normal; }

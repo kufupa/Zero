@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind, type PropertyConfiguration } from '@/lib/reservation-workflow/types';
 import { effectiveAt, guestProfileDefaultsToNew, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
+import { sameGuestName } from '../../../server-pilot/src/ai/guest-name-match.js';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
@@ -49,6 +50,27 @@ type Buffer = {
 };
 const buffers = new Map<string, Buffer>();
 const guestCreatesInFlight = new Set<string>();
+const uncertainFilingAttempts = new Map<string, { operationId: string; requestId: string; preparedRef: string }>();
+class FilingActionError extends Error {}
+function filingAttemptUncertain(key: string, snapshot: ReservationPaneSnapshot | null): boolean {
+  const attempt = uncertainFilingAttempts.get(key);
+  if (!attempt) return false;
+  const draft = snapshot?.session.draft;
+  const dispatch = snapshot?.session.workflowDispatches?.find(row => row.endpoint === 'execute' &&
+    row.requestId === attempt.requestId && row.preparedRef === attempt.preparedRef && row.status === 'failed');
+  const operationId = dispatch?.operationId ?? attempt.operationId;
+  const result = draft?.operationResults.find(row => row.id === operationId && row.workflow === 'filing' &&
+    row.requestId === attempt.requestId && row.status === 'failed');
+  if (result && draft?.observations.some(row => result.observationRefs.includes(row.ref) && row.kind === 'document' && row.status === 'failed' &&
+      row.generationId === draft.generationId && row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId &&
+      row.criteria.workflow === 'filing' && row.criteria.operationId === operationId &&
+      (row.criteria.requestId === attempt.requestId || row.criteria.requestId === undefined && row.criteria.sourceHash === draft.source.sourceHash) &&
+      record(row.result).outcome === 'not_dispatched')) {
+    uncertainFilingAttempts.delete(key);
+    return false;
+  }
+  return true;
+}
 const sourceKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.propertySelectionEpoch ?? 0, source.selectionEpoch, source.messageId, source.sourceHash]);
 const bufferKey = (source: ReservationSourceContext) => JSON.stringify([source.mailboxId, source.propertyId, source.threadId, source.messageId]);
 const guestAttemptKey = (source: ReservationSourceContext, requestId: string, allocationId: string) =>
@@ -303,7 +325,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       if (captured.length) void enqueue(buffer, () => flushCaptured(bound, buffer, captured)).catch(() => {});
     };
   }, [key, source.selectionEpoch, client]);
-  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false): Promise<void> => {
+  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false, filing = false): Promise<void> => {
     const bound = source;
     const buffer = entry;
     const execute = async () => {
@@ -321,8 +343,11 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         if (currentBinding && failure instanceof ReservationWorkflowStaleRevisionError) {
           buffer.conflict = true; buffer.error = failure.message; apply(failure.snapshot, bound, buffer);
         }
-        if (currentBinding && mounted.current && active.current.key === key) setError(failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.');
-        throw failure;
+        const displayed = filing && !(failure instanceof FilingActionError)
+          ? 'Infor could not complete this step. Check the details and try again.'
+          : failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.';
+        if (currentBinding && mounted.current && active.current.key === key) setError(displayed);
+        throw filing && !(failure instanceof FilingActionError) ? new FilingActionError(displayed) : failure;
       } finally {
         if (write) endMutation();
         if (mounted.current && active.current.key === key) { setBusy(false); rerender(value => value + 1); }
@@ -553,6 +578,184 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       return { ...prepared, workflowReply: context.snapshot.workflowReply };
     }); },
     configureFiling(attachmentId, target, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, ...(typeof target === 'string' ? { confirmation: target } : target), kind })); },
+    prepareFiling(attachmentId, target, kind) {
+      if (!canReadRequest || !canPrepareRequest) return unavailable();
+      const requestId = requireRequest();
+      const attemptKey = `${bufferKey(source)}:${requestId}`;
+      const blocked = [...liveInputs.current.uncommitted].some(id =>
+        id !== `filing-selection:${requestId}` && !id.startsWith(`target-selection:${requestPath(requestId)}/`));
+      if (blocked) return Promise.reject(new FilingActionError('Finish editing the details before filing.'));
+      return run(async context => {
+        let current = context.snapshot;
+        if (filingAttemptUncertain(attemptKey, current)) {
+          current = await client.get(context);
+          if (!snapshotMatchesSource(current, context.source) || current.session.sourceChanged)
+            throw new FilingActionError('The email or filing details changed. Review them before filing again.');
+          apply(current, context.source, entry);
+          if (filingAttemptUncertain(attemptKey, current)) {
+            const attempt = uncertainFilingAttempts.get(attemptKey);
+            const revoked = attempt && client.revokeUnsentFiling && await client.revokeUnsentFiling({
+              source: context.source, snapshot: current, requestId, preparedRef: attempt.preparedRef,
+            }).catch(() => false);
+            if (!revoked) throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+            uncertainFilingAttempts.delete(attemptKey);
+            current = await client.get({ source: context.source, snapshot: current });
+            if (!snapshotMatchesSource(current, context.source) || current.session.sourceChanged)
+              throw new FilingActionError('The email or filing details changed. Review them before filing again.');
+            apply(current, context.source, entry);
+          }
+        }
+        const ensureCurrent = (next?: ReservationPaneSnapshot) => {
+          const selected = (entry.snapshot?.requests.find(row => row.id === activeAction.current) ?? entry.snapshot?.requests[0])?.id;
+          const sameVersion = (left: ReservationPaneSnapshot | null, right: ReservationPaneSnapshot) =>
+            left?.session.seq === right.session.seq && left?.session.revision === right.session.revision;
+          if (!mounted.current || active.current.key !== sourceKey(context.source) ||
+              active.current.epoch !== context.source.selectionEpoch || entry.owner !== owner ||
+              entry.sourceKey !== sourceKey(context.source) || selected !== requestId || entry.conflict ||
+              entry.pending.size || entry.snapshot?.session.sourceChanged || next?.session.sourceChanged ||
+              !(sameVersion(entry.snapshot, current) || next && sameVersion(entry.snapshot, next)))
+            throw new FilingActionError('The email or filing details changed. Review them before filing again.');
+        };
+        const step = async (action: () => Promise<ReservationPaneSnapshot>) => {
+          ensureCurrent();
+          const next = await action();
+          ensureCurrent(next);
+          current = next;
+          apply(next, context.source, entry);
+          if (next.serviceNotice) throw new FilingActionError('Infor could not check these details. Review them and try again.');
+        };
+        if (current.operationResults.some(row => row.workflow === 'filing' && row.requestId === requestId &&
+            ['succeeded', 'unknown'].includes(text(row.status))) || current.session.workflowDispatches?.some(row =>
+            row.requestId === requestId && !['failed', 'succeeded', 'needs_review'].includes(row.status)))
+          throw new FilingActionError('Check the earlier filing outcome before trying again.');
+        const root = requestPath(requestId);
+        const originalRefs = valueAt(current, `${root}/documentRefs`);
+        const originalScope = record(effectiveAt(current, `${root}/body/targets`));
+        if (Array.isArray(originalRefs) && originalRefs.length > 1 || originalScope.mode === 'scoped_all' ||
+            Array.isArray(originalScope.include) && originalScope.include.length > 1 ||
+            Array.isArray(originalScope.exclude) && originalScope.exclude.length > 0)
+          throw new FilingActionError('Separate the documents and stays before filing.');
+        const originalId = Array.isArray(originalRefs) && originalRefs.length === 1 ? text(originalRefs[0]) : '';
+        const optional = originalId ? (['requestedName', 'requestedDescription'] as const).map(field => {
+          const path = `/proposal/content/documents/${encodeURIComponent(originalId)}/${field}`;
+          const value = valueAt(current, path);
+          return { field, value: typeof value === 'string' && value.trim() ? value : null };
+        }) : [];
+        await step(() => client.configureFiling({ source: context.source, snapshot: current, requestId, attachmentId, ...target, kind }));
+        const refs = valueAt(current, `${root}/documentRefs`);
+        if (!Array.isArray(refs) || refs.length !== 1 || typeof refs[0] !== 'string') throw new FilingActionError('Choose one document before filing.');
+        const documentId = refs[0];
+        if (documentId !== originalId) for (const { field, value } of optional) {
+          const path = `/proposal/content/documents/${encodeURIComponent(documentId)}/${field}`;
+          await step(() => client.edit({ source: context.source, snapshot: current, requestId, fieldPath: path, state: value === null ? 'none' : 'set', value }));
+          if (value !== null) await step(() => client.review({ source: context.source, snapshot: current, fieldPath: path, decision: 'accepted', note: 'Confirmed by staff' }));
+        }
+        const scope = record(effectiveAt(current, `${root}/body/targets`));
+        const hints = Array.isArray(scope.include) ? scope.include.map(record) : [];
+        if (scope.mode !== 'explicit' || hints.length !== 1 || !text(hints[0]?.id) ||
+            !Array.isArray(scope.exclude) || scope.exclude.length) throw new FilingActionError('Choose one stay before filing.');
+        const hint = hints[0]!, path = `${root}/body/targets/include/${encodeURIComponent(text(hint.id))}/suggestedRef`;
+        await step(() => client.lookup({ source: context.source, snapshot: current, requestId }));
+        const lookups = record(current.workflowReply).lookups;
+        const candidates = Array.isArray(lookups) ? lookups.map(record).filter(row => row.status === 'candidate' && row.requestId === requestId) : [];
+        const ref = candidates.length === 1 ? text(record(candidates[0]?.targetCandidate).observationRef) : '';
+        const draft = current.session.draft;
+        const candidate = draft.observations.find(row => row.ref === ref);
+        if (!candidate) throw new FilingActionError('Infor did not verify the selected stay. Check the guest and dates before filing.');
+        const criteria = candidate.criteria, result = record(candidate.result), stay = record(result.stay);
+        const confirmation = text(stay.confirmation);
+        const createTarget = 'allocationTarget' in target ? target.allocationTarget : null;
+        const matchesTarget = 'confirmation' in target ? confirmation === target.confirmation
+          : createTarget !== null && criteria.createRequestId === createTarget.requestId && criteria.createAllocationId === createTarget.allocationId &&
+            criteria.createConfirmation === confirmation && draft.operationResults.some(row => row.id === criteria.createOperationId &&
+              row.workflow === 'create' && row.status === 'succeeded' && row.generationId === draft.generationId &&
+              row.requestId === createTarget.requestId && row.allocationId === createTarget.allocationId &&
+              row.observationRefs.length === 1 && row.observationRefs[0] === criteria.createObservationRef &&
+              draft.observations.some(receipt => receipt.ref === criteria.createObservationRef && receipt.kind === 'stay_candidate' &&
+                receipt.status === 'complete' && receipt.coverage.complete && receipt.generationId === draft.generationId &&
+                receipt.propertyCode === draft.propertyCode && receipt.sourceMessageId === draft.source.messageId &&
+                receipt.criteria.workflow === 'create' && receipt.criteria.requestId === createTarget.requestId &&
+                receipt.criteria.allocationId === createTarget.allocationId && receipt.criteria.draftRevision === row.draftRevision &&
+                record(receipt.result).confirmation === confirmation));
+        if (candidate.kind !== 'stay_candidate' || candidate.status !== 'complete' || !candidate.coverage.complete ||
+            candidate.generationId !== draft.generationId || candidate.propertyCode !== draft.propertyCode ||
+            candidate.sourceMessageId !== draft.source.messageId || criteria.workflow !== 'filing' || criteria.requestId !== requestId ||
+            criteria.targetHintId !== hint.id || criteria.sourceHash !== draft.source.sourceHash || result.outcome !== 'found' ||
+            !/^\d+-\d+$/.test(confirmation) || criteria.confirmation !== confirmation || !matchesTarget ||
+            (hint.guestName && !sameGuestName(text(hint.guestName), `${text(stay.firstName)} ${text(stay.lastName)}`)) ||
+            (hint.bookedArrival && hint.bookedArrival !== stay.arrival) || (hint.bookedDeparture && hint.bookedDeparture !== stay.departure))
+          throw new FilingActionError('Infor did not verify the selected stay. Check the guest and dates before filing.');
+        await step(() => client.selectNative({ source: context.source, snapshot: current, requestId, fieldPath: path, observationRef: ref }));
+        if (valueAt(current, path) !== ref) throw new FilingActionError('The selected stay could not be confirmed.');
+        await step(() => client.lookup({ source: context.source, snapshot: current, requestId }));
+        const proof = current.session.draft.observations.find(row => row.kind === 'document' && row.status === 'complete' &&
+          row.coverage.complete && row.generationId === current.session.draft.generationId && row.propertyCode === current.session.draft.propertyCode &&
+          row.sourceMessageId === current.session.draft.source.messageId && row.criteria.workflow === 'filing' &&
+          row.criteria.requestId === requestId && row.criteria.documentId === documentId && row.criteria.targetObservationRef === ref &&
+          record(row.result).outcome === 'ready');
+        if (!proof) throw new FilingActionError('Infor could not verify this PDF for the selected stay.');
+        await step(() => client.reviewScope({ source: context.source, snapshot: current, requestId, scope: 'request', ids: [] }));
+        await step(() => client.prepare({ source: context.source, snapshot: current, requestId }));
+      }, false, false, true);
+    },
+    fileFiling(preparedRef, observationRef) {
+      if (!canExecuteRequest) return unavailable();
+      if (preview) return Promise.reject(new FilingActionError('Preview only. Filing is disabled.'));
+      const requestId = requireRequest(), attemptKey = `${bufferKey(source)}:${requestId}`;
+      if (liveInputs.current.key === key && liveInputs.current.uncommitted.size)
+        return Promise.reject(new FilingActionError('Finish editing and check the details before filing.'));
+      return run(async context => {
+        if (filingAttemptUncertain(attemptKey, context.snapshot)) {
+          const refreshed = await client.get(context);
+          if (!snapshotMatchesSource(refreshed, context.source) || refreshed.session.sourceChanged)
+            throw new FilingActionError('The email or filing details changed. Review them before filing again.');
+          apply(refreshed, context.source, entry);
+          if (filingAttemptUncertain(attemptKey, refreshed)) {
+            const attempt = uncertainFilingAttempts.get(attemptKey);
+            const revoked = attempt && client.revokeUnsentFiling && await client.revokeUnsentFiling({
+              source: context.source, snapshot: refreshed, requestId, preparedRef: attempt.preparedRef,
+            }).catch(() => false);
+            if (!revoked) throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+            uncertainFilingAttempts.delete(attemptKey);
+          }
+          throw new FilingActionError('The filing details changed. Check the stay and document again.');
+        }
+        const draft = context.snapshot.session.draft;
+        if ((entry.snapshot?.requests.find(row => row.id === activeAction.current) ?? entry.snapshot?.requests[0])?.id !== requestId || context.snapshot.session.sourceChanged)
+          throw new FilingActionError('The email or filing details changed. Review them before filing again.');
+        const receipt = context.snapshot.session.workflowPreparations?.find(row => row.endpoint === 'execute' && row.requestId === requestId &&
+          row.preparedRef === preparedRef && row.expectedRevision === context.snapshot.session.revision && row.generationId === draft.generationId);
+        const observation = draft.observations.find(row => row.ref === observationRef && row.kind === 'document' && row.status === 'complete' &&
+          row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+          row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'filing' && row.criteria.requestId === requestId &&
+          record(row.result).outcome === 'prepared');
+        if (!receipt || !observation || !draft.operationResults.some(row => row.workflow === 'filing' && row.requestId === requestId &&
+          row.generationId === draft.generationId && row.status === 'prepared' && row.observationRefs.includes(observationRef)))
+          throw new FilingActionError('The checked filing changed. Check the details again before filing.');
+        const operationId = crypto.randomUUID();
+        uncertainFilingAttempts.set(attemptKey, { operationId, requestId, preparedRef });
+        try {
+          const next = await client.execute({ ...context, requestId, idempotencyKey: operationId });
+          apply(next, context.source, entry);
+          if (next.serviceNotice) {
+            if (record(next.workflowReply).status === 'needs_prepare') {
+              uncertainFilingAttempts.delete(attemptKey);
+              throw new FilingActionError('The filing details changed. Check the stay and document again.');
+            }
+            throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+          }
+          uncertainFilingAttempts.delete(attemptKey);
+          return next;
+        } catch (failure) {
+          if (failure instanceof ReservationWorkflowStaleRevisionError) {
+            uncertainFilingAttempts.delete(attemptKey);
+            throw failure;
+          }
+          if (failure instanceof FilingActionError) throw failure;
+          throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+        }
+      }, true, false, true);
+    },
     lookupServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
     previewServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then check again.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
     executeServices(target, serviceId, reviewedPrepareRef) { if (!canSaveAddons) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then save again.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },

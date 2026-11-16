@@ -674,6 +674,10 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
       eq(workEvent.workItemId, item.id), eq(workEvent.type, 'approval.granted'),
       sql`${workEvent.value}->>'preparedRef' = ${prepared.preparedRef}`)).limit(1);
     if (existingGrant) throw new HmsApprovalError('already_consumed');
+    const [revoked] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
+      eq(workEvent.workItemId, item.id), eq(workEvent.type, 'hms.prepare.revoked'),
+      sql`${workEvent.value}->>'preparedRef' = ${prepared.preparedRef}`)).limit(1);
+    if (revoked) throw new HmsApprovalError('state_changed');
     return prepared;
   }
   const saved = hmsDispatchTargetSchema.safeParse({ propertyCode: scope.propertyCode, kind: 'saved',
@@ -716,6 +720,41 @@ async function lockedPreparation(db: CreateFenceTransaction, input: {
     ...(operation.data === 'create' ? { allocations } : {}),
     ...(v2?.workflowContext ? { workflowContext: v2.workflowContext } : {}) });
   return recordHmsPreparation(db, prepared);
+}
+
+/** Fence a possibly unsent filing Go against a late approval before allowing another check. */
+export async function revokeUnsentFilingPreparation(input: {
+  db: DB; transportId: string; workItemId: string; actorUserId: string; sessionId: string;
+  sessionProfile: 'legacy' | 'remote'; propertySwitch?: PropertySwitch; selectedSource: HmsSelectedSource;
+  requestId: string; preparedRef: string;
+}): Promise<'revoked' | 'dispatched'> {
+  return input.db.transaction(async tx => {
+    await lockHmsSelectedMailbox(tx as DB, input);
+    const [item] = await tx.select().from(workItem).where(and(eq(workItem.id, input.workItemId),
+      eq(workItem.transportId, input.transportId))).limit(1).for('update');
+    if (!item) throw new HmsApprovalError('not_found');
+    await assertHmsSelectedSource(tx as DB, input, item, true);
+    const prepared = await loadHmsPreparation(tx, input.preparedRef, item.id);
+    const scope = resolvePropertyScope({ transportId: input.transportId, propertySwitch: input.propertySwitch });
+    if (prepared.operation !== 'attach_document' || prepared.workflowContext?.endpoint !== 'execute' ||
+        prepared.workflowContext.input.requestId !== input.requestId ||
+        canonicalJson(prepared.scope) !== canonicalJson(scope) ||
+        canonicalJson(prepared.session) !== canonicalJson({ actorUserId: input.actorUserId,
+          sessionId: input.sessionId, sessionProfile: input.sessionProfile }) ||
+        prepared.source.threadId !== input.selectedSource.threadId ||
+        prepared.source.sourceMessageId !== input.selectedSource.messageId ||
+        prepared.source.sourceHash !== input.selectedSource.sourceHash) throw new HmsApprovalError('state_changed');
+    const [grant] = await tx.select({ id: workEvent.id }).from(workEvent).where(and(
+      eq(workEvent.workItemId, item.id), eq(workEvent.type, 'approval.granted'),
+      sql`${workEvent.value}->>'preparedRef' = ${input.preparedRef}`)).limit(1);
+    if (grant) return 'dispatched';
+    const [prior] = await tx.select({ id: workEvent.id }).from(workEvent).where(and(
+      eq(workEvent.workItemId, item.id), eq(workEvent.type, 'hms.prepare.revoked'),
+      sql`${workEvent.value}->>'preparedRef' = ${input.preparedRef}`)).limit(1);
+    if (!prior) await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system',
+      actorUserId: input.actorUserId, type: 'hms.prepare.revoked', value: { preparedRef: input.preparedRef } });
+    return 'revoked';
+  });
 }
 
 export type HmsNativePreparation = Pick<HmsPreparation, 'operation' | 'targetAliases' | 'nativeObservation' |

@@ -3,9 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
-import { sameGuestName } from '../../../../server-pilot/src/ai/guest-name-match.js';
 import { Field, Section } from '../shared/stay-fields';
-import { isExactConfirmation, latestStayCandidates, StayFacts } from './amend-editor';
+import { isExactConfirmation } from './amend-editor';
 import {
   AMEND_FIND_COPY,
   amendFindClientFromTrpc,
@@ -43,6 +42,10 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
   const refs = Array.isArray(effectiveRefs) ? effectiveRefs : owner?.documentRefs ?? [];
   const docs = draft.proposal.content.documents.filter(row => refs.includes(row.id) && row.ownerRequestId === editor.request.id);
   const [documentChoice, setDocumentChoice] = useState('');
+  const [filing, setFiling] = useState(false);
+  const [filingError, setFilingError] = useState('');
+  const [rejectedPreparation, setRejectedPreparation] = useState<string | null>(null);
+  const filingInFlight = useRef(false);
   const docsKey = docs.map(row => row.id).join('\u001f');
   useEffect(() => {
     if (docs.length === 1) setDocumentChoice(docs[0]!.id);
@@ -201,9 +204,18 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     draft.staffReviews[`${documentRoot}/${field}`]?.status === 'accepted'));
   const pickedTarget = !useCreateTarget && pickedRow && pickedRow.confirmation === confirmation.trim() ? pickedRow : null;
   const pickedGuest = pickedTarget ? [pickedTarget.firstName, pickedTarget.lastName].filter(Boolean).join(' ').trim() : '';
+  const pickedArrival = pickedTarget?.arrival || (pickedTarget ? searchForm.arrival : '');
+  const pickedDeparture = pickedTarget?.departure || (confirmation.trim() === text(hint?.confirmation) ? text(hint?.bookedDeparture) : '');
+  useEffect(() => {
+    if (pickedTarget && confirmation.trim() === text(hint?.confirmation) &&
+        (!pickedGuest || pickedGuest === text(hint?.guestName)) &&
+        (!pickedArrival || pickedArrival === text(hint?.bookedArrival)) &&
+        (!pickedDeparture || pickedDeparture === text(hint?.bookedDeparture)))
+      setPickedRow(current => current === pickedTarget ? null : current);
+  }, [pickedTarget, confirmation, hint?.confirmation, hint?.guestName, hint?.bookedArrival, hint?.bookedDeparture,
+    pickedGuest, pickedArrival, pickedDeparture]);
   const pickedHintsDirty = Boolean(pickedTarget && (pickedGuest !== text(hint?.guestName) ||
-    (pickedTarget.arrival ?? '') !== text(hint?.bookedArrival) ||
-    (pickedTarget.departure ?? '') !== text(hint?.bookedDeparture)));
+    pickedArrival !== text(hint?.bookedArrival) || pickedDeparture !== text(hint?.bookedDeparture)));
   const dirty = (chosenAttachment !== null && chosenAttachment !== resolvedAttachment) ||
     destinationKind !== defaultDestinationKind ||
     (!useCreateTarget && confirmation.trim() !== text(hint?.confirmation)) ||
@@ -224,63 +236,84 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     editor.commands.setUncommitted(key, dirty && !filingLocked);
     return () => editor.commands.setUncommitted(key, false);
   }, [dirty, filingLocked, editor.request.id]);
-  const path = hint ? `${body}/targets/include/${encodeURIComponent(text(hint.id))}/suggestedRef` : '';
-  const selected = path ? valueAt(editor.snapshot, path) : null;
-  const candidates = hint ? latestStayCandidates(draft.observations.flatMap(observation => {
-    const c = observation.criteria, result = record(observation.result), stay = record(result.stay);
-    const createOperation = createSuccesses.length === 1 ? createSuccesses[0] : undefined;
-    const createReceipt = createOperation?.observationRefs.length === 1
-      ? draft.observations.find(row => row.ref === createOperation.observationRefs[0]) : undefined;
-    const linkedReceiptMatches = Boolean(selectedAllocation && createStatus === 'succeeded' && createOperation && createReceipt &&
-      c.createRequestId === selectedAllocation.requestId && c.createAllocationId === selectedAllocation.allocationId &&
-      c.createOperationId === createOperation.id && c.createObservationRef === createReceipt.ref &&
-      c.createConfirmation === stay.confirmation && c.confirmation === stay.confirmation &&
-      createReceipt.kind === 'stay_candidate' && createReceipt.status === 'complete' && createReceipt.coverage.complete &&
-      createReceipt.generationId === draft.generationId && createReceipt.propertyCode === draft.propertyCode &&
-      createReceipt.sourceMessageId === draft.source.messageId && createReceipt.criteria.workflow === 'create' &&
-      createReceipt.criteria.requestId === selectedAllocation.requestId && createReceipt.criteria.allocationId === selectedAllocation.allocationId &&
-      createReceipt.criteria.draftRevision === createOperation.draftRevision && record(createReceipt.result).confirmation === stay.confirmation);
-    if (observation.kind !== 'stay_candidate' || observation.status !== 'complete' || record(observation.coverage).complete !== true
-      || observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode
-      || observation.sourceMessageId !== draft.source.messageId || c.workflow !== 'filing' || c.requestId !== editor.request.id
-      || c.targetHintId !== hint.id || c.sourceHash !== draft.source.sourceHash || result.outcome !== 'found' || !isExactConfirmation(stay.confirmation)
-      || (c.bookedArrival ?? null) !== (hint.bookedArrival || null)
-      || (hasAllocationTarget ? !linkedReceiptMatches : c.createRequestId != null || c.confirmation !== hint.confirmation)
-      || (hint.confirmation && hint.confirmation !== stay.confirmation)) return [];
-    const guestMismatch = Boolean(hint.guestName && !sameGuestName(hint.guestName, `${text(stay.firstName)} ${text(stay.lastName)}`));
-    const dateMismatch = Boolean(hint.bookedArrival && hint.bookedArrival !== stay.arrival ||
-      hint.bookedDeparture && hint.bookedDeparture !== stay.departure);
-    return [{ observation, stay, guestMismatch, dateMismatch }];
-  }), selected) : [];
-  const selectedStay = candidates.find(candidate => candidate.observation.ref === selected && !candidate.guestMismatch && !candidate.dateMismatch);
-  const selectionNeedsReview = !filingLocked && typeof selected === 'string' && !selectedStay;
-  useEffect(() => {
-    const key = `target-selection:${path}`;
-    editor.commands.setUncommitted(key, selectionNeedsReview);
-    return () => editor.commands.setUncommitted(key, false);
-  }, [path, selectionNeedsReview]);
-  const proof = doc && selectedStay ? [...draft.observations].reverse().find(observation => observation.kind === 'document'
-    && observation.status === 'complete' && record(observation.coverage).complete === true
-    && observation.generationId === draft.generationId && observation.criteria.workflow === 'filing'
-    && observation.criteria.requestId === editor.request.id && observation.criteria.documentId === doc.id
-    && observation.criteria.targetObservationRef === selectedStay.observation.ref && record(observation.result).outcome === 'ready') : undefined;
   const validConfirmation = useCreateTarget ? Boolean(selectedAllocation && allocationOptions.length)
     : isExactConfirmation(confirmation);
-  const canRunLookup = !targetLinkHeld && !targetBindingMissing && (!useCreateTarget || (Boolean(selectedAllocation) && createStatus === 'succeeded'));
   const needsSeparateAction = docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all';
   const linkedCreateLabel = createStatus === 'queued' ? 'Queued — waiting for this exact Create allocation to save.'
     : createStatus === 'failed' ? 'Create failed — Filing is blocked until the booking is resolved.'
       : createStatus === 'needs_reconcile' ? 'Create outcome needs reconciliation. Do not retry or file against a guessed confirmation.'
-        : 'Create receipt recorded. Find stay will verify its returned confirmation in HMS.';
-  return <div className={styles.stack}>
-    <Section title="PDF and destination">
+        : 'Create receipt recorded. Infor will verify its returned confirmation before filing.';
+  const receipt = editor.snapshot.session.workflowPreparations?.find(row => row.endpoint === 'execute' && row.requestId === editor.request.id &&
+    row.expectedRevision === editor.snapshot.session.revision && row.generationId === draft.generationId);
+  const preparedOperation = [...draft.operationResults].reverse().find(row => row.workflow === 'filing' && row.requestId === editor.request.id &&
+    row.generationId === draft.generationId && row.status === 'prepared');
+  const prepared = doc && hint && [...draft.observations].reverse().find(row => preparedOperation?.observationRefs.includes(row.ref) &&
+    row.kind === 'document' && row.status === 'complete' && row.coverage.complete && row.generationId === draft.generationId &&
+    row.propertyCode === draft.propertyCode && row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'filing' &&
+    row.criteria.requestId === editor.request.id && row.criteria.documentId === doc.id &&
+    row.criteria.targetObservationRef === valueAt(editor.snapshot, `${body}/targets/include/${encodeURIComponent(text(hint.id))}/suggestedRef`) &&
+    record(row.result).outcome === 'prepared');
+  const preparedResult = record(prepared?.result), preparedTarget = record(preparedResult.target);
+  const preparedCurrent = Boolean(receipt && receipt.preparedRef !== rejectedPreparation && prepared && !dirty && !editor.view.saving && !editor.view.blocked &&
+    text(preparedTarget.confirmation) && text(preparedTarget.firstName) && text(preparedTarget.lastName) &&
+    text(preparedTarget.arrival) && text(preparedTarget.departure) && text(preparedResult.documentName));
+  const safeFailure = (failure: unknown) => {
+    const message = failure instanceof Error ? failure.message : '';
+    return ['The filing outcome could not be confirmed. Check Infor before trying again.',
+      'The email or filing details changed. Review them before filing again.',
+      'The checked filing changed. Check the details again before filing.',
+      'The filing details changed. Check the stay and document again.',
+      'Finish editing and check the details before filing.', 'Finish editing the details before filing.',
+      'Check the earlier filing outcome before trying again.', 'Separate the documents and stays before filing.',
+      'Choose one document before filing.', 'Choose one stay before filing.',
+      'Infor did not verify the selected stay. Check the guest and dates before filing.',
+      'The selected stay could not be confirmed.', 'Infor could not verify this PDF for the selected stay.',
+      'Infor could not check these details. Review them and try again.'].includes(message)
+      ? message : 'Infor could not complete this step. Check the details and try again.';
+  };
+  const check = async () => {
+    if (filingInFlight.current || !kind || !validConfirmation || !pdf || useCreateTarget && (!selectedAllocation || createStatus !== 'succeeded')) return;
+    filingInFlight.current = true;
+    setFiling(true);
+    setFilingError('');
+    const picked = !useCreateTarget && pickedRow && pickedRow.confirmation === confirmation.trim() ? pickedRow : null;
+    const guest = picked ? [picked.firstName, picked.lastName].filter(Boolean).join(' ').trim() : confirmation.trim() === text(hint?.confirmation) ? text(hint?.guestName) : '';
+    const arrival = picked?.arrival || (picked ? searchForm.arrival : confirmation.trim() === text(hint?.confirmation) ? text(hint?.bookedArrival) : '');
+    const departure = picked ? text(picked.departure) : confirmation.trim() === text(hint?.confirmation) ? text(hint?.bookedDeparture) : '';
+    if (!useCreateTarget && departure && !arrival) {
+      setFilingError('Add the original arrival date before checking this stay.');
+      filingInFlight.current = false;
+      setFiling(false);
+      return;
+    }
+    const target = useCreateTarget && selectedAllocation ? { allocationTarget: { requestId: selectedAllocation.requestId, allocationId: selectedAllocation.allocationId } }
+      : { confirmation: confirmation.trim(), ...(guest ? { guestName: guest } : {}),
+        ...(arrival ? { bookedArrival: arrival, ...(departure ? { bookedDeparture: departure } : {}) } : {}) };
+    try { await editor.commands.prepareFiling(attachmentId, target, kind); setRejectedPreparation(null); }
+    catch (failure) { setFilingError(safeFailure(failure)); }
+    finally { filingInFlight.current = false; setFiling(false); }
+  };
+  const file = async () => {
+    if (filingInFlight.current || !preparedCurrent || !receipt || !prepared) return;
+    filingInFlight.current = true;
+    setFiling(true);
+    setFilingError('');
+    try { await editor.commands.fileFiling(receipt.preparedRef, prepared.ref); }
+    catch (failure) {
+      if (failure instanceof Error && failure.message === 'The filing details changed. Check the stay and document again.')
+        setRejectedPreparation(receipt.preparedRef);
+      setFilingError(safeFailure(failure));
+    }
+    finally { filingInFlight.current = false; setFiling(false); }
+  };
+  return <fieldset className={styles.stack} disabled={filing} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+    <Section title="Stay">
       {outgoingInvoice && <div className={styles.warning}>This request asks the hotel to send an invoice. Arrange and send the invoice manually. Use Filing only if the customer also asked to file a supplied PDF.</div>}
-      <p className={styles.hint}>File one admitted PDF to one exact stay. Additional files or stays need separate filing actions.</p>
+      <p className={styles.hint}>File one PDF to one stay. Additional files or stays need separate filing actions.</p>
       {(include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all') && <div className={styles.warning}>The source contains a broader or excluded stay scope. Resolve it as a separate one-stay action before filing.</div>}
       {docs.length > 1 && <div className={styles.warning}>This action has multiple PDFs. Choose one PDF and create a separate one-document Filing action before lookup.</div>}
       {scope.mode === 'scoped_all' && include.length === 0 && exclude.length === 0 && <div className={styles.warning}>This Filing has an opaque group scope with no exact stays to split. Lookup and filing remain blocked until one exact stay is identified.</div>}
-      {targetLinkHeld && <div className={styles.warning}>The saved document/stay association is unknown or contradictory. Choose the exact destination and apply a deliberate correction before lookup.</div>}
-      {targetBindingMissing && <div className={styles.warning}>This PDF has no exact saved-stay reference. Apply the destination to bind this document before lookup.</div>}
+      {targetLinkHeld && <div className={styles.warning}>Choose the stay and document to correct the saved selection.</div>}
       {filingLocked && <div className={styles.warning}>This Filing already succeeded or has an uncertain result. Do not create another action until it is reconciled.</div>}
       {docs.length > 1 && <label className={styles.label}>PDF to separate
         <select value={documentChoice} disabled={editor.view.busy} onChange={event => setDocumentChoice(event.target.value)}>
@@ -302,21 +335,6 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           kind: 'separate_filing_target', requestId: editor.request.id, documentId: doc.id, targetHintId: text(row.id), targetDisposition: 'excluded',
         }).catch(() => {})}>{docs.length > 1 ? 'Create separate Filing for this PDF and stay' : 'Create separate Filing for this excluded stay'}</button>}
       </div>)}
-      <label className={styles.label}>Attachment from this email
-        <select value={attachmentId} disabled={editor.view.busy || filingLocked} onChange={event => {
-          const nextId = event.target.value;
-          setChosenAttachment(nextId);
-          const picked = attachments.find(attachment => attachment.sourceRef === nextId);
-          setKind(picked ? inferFilingDocumentKind(picked.name) ?? '' : '');
-        }}>
-          <option value="">Choose attachment</option>
-          {attachments.map(attachment => <option key={attachment.sourceRef} value={attachment.sourceRef}>{attachment.name}</option>)}
-        </select>
-      </label>
-      {selectedAttachment && <div className={styles.hint}>{selectedAttachment.name} · {selectedAttachment.size === undefined ? 'Size unknown' : `${(selectedAttachment.size / 1024 / 1024).toFixed(2)} MB`} · {
-        selectedAttachment.uploadability === 'ready' ? 'Source available; Infor check still required' : selectedAttachment.uploadability === 'checking' ? 'Checking source bytes' : selectedAttachment.uploadability === 'unknown' ? 'Source bytes not yet verified' : 'Unsupported source'}</div>}
-      {selectedAttachment && !pdf && <div className={styles.warning}>Choose a PDF no larger than 10 MB. Images and conversion are not supported.</div>}
-      {!attachments.length && <div className={styles.warning}>No attachment is available in this email. A promised voucher or payment proof cannot be filed until its bytes are available.</div>}
       <div className={styles.grid}>
         <label className={styles.label}>Destination type
           <select value={destinationKind} disabled={editor.view.busy || filingLocked} onChange={event => {
@@ -338,16 +356,10 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           : <label className={styles.label}>Existing Infor confirmation
           <input value={confirmation} disabled={editor.view.busy || filingLocked} onChange={event => setConfirmation(event.target.value)} placeholder="12345678-1" />
         </label>}
-        <label className={styles.label}>Attachment category
-          <select value={kind} disabled={editor.view.busy || filingLocked} onChange={event => setKind(event.target.value === 'voucher' || event.target.value === 'payment_proof' ? event.target.value : '')}>
-            <option value="">Choose category</option><option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
-          </select>
-        </label>
       </div>
-      <small className={styles.hint}>The category identifies the voucher or payment proof. Infor saves the PDF name and description with a generated Document Code.</small>
-      {!useCreateTarget && !filingLocked && <div className={styles.card}>
-        <strong>Find the stay by guest name</strong>
-        <small className={styles.hint}>Use this when the email has no HMS booking number. Search by surname and arrival day; it takes about a minute. The stay you pick is verified in Infor before filing.</small>
+      {!useCreateTarget && !filingLocked && <details className={styles.card} open={!isExactConfirmation(confirmation)}>
+        <summary>Find the stay by guest name</summary>
+        <small className={styles.hint}>Use this when the email has no Infor booking number. Search by surname and arrival day; it takes about a minute. The stay you pick is verified in Infor before filing.</small>
         <div className={styles.grid}>
           <label className={styles.label}>Guest surname
             <input value={searchForm.lastName} disabled={editor.view.busy || searching}
@@ -364,10 +376,10 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
         </div>
         <div className={styles.row}>
           <button type="button" disabled={editor.view.busy || searching || !searchTransport}
-            onClick={runGuestSearch}>{searching ? 'Searching HMS…' : 'Search HMS'}</button>
+            onClick={runGuestSearch}>{searching ? 'Searching Infor…' : 'Search Infor'}</button>
         </div>
         {searching && <small className={styles.hint}>{AMEND_FIND_COPY.searching} {AMEND_FIND_COPY.lookupWait}</small>}
-        {searchResult?.kind === 'none' && <small className={styles.hint}>Not found in HMS by surname {searchResult.lastName} and arrival {formatStayDate(searchResult.arrival)}.</small>}
+        {searchResult?.kind === 'none' && <small className={styles.hint}>Not found in Infor by surname {searchResult.lastName} and arrival {formatStayDate(searchResult.arrival)}.</small>}
         {searchResult?.kind === 'capped' && <small className={styles.hint}>{AMEND_FIND_COPY.searchCapped}</small>}
         {searchResult?.kind === 'error' && <div className={styles.warning}>{searchResult.message}</div>}
         {searchRows.map(row => {
@@ -381,66 +393,58 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           </div>;
         })}
         {pickedRow && <small className={styles.hint}>Picked stay {pickedRow.confirmation} fills the confirmation above. Its guest and dates are checked against a fresh Infor read before filing.</small>}
-      </div>}
-      {doc && <div className={styles.grid}>
-        <Field label="Document name" path={`${documentRoot}/requestedName`} editor={editor} maxLength={150} emptyState="none" review
-          disabled={filingLocked || editor.view.busy} hint="Optional PDF name in Infor. Leave blank to use the attachment name." />
-        <Field label="Description" path={`${documentRoot}/requestedDescription`} editor={editor} maxLength={200} emptyState="none" review
-          disabled={filingLocked || editor.view.busy} hint="Optional description in Infor. Leave blank to use the default." />
-        {(['requestedName', 'requestedDescription'] as const).map(field => {
-          const path = `${documentRoot}/${field}`, value = valueAt(editor.snapshot, path);
-          if (typeof value !== 'string' || !value.trim() || draft.staffReviews[path]?.status === 'accepted') return null;
-          const label = field === 'requestedName' ? 'document name' : 'description';
-          return <button type="button" key={field} disabled={editor.view.busy || filingLocked} onClick={() => void editor.commands.acceptServiceReview(
-            path, `Reviewed ${label}`, { path, value, generationId: draft.generationId }).catch(() => {})}>Confirm {label}</button>;
-        })}
-      </div>}
+      </details>}
       {useCreateTarget && selectedAllocation && <div className={createStatus === 'needs_reconcile' || createStatus === 'failed' ? styles.warning : styles.hint}>
         {linkedCreateLabel} The confirmation is supplied only from the verified Create receipt; it is not entered or guessed here.
         {createUnknown.length === 1 && <div className={styles.row}><button type="button" disabled={editor.view.busy}
           onClick={() => void editor.commands.reconcile(createUnknown[0]!.id)}>Reconcile Create</button></div>}
       </div>}
-      {hint && doc && !useCreateTarget && <div className={styles.grid}>
-        <Field label="Guest name" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/guestName`} editor={editor} resolvedValue={hint.guestName ?? null} disabled={dirty || editor.view.busy || filingLocked} />
-        <Field label="Original Arrival Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedArrival`} type="date" editor={editor} resolvedValue={hint.bookedArrival ?? null} disabled={dirty || editor.view.busy || filingLocked} />
-        <Field label="Original Departure Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedDeparture`} type="date" editor={editor} resolvedValue={hint.bookedDeparture ?? null} disabled={dirty || editor.view.busy || filingLocked} />
+      {hint && !useCreateTarget && !pickedTarget && confirmation.trim() === text(hint.confirmation) && <div className={styles.grid}>
+        <Field label="Guest name" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/guestName`} editor={editor} resolvedValue={hint.guestName ?? null} disabled={editor.view.busy || filingLocked} />
+        <Field label="Original Arrival Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedArrival`} type="date" editor={editor} resolvedValue={hint.bookedArrival ?? null} disabled={editor.view.busy || filingLocked} />
+        <Field label="Original Departure Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedDeparture`} type="date" editor={editor} resolvedValue={hint.bookedDeparture ?? null} disabled={editor.view.busy || filingLocked} />
       </div>}
-      {dirty && !filingLocked && <div className={styles.warning}>Apply the PDF and destination to confirm the attachment, category and filing request before checking.</div>}
-      <div className={styles.row}><button type="button" disabled={editor.view.busy || filingLocked || !dirty || !pdf || !validConfirmation || !kind || docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all'}
-        onClick={() => {
-          if (!kind || useCreateTarget && !selectedAllocation) return;
-          const picked = !useCreateTarget && pickedRow && pickedRow.confirmation === confirmation.trim() ? pickedRow : null;
-          const pickedGuest = picked ? [picked.firstName, picked.lastName].filter(Boolean).join(' ').trim() : '';
-          const target = useCreateTarget && selectedAllocation ? { allocationTarget: { requestId: selectedAllocation.requestId,
-            allocationId: selectedAllocation.allocationId } } : { confirmation: confirmation.trim(),
-            ...(picked ? { ...(pickedGuest ? { guestName: pickedGuest } : {}),
-              ...(picked.arrival ? { bookedArrival: picked.arrival } : {}),
-              ...(picked.departure ? { bookedDeparture: picked.departure } : {}) } : {}) };
-          void editor.commands.configureFiling(attachmentId, target, kind).then(() => {
-            // The command resolves only after the service persisted this exact
-            // choice and a fresh snapshot was applied; failures, stale revisions
-            // and unresolved replies reject and keep the pending row. Clear by
-            // identity so a newer pick or source is never dropped.
-            setPickedRow(current => current === picked ? null : current);
-          }).catch(() => {});
-        }}>Apply PDF and destination</button>
-        <button type="button" disabled={editor.view.busy || dirty || docs.length !== 1 || !hint || !doc || exclude.length > 0 || !canRunLookup}
-          onClick={() => void editor.commands.lookup()}>{useCreateTarget ? 'Find created stay and check PDF' : 'Find stay and check PDF'}</button></div>
-      {doc && <small className={styles.hint}>Saved selection: {attachments.find(attachment => attachment.sourceRef === resolvedAttachment)?.name || 'Source attachment unavailable'} · {documentKind === 'payment_proof' ? 'Payment proof' : documentKind === 'voucher' ? 'Voucher' : documentKind} · {useCreateTarget ? selectedAllocation ? 'Create-linked target; actual confirmation verified on lookup' : 'Choose an exact Create allocation' : text(hint?.confirmation) || 'Destination missing'}</small>}
     </Section>
-    <Section title="Exact destination and source bytes">
-      {candidates.map(({ observation, stay, guestMismatch, dateMismatch }) => <div className={styles.card} key={observation.ref}>
-        <StayFacts stay={stay} />
-        {guestMismatch && <div className={styles.warning}>The guest name differs from the source. Update the guest name and find the stay again before filing.</div>}
-        {dateMismatch && <div className={styles.warning}>The stay dates differ from the source. Update the dates and find the stay again before filing.</div>}
-        <div className={styles.row}><button type="button" disabled={editor.view.busy || filingLocked || dirty || guestMismatch || dateMismatch}
-          onClick={() => void editor.commands.selectNative(path, observation.ref)}>{selected === observation.ref ? 'Selected stay' : 'Select this stay'}</button></div>
-      </div>)}
-      {selectionNeedsReview && <div className={styles.warning}>The selected stay needs review. Find and select the current Infor record before continuing.</div>}
-      {!selectedStay && <span className={styles.hint}>Find and select the exact stay, then check the PDF again.</span>}
-      {selectedStay && !proof && <div className={styles.warning}>PDF bytes have not been verified for this stay. Find the stay and check the PDF again.</div>}
-      {proof && <div className={styles.hint}>Infor lookup verified the source PDF for this selected stay. Check before filing.</div>}
+    <Section title="Document">
+      <label className={styles.label}>Attachment from this email
+        <select value={attachmentId} disabled={editor.view.busy || filingLocked} onChange={event => {
+          const nextId = event.target.value;
+          setChosenAttachment(nextId);
+          const picked = attachments.find(attachment => attachment.sourceRef === nextId);
+          setKind(picked ? inferFilingDocumentKind(picked.name) ?? '' : '');
+        }}>
+          <option value="">Choose attachment</option>
+          {attachments.map(attachment => <option key={attachment.sourceRef} value={attachment.sourceRef}>{attachment.name}</option>)}
+        </select>
+      </label>
+      {selectedAttachment && <div className={styles.hint}>{selectedAttachment.name} · {selectedAttachment.size === undefined ? 'Size unknown' : `${(selectedAttachment.size / 1024 / 1024).toFixed(2)} MB`} · {
+        selectedAttachment.uploadability === 'ready' ? 'Source available; Infor check still required' : selectedAttachment.uploadability === 'checking' ? 'Checking attachment' : selectedAttachment.uploadability === 'unknown' ? 'Attachment not yet checked' : 'Unsupported source'}</div>}
+      {selectedAttachment && !pdf && <div className={styles.warning}>Choose a PDF no larger than 10 MB. Images and conversion are not supported.</div>}
+      {!attachments.length && <div className={styles.warning}>No attachment is available in this email. A promised voucher or payment proof cannot be filed until the attachment is available.</div>}
+      <label className={styles.label}>Attachment category
+          <select value={kind} disabled={editor.view.busy || filingLocked} onChange={event => setKind(event.target.value === 'voucher' || event.target.value === 'payment_proof' ? event.target.value : '')}>
+            <option value="">Choose category</option><option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
+          </select>
+        </label>
+      {doc && <div className={styles.grid}>
+        <Field label="Document name" path={`${documentRoot}/requestedName`} editor={editor} maxLength={150} emptyState="none" review
+          disabled={filingLocked || editor.view.busy} hint="Optional PDF name in Infor. Leave blank to use the attachment name." />
+        <Field label="Description" path={`${documentRoot}/requestedDescription`} editor={editor} maxLength={200} emptyState="none" review
+          disabled={filingLocked || editor.view.busy} hint="Optional description in Infor. Leave blank to use the default." />
+      </div>}
+      {preparedCurrent && <div className={styles.card}>
+        <strong>Check the stay and document from Infor</strong>
+        <p>{text(preparedTarget.firstName)} {text(preparedTarget.lastName)} · {text(preparedTarget.confirmation)}</p>
+        <p>{text(preparedTarget.arrival)} → {text(preparedTarget.departure)}</p>
+        <p>Document: {text(preparedResult.documentName)}{text(preparedResult.documentDescription) ? ` · ${text(preparedResult.documentDescription)}` : ''}</p>
+      </div>}
+      <div className={styles.row}>{preparedCurrent
+        ? <button type="button" className={styles.primary} disabled={editor.view.busy || editor.view.preview || filingLocked || !['lab', 'staff-enabled'].includes(editor.configuration?.capabilities?.attach?.status ?? '')} onClick={() => { void file(); }}>File to stay</button>
+        : <button type="button" className={styles.primary} disabled={editor.view.busy || filingLocked || !pdf || !validConfirmation || !kind || docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all' || (useCreateTarget && createStatus !== 'succeeded') || !['prepare-only', 'lab', 'staff-enabled'].includes(editor.configuration?.capabilities?.attach?.status ?? '')} onClick={() => { void check(); }}>Check stay and document</button>}</div>
+      {!['lab', 'staff-enabled'].includes(editor.configuration?.capabilities?.attach?.status ?? '') && <small className={styles.hint}>Filing is not available for this hotel yet.</small>}
+      {filingError && <div className={styles.warning} role="alert">{filingError}</div>}
+      {filing && <small className={styles.hint}>Working in Infor. This may take a few minutes.</small>}
     </Section>
     <small className={styles.hint}>Filing payment proof does not confirm payment or settlement.</small>
-  </div>;
+  </fieldset>;
 }

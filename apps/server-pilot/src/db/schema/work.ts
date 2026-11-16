@@ -42,6 +42,7 @@ export const WORK_EVENT_TYPES = [
   'approval.granted',
   'approval.consumed',
   'hms.prepared',
+  'hms.prepare.revoked',
   'hms.prepare.failed',
   'hms.dispatch.started',
   'hms.dispatch.reviewed',

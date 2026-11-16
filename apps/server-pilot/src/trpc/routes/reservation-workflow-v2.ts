@@ -9,7 +9,7 @@ import { workEvent, workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import { canonicalJson } from '../../ai/draft-approval.js';
-import { approveHmsWrite, formDigest, hmsAllocationOperationId, prepareNativeHmsWrite, type V2HmsNativePreparation } from '../../ai/hms-approval.js';
+import { approveHmsWrite, formDigest, hmsAllocationOperationId, HmsApprovalError, prepareNativeHmsWrite, revokeUnsentFilingPreparation, type V2HmsNativePreparation } from '../../ai/hms-approval.js';
 import { hmsConfigurationIdentities, hmsPreparationSchema, hmsWriteGrantV2Schema, loadHmsPreparation,
   preparationDigest } from '../../hms/hms-preparation.js';
 import { propertyConfigurationForScope } from '../../hms/rate-catalogue.js';
@@ -150,12 +150,19 @@ async function queuePreparedV2(ctx: Awaited<ReturnType<typeof nativeContext>>, p
       prepared.session.sessionId !== ctx.user.sessionId || prepared.session.sessionProfile !== ctx.user.sessionProfile) {
     return { status: 'needs_prepare' as const, issue: 'staff_go_preparation_changed' };
   }
-  const approved = await approveHmsWrite({ db: ctx.db, transportId: ctx.transport.id, workItemId: input.workItemId,
-    actorUserId: ctx.user.id, sessionId: ctx.user.sessionId, sessionProfile: ctx.user.sessionProfile,
-    propertySwitch: input.propertySwitch, preparedRef, expectedRevision: input.expectedRevision,
-    selectedSource: { threadId: input.source.threadId, messageId: input.source.messageId, sourceHash: input.source.sourceHash },
-    formDigest: prepared.businessDigest });
-  return { status: 'queued' as const, ...approved, operationId: approved.grantId };
+  try {
+    const approved = await approveHmsWrite({ db: ctx.db, transportId: ctx.transport.id, workItemId: input.workItemId,
+      actorUserId: ctx.user.id, sessionId: ctx.user.sessionId, sessionProfile: ctx.user.sessionProfile,
+      propertySwitch: input.propertySwitch, preparedRef, expectedRevision: input.expectedRevision,
+      selectedSource: { threadId: input.source.threadId, messageId: input.source.messageId, sourceHash: input.source.sourceHash },
+      formDigest: prepared.businessDigest });
+    return { status: 'queued' as const, ...approved, operationId: approved.grantId };
+  } catch (error) {
+    if (prepared.operation === 'attach_document' && error instanceof HmsApprovalError &&
+        (error.refusal === 'snapshot_stale' || error.refusal === 'state_changed'))
+      return { status: 'needs_prepare' as const, issue: 'filing_preparation_expired_or_changed' };
+    throw error;
+  }
 }
 
 const sourceInput = z.object({
@@ -444,7 +451,7 @@ export const reservationWorkflowV2Router = router({
     const events = await scoped.db.select({ type: workEvent.type, value: workEvent.value,
       actorKind: workEvent.actorKind, payloadHash: workEvent.payloadHash }).from(workEvent)
       .where(and(eq(workEvent.workItemId, input.workItemId),
-        sql`${workEvent.type} in ('hms.prepared', 'approval.granted', 'hms.dispatch.reviewed')`))
+        sql`${workEvent.type} in ('hms.prepared', 'hms.prepare.revoked', 'approval.granted', 'hms.dispatch.reviewed')`))
       .orderBy(desc(workEvent.at), desc(workEvent.id)).limit(1000);
     const allPreparations = events.flatMap(event => {
       if (event.type !== 'hms.prepared') return [];
@@ -463,6 +470,11 @@ export const reservationWorkflowV2Router = router({
       return parsed.success && allPreparations.some(saved => saved.preparedRef === parsed.data.preparedRef) ? [parsed.data] : [];
     });
     const granted = new Set(grants.map(grant => grant.preparedRef));
+    for (const event of events) {
+      if (event.type !== 'hms.prepare.revoked' || event.actorKind !== 'system') continue;
+      const value = z.object({ preparedRef: z.string().uuid() }).safeParse(event.value);
+      if (value.success) granted.add(value.data.preparedRef);
+    }
     const runs = grants.length ? await scoped.db.select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state,
       idempotencyKey: aiWorkflowRun.idempotencyKey, failureClass: aiWorkflowRun.failureClass }).from(aiWorkflowRun).where(and(
         eq(aiWorkflowRun.workItemId, input.workItemId), eq(aiWorkflowRun.transportId, scoped.transportId),
@@ -506,7 +518,7 @@ export const reservationWorkflowV2Router = router({
       return [{ endpoint: captured.endpoint, requestId: captured.input.requestId,
         ...(captured.input.allocationId ? { allocationId: captured.input.allocationId } : {}),
         ...('serviceId' in captured.input ? { serviceId: captured.input.serviceId } : {}),
-        runId: run?.id ?? null, grantId: grant.grantId, operationId: grant.grantId, status,
+        runId: run?.id ?? null, grantId: grant.grantId, operationId: grant.grantId, preparedRef: grant.preparedRef, status,
         // Only closed codes leave the server; never expose stored error text.
         ...(run?.failureClass && ['failed', 'needs_reconcile', 'retry_wait'].includes(status)
           ? { failureClass: ['BEDROCK_TRANSIENT', 'ARTIFACT_TRANSIENT', 'AUDIT_CAPTURE', 'STAFF_QUOTE_ACTIVE',
@@ -545,6 +557,19 @@ export const reservationWorkflowV2Router = router({
       return saved && view.current ? { ...view, preparedRef: saved.preparedRef,
         expectedRevision: saved.revision, generationId: saved.generationId } : view;
     }) };
+  }),
+  revokeUnsentFiling: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema.extend({
+    requestId: z.string().min(1), preparedRef: z.string().uuid(),
+  }).strict()).mutation(async ({ input, ctx }) => {
+    const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
+    if (!ctx.sessionUser.sessionId || !ctx.sessionUser.sessionProfile)
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'authenticated_staff_session_required' });
+    const status = await revokeUnsentFilingPreparation({ db: scoped.db, transportId: scoped.transportId,
+      workItemId: input.workItemId, actorUserId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId,
+      sessionProfile: ctx.sessionUser.sessionProfile, propertySwitch: input.propertySwitch,
+      selectedSource: { threadId: input.source.threadId, messageId: input.source.messageId, sourceHash: input.source.sourceHash },
+      requestId: input.requestId, preparedRef: input.preparedRef });
+    return { status };
   }),
   reconcileSource: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema.extend({ confirmed: z.literal(true) })).mutation(({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);

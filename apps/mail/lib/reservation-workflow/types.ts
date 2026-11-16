@@ -61,7 +61,7 @@ export type ReservationWorkflowDispatch = {
   endpoint: 'execute' | 'createGuestProfile' | 'executeServices' | 'executeSavedServices';
   requestId: string; allocationId?: string; serviceId?: string;
   status: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'needs_reconcile' | 'needs_review' | 'succeeded' | 'failed';
-  runId: string | null; grantId: string; operationId: string;
+  runId: string | null; grantId: string; operationId: string; preparedRef?: string;
   failureClass?: string;
 };
 
@@ -176,6 +176,7 @@ export interface ReservationWorkflowClient {
   createGuestProfile(input: ReservationGuestProfileCommand & { prepareRef: string; preparedRef: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
+  revokeUnsentFiling?(input: ReservationCommandContext & { requestId: string; preparedRef: string }): Promise<boolean>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
   configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation?: string;
     guestName?: string; bookedArrival?: string; bookedDeparture?: string;
