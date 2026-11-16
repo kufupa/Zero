@@ -1,0 +1,364 @@
+import { describe, expect, expectTypeOf, it } from 'vitest';
+import type { PaneHmsWriteResult } from '../src/ai/pane-hms-write.js';
+import type { PaneStayResult } from '../src/ai/pane-stay-save.js';
+import type { PaneStayCancelResult } from '../src/ai/pane-stay-cancel.js';
+import {
+  adaptBatchToolResult, adaptExistingToolResult, AmendStageInputSchema,
+  BatchManifestGrantSchema, FilingRunnerInputSchema,
+} from '../src/ai/nava-tool-result.js';
+
+describe('Nava tool result contract', () => {
+  it.each(['committed_unverified', 'awaiting_readback', 'uncertain', 'save_failed'])(
+    '%s is uncertain even after a claimed verification', (outcome) => {
+      expect(adaptExistingToolResult({ outcome }, { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+    },
+  );
+  it('never calls an unconfirmed pane save a refusal', () => {
+    expect(adaptExistingToolResult({ status: 'refused', reason: 'pane_save_unconfirmed' }, { operation: 'write' }))
+      .toMatchObject({ outcome: 'uncertain', reason: 'pane_save_unconfirmed' });
+  });
+  it.each([{ clickedSave: true }, { clickedSave: 'unknown' as const }, { saveDispatched: true }, { saveDispatched: 'unknown' as const },
+    { saveAttempted: true }, { saveAttempted: 'unknown' as const }, { uploadSent: true },
+    { uploadSent: 'unknown' as const }, { clickedOk: true }, { clickedOk: 'unknown' as const },
+    { possiblyDispatched: true }, { possiblyDispatched: 'unknown' as const },
+    { dispatched: true }, { dispatched: 'unknown' as const }])('keeps possible dispatch uncertain: %o', (signal) => {
+    expect(adaptExistingToolResult({ outcome: 'refused', ...signal }, { operation: 'write' }).outcome).toBe('uncertain');
+  });
+  it('never converts a dispatched refusal to a definite refusal even with claimed verification', () => {
+    expect(adaptExistingToolResult({ outcome: 'refused', clickedSave: true },
+      { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult({ outcome: 'ok', status: 'refused', clickedSave: true },
+      { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+  });
+  it.each(['refused_flag_off', 'amend_preview_required'])('keeps known pre-dispatch refusal %s', (code) => {
+    expect(adaptExistingToolResult({ outcome: code }, { operation: 'write' }))
+      .toMatchObject({ outcome: 'refused', reason: code });
+    expect(adaptExistingToolResult({ status: 'uncertain', outcome: code }, { operation: 'write' }).outcome)
+      .toBe('uncertain');
+    for (const signal of [{ clickedSave: true }, { saveDispatched: 'unknown' as const }, { possiblyDispatched: true }]) {
+      expect(adaptExistingToolResult({ outcome: code, ...signal }, { operation: 'write', readbackVerified: true }).outcome)
+        .toBe('uncertain');
+    }
+  });
+  it('keeps contradictory commit evidence uncertain without blocking ordinary pre-dispatch refusals', () => {
+    for (const status of ['saved', 'committed', 'confirmed', 'verified', 'readback_verified']) {
+      for (const outcome of ['not_dispatched', 'refused', 'refused_flag_off', 'needs_input']) {
+        expect(adaptExistingToolResult({ status, outcome }, { operation: 'write' }).outcome).toBe('uncertain');
+        expect(adaptExistingToolResult({ status, outcome }, { operation: 'write', readbackVerified: true,
+          verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+      }
+    }
+    expect(adaptExistingToolResult({ status: 'ok', outcome: 'refused' }, { operation: 'write' }).outcome).toBe('refused');
+    expect(adaptExistingToolResult({ status: 'ok', outcome: 'not_dispatched' }, { operation: 'write' }).outcome).toBe('refused');
+  });
+  it('does not turn a pre-dispatch status into success when outcome says ok', () => {
+    for (const status of ['not_dispatched', 'refused', 'refused_flag_off', 'amend_preview_required', 'needs_input', 'input_gap']) {
+      for (const success of ['ok', 'success']) {
+        const result = { status, outcome: success };
+        expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+          verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+        expect(adaptExistingToolResult(result, { operation: 'read' }).outcome).toBe('refused');
+        const reverse = { status: success, outcome: status };
+        const expected = status === 'needs_input' || status === 'input_gap' ? 'needs_input' : 'refused';
+        expect(adaptExistingToolResult(reverse, { operation: 'write' }).outcome).toBe(expected);
+        expect(adaptExistingToolResult(reverse, { operation: 'read' }).outcome).toBe(expected);
+      }
+    }
+  });
+
+  it('keeps named legacy read refusals distinct without implying a write was not dispatched', () => {
+    for (const code of ['refused_input_invalid', 'refused_lock_busy']) {
+      const result = { outcome: code, reason: null, stay: null };
+      expect(adaptExistingToolResult(result, { operation: 'read' })).toMatchObject({ outcome: 'refused', reason: code });
+      expect(adaptExistingToolResult({ ...result, clickedSave: true }, { operation: 'write' }))
+        .toMatchObject({ outcome: 'uncertain', reason: code });
+    }
+    expect(adaptExistingToolResult({ outcome: 'refused_lock_busy', reason: 'POLICY_BLOCK' }, { operation: 'read' }))
+      .toMatchObject({ outcome: 'refused', reason: 'policy_block' });
+    expect(adaptExistingToolResult({ outcome: 'refused_secret@example.com' }, { operation: 'read' }).reason).toBeUndefined();
+  });
+
+  it('keeps unknown refusal-looking codes uncertain', () => {
+    expect(adaptExistingToolResult({ outcome: 'refused_unknown' }, { operation: 'write' }).outcome).toBe('uncertain');
+  });
+  it('accepts matched stay reads with nullable reasons without treating found as a write success', () => {
+    const result = { outcome: 'found', reason: null, stay: { confirmation: '123' }, screenshots: [], runId: null };
+    expect(adaptExistingToolResult(result, { operation: 'read' })).toMatchObject({
+      outcome: 'ok', data: { stay: { confirmation: '123' } },
+    });
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: { confirmation: '123' } } }).outcome).toBe('uncertain');
+  });
+
+  it.each(['amended', 'cancelled', 'attached'])('requires trusted fresh readback for legacy %s writes', (outcome) => {
+    const result = { outcome };
+    expect(adaptExistingToolResult(result, { operation: 'write' }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ status: outcome, outcome: 'not_dispatched' }, { operation: 'write',
+      readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult({ status: 'not_dispatched', outcome }, { operation: 'write',
+      readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult(result, { operation: 'read' }).outcome).toBe('refused');
+  });
+
+  it('recognizes actual successful previews as reads, never as completed writes', () => {
+    const booking: PaneStayResult = { status: 'ok', outcome: 'previewed', clickedSave: false, previewDigest: 'booking-preview' };
+    const cancellation: PaneStayCancelResult = {
+      outcome: 'preview_ok', statusBefore: 'Reserved', statusAfter: null, reasons: [], penaltyText: null,
+      message: null, arrivalMismatch: false, requestedArrival: null, hmsArrival: null,
+      screenshots: [], runId: null, previewDigest: 'cancel-preview',
+    };
+    for (const result of [booking, cancellation]) {
+      expect(adaptExistingToolResult(result, { operation: 'read' })).toMatchObject({
+        outcome: 'ok', data: { previewDigest: result.previewDigest },
+      });
+      expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+        verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    }
+    for (const preview of ['previewed', 'preview_ok']) {
+      expect(adaptExistingToolResult({ status: 'refused', outcome: preview }, { operation: 'read' }).outcome).toBe('refused');
+      expect(adaptExistingToolResult({ status: 'uncertain', outcome: preview }, { operation: 'read' }).outcome).toBe('uncertain');
+      expect(adaptExistingToolResult({ outcome: preview, clickedSave: true }, { operation: 'read' }).outcome).toBe('uncertain');
+      expect(adaptExistingToolResult({ status: preview, outcome: 'committed' }, { operation: 'write', readbackVerified: true,
+        verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+      expect(adaptExistingToolResult({ status: preview, outcome: 'ok' }, { operation: 'write', readbackVerified: true,
+        verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('uncertain');
+    }
+  });
+
+  it('requires verified readback for successful writes', () => {
+    expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'write' }).outcome).toBe('uncertain');
+    expect(adaptExistingToolResult({ outcome: 'ok', clickedSave: true }, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'read' }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } }).outcome).toBe('ok');
+    expect(adaptExistingToolResult({ outcome: 'saved' }, { operation: 'write' }).outcome).toBe('uncertain');
+  });
+  it('rejects a verification boolean without its exact fresh readback', () => {
+    for (const readback of [undefined, null]) {
+      expect(adaptExistingToolResult({ outcome: 'committed', clickedSave: true }, {
+        operation: 'write', readbackVerified: true, verifiedReadback: { readback },
+      }).outcome).toBe('uncertain');
+    }
+    expect(adaptBatchToolResult([{ key: 'a', result: { outcome: 'committed' }, readbackVerified: true }])
+      .children?.[0]?.outcome).toBe('uncertain');
+  });
+  it('types required data without a spurious legacy payload union', () => {
+    const explicit = adaptExistingToolResult({ outcome: 'ok', data: { documentCode: 'ABC' } }, { operation: 'read' });
+    expectTypeOf(explicit.data).toEqualTypeOf<{ documentCode: string } | undefined>();
+    const legacy = adaptExistingToolResult({ outcome: 'ok', rows: ['ABC'] }, { operation: 'read' });
+    expectTypeOf(legacy.data).toEqualTypeOf<{ rows: string[] } | undefined>();
+    const optional: { outcome: string; data?: { documentCode: string }; rows: string[] } = { outcome: 'ok', rows: [] };
+    const adapted = adaptExistingToolResult(optional, { operation: 'read' });
+    expectTypeOf(adapted.data).toEqualTypeOf<{ documentCode: string } | { rows: string[] } | undefined>();
+  });
+  it('adapts a legacy committed booking only after fresh readback', () => {
+    const result = { status: 'ok', outcome: 'committed', clickedSave: true, confirmationNumber: '123456-1' };
+    expect(adaptExistingToolResult(result, { operation: 'write' })).toMatchObject({
+      outcome: 'uncertain', data: { confirmationNumber: '123456-1' },
+    });
+    expect(adaptExistingToolResult(result, { operation: 'write', readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } } })).toMatchObject({
+      outcome: 'ok', data: { confirmationNumber: '123456-1' },
+    });
+  });
+  it('retains all legacy search rows and other producer fields', () => {
+    const rows = [{ confirmation: '123', extra: { exact: true } }, { confirmation: '456' }];
+    expect(adaptExistingToolResult({ outcome: 'ok', rows, coverage: { complete: true } }, { operation: 'read' }))
+      .toMatchObject({ outcome: 'ok', data: { rows, coverage: { complete: true } } });
+    expect(adaptExistingToolResult({ outcome: 'ok', data: { normalized: true }, confirmationNumber: '123',
+      previewDigest: null }, { operation: 'write' })).toMatchObject({ outcome: 'uncertain',
+      data: { normalized: true }, legacyData: { confirmationNumber: '123', previewDigest: null } });
+  });
+  it('keeps batch child identity, confirmation and uncertainty', () => {
+    expect(adaptBatchToolResult([
+      { key: 'a', result: { outcome: 'ok' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh' } }, confirmation: '123' },
+      { key: 'b', result: { outcome: 'awaiting_readback', issue: 'SAVE_UNCONFIRMED' } },
+    ])).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'ok', confirmation: '123' },
+      { key: 'b', outcome: 'uncertain', reason: 'save_unconfirmed' },
+    ] });
+  });
+  it('retains each batch child payload and evidence without treating them as verification', () => {
+    const batch = adaptBatchToolResult([
+      { key: 'a', result: { status: 'confirmed', confirmationNumber: '123', runId: 'run-a', screenshots: ['save.png'] } },
+      { key: 'b', result: { status: 'uncertain', confirmationNumber: '456', saveAttempted: true } },
+    ]);
+    expect(batch).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'uncertain', data: { confirmationNumber: '123' },
+        evidence: { legacy: [{ runId: 'run-a', screenshots: ['save.png'] }] } },
+      { key: 'b', outcome: 'uncertain', data: { confirmationNumber: '456' } },
+    ] });
+  });
+  it('uses each child trusted readback rather than its producer evidence', () => {
+    const claimed = { confirmation: '123', version: 'producer' };
+    const fresh = { confirmation: '123', version: 'fresh' };
+    const batch = adaptBatchToolResult([{ key: 'a', result: { status: 'confirmed',
+      evidence: { level: 'readback_verified' as const, readback: claimed } }, readbackVerified: true,
+      verifiedReadback: { readback: fresh } }]);
+    expect(batch.children?.[0]).toMatchObject({ outcome: 'ok', evidence: { level: 'readback_verified', readback: fresh,
+      legacy: [{ claimedLevel: 'readback_verified', claimedReadback: claimed }] } });
+  });
+  it('preserves producer-style confirmed and uncertain batch children', () => {
+    expect(adaptBatchToolResult([
+      { key: 'child-a', result: { status: 'confirmed' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh-a' } }, confirmation: '123456-1' },
+      { key: 'child-b', result: { status: 'uncertain', possiblyDispatched: true } },
+    ])).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'child-a', outcome: 'ok', confirmation: '123456-1' },
+      { key: 'child-b', outcome: 'uncertain' },
+    ] });
+    for (const signal of [{}, { possiblyDispatched: true }]) {
+      expect(adaptExistingToolResult({ outcome: 'partial', ...signal }, { operation: 'write' }).outcome)
+        .toBe('uncertain'); // The single-result adapter cannot preserve batch children.
+    }
+    expect(adaptExistingToolResult({ outcome: 'partial' }, { operation: 'read' }).outcome).toBe('uncertain');
+  });
+  it('keeps every nonempty batch partial, regardless of child outcomes', () => {
+    const verified = adaptBatchToolResult([
+      { key: 'a', result: { status: 'confirmed' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh-a' } }, confirmation: '123456-1' },
+      { key: 'b', result: { status: 'confirmed' }, readbackVerified: true, verifiedReadback: { readback: { id: 'fresh-b' } }, confirmation: '123457-1' },
+    ]);
+    expect(verified).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'ok', confirmation: '123456-1' },
+      { key: 'b', outcome: 'ok', confirmation: '123457-1' },
+    ] });
+    const refused = adaptBatchToolResult([
+      { key: 'a', result: { outcome: 'not_dispatched' } },
+      { key: 'b', result: { outcome: 'refused', reason: 'POLICY_BLOCK' } },
+    ]);
+    expect(refused).toMatchObject({ schema: 'nava.tool/v1', outcome: 'partial', children: [
+      { key: 'a', outcome: 'refused' }, { key: 'b', outcome: 'refused', reason: 'policy_block' },
+    ] });
+    expect(adaptBatchToolResult([])).toEqual({ schema: 'nava.tool/v1', outcome: 'needs_input', reason: 'batch_empty' });
+  });
+  it('accepts pane write evidence names without treating them as verified screenshots', () => {
+    const result: Extract<PaneHmsWriteResult, { status: 'succeeded' }> = {
+      status: 'succeeded', action: 'attach_document', outcome: 'attached', evidence: ['before.png', 'after.png'],
+    };
+    const unverified = adaptExistingToolResult(result, { operation: 'write' });
+    expect(unverified).toMatchObject({ outcome: 'uncertain', data: { action: 'attach_document' },
+      evidence: { legacy: [{ legacyEvidenceNames: ['before.png', 'after.png'] }] } });
+    expect(unverified.evidence?.screenshots).toBeUndefined();
+    expect(unverified.evidence?.level).toBeUndefined();
+    const reAdapted = adaptExistingToolResult({ outcome: 'ok', evidence: unverified.evidence }, { operation: 'read' });
+    expect(reAdapted.evidence?.legacy).toEqual([{ legacyEvidenceNames: ['before.png', 'after.png'] }]);
+    const fresh = { documentId: 'fresh' };
+    const verified = adaptExistingToolResult(result, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: fresh } });
+    expect(verified).toMatchObject({ outcome: 'ok', evidence: { level: 'readback_verified', readback: fresh,
+      legacy: [{ legacyEvidenceNames: ['before.png', 'after.png'] }] } });
+    expect(verified.evidence?.screenshots).toBeUndefined();
+    expect(adaptBatchToolResult([{ key: 'one', result }]).children?.[0]).toMatchObject({
+      outcome: 'uncertain', evidence: { legacy: [{ legacyEvidenceNames: ['before.png', 'after.png'] }] },
+    });
+  });
+  it('retains legacy hashed shots and readback without claiming verification', () => {
+    const hash = 'a'.repeat(64);
+    const legacy = { status: 'ok', outcome: 'committed', clickedSave: true, runId: 'run-1',
+      screenshots: ['saved.png', 'unhashed.png'], shots: [{ name: 'saved.png', sha256: hash, at: '2026-11-02T00:00:00Z' }],
+      changedFieldsReadback: { arrival: '2027-01-01', unknownField: { exact: true } } };
+    const adapted = adaptExistingToolResult(legacy, { operation: 'write' });
+    expect(adapted.outcome).toBe('uncertain');
+    expect(adapted.evidence).toMatchObject({
+      screenshots: [{ runId: 'run-1', name: 'saved.png', sha256: hash }],
+      readback: legacy.changedFieldsReadback,
+      legacy: [{ runId: legacy.runId, screenshots: legacy.screenshots, shots: legacy.shots,
+        changedFieldsReadback: legacy.changedFieldsReadback }],
+    });
+    expect(adapted.evidence?.level).toBeUndefined();
+  });
+  it('retains conflicting producer observations without fabricating shot hashes', () => {
+    const adapted = adaptExistingToolResult({ outcome: 'ok', runId: 'run-1', screenshots: ['saved.png'],
+      shots: [{ name: '../outside.png', sha256: 'bad' }], readback: { top: true },
+      changedFieldsReadback: { changed: true }, evidence: { readback: { normalized: true }, level: 'none' } },
+    { operation: 'read' });
+    expect(adapted.evidence).toMatchObject({ readback: { normalized: true }, level: 'none',
+      legacy: [{ runId: 'run-1', screenshots: ['saved.png'], shots: [{ name: '../outside.png', sha256: 'bad' }],
+        readback: { top: true }, changedFieldsReadback: { changed: true } }] });
+    expect(adapted.evidence?.screenshots).toBeUndefined();
+  });
+  it('does not attach an unverified legacy readback to an unrelated verified level', () => {
+    for (const legacy of [{ readback: { raw: true } }, { changedFieldsReadback: { raw: true } }]) {
+      const adapted = adaptExistingToolResult({ outcome: 'ok', ...legacy,
+        evidence: { level: 'readback_verified' } }, { operation: 'read' });
+      expect(adapted.evidence).toMatchObject({ level: 'none', legacy: [legacy] });
+    }
+    const verified = { id: 'verified-stay' };
+    const adapted = adaptExistingToolResult({ outcome: 'ok', readback: { raw: true },
+      evidence: { level: 'readback_verified', readback: verified } },
+    { operation: 'read', readbackVerified: true, verifiedReadback: { readback: verified } });
+    expect(adapted.evidence).toMatchObject({ level: 'readback_verified', readback: verified,
+      legacy: [{ readback: { raw: true } }] });
+  });
+  it('keeps original producer metadata but never trusts its verification claim', () => {
+    const source = { outcome: 'refused', reason: 'POLICY_BLOCK', saveAttempted: true,
+      evidence: { level: 'readback_verified' as const, readback: { id: 'producer-claim' } } };
+    const adapted = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true });
+    expect(adapted.outcome).toBe('uncertain');
+    expect(adapted.evidence).toMatchObject({ level: 'none', legacy: [{ saveAttempted: true, claimedLevel: 'readback_verified' }] });
+    const successful = adaptExistingToolResult({ ...source, outcome: 'ok' }, { operation: 'write' });
+    expect(successful.outcome).toBe('uncertain');
+    expect(successful.evidence?.level).toBe('none');
+  });
+  it('binds verified evidence to the exact trusted fresh read, not a producer claim', () => {
+    const claimed = { confirmation: '123', note: 'producer' };
+    const fresh = { confirmation: '123', note: 'fresh' };
+    const source = { outcome: 'committed', clickedSave: true,
+      evidence: { level: 'readback_verified' as const, readback: claimed } };
+    const withoutEvidence = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true });
+    expect(withoutEvidence.outcome).toBe('uncertain');
+    expect(withoutEvidence.evidence).toMatchObject({ level: 'none', readback: claimed,
+      legacy: [{ claimedLevel: 'readback_verified' }] });
+    const verified = adaptExistingToolResult(source, { operation: 'write', readbackVerified: true,
+      verifiedReadback: { readback: fresh } });
+    expect(verified.evidence).toMatchObject({ level: 'readback_verified', readback: fresh,
+      legacy: [{ claimedLevel: 'readback_verified', claimedReadback: claimed }] });
+    const uncertain = adaptExistingToolResult({ ...source, outcome: 'uncertain' }, { operation: 'write',
+      readbackVerified: true, verifiedReadback: { readback: fresh } });
+    expect(uncertain.outcome).toBe('uncertain');
+    expect(uncertain.evidence).toMatchObject({ level: 'none', readback: claimed });
+  });
+  it('does not expose raw error text or duplicate data through legacy evidence', () => {
+    const adapted = adaptExistingToolResult({ outcome: 'refused', reason: 'sensitive failure details',
+      issue: 'internal error details', error: 'hidden error', stack: 'private stack',
+      data: { payload: true }, saveAttempted: true }, { operation: 'write' });
+    expect(adapted).toMatchObject({ outcome: 'uncertain', reason: 'tool_result_unclassified',
+      data: { payload: true }, evidence: { legacy: [{ saveAttempted: true }] } });
+    expect(JSON.stringify(adapted.evidence)).not.toContain('failure details');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('internal error');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('hidden error');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('private stack');
+    expect(JSON.stringify(adapted.evidence)).not.toContain('payload');
+    const older = adaptExistingToolResult({ outcome: 'ok', evidence: { legacy: [
+      { reason: 'old error details', runId: 'old-run' },
+    ] } }, { operation: 'read' });
+    expect(older.evidence?.legacy).toEqual([{ runId: 'old-run' }]);
+    expect(adaptExistingToolResult({ outcome: 'ok' }, { operation: 'read' }).evidence).toBeUndefined();
+  });
+  it('does not drop readback fields', () => {
+    const readback = { id: 'stay', otherField: { exact: 'value' } };
+    expect(adaptExistingToolResult({ outcome: 'ok', evidence: { readback } }, { operation: 'read' }).evidence?.readback).toEqual(readback);
+  });
+  it('rejects duplicate or noncanonical batch keys and invalid child digests', () => {
+    const child = { key: 'room-a', stayDigest: 'a'.repeat(64), previewDigest: 'b'.repeat(64) };
+    const manifest = { manifestId: 'manifest', revision: 1, expiresAt: '2027-01-01T00:00:00Z', children: [child] };
+    expect(BatchManifestGrantSchema.safeParse(manifest).success).toBe(true);
+    for (const children of [
+      [child, child], [{ ...child, key: ' ' }], [{ ...child, key: ' room-a' }], [{ ...child, key: 'room\na' }],
+      [{ ...child, stayDigest: 'not-a-digest' }], [{ ...child, previewDigest: 'A'.repeat(64) }],
+    ]) expect(BatchManifestGrantSchema.safeParse({ ...manifest, children }).success).toBe(false);
+    expect(BatchManifestGrantSchema.safeParse({ ...manifest, manifestId: ' ' }).success).toBe(false);
+  });
+
+  it('refuses unknown fields and requires server grants', () => {
+    expect(FilingRunnerInputSchema.safeParse({ grantRef: 'g', extra: true }).success).toBe(false);
+    expect(FilingRunnerInputSchema.safeParse({}).success).toBe(false);
+    expect(AmendStageInputSchema.safeParse({ grantRef: 'g', occupancy: { adults: 2, childAges: 'unknown' } }).success).toBe(true);
+    expect(AmendStageInputSchema.safeParse({ grantRef: 'g', occupancy: { adults: 2, childAges: [], extra: true } }).success).toBe(false);
+    expect(AmendStageInputSchema.safeParse({ occupancy: { adults: 2, childAges: [] } }).success).toBe(false);
+    expect(BatchManifestGrantSchema.safeParse({ manifestId: 'm', revision: 1, expiresAt: '2027-01-01T00:00:00Z',
+      children: [{ key: 'a', stayDigest: 's', previewDigest: 'p', extra: true }] }).success).toBe(false);
+    expect(BatchManifestGrantSchema.safeParse({ manifestId: 'm', revision: 1, expiresAt: '2027-01-01T00:00:00Z',
+      children: [] }).success).toBe(false);
+  });
+});
