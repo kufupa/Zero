@@ -506,7 +506,7 @@ async function main(): Promise<void> {
   const body = (mail: Mail) => /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(mail.body) ? htmlToPlainText(mail.body) : mail.body;
   async function attachments(mail: Mail): Promise<SyncedQuoteAttachment[]> {
     localWork.attachmentLoads++;
-    const output: SyncedQuoteAttachment[] = [], seen = new Set<string>(), frozen = new Map<string, Buffer>();
+    const output: SyncedQuoteAttachment[] = [], seen = new Set<string>(), byteRefs = new Map<string, z.infer<typeof artifact>>();
     const byteRows: QuoteAttachmentRow[] = [];
     for (const row of mail.attachmentRows) for (const item of row.privateMessage.attachments) {
       if (seen.has(item.id)) continue; seen.add(item.id);
@@ -518,9 +518,7 @@ async function main(): Promise<void> {
       if (item.bytesArtifact?.status === 'available') {
         const ref = item.bytesArtifact.artifact;
         if (!ref || ref.bytes !== item.byteSize) throw new Error('Attachment bytes descriptor mismatch');
-        const localStartedAt = Date.now(); const bytes = await withLocalReader(() => readFile(join(dirname(corpusPath), 'attachment-bytes', `${ref.id}.bin`)));
-        if (hash(bytes) !== ref.sha256 || bytes.length !== ref.bytes) throw new Error('Attachment bytes hash/count mismatch');
-        localWork.byteArtifactsRead++; localWork.byteReadMs += Date.now() - localStartedAt; frozen.set(item.id, bytes);
+        byteRefs.set(item.id, ref);
         byteRows.push({ id: item.id, messageId: mail.sourceRowId, filename: item.filename, mimeType: item.contentType,
           sizeBytes: item.byteSize, isInline: item.inline === true, s3Key: '', sha256: ref.sha256 });
       }
@@ -528,7 +526,11 @@ async function main(): Promise<void> {
         isInline: item.inline === true, text, bytesPresent: Boolean(text), ...(text ? {} : { readFailure: `Frozen source text unavailable (${item.textArtifact?.status ?? 'not_exported'})` }) });
     }
     const reads = await readQuoteAttachments(byteRows, async row => {
-      const bytes = frozen.get(row.id); if (!bytes) throw new Error('Verified attachment bytes unavailable');
+      const ref = byteRefs.get(row.id); if (!ref) throw new Error('Frozen attachment bytes descriptor unavailable');
+      const localStartedAt = Date.now();
+      const bytes = await withLocalReader(() => readFile(join(dirname(corpusPath), 'attachment-bytes', `${ref.id}.bin`)));
+      if (hash(bytes) !== ref.sha256 || bytes.length !== ref.bytes) throw new Error('Attachment bytes hash/count mismatch');
+      localWork.byteArtifactsRead++; localWork.byteReadMs += Date.now() - localStartedAt;
       const mime = row.mimeType.split(';')[0]?.trim().toLowerCase();
       if (mime === 'image/png' || mime === 'image/jpeg') {
         const valid = mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]));
@@ -537,15 +539,15 @@ async function main(): Promise<void> {
       const text = output.find(item => item.id === row.id)?.text;
       if (text?.trim()) return { text };
       if (!isPdfAttachment(row)) return { text: null, reason: 'Frozen file type unsupported without exported text' };
-      const localStartedAt = Date.now();
+      const pdfStartedAt = Date.now();
       const read = await withLocalReader(() => extractEmbeddedPdfText({ body: bytes, declaredSize: row.sizeBytes, declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { attachmentId: row.id, signal: AbortSignal.timeout(30_000) }));
-      localWork.pdfTextReads++; localWork.pdfTextMs += Date.now() - localStartedAt;
+      localWork.pdfTextReads++; localWork.pdfTextMs += Date.now() - pdfStartedAt;
       if (read.data.reason === 'no_embedded_text') localWork.scannedPdfs++; else if (!read.data.text?.trim()) localWork.pdfReadFailures++;
       if (read.data.text?.trim()) return { text: read.data.text };
       return read.data.reason === 'no_embedded_text' ? { text: null, pdf: bytes } : { text: null, reason: read.data.reason.replaceAll('_', ' ') };
     }, { includeVisionImages: replayVision, trackVisionImages: true });
     const byId = new Map(reads.map(item => [item.id, item]));
-    return output.map(item => !frozen.has(item.id) ? item : { ...(byId.get(item.id) ?? { ...item, text: '', bytesPresent: false, readFailure: 'Frozen attachment excluded by normal attachment reader' }), messageId: mail.sourceRowId });
+    return output.map(item => !byteRefs.has(item.id) ? item : { ...(byId.get(item.id) ?? { ...item, text: '', bytesPresent: false, readFailure: 'Frozen attachment excluded by normal attachment reader' }), messageId: mail.sourceRowId });
   }
   const batchSchema = z.object({ messages: z.array(z.object({ selectedMessageId: z.string(), result: classificationSchema })).max(20) });
   type QueuedClassification = { mail: Mail; payload: unknown; chars: number; resolve: (result: z.infer<typeof classificationSchema>) => void; reject: (error: unknown) => void };
@@ -589,12 +591,14 @@ async function main(): Promise<void> {
   const failedClassification = new Set<string>(), replayFailures = new Set<string>();
   const byThread = new Map<string, Mail[]>();
   for (const mail of selectedInbound) { const key = mail.threadId ?? `unresolved:${mail.sourceRowId}`; byThread.set(key, [...(byThread.get(key) ?? []), mail]); }
-  let groups = [...byThread.values()], nextGroup = 0;
+  let groups = [...byThread.values()], nextGroup = 0, retryPass = false;
+  const loadedPendingMeasurements = new Set(measurementPending);
   const classifiedVisited = new Set<string>(), completedVisited = new Set<string>();
   async function worker(): Promise<void> {
     for (;;) {
       const group = groups[nextGroup++]; if (!group) return;
       for (const mail of group) {
+        if (!retryPass && loadedPendingMeasurements.has(mail.sourceRowId)) continue;
         activeMessages++;
         const earlier = mail.threadId ? mails.filter(row => row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)) : [];
         let stage: 'classification' | 'replay' = 'classification', prepSlot = false, frozenSlot = false, prepStartedAt = 0;
@@ -802,7 +806,7 @@ async function main(): Promise<void> {
   }, 60000); progressTimer.unref();
   try { await Promise.all(Array.from({ length: Math.min(MAX_WORKERS * batchSize, groups.length) }, worker)); await checkpointQueue;
     if (measurementPending.size) {
-      activeLimit = Math.min(8, activeLimit); nextGroup = 0;
+      activeLimit = Math.min(8, activeLimit); nextGroup = 0; retryPass = true;
       const retryGroups = new Map<string, Mail[]>();
       for (const mail of selectedInbound.filter(mail => measurementPending.has(mail.sourceRowId))) { const key = mail.threadId ?? mail.sourceRowId; retryGroups.set(key, [...(retryGroups.get(key) ?? []), mail]); }
       groups = [...retryGroups.values()]; info({ phase: 'measurement_retry_once', replayWorkers: activeLimit, messages: measurementPending.size });
