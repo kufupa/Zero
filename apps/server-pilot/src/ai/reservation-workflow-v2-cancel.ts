@@ -158,7 +158,7 @@ const cancelChargeSchema = z.object({ version: z.literal(1), id: z.string().uuid
   expectedRevision: z.number().int().nonnegative(), expectedSeq: z.number().int().nonnegative(),
   actorUserId: z.string().trim().min(1).max(200), sessionId: z.string().min(1).max(512),
   sessionProfile: z.enum(['legacy', 'remote']), expiresAt: z.number().int(),
-  status: z.enum(['pending', 'approved', 'declined', 'consumed', 'dispatched', 'expired']),
+  status: z.enum(['pending', 'approved', 'declined', 'consumed', 'dispatching', 'dispatched', 'uncertain', 'expired']),
   requestDigest: chargeDigestSchema.optional() }).strict();
 type CancelCharge = z.infer<typeof cancelChargeSchema>;
 
@@ -1425,6 +1425,20 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           await fn(tx, run.metrics ?? {});
         });
       };
+      const recordChargeDispatch = async (approved: CancelCharge, from: 'consumed' | 'dispatching',
+        status: 'dispatching' | 'dispatched' | 'uncertain', requestDigest: string) => {
+        const fence = ctx.writeRunFence;
+        if (!fence || !chargeDigestSchema.safeParse(requestDigest).success) throw new Error('cancel_charge_lease_lost');
+        await chargeRun(async (tx, metrics) => {
+          const current = cancelChargeOf(metrics);
+          if (!current || current.id !== approved.id || current.dialogDigest !== approved.dialogDigest ||
+              current.status !== from || from === 'consumed' && current.expiresAt <= Date.now() ||
+              from === 'dispatching' && current.requestDigest !== requestDigest) throw new Error('cancel_charge_changed');
+          chargeApproval = { ...current, status, requestDigest };
+          await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: chargeApproval },
+            updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
+        });
+      };
       const acquireClaim = async (requestDigest: string, beforePath: string) => {
         lockSignal?.throwIfAborted();
         if (handle || !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
@@ -1552,15 +1566,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             }
             const chargeApprovalDigest = sha256({ action: 'cancel_charge_dialog', approval, penaltyText: approved.text,
               idempotencyKey: input.idempotencyKey, challengeId: approved.id, dialogDigest: approved.dialogDigest });
+            lockSignal?.throwIfAborted();
             await acquireClaim(chargeApprovalDigest, beforePath);
-            await chargeRun(async (tx, metrics) => {
-              const current = cancelChargeOf(metrics);
-              if (!current || current.id !== approved.id || current.dialogDigest !== approved.dialogDigest ||
-                  current.status !== 'consumed') throw new Error('cancel_charge_changed');
-              chargeApproval = { ...current, status: 'dispatched', requestDigest: chargeApprovalDigest };
-              await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: chargeApproval },
-                updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
-            });
           },
           // A post-Save charge is a separate native request; it dispatches only under the consumed
           // challenge's own exact request-bound authority, never under the cancellation Save's.
@@ -1569,19 +1576,16 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             if (!approved || approved.timing !== 'after_save' || !handle ||
                 !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
                 !continuationAllowed()) throw new Error('cancel_charge_authority_unavailable');
-            const fence = ctx.writeRunFence!;
-            await chargeRun(async (tx, metrics) => {
-              const current = cancelChargeOf(metrics);
-              if (!current || current.id !== approved.id || current.dialogDigest !== approved.dialogDigest ||
-                  current.status !== 'consumed' || current.expiresAt <= Date.now()) {
-                throw new Error('cancel_charge_changed');
-              }
-              chargeApproval = { ...current, status: 'dispatched', requestDigest };
-              await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: chargeApproval },
-                updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
-            });
             lockSignal?.throwIfAborted();
-            return send();
+            await recordChargeDispatch(approved, 'consumed', 'dispatching', requestDigest);
+            try {
+              const result = await send();
+              await recordChargeDispatch(approved, 'dispatching', 'dispatched', requestDigest);
+              return result;
+            } catch (error) {
+              await recordChargeDispatch(approved, 'dispatching', 'uncertain', requestDigest).catch(() => {});
+              throw error;
+            }
           },
           dispatchWithAuthority: async (send: () => Promise<unknown>, requestDigest: string, _request: unknown,
             beforePath: string) => {
@@ -1603,7 +1607,17 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
               if (recorded.status !== 'ok') throw new Error('reservation_workflow_v2_cancel_request_receipt_unavailable');
             }
             lockSignal?.throwIfAborted();
-            return send();
+            const approved = chargeApproval?.timing === 'before_save' ? chargeApproval : null;
+            if (!approved) return send();
+            await recordChargeDispatch(approved, 'consumed', 'dispatching', requestDigest);
+            try {
+              const result = await send();
+              await recordChargeDispatch(approved, 'dispatching', 'dispatched', requestDigest);
+              return result;
+            } catch (error) {
+              await recordChargeDispatch(approved, 'dispatching', 'uncertain', requestDigest).catch(() => {});
+              throw error;
+            }
           } });
       } catch {
         native = native ?? { outcome: 'execution_failure', issue: claimError ?? 'cancel_native_runner_failed', requestDispatched: false };
@@ -1937,10 +1951,11 @@ export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflow
   const live = ['claimed', 'running'].includes(run.state) && run.deadlineAt !== null &&
     run.deadlineAt.getTime() > Date.now();
   const open = live && charge.expiresAt > Date.now();
-  // Consumption only records that staff approved this exact dialog. Keep it distinct from a
-  // native submission: dispatch is proven only after the writer records the exact request digest.
+  // Consumption only records staff approval. An in-flight/failed send stays uncertain; submitted
+  // is reserved for a native send callback that returned successfully.
   const status = charge.status === 'pending' ? (open ? 'pending' as const : 'expired' as const)
     : charge.status === 'declined' ? 'declined' as const
+    : charge.status === 'dispatching' || charge.status === 'uncertain' ? 'uncertain' as const
     : charge.status === 'dispatched' ? 'submitted' as const
     : charge.status === 'expired' ? 'expired' as const
     : open ? 'approved' as const : 'expired' as const;
