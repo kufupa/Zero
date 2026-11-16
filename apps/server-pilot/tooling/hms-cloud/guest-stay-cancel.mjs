@@ -201,11 +201,13 @@ function matchesOpen(request, frame, expected) {
   } catch { return false; }
 }
 
-/** Opens only the initial cancellation form. It never chooses a reason or confirms cancellation. */
+/** Opens only the initial cancellation form. It never chooses a reason or confirms cancellation.
+ * `requestDispatched` means cancellation Save; the separate OSCNRS form-open POST is reported explicitly. */
 export async function openLabtestCancellation(page, expected = {}, { timeoutMs = 20_000, awaitChargeApproval,
   prepareChargeWithAuthority, continuationAllowed = () => true, bindDepositReceived = false } = {}) {
-  if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED' };
-  let armed = false, dispatched = false, nativeDialog = null, response = null, authorizedRequest;
+  if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED', requestDispatched: false,
+    dialogOpenRequestDispatched: false, cancellationSaveDispatched: false, chargeApproved: false, chargeDispatched: false };
+  let armed = false, dialogOpenDispatched = false, nativeDialog = null, response = null, authorizedRequest;
   let fence, scope, interactionStarted = false, openedReady = false, baselineVerified = false;
   let preChargeStarted = false, preChargeText = null, seenChargeText = null;
   const blocked = [];
@@ -225,8 +227,10 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     quarantine: () => { fence?.quarantine(); scope?.close(); },
     result: (reason, dialog) => ({ outcome: preChargeStarted ? 'fee_accepted_unconfirmed' :
       (preChargeText ?? seenChargeText) || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
-      dispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
-    requestDispatched: dispatched, httpStatus: response?.status() || null, nativeDialog,
+      dialogOpenDispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
+    requestDispatched: false, dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
+    httpStatus: response?.status() || null, nativeDialog,
+    chargeApproved: preChargeStarted, chargeDispatched: false,
     penaltyText: dialog?.message ?? preChargeText ?? seenChargeText, blockedRequests: [...blocked] }),
     onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK' }),
   });
@@ -280,7 +284,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       if (armed && !nativeDialog && !fence.isQuarantined() && matchesOpen(request, frame, expected) && scope.allow(request)) {
         armed = false;
         authorizedRequest = request;
-        dispatched = true;
+        dialogOpenDispatched = true;
         return route.fallback();
       }
       armed = false;
@@ -317,7 +321,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const policyReady = Boolean(reasons && (expected.allowRealGuest === true || reasons.some((item) =>
       item.value === 'TEST' && item.display === 'Test Reservations')));
     let afterOpen = await recordSnapshot(frame);
-    if (fee && !nativeDialog && policyReady && dispatched && response?.status() === 200 && !blocked.length &&
+    if (fee && !nativeDialog && policyReady && dialogOpenDispatched && response?.status() === 200 && !blocked.length &&
         readySnapshot(afterOpen, expected) && sameParties(state, afterOpen, expected) && unchangedExcept(baseline, afterOpen, {}) &&
         unchangedCancellationFields(baseline, afterOpen, expected) &&
         typeof awaitChargeApproval === 'function' && typeof prepareChargeWithAuthority === 'function') {
@@ -353,7 +357,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       }
     }
     action.check();
-    const reasonReady = !fee && policyReady && dispatched && response?.status() === 200 &&
+    const reasonReady = !fee && policyReady && dialogOpenDispatched && response?.status() === 200 &&
       dialogs.length === 1 && /cancellation reason/i.test(dialogs[0]) && !nativeDialog &&
       readySnapshot(afterOpen, expected) && sameParties(state, afterOpen, expected) &&
       unchangedExcept(baseline, afterOpen, {}) && unchangedCancellationFields(baseline, afterOpen, expected) &&
@@ -363,15 +367,19 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       chargeApproved: preChargeStarted, penaltyText: preChargeText, dialogSeen: () => nativeDialog });
     openedReady = reasonReady;
     return { outcome: preChargeStarted && !reasonReady ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' : reasonReady ? 'reason_ready' : policy && !policyReady ? 'policy_requires_review' :
-      dispatched && dialogs.length ? 'unexpected_dialog' : dispatched ? 'uncertain' : 'not_dispatched',
+      dialogOpenDispatched && dialogs.length ? 'unexpected_dialog' : dialogOpenDispatched ? 'uncertain' : 'not_dispatched',
+    requestDispatched: false, dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
+    chargeApproved: preChargeStarted, chargeDispatched: false,
     httpStatus: response?.status() || null, reasons: reasons ?? [], policy: policy ? { applyCancelPolicy: policy.applyCancelPolicy,
       allowCancelPolicyOverride: policy.allowCancelPolicyOverride } : null, policyFacts: cancellationPolicyFacts(policy),
     penaltyText: preChargeText ?? dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text)) ?? nativeDialog?.message ?? null,
-    chargeApproved: preChargeStarted, dialogs, nativeDialog, blockedRequests: blocked };
+    dialogs, nativeDialog, blockedRequests: blocked };
   } catch (error) {
     armed = false;
     return { outcome: preChargeStarted ? 'fee_accepted_unconfirmed' : (preChargeText ?? seenChargeText) ? 'fee_dialog_pending' :
-      dispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), penaltyText: preChargeText ?? seenChargeText,
+      dialogOpenDispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), requestDispatched: false,
+      dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
+      chargeApproved: preChargeStarted, chargeDispatched: false, penaltyText: preChargeText ?? seenChargeText,
       httpStatus: response?.status() || null, nativeDialog, blockedRequests: blocked };
   } finally {
     if (!openedReady && interactionStarted) fence?.quarantine();
@@ -440,7 +448,8 @@ async function chargeTargetIsCurrent(frame, expected) {
 /** Confirm one observed reason. A later charge requires a second staff decision on the same dialog. */
 export async function confirmLabtestCancellation(page, expected = {}, { cancellationNote = '', reasonCode,
   reasonLabel, timeoutMs = 20_000, beforeDispatch, dispatchWithAuthority, continuationAllowed = () => true,
-  onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority, bindDepositReceived = false } = {}) {
+  onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority, bindDepositReceived = false,
+  stageOnly = false } = {}) {
   const opened = pendingPages.get(page);
   pendingPages.delete(page);
   if (!opened) return { outcome: 'refused', issue: 'CANCEL_REASON_NOT_CURRENT' };
@@ -451,7 +460,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     reasonCode ??= 'TEST'; reasonLabel ??= 'Test Reservations';
   }
   if (!opened.reasons?.some((item) => item.value === reasonCode && item.display === reasonLabel) ||
-      (expected.allowRealGuest && (typeof beforeDispatch !== 'function' || typeof dispatchWithAuthority !== 'function'))) {
+      (expected.allowRealGuest && !stageOnly &&
+        (typeof beforeDispatch !== 'function' || typeof dispatchWithAuthority !== 'function'))) {
     return { outcome: 'refused', issue: 'CANCEL_REASON_UNVERIFIED' };
   }
   let armed = false, dispatched = false, nativeDialog = null, response = null, authorizedRequest, sendRequests = 0;
@@ -662,7 +672,34 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       throw new Error('CANCEL_REASON_CHANGED');
     }
     preparedSnapshot = afterFields;
+    // The settled main-form snapshot excludes the reason dialog's controls. Re-read the staged
+    // reason and note now; a silent revert between selecting and settling must fail closed.
+    const stagedReason = await reason.evaluate((el, expectedReason) => {
+      const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      return component?.getValue?.() === expectedReason.value && el.value.trim() === expectedReason.display;
+    }, { value: reasonCode, display: reasonLabel });
+    const stagedNote = await note.evaluate((el, value) => {
+      const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
+      return component?.getValue?.() === value && el.value === value;
+    }, cancellationNote);
+    if (stagedReason !== true || stagedNote !== true) {
+      chargeText = await visibleChargeText() ?? chargeText;
+      throw new Error('CANCEL_REASON_CHANGED');
+    }
     const reasonText = (await dialog.innerText()).trim();
+    if (stageOnly) {
+      // Staging ends before the OK click: reason and note are set, the Save request is never armed, and any
+      // charge text HMS put into the reason dialog is reported for the staff review instead of approved.
+      if (/penalt|fee|charge|deposit/i.test(reasonText)) {
+        chargeText = reasonText;
+        penaltyTiming = 'before_save';
+      }
+      return { outcome: 'staged', reason: reasonLabel, requestDispatched: false,
+        stagedDialogText: reasonText.length <= 2000 ? reasonText : null, httpStatus: response?.status() || null,
+        dialogs: [reasonText], nativeDialog, blockedRequests: blocked, browserSendRequests: sendRequests,
+        penaltyText: chargeText, chargeApproved: false, chargeDispatched: false,
+        dispatchCallbacksDrained: pendingDispatch === 0 };
+    }
     if (/penalt|fee|charge|deposit/i.test(reasonText)) {
       chargeText = reasonText;
       penaltyTiming = 'before_save';

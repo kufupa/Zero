@@ -70,8 +70,10 @@ type CancelOutcome = { status: string; issue?: string; [key: string]: unknown };
 type Tx = Parameters<Parameters<DB['transaction']>[0]>[0];
 type NativeCancelResult = {
   outcome?: string; issue?: string; expected?: unknown; reasons?: unknown; policyFacts?: unknown; penaltyText?: unknown;
+  feeDialogPending?: unknown; dialogOpenRequestDispatched?: unknown; cancellationSaveDispatched?: unknown;
   requestDispatched?: boolean; writerSessionClosed?: boolean; dispatchCallbacksDrained?: boolean;
   nativeReadback?: unknown; runDir?: unknown; screenshots?: unknown; chargeApproved?: unknown; chargeDispatched?: unknown;
+  staged?: unknown;
   zeroPenaltyNotice?: unknown; neverDispatchedProof?: unknown; penaltyAmount?: unknown; penaltyTiming?: unknown;
   penaltyNoticeAcknowledged?: unknown;
 };
@@ -96,9 +98,18 @@ const sha256 = (value: unknown) => createHash('sha256').update(canonicalJson(val
 // HMS dialogs break penalty text over several lines. Staff review and the second Go bind one-line text.
 const penaltyLine = (value: unknown): unknown => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : value;
 const ptr = (...parts: Array<string | number>) => `/${parts.map((part) => encodeURIComponent(String(part))).join('/')}`;
-const sameName = (left: unknown, right: unknown): boolean => typeof left === 'string' && typeof right === 'string' &&
-  left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
-  right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+const normalizedName = (value: unknown): string | null => typeof value === 'string'
+  ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : null;
+const sameName = (left: unknown, right: unknown): boolean => {
+  const normalizedLeft = normalizedName(left), normalizedRight = normalizedName(right);
+  return normalizedLeft !== null && normalizedRight !== null && normalizedLeft === normalizedRight;
+};
+function sourceNameHasSurnameSuffix(sourceName: unknown, nativeSurname: unknown): boolean {
+  const normalizedSource = normalizedName(sourceName), normalizedSurname = normalizedName(nativeSurname);
+  // guestName may be surname-only or a full name; accept only an exact final surname token.
+  return Boolean(normalizedSource && normalizedSurname &&
+    (normalizedSource === normalizedSurname || normalizedSource.endsWith(` ${normalizedSurname}`)));
+}
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const date = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
@@ -117,9 +128,17 @@ const cancelPreimageSchema = z.object({
 type CancelPreimage = z.infer<typeof cancelPreimageSchema>;
 const reasonOptionSchema = z.object({ value: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
   display: z.string().trim().min(1).max(120).refine((value) => !/[\p{Cc}]/u.test(value)) }).strict();
+const feeReasonOptionsSchema = z.array(reasonOptionSchema).max(100)
+  .refine((rows) => new Set(rows.map((row) => row.value)).size === rows.length &&
+    new Set(rows.map((row) => row.display)).size === rows.length);
 const reasonOptionsSchema = z.array(reasonOptionSchema).min(1).max(100)
   .refine((rows) => new Set(rows.map((row) => row.value)).size === rows.length &&
     new Set(rows.map((row) => row.display)).size === rows.length);
+/** The unsaved staged reason, note and dialog text staff reviewed. Dispatch must name the same reason and note. */
+const stagedCancelSchema = z.object({ reasonCode: reasonOptionSchema.shape.value, reasonLabel: reasonOptionSchema.shape.display,
+  cancellationNote: z.string().max(200).refine((value) => !/[\p{Cc}]/u.test(value)),
+  dialogText: z.string().max(2000).nullable(),
+  penaltyText: z.string().trim().min(1).max(2000).nullable() }).strict();
 const reviewNote = (observationRef: string, approvalDigest: string) =>
   `cancel-preview:${observationRef}:${approvalDigest}`;
 
@@ -318,16 +337,21 @@ function expectedTargetIdentity(preimage: CancelPreimage) {
 }
 
 function matchesHint(preimage: CancelPreimage, hint: CancelHint): boolean {
-  return (!hint.confirmation || hint.confirmation === preimage.confirmation) &&
-    (!hint.guestName || sameName(hint.guestName, `${preimage.firstName} ${preimage.lastName}`)) &&
+  return hint.confirmation === preimage.confirmation && sourceNameHasSurnameSuffix(hint.guestName, preimage.lastName) &&
+    (sameName(hint.guestName, `${preimage.firstName} ${preimage.lastName}`) || sameName(hint.guestName, preimage.lastName)) &&
     (!hint.bookedArrival || hint.bookedArrival === preimage.arrival) &&
     (!hint.bookedDeparture || hint.bookedDeparture === preimage.departure);
+}
+
+function matchesReviewedHintIdentity(preimage: CancelPreimage, hint: CancelHint): boolean {
+  return hint.confirmation === preimage.confirmation && sourceNameHasSurnameSuffix(hint.guestName, preimage.lastName);
 }
 
 function sourceHintMismatchFields(current: Record<string, unknown>, hint: CancelHint): string[] {
   const fields: string[] = [];
   const currentName = `${text(current.firstName) ?? ''} ${text(current.lastName) ?? ''}`.trim();
-  if (hint.guestName && !sameName(hint.guestName, currentName) && !sameName(hint.guestName, current.lastName)) fields.push('guestName');
+  const fullNameMatches = sameName(hint.guestName, currentName), surnameOnly = sameName(hint.guestName, current.lastName);
+  if (!sourceNameHasSurnameSuffix(hint.guestName, current.lastName) || (!fullNameMatches && !surnameOnly)) fields.push('guestName');
   if (hint.bookedArrival && hint.bookedArrival !== current.arrival) fields.push('bookedArrival');
   if (hint.bookedDeparture && hint.bookedDeparture !== current.departure) fields.push('bookedDeparture');
   return fields;
@@ -442,11 +466,15 @@ async function safeCancelTargetRead(target: HmsReadTarget, confirmation: string,
 type FreshPreview = {
   outcome: 'ok'; preimage: CancelPreimage; preflight: Record<string, unknown>;
   reasons: z.infer<typeof reasonOptionsSchema>; policyFacts: string[]; penaltyText: string | null;
+  staged: z.infer<typeof stagedCancelSchema> | null;
   observedAt: string | null; screenshots: string[]; runDir: string | null;
-} | { outcome: 'failed'; issue: string; runDir?: string | null };
+} | { outcome: 'failed'; issue: string; reasons?: z.infer<typeof reasonOptionsSchema>;
+  preimage?: CancelPreimage; preflight?: Record<string, unknown>; policyFacts?: string[];
+  penaltyText?: string | null; observedAt?: string | null; runDir?: string | null };
 
 async function freshPreview(target: HmsReadTarget, confirmation: string, hint: CancelHint, allowPreviewCharge = true,
-  cloudTargetKey?: string, signal?: AbortSignal, allowReviewedSourceMismatch = false, transportId?: string): Promise<FreshPreview> {
+  cloudTargetKey?: string, signal?: AbortSignal, allowReviewedSourceMismatch = false, transportId?: string,
+  stage?: { reasonLabel: string; cancellationNote: string }): Promise<FreshPreview> {
   if (!transportId) return { outcome: 'failed', issue: 'cancel_transport_unavailable' };
   const initial = await cancellationPreflight(target, transportId, confirmation,
     allowReviewedSourceMismatch ? undefined : hint.bookedArrival, signal, cloudTargetKey);
@@ -459,20 +487,62 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
   let native: NativeCancelResult | null = null;
   try {
     native = await runCloudCancellation({ mode: 'preview', target, transportId, confirmation, arrival, allowRealGuest: true,
-      ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(signal ? { signal } : {}) }) as NativeCancelResult;
-    const expected = cancelPreimageSchema.safeParse(native.expected), reasons = reasonOptionsSchema.safeParse(native.reasons),
+      ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(signal ? { signal } : {}),
+      ...(stage ? { previewStage: stage } : {}) }) as NativeCancelResult;
+    const feeDialogPending = native.feeDialogPending === true;
+    const expected = cancelPreimageSchema.safeParse(native.expected),
+      reasons = (feeDialogPending ? feeReasonOptionsSchema : reasonOptionsSchema)
+        .safeParse(feeDialogPending && native.reasons == null ? [] : native.reasons),
       policyFacts = z.array(z.string().trim().min(1).max(260)).max(12).safeParse(native.policyFacts ?? []),
-      penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(penaltyLine(native.penaltyText ?? null));
+      penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(penaltyLine(native.penaltyText ?? null)),
+      staged = stagedCancelSchema.safeParse(native.staged);
+    if (native.outcome === 'refused_reason_missing' && stage) {
+      // The refused dialog still reports the verified stay and its native reason list. Reattach
+      // them only when the run proves nothing was dispatched and its writer session closed, and
+      // the identity matches this preview's stay, so prepare can persist the options for staff
+      // instead of returning them in the transient reply alone.
+      if (native.requestDispatched !== false || native.writerSessionClosed !== true) {
+        return { outcome: 'failed', issue: 'CANCEL_REASON_MISMATCH_UNVERIFIED',
+          runDir: safeRunDir(native.runDir) ? native.runDir : null };
+      }
+      const verifiedPreimage = expected.success && expected.data.propertyCode === target.propertyCode &&
+        expected.data.confirmation === confirmation && expected.data.arrival === arrival &&
+        expected.data.departure === departure &&
+        (expected.data.allowRealGuest || (expected.data.firstName === 'Proof' && expected.data.lastName === 'Labtest' &&
+          expected.data.arrival >= '2027-01-01' && expected.data.cmsSend === false)) &&
+        (matchesHint(expected.data, hint) ||
+          (allowReviewedSourceMismatch && matchesReviewedHintIdentity(expected.data, hint)))
+        ? expected.data : null;
+      return { outcome: 'failed', issue: 'CANCEL_REASON_MISMATCH',
+        ...(reasons.success ? { reasons: reasons.data } : {}),
+        ...(verifiedPreimage ? { preimage: verifiedPreimage, preflight: initial.facts, observedAt: initial.observedAt,
+          ...(policyFacts.success ? { policyFacts: policyFacts.data } : {}),
+          ...(penaltyText.success ? { penaltyText: penaltyText.data } : {}) } : {}),
+        runDir: safeRunDir(native.runDir) ? native.runDir : null };
+    }
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
         !expected.success || !reasons.success || !policyFacts.success || !penaltyText.success ||
+        (feeDialogPending && (typeof native.dialogOpenRequestDispatched !== 'boolean' ||
+          native.cancellationSaveDispatched !== false || native.chargeApproved !== false || native.chargeDispatched !== false ||
+          penaltyText.data === null || native.staged !== undefined)) ||
         expected.data.propertyCode !== target.propertyCode || expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
         (!expected.data.allowRealGuest && (expected.data.firstName !== 'Proof' || expected.data.lastName !== 'Labtest' ||
           expected.data.arrival < '2027-01-01' || expected.data.cmsSend !== false))) {
       return { outcome: 'failed', issue: native.outcome === 'refused_scope_unverified' ? 'CANCELLATION_SCOPE_UNVERIFIED' :
         native.issue ?? native.outcome ?? 'CANCELLATION_PREVIEW_UNAVAILABLE', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
-    if (!matchesHint(expected.data, hint) && !(allowReviewedSourceMismatch && expected.data.confirmation === hint.confirmation)) {
+    if (!matchesHint(expected.data, hint) &&
+        !(allowReviewedSourceMismatch && matchesReviewedHintIdentity(expected.data, hint))) {
       return { outcome: 'failed', issue: 'CANCELLATION_TARGET_HINT_MISMATCH', runDir: safeRunDir(native.runDir) ? native.runDir : null };
+    }
+    // A staged request must come back bound to that exact reason and note. A validated fee prompt may
+    // pre-empt staging either before the reason list or while choosing the reason; neither is ready.
+    const stagedResult = !stage ? null : staged.success && staged.data.reasonLabel === stage.reasonLabel &&
+        staged.data.cancellationNote === stage.cancellationNote &&
+        reasons.data.some((reason) => reason.value === staged.data.reasonCode && reason.display === staged.data.reasonLabel)
+      ? staged.data : null;
+    if (stage && !stagedResult && !(native.staged === undefined && penaltyText.data !== null)) {
+      return { outcome: 'failed', issue: 'CANCEL_STAGE_UNVERIFIED', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
     const financialHandling = record(initial.facts.financialHandling);
     const received = record(record(record(initial.facts.money)?.depositReceived)?.amount);
@@ -485,7 +555,7 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
       return { outcome: 'failed', issue: 'CANCELLATION_PENALTY_CHANGED', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
     return { outcome: 'ok', preimage: expected.data, preflight: initial.facts, reasons: reasons.data,
-      policyFacts: policyFacts.data, penaltyText: penaltyText.data, observedAt: initial.observedAt,
+      policyFacts: policyFacts.data, penaltyText: penaltyText.data, staged: stagedResult, observedAt: initial.observedAt,
       screenshots: Array.isArray(native.screenshots) ? native.screenshots.filter((path): path is string => typeof path === 'string') : [],
       runDir: safeRunDir(native.runDir) ? native.runDir : null };
   } catch { return { outcome: 'failed', issue: 'CANCELLATION_PREVIEW_UNAVAILABLE', runDir: safeRunDir(native?.runDir) ? native!.runDir as string : null }; }
@@ -500,7 +570,8 @@ function approvalDigest(compiled: Extract<CancelCompile, { outcome: 'ok' }>, fre
   return sha256({ workflow: 'cancel', requestId: compiled.requestId, hintId: compiled.hintId,
     semanticDigest: compiled.semanticDigest, sourceRefs: compiled.sourceRefs, target: expectedTargetIdentity(fresh.preimage),
     baseline: fresh.preimage, preflight: stablePreflight(fresh.preflight),
-    native: { reasons: fresh.reasons, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText } });
+    native: { reasons: fresh.reasons, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText,
+      staged: fresh.staged } });
 }
 
 function supportedCancelOverride(path: string, bodyPath: string, body: Record<string, unknown>): boolean {
@@ -537,7 +608,7 @@ function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string,
   const mismatches = preimage.success ? sourceHintMismatchFields(preimage.data, hint) : [];
   const recordedMismatches = Array.isArray(result?.sourceHintMismatchFields)
     ? result.sourceHintMismatchFields.filter((field): field is string => typeof field === 'string') : [];
-  const reviewedMismatch = preimage.success && preimage.data.confirmation === hint.confirmation &&
+  const reviewedMismatch = preimage.success && matchesReviewedHintIdentity(preimage.data, hint) &&
     result?.sourceHintMismatchReviewRequired === true && canonicalJson(recordedMismatches) === canonicalJson(mismatches);
   if (!selected || !criteria || criteria.workflow !== 'cancel' || criteria.stage !== 'lookup' ||
       criteria.requestId !== requestId || criteria.hintId !== hint.id || criteria.fieldPath !== path ||
@@ -831,18 +902,32 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
 }
 
 function preparedPreview(draft: ReservationWorkflowV2Draft, compiled: Extract<CancelCompile, { outcome: 'ok' }>) {
-  const candidates = draft.operationResults.toReversed().flatMap((entry) => {
-    if (entry.requestId !== compiled.requestId || entry.allocationId !== compiled.hintId || entry.workflow !== 'cancel' ||
-        entry.status !== 'prepared' || entry.generationId !== draft.generationId || entry.draftRevision > draft.revision) return [];
-    return entry.observationRefs.flatMap((ref) => {
-      const item = draft.observations.find((candidate) => candidate.ref === ref && candidate.kind === 'stay_candidate' &&
-        candidate.status === 'complete' && candidate.generationId === draft.generationId);
-      const criteria = record(item?.criteria), result = record(item?.result);
-      return item && criteria?.stage === 'prepare' && criteria.semanticDigest === compiled.semanticDigest &&
-        result?.ready === true && typeof result.approvalDigest === 'string' ? [{ item, result, criteria }] : [];
-    });
+  // The latest prepare observation for this exact request, target and semantic input is
+  // authoritative, including when it is partial or non-ready. Filtering to ready observations
+  // first would let a newer fee/reason failure fall through to an older accepted preview.
+  const item = draft.observations.toReversed().find((candidate) => {
+    const criteria = record(candidate.criteria);
+    return candidate.kind === 'stay_candidate' && candidate.generationId === draft.generationId &&
+      candidate.propertyCode === draft.propertyCode && candidate.sourceMessageId === draft.source.messageId &&
+      criteria?.workflow === 'cancel' && criteria.stage === 'prepare' && criteria.requestId === compiled.requestId &&
+      criteria.hintId === compiled.hintId && criteria.semanticDigest === compiled.semanticDigest &&
+      criteria.selectionRef === compiled.selectionRef;
   });
-  return candidates[0] ?? null;
+  if (!item || item.status !== 'complete') return null;
+  const entry = draft.operationResults.toReversed().find((candidate) => candidate.observationRefs.includes(item.ref));
+  if (!entry || entry.requestId !== compiled.requestId || entry.allocationId !== compiled.hintId ||
+      entry.workflow !== 'cancel' || entry.status !== 'prepared' || entry.generationId !== draft.generationId ||
+      entry.draftRevision > draft.revision) return null;
+  const criteria = record(item.criteria), result = record(item.result);
+  // A ready preview must carry the exact reason and note HMS staged unsaved. A historically
+  // recorded preview without staged data can never qualify for Go, and neither can one that
+  // observed a cancellation charge: any fee is finished in HMS, never accepted under one Go.
+  const staged = stagedCancelSchema.safeParse(result?.staged);
+  return criteria?.stage === 'prepare' && criteria.semanticDigest === compiled.semanticDigest &&
+    result?.ready === true && typeof result.approvalDigest === 'string' && staged.success &&
+    result?.penaltyText === null && staged.data.penaltyText === null &&
+    staged.data.reasonLabel === compiled.reasonText && staged.data.cancellationNote === compiled.cancellationNote
+    ? { item, result, criteria } : null;
 }
 
 function reviewBinding(draft: ReservationWorkflowV2Draft, compiled: Extract<CancelCompile, { outcome: 'ok' }>,
@@ -864,10 +949,43 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   if (!target) return { status: 'unsupported', issue: 'cancel_property_session_unavailable' };
   const compiled = compileCancel(loaded.draft, input.requestId, input.allocationId, ctx.property.propertyCode);
   if (compiled.outcome !== 'ok') return { status: compiled.outcome, issue: compiled.issue, fields: compiled.fields ?? [] };
+  const policyProperty = z.enum(['HRCEN', 'HRDAV', 'HRDAVS']).safeParse(ctx.property.propertyCode);
+  if (!policyProperty.success || !effectiveWorkflowPolicy(process.env, policyProperty.data, 'cancel').readEnabled) {
+    return { status: 'unsupported', issue: 'cancel_preview_flag_off' };
+  }
   const fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
-    hmsDispatchTargetKey(dispatchTarget(compiled.preimage)), ctx.signal, compiled.sourceHintMismatchFields.length > 0, ctx.transport.id);
+    hmsDispatchTargetKey(dispatchTarget(compiled.preimage)), ctx.signal, compiled.sourceHintMismatchFields.length > 0, ctx.transport.id,
+    compiled.reasonText === null ? undefined : { reasonLabel: compiled.reasonText, cancellationNote: compiled.cancellationNote });
   if (fresh.outcome !== 'ok') {
     await removeNativeRunDir(fresh.runDir);
+    if (fresh.issue === 'CANCEL_REASON_MISMATCH') {
+      // A manual lookup never warms native options, so the editor reads reasons only from a
+      // saved prepare observation. Persist them bound to this exact selection and digest as a
+      // non-ready observation: nothing was staged, and `ready: false` keeps it away from
+      // review, Go authorization and `preparedPreview`.
+      if (fresh.preimage && fresh.reasons) {
+        const mismatch = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'prepare', 'complete',
+          { semanticDigest: compiled.semanticDigest, selectionRef: compiled.selectionRef, sourceRefs: compiled.sourceRefs },
+          { ready: false, staged: null, issue: 'cancel_reason_must_match_native_option',
+            target: expectedTargetIdentity(fresh.preimage), preimage: fresh.preimage,
+            semanticInput: compiled.semanticInput, requestedReason: compiled.reasonText,
+            reasons: fresh.reasons, sourceRefs: compiled.sourceRefs,
+            ...(fresh.preflight ? { preflight: fresh.preflight,
+              feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit',
+              roomScope: fresh.preflight.roomScope } : {}),
+            ...(fresh.observedAt ? { preflightObservedAt: fresh.observedAt } : {}),
+            ...(fresh.policyFacts ? { policyFacts: fresh.policyFacts } : {}),
+            penaltyText: fresh.penaltyText ?? null,
+            baselineChangedSinceLookup: canonicalJson(compiled.preimage) !== canonicalJson(fresh.preimage) });
+        const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, mismatch, 'prepared',
+          'HMS could not stage the requested reason; its current cancellation options were recorded for staff');
+        if (recorded.status !== 'ok') return recorded;
+        return { status: 'needs_input', issue: 'cancel_reason_must_match_native_option',
+          observationRef: mismatch.ref, reasons: fresh.reasons };
+      }
+      return { status: 'needs_input', issue: 'cancel_reason_must_match_native_option',
+        ...(fresh.reasons ? { reasons: fresh.reasons } : {}) };
+    }
     return { status: 'needs_review', issue: fresh.issue };
   }
   const sameNativeIdentity = canonicalJson(expectedTargetIdentity(fresh.preimage)) ===
@@ -885,25 +1003,33 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   }
   const matchingReason = compiled.reasonText === null ? [] : fresh.reasons.filter((item) => item.display === compiled.reasonText);
   const reasonReady = matchingReason.length === 1;
-  const ready = reasonReady && compiled.reasonText !== null;
+  // Any HMS cancellation charge keeps the preview non-ready whether a pre-reason fee dialog
+  // pre-empted staging or the staged dialog carries the charge: staff finish it in HMS.
+  // Only an HMS-staged reason and note with no reported charge qualify for a reviewed Go.
+  const charge = fresh.penaltyText !== null;
+  const ready = !charge && reasonReady && compiled.reasonText !== null && fresh.staged !== null;
   const approval = approvalDigest(compiled, fresh);
   const item = preparedObservation(loaded.draft, input, compiled, fresh, approval, ready);
   const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, item, 'prepared',
-    ready ? 'HMS cancellation preview is fresh and unsaved' : 'HMS preview is ready; staff must choose a listed cancellation reason');
+    ready ? 'HMS cancellation preview is fresh and unsaved' : charge
+      ? 'HMS reported a cancellation charge; staff must finish this cancellation in HMS'
+      : 'HMS preview is ready; staff must choose a listed cancellation reason');
   if (recorded.status !== 'ok') return recorded;
   const binding = reviewBinding(loaded.draft, compiled, item, approval);
   const index = compiled.previewObservationRefs.length;
   await removeNativeRunDir(fresh.runDir);
-  return { status: ready ? 'prepared' : 'needs_input', requestId: compiled.requestId, hintId: compiled.hintId,
+  return { status: ready ? 'prepared' : charge ? 'needs_review' : 'needs_input', requestId: compiled.requestId, hintId: compiled.hintId,
     observationRef: item.ref, target: expectedTargetIdentity(fresh.preimage), reasons: fresh.reasons,
-    selectedReason: matchingReason[0] ?? null, cancellationNote: compiled.cancellationNote,
+    selectedReason: matchingReason[0] ?? null, cancellationNote: compiled.cancellationNote, staged: fresh.staged,
     preflight: fresh.preflight, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText,
+    ...(charge ? { manualHmsRequired: true } : {}),
     financialHandling: fresh.preflight.financialHandling,
     feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', scope: fresh.preflight.roomScope,
     sourceRefs: compiled.sourceRefs, approvalDigest: approval,
-    financialReview: { required: true, accepted: binding.accepted, observationRef: item.ref,
-      approvalDigest: approval, reviewFieldPath: `${compiled.reviewPath}/${index}`, reviewNote: reviewNote(item.ref, approval) },
-    ...(!ready ? { issue: compiled.reasonText === null ? 'cancel_reason_required' : 'cancel_reason_must_match_native_option' } : {}) };
+    ...(ready ? { financialReview: { required: true, accepted: binding.accepted, observationRef: item.ref,
+      approvalDigest: approval, reviewFieldPath: `${compiled.reviewPath}/${index}`, reviewNote: reviewNote(item.ref, approval) } } : {}),
+    ...(!ready ? { issue: charge ? 'cancel_charge_finish_in_hms' :
+      compiled.reasonText === null ? 'cancel_reason_required' : 'cancel_reason_must_match_native_option' } : {}) };
 }
 
 const CANCEL_DISPATCH_FIELD = 'nava.hms.labtest.dispatch.v1';
@@ -1090,7 +1216,8 @@ function preparedObservation(draft: ReservationWorkflowV2Draft, input: Reservati
     { ready, approvalDigest: approval, semanticInput: compiled.semanticInput, sourceRefs: compiled.sourceRefs,
       target: expectedTargetIdentity(fresh.preimage), preimage: fresh.preimage, preflight: fresh.preflight,
       preflightObservedAt: fresh.observedAt, reasons: fresh.reasons, policyFacts: fresh.policyFacts,
-      penaltyText: fresh.penaltyText, feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit',
+      penaltyText: fresh.penaltyText, staged: fresh.staged,
+      feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit',
       roomScope: fresh.preflight.roomScope, baselineChangedSinceLookup: canonicalJson(compiled.preimage) !== canonicalJson(fresh.preimage) }),
     sourceRefs: sourceObservationRefs(draft, [compiled.sourceRefs]) };
 }
@@ -1166,7 +1293,8 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       if (!epoch) return { status: 'needs_reconcile', issue: 'cancel_dispatch_history_unavailable' };
       let fresh: FreshPreview;
       try { fresh = await freshPreview(target, compiled.preimage.confirmation, compiled.hint, true,
-        hmsDispatchTargetKey(expectedTarget), lockSignal, compiled.sourceHintMismatchFields.length > 0, ctx.transport.id); }
+        hmsDispatchTargetKey(expectedTarget), lockSignal, compiled.sourceHintMismatchFields.length > 0, ctx.transport.id,
+        compiled.reasonText === null ? undefined : { reasonLabel: compiled.reasonText, cancellationNote: compiled.cancellationNote }); }
       catch { return { status: 'needs_review', issue: 'cancel_fresh_preview_unavailable' }; }
       if (fresh.outcome !== 'ok') {
         await removeNativeRunDir(fresh.runDir);
@@ -1185,10 +1313,25 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         return recorded.status === 'ok' ? { status: 'needs_review', issue: 'cancel_selected_native_target_changed',
           observationRef: changed.ref } : recorded;
       }
+      // A charge reported at the Go recheck is never accepted under this Go: the booking
+      // keeps a non-ready observation with the native text and staff finish it in HMS.
+      if (fresh.penaltyText !== null) {
+        const chargeApproval = approvalDigest(compiled, fresh);
+        const changed = preparedObservation(loaded.draft, input, compiled, fresh, chargeApproval, false);
+        await removeNativeRunDir(fresh.runDir);
+        const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, changed, 'prepared',
+          'HMS reported a cancellation charge; staff must finish this cancellation in HMS', changed.ref);
+        if (recorded.status !== 'ok') return recorded;
+        return { status: 'needs_review', issue: 'cancel_charge_finish_in_hms', requestId: compiled.requestId,
+          hintId: compiled.hintId, observationRef: changed.ref, target: expectedTargetIdentity(fresh.preimage),
+          preflight: fresh.preflight, penaltyText: fresh.penaltyText,
+          feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit' };
+      }
       const liveApproval = approvalDigest(compiled, fresh);
       if (liveApproval !== approval) {
         const changed = preparedObservation(loaded.draft, input, compiled, fresh, liveApproval,
-          compiled.reasonText !== null && fresh.reasons.some((reason) => reason.display === compiled.reasonText));
+          compiled.reasonText !== null && fresh.staged !== null &&
+          fresh.reasons.some((reason) => reason.display === compiled.reasonText));
         await removeNativeRunDir(fresh.runDir);
         const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, changed, 'prepared',
           'Fresh HMS baseline or cancellation financial facts differ; another staff review and Go are required', changed.ref);
@@ -1348,18 +1491,18 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             !/[\p{Cc}]/u.test(nativePenaltyText)));
         if (!activeHandle && !claimError && native.requestDispatched === false && native.writerSessionClosed === true &&
             native.dispatchCallbacksDrained === true && nativePenaltyObserved && nativePenaltyText !== fresh.penaltyText) {
+          // A charge dialog appeared between the recheck and Save; the refused session closed
+          // without a dispatch. Staff finish this cancellation in HMS, never by another Go.
           const changedFresh = { ...fresh, penaltyText: nativePenaltyText as string | null };
           const changedApproval = approvalDigest(compiled, changedFresh);
-          const changed = preparedObservation(loaded.draft, input, compiled, changedFresh, changedApproval, true);
+          const changed = preparedObservation(loaded.draft, input, compiled, changedFresh, changedApproval, false);
           const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, changed, 'prepared',
-            'Native cancellation penalty text changed after the reviewed preview; another review and Go are required', changed.ref);
+            'Native reported a cancellation charge before Save; staff must finish this cancellation in HMS', changed.ref);
           if (recorded.status !== 'ok') return recorded;
-          const financialReview = reviewRequestFor(compiled.previewObservationRefs, compiled.reviewPath, changed,
-            changedApproval, 'native_cancellation_penalty_changed');
-          return { status: 'needs_review', issue: 'cancel_penalty_changed_requires_second_go', requestId: compiled.requestId,
+          return { status: 'needs_review', issue: 'cancel_charge_finish_in_hms', requestId: compiled.requestId,
             hintId: compiled.hintId, observationRef: changed.ref, target: expectedTargetIdentity(fresh.preimage),
             preflight: fresh.preflight, penaltyText: changedFresh.penaltyText,
-            feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', financialReview };
+            feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit' };
         }
         if (activeHandle && native.neverDispatchedProof && native.requestDispatched === false &&
             native.writerSessionClosed === true && native.dispatchCallbacksDrained === true &&

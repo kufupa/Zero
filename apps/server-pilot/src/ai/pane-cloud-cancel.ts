@@ -78,7 +78,8 @@ type CancelContext = CancelRequestBinding & { db?: DB; transportId: string; acto
   confirmation: string; arrival: string; target: HmsReadTarget; env?: NodeJS.Dict<string>;
   selectedInternetMessageId?: string; expectedFormDigest?: string };
 type NativeResult = { outcome: string; expected?: unknown; reasons?: unknown; policyFacts?: string[]; penaltyText?: string | null;
-  zeroPenaltyNotice?: string;
+  zeroPenaltyNotice?: string; feeDialogPending?: boolean; dialogOpenRequestDispatched?: boolean;
+  cancellationSaveDispatched?: boolean; chargeApproved?: boolean; chargeDispatched?: boolean;
   runDir?: string; screenshots?: string[];
   requestDispatched?: boolean; nativeReadback?: unknown; dispatchCallbacksDrained?: boolean; writerSessionClosed?: boolean };
 type NativeRunner = (input: Record<string, unknown>) => Promise<NativeResult>;
