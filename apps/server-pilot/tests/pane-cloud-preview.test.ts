@@ -90,7 +90,9 @@ beforeEach(async () => {
     extractionId: h.row.extraction.id, revision: h.row.item.revision,
     revisionHead: h.row.item.revisionHead, seq: h.row.item.revisionSeq }] : [] };
   const thread: any = { from: () => thread, where: () => thread, orderBy: () => thread,
-    limit: () => thread, for: async () => h.row ? [h.row.mail] : [] };
+    limit: () => Object.assign(Promise.resolve([] as unknown[]),
+      { for: async () => h.row ? [h.row.mail] : [] }),
+    for: async () => h.row ? [h.row.mail] : [] };
   h.db = { select: () => cursor }; h.tx = { select: () => thread };
   oldRun = paneCloudPreviewLoaders.run; oldRuntime = paneCloudPreviewLoaders.runtimeReady;
   paneCloudPreviewLoaders.runtimeReady = () => true;
