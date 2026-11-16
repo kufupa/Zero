@@ -103,18 +103,19 @@ export function derivePaneStage(input: StageInput): Stage {
     : request.kind === 'cancel' && cancelFeeReview ? ['Details', 'Check', 'Review fee', 'Cancel', 'Done']
     : ['Details', 'Check', request.kind === 'filing' ? 'File' : request.kind === 'cancel' ? 'Cancel' : 'Save',
       request.kind === 'create' ? 'Booked' : request.kind === 'amend' ? 'Saved' : 'Done'];
-  const current = request.kind === 'quote' ? needsCheck ? 1 : quoteSaved ? 4 : generated ? 3 : 2
-    : needsCheck ? 1 : allSaved ? steps.length - 1 : pendingAmendReview ? 3 : 2;
+  // Completed results drive progress: a successful save or generation clears the check digest.
+  const current = request.kind === 'quote' ? quoteSaved ? 4 : generated ? 3 : needsCheck ? 1 : 2
+    : allSaved ? steps.length - 1 : needsCheck ? 1 : pendingAmendReview ? 3 : 2;
   const price = request.kind === 'create' && !needsCheck ? createPrice(snapshot, request.id, rooms) : null;
   const now = input.blockedReason ? input.blockedReason
     : uncertain ? request.kind === 'quote' ? 'Quote generation could not be confirmed. Check the result above before trying again.'
       : 'The save outcome is uncertain. Check the outcome above before trying again.'
     : allSaved && request.kind === 'create' ? `All rooms were booked. ${needsCheck ? 'Check booking checks the current details.' : 'Review the results above before using Save in Infor.'}`
     : allSaved ? 'Completed. Check the result above.'
-    : needsCheck ? `${config.check} checks the details${request.kind === 'create' ? ' and price' : ''}. ${request.kind === 'amend' && pendingAmendReview ? 'Details may already have changed in Infor.' : saved ? 'See earlier results above; this check does not save more changes.' : request.kind === 'quote' ? 'No quote or reply is sent by this check.' : 'This check does not save the stay or file in Infor.'}`
     : quoteSaved ? 'Reply saved in your Drafts folder. Send it from your mail when ready.'
-    : generated ? quoteOutput?.hasCover ? `${quoteOutput.hasFiles ? 'Files and reply are' : 'The unsent reply is'} ready above. Use ${quoteOutput.saveLabel} above; the button below generates again.`
+    : generated ? quoteOutput?.hasCover ? `${quoteOutput.hasFiles ? 'Files and reply are' : 'The unsent reply is'} ready above. Use ${quoteOutput.saveLabel} above${needsCheck ? `; use ${config.check} below only if you need fresh prices.` : '; the button below generates again.'}`
       : quoteOutput?.hasFiles ? 'Download the available files above.' : 'Quote output could not be completed. Check the results above.'
+    : needsCheck ? `${config.check} checks the details${request.kind === 'create' ? ' and price' : ''}. ${request.kind === 'amend' && pendingAmendReview ? 'Details may already have changed in Infor.' : saved ? 'See earlier results above; this check does not save more changes.' : request.kind === 'quote' ? 'No quote or reply is sent by this check.' : 'This check does not save the stay or file in Infor.'}`
     : input.createPriceBlocked ? 'Resolve the customer and Infor prices above before saving.'
     : input.extrasNeedReview ? 'Review the extra charges above before generating the quote.'
     : price ? `Infor priced ${roomCount} · total ${price}. ${saved ? 'See saved rooms above.' : 'Nothing saved yet.'} Next: ${button} creates ${remaining} ${remaining === 1 ? 'booking' : 'bookings'}.`
@@ -125,7 +126,7 @@ export function derivePaneStage(input: StageInput): Stage {
     : request.kind === 'create' ? `Check complete for ${roomCount}. Next: ${button} creates ${remaining} ${remaining === 1 ? 'booking' : 'bookings'}.`
     : `Check complete. Next: ${button} ${request.kind === 'cancel' ? 'cancels the stay' : request.kind === 'filing' ? 'files the PDF' : 'saves the changes'} in Infor.`;
   return { steps: steps.map((label, index) => ({ label, state: index < current ? 'done' : index === current ? 'current' : 'todo' })),
-    button, now, showOutcomes: allSaved || !needsCheck && (request.kind === 'quote' && (quoteSaved || generated && !quoteOutput?.hasCover) || !input.blockedReason),
+    button, now, showOutcomes: allSaved || request.kind === 'quote' && (quoteSaved || generated) || !needsCheck && !input.blockedReason,
     youGet: request.kind === 'quote' && (input.quoteDecline || quoteOutput?.inventoryDecline)
       ? `An unsent decline reply ${quoteSaved ? 'saved in' : 'to save to'} your Drafts folder; no quote files.`
       : request.kind === 'quote' && outputs.length ? ([generated ? quoteOutput?.hasFiles ? 'Available quote files for download' : '' : files ? `${files} quote files for download` : '',
