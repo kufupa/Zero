@@ -5837,9 +5837,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   if (lane === 'default' && fairness) {
     if (claimed.runKind === 'reservation_prefill' && claimed.priority === 1) {
       fairness.backgroundPrefills = Math.min(5, fairness.backgroundPrefills + 1);
-    } else if (claimed.priority === 0 && (claimed.runKind === 'reply_check' ||
-      (claimed.runKind === 'inbound_triage' &&
-        claimed.idempotencyKey === `external-sent-baseline:${claimed.triggerMessageId}`))) {
+    } else if (claimed.priority === 0) {
       fairness.backgroundPrefills = 0;
     }
   }
