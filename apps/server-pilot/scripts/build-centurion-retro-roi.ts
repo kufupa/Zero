@@ -15,7 +15,7 @@ import type { QuoteAttachmentRow, SyncedQuoteAttachment, SyncedQuoteSelection } 
 import { RETRO_WORKFLOWS, RETRO_ROI_MAX_REPORT_BYTES, retroReportSchema, retroTaskSchema, type RetroTask } from '../src/metrics/centurion-retro-roi.js';
 
 const VERSION = 'centurion-retro-roi-runner/2';
-const MAX_WORKERS = 96, CONTROL_INTERVAL_MS = 300_000, ERROR_LIMIT = 0.02, MAX_429_RETRIES = 3;
+const MAX_WORKERS = 96, MAX_REPLAY_WORKERS = 32, CONTROL_INTERVAL_MS = 300_000, ERROR_LIMIT = 0.02, MAX_429_RETRIES = 3;
 const ASSESSMENT_MODEL = 'gpt-6.1-terra';
 const START = '2026-10-17T04:17:49Z', END = '2026-11-16T04:17:49Z';
 const MAILBOX = 'centurion@legacyhotels.co.za';
@@ -90,6 +90,8 @@ const checkpointSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rate_limit'), fingerprint: sha256, key: sha256, stage: z.string(), attempt: z.number().int().positive(), decision: z.enum(['retry', 'exhausted']), delayMs: z.number().nonnegative(), reason: z.string() }),
   z.object({ kind: z.literal('runtime_metrics'), fingerprint: sha256, at: instant, metrics: z.record(z.unknown()) }),
   z.object({ kind: z.literal('measurement_pending'), fingerprint: sha256, messageId: z.string(), reason: z.string() }),
+  z.object({ kind: z.literal('measurement_completed'), fingerprint: sha256, messageId: z.string() }),
+  z.object({ kind: z.literal('assessment_rejected'), fingerprint: sha256, messageId: z.string(), key: sha256, reason: short }),
   z.object({ kind: z.literal('model'), fingerprint: sha256, key: sha256, result: modelResultSchema, importedFrom: z.object({ path: z.string(), fingerprint: sha256 }).optional() }),
   z.object({ kind: z.literal('context'), fingerprint: sha256, start: instant, end: instant, nativeIndexSha256: sha256.nullable(), classifyOnly: z.boolean(), producerSHA: codeSHA.optional(), reviewedCompatibleProducer: z.union([codeSHA, z.literal('unknown')]).optional() }),
   z.object({ kind: z.literal('dispatch_failure'), fingerprint: sha256, key: sha256, purpose: z.string(), phase: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), errorName: z.string(), errorMessage: short, statusCode: z.number().optional(), latencyMs: z.number().nonnegative(), usage: z.literal('unknown') }),
@@ -179,8 +181,8 @@ function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, ac
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
-    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA] [--concurrency 8 --maximum-concurrency 8 --classifier-concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max --assessment-output-tokens 24000] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
-      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 8, maximumConcurrency: 8, classifierConcurrency: 32 }, model: 'Approved Azure gpt-6-luna prefill only, held at8; gpt-6.1-terra classification/assessment', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
+    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA] [--concurrency 32 --maximum-concurrency 32 --classifier-concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max --assessment-output-tokens 24000] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
+      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 32, maximumConcurrency: 32, classifierConcurrency: 32 }, model: 'Approved Azure gpt-6-luna prefill only, capped at32; gpt-6.1-terra classification/assessment', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
   const repo = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'));
@@ -189,8 +191,8 @@ async function main(): Promise<void> {
   const checkpointPath = await outsideGit(resolve(option('--checkpoint', `${out}.checkpoints.jsonl`)), repo);
   const start = instant.parse(option('--start', START)), end = instant.parse(option('--end', END));
   if (Date.parse(end) - Date.parse(start) !== 30 * 86400000 || Date.parse(end) > Date.now()) throw new Error('Require a past, literal 30-day window');
-  const maximumReplayConcurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--maximum-concurrency', '8'));
-  const concurrency = z.coerce.number().int().min(1).max(maximumReplayConcurrency).parse(option('--concurrency', '8'));
+  const maximumReplayConcurrency = z.coerce.number().int().min(1).max(MAX_REPLAY_WORKERS).parse(option('--maximum-concurrency', '32'));
+  const concurrency = z.coerce.number().int().min(1).max(maximumReplayConcurrency).parse(option('--concurrency', '32'));
   const classifierConcurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--classifier-concurrency', '32'));
   const limit = z.coerce.number().int().positive().parse(option('--limit', '15000'));
   const batchSize = z.coerce.number().int().min(1).max(20).parse(option('--classify-batch', '12'));
@@ -288,6 +290,7 @@ async function main(): Promise<void> {
       try { record = checkpointSchema.parse(JSON.parse(line)); }
       catch { if (index === records.length - 1) break; throw new Error('Invalid reuse checkpoint record'); }
       if (record.kind === 'model') importedModels.set(record.key, { result: record.result, path, fingerprint: record.fingerprint });
+      if (record.kind === 'assessment_rejected') importedModels.delete(record.key);
     }
     info({ phase: 'checkpoint_import', eligibleModelReceipts: importedModels.size, source: path, policy: 'Exact actual model input key matches only; prior classifications, replays and grades are not imported' });
   }
@@ -325,6 +328,7 @@ async function main(): Promise<void> {
   const { nativeReadArgsKey } = await import('./wave1-prefill-replay/cache.js');
   const dispatchFailures: Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>[] = [];
   const cache = new Map<string, ModelInvokeResult>(), classifications = new Map<string, z.infer<typeof classificationSchema>>(), tasks = new Map<string, RetroTask>();
+  const assessmentKeys = new Map<string, string>(), rejectedAssessmentKeys = new Set<string>(), legacyAssessmentKeys = new Map<string, Set<string>>();
   let checkpointQueue = Promise.resolve();
   const save = (record: z.infer<typeof checkpointSchema>) => { checkpointQueue = checkpointQueue.then(() => appendFile(checkpointPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })); return checkpointQueue; };
   let contextSeen = false, derivedCompatible = false, lastProducerSHA: string | undefined, skippedDerived = 0;
@@ -348,13 +352,17 @@ async function main(): Promise<void> {
         contextSeen = true; continue;
       }
       if (!contextSeen) throw new Error('Checkpoint has no validated run context: use a separate --reuse-checkpoint snapshot');
-      if (record.kind === 'model') cache.set(record.key, record.result);
+      if (record.kind === 'model') { cache.set(record.key, record.result); rejectedAssessmentKeys.delete(record.key); }
+      if (record.kind === 'assessment_rejected') { cache.delete(record.key); importedModels.delete(record.key); rejectedAssessmentKeys.add(record.key); }
+      if (record.kind === 'api_attempt' && record.stage === 'assessment') for (const id of record.messageIds) { const keys = legacyAssessmentKeys.get(id) ?? new Set<string>(); keys.add(record.key); legacyAssessmentKeys.set(id, keys); }
       if (record.kind === 'dispatch_failure') dispatchFailures.push(record);
       if (!derivedCompatible && (record.kind === 'classification' || record.kind === 'replay' || record.kind === 'task')) { skippedDerived++; continue; }
       if (record.kind === 'classification') classifications.set(record.messageId, record.result);
-      if (record.kind === 'replay') { if (failedMeasurement(record.result)) { measurementPending.add(record.messageId); replays.delete(record.messageId); } else { measurementPending.delete(record.messageId); replays.set(record.messageId, { result: record.result, nativeReads: record.nativeReads }); } }
+      if (record.kind === 'replay') { if (failedMeasurement(record.result)) { measurementPending.add(record.messageId); replays.delete(record.messageId); } else replays.set(record.messageId, { result: record.result, nativeReads: record.nativeReads }); }
       if (record.kind === 'measurement_pending') measurementPending.add(record.messageId);
-      if (record.kind === 'task' && !measurementPending.has(record.task.sources[0]?.messageId ?? '')) tasks.set(record.task.id, record.fingerprint === fingerprint ? record.task : retroTaskSchema.parse({ ...record.task, reason: `${record.task.reason.slice(0, 7600)} Prior valid Luna assessment retained from owner-reviewed compatible producer.` }));
+      if (record.kind === 'measurement_completed') measurementPending.delete(record.messageId);
+      if (record.kind === 'runtime_metrics') { const completed = z.object({ phase: z.literal('completed_preparation_message'), messageId: z.string() }).safeParse(record.metrics); if (completed.success) measurementPending.delete(completed.data.messageId); }
+      if (record.kind === 'task') tasks.set(record.task.id, record.fingerprint === fingerprint ? record.task : retroTaskSchema.parse({ ...record.task, reason: `${record.task.reason.slice(0, 7600)} Prior valid Luna assessment retained from owner-reviewed compatible producer.` }));
     }
     await chmod(checkpointPath, 0o600);
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
@@ -362,6 +370,10 @@ async function main(): Promise<void> {
   if (!contextSeen || lastProducerSHA !== producerSHA) {
     if (contextSeen) info({ phase: derivedCompatible ? 'reviewed_derived_reuse' : 'derived_reset', previousProducerSHA: lastProducerSHA ?? 'unknown', producerSHA, reviewedCompatibleProducer, rawModelReceiptsRetained: cache.size, skippedDerived, policy: 'Only exact actual model input keys reuse raw receipts; batch grouping and replay metadata can change keys' });
     await save(runContext);
+  }
+  for (const messageId of measurementPending) for (const key of legacyAssessmentKeys.get(messageId) ?? []) {
+    cache.delete(key); importedModels.delete(key);
+    if (!rejectedAssessmentKeys.has(key)) { rejectedAssessmentKeys.add(key); await save({ kind: 'assessment_rejected', fingerprint, messageId, key, reason: 'Legacy pending assessment requires fresh schema and host validation; valid prefill retained' }); }
   }
   const startedAt = Date.now();
   const workerRegimes: Array<{ workers: number; classificationWorkers: number; fromElapsedMs: number; toElapsedMs: number | null }> = [{ workers: concurrency, classificationWorkers: classifierConcurrency, fromElapsedMs: 0, toElapsedMs: null }];
@@ -378,7 +390,7 @@ async function main(): Promise<void> {
   const admitClassifier = () => { while (classifierSlots < classifierLimit && classifierAdmissions.length) { const next = classifierAdmissions.shift(); if (next) { classifierSlots++; next(); } } };
   const acquireClassifier = () => new Promise<void>(resolveAdmission => { classifierAdmissions.push(resolveAdmission); admitClassifier(); });
   const releaseClassifier = () => { classifierSlots--; admitClassifier(); };
-  const frozenProducers = fixedLimiter(4), localReaders = fixedLimiter(4);
+  const graders = fixedLimiter(32), frozenProducers = fixedLimiter(4), localReaders = fixedLimiter(4);
   const withLocalReader = async <T>(run: () => Promise<T>): Promise<T> => { await localReaders.acquire(); try { return await run(); } finally { localReaders.release(); } };
   const apiAttempts: Array<Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>> = [];
   let rateLimitResponses = 0, rateLimitRetries = 0, rateLimitExhaustions = 0, gradedTasksThisRun = 0, lastControlAt = startedAt, nextGrowthBoundary = CONTROL_INTERVAL_MS;
@@ -416,7 +428,7 @@ async function main(): Promise<void> {
       return { limit: current, reason: 'Hold pending five-minute boundary, headroom or completed stage evidence' };
     };
     const classifierDecision = nextLimit(classifierLimit, classification, false), proposedReplayDecision = nextLimit(activeLimit, replay, true);
-    const replayDecision = { ...proposedReplayDecision, limit: Math.min(maximumReplayConcurrency, proposedReplayDecision.limit), reason: maximumReplayConcurrency <= 8 ? 'Owner hard hold: Luna prefill maximum8; no automatic time-based release' : proposedReplayDecision.reason };
+    const replayDecision = { ...proposedReplayDecision, limit: Math.min(maximumReplayConcurrency, proposedReplayDecision.limit), reason: proposedReplayDecision.limit > maximumReplayConcurrency ? 'Owner Luna prefill ceiling:32 maximum' : proposedReplayDecision.reason };
     if (classifierDecision.limit !== classifierLimit || replayDecision.limit !== activeLimit) {
       const elapsedMs = now - startedAt, previous = workerRegimes[workerRegimes.length - 1]; if (previous) previous.toElapsedMs = elapsedMs;
       classifierLimit = classifierDecision.limit; activeLimit = replayDecision.limit;
@@ -435,6 +447,7 @@ async function main(): Promise<void> {
   const trackedAdapter = (model: ModelAdapter, purpose: string, modelId: keyof typeof activeModelCallsByModel): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
     const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
     const key = hash(JSON.stringify({ purpose, input: stableInput })), cached = cache.get(key);
+    if (purpose.startsWith('assessment:')) for (const id of callMessageIds(input)) assessmentKeys.set(id, key);
     if (cached) { cacheHits++; return cached; }
     const imported = importedModels.get(key);
     if (imported) {
@@ -468,7 +481,7 @@ async function main(): Promise<void> {
       apiAttempts.push(receipt); await save(receipt);
       if (dispatched.ok) {
         successfulDispatches++;
-        await save({ kind: 'model', fingerprint, key, result: dispatched.result }); cache.set(key, dispatched.result); return dispatched.result;
+        await save({ kind: 'model', fingerprint, key, result: dispatched.result }); cache.set(key, dispatched.result); rejectedAssessmentKeys.delete(key); return dispatched.result;
       }
       if (stage === 'extraction' && timeout) extractionTimeouts++;
       if (statusCode === 429) {
@@ -498,11 +511,11 @@ async function main(): Promise<void> {
   if (!assessmentModel) throw new Error('APPROVED_ASSESSMENT_ADAPTER_UNAVAILABLE');
   const assessmentAdapter = trackedAdapter(assessmentModel, `assessment:${ASSESSMENT_MODEL}:${assessmentEffort}`, ASSESSMENT_MODEL);
   const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown, purpose: 'classify' | 'assess' = 'assess', normalizeOutput?: (value: unknown) => unknown, images?: ModelInvokeInput['images']): Promise<z.infer<T>> => {
-    if (purpose === 'classify') await acquireClassifier();
+    if (purpose === 'classify') await acquireClassifier(); else await graders.acquire();
     try {
       const result = await (purpose === 'classify' ? classifierAdapter : assessmentAdapter).invoke({ modelId: purpose === 'classify' ? classifierModelId : ASSESSMENT_MODEL, systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : assessmentOutputTokens, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
       return schema.parse(normalizeOutput ? normalizeOutput(result.output) : result.output);
-    } finally { if (purpose === 'classify') releaseClassifier(); }
+    } finally { if (purpose === 'classify') releaseClassifier(); else graders.release(); }
   };
   const body = (mail: Mail) => /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(mail.body) ? htmlToPlainText(mail.body) : mail.body;
   async function attachments(mail: Mail): Promise<SyncedQuoteAttachment[]> {
@@ -602,7 +615,7 @@ async function main(): Promise<void> {
         if (!retryPass && loadedPendingMeasurements.has(mail.sourceRowId)) continue;
         activeMessages++;
         const earlier = mail.threadId ? mails.filter(row => row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)) : [];
-        let stage: 'classification' | 'replay' = 'classification', prepSlot = false, frozenSlot = false, prepStartedAt = 0;
+        let stage: 'classification' | 'replay' = 'classification', prepSlot = false, frozenSlot = false, prepStartedAt = 0, gradeValidated = false;
         try {
           if ([mail, ...earlier].some(row => row.attachmentRows.some(copy => copy.privateMessage.attachments.some(item => item.bytesArtifact?.status === 'available' || item.textArtifact?.status === 'available')))) { await frozenProducers.acquire(); frozenSlot = true; }
           const currentAttachments = await attachments(mail), previousAttachments = (await Promise.all(earlier.map(attachments))).flat();
@@ -680,6 +693,7 @@ async function main(): Promise<void> {
 
             } });
           if (replay && !replays.has(mail.sourceRowId)) { const validated = replayResultSchema.parse(replay); await save({ kind: 'replay', fingerprint, messageId: mail.sourceRowId, result: validated, nativeReads }); replays.set(mail.sourceRowId, { result: validated, nativeReads }); prefilledThisRun++; }
+          release(); prepSlot = false;
           if (replay && failedMeasurement(replay)) { measurementPending.add(mail.sourceRowId); replays.delete(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Core model timeout/error is a failed measurement; no grading or task credit until retry completes' }); info({ messageId: mail.sourceRowId, status: 'measurement_pending' }); continue; }
           const assessmentMessages = context.filter(message => message.messageId === mail.sourceRowId || pending.some(action => action.requirements.some(requirement => requirement.messageId === message.messageId))).map(message => message.messageId === mail.sourceRowId ? message : { ...message, bodyText: pending.flatMap(action => action.requirements.filter(requirement => requirement.messageId === message.messageId).map(requirement => requirement.quote)).join('\n'), attachments: [] });
           const assessed = replay ? await invoke(assessmentSchema, ASSESS, { tasks: pending.map(action => ({ ...action, requiredNativeChecks: NATIVE_REQUIREMENTS[action.workflow] })), messages: assessmentMessages, replay: { generationId: replay.generationId, status: replay.status, proposal: replay.proposal, observations: replay.observations.filter(observation => observation.kind !== 'source' && observation.kind !== 'mail_candidate'), errors: replay.errors }, nativeReads }) : null;
@@ -744,7 +758,10 @@ async function main(): Promise<void> {
               replay: replay ? { status: 'replayed', replayId: replay.generationId, nativeEvidence: nativeComplete ? 'complete' : 'missing', checks } : { status: 'not_run', reason: 'Requested classify-only mode' } });
             stagedTasks.push(task);
           }
+          gradeValidated = true;
+          await save({ kind: 'measurement_completed', fingerprint, messageId: mail.sourceRowId });
           for (const task of stagedTasks) { await save({ kind: 'task', fingerprint, task }); tasks.set(task.id, task); gradedTasksThisRun++; }
+          assessmentKeys.delete(mail.sourceRowId);
           measurementPending.delete(mail.sourceRowId);
           if (replay) {
             replayedThisRun++;
@@ -755,6 +772,8 @@ async function main(): Promise<void> {
           }
           info({ messageId: mail.sourceRowId, classification: classified.disposition, newTasks: pending.length, replayStatus: replay?.status ?? 'not_run' });
         } catch (error) {
+          const rejectedKey = assessmentKeys.get(mail.sourceRowId); assessmentKeys.delete(mail.sourceRowId);
+          if (stage === 'replay' && rejectedKey && !gradeValidated) { cache.delete(rejectedKey); importedModels.delete(rejectedKey); rejectedAssessmentKeys.add(rejectedKey); await save({ kind: 'assessment_rejected', fingerprint, messageId: mail.sourceRowId, key: rejectedKey, reason: 'Assessment schema or sibling host validation failed; raw assessment evicted for fresh retry' }); }
           if (stage === 'replay') { measurementPending.add(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Preparation/assessment measurement did not validate; retry pending' }); }
           failedThisRun++; (stage === 'classification' ? failedClassification : replayFailures).add(mail.sourceRowId);
           const validationIssues = error instanceof z.ZodError ? error.issues.slice(0, 40).map(issue => ({ path: issue.path.map(String), code: issue.code, message: issue.message.slice(0, 8000) })) : undefined;
@@ -788,7 +807,7 @@ async function main(): Promise<void> {
     const host = await sampleResources();
     const now = Date.now(), minutes = (now - loggedAt) / 60000, elapsedMinutes = (now - startedAt) / 60000;
     const rate = (count: number) => minutes > 0 ? Number((count / minutes).toFixed(2)) : 0;
-    const metrics = { phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, replayWorkers: activeLimit, classificationWorkers: classifierLimit, activeReplaySlots: activeSlots, activeClassificationSlots: classifierSlots, activeModelCalls, activeModelCallsByModel: { ...activeModelCallsByModel }, activeMessages, maximumMessageProducers: MAX_WORKERS * batchSize, waitingReplaySlots: admissions.length, waitingClassificationSlots: classifierAdmissions.length, frozenArtifactProducers: frozenProducers.stats(), localReaderWork: localReaders.stats(), admissionWaitMsTotal,
+    const metrics = { phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, replayWorkers: activeLimit, classificationWorkers: classifierLimit, activeReplaySlots: activeSlots, activeClassificationSlots: classifierSlots, activeModelCalls, activeModelCallsByModel: { ...activeModelCallsByModel }, activeMessages, maximumMessageProducers: MAX_WORKERS * batchSize, waitingReplaySlots: admissions.length, waitingClassificationSlots: classifierAdmissions.length, assessmentSlots: graders.stats(), frozenArtifactProducers: frozenProducers.stats(), localReaderWork: localReaders.stats(), admissionWaitMsTotal,
       classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, totalMessages: selectedInbound.length,
       classificationEmailsPerMinute: rate(classifiedThisRun - lastClassified), prefillEmailsPerMinute: rate(prefilledThisRun - lastPrefilled), replayAndAssessmentEmailsPerMinute: rate(replayedThisRun - lastReplayed), completedEmailsPerMinute: rate(completedThisRun - lastCompleted),
       workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, classificationWorkers: regime.classificationWorkers, durationSeconds: Number((((regime.toElapsedMs ?? now - startedAt) - regime.fromElapsedMs) / 1000).toFixed(2)) })),
@@ -826,7 +845,7 @@ async function main(): Promise<void> {
   const regimeSummary = { changes: workerRegimes.length, initialReplayWorkers: concurrency, initialClassificationWorkers: classifierConcurrency, finalReplayWorkers: activeLimit, finalClassificationWorkers: classifierLimit,
     recent: workerRegimes.slice(-8).map(regime => ({ replayWorkers: regime.workers, classificationWorkers: regime.classificationWorkers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })) };
   const report = retroReportSchema.parse({ version: 'centurion-retro-roi/1', reportId: `retro-${fingerprint.slice(0, 32)}`, propertyCode: 'HRCEN', generatedAt: new Date().toISOString(), period: { start, end, timezone: 'Africa/Johannesburg' },
-    provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna prefill maximum8 owner hold; gpt-6.1-terra classification/assessment; retained reviewed prior valid grades' },
+    provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna prefill maximum32; gpt-6.1-terra classification/assessment; retained reviewed prior valid grades' },
     coverage: { status: sourceComplete && successful.length === inbound.length && unknownTimestamps === 0 && failedClassification.size === 0 && Date.parse(sourceThrough) >= Date.parse(end) ? 'complete' : 'partial',
       sourceExportedAt, sourceThrough: sourceThrough, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0), canonicalMessages: population.length,
       inboundMessages: inbound.length, classifiedMessages: successful.length, excludedMessages: successful.filter(id => classifications.get(id)?.disposition === 'excluded').length,
@@ -839,7 +858,7 @@ async function main(): Promise<void> {
         `Model dispatch workers requested ${concurrency}, final admission ${activeLimit}, message producers bounded at ${MAX_WORKERS * batchSize}, compute admission waits outside original classification and preparation deadlines, regimes ${JSON.stringify(regimeSummary)}; exact-input cache hits ${cacheHits}, imported cache hits ${importedCacheHits}, new dispatches ${dispatchedCalls}, successful new dispatches ${successfulDispatches}. Producer ${producerSHA}; reviewed compatible producer ${reviewedCompatibleProducer ?? 'none'}. Same/reviewed compatible derived records retained with original checkpoint provenance; failed measurements excluded; changed actual model keys rerun.`,
         `Measured new adapter attempts ${JSON.stringify(networkSummary())}; local PDF/text/classifier vision work ${JSON.stringify(localWork)}. Prefill pre-model time includes native preload and vision preparation, not an isolated renderer measurement. Retry backoff stays inside original deadlines; successful and all-attempt latency distributions are separate.`,
         `Actual replay diagnostics: ${JSON.stringify(replayDiagnostics)}. Checkpoint model usage: ${JSON.stringify(usage)}; failed dispatch billing is unknown, not zero.`,
-        `Luna prefill hard maximum ${maximumReplayConcurrency} with explicit owner release required; classifier ${classifierModelId}/${classifierEffort}; replay effort ${replayEffort}; assessment ${ASSESSMENT_MODEL}/${assessmentEffort} output cap ${assessmentOutputTokens}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
+        `Luna prefill maximum ${maximumReplayConcurrency}; Terra grading independent fixed32; classifier ${classifierModelId}/${classifierEffort}; replay effort ${replayEffort}; assessment ${ASSESSMENT_MODEL}/${assessmentEffort} output cap ${assessmentOutputTokens}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
         'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
     tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
