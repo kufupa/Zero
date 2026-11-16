@@ -16,13 +16,78 @@ import { checkpointReservationWorkflowV2Extraction, claimReservationWorkflowV2Pr
 import { runReservationWorkflowV2Prefill } from './reservation-workflow-v2-prefill.js';
 import { createAzureExtractionAdapter } from './extraction/extract.js';
 import { prefillSimpleSynthesisEnabled } from './extraction/config.js';
-import type { ModelAdapter } from './bedrock/adapter.js';
+import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
 import { runReservationArrivalChecks } from './reservation-workflow-v2-arrival-checks.js';
 
+/** Failure classes safe for production logs; any unlisted name collapses to 'other'. */
+const MODEL_CALL_ERROR_CLASSES = new Set([
+  'AbortError', 'TimeoutError', 'Error', 'TypeError', 'FetchError', 'RunDeadlineError',
+  'AI_APICallError', 'AI_DownloadError', 'AI_InvalidResponseDataError', 'AI_JSONParseError',
+  'AI_NoObjectGeneratedError', 'AI_NoSuchModelError', 'AI_RetryError', 'AI_TypeValidationError',
+]);
+
+/** Transport-level codes that carry no message text. */
+const MODEL_CALL_ERROR_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET', 'UND_ERR_ABORTED', 'UND_ERR_DESTROYED',
+]);
+
+/** Object check that survives revoked Proxies, whose typeof throws. */
+function isErrorLikeObject(value: unknown): boolean {
+  try {
+    return value !== null && typeof value === 'object';
+  } catch {
+    return false;
+  }
+}
+
+/** Single guarded property read: a throwing getter or Proxy trap yields undefined
+ *  instead of throwing, so classification keeps metadata already read. */
+function readErrorProp(value: unknown, key: 'name' | 'code' | 'statusCode' | 'status' | 'cause'): unknown {
+  try {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
+    return (value as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bounded failure metadata: allowlisted class/code or numeric HTTP status, never messages or stacks.
+ *  Fetch wrappers keep the transport code under `cause`, so walk a bounded, cycle-safe chain;
+ *  each field keeps the first allowlisted value, outermost first. */
+function classifyModelCallError(error: unknown): { errorClass: string; errorCode?: string; httpStatus?: number } {
+  let errorClass: string | undefined;
+  let errorCode: string | undefined;
+  let httpStatus: number | undefined;
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && isErrorLikeObject(current) && !seen.has(current); depth++) {
+    seen.add(current);
+    const name = readErrorProp(current, 'name');
+    const code = readErrorProp(current, 'code');
+    const statusCode = readErrorProp(current, 'statusCode');
+    const status = readErrorProp(current, 'status');
+    const rawStatus = typeof statusCode === 'number' ? statusCode
+      : typeof status === 'number' ? status : undefined;
+    if (errorClass === undefined && typeof name === 'string' && MODEL_CALL_ERROR_CLASSES.has(name)) errorClass = name;
+    if (errorCode === undefined && typeof code === 'string' && MODEL_CALL_ERROR_CODES.has(code)) errorCode = code;
+    if (httpStatus === undefined && rawStatus !== undefined &&
+        Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599) httpStatus = rawStatus;
+    if (errorClass !== undefined && errorCode !== undefined && httpStatus !== undefined) break;
+    current = readErrorProp(current, 'cause');
+  }
+  return {
+    errorClass: errorClass ?? 'other',
+    ...(errorCode !== undefined ? { errorCode } : {}),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+  };
+}
+
 /** Preserve model failure timing even when a bounded retry keeps its original fallback. */
 function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: string,
-  stage: 'extract' | 'synthesis', reasoningEffort: string): ModelAdapter | null {
+  stage: 'extract' | 'synthesis', reasoningEffort: string, jobRunId?: string): ModelAdapter | null {
   if (!adapter) return null;
   let callNumber = 0;
   return {
@@ -30,24 +95,48 @@ function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: s
     async invoke(input) {
       const call = ++callNumber;
       const startedAt = Date.now();
+      // Request-side context for latency root cause: sizes are raw UTF-8 and file bytes,
+      // never provider tokens; prompt text, filenames and addresses are never logged.
+      const request = {
+        modelId: input.modelId,
+        systemPromptBytes: Buffer.byteLength(input.systemPrompt),
+        userPromptBytes: Buffer.byteLength(input.userPrompt),
+        fileCount: input.files?.length ?? 0,
+        fileBytes: (input.files ?? []).reduce((sum, file) => sum + file.data.byteLength, 0),
+        imageCount: input.images?.length ?? 0,
+        imageBytes: (input.images ?? []).reduce((sum, image) => sum + image.data.byteLength, 0),
+        ...(input.maxOutputTokens !== undefined ? { maxOutputTokens: input.maxOutputTokens } : {}),
+        ...(input.deadlineAt !== undefined ? { deadlineRemainingMs: input.deadlineAt - startedAt } : {}),
+      };
       let reported = false;
-      const report = (outcome: string, usage?: { inputTokens: number; outputTokens: number }) => {
+      const report = (outcome: string, result?: ModelInvokeResult,
+        failure?: { errorClass: string; errorCode?: string; httpStatus?: number }) => {
         if (reported) return;
         reported = true;
-        console.info('reservation_v2_model_call', JSON.stringify({ sourceMessageId, stage, callNumber: call,
-          reasoningEffort, outcome, elapsedMs: Date.now() - startedAt,
-          ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {}) }));
+        console.info('reservation_v2_model_call', JSON.stringify({
+          at: new Date().toISOString(), sourceMessageId, stage, callNumber: call,
+          ...(jobRunId ? { jobRunId } : {}), ...request, reasoningEffort, outcome,
+          elapsedMs: Date.now() - startedAt,
+          // adapterLatencyMs is the adapter's measured round-trip, never
+          // provider-reported; token counts emit only when the provider reported
+          // usage, otherwise they are unknown rather than measured zeros.
+          ...(result?.usage ? {
+            ...(result.provenance?.usageSource === 'reported'
+              ? { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens } : {}),
+            adapterLatencyMs: result.usage.latencyMs } : {}),
+          ...(failure ?? {}) }));
       };
-      const aborted = () => report(input.signal?.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted');
+      const aborted = () => report(readErrorProp(input.signal?.reason, 'name') === 'TimeoutError' ? 'timeout' : 'aborted',
+        undefined, classifyModelCallError(input.signal?.reason));
       input.signal?.addEventListener('abort', aborted, { once: true });
       if (input.signal?.aborted) aborted();
       try {
         const result = await adapter.invoke(input);
-        report('succeeded', result.usage);
+        report('succeeded', result);
         return result;
       } catch (error) {
         if (input.signal?.aborted) aborted();
-        else report('model_error');
+        else report('model_error', undefined, classifyModelCallError(error));
         throw error;
       } finally {
         input.signal?.removeEventListener('abort', aborted);
@@ -75,11 +164,13 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
       signal: operationSignal,
-      adapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'extract', modelEnv.EXTRACTION_REASONING_EFFORT),
-      synthesisAdapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'synthesis', modelEnv.EXTRACTION_REASONING_EFFORT),
+      adapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'extract',
+        modelEnv.EXTRACTION_REASONING_EFFORT, jobFence?.runId),
+      synthesisAdapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'synthesis',
+        modelEnv.EXTRACTION_REASONING_EFFORT, jobFence?.runId),
       simpleSynthesisAdapter: prefillSimpleSynthesisEnabled(modelEnv) ? observedPrefillAdapter(
         createAzureExtractionAdapter({ ...modelEnv, EXTRACTION_REASONING_EFFORT: 'medium' }),
-        input.source.messageId, 'synthesis', 'medium') : null,
+        input.source.messageId, 'synthesis', 'medium', jobFence?.runId) : null,
       onValidatedExtraction: async (generationId, extraction) => {
         const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...input, claim: activeClaim,
           generationId, extraction, jobFence });
