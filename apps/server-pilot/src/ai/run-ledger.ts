@@ -328,6 +328,8 @@ export interface AiRunScopeFilter {
 export interface ClaimNextAiRunInput extends AiRunScopeFilter {
   ownerId: string;
   lane: AiExecutorLane;
+  /** Allow one due priority-zero run ahead of background prefills on the default lane. */
+  preferDeferredWork?: boolean;
   now?: Date;
   staleRunTimeoutMs?: number;
   db?: DB;
@@ -742,6 +744,12 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         // staff_quote shares HMS_JOB_PRIORITY_USER with party/find; jump those reads on this serial lane.
         // hms_write is a separate claim (runKind filter) and keeps HMS_WRITE_PRIORITY.
         .orderBy(
+          ...(input.lane === 'default' && input.preferDeferredWork
+            ? [desc(sql`CASE
+                WHEN ${aiWorkflowRun.priority} >= 2 OR (${aiWorkflowRun.priority} = 1 AND ${aiWorkflowRun.runKind} <> 'reservation_prefill') THEN 2
+                WHEN ${aiWorkflowRun.priority} = 0 THEN 1
+                ELSE 0 END`)]
+            : []),
           desc(aiWorkflowRun.priority),
           desc(sql`CASE WHEN ${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote' THEN 1 ELSE 0 END`),
           BACKGROUND_PREFILL_PROPERTY_ORDER,
