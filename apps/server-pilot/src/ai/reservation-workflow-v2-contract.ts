@@ -200,12 +200,13 @@ const quoteBodySchema = z.object({
     mealPlan: z.string().max(120).nullable(),
     requestedMealPlan: z.string().max(120).nullable().default(null),
     requestedRoomDescription: z.string().max(1000).nullable().optional(),
+    sourceAssociationUnresolved: z.boolean().optional(),
     guestNames: z.array(z.string().max(300)).max(200).optional(),
     roomCodes: z.array(z.string().max(120)).max(100),
     ratePlan: z.string().max(120).nullable(),
     occupancy: occupancySchema.extend({ scope: z.enum(['per_room', 'whole_group', 'unresolved']) }),
     priceObservationRefs: z.array(refSchema).max(100),
-  }).strict()).max(100),
+  }).strict()).max(200),
   guestNames: z.array(z.string().max(300)).max(200).optional(),
   parties: z.object({ organization: value(partySchema).optional(), bookingAgency: value(partySchema).optional() }).strict(),
   salesStrategy: z.string().max(1000).nullable(),
@@ -490,7 +491,7 @@ const modelCreateBodySchema = createBodySchema.extend({
   allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: modelBookingFieldsSchema })).max(100),
 });
 const modelMoneyRequestSchema = moneyRequestSchema.omit({ staffAllowanceType: true });
-const modelQuoteGroupSchema = quoteBodySchema.shape.groups.element.omit({ mealPlan: true })
+const modelQuoteGroupSchema = quoteBodySchema.shape.groups.element.omit({ mealPlan: true, sourceAssociationUnresolved: true })
   .transform((group) => ({ ...group, mealPlan: null }));
 const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuoteGroupSchema).max(100),
   requestedMoney: z.array(modelMoneyRequestSchema).max(100) });

@@ -1194,7 +1194,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           db,
           now,
         });
-        if (run) claimed.push(run.priority);
+        if (run) {
+          claimed.push(run.priority);
+          await db.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: now, updatedAt: now })
+            .where(eq(aiWorkflowRun.id, run.id));
+        }
       }
       expect(claimed).toEqual([
         HMS_JOB_PRIORITY_USER,
@@ -1207,8 +1211,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it.each([
     ['prefill queued during staff hours', new Date('2099-05-10T10:00:00Z'), true, 'on', false],
     ['no higher tier queued during staff hours', new Date('2099-05-10T10:00:00Z'), false, 'on', true],
-    ['outside staff hours', new Date('2099-05-10T16:00:00Z'), true, 'on', true],
-    ['gate disabled', new Date('2099-05-10T10:00:00Z'), true, 'off', true],
+    ['outside staff hours, earlier background work stays first', new Date('2099-05-10T16:00:00Z'), true, 'on', false],
+    ['gate disabled, earlier background work stays first', new Date('2099-05-10T10:00:00Z'), true, 'off', false],
   ] as const)('dev gate: %s', async (_case, now, queuePrefill, gate, shouldClaim) =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_DEV_GATE', gate);
@@ -1239,6 +1243,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
       expect(Boolean(claimed)).toBe(shouldClaim);
       if (claimed) expect(claimed.priority).toBe(HMS_JOB_PRIORITY_DEV);
+      if (queuePrefill && !claimed) {
+        const earlier = await claimNextAiRun({ ownerId: LANE_OWNER, lane: 'hms', runKind: 'read_tool',
+          promptVersion: HMS_JOB_PROMPT_VERSION, db, now });
+        expect(earlier?.priority).toBe(HMS_JOB_PRIORITY_PREFETCH);
+        await db.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: now, updatedAt: now })
+          .where(eq(aiWorkflowRun.id, earlier!.id));
+        const deferred = await claimNextAiRun({ ownerId: LANE_OWNER, lane: 'hms', runKind: 'read_tool',
+          promptVersion: HMS_JOB_PROMPT_VERSION, idempotencyPrefix: `${prefix}:dev`, db, now });
+        expect(deferred?.priority).toBe(HMS_JOB_PRIORITY_DEV);
+      }
     }));
 
   it('does not let higher-tier work on another transport block the dev gate', () =>
@@ -4958,8 +4972,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(remounted?.result).toMatchObject({
         outcome: 'found',
         commercial: {
-          company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-          agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+          organization: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
+          bookingAgency: { name: 'Harbor Travel', nativeId: 'AG-9' },
         },
       });
       const [learned] = await db

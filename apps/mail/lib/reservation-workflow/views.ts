@@ -16,13 +16,13 @@ export type WorkbenchCommands = {
   changeRows(change: RowChange): Promise<void>;
   selectNative(path: string, observationRef: string): Promise<void>;
   verifyNativeLead?(path: string, observationRef: string): Promise<void>;
-  lookup(): Promise<void>;
+  lookup(background?: boolean): Promise<void>;
   lookupChoices?(path: string): Promise<void>;
   guestProfileOptions(allocationId: string, field: ReservationGuestProfileOptionField): Promise<Record<string, unknown>>;
   createGuestProfile(allocationId: string, confirmDuplicateName?: boolean): Promise<void>;
   guestProfilePending(allocationId: string): string | null;
   checkGuestProfile(allocationId: string): Promise<void>;
-  prepare(allocationId?: string): Promise<void>;
+  prepare(allocationId?: string, background?: boolean): Promise<void>;
   review(scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents', ids: string[]): Promise<void>;
   execute(allocationId?: string): Promise<void>;
   reconcile(operationId: string): Promise<void>;

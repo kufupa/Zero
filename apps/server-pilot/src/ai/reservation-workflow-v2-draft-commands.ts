@@ -520,7 +520,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           changedRoots.push(`${root}/body/requestedMoney`); break;
         }
         case 'add_quote_group': {
-          if (request.kind !== 'quote' || request.body.groups.length >= 100) return null;
+          if (request.kind !== 'quote' || request.body.groups.length >= 200) return null;
           const row = group();
           const arrival = valueAt(draft, `${root}/body/groups/0/arrival`), departure = valueAt(draft, `${root}/body/groups/0/departure`);
           row.arrival = typeof arrival === 'string' ? arrival as never : null;

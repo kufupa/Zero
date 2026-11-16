@@ -11,3 +11,4 @@ export * from './outlook-sync.js';
 export * from './hitl.js';
 export * from './work.js';
 export * from './party-sender-map.js';
+export * from './hms-credential-admission.js';

@@ -784,6 +784,9 @@ importers:
       '@mastra/libsql':
         specifier: 1.23.2
         version: 1.23.2(@mastra/core@1.70.0(ai@6.0.307(zod@3.25.67))(express@5.2.1)(rxjs@7.8.2)(zod-to-json-schema@3.25.2(zod@3.25.67))(zod@3.25.67))
+      '@noble/hashes':
+        specifier: 2.3.0
+        version: 2.3.0
       '@office-kit/xlsx':
         specifier: 0.25.0
         version: 0.25.0

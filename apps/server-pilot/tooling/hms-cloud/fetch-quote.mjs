@@ -512,6 +512,7 @@ export async function resetPublicControls(page) {
     }
     step='currency';
     await applyCurrency(page);
+    if (!await resetFieldIsEmpty(page.locator('input[name="currency"]'))) await applyCurrency(page);
     step='sales_strategy';
     if (await selectSalesStrategy(page,'BAR')!=='BAR') throw new Error('PUBLIC_RESET_SALES_STRATEGY_MISMATCH');
     step='restricted_visibility';

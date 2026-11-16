@@ -46,11 +46,6 @@
       }
     }
   },
-  "boards": {
-    "bed & breakfast r": "breakfast",
-    "bed & breakfast nr": "breakfast",
-    "wholesale dinner, bed & breakfast - nr": "dinner_bed_breakfast"
-  },
   "letter": {
     "hotel": "/Da ?Vinci Hotel (?:&|and) Suites/i",
     "confirmation": "/We have pleasure in confirming your reservation at (?:The )?Da ?Vinci Hotel (?:&|and) Suites/i"

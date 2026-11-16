@@ -40,6 +40,7 @@ export type ReservationAttachmentView = {
 };
 
 export type ReservationWorkflowV2Session = {
+  backgroundChecks?: 'queued' | 'running' | 'failed';
   draft: ReservationWorkflowV2Draft;
   sourceChanged?: boolean;
   revision: number;
@@ -129,6 +130,8 @@ export type ReservationServiceInput = { allocationId?: string; targetRef?: Reser
 
 export type ReservationWorkflowKind = ReservationRequestProjection['kind'];
 
+export type QuoteWaitControls = { onQuoteWait?: (waiting: boolean) => void; shouldContinueQuoteWait?: () => boolean };
+
 export type ReservationCommandContext = {
   source: ReservationSourceContext;
   snapshot: ReservationPaneSnapshot;
@@ -157,7 +160,7 @@ export type ReservationReviewCommand = ReservationCommandContext & {
 /** Client boundary is bound to reservationWorkflowV2; no quoteWorkflow DTOs cross it. */
 export interface ReservationWorkflowClient {
   ensure(input: { source: ReservationSourceContext; mode?: 'initialize' | 'prefill' }): Promise<ReservationPaneSnapshot>;
-  prefill(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
+  prefill(input: ReservationCommandContext & { background?: boolean }): Promise<ReservationPaneSnapshot>;
   addAction(input: ReservationCommandContext & { kind: Exclude<ReservationWorkflowKind, 'other'> }): Promise<ReservationPaneSnapshot>;
   changeRows(input: ReservationCommandContext & RowChange): Promise<ReservationPaneSnapshot>;
   selectNative(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
@@ -169,12 +172,12 @@ export interface ReservationWorkflowClient {
   review(input: ReservationReviewCommand): Promise<ReservationPaneSnapshot>;
   undo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   redo(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
-  lookup(input: ReservationCommandContext & { requestId?: string; nativeFieldPath?: string }): Promise<ReservationPaneSnapshot>;
+  lookup(input: ReservationCommandContext & QuoteWaitControls & { requestId?: string; nativeFieldPath?: string; background?: boolean }): Promise<ReservationPaneSnapshot>;
   guestProfileOptions(input: ReservationCommandContext & { requestId: string; allocationId: string;
     field: ReservationGuestProfileOptionField }): Promise<ReservationPaneSnapshot>;
   prepareGuestProfile(input: ReservationGuestProfileCommand): Promise<ReservationPaneSnapshot>;
   createGuestProfile(input: ReservationGuestProfileCommand & { prepareRef: string; preparedRef: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
-  prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
+  prepare(input: ReservationCommandContext & QuoteWaitControls & { requestId: string; allocationId?: string; background?: boolean }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
   configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string };

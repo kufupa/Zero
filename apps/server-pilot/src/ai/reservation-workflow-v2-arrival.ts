@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
@@ -16,7 +16,7 @@ export const reservationArrivalEnabled = () => process.env.RESERVATION_V2_ARRIVA
 
 /** Called with the admission transaction, or with an authenticated pane's current source. */
 export async function enqueueReservationArrival(db: DB, input: {
-  transportId: string; messageId: string; priority?: number; requestedByPane?: boolean;
+  transportId: string; messageId: string; priority?: number; requestedByPane?: boolean; staffRequested?: boolean;
 }) {
   if (!reservationArrivalEnabled()) return null;
   const property = resolvePropertyTransport(input.transportId);
@@ -54,16 +54,22 @@ export async function enqueueReservationArrival(db: DB, input: {
   const job = await enqueueAiRun({ transportId: input.transportId, threadId: row.threadId, triggerMessageId: row.id,
     runKind: 'reservation_prefill', idempotencyKey: `reservation-prefill:${input.transportId}:${row.id}:${sourceHash}:${evidence.hash}`,
     modelId: NOT_APPLICABLE_MODEL_ID, promptVersion: RESERVATION_ARRIVAL_VERSION,
-    priority, metrics: { sourceHash, evidenceHash: evidence.hash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued' } }, db);
+    priority, metrics: { sourceHash, evidenceHash: evidence.hash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued',
+      ...(input.staffRequested ? { staffPrefillRequested: true } : {}) } }, db);
   if (!input.requestedByPane) return job;
-  return await promoteReservationArrival(db, { transportId: input.transportId, jobRunId: job.id }) ?? job;
+  return await promoteReservationArrival(db, { transportId: input.transportId, jobRunId: job.id,
+    staffRequested: input.staffRequested }) ?? job;
 }
 
-/** Moves a waiting prefill job ahead of admission work when staff open its email. Never inserts or restarts a job. */
-export async function promoteReservationArrival(db: DB, input: { transportId: string; jobRunId: string }) {
-  const [promoted] = await db.update(aiWorkflowRun).set({ priority: PANE_REQUEST_PRIORITY, updatedAt: new Date() })
+/** Promote waiting work and record explicit staff intent without restarting a claimed job. */
+export async function promoteReservationArrival(db: DB, input: { transportId: string; jobRunId: string; staffRequested?: boolean }) {
+  const [promoted] = await db.update(aiWorkflowRun).set({
+    priority: sql`greatest(${aiWorkflowRun.priority}, ${PANE_REQUEST_PRIORITY})`, updatedAt: new Date(),
+    ...(input.staffRequested ? { metrics: sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) || '{"staffPrefillRequested":true}'::jsonb` } : {}),
+  })
     .where(and(eq(aiWorkflowRun.id, input.jobRunId), eq(aiWorkflowRun.transportId, input.transportId),
-      eq(aiWorkflowRun.runKind, 'reservation_prefill'), inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
-      lt(aiWorkflowRun.priority, PANE_REQUEST_PRIORITY))).returning();
+      eq(aiWorkflowRun.runKind, 'reservation_prefill'), inArray(aiWorkflowRun.state,
+        input.staffRequested ? ['queued', 'retry_wait', 'claimed', 'running'] : ['queued', 'retry_wait']),
+      input.staffRequested ? undefined : lt(aiWorkflowRun.priority, PANE_REQUEST_PRIORITY))).returning();
   return promoted ?? null;
 }

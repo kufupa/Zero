@@ -1,5 +1,3 @@
-import { separatedQuoteMoneyLinked } from './reservation-workflow-v2-contract.js';
-import { normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import type { ReservationWorkflowV2SystemReadContext } from './reservation-workflow-v2-system-read-context.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
@@ -35,7 +33,10 @@ import {
 import { deriveAuthorizedExtraLines, deriveQuoteLines, extraDisplayDescription,
   type AuthorizedProposalFacts, type RowPrice } from '../quote-proposal/quote-lines.js';
 import { occupiedDates, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
-import { getProfileBoards, profileFor } from '../../tooling/hms-cloud/property-profile.mjs';
+import { compileQuote, compilePreparedUnavailableQuote, currentQuoteAvailabilityObservation, operationResults,
+  preparedUnavailableOperation, quoteExtrasReadiness, quoteInputOverrides, quoteOverridesMatch, quoteReadiness, resolvedLeaf, sameName,
+  unavailableInventoryProof, UNAVAILABLE_PREPARED_SUMMARY, type CompiledQuote, type QuoteOperationResult, type QuoteRequest, type UnavailableInventoryProof
+} from './reservation-workflow-v2-quote-readiness.js';
 
 /** Kept structurally aligned with reservationWorkflowV2ServerContext in the native tools module. */
 export type ReservationWorkflowV2QuoteContext = {
@@ -63,19 +64,6 @@ export type ReservationWorkflowV2QuoteExecuteInput = QuoteBaseInput & {
 };
 export type ReservationWorkflowV2QuoteReconcileInput = QuoteBaseInput & { operationId: string };
 
-type QuoteRequest = Extract<ReservationWorkflowV2Draft['proposal']['content']['requests'][number], { kind: 'quote' }>;
-type QuoteOperationResult = {
-  id: string;
-  generationId: string;
-  requestId: string;
-  allocationId: null;
-  workflow: 'quote';
-  status: 'prepared' | 'succeeded' | 'failed' | 'unknown';
-  draftRevision: number;
-  observationRefs: string[];
-  updatedAt: string;
-  summary: string | null;
-};
 type Outcome = { status: string; issue?: string; [key: string]: unknown };
 type QuoteRunResult = Record<string, unknown>;
 type QuoteArtifactGeneration = {
@@ -99,13 +87,6 @@ const record = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const cleanText = (value: unknown): string | null =>
   typeof value === 'string' && value.trim() ? value.trim() : null;
-const isNone = (value: unknown): boolean =>
-  Boolean(value && typeof value === 'object' && !Array.isArray(value) && (value as { kind?: unknown }).kind === 'none');
-const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
-});
-const providerCode = z.string().regex(/^[A-Z0-9_-]{1,16}$/);
 const hash = (value: unknown) => quoteDigest(value);
 // Keep the uncertain window beyond the 12-minute quote run so a live generation is not released for retry.
 const QUOTE_OPERATION_STALE_AFTER_MS = 15 * 60_000;
@@ -134,27 +115,6 @@ function quoteBodyPath(requestId: string): string {
   return ptr('proposal', 'content', 'requests', requestId, 'body');
 }
 
-function quoteInputOverrides(draft: ReservationWorkflowV2Draft, requestId: string) {
-  const index = draft.proposal.content.requests.findIndex((request) => request.id === requestId);
-  const prefixes = [ptr('proposal', 'content', 'requests', requestId), ptr('proposal', 'content', 'requests', index)];
-  return Object.fromEntries(Object.entries(draft.fieldOverrides)
-    .filter(([path]) => prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`)))
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([path, override]) => [path, { state: override.state,
-      ...(override.state === 'set' ? { value: override.value } : {}) }]));
-}
-
-function pricingOverrides(overrides: Record<string, unknown>) {
-  return Object.fromEntries(Object.entries(overrides).filter(([path]) =>
-    !/\/body\/(?:guestNames|groups\/[^/]+\/(?:guestNames|requestedRoomDescription))(?:\/|$)/u.test(path)));
-}
-
-function quoteOverridesMatch(draft: ReservationWorkflowV2Draft, requestId: string, saved: unknown): boolean {
-  const overrides = record(saved);
-  return overrides !== null && hash(pricingOverrides(overrides)) ===
-    hash(pricingOverrides(quoteInputOverrides(draft, requestId)));
-}
-
 function quoteRequests(draft: ReservationWorkflowV2Draft, requestId?: string): QuoteRequest[] {
   return draft.proposal.content.requests.filter((request): request is QuoteRequest =>
     request.kind === 'quote' && (!requestId || request.id === requestId));
@@ -171,122 +131,6 @@ async function loadCurrent(ctx: ReadContext, input: QuoteBaseInput) {
     return { result: { status: 'stale_revision' as const }, draft: null } as const;
   }
   return { result: loaded, draft: loaded.draft } as const;
-}
-
-function resolvedLeaf(draft: ReservationWorkflowV2Draft, path: string, sourceValue: unknown):
-  { value: unknown; path: string; unset?: boolean; overridden?: boolean } | { issue: string } {
-  const override = draft.fieldOverrides[path];
-  if (override) {
-    if (override.state === 'unknown') return { issue: 'unknown_staff_value' };
-    if (override.state === 'set') return { value: override.value, path, overridden: true };
-    if (override.state === 'none' || override.state === 'clear') return { value: undefined, path, unset: true, overridden: true };
-    if (override.state === 'inherit') return { value: sourceValue, path };
-  }
-  if (isNone(sourceValue)) return { value: undefined, path, unset: true };
-  return { value: sourceValue, path };
-}
-
-function reviewAccepted(draft: ReservationWorkflowV2Draft, path: string): boolean {
-  return draft.fieldReviewRequirements[path]?.required === false || draft.staffReviews[path]?.status === 'accepted';
-}
-
-function boardCode(value: unknown, propertyCode?: string): 'room_only' | 'bb' | 'dinner_bb' | null {
-  if (typeof value !== 'string') return null;
-  const normalizedRequest = normalizeRequestedMealPlan(value).mealPlan;
-  if (normalizedRequest) return normalizedRequest;
-  const board = value.trim().toLocaleLowerCase().replace(/[,\s&-]+/gu, '_').replace(/_for_all$/u, '');
-  if (['room_only', 'roomonly', 'ro'].includes(board)) return 'room_only';
-  if (['bb', 'b_b', 'breakfast', 'bed_and_breakfast', 'bed_breakfast'].includes(board)) return 'bb';
-  if (['dbb', 'dinner_bb', 'dinner_b_b', 'dinner_bed_breakfast', 'dinner_bed_and_breakfast', 'dinner_and_breakfast'].includes(board)) return 'dinner_bb';
-  if (propertyCode && profileFor(propertyCode)) {
-    try {
-      const mapped = getProfileBoards(propertyCode)[value.trim().toLowerCase().replace(/\s+/gu, ' ')];
-      if (mapped === 'room_only') return 'room_only';
-      if (mapped === 'breakfast') return 'bb';
-      if (mapped === 'dinner_bed_breakfast') return 'dinner_bb';
-    } catch {
-      // Unknown or incomplete property mappings stay unresolved.
-    }
-  }
-  return null;
-}
-
-function selectedParty(
-  draft: ReservationWorkflowV2Draft,
-  request: QuoteRequest,
-  role: 'organization' | 'bookingAgency',
-  execute: boolean,
-): { name?: string; party?: { kind: 'organization' | 'bookingAgency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
-  const raw = request.body.parties[role];
-  const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
-  const namePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'name');
-  const selectionPath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'nativeSelectionRef');
-  const partyLeaf = resolvedLeaf(draft, basePath, raw);
-  // Always surface the mounted party picker path so Review/focus can land (O8/O9).
-  if ('issue' in partyLeaf) return { reviewPaths: [basePath], issue: `${role}_${partyLeaf.issue}` };
-  const value = isNone(partyLeaf.value) ? null : record(partyLeaf.value);
-  // Child name edits can create a party even when extraction supplied null or no party object.
-  // An explicit parent clear still wins over stale child overrides.
-  const allowChildName = !partyLeaf.overridden;
-  const named = !value && !allowChildName
-    ? { value: undefined, path: namePath }
-    : resolvedLeaf(draft, namePath, value?.name);
-  if ('issue' in named) return { reviewPaths: [basePath], issue: `${role}_${named.issue}` };
-  const name = cleanText(named.value);
-  if (!name) {
-    if ((('overridden' in named && named.overridden) || partyLeaf.overridden) &&
-        typeof named.value === 'string' && !named.value.trim()) {
-      const reviewPaths = execute ? [basePath, namePath].filter((path) => !reviewAccepted(draft, path)) : [];
-      return { reviewPaths };
-    }
-    if (partyLeaf.value === null || partyLeaf.value === undefined || isNone(partyLeaf.value)) {
-      const explicitlyUnset = raw !== undefined || partyLeaf.overridden;
-      const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
-      return { reviewPaths };
-    }
-    return { reviewPaths: [basePath], issue: `${role}_name_unresolved` };
-  }
-  // Older name edits invalidate a selection as unknown. Never fall back to the old suggestion.
-  const selectionOverride = draft.fieldOverrides[selectionPath];
-  const nameEdits = [draft.fieldOverrides[basePath], draft.fieldOverrides[namePath]];
-  const invalidatedByName = selectionOverride?.state === 'unknown' && nameEdits.some(edit =>
-    edit?.state === 'set' && Date.parse(edit.updatedAt) >= Date.parse(selectionOverride.updatedAt));
-  const selected = invalidatedByName
-    ? { value: undefined, path: selectionPath }
-    : resolvedLeaf(draft, selectionPath, value?.suggestedRef ?? null);
-  if ('issue' in selected) return { reviewPaths: [basePath], issue: `${role}_${selected.issue}` };
-  const ref = typeof selected.value === 'string' ? selected.value : null;
-  if (!ref) {
-    if (selected.value != null) return { reviewPaths: [basePath], issue: `${role}_candidate_unverified` };
-    const reviewPaths = execute ? [basePath, namePath].filter((path) => !reviewAccepted(draft, path)) : [];
-    return { name, reviewPaths };
-  }
-  const observation = draft.observations.find((entry) => entry.ref === ref && entry.kind === 'party_candidate');
-  const criteria = record(observation?.criteria);
-  const candidate = record(observation?.result);
-  if (!observation || observation.status !== 'complete' || !observation.coverage.complete ||
-      observation.generationId !== draft.generationId || observation.propertyCode !== draft.propertyCode ||
-      observation.sourceMessageId !== draft.source.messageId || criteria?.workflow !== 'quote' ||
-      criteria.requestId !== request.id || criteria.role !== role ||
-      !candidate || !cleanText(candidate.nativeId) || !cleanText(candidate.name) || !sameName(candidate.name, name)) {
-    return { reviewPaths: [basePath], issue: `${role}_candidate_unverified` };
-  }
-  const reviewPaths = execute
-    ? [basePath, namePath, selectionPath].filter((path) => !reviewAccepted(draft, path))
-    : [];
-  if (execute && reviewPaths.length) return { reviewPaths, issue: `${role}_requires_staff_acceptance` };
-  return {
-    name,
-    party: { kind: role, nativeId: String(candidate.nativeId), name: String(candidate.name) },
-    reviewPaths,
-    observationRef: observation.ref,
-  };
-}
-
-function sameName(left: unknown, right: unknown): boolean {
-  return typeof left === 'string' && typeof right === 'string' &&
-    left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
-      right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 }
 
 function pricedDinnerFallbackMatches(
@@ -396,45 +240,6 @@ function preparedQuoteMatches(
   return true;
 }
 
-type CompiledQuote = {
-  status: 'ok';
-  request: QuoteRequest;
-  input: z.infer<typeof staffQuoteInput>;
-  inputDigest: string;
-  reviewPaths: string[];
-  sourceRefs: string[];
-  outputKinds: Array<'email_quote' | 'pdf_quote' | 'xlsx_quote'>;
-  strategyDefaulted: boolean;
-  mealPlanDefaultedGroupIds: string[];
-} | {
-  status: 'needs_input' | 'needs_review' | 'unsupported';
-  issue: string;
-  fields: string[];
-};
-
-type UnavailableInventoryProof = {
-  observation: ReservationWorkflowV2Observation;
-  group: Extract<CompiledQuote, { status: 'ok' }>['input']['groups'][number];
-  roomCode: string;
-  roomLabel: string;
-  freshUntil: string;
-};
-const UNAVAILABLE_PREPARED_SUMMARY = 'Complete current Infor evidence supports an unsent requested-room decline; no price or reservation was created';
-
-function currentQuoteAvailabilityObservation(
-  draft: ReservationWorkflowV2Draft,
-  requestId: string,
-  inputDigest: string,
-): ReservationWorkflowV2Observation | null {
-  return [...draft.observations].reverse().find((item) => {
-    const criteria = record(item.criteria);
-    return item.kind === 'rate_availability' && item.generationId === draft.generationId &&
-      item.propertyCode === draft.propertyCode && item.sourceMessageId === draft.source.messageId &&
-      criteria?.workflow === 'quote' && criteria.requestId === requestId &&
-      criteria.sourceHash === draft.source.sourceHash && criteria.inputDigest === inputDigest;
-  }) ?? null;
-}
-
 function unavailableInventoryMarker(
   compiled: Extract<CompiledQuote, { status: 'ok' }>,
   proof: UnavailableInventoryProof,
@@ -455,366 +260,6 @@ function unavailableInventoryMarker(
   };
 }
 
-/** A decline is safe only for one explicitly selected room/rate with complete, current nightly zero-stock facts. */
-function unavailableInventoryProof(
-  draft: ReservationWorkflowV2Draft,
-  compiled: Extract<CompiledQuote, { status: 'ok' }>,
-): UnavailableInventoryProof | null {
-  if (compiled.input.groups.length !== 1 || compiled.mealPlanDefaultedGroupIds.length) return null;
-  const group = compiled.input.groups[0];
-  const roomCode = group?.roomCodes?.length === 1 ? group.roomCodes[0] : undefined;
-  if (!group || !roomCode || !group.rateCode) return null;
-
-  const observation = currentQuoteAvailabilityObservation(draft, compiled.request.id, compiled.inputDigest);
-  if (!observation || observation.status !== 'failed') return null;
-  const result = record(observation.result), shortfall = record(result?.shortfall);
-  // Bind the shortage to the complete current request, not just its normalized
-  // quote digest. Undo can restore the same values/revision while old receipts
-  // still contain an earlier recipient, occupancy, party, or override set.
-  if (!quoteOverridesMatch(draft, compiled.request.id, result?.inputOverrides) ||
-      !Array.isArray(result?.requestedGroups) ||
-      hash(result.requestedGroups) !== hash(compiled.input.groups)) return null;
-  if (result?.failureCode !== 'native_quote_insufficient_inventory' || result.failureKind !== 'proven_shortage' ||
-      result.sourceHash !== draft.source.sourceHash || result.inputDigest !== compiled.inputDigest ||
-      result.availabilityTruncated !== false || !shortfall || shortfall.roomCode !== roomCode ||
-      shortfall.demand !== group.quantity || shortfall.supply !== 0 || typeof shortfall.date !== 'string' ||
-      typeof shortfall.roomLabel !== 'string') return null;
-
-  const freshUntil = typeof result.freshUntil === 'string' ? result.freshUntil : '';
-  const expires = Date.parse(freshUntil);
-  if (!Number.isFinite(expires) || expires <= Date.now()) return null;
-  const nights = occupiedDates(group.arrivalDate, group.departureDate);
-  if (!nights.length || !nights.includes(shortfall.date)) return null;
-
-  const diagnostics: Record<string, unknown>[] = Array.isArray(result.quoteDiagnostics)
-    ? result.quoteDiagnostics.map(record).filter((item): item is Record<string, unknown> => item !== null) : [];
-  const diagnostic = [...diagnostics].reverse().find((item) => item.kind === 'requested' && item.contextMatchesSelection === true);
-  const diagnosticExpiry = Date.parse(String(diagnostic?.freshUntil ?? ''));
-  if (!diagnostic || diagnostic.availabilityTruncated !== false ||
-      !Number.isFinite(diagnosticExpiry) || diagnosticExpiry <= Date.now()) return null;
-  const board: Record<string, unknown>[] = Array.isArray(diagnostic.availabilityBoard)
-    ? diagnostic.availabilityBoard.map(record).filter((row): row is Record<string, unknown> => row !== null) : [];
-  const expectedBoard = board.filter((row) => row?.groupId === group.id && row.roomCode === roomCode &&
-    row.rateCode === group.rateCode && boardCode(row.mealPlanLabel ?? row.mealPlan, draft.propertyCode) === group.mealPlan);
-  if (expectedBoard.length !== 1) return null;
-  const row = expectedBoard[0]!;
-  const coverage = record(row.coverage), nightCoverage = record(row.nightCoverage);
-  const facts: Record<string, unknown>[] = Array.isArray(row.nightly)
-    ? row.nightly.map(record).filter((fact): fact is Record<string, unknown> => fact !== null) : [];
-  const byDate = new Map(facts.map((fact) => [fact.date, fact]));
-  if (row.availability !== 'unavailable' || row.roomsLeft !== 0 ||
-      coverage?.search !== 'complete' || coverage.requiredFacts !== 'complete' ||
-      coverage.matchingRowsUnseen === true || coverage.optionsTruncated === true ||
-      nightCoverage?.complete !== true || nightCoverage.expected !== nights.length ||
-      nightCoverage.observed !== nights.length || facts.length !== nights.length || byDate.size !== nights.length ||
-      nights.some((date) => {
-        const fact = byDate.get(date);
-        return !fact || fact.availableCount !== 0 || fact.requestedCount !== group.quantity || fact.stockStatus !== 'sold';
-      })) return null;
-  return { observation, group, roomCode, roomLabel: shortfall.roomLabel, freshUntil: String(diagnostic.freshUntil) };
-}
-
-function compileQuote(
-  draft: ReservationWorkflowV2Draft,
-  request: QuoteRequest,
-  execute: boolean,
-  allowRequestedForUnavailable = false,
-): CompiledQuote {
-  const bodyPath = ['proposal', 'content', 'requests', request.id, 'body'] as const;
-  const path = (...parts: Array<string | number>) => ptr(...bodyPath, ...parts);
-  const issues: string[] = [];
-  const reviewPaths = new Set<string>();
-  const resolved = (fieldPath: string, sourceValue: unknown) => {
-    const value = resolvedLeaf(draft, fieldPath, sourceValue);
-    if ('issue' in value) issues.push(`${fieldPath}:${value.issue}`);
-    else if (execute && value.value !== undefined && value.value !== null &&
-        !(Array.isArray(value.value) && value.value.length === 0) &&
-        !fieldPath.endsWith('/occupancy/scope') && !reviewAccepted(draft, fieldPath)) {
-      reviewPaths.add(fieldPath);
-    }
-    return value;
-  };
-
-  const provisional = resolved(path('provisionalBookingRequested'), request.body.provisionalBookingRequested);
-  if (execute && draft.staffReviews[path('provisionalBookingRequested')]?.status !== 'accepted') {
-    reviewPaths.add(path('provisionalBookingRequested'));
-  }
-  if (execute && ('issue' in provisional || provisional.value !== false)) {
-    issues.push(`${path('provisionalBookingRequested')}:${!('issue' in provisional) && provisional.value === true
-      ? 'separate_create_required' : 'quote_only_choice_required'}`);
-  }
-  if (!request.body.groups.length) issues.push(`${path('groups')}:group_required`);
-  if (request.body.groups.length > 8) issues.push(`${path('groups')}:native_quote_group_limit`);
-
-  const nativeGroups: Array<{
-    id: string; arrivalDate: string; departureDate: string; quantity: number; adults: number;
-    childrenAges: number[]; mealPlan: 'room_only' | 'bb' | 'dinner_bb'; roomCodes?: string[]; rateCode?: string;
-  }> = [];
-  const datePairs = new Set<string>();
-  const mealPlanDefaultedGroupIds: string[] = [];
-  for (const [groupIndex, group] of request.body.groups.entries()) {
-    const base = path('groups', groupIndex);
-    if (group.id.length > 64) issues.push(`${base}/id:native_group_id_limit`);
-    const dates = [
-      resolved(path('groups', groupIndex, 'arrival'), group.arrival),
-      resolved(path('groups', groupIndex, 'departure'), group.departure),
-    ];
-    const arrival = dates[0] && !('issue' in dates[0]) ? dates[0].value : null;
-    const departure = dates[1] && !('issue' in dates[1]) ? dates[1].value : null;
-    if (typeof arrival !== 'string' || !dateSchema.safeParse(arrival).success) issues.push(`${base}/arrival:valid_date_required`);
-    if (typeof departure !== 'string' || !dateSchema.safeParse(departure).success) issues.push(`${base}/departure:valid_date_required`);
-    if (typeof arrival === 'string' && typeof departure === 'string') {
-      datePairs.add(`${arrival}/${departure}`);
-      if (arrival >= departure) issues.push(`${base}:date_range_invalid`);
-    }
-
-    const quantityResult = resolved(path('groups', groupIndex, 'quantity'), group.quantity);
-    const quantity = quantityResult && !('issue' in quantityResult) ? quantityResult.value : null;
-    if (!Number.isInteger(quantity) || Number(quantity) < 1 || Number(quantity) > 100) issues.push(`${base}/quantity:valid_room_count_required`);
-
-    const boardResult = execute ? resolved(path('groups', groupIndex, 'mealPlan'), group.mealPlan)
-      : resolvedLeaf(draft, path('groups', groupIndex, 'mealPlan'), group.mealPlan);
-    const actual = boardResult && !('issue' in boardResult) ? boardCode(boardResult.value, draft.propertyCode) : null;
-    const useRequested = execute && allowRequestedForUnavailable && !('issue' in boardResult) && boardResult.value == null;
-    const requestedPath = path('groups', groupIndex, 'requestedMealPlan');
-    const requested = useRequested ? resolved(requestedPath, group.requestedMealPlan)
-      : resolvedLeaf(draft, requestedPath, group.requestedMealPlan);
-    const requestedBoard = !('issue' in requested) ? boardCode(requested.value, draft.propertyCode) : null;
-    const board = actual ?? (useRequested ? requestedBoard : !execute ? requestedBoard ?? 'bb' : null);
-    if (!execute && !actual && !requestedBoard) mealPlanDefaultedGroupIds.push(group.id);
-    if (!board) issues.push(`${base}/mealPlan:native_meal_plan_code_required`);
-
-    // Occupancy may be edited atomically as a parent object to keep child count and age slots in one revision.
-    const occupancyResult = resolvedLeaf(draft, path('groups', groupIndex, 'occupancy'), group.occupancy);
-    const occupancy = !('issue' in occupancyResult) ? record(occupancyResult.value) ?? group.occupancy : group.occupancy;
-    if ('issue' in occupancyResult) issues.push(`${base}/occupancy:${occupancyResult.issue}`);
-    const scopePath = path('groups', groupIndex, 'occupancy', 'scope');
-    const scopeResult = resolved(scopePath, occupancy.scope);
-    const scope = scopeResult && !('issue' in scopeResult) ? scopeResult.value : null;
-    const adultsResult = resolved(path('groups', groupIndex, 'occupancy', 'adults'), occupancy.adults);
-    const adults = adultsResult && !('issue' in adultsResult) ? adultsResult.value : null;
-    if (scope !== 'per_room') issues.push(`${base}/occupancy/scope:per_room_scenario_required`);
-    if (!Number.isInteger(adults) || Number(adults) < 1 || Number(adults) > 6) issues.push(`${base}/occupancy/adults:valid_per_room_adults_required`);
-    const countResult = resolved(path('groups', groupIndex, 'occupancy', 'childCount'), occupancy.childCount);
-    const count = countResult && !('issue' in countResult) ? countResult.value : null;
-    const agesResult = resolved(path('groups', groupIndex, 'occupancy', 'childAges'), occupancy.childAges);
-    const ages = agesResult && !('issue' in agesResult) ? agesResult.value : null;
-    let childrenAges: number[] | null = null;
-    const exceedsChildLimit = Number.isInteger(count) && Number(count) > 6;
-    if (count === 0 && (ages === null || (Array.isArray(ages) && ages.length === 0))) childrenAges = [];
-    else if (Number.isInteger(count) && Number(count) > 0 && Number(count) <= 6 && Array.isArray(ages) && ages.length === Number(count) &&
-        ages.every((age) => Number.isInteger(age) && Number(age) >= 0 && Number(age) <= 17)) {
-      childrenAges = ages as number[];
-    }
-    if (exceedsChildLimit) issues.push(`${base}/occupancy/childCount:native_quote_max_six_children_per_room`);
-    else if (childrenAges === null) issues.push(`${base}/occupancy/${Number.isInteger(count) && Number(count) > 0 ? 'childAges' : 'childCount'}:known_child_count_and_ages_required`);
-
-    const roomCodesResult = resolved(path('groups', groupIndex, 'roomCodes'), group.roomCodes);
-    const rawRoomCodes = roomCodesResult && !('issue' in roomCodesResult) ? roomCodesResult.value : null;
-    let roomCodes: string[] | undefined;
-    if (rawRoomCodes !== null && rawRoomCodes !== undefined) {
-      if (!Array.isArray(rawRoomCodes) || rawRoomCodes.length > 8 ||
-          rawRoomCodes.some((code) => !providerCode.safeParse(code).success)) {
-        issues.push(`${base}/roomCodes:native_room_codes_required`);
-      } else if (rawRoomCodes.length) roomCodes = rawRoomCodes as string[];
-    }
-    if (execute && !roomCodes?.length) issues.push(`${base}/roomCodes:native_room_selection_required`);
-    const rateResult = resolved(path('groups', groupIndex, 'ratePlan'), group.ratePlan);
-    const rawRate = rateResult && !('issue' in rateResult) ? rateResult.value : null;
-    let rateCode: string | undefined;
-    if (rawRate !== null && rawRate !== undefined) {
-      if (typeof rawRate !== 'string' || !providerCode.safeParse(rawRate).success) issues.push(`${base}/ratePlan:native_rate_code_required`);
-      else rateCode = rawRate;
-    }
-    if (typeof arrival === 'string' && typeof departure === 'string' && Number.isInteger(quantity) &&
-        Number.isInteger(adults) && childrenAges && board) {
-      nativeGroups.push({ id: group.id, arrivalDate: arrival, departureDate: departure,
-        quantity: Number(quantity), adults: Number(adults), childrenAges, mealPlan: board,
-        ...(roomCodes ? { roomCodes } : {}), ...(rateCode ? { rateCode } : {}) });
-    }
-  }
-  if (datePairs.size > 1) issues.push(`${path('groups')}:separate_quote_runs_required`);
-  if (new Set(nativeGroups.map((group) => group.id)).size !== nativeGroups.length) {
-    issues.push(`${path('groups')}:duplicate_group_id`);
-  }
-
-  const extras: NonNullable<z.infer<typeof staffQuoteInput>['extras']> = [];
-  const lunchClaimGroupIds = new Set<string>();
-  const separatedLunchGroupIds = new Set<string>();
-  let dinner: Pick<z.infer<typeof staffQuoteInput>, 'dinnerAllowanceMinor' | 'dinnerAllowanceUnit' | 'dinnerAllowanceGroupIds'> = {};
-  for (const [index, claim] of request.body.requestedMoney.entries()) {
-    const base = path('requestedMoney', index);
-    const read = (key: string, original: unknown) => resolvedLeaf(draft, `${base}/${key}`, original);
-    const kind = read('staffAllowanceType', claim.staffAllowanceType);
-    const amount = read('amount', claim.amount), currency = read('currency', claim.currency),
-      unit = read('unit', claim.unit), scope = read('scope', claim.scope), targets = read('targetRefs', claim.targetRefs);
-    const values = [kind, amount, currency, unit, scope, targets];
-    const selectedKind = !('issue' in kind) ? kind.value : undefined;
-    const rawAmount = !('issue' in amount) ? amount.value : undefined;
-    const amountText = typeof rawAmount === 'string' ? rawAmount.trim() : '';
-    const match = /^(\d{1,8})(?:\.(\d{1,2}))?$/u.exec(amountText);
-    const amountMinor = match ? Number(match[1]) * 100 + Number((match[2] ?? '').padEnd(2, '0')) : 0;
-    const rawUnit = !('issue' in unit) ? unit.value : undefined;
-    const unitValue = rawUnit === 'per_person_night' ? 'per_person_per_night' : rawUnit;
-    const unitAllowed = unitValue === 'per_person_per_night' || unitValue === 'per_room_per_night' || unitValue === 'per_person' || unitValue === 'per_trip' || unitValue === 'item';
-    const scopeValue = !('issue' in scope) ? scope.value : undefined;
-    const targetValues = !('issue' in targets) && Array.isArray(targets.value) ? targets.value : [];
-    const allIds = nativeGroups.map((group) => group.id);
-    const groupIds = scopeValue === 'overall' && targetValues.length === 0 ? allIds
-      : scopeValue === 'per_target' && targetValues.length > 0 && targetValues.every((id) => typeof id === 'string' && allIds.includes(id)) &&
-          new Set(targetValues).size === targetValues.length ? targetValues as string[] : [];
-    const supportedKind = selectedKind === 'dinner' || selectedKind === 'lunch' || selectedKind === 'airport_transfer' || selectedKind === 'office_transfer';
-    const supported = supportedKind && !values.some((item) => 'issue' in item) &&
-      !('issue' in currency) && typeof currency.value === 'string' && currency.value.trim().toUpperCase() === 'ZAR' &&
-      amountMinor > 0 && Number.isSafeInteger(amountMinor) && unitAllowed && groupIds.length > 0 &&
-      (selectedKind !== 'dinner' || dinner.dinnerAllowanceMinor === undefined && unitValue !== 'per_trip' && unitValue !== 'item');
-    const separatedOther = draft.proposal.content.requests.find(candidate => candidate.kind === 'other' &&
-      separatedQuoteMoneyLinked(candidate.body.separatedFrom, request.id, claim.id));
-    const explicitlySeparated = selectedKind === 'unsupported' && separatedOther?.kind === 'other';
-    if (selectedKind === 'lunch') groupIds.forEach(id => lunchClaimGroupIds.add(id));
-    if (explicitlySeparated && separatedOther.kind === 'other') {
-      const allowance = separatedOther.body.separatedFrom?.allowance;
-      const kind = allowance?.kind ?? claim.staffAllowanceType;
-      if (kind === 'lunch') {
-        const covered = allowance ? groupIds.filter(id => allowance.groupIds.includes(id)) : groupIds;
-        covered.forEach(id => { lunchClaimGroupIds.add(id); separatedLunchGroupIds.add(id); });
-      }
-    }
-    if (!supported && !explicitlySeparated) {
-      // Background HMS room prices remain useful while the unpriced request stays visible.
-      if (execute) issues.push(`${base}:allowance_requires_supported_staff_choice`);
-      continue;
-    }
-    if (supported) {
-      if (selectedKind !== 'dinner') {
-        const service = selectedKind === 'lunch' ? 'lunch_allowance' : selectedKind === 'airport_transfer' ? 'shuttle' : 'office_transfer';
-        const extraUnit = unitValue === 'per_person_per_night' ? 'per_person_night' : unitValue;
-        if (extraUnit === 'per_person_night' || extraUnit === 'per_person' || extraUnit === 'per_room_per_night' || extraUnit === 'per_trip' || extraUnit === 'item') {
-          extras.push({ id: claim.id, service, amountMinor, unit: extraUnit, groupIds });
-        }
-      } else dinner = { dinnerAllowanceMinor: amountMinor,
-        dinnerAllowanceUnit: unitValue as 'per_person_per_night' | 'per_room_per_night' | 'per_person',
-        dinnerAllowanceGroupIds: groupIds };
-      if (execute) for (const key of ['staffAllowanceType', 'amount', 'currency', 'unit', 'scope', 'targetRefs']) {
-        const fieldPath = `${base}/${key}`;
-        if (!reviewAccepted(draft, fieldPath)) reviewPaths.add(fieldPath);
-      }
-    } else if (execute && explicitlySeparated && !reviewAccepted(draft, `${base}/staffAllowanceType`)) {
-      reviewPaths.add(`${base}/staffAllowanceType`);
-    }
-  }
-
-  const company = selectedParty(draft, request, 'organization', execute);
-  const agency = selectedParty(draft, request, 'bookingAgency', execute);
-  for (const selected of [company, agency]) {
-    if (selected.issue) issues.push(selected.issue);
-    selected.reviewPaths.forEach((item) => reviewPaths.add(item));
-  }
-  const strategyPath = path('salesStrategy');
-  const strategyResult = resolved(strategyPath, request.body.salesStrategy);
-  const rawStrategy = strategyResult && !('issue' in strategyResult) ? strategyResult.value : null;
-  const strategy = typeof rawStrategy === 'string' ? rawStrategy.trim() : '';
-  const strategies = new Set(['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Government']);
-  // An unchosen sales strategy must not prevent read-only discovery. Use the existing
-  // public-rate search default without changing the draft or approving quote generation.
-  const strategyDefaulted = !execute && !strategy && (rawStrategy === null || rawStrategy === undefined);
-  if (!strategyDefaulted && !strategies.has(strategy)) issues.push(`${strategyPath}:supported_sales_strategy_required`);
-
-  const attentionPath = path('client', 'attention');
-  const emailPath = path('client', 'email');
-  const phonePath = path('client', 'telephone');
-  const attentionResult = resolved(attentionPath, request.body.client.attention);
-  const emailResult = resolved(emailPath, request.body.client.email);
-  const phoneResult = resolved(phonePath, request.body.client.telephone);
-  const attention = attentionResult && !('issue' in attentionResult) ? cleanText(attentionResult.value) ?? '' : '';
-  const clientEmail = emailResult && !('issue' in emailResult) ? cleanText(emailResult.value) ?? '' : '';
-  const clientTelephone = phoneResult && !('issue' in phoneResult) ? cleanText(phoneResult.value) ?? '' : '';
-  const notesPath = path('notes');
-  const notesResult = resolved(notesPath, request.body.notes);
-  const sourceNotes = notesResult && !('issue' in notesResult) ? cleanText(notesResult.value) ?? undefined : undefined;
-  const lunchRequestedGroupIds = new Set(lunchClaimGroupIds);
-  request.body.groups.forEach((group, index) => {
-    const requested = resolvedLeaf(draft, path('groups', index, 'requestedMealPlan'), group.requestedMealPlan);
-    if (!('issue' in requested) && normalizeRequestedMealPlan(requested.value).lunchRequested) lunchRequestedGroupIds.add(group.id);
-  });
-  const pricedLunchGroupIds = new Set(extras.filter(extra => extra.service === 'lunch_allowance').flatMap(extra => extra.groupIds));
-  const lunchSeparated = separatedLunchGroupIds.size > 0;
-  const lunchRequested = lunchRequestedGroupIds.size > 0;
-  const lunchNotice = lunchSeparated ? 'Centurion meal plans do not include lunch. The separate lunch request is not included in this room quote.'
-    : lunchRequested ? 'Centurion meal plans do not include lunch. Lunch is quoted as a separate extra.' : undefined;
-  const notes = [sourceNotes, lunchNotice].filter(Boolean).join('\n') || undefined;
-  if (execute && [...lunchRequestedGroupIds].some(id => !separatedLunchGroupIds.has(id) && !pricedLunchGroupIds.has(id))) {
-    issues.push(`${path('requestedMoney')}:lunch_extra_price_required`);
-  }
-  if (notes && notes.length > 1000) issues.push(`${notesPath}:native_note_limit`);
-  const outputPath = path('outputIntent', 'artifacts');
-  const outputResult = execute ? resolved(outputPath, request.body.outputIntent.artifacts)
-    : resolvedLeaf(draft, outputPath, request.body.outputIntent.artifacts);
-  const rawOutputKinds = outputResult && !('issue' in outputResult) ? outputResult.value : null;
-  const outputAllowed = new Set(['email_quote', 'pdf_quote', 'xlsx_quote']);
-  const outputKinds = Array.isArray(rawOutputKinds)
-    ? [...new Set(rawOutputKinds.filter((kind): kind is 'email_quote' | 'pdf_quote' | 'xlsx_quote' =>
-      typeof kind === 'string' && outputAllowed.has(kind)))]
-    : [];
-  if (execute && Array.isArray(rawOutputKinds) && outputKinds.length !== rawOutputKinds.length) {
-    issues.push(`${outputPath}:unsupported_artifact_kind`);
-  }
-  if (execute && !outputKinds.length) issues.push(`${path('outputIntent', 'artifacts')}:output_required`);
-  if (execute && outputKinds.includes('email_quote') && !clientEmail) issues.push(`${emailPath}:recipient_required_for_cover`);
-
-  if (issues.length) {
-    const unsupported = issues.some((issue) => /unsupported|separate_create_required|separate_quote_runs_required|allowance_requires_supported_staff_choice/u.test(issue));
-    return { status: unsupported ? 'unsupported' : reviewPaths.size ? 'needs_review' : 'needs_input',
-      issue: unsupported ? 'quote_native_scope_unsupported' : reviewPaths.size ? 'quote_requires_staff_acceptance' : 'quote_inputs_incomplete',
-      fields: [...new Set([...issues, ...reviewPaths])] };
-  }
-  if (execute && reviewPaths.size) {
-    return { status: 'needs_review', issue: 'quote_requires_staff_acceptance', fields: [...reviewPaths] };
-  }
-
-  const parties = {
-    ...(company.party ? { organization: company.party } : {}),
-    ...(agency.party ? { bookingAgency: agency.party } : {}),
-  };
-  const nativeInput = {
-    messageId: draft.source.messageId,
-    sourceHash: draft.source.sourceHash,
-    selectionEpoch: draft.revision,
-    inputRevision: draft.revision,
-    groups: nativeGroups,
-    salesStrategy: strategyDefaulted ? 'BAR' : strategy === 'GOV' ? 'Government' : strategy,
-    organization: company.name ?? '',
-    bookingAgency: agency.name ?? '',
-    attention,
-    clientEmail,
-    clientTelephone,
-    ...(notes ? { notes } : {}),
-    ...(Object.keys(parties).length ? { parties } : {}),
-    ...dinner,
-    ...(extras.length ? { extras } : {}),
-  };
-  const parsedInput = staffQuoteInput.safeParse(nativeInput);
-  if (!parsedInput.success) {
-    return { status: 'needs_input', issue: 'quote_inputs_outside_native_limits',
-      fields: parsedInput.error.issues.map((item) => item.path.join('.')) };
-  }
-  const input = parsedInput.data;
-  const sourceRefs = [...new Set([
-    ...request.sourceRefs,
-    ...request.body.groups.flatMap((group) => group.priceObservationRefs),
-    ...request.body.outputIntent.evidenceRefs,
-    ...(company.observationRef ? [company.observationRef] : []),
-    ...(agency.observationRef ? [agency.observationRef] : []),
-  ])].filter((ref) => draft.observations.some((observation) => observation.ref === ref));
-  return {
-    status: 'ok', request, input,
-    // Staff acknowledgement advances pane revisions without changing quote scope.
-    inputDigest: hash({ sourceHash: draft.source.sourceHash, requestId: request.id,
-      input: { ...input, selectionEpoch: 0, inputRevision: 0 } }),
-    reviewPaths: [...reviewPaths], sourceRefs, outputKinds, strategyDefaulted, mealPlanDefaultedGroupIds,
-  };
-}
-
 export const compileReservationWorkflowV2Quote = compileQuote;
 
 async function quoteTarget(ctx: ReadContext, input: QuoteBaseInput) {
@@ -825,10 +270,17 @@ async function quoteTarget(ctx: ReadContext, input: QuoteBaseInput) {
       messageId: input.source.messageId,
       propertyCode: propertyCodeSchema.parse(ctx.property.propertyCode),
     });
-    if (!result.ok) return { target: null, issue: 'quote_property_not_enabled' };
-    if (result.target.propertyCode !== ctx.property.propertyCode) return { target: null, issue: 'quote_property_scope_mismatch' };
+    if (!result.ok) {
+      console.warn('quote_target_not_enabled', { workItemId: input.workItemId, propertyCode: ctx.property.propertyCode });
+      return { target: null, issue: 'quote_property_not_enabled' };
+    }
+    if (result.target.propertyCode !== ctx.property.propertyCode) {
+      console.warn('quote_target_scope_mismatch', { workItemId: input.workItemId, propertyCode: ctx.property.propertyCode });
+      return { target: null, issue: 'quote_property_scope_mismatch' };
+    }
     return { target: result.target, issue: null };
   } catch {
+    console.warn('quote_target_unavailable', { workItemId: input.workItemId, propertyCode: ctx.property.propertyCode });
     return { target: null, issue: 'quote_property_unavailable' };
   }
 }
@@ -955,11 +407,6 @@ async function persistResult(
   });
 }
 
-function operationResults(draft: ReservationWorkflowV2Draft): QuoteOperationResult[] {
-  return draft.operationResults.filter((result): result is QuoteOperationResult =>
-    result.workflow === 'quote' && result.allocationId === null);
-}
-
 function operationObservation(draft: ReservationWorkflowV2Draft, operationId: string, refs: string[] = []) {
   const linkedRefs = new Set(refs);
   return [...draft.observations].reverse().find((observation) =>
@@ -977,25 +424,6 @@ function operationResult(
 ): QuoteOperationResult {
   return { id, generationId: draft.generationId, requestId, allocationId: null, workflow: 'quote', status,
     draftRevision: draft.revision, observationRefs: refs, updatedAt: new Date().toISOString(), summary };
-}
-
-function preparedUnavailableOperation(
-  draft: ReservationWorkflowV2Draft,
-  requestId: string,
-  observationRef: string,
-): QuoteOperationResult | null {
-  return [...operationResults(draft)].reverse().find((result) => result.requestId === requestId &&
-    result.generationId === draft.generationId && result.draftRevision === draft.revision && result.status === 'prepared' &&
-    result.summary === UNAVAILABLE_PREPARED_SUMMARY && result.observationRefs.includes(observationRef)) ?? null;
-}
-
-/** Only a current, prepared shortage can use the reviewed requested meal plan to compile a decline. */
-function compilePreparedUnavailableQuote(draft: ReservationWorkflowV2Draft, request: QuoteRequest): CompiledQuote | null {
-  const discovery = compileQuote(draft, request, false);
-  if (discovery.status !== 'ok') return null;
-  const proof = unavailableInventoryProof(draft, discovery);
-  if (!proof || !preparedUnavailableOperation(draft, request.id, proof.observation.ref)) return null;
-  return compileQuote(draft, request, true, true);
 }
 
 async function prepareUnavailableInventory(
@@ -1074,6 +502,9 @@ async function priceQuote(
   } catch (error) {
     ctx.nativeBatch?.signal.throwIfAborted();
     const cause = staffQuoteCauseSummary(error);
+    if (cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE') {
+      return { status: 'failed' as const, issue: cause.code, outcomeClass: 'hms_busy' as const };
+    }
     const mismatch = cause.code === 'native_quote_no_matching_rate' || cause.code === 'business_selected_price_unavailable';
     const shortage = cause.code === 'native_quote_insufficient_inventory';
     const restricted = cause.code === 'native_quote_restricted_nights';
@@ -1087,15 +518,16 @@ async function priceQuote(
         : {}) };
     });
     const latest = [...diagnostics].reverse().find((diagnostic) => diagnostic.contextMatchesSelection);
+    const answered = Boolean(latest) && (mismatch || shortage || restricted);
+    if (!answered) console.warn('quote_price_failed', { workItemId: input.workItemId, requestId: compiled.request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
     const failureDetails = {
       searchContext: { salesStrategy: compiled.input.salesStrategy,
         strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft',
       mealPlanDefaultedGroupIds: compiled.mealPlanDefaultedGroupIds },
       failureCode: cause.code,
       failurePhase: cause.phase ?? 'unknown',
-      failureKind: cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'
-        : mismatch ? 'requested_unqualified' : shortage ? 'proven_shortage'
-        : restricted ? 'restricted' : cause.phase === 'qualification' ? 'qualification_failure' : 'read_failure',
+      failureKind: !answered ? 'system_fault' : cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'
+        : mismatch ? 'requested_unqualified' : shortage ? 'proven_shortage' : 'restricted',
       quoteDiagnostics: diagnostics,
       inputOverrides: quoteInputOverrides(draft, compiled.request.id),
       requestedGroups: compiled.input.groups,
@@ -1118,18 +550,21 @@ async function priceQuote(
     };
     const saved = await persistObservation(ctx, input, failure);
     return saved.status === 'ok'
-      ? { status: mismatch || shortage || restricted ? 'needs_input' as const : 'failed' as const, issue, observationRef: failure.ref,
+      ? { status: answered ? 'needs_input' as const : 'failed' as const, issue, outcomeClass: answered ? 'hms_answered_no' as const : 'system_fault' as const, observationRef: failure.ref,
         quote: { observationRef: failure.ref, ...failureDetails } }
       : saved;
   }
   const observation = quoteObservation(draft, compiled, quote, null);
   const saved = await persistObservation(ctx, input, observation);
   if (saved.status !== 'ok') return saved;
-  if (!observation.coverage.complete) return { status: 'failed' as const,
+  if (!observation.coverage.complete) {
+    console.warn('quote_price_incomplete', { workItemId: input.workItemId, requestId: compiled.request.id, code: observation.coverage.notes[0] ?? 'incomplete' });
+    return { status: 'failed' as const, outcomeClass: 'system_fault' as const,
     issue: quote.status !== 'ready' ? 'native_quote_price_unavailable'
       : observation.coverage.notes[0] === 'native_quote_price_expired'
         ? 'native_quote_price_expired' : 'native_quote_business_fields_did_not_match_request',
     observationRef: observation.ref };
+  }
   return { status: 'priced' as const, observationRef: observation.ref, observation,
     quote: pricePayload(observation), revision: saved.revision, seq: saved.seq };
 }
@@ -1168,6 +603,9 @@ async function lookupPartyCandidates(
     if (ctx.nativeBatch) {
       const found = await lookupNativeParty({ role: role === 'organization' ? 'organization' : 'agency',
         name, target: target.target, transportId: ctx.transport.id, signal: ctx.nativeBatch.signal });
+      if (found.result.outcome === 'refused_lock_busy' || found.result.reason === 'HMS_LOCK_BUSY' || found.coverage.notes.includes('refused_lock_busy')) {
+        return { status: 'failed', issue: 'HMS_LOCK_BUSY', outcomeClass: 'hms_busy', candidates };
+      }
       const rows = Array.isArray(found.result.candidates) ? found.result.candidates : [];
       const rowValues = rows.length ? rows : [null];
       for (const value of rowValues) {
@@ -1183,13 +621,21 @@ async function lookupPartyCandidates(
         if (saved.status !== 'ok') return { status: saved.status, issue: 'party_lookup_result_not_persisted', candidates };
         if (row) candidates.push({ ...row, ref: observation.ref, kind: role });
       }
-      if (found.status !== 'complete') return { status: 'failed', issue: 'native_party_search_incomplete', candidates };
+      if (found.status !== 'complete') {
+        console.warn('quote_party_lookup_incomplete', { workItemId: input.workItemId, requestId: request.id });
+        return { status: 'failed', issue: 'native_party_search_incomplete', outcomeClass: 'system_fault', candidates };
+      }
       continue;
     }
     let found: Awaited<ReturnType<typeof findParty>>;
     try {
       found = await findParty({ kind: role, name }, { target: target.target, transportId: ctx.transport.id });
-    } catch {
+    } catch (error) {
+      const cause = staffQuoteCauseSummary(error);
+      if (cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE') {
+        return { status: 'failed', issue: cause.code, outcomeClass: 'hms_busy', candidates };
+      }
+      console.warn('quote_party_lookup_failed', { workItemId: input.workItemId, requestId: request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
       const observation: ReservationWorkflowV2Observation = {
         ref: randomUUID(), generationId: draft.generationId, kind: 'party_candidate', status: 'failed',
         observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
@@ -1206,7 +652,16 @@ async function lookupPartyCandidates(
         ? { status: 'failed', issue: 'native_party_search_failed', candidates }
         : { status: saved.status, issue: 'party_lookup_result_not_persisted', candidates };
     }
-    const answered = ['resolved', 'ambiguous', 'no_match'].includes(found.outcome) && !found.truncated;
+    if (found.outcome === 'refused_lock_busy') return { status: 'failed', issue: 'HMS_LOCK_BUSY', outcomeClass: 'hms_busy', candidates };
+    if (!['resolved', 'ambiguous', 'no_match'].includes(found.outcome)) {
+      console.warn('quote_party_lookup_failed', { workItemId: input.workItemId, requestId: request.id, code: found.outcome });
+      return { status: 'failed', issue: 'native_party_search_failed', outcomeClass: 'system_fault', candidates };
+    }
+    if (found.truncated) {
+      console.warn('quote_party_lookup_incomplete', { workItemId: input.workItemId, requestId: request.id });
+      return { status: 'failed', issue: 'native_party_search_incomplete', outcomeClass: 'system_fault', candidates };
+    }
+    const answered = true;
     const rows = found.results.map((row) => ({ ...row, ref: randomUUID() }));
     for (const row of rows) {
       const observation: ReservationWorkflowV2Observation = {
@@ -1261,7 +716,8 @@ export async function reservationWorkflowV2QuoteLookup(
     }
     const compiled = compileQuote(loaded.draft, request, false);
     if (compiled.status !== 'ok') {
-      results.push({ status: compiled.status, requestId: request.id, issue: compiled.issue, fields: compiled.fields,
+      results.push({ status: 'needs_input', requestId: request.id, issue: compiled.issue, fields: compiled.fields, outcomeClass: 'needs_input',
+        readiness: quoteReadiness(loaded.draft, request.id, 'check'),
         partyCandidates: parties.candidates });
       continue;
     }
@@ -1274,9 +730,12 @@ export async function reservationWorkflowV2QuoteLookup(
     try {
       const priced = await priceQuote(ctx, input, loaded.draft, compiled);
       results.push({ ...priced, requestId: request.id, partyCandidates: parties.candidates });
-    } catch {
-      results.push({ status: 'failed', requestId: request.id, issue: 'native_quote_price_unavailable',
-        partyCandidates: parties.candidates });
+    } catch (error) {
+      const cause = staffQuoteCauseSummary(error);
+      const busy = cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE';
+      if (!busy) console.warn('quote_lookup_failed', { workItemId: input.workItemId, requestId: request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
+      results.push({ status: 'failed', requestId: request.id, issue: busy ? cause.code : 'native_quote_price_unavailable',
+        outcomeClass: busy ? 'hms_busy' : 'system_fault', partyCandidates: parties.candidates });
     }
   }
   const current = await getReservationWorkflowV2Draft(stateContext(ctx), { workItemId: input.workItemId, source: input.source });
@@ -1296,11 +755,8 @@ export async function reservationWorkflowV2QuotePrepare(
   const request = quoteRequests(loaded.draft, input.requestId)[0];
   if (!request) return { status: 'not_found' };
   const compiled = compileQuote(loaded.draft, request, false);
-  if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
-  if (!('system' in ctx) && !ctx.nativeBatch && compiled.strategyDefaulted) {
-    return { status: 'needs_input', issue: 'quote_inputs_incomplete',
-      fields: [`${quoteBodyPath(request.id)}/salesStrategy:supported_sales_strategy_required`] };
-  }
+  if (compiled.status !== 'ok') return { status: 'needs_input', issue: compiled.issue, fields: compiled.fields, outcomeClass: 'needs_input',
+    readiness: quoteReadiness(loaded.draft, request.id, 'check') };
   const existing = matchingPreparedQuote(loaded.draft, compiled);
   if (existing) {
     // Preserve the native capture time/expiry while binding reused pricing to current inputs.
@@ -1345,8 +801,11 @@ export async function reservationWorkflowV2QuotePrepare(
     const saved = await persistResult(ctx, input, loaded.draft.generationId, result);
     return saved.status === 'ok' ? { status: 'prepared', requestId: request.id, operationId: result.id,
       quote: pricePayload(observation), observationRef: observation.ref } : saved;
-  } catch {
-    return { status: 'failed', issue: 'native_quote_prepare_failed' };
+  } catch (error) {
+    const cause = staffQuoteCauseSummary(error);
+    const busy = cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE';
+    if (!busy) console.warn('quote_prepare_failed', { workItemId: input.workItemId, requestId: request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
+    return { status: 'failed', issue: busy ? cause.code : 'native_quote_prepare_failed', outcomeClass: busy ? 'hms_busy' : 'system_fault' };
   }
 }
 
@@ -1548,7 +1007,8 @@ export async function reservationWorkflowV2QuoteExecute(
       declineOnly = true;
     }
   }
-  if (compiled.status !== 'ok') return { status: compiled.status, issue: compiled.issue, fields: compiled.fields };
+  if (compiled.status !== 'ok') return { status: 'needs_input', issue: compiled.issue, fields: compiled.fields, outcomeClass: 'needs_input',
+    readiness: quoteReadiness(loaded.draft, request.id, 'execute') };
   const preparedObservation = declineOnly ? null : matchingPreparedQuote(loaded.draft, compiled, true);
   const unavailable = preparedObservation ? null : unavailableInventoryProof(loaded.draft, compiled);
   if (!preparedObservation && !unavailable) return { status: 'needs_prepare', issue: 'current_native_quote_prepare_required' };
@@ -1556,8 +1016,9 @@ export async function reservationWorkflowV2QuoteExecute(
     return { status: 'needs_prepare', issue: 'current_native_unavailable_decline_prepare_required' };
   }
   if (unavailable && !compiled.outputKinds.includes('email_quote')) {
-    return { status: 'needs_input', issue: 'cover_email_required_for_unavailable_reply',
-      fields: [ptr('proposal', 'content', 'requests', request.id, 'body', 'outputIntent', 'artifacts')] };
+    const readiness = quoteReadiness(loaded.draft, request.id, 'execute');
+    return { status: 'needs_input', outcomeClass: 'needs_input', issue: 'cover_email_required_for_unavailable_reply',
+      fields: readiness.map(item => item.path), readiness };
   }
   if (preparedObservation) {
     const quoteResult = record(preparedObservation.result);
@@ -1568,16 +1029,11 @@ export async function reservationWorkflowV2QuoteExecute(
     const rawExtrasReviewItems = quoteResult?.extrasReviewItems;
     const extrasReviewItems = Array.isArray(rawExtrasReviewItems)
       ? rawExtrasReviewItems.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())) : [];
-    const extrasReviewPath = quoteBodyPath(request.id);
-    const extrasReview = loaded.draft.staffReviews[extrasReviewPath];
-    const preparedOperation = [...operationResults(loaded.draft)].reverse().find(entry => entry.requestId === request.id &&
-      entry.status === 'prepared' && entry.observationRefs.includes(preparedObservation.ref));
-    const extrasAccepted = extrasReview?.status === 'accepted' &&
-      Date.parse(extrasReview.at ?? '') >= Date.parse(preparedObservation.observedAt) &&
-      Boolean(preparedOperation && Date.parse(extrasReview.at ?? '') >= Date.parse(preparedOperation.updatedAt));
-    if (extrasReviewItems.length && !extrasAccepted) {
-      return { status: 'needs_review', issue: 'quote_extras_require_staff_acceptance',
-        fields: [extrasReviewPath], extrasReviewItems, extrasReviewPath };
+    const extrasReadiness = quoteExtrasReadiness(loaded.draft, request.id, preparedObservation.ref);
+    if (extrasReadiness.length) {
+      return { status: 'needs_review', outcomeClass: 'needs_input', issue: 'quote_extras_require_staff_acceptance',
+        fields: extrasReadiness.map(item => item.path), readiness: extrasReadiness,
+        extrasReviewItems, extrasReviewPath: extrasReadiness[0]?.path };
     }
   }
   const result = operationResult(loaded.draft, request.id, input.idempotencyKey, 'unknown', [],
@@ -1591,6 +1047,7 @@ export async function reservationWorkflowV2QuoteExecute(
       ? unavailableQuoteReply(compiled, unavailable)
       : await quoteArtifacts(ctx, compiled, preparedObservation!);
   } catch {
+    console.warn('quote_artifact_generation_failed', { workItemId: input.workItemId, requestId: request.id });
     const failureObservation: ReservationWorkflowV2Observation = {
       ref: randomUUID(), generationId: loaded.draft.generationId, kind: 'document', status: 'failed',
       observedAt: new Date().toISOString(), propertyCode: loaded.draft.propertyCode,

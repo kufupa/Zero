@@ -13,6 +13,7 @@ import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
 import { useCmsRecipientDefault } from './shared/cms-recipient-default';
 import { QuoteEditor } from './editors/quote-editor';
+import { quoteReadiness, quoteReadinessBeforeSplit } from '../../../server-pilot/src/ai/reservation-workflow-v2-quote-readiness';
 import { AmendEditor, isExactConfirmation } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
 import { AddonsEditor } from './editors/addons-editor';
@@ -414,12 +415,12 @@ export function ReservationPane(props: ReservationPaneProps) {
   const needsCheck = () => checked !== digest || request?.kind === 'amend' && (checkedAmendReview !== null || hasPendingAmendPrice) &&
     !amendPriceReviews.some(row => row.observation.ref === checkedAmendReview) || !hasPendingAmendPrice && Boolean(amendCallbackTargets[0]?.commissionUnknown) ||
     request?.kind === 'quote' && (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
+  const quoteMissing = snapshot && request?.kind === 'quote'
+    ? needsCheck() ? quoteReadinessBeforeSplit(snapshot.session.draft, request.id)
+      : quoteReadiness(snapshot.session.draft, request.id, 'execute') : [];
+  const extrasNeedReview = quoteMissing.some(item => item.code === 'quote_extras_require_staff_acceptance');
   const pendingAmendReview = amendPriceReviews.find(row => row.observation.ref === checkedAmendReview) ??
     amendPriceReviews.find(row => row.id === activeTarget.current) ?? amendPriceReviews[0];
-  const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
-  const quoteReview = request && snapshot?.session.draft.staffReviews[`${requestPath(request.id)}/body`];
-  const extrasNeedReview = Array.isArray(quoteExtras) && quoteExtras.some(item => typeof item === 'string' && item.trim()) &&
-    !(quoteReview?.status === 'accepted' && Date.parse(quoteReview.at ?? '') >= Date.parse(quotePrepared?.updatedAt ?? '') && Date.parse(quoteReview.at ?? '') >= Date.parse(quoteObservation?.observedAt ?? ''));
   const check = async () => {
     if (!request || createBlocked) return;
     if (['create', 'amend', 'cancel'].includes(request.kind) && !ids.length) {
@@ -583,6 +584,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     : preview ? 'Save is disabled in this interactive preview.'
     : sourceChanged ? 'Review the changed email and attachments before continuing.'
     : pendingDispatch ? pendingDispatch.status === 'needs_reconcile' ? staffFailureCopy('UNKNOWN', true) : 'Saving in Infor. Waiting for the confirmed outcome.'
+    : quoteMissing.length ? 'Complete the quote details above before continuing.'
     : null;
   const visibleError = workbench.error && (!currentAttention || workbench.conflict ||
     !(currentAttention.original.includes(workbench.error) || currentAttention.message.includes(workbench.error))) ? workbench.error : null;
@@ -595,7 +597,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     ['succeeded', 'unknown'].includes(text(row.status))) || Boolean(pendingAmendReview);
 
   return <div ref={paneRef} className={styles.pane} data-reservation-pane>
-    <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
+    <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : snapshot?.session.backgroundChecks === 'running' ? 'Checking Infor in the background…' : snapshot?.session.backgroundChecks === 'queued' ? 'Infor checks queued' : 'Saved draft'}</span></div>
       <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
     </header>
     <nav className={styles.actionNav} aria-label="Reservation actions"><div className={styles.actionBar}><div className={styles.tabs}>
@@ -616,6 +618,8 @@ export function ReservationPane(props: ReservationPaneProps) {
     </div>}</nav>
     <div className={styles.sources}>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     <main className={`${styles.content} nava-pane-scroll`}>
+    {snapshot?.session.backgroundChecks === 'failed' && <p className={styles.notice} role="status">An automatic Infor check could not finish. Use Check to try again.</p>}
+    {workbench.quoteWaiting && <p className={styles.notice} role="status">Infor is in use. Waiting for the current action to finish. This can take more than 30 seconds.</p>}
     {(props.loadError || visibleError || workbench.conflict) && <div className={styles.error} role="alert">{[...new Set([props.loadError, visibleError].filter((error): error is string => Boolean(error)))].map(error => <p key={error}>{knownFailureCopy(error) ?? error}</p>)}{workbench.conflict && <>
       {workbench.unresolvedPending.length > 0 && <div><p>These edits need to be entered again. Copy the values before discarding:</p>
         {workbench.unresolvedPending.map(edit => <p key={edit.path}><strong>{edit.label}:</strong> {edit.value || '(empty)'}</p>)}</div>}
@@ -726,6 +730,12 @@ export function ReservationPane(props: ReservationPaneProps) {
       {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}
+      {quoteMissing.length > 0 && <div className={`${styles.notice} ${styles.readiness}`} role="status">
+        <strong>Complete before {needsCheck() ? 'checking' : 'generating'} the quote:</strong>
+        <ul>{quoteMissing.map((item, index) => <li key={`${item.code}:${item.path}:${index}`}>
+          <button type="button" onClick={() => focusField(item.path)}>{item.message}</button>
+        </li>)}</ul>
+      </div>}
       {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <div className={styles.notice}>
         For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)}.
         {amendCallbackTargets[0].commission && <><br />Agency {amendCallbackTargets[0].commission.name}: Infor selection default TA commission {amendCallbackTargets[0].commission.nativeDefault}%.
@@ -739,7 +749,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p><strong>Guest gets:</strong> {stage.guestGets}</p></>}
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || quoteMissing.length > 0 || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
       {!currentAttention && (workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;

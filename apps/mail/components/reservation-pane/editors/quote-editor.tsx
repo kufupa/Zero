@@ -150,12 +150,8 @@ function availabilityMessage(result: Record<string, unknown>): string | null {
     return 'Infor did not confirm a matching rate for the selected room and meal plan. Availability is not confirmed; choose an available offer or refresh the search.';
   if (result.failureKind === 'restricted')
     return 'Infor marked part of this stay restricted. This is not a sold-out result; review the affected dates or choose another offer.';
-  if (result.failureKind === 'qualification_failure')
-    return 'Infor could not verify that this request qualifies for the selected rate. Availability is not confirmed; check the agency/rate selection and retry.';
-  if (result.failureKind === 'read_failure')
-    return result.availabilityTruncated === true
-      ? 'Infor availability could not be fully read. No unavailable-room or sold-out conclusion was made; refresh the search.'
-      : 'Infor availability could not be confirmed. No unavailable-room or sold-out conclusion was made; refresh the search.';
+  if (['system_fault', 'qualification_failure', 'read_failure'].includes(text(result.failureKind)))
+    return 'Nava problem, not yours. Contact Nava support.';
   return null;
 }
 
@@ -165,7 +161,7 @@ function hasSavedSeparateOther(editor: Editor, requestId: string, moneyId: strin
     separatedQuoteMoneyLinked(request.body.separatedFrom, requestId, moneyId));
 }
 
-function RoomCode({ editor, path, options }: { editor: Editor; path: string; options: Record<string, unknown>[] }) {
+function RoomCode({ editor, path, options, requested }: { editor: Editor; path: string; options: Record<string, unknown>[]; requested: string }) {
   const id = useId(), picker = useRef<HTMLDivElement>(null);
   const saved = valueAt(editor.snapshot, path);
   const initial = Array.isArray(saved) ? saved.map(text).join(', ') : '';
@@ -186,6 +182,11 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
   }, [open]);
   const codes = [...new Map([...nativeChoices(editor.snapshot, path, 'room_type', editor.configuration).map(row => [row.value, row.label] as const),
     ...options.map(option => [text(option.roomCode), text(option.roomLabel)] as const)].filter(([code]) => code)).entries()];
+  const words = requested.toLocaleLowerCase().match(/[\p{L}]+/gu)?.filter(word => !['x', 'room', 'rooms'].includes(word)) ?? [];
+  const matching = words.length ? codes.filter(([, label]) => {
+    const meaning = label.toLocaleLowerCase();
+    return words.every(word => meaning.includes(word));
+  }) : [];
   const load = async () => {
     if (loadingRef.current) return;
     loadingRef.current = true; setLoading(true); setError(null);
@@ -237,6 +238,11 @@ function RoomCode({ editor, path, options }: { editor: Editor; path: string; opt
   }, [activeId]);
   return <div data-field-path={path} className={`${styles.localField} ${styles.quoteLine}`}>
     <label htmlFor={id}>Room categories</label>
+    {!parse(value).length && requested && <div className={styles.roomSuggestions}>
+      <small>Requested: {requested}. Choose an Infor room type.</small>
+      {matching.map(([code, label]) => <button type="button" key={code} disabled={editor.view.busy || reviewing}
+        onClick={() => { void choose(code); }}><strong>{code}</strong>{label !== code ? ` — ${label}` : ''}</button>)}
+    </div>}
     <div ref={picker} className={pickerStyles.picker}>
       <div className={pickerStyles.pickerInput}><input id={id} value={value} role="combobox" aria-expanded={open} aria-controls={`${id}-rooms`} aria-activedescendant={activeId}
         disabled={reviewing || editor.view.busy && !loading} placeholder="Any category, or codes separated by commas" onFocus={openChoices} onClick={openChoices}
@@ -265,7 +271,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
   const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === groupId) : [];
   const current = quoteOffersCurrent(editor, observation);
   return <div className={styles.offerList}>
-    {observation && !current && <p className={styles.notice}>Earlier availability shown. Refresh the price before choosing.</p>}
+    {observation && !current && <p className={styles.notice}>Earlier availability shown. Check the quote again before choosing.</p>}
     {result.availabilityTruncated === true && <p className={styles.notice}>Infor's availability results were truncated; some offers may be missing.</p>}
     {!options.length && <p className={styles.note}>{observation ? 'No selectable Infor offers were returned for this group.' : 'Available Infor offers appear after lookup.'}</p>}
     {options.map((option, index) => {
@@ -439,6 +445,7 @@ export function QuoteEditor(editor: Editor) {
   const bodyPath = `${requestPath(request.id)}/body`;
   const body = record(effectiveAt(snapshot, bodyPath));
   const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
+  const sourceQuote = snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id && row.kind === 'quote');
   const rows = Array.isArray(body.requestedMoney) ? body.requestedMoney.map(record) : [];
   const observation = latestQuote(editor);
   const result = record(observation?.result);
@@ -462,7 +469,7 @@ export function QuoteEditor(editor: Editor) {
     <Section title="Stay and rooms">
       <GuestRoster editor={editor} path={`${bodyPath}/guestNames`} />
       {!groups.length && <p className={styles.notice}>Add a room group to start a manual quote.</p>}
-      {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Refresh before relying on it.`}</p>}
+      {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Check the quote again before relying on it.`}</p>}
       <div className={styles.groupHeading}><strong>Room groups</strong>
         <button type="button" className={styles.linkButton} aria-label="Add room group"
           data-field-path={`${bodyPath}/groups`}
@@ -479,6 +486,10 @@ export function QuoteEditor(editor: Editor) {
             <button type="button" className={styles.linkButton} data-field-path={groupPath}
               disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
               requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
+          {sourceQuote?.kind === 'quote' && sourceQuote.body.groups[index]?.sourceAssociationUnresolved === true && valueAt(snapshot, `${groupPath}/sourceAssociationUnresolved`) !== false && <div className={styles.notice} data-field-path={`${groupPath}/sourceAssociationUnresolved`}>
+            This may duplicate another room group. Remove it or confirm it is separate.{' '}
+            <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/sourceAssociationUnresolved`, false)}>Keep as a separate group</button>
+          </div>}
           <div className={styles.twoCol}><Field label="Arrival" path={`${groupPath}/arrival`} editor={editor} type="date" review />
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>
           <GuestRoster editor={editor} path={`${groupPath}/guestNames`} />
@@ -494,7 +505,7 @@ export function QuoteEditor(editor: Editor) {
           {scope !== 'per_room' && <p className={styles.notice}>Allocate adults and children per room before pricing. Totals are not divided automatically.</p>}
           <div className={styles.twoCol}><Count label={scope === 'whole_group' ? 'Adults (whole group)' : scope === 'per_room' ? 'Adults per room' : 'Adults'} path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={scope === 'per_room' ? 6 : 100} review />
             <ChildAges editor={editor} path={`${groupPath}/occupancy`} max={6} /></div>
-          <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} />
+          <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} requested={text(valueAt(editor.snapshot, `${groupPath}/requestedRoomDescription`))} />
           <NativePicker label="Rate Plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
           <div data-field-path={`${groupPath}/mealPlan`} className={styles.localField}>
             <div className={styles.countHeading}><span>Meal Plan</span>
@@ -504,7 +515,6 @@ export function QuoteEditor(editor: Editor) {
           <OfferList editor={editor} groupId={text(group.id)} groupPath={groupPath} observation={observation} />
         </div>;
       })}
-      <div className={styles.inlineButtons}><button type="button" className={styles.secondaryButton} disabled={view.busy} onClick={() => void commands.lookup()}>Refresh Infor offers</button></div>
       {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : offersCurrent ? 'Current Infor availability' : 'Earlier Infor observation'}</strong>
         {money(result.totalMinor, result.currency) && <span>{money(result.totalMinor, result.currency)} total</span>}
         <small>{text(result.arrivalDate)} – {text(result.departureDate)}{observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>

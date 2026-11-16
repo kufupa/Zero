@@ -1,3 +1,4 @@
+import { assertReservationActionFence, lockReservationActionClaim } from './reservation-workflow-v2-action-lane.js';
 import { isLunchOnlyMealRequest, normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -2095,6 +2096,8 @@ function nativeObservation(draft: ReservationWorkflowV2Draft, input: Reservation
 
 async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB['transaction']>[0]>[0], ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2ExecuteInput, observation: ReservationWorkflowV2Observation, summary: string) {
+  await lockReservationActionClaim(tx, input.workItemId);
+  await assertReservationActionFence(tx, input.workItemId);
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
@@ -2126,6 +2129,8 @@ async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB[
 /** A one-use native proof permits a failure receipt even if the email or access changed after the claim. */
 async function persistNeverDispatchedCreate(tx: Parameters<Parameters<DB['transaction']>[0]>[0], ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2ExecuteInput, intent: Readonly<HmsLabtestIntent>, generationId: string, approvedDigest: string) {
+  await lockReservationActionClaim(tx, input.workItemId);
+  await assertReservationActionFence(tx, input.workItemId);
   const [item] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state);

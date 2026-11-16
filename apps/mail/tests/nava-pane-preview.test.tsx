@@ -47,6 +47,7 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: { ping: { mutate: pingMutateMock } },
     quoteWorkflow: {
+      rateCatalogue: { query: vi.fn().mockRejectedValue(new Error('No catalogue configured')) },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,

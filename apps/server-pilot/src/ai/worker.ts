@@ -1,3 +1,6 @@
+import { hmsJobQueueAvailable, withCloudCredentialRun } from '../../tooling/hms-cloud/cloud-session.mjs';
+import postgres from 'postgres';
+import { getPostgresSslOptions } from '../db/ssl-config.js';
 import {
   claimNextAiRun,
   CLEANUP_RESERVE_MS,
@@ -4281,7 +4284,15 @@ export async function storeWorkflowClassifierForInbound(
   }
 }
 
-export async function executeAiRun(
+export async function executeAiRun(runId: string, options: Parameters<typeof executeAiRunInCredentialScope>[1] = {}): Promise<ExecuteAiRunResult> {
+  const [run] = await getDb().select({ claimOwner: aiWorkflowRun.claimOwner, claimToken: aiWorkflowRun.claimToken })
+    .from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).limit(1);
+  if (!run?.claimOwner || !run.claimToken) return executeAiRunInCredentialScope(runId, options);
+  return withCloudCredentialRun({ runId, claimOwner: run.claimOwner, claimToken: run.claimToken },
+    () => executeAiRunInCredentialScope(runId, options));
+}
+
+async function executeAiRunInCredentialScope(
   runId: string,
   options: {
     shutdownSignal?: AbortSignal;
@@ -5690,15 +5701,18 @@ export async function executeAiRun(
 
     throw new Error(`unsupported AI run kind: ${run.runKind}`);
   } catch (error) {
-    // A worker shutdown (a deploy restart) cut off an inbound read. Its writes commit only under the claim, and a
-    // read stored before the cut is found again ('exists'), so it goes back on the queue now with a fresh deadline for
+    // A worker shutdown (a deploy restart) cut off a read or warmup. Its writes commit only under the claim, and a
+    // read stored before the cut is found again, so it goes back on the queue now with a fresh deadline for
     // the next worker. The run's own deadline or a lost lease aborts with another reason and fails as before. The loop
     // claims nothing once shutdown starts, so each requeue takes one more shutdown. The first costs no attempt; a run
     // cut off again right after one spends an attempt each time and dead-letters at MAX_WORKER_SHUTDOWN_ATTEMPTS, so a
     // read that keeps its worker from stopping is not requeued forever.
     const cutAgain = run.failureClass === 'WORKER_SHUTDOWN';
+    const warmup = run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION &&
+      run.readRequest && typeof run.readRequest === 'object' && !Array.isArray(run.readRequest) &&
+      (run.readRequest as Record<string, unknown>).kind === 'reservation_warmup';
     if (
-      (run.runKind === 'inbound_extraction' || run.runKind === 'reservation_prefill') &&
+      (run.runKind === 'inbound_extraction' || run.runKind === 'reservation_prefill' || warmup) &&
       shutdownSignal.aborted &&
       signal.reason === shutdownSignal.reason &&
       !(cutAgain && run.attempts >= MAX_WORKER_SHUTDOWN_ATTEMPTS)
@@ -6164,6 +6178,37 @@ async function closeAiWorkerResources(): Promise<void> {
   if (closeError) throw closeError;
 }
 
+/** Publish a live queue consumer until shutdown; loss stops the owner before further claims. */
+export async function openHmsJobConsumerMarker(databaseUrl: string, onLost: () => void): Promise<() => Promise<void>> {
+  let closing = false;
+  let heartbeat: Promise<unknown> | undefined;
+  const client = postgres(databaseUrl, { max: 1, idle_timeout: 0, max_lifetime: 0, connect_timeout: 10,
+    ssl: getPostgresSslOptions(databaseUrl), onclose: () => { if (!closing) onLost(); } });
+  try {
+    await client`SELECT pg_advisory_lock_shared(hashtext('zero/hms-job-consumer/v1'), 0)`;
+  } catch (error) {
+    closing = true;
+    await client.end({ timeout: 5 });
+    throw error;
+  }
+  const timer = setInterval(() => {
+    if (heartbeat) return;
+    heartbeat = Promise.race([
+      client`SELECT 1`,
+      new Promise((_, reject) => {
+        const timeout = setTimeout(() => reject(new Error('HMS_JOB_CONSUMER_LOST')), 10_000);
+        timeout.unref();
+      }),
+    ]).catch(() => { if (!closing) onLost(); }).finally(() => { heartbeat = undefined; });
+  }, 5_000);
+  timer.unref();
+  return async () => {
+    closing = true;
+    clearInterval(timer);
+    await client.end({ timeout: 5 });
+  };
+}
+
 export async function runAiWorkerLoop(
   pollIntervalMs = 5_000,
   scope: AiRunScopeFilter = {},
@@ -6177,6 +6222,19 @@ export async function runAiWorkerLoop(
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
+  // Advertise only a real, unscoped queue consumer. The session-scoped lock is
+  // visible to every credential client and disappears when this connection is lost.
+  const publishesConsumer = hmsJobQueueAvailable() && !scope.idempotencyPrefix &&
+    (resolveWorkerLane() === 'default' || (resolveWorkerLane() === 'hms' &&
+      !scope.transportId && !scope.runKind && !scope.promptVersion));
+  let closeConsumer: (() => Promise<void>) | undefined;
+  try {
+    if (publishesConsumer) closeConsumer = await openHmsJobConsumerMarker(parseEnv(process.env).DATABASE_URL, stop);
+  } catch (error) {
+    process.off('SIGTERM', stop);
+    process.off('SIGINT', stop);
+    throw error;
+  }
   // Restart sweep for HMS reads: the first tick runs it, and no lane-hms claim happens until it succeeds.
   const hmsRecovery = createHmsRecoveryGate({ ownerId: aiWorkerOwnerId('hms') });
   // HMS_JOB_QUEUE=on: the default worker also claims pane HMS jobs. Scoped (proof) loops never do.
@@ -6234,6 +6292,7 @@ export async function runAiWorkerLoop(
     await hmsCloudCancel;
     await hmsLabtestAmend;
     await hmsWriteSweep;
+    await closeConsumer?.();
     await closeAiWorkerResources();
     if (stopping) console.log(`ai-worker: shutdown complete pid=${process.pid}`);
   }

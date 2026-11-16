@@ -1,3 +1,4 @@
+import { currentCloudCredentialPriority, withCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { RESERVATION_EVIDENCE_TTL_MS } from '../hms/adapter.js';
 import { createPostgresPropertyReadLock, propertyReadLockKey } from '../hms/property-read-lock.js';
 import { assertHmsReadOriginAllowed, hmsReadTargetForProperty } from '../hms/hms-read-target.js';
@@ -216,7 +217,7 @@ export function createInstalledReservationistProvider(
             lock = paneStayPropertyLock(target);
           } else return run();
           if (!lock) return run();
-          return lock.withLock(async () => {
+          return withCloudCredentialPriority(currentCloudCredentialPriority('background'), () => lock.withLock(async () => {
             await assertOrigin();
             const traces: Promise<void>[] = [];
             const activeCancellationSessions = new Set<Promise<unknown>>();
@@ -363,7 +364,7 @@ export function createInstalledReservationistProvider(
               await Promise.allSettled(traces);
               activeServices = basicServices;
             }
-          }, { signal, deadlineAt: input.clock.deadlineAt });
+          }, { signal, deadlineAt: input.clock.deadlineAt }));
         },
       },
     };

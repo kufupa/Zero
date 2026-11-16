@@ -1,3 +1,4 @@
+import { assertReservationActionFence, lockReservationActionClaim } from './reservation-workflow-v2-action-lane.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
@@ -360,6 +361,8 @@ async function currentDraft(ctx: ReservationWorkflowV2ServerContext, input: Rese
 
 async function currentDraftTx(tx: DispatchTx, ctx: ReservationWorkflowV2ServerContext,
   input: ServicesSourceInput, exactCursor: boolean) {
+  await lockReservationActionClaim(tx, input.workItemId);
+  await assertReservationActionFence(tx, input.workItemId);
   const [item] = await tx.select({ id: workItem.id, state: workItem.state, revision: workItem.revision,
     revisionHead: workItem.revisionHead, revisionSeq: workItem.revisionSeq, sourceMessageId: workItem.sourceMessageId,
     threadId: workItem.threadId }).from(workItem)
@@ -645,6 +648,8 @@ async function persistResolvedServiceTx(tx: DispatchTx, ctx: ReservationWorkflow
   const observationRef = randomUUID();
   const observation = serviceObservationFromRef(observationRef, intent, input, result);
   const summary = `Saved ${intent.serviceId} Add-On on ${intent.target.confirmation}; fresh native readback verified`;
+  await lockReservationActionClaim(tx, input.workItemId);
+  await assertReservationActionFence(tx, input.workItemId);
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id)))
     .limit(1).for('update');
@@ -1408,6 +1413,8 @@ function savedLostResponseReadback(intent: SavedIntent, readback: Record<string,
 
 async function persistSavedServiceTx(tx: DispatchTx, ctx: ReservationWorkflowV2ServerContext,
   input: ServicesSourceInput, intent: SavedIntent, nativeReadback: Record<string, unknown>, readbackDigest: string) {
+  await lockReservationActionClaim(tx, intent.workItemId);
+  await assertReservationActionFence(tx, intent.workItemId);
   const [item] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, intent.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const parsed = item && reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2((item.state as Record<string, unknown>)[RESERVATION_WORKFLOW_V2_STATE_KEY]));

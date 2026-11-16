@@ -1396,6 +1396,11 @@ function buildFallbackProposal(input: {
     if (request.kind === 'filing') return { ...base, kind: 'filing' as const, body: { targets: null } };
     return { ...base, kind: 'other' as const, body: { requestedText: request.requestText.raw.slice(0, 2_000), supported: false as const } };
   });
+  for (const request of projected) {
+    if (request.kind !== 'quote') continue;
+    const extracted = requests.find((candidate) => candidate.id === request.id && candidate.kind === 'quote');
+    if (extracted) retainQuoteRoomHints(request, extracted, currentRefs);
+  }
   if (!projected.length && currentRef) projected.push({ id: stableId(input.source.messageId, 'request', 'fallback'), requestText: 'Review this selected message and identify any reservation work.',
     sourceRefs: [currentRef], serviceRefs: [], documentRefs: [], kind: 'other', body: { requestedText: 'Review the source message; prefill extraction was unavailable.', supported: false } });
   const valid = reservationWorkflowV2ProposalSchema.safeParse({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
@@ -2060,6 +2065,73 @@ function roomDescription(claim: { raw: string; value: unknown; sourceRefs: strin
     return claim.raw.length <= 1000 ? claim.raw : null;
   }
   return value;
+}
+
+/** Preserve each source room preference even when no native code or date association is known. */
+function retainQuoteRoomHints(
+  request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'quote' }>,
+  extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>,
+) {
+  const hints = extracted.roomTypeHints.flatMap((hint) => {
+    if (!currentClaim(hint, currentRefs)) return [];
+    const description = (roomDescription(hint, currentRefs, false) ?? hint.raw.slice(0, 1000)).trim();
+    return description ? [{ hint, description }] : [];
+  });
+  if (!hints.length) return;
+  const original = request.body.groups;
+  const used = new Set<string>();
+  const groups = hints.map(({ hint, description }, index) => {
+    const counted = /^\s*(\d{1,3})\s*(?:[x×]\s*)?(.+?\brooms?)\s*$/iu.exec(hint.raw);
+    const roomKey = (value: string) => normalizedFact(value).replace(/\brooms\b/gu, 'room');
+    const matchingDates = extracted.dates.filter((date) => {
+      const count = currentClaim(date.roomCount, currentRefs);
+      return count && count.sourceRefs.some((ref) => hint.sourceRefs.includes(ref)) &&
+        roomKey(count.raw).includes(roomKey(description));
+    });
+    const dates = hints.length === 1 && extracted.dates.length === 1 ? extracted.dates[0] :
+      matchingDates.length === 1 ? matchingDates[0] : undefined;
+    const singleDate = dates && currentClaim(dates.arrival, currentRefs) && currentClaim(dates.departure, currentRefs);
+    const arrival = singleDate ? safeCurrentText(dates.arrival, currentRefs, 40) ?? null : null;
+    const departure = singleDate ? safeCurrentText(dates.departure, currentRefs, 40) ?? null : null;
+    const mentionsOtherHint = (raw: string) => hints.some(other => other.hint !== hint &&
+      roomKey(raw).includes(roomKey(other.description)));
+    const directCount = counted && !mentionsOtherHint(hint.raw) ? Number(counted[1]) : null;
+    const dateCount = dates && currentClaim(dates.roomCount, currentRefs);
+    const sharedCount = Boolean(dateCount && mentionsOtherHint(dateCount.raw));
+    const count = directCount ?? (hints.length === 1
+      ? dates ? quoteDatedRoomCount(extracted, dates, currentRefs).count
+        : extracted.dates.length === 0 ? citedInteger(currentClaim(extracted.roomCount, currentRefs)) ?? null : null
+      : dateCount && !sharedCount ? citedInteger(dateCount) ?? null : null);
+    const quantity = count !== null && count >= 1 && count <= 100 ? count : null;
+    const sourceId = stableId(request.id, 'source_room_hint', String(index));
+    const matches = original.filter((group) => !used.has(group.id) &&
+      normalizedFact(group.requestedRoomDescription) === normalizedFact(description));
+    const existing = original.find(group => group.id === sourceId && !used.has(group.id)) ??
+      (matches.length === 1 ? matches[0] : hints.length === 1 && original.length === 1 ? original[0] : undefined);
+    if (existing) used.add(existing.id);
+    return { ...(existing ?? { id: sourceId, arrival, departure,
+      quantity: null, mealPlan: null, requestedMealPlan: null, roomCodes: [], ratePlan: null,
+      occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }),
+      arrival: singleDate ? arrival : existing?.arrival ?? null,
+      departure: singleDate ? departure : existing?.departure ?? null,
+      requestedRoomDescription: description, quantity: quantity ?? (hints.length > 1 ? null : existing?.quantity ?? null) };
+  });
+  if (hints.length === 1 && original.length > 1) {
+    // A request-wide preference does not establish which of several date rows
+    // it belongs to. Retain it separately without copying a count or dates.
+    const sourceGroup = groups[0];
+    if (used.size && sourceGroup) request.body.groups = original.map(group => group.id === sourceGroup.id ? sourceGroup : group);
+    else request.body.groups = [...original, ...groups];
+    return;
+  }
+  const retained = original.map((group) => {
+    const matched = groups.find(candidate => candidate.id === group.id);
+    if (matched) return matched;
+    const overlaps = !group.requestedRoomDescription && group.arrival && group.departure &&
+      groups.some((source) => source.arrival === group.arrival && source.departure === group.departure);
+    return overlaps ? { ...group, sourceAssociationUnresolved: true } : group;
+  });
+  request.body.groups = [...retained, ...groups.filter(group => !used.has(group.id))];
 }
 
 function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): boolean {
@@ -4550,6 +4622,7 @@ function projectCurrentExtraction(input: {
             `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${groupIndex}/requestedMealPlan`, claim, currentRefs);
         }
       }
+      retainQuoteRoomHints(request, extracted, currentRefs);
       if (!request.body.outputIntent.artifacts.length) request.body.outputIntent.artifacts = ['email_quote', 'pdf_quote', 'xlsx_quote'];
     }
     if (request.kind === 'create') {
@@ -6274,6 +6347,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   workflowGuidanceExcludedFamilies?: readonly string[];
   onWorkflowGuidance?: (receipt: WorkflowGuidanceReceipt) => void;
   onValidatedExtraction?: (generationId: string, extraction: ReservationWorkflowV2Extraction) => Promise<boolean>;
+  onCandidateReadsSettled?: () => Promise<void>;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }): Promise<ReservationWorkflowV2PrefillResult> {
@@ -6457,6 +6531,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       readErrors.push({ stage: 'lookup', code: 'reader_failed', message: `Candidate read ${candidate.id} failed.` });
     }
   }
+  await input.onCandidateReadsSettled?.();
   let cmsCapabilityContext = '';
   if (propertyCode === 'HRCEN' && extraction.requests.some((request) => request.kind === 'amend')) {
     try {
