@@ -121,7 +121,7 @@ export function planAutopickPartyReads(input: { extraction: ReservationWorkflowV
       if (ambiguous) {
         const names = named.slice(0, MODEL_CANDIDATES).map((row) => row.value);
         names.forEach((name) => add(partyRole[field], name, request.id));
-        modelSlots.push({ requestId: request.id, field, names });
+        modelSlots.push({ requestId: request.id, field: 'organization', names });
       } else add(partyRole[field], named[0]!.value, request.id);
     }
   }
@@ -189,7 +189,7 @@ export function validateAutopickModelOutput(raw: unknown, slots: AutopickModelSl
   evidence: ReservationWorkflowV2Evidence[]): AutopickModelResult[] {
   const text = squash(currentText(evidence));
   const entries = Array.isArray(raw) ? raw : null;
-  return slots.map((slot) => {
+  return slots.map((slot): AutopickModelResult => {
     const base = { slot: slot.slot, requestId: slot.requestId, field: slot.field,
       candidateRefs: slot.candidates.map((row) => row.token), choice: null, quote: null, nativeId: null };
     if (!entries) return { ...base, outcome: 'parse_failure' as const, problems: [raw === undefined ? 'autopick_missing' : 'autopick_not_array'] };
