@@ -399,8 +399,6 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
       found.reservationObservations), native }] };
   }
   const name = text(hint.guestName), arrival = hint.bookedArrival, departure = hint.bookedDeparture;
-  if (signal) return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
-    'background_guest_stay_reader_unavailable') };
   if (!name || !realDate(arrival) || (departure !== undefined && (!realDate(departure) || departure <= arrival))) {
     return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query,
       'original_stay_hints_required') };
@@ -409,7 +407,7 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
   let search: Awaited<ReturnType<typeof searchGuest>>;
   try {
     search = await searchGuest({ lastName, arrival, ...(realDate(departure) ? { departure } : {}) }, {
-      target, transportId, lock: () => paneStayPropertyLock(target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+      target, transportId, signal, lock: () => paneStayPropertyLock(target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     });
   } catch {
     return { rows, observation: failedStayObservation(draft, requestId, hintId, selectionPath, query, 'stay_search_failed') };
@@ -418,7 +416,7 @@ async function lookupHint(draft: ReservationWorkflowV2Draft,
     search.outcome === 'ambiguous_capped' ? 'stay_search_ambiguous' : 'stay_search_failed') };
   for (const row of search.rows) {
     if (row.arrival !== arrival || (realDate(departure) && row.departure !== departure)) continue;
-    const found = await readCandidate(target, row.confirmation, row.arrival ?? undefined, undefined, transportId);
+    const found = await readCandidate(target, row.confirmation, row.arrival ?? undefined, signal, transportId);
     const native = record(found)?.nativePreimage;
     const mismatch = validNative(native, target.propertyCode) ? validateHintAgainstNative(hint, native) : 'native_stay_unverified';
     if (!validNative(native, target.propertyCode) || mismatch || found?.outcome !== 'found') continue;

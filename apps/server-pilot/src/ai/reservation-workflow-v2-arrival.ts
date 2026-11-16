@@ -1,6 +1,6 @@
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import { classifyMailSource } from './mail-source.js';
 import { preStaySourceText } from './existing-stay-information.js';
@@ -40,10 +40,24 @@ export async function enqueueReservationArrival(db: DB, input: {
   // A routine internal function sheet is an operations handover, not a client request.
   if (/@legacyhotels\.(?:co\.za|com)\s*>?$/i.test(row.fromAddress.trim()) &&
       /^(?:re:\s*|fw(?:d)?:\s*)*(?:new\s+|updated\s+)?function\s+sheet\b/i.test(row.subject?.trim() ?? '')) return null;
+  if (!input.requestedByPane) {
+    if (/^(?:[^<>]*<)?no-reply@grfeedback-b\.com\s*>?$/i.test(row.fromAddress.trim()) &&
+        /^(?:The Centurion Hotel has received a new online review|The Centurion Hotel has received a Post-Stay survey response from |The Centurion Hotel - GuestRevu (?:Daily|Weekly) Summary)/i.test(row.subject?.trim() ?? '')) return null;
+    if (/^(?:[^<>]*<)?calendar-notification@google\.com\s*>?$/i.test(row.fromAddress.trim()) &&
+        /^(?:Invitation:|Declined:|Canceled event:)/i.test(row.subject?.trim() ?? '')) return null;
+  }
   const sourceHash = staffQuoteSourceHash(row);
   const evidence = await reservationArrivalEvidence(db, row.id);
-  return enqueueAiRun({ transportId: input.transportId, threadId: row.threadId, triggerMessageId: row.id,
+  const priority = input.requestedByPane ? 2 : input.priority ?? 0;
+  const job = await enqueueAiRun({ transportId: input.transportId, threadId: row.threadId, triggerMessageId: row.id,
     runKind: 'reservation_prefill', idempotencyKey: `reservation-prefill:${input.transportId}:${row.id}:${sourceHash}:${evidence.hash}`,
     modelId: NOT_APPLICABLE_MODEL_ID, promptVersion: RESERVATION_ARRIVAL_VERSION,
-    priority: input.priority ?? 0, metrics: { sourceHash, evidenceHash: evidence.hash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued' } }, db);
+    priority, metrics: { sourceHash, evidenceHash: evidence.hash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued' } }, db);
+  if (input.requestedByPane) {
+    const [promoted] = await db.update(aiWorkflowRun).set({ priority, updatedAt: new Date() })
+      .where(and(eq(aiWorkflowRun.id, job.id), inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+        lt(aiWorkflowRun.priority, priority))).returning();
+    return promoted ?? job;
+  }
+  return job;
 }
