@@ -50,9 +50,10 @@ function requestedCombinedAmend(journal) {
   return { arrival, departure, roomType: request.roomType, adults: request.adults };
 }
 // A repriced amendment requires the native average as well as the total.
+const validAmendPrice = prices => prices?.version === 2 && /^[A-Z]{3}$/.test(prices.currency ?? '') &&
+  /^(?:0|[1-9]\d{0,13})$/.test(prices.totalCents ?? '') && /^(?:0|[1-9]\d{0,13})$/.test(prices.averageCents ?? '');
 function verifiedAmendPrice(prices, issue) {
-  check(prices?.version === 2 && /^[A-Z]{3}$/.test(prices.currency ?? '') &&
-    /^(?:0|[1-9]\d{0,13})$/.test(prices.totalCents ?? '') && /^(?:0|[1-9]\d{0,13})$/.test(prices.averageCents ?? ''), issue);
+  check(validAmendPrice(prices), issue);
 }
 
 function nativeAddOnPreview(result) {
@@ -220,6 +221,12 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     const operationDigest = hash({ propertyCode, confirmation: own.confirmation, nativeStayId: own.nativeStayId,
       changes, nativeDigest: proof.prepared.nativeDigest, approvedPrices: proof.prepared.approvedPrices,
       preserved: proof.prepared.preserved });
+    if (validAmendPrice(proof.prepared.approvedPrices)) {
+      const { currency, totalCents, averageCents } = proof.prepared.approvedPrices;
+      proof.preCommitPrice = { propertyCode, currency, totalCents, averageCents };
+      process.stdout.write(`${JSON.stringify({ amendPreCommitPrice: proof.preCommitPrice })}\n`);
+      await checkpoint();
+    }
     proof.result = await commitCloudPaneAmend({ ...input, nativeDigest: proof.prepared.nativeDigest,
       approvedPrices: proof.prepared.approvedPrices, preserved: proof.prepared.preserved }, {
       operationDigest,
@@ -421,6 +428,9 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
           /^[A-Z]{3}$/.test(proof.prepared.approvedPrices.currency ?? '') &&
           /^(?:0|[1-9]\d{0,13})$/.test(proof.prepared.approvedPrices.totalCents ?? '') &&
           /^(?:0|[1-9]\d{0,13})$/.test(proof.prepared.approvedPrices.averageCents ?? '') &&
+          equal(proof.preCommitPrice, { propertyCode: journal.propertyCode,
+            currency: proof.prepared.approvedPrices.currency, totalCents: proof.prepared.approvedPrices.totalCents,
+            averageCents: proof.prepared.approvedPrices.averageCents }) &&
           readback.price?.currency === proof.prepared.approvedPrices.currency &&
           readback.price?.totalCents === proof.prepared.approvedPrices.totalCents &&
           readback.price?.averageCents === proof.prepared.approvedPrices.averageCents
