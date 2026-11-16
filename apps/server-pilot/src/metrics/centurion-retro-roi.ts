@@ -143,6 +143,12 @@ function staffExplanation(value: string, fallback: string, sourceNames: Readonly
 }
 
 export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
+  const progressNotes = report.coverage.notes.flatMap(note => {
+    const progress = note.startsWith('Pending measurements:')
+      ? note.split('. ')[0]
+      : /^(?:PARTIAL LIVE SNAPSHOT:|Selected \d+\/\d+ inbound messages;)/.test(note) ? note : undefined;
+    return progress ? [staffExplanation(progress, '', new Set<string>())] : [];
+  });
   return {
     version: report.version,
     reportId: report.reportId,
@@ -159,6 +165,7 @@ export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
           : 'Source coverage and classification are complete. Preparation quality is assessed separately for each task.',
         'Email extraction is assessed against the request. HMS-dependent work without historical evidence is not measurable from history.',
         'Effort minutes are estimates, not measured staff savings. There is no monthly savings extrapolation.',
+        ...progressNotes,
       ],
     },
     tasks: report.tasks.map(task => {
