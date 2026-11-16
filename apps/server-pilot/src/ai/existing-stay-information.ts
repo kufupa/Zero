@@ -36,22 +36,32 @@ export function isSelfSentPreStayInformationMail(input: {
 }
 
 /**
- * One self-prestay candidate gate for live admission, V2 arrival and the pane:
- * the hotel's own mailbox, a pre-stay subject and a confirmation number in the
- * subject or the current body. A missing mailbox or confirmation is never
- * evidence, so the exemption simply does not apply.
+ * One self-prestay candidate gate for live admission, V2 arrival, the pane and
+ * the legacy Create fence: the hotel's own mailbox, a pre-stay subject and a
+ * confirmation number in the subject, the current body or the stored
+ * extraction. A missing mailbox or confirmation is never evidence, so the
+ * exemption simply does not apply.
  */
 export function selfSentPreStayCandidate(input: {
   fromAddress?: string | null;
   mailboxAddress?: string | null;
   subject?: string | null;
   bodyText?: string | null;
+  confirmationNumbers?: readonly string[];
 }): boolean {
   if (!isSelfSentPreStaySubject(input)) return false;
   return (
     SUBJECT_CONFIRMATION_NUMBER.test(input.subject ?? '') ||
-    BODY_CONFIRMATION_NUMBER.test(`${input.subject ?? ''}\n${input.bodyText ?? ''}`)
+    BODY_CONFIRMATION_NUMBER.test(`${input.subject ?? ''}\n${input.bodyText ?? ''}`) ||
+    input.confirmationNumbers?.some((number) => number.trim().length > 0) === true
   );
+}
+
+const BODY_CONFIRMATION_NUMBER_GLOBAL = new RegExp(BODY_CONFIRMATION_NUMBER.source, 'g');
+
+/** Every confirmation-shaped token the body scan accepts, for display when extraction stored none. */
+export function selfSentPreStayBodyConfirmationNumbers(text: string | null | undefined): string[] {
+  return text?.match(BODY_CONFIRMATION_NUMBER_GLOBAL) ?? [];
 }
 
 /** For HTML-only self-mail, give extraction and validation the same current-message text. */

@@ -21,7 +21,7 @@ import { acquisitionWithin, assertTargetAliasesHeld, createPostgresTargetAliasLo
 import { canonicalJson } from './draft-approval.js';
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import { formStays } from './work-items.js';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { selfSentPreStayCandidate } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, hmsLabtestIntentTarget, nativeCreateSaveDigest,
   readResolvedHmsLabtestCreates, resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
@@ -225,10 +225,13 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
       !currentPaneCreateDatesMatch(payload, source.item.state, input.selection.identity, input.stay, input.selection.source)) {
     throw new Error('cloud_create_scope_changed');
   }
+  const sourceBodyText = canonicalSourceBodyText({ textBody: mail.textBody, htmlBody: mail.htmlBody });
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
     ? payload.confirmationNumbers.filter((value): value is string => typeof value === 'string') : [];
-  if (!actor.mailboxAddress || isSelfSentPreStayInformationMail({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
-    subject: mail.subject, confirmationNumbers: confirmations })) throw new Error('cloud_create_existing_booking');
+  if (!actor.mailboxAddress || selfSentPreStayCandidate({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
+    subject: mail.subject, confirmationNumbers: confirmations, bodyText: sourceBodyText })) {
+    throw new Error('cloud_create_existing_booking');
+  }
   // The pane hides channel and automated sources, but an older Create request
   // can still reach this seam; reclassify the locked source with the same shared
   // rules. Only a persisted non-inline file proves attachment presence; unproven
@@ -236,7 +239,7 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
   const [fileAttachment] = await tx.select({ id: attachment.id }).from(attachment)
     .where(and(eq(attachment.messageId, mail.id), eq(attachment.isInline, false))).limit(1);
   if (classifyMailSource({ fromAddress: mail.fromAddress, subject: mail.subject,
-    bodyText: canonicalSourceBodyText({ textBody: mail.textBody, htmlBody: mail.htmlBody }),
+    bodyText: sourceBodyText,
     hasAttachments: fileAttachmentPresence(fileAttachment != null, mail.sourceProvenance) }).kind !== 'direct') {
     throw new Error('cloud_create_source_blocked');
   }

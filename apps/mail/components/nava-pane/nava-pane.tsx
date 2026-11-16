@@ -142,8 +142,8 @@ import { useSavedReply } from './use-saved-reply';
 import { useQuotePdfJob } from './use-quote-pdf-job';
 import { useStaffQuoteAutostart } from './use-staff-quote-autostart';
 import { useSystemCheck } from './use-system-check';
-import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
-import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
+import { canonicalSourceBodyText, classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
+import { selfSentPreStayBodyConfirmationNumbers, selfSentPreStayCandidate } from '../../../server-pilot/src/ai/existing-stay-information.js';
 import { readAsForAnalysis, workStateForStatus } from '@/lib/quote-workflow/workflow-vocabulary';
 import { GOLD_ACTION_FOR_READ_AS } from '@/lib/workflow-action-labels';
 
@@ -490,12 +490,17 @@ export function NavaPane({
   const nonActionableMailSource =
     sourceClassification.kind === 'direct' ? null : sourceClassification;
   const isNonActionableMailSource = nonActionableMailSource !== null;
-  const selfSentPreStayBySubject = isSelfSentPreStayInformationMail({
+  const selfPreStayBodyText = canonicalSourceBodyText({
+    textBody: activeEmail?.bodyText,
+    htmlBody: activeEmail?.bodyHtml,
+  });
+  const selfSentPreStay = selfSentPreStayCandidate({
     fromAddress: activeEmail?.senderEmail,
     mailboxAddress: activeConnection?.email,
     subject: activeEmail?.subject,
+    bodyText: selfPreStayBodyText,
   });
-  const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStayBySubject;
+  const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStay;
   useEffect(() => {
     let alive = true;
     const selectedEpoch = configEpoch.current.value;
@@ -733,7 +738,7 @@ export function NavaPane({
     editVersion: amendWorkItem.editVersion, hasDraft: amendWorkItem.available,
     flush: amendWorkItem.flush, reload: storedWork.reloadRefreshedAmend });
   const isExistingStayInformation =
-    selfSentPreStayBySubject ||
+    selfSentPreStay ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
   const contactEditorKey = `${contactCorrectionKey}|${
@@ -1566,7 +1571,9 @@ export function NavaPane({
   const needsYou = useNeedsYou(trpcClient);
   const selectedReadKind = storedWork.pane.state === 'ready' ? storedWork.pane.kind : null;
   const existingStayConfirmationNumbers =
-    storedWork.pane.state === 'ready' ? (storedWork.pane.confirmationNumbers ?? []) : [];
+    storedWork.pane.state === 'ready' && (storedWork.pane.confirmationNumbers ?? []).length > 0
+      ? storedWork.pane.confirmationNumbers ?? []
+      : selfSentPreStayBodyConfirmationNumbers(`${activeEmail?.subject ?? ''}\n${selfPreStayBodyText}`);
   const savedStays = storedWork.pane.state === 'ready' ? storedWork.pane.savedStays : undefined;
   const separateAsk = storedWork.pane.state === 'ready'
     ? storedWork.pane.separateAsk ?? null
