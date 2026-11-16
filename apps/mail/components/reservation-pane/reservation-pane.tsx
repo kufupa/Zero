@@ -16,6 +16,7 @@ import { QuoteEditor } from './editors/quote-editor';
 import { createReadiness } from '../../../server-pilot/src/ai/reservation-workflow-v2-create-readiness';
 import { AmendEditor, isExactConfirmation } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
+import { CancelChargePrompt } from './editors/cancel-charge-prompt';
 import { AddonsEditor } from './editors/addons-editor';
 import { FilingEditor } from './editors/filing-editor';
 import styles from './reservation-pane.module.css';
@@ -562,6 +563,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const pendingDispatch = snapshot?.preparationViews.find(view => view.dispatch)?.dispatch ??
     snapshot?.session.workflowDispatches?.find(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review');
+  const cancelDispatch = request?.kind === 'cancel' && !sourceChanged ? snapshot?.session.workflowDispatches?.find(dispatch =>
+    dispatch.endpoint === 'execute' && dispatch.requestId === request.id && ['queued', 'claimed', 'running', 'retry_wait'].includes(dispatch.status)) : undefined;
   // Grants arrive newest first. A later success retires failed warnings, never uncertain outcomes.
   const dispatchNotices = snapshot?.session.workflowDispatches?.filter((dispatch, index, dispatches) =>
     dispatch.requestId === request?.id && (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass) &&
@@ -657,6 +660,9 @@ export function ReservationPane(props: ReservationPaneProps) {
             {actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <button type="button" key={kind}
               disabled={disabled} onClick={() => { void workbench.addAction(kind).catch(() => {}); }}>{labels[kind]}</button>)}
           </div></div>}
+      {snapshot && cancelDispatch && !preview && <CancelChargePrompt
+        key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${cancelDispatch.operationId}`}
+        client={props.client} source={source} snapshot={snapshot} operationId={cancelDispatch.operationId} />}
       {hasPendingAmendPrice && amendPriceReviews.length === 0 && <p className={styles.notice}>
         An earlier price review no longer matches the selected stay. Restore the selection and check again before saving.
       </p>}

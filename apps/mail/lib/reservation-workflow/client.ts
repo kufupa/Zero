@@ -26,6 +26,7 @@ import type {
 } from './types';
 import { ReservationWorkflowStaleRevisionError } from './types';
 import { knownFailureCopy } from './failure-copy';
+import { cancelChargeSchema } from './cancel-charge';
 
 type ItemInput = {
   propertySwitch?: PropertySwitch;
@@ -67,6 +68,8 @@ export type ReservationWorkflowV2TrpcClient = {
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string; preparedRef?: string }>;
     revokeUnsentFiling: MutationProcedure<ItemInput & { requestId: string; preparedRef: string }>;
+    cancelCharge?: QueryProcedure<ItemInput & { operationId: string }>;
+    cancelChargeDecision?: MutationProcedure<ItemInput & { operationId: string; challengeId: string; dialogDigest: string; decision: 'accept' | 'decline' }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
     configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation?: string;
       guestName?: string; bookedArrival?: string; bookedDeparture?: string;
@@ -1124,6 +1127,18 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const result = await api.revokeUnsentFiling.mutate({ ...itemInput(command), requestId: command.requestId,
         preparedRef: command.preparedRef }, mailboxOptions(command.source));
       return isRecord(result) && result.status === 'revoked';
+    },
+    async cancelCharge(command) {
+      if (!api.cancelCharge) throw new Error('The cancellation fee check is unavailable.');
+      return cancelChargeSchema.parse(await api.cancelCharge.query({ ...itemInput(command), operationId: command.operationId }, mailboxOptions(command.source, true)));
+    },
+    async cancelChargeDecision(command) {
+      if (!api.cancelChargeDecision) throw new Error('The cancellation fee decision is unavailable.');
+      const result = await api.cancelChargeDecision.mutate({ ...itemInput(command), operationId: command.operationId,
+        challengeId: command.challengeId, dialogDigest: command.dialogDigest, decision: command.decision }, mailboxOptions(command.source));
+      if (!isRecord(result) || !['accepted', 'declined', 'unavailable'].includes(String(result.status))) throw new Error('The fee decision could not be confirmed.');
+      if (result.status === 'accepted' || result.status === 'declined') return result.status;
+      return 'unavailable';
     },
     async reconcile(command) {
       const input = { ...itemInput(command), operationId: command.operationId };

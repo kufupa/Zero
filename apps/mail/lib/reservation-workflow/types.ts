@@ -177,6 +177,9 @@ export interface ReservationWorkflowClient {
   prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   revokeUnsentFiling?(input: ReservationCommandContext & { requestId: string; preparedRef: string }): Promise<boolean>;
+  cancelCharge?(input: ReservationCommandContext & { operationId: string }): Promise<import('./cancel-charge').CancelCharge>;
+  cancelChargeDecision?(input: ReservationCommandContext & { operationId: string; challengeId: string; dialogDigest: string;
+    decision: 'accept' | 'decline' }): Promise<'accepted' | 'declined' | 'unavailable'>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
   configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation?: string;
     guestName?: string; bookedArrival?: string; bookedDeparture?: string;
