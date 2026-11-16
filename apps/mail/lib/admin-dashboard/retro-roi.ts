@@ -106,6 +106,93 @@ export function taskCredit(task: RetroTask, assumptions: Assumptions): number {
   return timing.manualMinutes - timing.assistedMinutes;
 }
 
+type PreparationCheck = Extract<RetroTask['replay'], { status: 'replayed' }>['checks'][number];
+const HMS_CHECK_COUNTS: Record<RetroWorkflow, number> = {
+  create: 4,
+  amend: 3,
+  quote: 2,
+  cancel: 2,
+  filing: 2,
+  other: 1,
+};
+
+export function preparationCheckKind(task: RetroTask, check: PreparationCheck): 'email' | 'hms' {
+  if (check.kind) return check.kind;
+  return check.sourceValue === 'Historical native verification required' ||
+    task.evidence.some(
+      (evidence) =>
+        evidence.kind === 'historical_native' && check.evidenceIds.includes(evidence.id),
+    )
+    ? 'hms'
+    : 'email';
+}
+
+export function extractionQuality(tasks: RetroTask[]) {
+  let matched = 0,
+    missing = 0,
+    mismatch = 0,
+    measuredTasks = 0,
+    completeTasks = 0;
+  let hmsMatched = 0,
+    hmsUnmeasurable = 0,
+    hmsMismatch = 0,
+    hmsDependentTasks = 0,
+    hmsUnmeasurableTasks = 0;
+  for (const task of tasks) {
+    if (task.replay.status !== 'replayed') continue;
+    const email = task.replay.checks.filter(
+      (check) => preparationCheckKind(task, check) === 'email',
+    );
+    const hms = task.replay.checks.filter((check) => preparationCheckKind(task, check) === 'hms');
+    if (email.length) {
+      measuredTasks++;
+      completeTasks += Number(email.every((check) => check.status === 'matched'));
+    }
+    matched += email.filter((check) => check.status === 'matched').length;
+    missing += email.filter((check) => check.status === 'missing').length;
+    mismatch += email.filter((check) => check.status === 'mismatch').length;
+    hmsDependentTasks++;
+    hmsUnmeasurableTasks += Number(task.replay.nativeEvidence === 'missing');
+    hmsMatched += hms.filter((check) => check.status === 'matched').length;
+    hmsUnmeasurable +=
+      hms.filter((check) => check.status === 'missing').length +
+      Math.max(0, HMS_CHECK_COUNTS[task.workflow] - hms.length);
+    hmsMismatch += hms.filter((check) => check.status === 'mismatch').length;
+  }
+  const total = matched + missing + mismatch;
+  return {
+    matched,
+    missing,
+    mismatch,
+    total,
+    measuredTasks,
+    completeTasks,
+    percent: total ? (100 * matched) / total : null,
+    hmsMatched,
+    hmsUnmeasurable,
+    hmsMismatch,
+    hmsDependentTasks,
+    hmsUnmeasurableTasks,
+  };
+}
+
+export function taskProRataEstimate(task: RetroTask, assumptions: Assumptions): number {
+  if (task.outcome === 'correct_complete') return taskCredit(task, assumptions);
+  if (task.outcome !== 'partial' || task.replay.status !== 'replayed' || !task.replay.checks.length)
+    return 0;
+  const timing = workflowTiming(assumptions, task.workflow);
+  const nativeChecks = task.replay.checks.filter(
+    (check) => preparationCheckKind(task, check) === 'hms',
+  ).length;
+  const requiredChecks =
+    task.replay.checks.length + Math.max(0, HMS_CHECK_COUNTS[task.workflow] - nativeChecks);
+  return (
+    ((timing.manualMinutes - timing.assistedMinutes) *
+      task.replay.checks.filter((check) => check.status === 'matched').length) /
+    requiredChecks
+  );
+}
+
 function emptyOutcomes(): Record<RetroOutcome, number> {
   return {
     correct_complete: 0,
@@ -124,8 +211,11 @@ export function forecastReport(report: RetroReport, assumptions: Assumptions) {
     tasks: report.tasks.filter((task) => task.workflow === workflow),
     outcomes: emptyOutcomes(),
     savedMinutes: 0,
+    proRataMinutes: 0,
+    extraction: extractionQuality(report.tasks.filter((task) => task.workflow === workflow)),
   }));
   let savedMinutes = 0;
+  let proRataMinutes = 0;
   for (const row of workflows) {
     for (const task of row.tasks) {
       row.outcomes[task.outcome] += 1;
@@ -133,9 +223,19 @@ export function forecastReport(report: RetroReport, assumptions: Assumptions) {
       const credit = taskCredit(task, assumptions);
       row.savedMinutes += credit;
       savedMinutes += credit;
+      const estimate = taskProRataEstimate(task, assumptions);
+      row.proRataMinutes += estimate;
+      proRataMinutes += estimate;
     }
   }
-  return { outcomes, workflows, savedMinutes, taskCount: report.tasks.length };
+  return {
+    outcomes,
+    workflows,
+    savedMinutes,
+    proRataMinutes,
+    extraction: extractionQuality(report.tasks),
+    taskCount: report.tasks.length,
+  };
 }
 
 export function unassessedMessageCount(report: RetroReport): number {
@@ -153,6 +253,10 @@ const dateFormatter = new Intl.DateTimeFormat('en-ZA', {
   timeStyle: 'short',
 });
 export const formatCount = (value: number) => numberFormatter.format(value);
+export const formatPercent = (value: number | null) =>
+  value === null
+    ? 'Not measured'
+    : `${new Intl.NumberFormat('en-ZA', { maximumFractionDigits: 1 }).format(value)}%`;
 export const formatHours = (minutes: number) => hourFormatter.format(minutes / 60);
 export const formatReportDate = (value: string) => dateFormatter.format(new Date(value));
 

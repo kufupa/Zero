@@ -26,6 +26,7 @@ const evidenceSchema = z.object({
   detail: text,
 });
 const checkSchema = z.object({
+  kind: z.enum(['email', 'hms']).optional(),
   requirement: text,
   status: z.enum(['matched', 'missing', 'mismatch']),
   sourceValue: text,
