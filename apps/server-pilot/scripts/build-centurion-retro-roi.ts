@@ -201,7 +201,7 @@ async function main(): Promise<void> {
   const selectedInbound = inbound.slice(0, limit), allowedIds = new Set(selectedInbound.map(mail => mail.sourceRowId));
   const productSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const codeDelta = execFileSync('git', ['-C', repo, 'diff', 'HEAD', '--', 'apps/server-pilot/src/ai', 'apps/server-pilot/tooling', 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'], { encoding: 'utf8' });
-  const fingerprint = hash(JSON.stringify({ version: VERSION, productSha, code: hash(codeDelta), runner: hash(await readFile(fileURLToPath(import.meta.url))), source: hash(corpusBytes), manifest: hash(manifestBytes), start, end, classifyOnly: process.argv.includes('--classify-only'), nativeIndex: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, prompts: hash(CLASSIFY + ASSESS), model: 'gpt-6-luna', classifyBatch: option('--classify-batch', '12') }));
+  const fingerprint = hash(JSON.stringify({ version: VERSION, productSha, code: hash(codeDelta), runner: hash(await readFile(fileURLToPath(import.meta.url))), source: hash(corpusBytes), manifest: hash(manifestBytes), start, end, classifyOnly: process.argv.includes('--classify-only'), nativeIndex: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, prompts: hash(CLASSIFY + ASSESS), model: 'gpt-6-luna', reasoningEffort: process.env.EXTRACTION_REASONING_EFFORT ?? 'max', contract: hash(await readFile(join(repo, 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'))), classifyBatch: option('--classify-batch', '12') }));
   const memory = await mkdtemp(join(dirname(out), 'retro-empty-memory-')); await chmod(memory, 0o700);
   const env: NodeJS.ProcessEnv = { AZURE_OPENAI_BASE_URL: process.env.AZURE_OPENAI_BASE_URL, AZURE_FOUNDRY_API_KEY: process.env.AZURE_FOUNDRY_API_KEY,
     EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT, HMS_MEMORY_DATA_DIR: memory,
@@ -387,6 +387,13 @@ async function main(): Promise<void> {
               const hostObservation = replay?.observations.find(row => row.ref === check.observationRef && row.kind === receipt.kind && row.status === 'complete' && row.coverage.complete);
               const binding = pointerValue(replay, check.bindingPointer);
               if (!hostObservation || !preparedForAction(replay, action, check.bindingPointer) || !(binding === check.observationRef || Array.isArray(binding) && binding.includes(check.observationRef))) throw new Error('Native observation is not selected for this action');
+              const candidateMatch = /^\/candidates\/(\d+)\//.exec(check.nativePointer);
+              if (candidateMatch) {
+                const candidateId = pointerValue(receipt.result, `/candidates/${candidateMatch[1]}/nativeId`);
+                const candidates = z.array(z.object({ nativeId: z.string() }).passthrough()).safeParse(hostObservation.result.candidates);
+                if (typeof candidateId !== 'string' || !candidates.success || !candidates.data.some(row => row.nativeId === candidateId) ||
+                    typeof hostObservation.criteria.candidateNativeId === 'string' && hostObservation.criteria.candidateNativeId !== candidateId) throw new Error('Native candidate identity differs from selected observation');
+              }
               const native = pointerValue(receipt.result, check.nativePointer), prepared = pointerValue(replay, check.preparedPointer);
               const stringify = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value);
               const fieldKinds: Record<string, string[]> = { 'guest and party identity': ['guest_candidate', 'party_candidate'], 'room type and rate plan': ['rate_availability'], 'availability and native price': ['rate_availability'], 'guarantee and billing fields': ['stay_candidate'],
