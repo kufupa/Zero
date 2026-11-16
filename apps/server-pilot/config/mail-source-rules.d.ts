@@ -5,10 +5,6 @@ export type MailSourceRuleData = {
   readonly domains: readonly string[];
   /** Owner-listed skip hosts match only the exact sender host; subdomains stay direct. */
   readonly exactHost?: boolean;
-  readonly forwardedSubjectPatterns?: readonly {
-    readonly source: string;
-    readonly flags: string;
-  }[];
   readonly otaChip?: boolean;
   readonly bookingPhrase?: string;
   readonly directSubjectPatterns?: readonly {
@@ -31,8 +27,6 @@ export type MailSourceRuleData = {
   }[];
   /** Evidence gate: skip only when the caller confirms no non-inline attachment. */
   readonly requiresNoAttachments?: boolean;
-  /** A human-forwarded copy of this source stays staff-visible; the skip only applies to direct send. */
-  readonly directWhenForwarded?: boolean;
 };
 
 export declare const MAIL_SOURCE_RULE_DATA: readonly MailSourceRuleData[];
@@ -47,9 +41,9 @@ export type RoutineNoticeExclusionData = {
   readonly subjectPattern: { readonly source: string; readonly flags: string };
   /**
    * Set for notices a person can reply to or forward: the exclusion then
-   * applies only to a proven unannotated re-send (no authored content before
-   * or after the embedded headers, unchanged forwarded subject, proven-empty
-   * attachment set), keeping current staff asks reviewable.
+   * applies only to a proven content-free send (the exact bare subject held by
+   * `subjectPattern`, an empty body and a proven-empty attachment set),
+   * keeping subject additions, body content and attachments reviewable.
    */
   readonly humanOrigin?: boolean;
 };

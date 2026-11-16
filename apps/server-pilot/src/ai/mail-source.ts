@@ -22,26 +22,18 @@ export function isMailSourceClassification(value: unknown): value is MailSourceC
 
 type MailSourceRule = Omit<
   MailSourceRuleData,
-  | 'forwardedSubjectPatterns'
-  | 'directSubjectPatterns'
-  | 'skipSubjectPatterns'
   | 'senderPatterns'
+  | 'skipSubjectPatterns'
+  | 'directSubjectPatterns'
   | 'skipBodyPatterns'
-  | 'exactHost'
-  | 'requiresNoAttachments'
-  | 'directWhenForwarded'
 > & {
-  exactHost?: boolean;
-  forwardedSubjectPatterns?: readonly RegExp[];
-  directSubjectPatterns?: readonly RegExp[];
-  skipSubjectPatterns?: readonly RegExp[];
   senderPatterns?: readonly RegExp[];
+  skipSubjectPatterns?: readonly RegExp[];
+  directSubjectPatterns?: readonly RegExp[];
   skipBodyPatterns?: readonly RegExp[];
-  requiresNoAttachments?: boolean;
-  directWhenForwarded?: boolean;
 };
 
-type MailSourcePatternData = NonNullable<MailSourceRuleData['forwardedSubjectPatterns']>[number];
+type MailSourcePatternData = NonNullable<MailSourceRuleData['senderPatterns']>[number];
 
 function compilePatterns(patterns: readonly MailSourcePatternData[]): readonly RegExp[] {
   return patterns.map(({ source, flags }) => new RegExp(source, flags));
@@ -54,9 +46,6 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
     source: rule.source,
     domains: rule.domains,
     ...(rule.exactHost === undefined ? {} : { exactHost: rule.exactHost }),
-    ...(rule.forwardedSubjectPatterns === undefined
-      ? {}
-      : { forwardedSubjectPatterns: compilePatterns(rule.forwardedSubjectPatterns) }),
     ...(rule.otaChip === undefined ? {} : { otaChip: rule.otaChip }),
     ...(rule.bookingPhrase === undefined ? {} : { bookingPhrase: rule.bookingPhrase }),
     ...(rule.directSubjectPatterns === undefined
@@ -70,7 +59,6 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
       ? {}
       : { skipBodyPatterns: compilePatterns(rule.skipBodyPatterns) }),
     ...(rule.requiresNoAttachments === undefined ? {} : { requiresNoAttachments: rule.requiresNoAttachments }),
-    ...(rule.directWhenForwarded === undefined ? {} : { directWhenForwarded: rule.directWhenForwarded }),
   };
 }
 
@@ -92,25 +80,10 @@ const ROUTINE_NOTICE_EXCLUSIONS: readonly RoutineNoticeExclusion[] = ROUTINE_NOT
   ...(entry.humanOrigin === undefined ? {} : { humanOrigin: entry.humanOrigin }),
 }));
 
-const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
-const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
-const ENVELOPE_SUBJECT_PREFIX = /^(?:(?:re|fw|fwd|forwarded)\s*:\s*)+/i;
-const FORWARDED_HEADER_LINE = /^\s*(?:>\s*)*(?:from|sender)\s*:\s*(.*?)\s*$/i;
-const FORWARDED_SUBJECT_LINE = /^\s*(?:>\s*)*subject\s*:\s*(.*?)\s*$/i;
-/** Header lines after the forwarded From line that may hold its Subject (Sent, To, Cc, Subject). */
-const FORWARD_SUBJECT_LOOKAHEAD_LINES = 6;
-const QUOTED_TEXT_LINE = /^\s*>/;
-const FORWARD_SEPARATOR_LINE =
-  /^\s*(?:-{2,}\s*(?:forwarded|original)\s+message\s*-{2,}\s*|begin\s+forwarded\s+message\s*:?\s*|forwarded\s+message\s*:?\s*)$/i;
-const REPLY_INTRO_LINE = /^\s*on\s.+?\bwrote\s*:\s*$/i;
-const ENVELOPE_FIELD_LINE = /^\s*(from|sender|sent|to|cc|bcc|date|subject)\s*:/i;
-/** Field names that share one header role: a repeat is a duplicate, not a new field. */
-const ENVELOPE_FIELD_ROLE: Record<string, string> = { sender: 'from', sent: 'date' };
 const EMAIL_ADDRESS = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9-]{2,63}/i;
 const HTML_TAG = /<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/i;
 const HTML_BLOCK_TAG = /<\/?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^<>]*)?\s*\/?>/gi;
 const HTML_ENTITY = /&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;/gi;
-const MAX_FORWARD_HEADER_CHARS = 5_000;
 
 function extractDomain(rawAddress: string | null | undefined): string {
   if (!rawAddress) return '';
@@ -131,10 +104,6 @@ function ruleForDomain(domain: string): { rule: MailSourceRule; registeredDomain
   return null;
 }
 
-function isInternalForwardSender(domain: string): boolean {
-  return INTERNAL_FORWARD_DOMAINS.some((registeredDomain) => domainMatches(domain, registeredDomain));
-}
-
 function matchedSource(
   rule: MailSourceRule,
   reason: string,
@@ -145,11 +114,11 @@ function matchedSource(
 /** A known sender's mail stays direct when it relays a person's enquiry, or fails a configured skip-evidence gate. */
 function directExemption(
   rule: MailSourceRule,
-  subjects: readonly (string | null | undefined)[],
+  subject: string | null | undefined,
   evidence: { fromAddress?: string | null; bodyText?: string | null; hasAttachments?: boolean },
 ): MailSourceClassification | null {
   const matches = (patterns: readonly RegExp[] | undefined) =>
-    subjects.some((subject) => patterns?.some((pattern) => pattern.test(subject ?? '')));
+    patterns?.some((pattern) => pattern.test(subject ?? '')) === true;
   if (rule.senderPatterns && !rule.senderPatterns.some((pattern) => pattern.test(evidence.fromAddress ?? ''))) {
     return { kind: 'direct', source: null, reason: `unmatched_sender:${rule.id}` };
   }
@@ -199,175 +168,36 @@ function plainTextBody(bodyText: string): string {
     });
 }
 
-/** Lines the forwarding staff member could have authored: no quotes, forward markers or reply intros. */
-function authoredForwardLines(lines: readonly string[]): string {
-  return lines
-    .filter(
-      (line) =>
-        line.trim() !== '' &&
-        !QUOTED_TEXT_LINE.test(line) &&
-        !FORWARD_SEPARATOR_LINE.test(line) &&
-        !REPLY_INTRO_LINE.test(line),
-    )
-    .join('\n')
-    .trim();
-}
-
 /**
- * Exclusive end of the embedded envelope header: the contiguous run of
- * unquoted field lines after the anchor From. Blank lines may separate fields
- * (HTML forwards), but the run ends at the first other content — quoted body,
- * a forward marker, a second From, or a repeated field — because a duplicate
- * or ambiguous line cannot be proven to be envelope. Header-looking text
- * after that stays reviewable instead of being ignored.
- */
-function embeddedHeaderEnd(lines: readonly string[], block: { index: number }): number {
-  const seen = new Set(['from']);
-  for (let index = block.index + 1; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.trim() === '') continue;
-    const field = ENVELOPE_FIELD_LINE.exec(line)?.[1].toLowerCase();
-    const role = field ? (ENVELOPE_FIELD_ROLE[field] ?? field) : undefined;
-    if (role === undefined || seen.has(role)) return index;
-    seen.add(role);
-  }
-  return lines.length;
-}
-
-/**
- * Text authored ahead of the forwarded content. Without an anchor From line,
- * forwarded prose would be indistinguishable from authored text, so only the
- * region before the first forward marker or embedded header counts.
- */
-function forwardedSubjectAuthoredText(bodyLines: readonly string[]): string {
-  const contentStart = bodyLines.findIndex(
-    (line) =>
-      FORWARD_SEPARATOR_LINE.test(line) || FORWARDED_HEADER_LINE.test(line) || REPLY_INTRO_LINE.test(line),
-  );
-  return authoredForwardLines(contentStart < 0 ? bodyLines : bodyLines.slice(0, contentStart));
-}
-
-/**
- * Authored-capable text around an embedded forwarded header block. `before`
- * covers everything ahead of its From line, including between a forward
- * separator and the headers; `after` covers everything after the provable
- * header run. The forwarded message has no end marker, so unquoted content
- * after the headers cannot be attributed to the original — a staff ask
- * appended there stays reviewable instead of being folded into the forwarded
- * source, and so does header-looking text past the boundary.
- */
-function forwardedAuthoredText(
-  lines: readonly string[],
-  block: { index: number },
-): { before: string; after: string } {
-  return {
-    before: authoredForwardLines(lines.slice(0, block.index)),
-    after: authoredForwardLines(lines.slice(embeddedHeaderEnd(lines, block))),
-  };
-}
-
-/** The first embedded forwarded header block (From/Sender line plus its lookahead Subject). */
-function forwardedHeaderBlock(
-  lines: readonly string[],
-): { index: number; domain: string; subject: string | null } | null {
-  for (const [index, line] of lines.entries()) {
-    const header = FORWARDED_HEADER_LINE.exec(line);
-    if (!header) continue;
-    // HTML forwards put blank lines between header fields, so only non-blank lines count toward the lookahead.
-    const subjectLine = lines
-      .slice(index + 1)
-      .filter((candidate) => candidate.trim() !== '')
-      .slice(0, FORWARD_SUBJECT_LOOKAHEAD_LINES)
-      .map((candidate) => FORWARDED_SUBJECT_LINE.exec(candidate)?.[1])
-      .find((subject) => subject !== undefined);
-    return { index, domain: extractDomain(header[1]), subject: subjectLine ?? null };
-  }
-  return null;
-}
-
-function originalForwardSender(
-  lines: readonly string[],
-  block: { index: number; domain: string; subject: string | null },
-): { rule: MailSourceRule; domain: string; subject: string | null; authoredText: string; tailText: string } | null {
-  const match = ruleForDomain(block.domain);
-  if (!match) return null;
-  const authored = forwardedAuthoredText(lines, block);
-  return {
-    rule: match.rule,
-    domain: match.registeredDomain,
-    subject: block.subject,
-    authoredText: authored.before,
-    tailText: authored.after,
-  };
-}
-
-/** The envelope subject minus Re:/Fw:/Fwd:/Forwarded: chains, trimmed. */
-function transportStrippedSubject(subject: string): string {
-  const trimmed = subject.trim();
-  const prefix = ENVELOPE_SUBJECT_PREFIX.exec(trimmed);
-  return prefix ? trimmed.slice(prefix[0].length).trim() : trimmed;
-}
-
-/**
- * The staff envelope subject must restate the embedded subject once transport
- * prefixes are stripped. Any difference can carry a current ask, and a missing
- * embedded subject proves nothing, so both keep the mail reviewable.
- */
-function envelopeSubjectAnnotated(outerSubject: string, embeddedSubject: string | null | undefined): boolean {
-  const embedded = embeddedSubject?.trim();
-  if (!embedded) return true;
-  return transportStrippedSubject(outerSubject) !== embedded;
-}
-
-function forwardSubjectGuardReason(embeddedSubject: string | null | undefined): string {
-  return embeddedSubject?.trim() ? 'forwarded_rewritten_subject' : 'forwarded_subject_unknown';
-}
-
-/**
- * A human-origin routine notice is suppressed only by a proven unannotated
- * send: an envelope re-send whose staff subject restates the embedded one, or
- * a bare template subject over an empty body. Any authored content — ahead of
- * the forwarded material, appended after it, or as the whole body — stays
- * reviewable, because the notice template itself cannot be told apart from a
- * current staff ask. Attachments are never read at this gate, so only a
- * proven-empty file set allows a skip; a present or unverified file can carry
- * a whole separate ask.
+ * A human-origin routine notice is suppressed only by a proven content-free
+ * send: the subject must be the exact bare notice subject (enforced by the
+ * exclusion's anchored pattern, so a reply, forward or any added text stays
+ * reviewable), the body must be empty, and attachments must be proven absent.
+ * Any body line could be staff-authored, and a present or unverified file can
+ * carry a whole separate ask, so both keep the mail reviewable.
  */
 function humanOriginNoticeSuppressed(input: {
-  subject?: string | null;
   /** Body already reduced to plain text by the caller. */
   plainBody: string;
   /** Tri-state attachment evidence; only `false` (proven none) counts. */
   hasAttachments?: boolean;
 }): boolean {
-  if (input.hasAttachments !== false) return false;
-  const subject = input.subject?.trim() ?? '';
-  const lines = input.plainBody.split(/\r?\n/);
-  const block = forwardedHeaderBlock(input.plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/));
-  if (block) {
-    if (envelopeSubjectAnnotated(subject, block.subject)) return false;
-    const authored = forwardedAuthoredText(lines, block);
-    return !authored.before && !authored.after;
-  }
-  if (ENVELOPE_SUBJECT_PREFIX.test(subject)) return false;
-  return !input.plainBody.trim();
-}
-
-function forwardedSubject(subject: string): string | null {
-  const trimmed = subject.trim();
-  const prefix = FORWARD_SUBJECT_PREFIX.exec(trimmed);
-  return prefix ? trimmed.slice(prefix[0].length).trim() : null;
+  return input.hasAttachments === false && !input.plainBody.trim();
 }
 
 /**
- * Classify only known sender domains, or a known source in an internal forward. Ordinary message text is never evidence:
- * a guest or travel agent can mention an OTA without turning their direct request into channel mail.
+ * Classify only known sender domains and exact routine notices. Ordinary
+ * message text is never evidence: a guest or travel agent can mention an OTA
+ * without turning their direct request into channel mail, and a human forward
+ * of a channel or notice can never be proved unannotated — any body line can
+ * be staff-authored even when it resembles an embedded header — so every
+ * human-origin forward stays reviewable for first-pass adjudication.
  */
 export function classifyMailSource(input: {
   fromAddress?: string | null;
   subject?: string | null;
   bodyText?: string | null;
-  /** Whether the message carries at least one non-inline attachment; undefined means unknown. A human-origin or forwarded send skips only on a proven-empty set, since a file can carry the whole ask. */
+  /** Whether the message carries at least one non-inline attachment; undefined means unknown. A human-origin send skips only on a proven-empty set, since a file can carry the whole ask. */
   hasAttachments?: boolean;
 }): MailSourceClassification {
   const plainBody = plainTextBody(input.bodyText ?? '');
@@ -376,7 +206,7 @@ export function classifyMailSource(input: {
       exclusion.senderPattern.test(input.fromAddress?.trim() ?? '') &&
       exclusion.subjectPattern.test(input.subject?.trim() ?? '') &&
       (exclusion.humanOrigin !== true ||
-        humanOriginNoticeSuppressed({ subject: input.subject, plainBody, hasAttachments: input.hasAttachments })),
+        humanOriginNoticeSuppressed({ plainBody, hasAttachments: input.hasAttachments })),
   );
   if (routineNotice) {
     return { kind: 'system', source: routineNotice.source, reason: `routine_notice:${routineNotice.id}` };
@@ -384,7 +214,7 @@ export function classifyMailSource(input: {
   const senderDomain = extractDomain(input.fromAddress);
   const senderMatch = ruleForDomain(senderDomain);
   if (senderMatch) {
-    const exemption = directExemption(senderMatch.rule, [input.subject], {
+    const exemption = directExemption(senderMatch.rule, input.subject, {
       fromAddress: input.fromAddress,
       bodyText: input.bodyText,
       hasAttachments: input.hasAttachments,
@@ -393,86 +223,10 @@ export function classifyMailSource(input: {
     return matchedSource(senderMatch.rule, `sender_domain:${senderMatch.registeredDomain}`);
   }
 
-  if (isInternalForwardSender(senderDomain)) {
-    const lines = plainBody.split(/\r?\n/);
-    const block = forwardedHeaderBlock(plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/));
-    const forwardedSender = block ? originalForwardSender(lines, block) : null;
-    if (forwardedSender) {
-      // Fresh authored content above the forward keeps the message reviewable;
-      // only an empty preamble is a clearly notice-only envelope.
-      if (forwardedSender.authoredText) {
-        return { kind: 'direct', source: null, reason: `forwarded_authored_content:${forwardedSender.rule.id}` };
-      }
-      // A rewritten envelope subject can carry the whole ask: it must restate
-      // the embedded subject once transport prefixes are stripped.
-      if (envelopeSubjectAnnotated(input.subject ?? '', forwardedSender.subject)) {
-        return {
-          kind: 'direct',
-          source: null,
-          reason: `${forwardSubjectGuardReason(forwardedSender.subject)}:${forwardedSender.rule.id}`,
-        };
-      }
-      // This gate runs before attachment reads, so only a proven-empty file
-      // set allows a skip; a present or unverified file can carry a separate ask.
-      if (input.hasAttachments !== false) {
-        return {
-          kind: 'direct',
-          source: null,
-          reason: `${input.hasAttachments === true ? 'forwarded_attachments_present' : 'forwarded_attachments_unverified'}:${forwardedSender.rule.id}`,
-        };
-      }
-      if (forwardedSender.tailText) {
-        return { kind: 'direct', source: null, reason: `forwarded_authored_tail:${forwardedSender.rule.id}` };
-      }
-      if (forwardedSender.rule.directWhenForwarded) {
-        return { kind: 'direct', source: null, reason: `forwarded_skip_exempt:${forwardedSender.rule.id}` };
-      }
-      const exemption = directExemption(forwardedSender.rule, [input.subject, forwardedSender.subject], {
-        fromAddress: input.fromAddress,
-        bodyText: input.bodyText,
-        hasAttachments: input.hasAttachments,
-      });
-      if (exemption) return exemption;
-      return matchedSource(forwardedSender.rule, `forwarded_sender:${forwardedSender.domain}`);
-    }
-
-    const originalSubject = forwardedSubject(input.subject ?? '');
-    if (originalSubject) {
-      for (const rule of MAIL_SOURCE_RULES) {
-        if (rule.forwardedSubjectPatterns?.some((pattern) => pattern.test(originalSubject))) {
-          const authored = block ? forwardedAuthoredText(lines, block) : null;
-          if (authored ? authored.before : forwardedSubjectAuthoredText(lines)) {
-            return { kind: 'direct', source: null, reason: `forwarded_authored_content:${rule.id}` };
-          }
-          // The branded subject template alone cannot prove the forward is
-          // unannotated; it must restate an embedded subject to still skip.
-          if (envelopeSubjectAnnotated(input.subject ?? '', block?.subject)) {
-            return {
-              kind: 'direct',
-              source: null,
-              reason: `${forwardSubjectGuardReason(block?.subject)}:${rule.id}`,
-            };
-          }
-          if (input.hasAttachments !== false) {
-            return {
-              kind: 'direct',
-              source: null,
-              reason: `${input.hasAttachments === true ? 'forwarded_attachments_present' : 'forwarded_attachments_unverified'}:${rule.id}`,
-            };
-          }
-          if (authored?.after) {
-            return { kind: 'direct', source: null, reason: `forwarded_authored_tail:${rule.id}` };
-          }
-          return matchedSource(rule, `forwarded_subject:${rule.id}`);
-        }
-      }
-    }
-  }
-
   return {
     kind: 'direct',
     source: null,
-    reason: 'no_matching_sender_or_forward_header',
+    reason: 'no_matching_sender',
   };
 }
 

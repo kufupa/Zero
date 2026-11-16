@@ -58,17 +58,13 @@ describe('self-sent pre-stay information', () => {
       subject,
       bodyText: 'Please book another room.\nFrom: Booking.com <noreply@messages.booking.com>\nSubject: Booking confirmation',
     });
-    expect(source).toEqual({ kind: 'direct', source: null, reason: 'forwarded_authored_content:booking-com' });
+    expect(source).toEqual({ kind: 'direct', source: null, reason: 'no_matching_sender' });
     expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual(source);
     expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: 'other@example.invalid' })).toEqual(source);
     expect(admissionMailSource(source, { fromAddress, subject: 'Booking confirmation', mailboxAddress: fromAddress })).toEqual(source);
-    const noticeOnly = classifyMailSource({
-      fromAddress,
-      subject,
-      bodyText: `From: Booking.com <noreply@messages.booking.com>\nSubject: ${subject}`,
-      hasAttachments: false,
-    });
-    expect(noticeOnly.kind).toBe('channel');
+    const noticeOnly: Parameters<typeof admissionMailSource>[0] = {
+      kind: 'channel', source: 'Booking.com', reason: 'sender_domain:booking.com',
+    };
     expect(admissionMailSource(noticeOnly, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({
       kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate',
     });
@@ -79,7 +75,7 @@ describe('self-sent pre-stay information', () => {
     const subject = 'Pre-arrival guest details';
     const source = classifyMailSource({ fromAddress, subject,
       bodyText: 'Confirmation No 57291630-1. Please send the menu.\nFrom: Booking.com <noreply@messages.booking.com>' });
-    expect(source).toEqual({ kind: 'direct', source: null, reason: 'forwarded_authored_content:booking-com' });
+    expect(source).toEqual({ kind: 'direct', source: null, reason: 'no_matching_sender' });
     expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual(source);
   });
 

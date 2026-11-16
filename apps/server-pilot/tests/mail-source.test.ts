@@ -141,9 +141,9 @@ const forwardedExamples = [
       bodyText: 'From: TrustYou <alerts@trustyou.com>\nSubject: New feedback',
       hasAttachments: false,
     },
-    kind: 'system',
-    source: 'TrustYou',
-    reason: 'forwarded_sender:trustyou.com',
+    kind: 'direct',
+    source: null,
+    reason: 'no_matching_sender',
   },
 ] as const;
 
@@ -212,7 +212,6 @@ const directExamples = [
         'Subject: SynXis Res Confirmed',
       ].join('\n'),
     },
-    reason: 'forwarded_authored_content:synxis',
   },
   {
     name: 'internal FW with authored ask matching a channel subject template',
@@ -221,7 +220,6 @@ const directExamples = [
       subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
       bodyText: 'Please file this.',
     },
-    reason: 'forwarded_authored_content:synxis',
   },
   {
     name: 'internal forward whose embedded Subject line is absent',
@@ -230,7 +228,6 @@ const directExamples = [
       subject: 'Fwd: New reservation',
       bodyText: 'Forwarded message:\nSender: Guest Messaging <notice@property.booking.com>',
     },
-    reason: 'forwarded_subject_unknown:booking-com',
   },
   {
     name: 'internal FW whose envelope subject adds an ask to the embedded subject',
@@ -239,12 +236,11 @@ const directExamples = [
       subject: 'FW: SynXis Res Confirmed — please amend dates',
       bodyText: 'Forwarded message:\nFrom: SynXis Reservations <noreply@synxis.com>\nSubject: SynXis Res Confirmed',
     },
-    reason: 'forwarded_rewritten_subject:synxis',
   },
 ] as const;
 
 describe('classifyMailSource', () => {
-  it('skips Profitroom exact-host mail regardless of subject, sent or forwarded', () => {
+  it('skips Profitroom exact-host mail regardless of subject, while a staff forward stays reviewable', () => {
     expect(
       classifyMailSource({ fromAddress: 'noreply@profitroom.com', subject: 'Default contact form', bodyText: '' }),
     ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'sender_domain:profitroom.com' });
@@ -255,10 +251,10 @@ describe('classifyMailSource', () => {
         bodyText: 'From: Profitroom <noreply@profitroom.com>\nSent: today\nSubject: Default contact form',
         hasAttachments: false,
       }),
-    ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'forwarded_sender:profitroom.com' });
+    ).toEqual({ kind: 'direct', source: null, reason: 'no_matching_sender' });
   });
 
-  it('keeps a renamed forward of a Profitroom contact form reviewable: the envelope subject no longer restates the embedded one', () => {
+  it('keeps a staff forward of a Profitroom contact form reviewable even with a rewritten subject', () => {
     expect(
       classifyMailSource({
         fromAddress: 'reservations@legacyhotels.co.za',
@@ -266,10 +262,10 @@ describe('classifyMailSource', () => {
         bodyText:
           'From: Profitroom <noreply@profitroom.com>\nSent: Monday\nTo: reservations\nSubject: Default contact form\n\nHello',
       }),
-    ).toEqual({ kind: 'direct', source: null, reason: 'forwarded_rewritten_subject:profitroom' });
+    ).toEqual({ kind: 'direct', source: null, reason: 'no_matching_sender' });
   });
 
-  it('keeps an HTML forward reviewable when unaccounted content follows the blank-line separated headers', () => {
+  it('keeps a staff forward with header-looking lines reviewable: text layout cannot prove an envelope', () => {
     const result = classifyMailSource({
       fromAddress: 'reservations@legacyhotels.co.za',
       subject: 'FW: Secure payment link',
@@ -277,7 +273,7 @@ describe('classifyMailSource', () => {
         'From: H-Pay <noreply@hospitality.cloud>\n\nSent: Monday\n\nTo: reservations\n\nCc: finance\n\nSubject: Secure payment link\n\nHello',
       hasAttachments: false,
     });
-    expect(result).toEqual({ kind: 'direct', source: null, reason: 'forwarded_authored_tail:h-pay' });
+    expect(result).toEqual({ kind: 'direct', source: null, reason: 'no_matching_sender' });
   });
 
   it('skips all exact-host H-Pay mail; the skip is not subject-limited, and subdomains stay direct', () => {
@@ -306,7 +302,7 @@ describe('classifyMailSource', () => {
     expect(classifyMailSource(input)).toEqual({ kind, source, reason });
   });
 
-  it.each(forwardedExamples)('matches forwarded source: $name', ({ input, kind, source, reason }) => {
+  it.each(forwardedExamples)('keeps a human-origin forward reviewable: $name', ({ input, kind, source, reason }) => {
     expect(classifyMailSource(input)).toEqual({ kind, source, reason });
   });
 
@@ -314,11 +310,11 @@ describe('classifyMailSource', () => {
     expect(classifyMailSource(entry.input)).toEqual({
       kind: 'direct',
       source: null,
-      reason: 'reason' in entry ? entry.reason : 'no_matching_sender_or_forward_header',
+      reason: 'reason' in entry ? entry.reason : 'no_matching_sender',
     });
   });
 
-  it('uses only the first forwarded sender header, not an older quoted channel notice', () => {
+  it('never lets header-looking body lines classify a staff forward, even an older quoted channel notice', () => {
     expect(
       classifyMailSource({
         fromAddress: 'staff@legacyhotels.co.za',
@@ -338,11 +334,11 @@ describe('classifyMailSource', () => {
     ).toEqual({
       kind: 'direct',
       source: null,
-      reason: 'no_matching_sender_or_forward_header',
+      reason: 'no_matching_sender',
     });
   });
 
-  it('reads the first forwarded sender from an HTML-only body', () => {
+  it('keeps an HTML-only staff forward with header-looking lines reviewable', () => {
     expect(
       classifyMailSource({
         fromAddress: 'staff@legacyhotels.co.za',
@@ -356,9 +352,9 @@ describe('classifyMailSource', () => {
         hasAttachments: false,
       }),
     ).toEqual({
-      kind: 'channel',
-      source: 'SynXis',
-      reason: 'forwarded_sender:synxis.com',
+      kind: 'direct',
+      source: null,
+      reason: 'no_matching_sender',
     });
   });
 });
@@ -368,7 +364,7 @@ describe('mailSourceTriageOutput', () => {
     const output = mailSourceTriageOutput({
       kind: 'channel',
       source: 'Expedia Partner Central',
-      reason: 'forwarded_sender:expediapartnercentral.com',
+      reason: 'sender_domain:m.expediapartnercentral.com',
     });
 
     expect(output).toMatchObject({
@@ -378,7 +374,7 @@ describe('mailSourceTriageOutput', () => {
       humanAction: 'none',
     });
     expect(output.rationale).toContain('Expedia Partner Central');
-    expect(output.rationale).toContain('forwarded_sender:expediapartnercentral.com');
+    expect(output.rationale).toContain('sender_domain:m.expediapartnercentral.com');
     expect(output.policyFlags).toContain('mail-source:channel');
     expect(output.policyFlags).not.toContain('mail-source:routed');
   });
