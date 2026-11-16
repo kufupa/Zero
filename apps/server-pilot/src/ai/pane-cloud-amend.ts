@@ -39,13 +39,14 @@ export const cloudAmendSourceBindingSchema = z.object({ selected: cloudAmendSour
   draft: amendDraftIdentitySchema.optional(),
 }).strict().refine((binding) => binding.revision <= binding.revisionHead);
 const editableText = z.string().max(1000).refine((value) => !/[\p{Cc}]/u.test(value));
+const billingReferenceText = z.string().max(50).refine((value) => !/[\p{Cc}]/u.test(value));
 const reservationNoteText = z.string().max(2000).refine((value) => !/[\p{Cc}]/u.test(value.replace(/\n/g, '')));
 export const cloudAmendChangesSchema = z.object({
   arrival: day.optional(), departure: day.optional(), adults: z.number().int().min(1).max(16).optional(),
   children: z.number().int().min(0).max(9).optional(), childAges: z.array(z.number().int().min(0).max(17)).max(9).optional(),
   roomType: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), roomTypeForCharge: z.string().regex(/^[A-Z0-9]{0,12}$/).optional(),
   ratePlan: z.string().regex(/^[A-Z0-9]{1,12}$/),
-  reservationNote: reservationNoteText.optional(), billingReference: editableText.optional(),
+  reservationNote: reservationNoteText.optional(), billingReference: billingReferenceText.optional(),
   retainRates: z.enum(['yes', 'no']), firstName: editableText.optional(), lastName: editableText.optional(),
   guestEmail: editableText.optional(), bookerName: editableText.optional(), bookerContact: editableText.optional(),
   cmsSend: z.boolean(), cmsMessageId: editableText, cmsRecipient: editableText,

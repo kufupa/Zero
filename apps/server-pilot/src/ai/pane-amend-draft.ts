@@ -54,6 +54,7 @@ export function validAmendRequestValue(field: AmendField, value: unknown): boole
     case 'roomTypeForCharge': return typeof value === 'string' && /^[A-Z0-9]{0,12}$/.test(value);
     case 'reservationNote': return typeof value === 'string' && value.length <= 2000 &&
       !/[\p{Cc}]/u.test(value.replace(/\n/g, ''));
+    case 'billingReference': return text(value, 50);
     case 'childAges': return Array.isArray(value) && value.length <= 9 &&
       value.every((age) => Number.isInteger(age) && age >= 0 && age <= 17);
     case 'retainRates': return value === 'yes' || value === 'no';

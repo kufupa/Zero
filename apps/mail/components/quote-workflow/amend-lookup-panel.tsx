@@ -1594,6 +1594,7 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
     firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && !pendingRateMatch &&
     /^[A-Z0-9]{1,12}$/.test(roomType) && /^[A-Z0-9]{0,12}$/.test(roomTypeForCharge.trim()) &&
+    billingReference.trim().length <= 50 && !/[\p{Cc}]/u.test(billingReference.trim()) &&
     validRecipient && !retainedPriceChange && !childChangeUnsupported &&
     (Object.keys(changes).length > 0 || cmsTouched));
   const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
@@ -1769,12 +1770,13 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
           <input data-pii className={selectClass} value={billingReference} onChange={(event) => {
             setBillingReference(event.target.value); markDetail('billingReference');
             durableDraft?.record('billingReference', event.target.value,
-              event.target.value.length <= 1000 && !/[\p{Cc}]/u.test(event.target.value));
+              event.target.value.length <= 50 && !/[\p{Cc}]/u.test(event.target.value));
           }} />
         </label>
       </div>
     </details>
     {!firstName.trim() || !lastName.trim() ? <p className={warnNoteClass}>Enter guest first name and surname under More.</p> : null}
+    {billingReference.trim().length > 50 ? <p className={warnNoteClass}>Billing reference is limited to 50 characters.</p> : null}
     {!/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType) ? <p className={warnNoteClass}>Choose a room type and enter a rate code (letters and numbers).</p> : null}
     {cmsNeedsChoice ? <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
       <span>Send HMS confirmation?</span>
