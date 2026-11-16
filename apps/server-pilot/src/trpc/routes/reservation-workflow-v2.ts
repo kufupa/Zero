@@ -66,7 +66,8 @@ import { reservationWorkflowV2SavedServicesExecuteInputSchema, reservationWorkfl
 import { reservationWorkflowV2QuoteLookup, reservationWorkflowV2QuotePrepare,
   reservationWorkflowV2QuoteExecute, reservationWorkflowV2QuoteReconcile } from '../../ai/reservation-workflow-v2-quote.js';
 import { reservationWorkflowV2CancelLookup, reservationWorkflowV2CancelPrepare, reservationWorkflowV2CancelPreparation,
-  reservationWorkflowV2CancelReconcile } from '../../ai/reservation-workflow-v2-cancel.js';
+  reservationWorkflowV2CancelReconcile, reservationWorkflowV2CancelCharge,
+  reservationWorkflowV2CancelChargeDecision } from '../../ai/reservation-workflow-v2-cancel.js';
 import { reservationWorkflowV2AmendLookup, reservationWorkflowV2AmendPrepare, reservationWorkflowV2AmendPreparation, reservationWorkflowV2AmendReviewView,
   reservationWorkflowV2AmendReconcile } from '../../ai/reservation-workflow-v2-amend.js';
 import { reservationWorkflowV2FilingLookup, reservationWorkflowV2FilingPrepare, reservationWorkflowV2FilingPreparation,
@@ -308,6 +309,12 @@ const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
     input.bookedDeparture === undefined), 'Stay hints apply only to an existing reservation.')
   .refine(input => input.bookedDeparture === undefined ||
     (input.bookedArrival !== undefined && input.bookedDeparture > input.bookedArrival), 'Departure must follow arrival.');
+
+const cancelChargeInput = reservationWorkflowV2ItemInputSchema.extend({
+  operationId: z.string().uuid() }).strict();
+const cancelChargeDecisionInput = cancelChargeInput.extend({
+  challengeId: z.string().uuid(), dialogDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  decision: z.enum(['accept', 'decline']) }).strict();
 
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
   allocationId: z.string().min(1).max(80).optional(),
@@ -724,6 +731,16 @@ export const reservationWorkflowV2Router = router({
     if (!['create', 'filing', 'cancel', 'amend'].includes(workflow.kind ?? '')) return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
     const { go: _go, idempotencyKey: _key, ...captured } = nativeInput;
     return queuePreparedV2(scoped, preparedRef, 'execute', captured);
+  }),
+  /** Live HMS fee challenge for one in-flight cancel Go; PANE-UX renders the exact dialog text. */
+  cancelCharge: reservationWorkflowV2Procedure.input(cancelChargeInput).query(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
+    return reservationWorkflowV2CancelCharge(scoped, input);
+  }),
+  /** Distinct staff Go on the fee itself; the writer re-verifies the exact dialog before acting. */
+  cancelChargeDecision: reservationWorkflowV2Procedure.input(cancelChargeDecisionInput).mutation(async ({ input, ctx }) => {
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
+    return reservationWorkflowV2CancelChargeDecision(scoped, input);
   }),
   lookupServices: reservationWorkflowV2Procedure.input(servicesInput).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);

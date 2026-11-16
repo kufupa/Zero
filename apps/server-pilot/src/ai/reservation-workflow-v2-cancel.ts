@@ -3,12 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, lstat, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
-import type { AiRunFence } from './run-ledger.js';
+import { HMS_WRITE_RUN_KIND, type AiRunFence } from './run-ledger.js';
 import { consumeStaffGoAtDispatch } from './hms-approval.js';
-import { mailboxAccess, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, mailboxAccess, mailThread, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
@@ -141,6 +141,32 @@ const stagedCancelSchema = z.object({ reasonCode: reasonOptionSchema.shape.value
   penaltyText: z.string().trim().min(1).max(2000).nullable() }).strict();
 const reviewNote = (observationRef: string, approvalDigest: string) =>
   `cancel-preview:${observationRef}:${approvalDigest}`;
+
+// A fee decision is a distinct staff Go bound to the exact native dialog, the live write run's
+// lease, the stay, the source, the draft revision and the staff session. It lives on the fenced
+// run's metrics so the pane process and the writer share one durable, expiring challenge.
+const CANCEL_CHARGE_METRIC = 'reservationV2CancelCharge';
+const chargeDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const cancelChargeSchema = z.object({ version: z.literal(1), id: z.string().uuid(), runId: z.string().uuid(),
+  dialogDigest: chargeDigestSchema, text: z.string().trim().min(1).max(2000),
+  button: z.string().trim().min(1).max(40), timing: z.enum(['before_save', 'after_save']),
+  confirmation: z.string().regex(/^\d+-\d+$/), nativeStayId: z.string().regex(/^\d{1,100}$/),
+  propertyCode: z.enum(['HRCEN', 'HRDAV', 'HRDAVS']), requestId: z.string().min(1).max(80),
+  hintId: z.string().min(1).max(80), approvalDigest: chargeDigestSchema, grantId: z.string().uuid(),
+  sourceDigest: chargeDigestSchema, workItemId: z.string().uuid(), generationId: z.string().uuid(),
+  expectedRevision: z.number().int().nonnegative(), expectedSeq: z.number().int().nonnegative(),
+  actorUserId: z.string().trim().min(1).max(200), sessionId: z.string().min(1).max(512),
+  sessionProfile: z.enum(['legacy', 'remote']), expiresAt: z.number().int(),
+  status: z.enum(['pending', 'approved', 'declined', 'consumed', 'dispatched', 'expired']),
+  requestDigest: chargeDigestSchema.optional() }).strict();
+type CancelCharge = z.infer<typeof cancelChargeSchema>;
+
+function cancelChargeOf(metrics: unknown): CancelCharge | null {
+  const object = metrics && typeof metrics === 'object' && !Array.isArray(metrics)
+    ? metrics as Record<string, unknown> : {};
+  const parsed = cancelChargeSchema.safeParse(object[CANCEL_CHARGE_METRIC]);
+  return parsed.success ? parsed.data : null;
+}
 
 function stateContext(ctx: ReadContext): StateContext {
   return { db: ctx.db, transportId: ctx.transport.id, userId: 'system' in ctx || ctx.nativeBatch ? null : ctx.user.id,
@@ -1045,7 +1071,7 @@ function operationById(draft: ReservationWorkflowV2Draft, operationId: string) {
 
 async function assertCurrentCancel(tx: Tx, ctx: ReservationWorkflowV2CancelContext, input: ReservationWorkflowV2ExecuteInput,
   compiled: Extract<CancelCompile, { outcome: 'ok' }>, preparedRef: string, approval: string,
-  actorSession: CancelActorSession, attempt?: ReservationWorkflowV2Observation): Promise<void> {
+  actorSession: CancelActorSession, attempt?: ReservationWorkflowV2Observation, forCharge = false): Promise<void> {
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq,
     sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id)))
@@ -1068,9 +1094,11 @@ async function assertCurrentCancel(tx: Tx, ctx: ReservationWorkflowV2CancelConte
   const [access] = await tx.select({ id: mailboxAccess.id }).from(mailboxAccess)
     .where(and(eq(mailboxAccess.userId, ctx.user.id), eq(mailboxAccess.transportId, ctx.transport.id))).limit(1).for('share');
   const op = draft.operationResults.find((entry) => entry.id === input.idempotencyKey);
+  // A charge re-check runs after the cancel dispatch already claimed its own operation; that one
+  // in-flight 'unknown' operation is the bound operation itself, not a competing write.
   const competingOperation = draft.operationResults.some((entry) => entry.requestId === compiled.requestId &&
     entry.allocationId === compiled.hintId && entry.workflow === 'cancel' &&
-    (entry.status === 'succeeded' || entry.status === 'unknown'));
+    (entry.status === 'succeeded' || (entry.status === 'unknown' && (!forCharge || entry.id !== input.idempotencyKey))));
   const live = compileCancel(draft, compiled.requestId, compiled.hintId, ctx.property.propertyCode);
   const livePrepared = live.outcome === 'ok' ? preparedPreview(draft, live) : null;
   const review = live.outcome === 'ok' && livePrepared ? reviewBinding(draft, live, livePrepared.item, approval) : null;
@@ -1078,7 +1106,8 @@ async function assertCurrentCancel(tx: Tx, ctx: ReservationWorkflowV2CancelConte
       staffQuoteSourceHash(source) !== input.source.sourceHash || !(source.arrivedAt instanceof Date) ||
       source.arrivedAt.toISOString() !== input.source.arrivedAt || live.outcome !== 'ok' ||
       live.semanticDigest !== compiled.semanticDigest || livePrepared?.item.ref !== preparedRef ||
-      record(livePrepared?.result)?.approvalDigest !== approval || !review?.accepted || op || competingOperation ||
+      record(livePrepared?.result)?.approvalDigest !== approval || !review?.accepted ||
+      (op && (!forCharge || op.status !== 'unknown')) || competingOperation ||
       (attempt !== undefined && (attempt.generationId !== draft.generationId || attempt.sourceMessageId !== draft.source.messageId ||
         draft.observations.some((entry) => entry.ref === attempt.ref) ||
         attempt.sourceRefs.some((ref) => !draft.observations.some((entry) => entry.ref === ref))))) {
@@ -1370,9 +1399,30 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
       let beforeReceipt: { runId: string; name: 'before.png'; sha256: string } | null = null;
       let nativeRequestDigest: string | null = null, claimRequestDigest: string | null = null, claimDigest: string | null = null;
       let beforeScreenshotPath: string | null = null, acceptedPenaltyText: string | null = null;
+      let chargeApproval: CancelCharge | null = null;
       const continuationAllowed = () => {
         const currentMode = cancelMode();
         return !lockSignal?.aborted && (currentMode === 'on' || (currentMode === 'lab' && labtest));
+      };
+      // Every charge mutation first re-binds the work item, source, draft, staff review and actor
+      // session, then locks the live run row, so a stale lease or changed draft cannot carry a
+      // charge authority forward.
+      const chargeRun = async (fn: (tx: Tx, metrics: Record<string, unknown>) => Promise<void>) => {
+        const fence = ctx.writeRunFence;
+        if (!fence) throw new Error('cancel_charge_lease_lost');
+        await ctx.db.transaction(async (tx) => {
+          await assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref, approval, actorSession.data, undefined, true);
+          const [run] = await tx.select({ metrics: aiWorkflowRun.metrics, deadlineAt: aiWorkflowRun.deadlineAt })
+            .from(aiWorkflowRun).where(and(eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.workItemId, input.workItemId),
+              eq(aiWorkflowRun.transportId, ctx.transport.id), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+              eq(aiWorkflowRun.claimOwner, fence.claimOwner), eq(aiWorkflowRun.claimToken, fence.claimToken),
+              inArray(aiWorkflowRun.state, ['claimed', 'running']))).limit(1).for('update');
+          if (!run?.deadlineAt || run.deadlineAt.getTime() !== fence.deadlineAt.getTime() ||
+              run.deadlineAt.getTime() <= Date.now() || !continuationAllowed()) {
+            throw new Error('cancel_charge_lease_lost');
+          }
+          await fn(tx, run.metrics ?? {});
+        });
       };
       const acquireClaim = async (requestDigest: string, beforePath: string) => {
         lockSignal?.throwIfAborted();
@@ -1423,23 +1473,105 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
           expected: fresh.preimage, bindDepositReceived: true, runId, reasonCode: matchingReason.value, reasonLabel: matchingReason.display,
           cancellationNote: compiled.cancellationNote, continuationAllowed, commitBudgetMs: 15 * 60_000,
           beforeDispatch: async () => continuationAllowed(),
-          awaitChargeApproval: async (dialog: { text: string; button: string }) => {
+          awaitChargeApproval: async (dialog: { text: string; button: string; timing?: string }) => {
             const dialogText = typeof dialog?.text === 'string' ? penaltyLine(dialog.text) as string : '';
             const button = typeof dialog?.button === 'string' ? dialog.button.trim() : '';
+            const fence = ctx.writeRunFence;
             if (!fresh.penaltyText || dialogText !== fresh.penaltyText || !/^(?:OK|Yes|Accept)$/i.test(button) ||
-                !continuationAllowed()) return false;
+                !fence || !continuationAllowed()) return false;
+            const expiresAt = Math.min(Date.now() + 3 * 60_000, fence.deadlineAt.getTime() - 60_000);
+            if (expiresAt <= Date.now() + 15_000) return false;
+            const body = { version: 1 as const, id: randomUUID(), runId: fence.runId, text: dialogText, button,
+              timing: dialog?.timing === 'after_save' ? 'after_save' as const : 'before_save' as const,
+              confirmation: fresh.preimage.confirmation, nativeStayId: fresh.preimage.nativeStayId,
+              propertyCode: expectedTarget.propertyCode, requestId: compiled.requestId, hintId: compiled.hintId,
+              approvalDigest: approval, grantId: input.idempotencyKey, sourceDigest: input.source.sourceHash,
+              workItemId: input.workItemId, generationId: loaded.draft.generationId,
+              expectedRevision: input.expectedRevision, expectedSeq: input.expectedSeq,
+              actorUserId: ctx.user.id, sessionId: actorSession.data.sessionId,
+              sessionProfile: actorSession.data.sessionProfile, expiresAt, status: 'pending' as const };
+            const challenge = cancelChargeSchema.parse({ ...body, dialogDigest: sha256({ ...body,
+              source: { threadId: input.source.threadId, messageId: input.source.messageId,
+                sourceHash: input.source.sourceHash } }) });
             try {
-              await ctx.db.transaction((tx) => assertCurrentCancel(tx, ctx, input, compiled, prepared.item.ref,
-                approval, actorSession.data));
-              acceptedPenaltyText = dialogText;
-              return true;
-            } catch { return false; }
+              await chargeRun(async (tx, metrics) => {
+                const previous = cancelChargeOf(metrics);
+                if (previous && !['dispatched', 'expired', 'declined'].includes(previous.status)) {
+                  throw new Error('cancel_charge_already_issued');
+                }
+                await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: challenge },
+                  updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
+              });
+              while (Date.now() < expiresAt && continuationAllowed()) {
+                await new Promise((resolve) => setTimeout(resolve, 2_000));
+                const [run] = await ctx.db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun)
+                  .where(and(eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+                    eq(aiWorkflowRun.claimToken, fence.claimToken), inArray(aiWorkflowRun.state, ['claimed', 'running'])))
+                  .limit(1);
+                const current = cancelChargeOf(run?.metrics);
+                if (!current || current.id !== challenge.id || current.dialogDigest !== challenge.dialogDigest) return false;
+                if (current.status === 'pending') continue;
+                if (current.status !== 'approved' || current.expiresAt <= Date.now()) return false;
+                await chargeRun(async (tx, metrics) => {
+                  const approved = cancelChargeOf(metrics);
+                  if (!approved || approved.id !== challenge.id || approved.dialogDigest !== challenge.dialogDigest ||
+                      approved.status !== 'approved' || approved.expiresAt <= Date.now()) {
+                    throw new Error('cancel_charge_changed');
+                  }
+                  chargeApproval = { ...approved, status: 'consumed' };
+                  await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: chargeApproval },
+                    updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
+                });
+                acceptedPenaltyText = current.text;
+                return true;
+              }
+              await chargeRun(async (tx, metrics) => {
+                const current = cancelChargeOf(metrics);
+                if (current?.id !== challenge.id || current.dialogDigest !== challenge.dialogDigest ||
+                    current.status !== 'pending') return;
+                await tx.update(aiWorkflowRun).set({ metrics: { ...metrics,
+                  [CANCEL_CHARGE_METRIC]: { ...current, status: 'expired' } }, updatedAt: new Date() })
+                  .where(eq(aiWorkflowRun.id, fence.runId));
+              }).catch(() => {});
+            } catch { /* A stale session, source or lease cannot authorize the charge. */ }
+            return false;
           },
           prepareChargeWithAuthority: async (beforePath: string) => {
-            if (!acceptedPenaltyText || acceptedPenaltyText !== fresh.penaltyText) throw new Error('cancel_fee_review_binding_missing');
-            const chargeApprovalDigest = sha256({ action: 'cancel_charge_dialog', approval, penaltyText: acceptedPenaltyText,
-              idempotencyKey: input.idempotencyKey });
+            const approved = chargeApproval;
+            if (!approved || approved.text !== fresh.penaltyText || !continuationAllowed()) {
+              throw new Error('cancel_fee_review_binding_missing');
+            }
+            const chargeApprovalDigest = sha256({ action: 'cancel_charge_dialog', approval, penaltyText: approved.text,
+              idempotencyKey: input.idempotencyKey, challengeId: approved.id, dialogDigest: approved.dialogDigest });
             await acquireClaim(chargeApprovalDigest, beforePath);
+            await chargeRun(async (tx, metrics) => {
+              const current = cancelChargeOf(metrics);
+              if (!current || current.id !== approved.id || current.dialogDigest !== approved.dialogDigest ||
+                  current.status !== 'consumed') throw new Error('cancel_charge_changed');
+              chargeApproval = { ...current, status: 'dispatched', requestDigest: chargeApprovalDigest };
+              await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: chargeApproval },
+                updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
+            });
+          },
+          // A post-Save charge is a separate native request; it dispatches only under the consumed
+          // challenge's own exact request-bound authority, never under the cancellation Save's.
+          dispatchChargeWithAuthority: async (send: () => Promise<unknown>, requestDigest: string) => {
+            const approved = chargeApproval;
+            if (!approved || !handle || !z.string().regex(/^[a-f0-9]{64}$/).safeParse(requestDigest).success ||
+                !continuationAllowed()) throw new Error('cancel_charge_authority_unavailable');
+            const fence = ctx.writeRunFence!;
+            await chargeRun(async (tx, metrics) => {
+              const current = cancelChargeOf(metrics);
+              if (!current || current.id !== approved.id || current.dialogDigest !== approved.dialogDigest ||
+                  current.status !== 'consumed' || current.expiresAt <= Date.now()) {
+                throw new Error('cancel_charge_changed');
+              }
+              chargeApproval = { ...current, status: 'dispatched', requestDigest };
+              await tx.update(aiWorkflowRun).set({ metrics: { ...metrics, [CANCEL_CHARGE_METRIC]: chargeApproval },
+                updatedAt: new Date() }).where(eq(aiWorkflowRun.id, fence.runId));
+            });
+            lockSignal?.throwIfAborted();
+            return send();
           },
           dispatchWithAuthority: async (send: () => Promise<unknown>, requestDigest: string, _request: unknown,
             beforePath: string) => {
@@ -1746,4 +1878,101 @@ export async function reservationWorkflowV2CancelReconcile(ctx: ReservationWorkf
     return { status: 'needs_reconcile', operationId: input.operationId, dispatchHoldId: intent.holdId,
       issue: 'fresh_positive_cancel_readback_unavailable', holdReleased: false };
   }
+}
+
+export type ReservationWorkflowV2CancelChargeAccessInput = {
+  workItemId: string; source: ReservationWorkflowV2Source;
+  expectedRevision: number; expectedSeq: number; operationId: string;
+};
+
+const chargeSessionSchema = z.object({ sessionId: z.string().min(1).max(512),
+  sessionProfile: z.enum(['legacy', 'remote']) }).strict();
+
+/** A challenge is only visible inside its exact source, revision, property and staff session. */
+function cancelChargeBound(charge: CancelCharge | null, run: { id: string }, ctx: ReservationWorkflowV2CancelContext,
+  input: CancelChargeAccessInput, draft: ReservationWorkflowV2Draft,
+  session: z.infer<typeof chargeSessionSchema>): charge is CancelCharge {
+  return Boolean(charge && charge.grantId === input.operationId && charge.workItemId === input.workItemId &&
+    charge.generationId === draft.generationId && charge.actorUserId === ctx.user.id &&
+    charge.sessionId === session.sessionId && charge.sessionProfile === session.sessionProfile &&
+    charge.sourceDigest === input.source.sourceHash && charge.expectedRevision === input.expectedRevision &&
+    charge.expectedSeq === input.expectedSeq && charge.propertyCode === ctx.property.propertyCode &&
+    charge.runId === run.id);
+}
+
+/** Read the live fee challenge for one in-flight cancellation Go. */
+export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflowV2CancelContext,
+  input: CancelChargeAccessInput) {
+  if (!z.string().uuid().safeParse(input.operationId).success) return { status: 'none' as const };
+  const session = chargeSessionSchema.safeParse(ctx.user);
+  if (!session.success) return { status: 'none' as const };
+  const [item] = await ctx.db.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
+    .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1);
+  const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
+  if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
+      draft.revision !== input.expectedRevision || draft.workItemId !== input.workItemId ||
+      draft.transportId !== ctx.transport.id || draft.propertyCode !== ctx.property.propertyCode ||
+      draft.source.messageId !== input.source.messageId || draft.source.threadId !== input.source.threadId ||
+      draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt) {
+    return { status: 'none' as const };
+  }
+  const [run] = await ctx.db.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics, state: aiWorkflowRun.state,
+      deadlineAt: aiWorkflowRun.deadlineAt })
+    .from(aiWorkflowRun).where(and(eq(aiWorkflowRun.workItemId, input.workItemId),
+      eq(aiWorkflowRun.transportId, ctx.transport.id), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+      eq(aiWorkflowRun.idempotencyKey, `hms-write:${input.operationId}`))).limit(1);
+  const charge = run ? cancelChargeOf(run.metrics) : null;
+  if (!run || !cancelChargeBound(charge, run, ctx, input, draft, session.data)) return { status: 'none' as const };
+  const live = ['claimed', 'running'].includes(run.state) && run.deadlineAt.getTime() > Date.now();
+  const status = charge.status === 'pending' ? (live && charge.expiresAt > Date.now() ? 'pending' as const : 'expired' as const)
+    : charge.status === 'declined' ? 'declined' as const
+    : charge.status === 'expired' ? 'expired' as const : 'submitted' as const;
+  return { status, challengeId: charge.id, dialogDigest: charge.dialogDigest, penaltyText: charge.text,
+    button: charge.button, timing: charge.timing, expiresAt: new Date(charge.expiresAt).toISOString() };
+}
+
+/** The staff fee Go: records accept/decline once; the writer re-checks the exact dialog before acting. */
+export async function reservationWorkflowV2CancelChargeDecision(ctx: ReservationWorkflowV2CancelContext,
+  input: CancelChargeAccessInput & { challengeId: string; dialogDigest: string; decision: 'accept' | 'decline' }) {
+  if (!z.string().uuid().safeParse(input.operationId).success || !z.string().uuid().safeParse(input.challengeId).success ||
+      !chargeDigestSchema.safeParse(input.dialogDigest).success || !['accept', 'decline'].includes(input.decision)) {
+    return { status: 'unavailable' as const };
+  }
+  const session = chargeSessionSchema.safeParse(ctx.user);
+  if (!session.success) return { status: 'unavailable' as const };
+  try {
+    return await ctx.db.transaction(async (tx) => {
+      const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
+        .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id)))
+        .limit(1).for('update');
+      const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
+      if (!item || !draft || item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq ||
+          draft.revision !== input.expectedRevision || draft.workItemId !== input.workItemId ||
+          draft.transportId !== ctx.transport.id || draft.propertyCode !== ctx.property.propertyCode ||
+          draft.source.messageId !== input.source.messageId || draft.source.threadId !== input.source.threadId ||
+          draft.source.sourceHash !== input.source.sourceHash || draft.source.arrivedAt !== input.source.arrivedAt) {
+        throw new Error('cancel_charge_unavailable');
+      }
+      const [run] = await tx.select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics, deadlineAt: aiWorkflowRun.deadlineAt,
+          claimOwner: aiWorkflowRun.claimOwner, claimToken: aiWorkflowRun.claimToken })
+        .from(aiWorkflowRun).where(and(eq(aiWorkflowRun.workItemId, input.workItemId),
+          eq(aiWorkflowRun.transportId, ctx.transport.id), eq(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+          eq(aiWorkflowRun.idempotencyKey, `hms-write:${input.operationId}`),
+          inArray(aiWorkflowRun.state, ['claimed', 'running']))).limit(1).for('update');
+      const charge = run ? cancelChargeOf(run.metrics) : null;
+      if (!run?.deadlineAt || run.deadlineAt.getTime() <= Date.now() || !run.claimOwner || !run.claimToken ||
+          !cancelChargeBound(charge, run, ctx, input, draft, session.data) || charge.id !== input.challengeId ||
+          charge.dialogDigest !== input.dialogDigest || charge.status !== 'pending' || charge.expiresAt <= Date.now()) {
+        throw new Error('cancel_charge_unavailable');
+      }
+      const decided: CancelCharge = { ...charge, status: input.decision === 'accept' ? 'approved' : 'declined' };
+      await tx.update(aiWorkflowRun).set({ metrics: { ...(run.metrics ?? {}), [CANCEL_CHARGE_METRIC]: decided },
+        updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
+      await tx.insert(workEvent).values({ workItemId: input.workItemId, at: new Date(), actorKind: 'user',
+        actorUserId: ctx.user.id, type: 'status.changed',
+        value: { cancelV2ChargeDecision: input.decision, operationId: input.operationId, challengeId: charge.id,
+          dialogDigest: charge.dialogDigest, confirmation: charge.confirmation, nativeStayId: charge.nativeStayId } });
+      return { status: input.decision === 'accept' ? 'accepted' as const : 'declined' as const };
+    });
+  } catch { return { status: 'unavailable' as const }; }
 }
