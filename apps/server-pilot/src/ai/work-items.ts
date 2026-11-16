@@ -2802,24 +2802,28 @@ const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
  * can still hide an unseen second ask, so it never reads as affirmed no-action. Self-sent pre-stay mail is about an
  * existing booking: a `create` request is never an ask, so it is dropped from the actions; the item still lists
  * because nothing yet records a typed, evidence-backed no-action for it (skipped sources are filtered upstream).
+ * When no ask survives that drop — an empty, create-only, pending or failed pre-stay draft — the row carries
+ * `reviewOnly` and no actions: it is for staff review, and `other` must not claim a task no request supports.
  */
-function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[] } {
+function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[]; reviewOnly: boolean } {
   const kinds = [...new Set((draft?.proposal.content.requests ?? []).map((request) => request.kind))];
   const asks = isPreStay ? kinds.filter((kind) => kind !== 'create') : kinds;
-  const actions = asks.length > 0 ? asks : ['other'];
+  const reviewOnly = isPreStay && asks.length === 0;
+  const actions = asks.length > 0 ? asks : reviewOnly ? [] : ['other'];
   for (const action of actions) {
     const kind = V2_REQUEST_MAIL_KIND[action];
-    if (kind) return { kind, actions };
+    if (kind) return { kind, actions, reviewOnly };
   }
-  return { kind: 'other_actionable', actions };
+  return { kind: 'other_actionable', actions, reviewOnly };
 }
 
 /**
- * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
- * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
- * booking, amendment, cancellation and voucher_pop items are included, plus self-prestay mail whose stored read left a
- * separate ask grounded or could not prove none: an unread, stale or unverified pre-stay read stays visible for review,
- * only its own adjudicated no-ask verdict is dropped. Spam, trashed and deleted threads are left out.
+ * Work items in this transport with the given statuses, the Needs-you list. On legacy kinds a stored origin of
+ * `person` means human-written and `system_notice` means automated and excluded; a missing extraction or origin
+ * counts as human-written. Canonical V2 drafts are admitted on their own door and are never hidden by that model
+ * origin. Only quote, booking, amendment, cancellation and voucher_pop items are included, plus self-prestay mail whose
+ * stored read left a separate ask grounded or could not prove none: an unread, stale or unverified pre-stay read stays
+ * visible for review, only its own adjudicated no-ask verdict is dropped. Spam, trashed and deleted threads are left out.
  * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
  * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
  * NEEDS_YOU_CHIPS order, then the oldest mail first.
@@ -2957,14 +2961,15 @@ export async function listWorkItems(
         const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId)?.id : undefined;
         if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
         if (v2) {
-          // The same deterministic source door the ensure/prefill paths keep: a stored system notice or a
-          // known channel/system source never queues (self-sent pre-stay is handled inside the admission —
-          // it is an automated notice by nature yet its separate asks stay reviewable). Anything uncertain
-          // stays reviewable.
-          if (!preStayAsk && (payload?.origin === 'system_notice' || classifyMailSource({ fromAddress: row.sender,
-              subject: row.subject, bodyText: preStaySourceText(sourceBody, sourceHtml) }).kind !== 'direct')) return null;
+          // The same deterministic source door the ensure/prefill paths keep: a known channel/system source never
+          // queues (self-sent pre-stay is handled inside the admission — it is an automated notice by nature yet
+          // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no
+          // binding to this source or generation, so it never hides a V2 draft: anything uncertain stays reviewable.
+          if (!preStayAsk && classifyMailSource({ fromAddress: row.sender,
+              subject: row.subject, bodyText: preStaySourceText(sourceBody, sourceHtml) }).kind !== 'direct') return null;
           const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
-          return { ...row, kind: admission.kind, chip, actions: admission.actions };
+          return { ...row, kind: admission.kind, chip, actions: admission.actions,
+            ...(admission.reviewOnly ? { reviewOnly: true } : {}) };
         }
         if (!preStayAsk) {
           if (
