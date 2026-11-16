@@ -7,6 +7,23 @@ import { Field, Section } from '../shared/stay-fields';
 import { isExactConfirmation, TargetSearch } from './amend-editor';
 import styles from './other-editors.module.css';
 
+/** Staff wording for the native fee state; never show raw state keys. */
+function feeLabel(value: unknown): string {
+  const state = text(value);
+  if (state === 'none') return 'No fee';
+  if (state === 'fee_dialog_pending') return 'Infor shows a fee. Review it below.';
+  if (state === 'fee_accepted_unconfirmed') return 'Fee accepted. Check it in Infor.';
+  if (!state || state.startsWith('unknown') || state.includes('cannot_be_recovered')) return 'Not shown yet. Check the policy below.';
+  return state.replaceAll('_', ' ');
+}
+function roomsLabel(value: unknown): string | null {
+  if (typeof value === 'string') return value || null;
+  const scope = record(value);
+  if (scope.complete === true) return 'Whole stay';
+  if (scope.complete === false) return 'Infor did not list every room. Check the stay in Infor.';
+  return null;
+}
+
 function exactConfirmation(hint: Record<string, unknown>) {
   const confirmation = text(hint.confirmation).trim();
   return isExactConfirmation(confirmation) ? confirmation : '';
@@ -174,13 +191,13 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
     </Section>
     <Section title="Cancellation details">
-      <p className={styles.warning}>Infor can cancel the stay before showing its final penalty amount. An unknown fee is not zero or approved. Any new charge needs a separate review and Go; an unresolved result must not be retried.</p>
+      <p className={styles.warning}>Infor may show a cancellation fee only after it cancels. If it does, Nava shows the fee and you decide. Never press Cancel twice.</p>
       {text(pendingFee.penaltyText) && <div className={styles.warning} role="alert">
         <strong>Cancellation penalty {text(pendingFee.penaltyAmount) || penaltyAmount(pendingFee.penaltyText) || '(amount unknown)'}</strong>
         <p>{text(pendingFee.penaltyText)}</p>
         <p>{text(record(pendingFee.nativeReadback).status) || 'Cancellation status needs verification'}.
-          {pendingFee.penaltyTiming === 'after_save' ? ' HMS showed this notice after Save.' : ''}
-          {' '}Fee approval and financial outcome need reconciliation in HMS. Do not repeat Cancel.</p>
+          {pendingFee.penaltyTiming === 'after_save' ? ' Infor showed this after cancelling.' : ''}
+          {' '}Check this fee in Infor before doing anything else. Do not cancel again.</p>
       </div>}
       <label className={styles.label}>Cancellation reason
         <select value={reasons.some(row => row.display === reason) ? reason : ''} disabled={editor.view.busy || !reasons.length}
@@ -189,18 +206,18 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
           {reasons.map(row => <option key={text(row.value)} value={text(row.display)}>{text(row.display)}</option>)}
         </select>
       </label>
-      {reasonsWarmed && <small className={styles.hint}>Current Infor options were read during arrival checks without saving or recording staff review. Prepare again before Go.</small>}
+      {reasonsWarmed && <small className={styles.hint}>Reasons loaded from Infor. Nava checks them again before you cancel.</small>}
       {warmCheck.status === 'ready' && <div className={styles.card}>
-        <strong>Cancellation policy and fee · arrival check</strong>
+        <strong>Cancellation policy and fee</strong>
         <div className={styles.facts}>
-          <span>Fee status: {text(warmCheck.feeState).replaceAll('_', ' ') || 'Unknown'}</span>
+          <span>Fee: {feeLabel(warmCheck.feeState)}</span>
           <span>Penalty: {text(warmCheck.penaltyText) || 'Not returned; check the policy and fee before deciding.'}</span>
           {Array.isArray(warmCheck.policyFacts) && [...new Set(warmCheck.policyFacts.map(text)
             .filter((fact): fact is string => Boolean(fact)))].map(fact => <span key={fact}>{fact}</span>)}
         </div>
-        <small className={styles.hint}>Read-only arrival context. Prepare again for a current review; this does not count as staff acceptance.</small>
+        <small className={styles.hint}>Read when this email opened. Nava checks again before you cancel.</small>
       </div>}
-      {warmCheck.status === 'unavailable' && <small className={styles.hint}>Arrival checks could not load current cancellation reasons. Check again before deciding.</small>}
+      {warmCheck.status === 'unavailable' && <small className={styles.hint}>Nava could not load the cancellation reasons yet. Press Check details to try again.</small>}
       {reason && reasons.length > 0 && !reasons.some(row => row.display === reason) && <div className={styles.warning}>Requested reason: {reason}. Choose a current Infor reason.</div>}
       <label className={styles.label}>Cancellation note (optional)
         <textarea rows={3} maxLength={200} value={note} disabled={editor.view.busy} onChange={event => { setNote(event.target.value); editor.commands.stageEdit(notePath, event.target.value, event.target.value ? 'set' : 'none'); }}
@@ -208,19 +225,19 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </label><small className={styles.hint}>{note.length}/200 characters. Infor accepts a single line.</small>
       {/[\p{Cc}]/u.test(note) && <div className={styles.warning}>Remove line breaks and control characters from this note before checking.</div>}
     </Section>
-    {preview && <Section title="Last Infor cancellation check">
+    {preview && <Section title="What Infor will cancel">
       <div className={styles.facts}>
-        <span>Scope: {text(record(result.target).confirmation)} · {text(record(result.target).arrival)} → {text(record(result.target).departure)}</span>
-        <span>Fee status: {text(result.feeState).replaceAll('_', ' ') || 'Unknown'}</span>
+        <span>Stay: {text(record(result.target).confirmation)} · {text(record(result.target).arrival)} → {text(record(result.target).departure)}</span>
+        <span>Fee: {feeLabel(result.feeState)}</span>
         <span>Penalty: {text(result.penaltyText) || 'Not returned; check the policy and fee before deciding.'}</span>
         {penaltyAmount(result.penaltyText) && <span>Penalty amount: {penaltyAmount(result.penaltyText)} (currency not returned)</span>}
         {Array.isArray(result.policyFacts) && [...new Set(result.policyFacts.map(text))].map(fact => <span key={fact}>{fact}</span>)}
-        {Boolean(result.roomScope) && <span>Room scope: {typeof result.roomScope === 'string' ? result.roomScope : JSON.stringify(result.roomScope)}</span>}
+        {roomsLabel(result.roomScope) && <span>Rooms: {roomsLabel(result.roomScope)}</span>}
       </div>
       {canReview && <div className={styles.row}>{accepted ? <span>Current cancellation policy and fee reviewed.</span> : <button type="button" disabled={editor.view.busy}
-        onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I reviewed this scope, policy and fee</button>}</div>}
-      <small className={styles.hint}>If Infor returns different financial facts at Go, review the new facts and decide again.</small>
+        onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I checked the stay, policy and fee</button>}</div>}
+      <small className={styles.hint}>If Infor shows a different fee when you cancel, Nava stops and asks you again.</small>
     </Section>}
-    <div className={styles.hint}>Linked PDFs and Add-Ons remain as separate work in this email case. Cancellation does not remove Add-Ons or issue a refund.</div>
+    <div className={styles.hint}>Cancelling does not remove Add-Ons or issue a refund.</div>
   </div>;
 }
