@@ -142,10 +142,15 @@ function storedReservationWorkflowV2Draft(draft: ReservationWorkflowV2Draft): Re
     ...(draft.extraction ? { extraction: { ...draft.extraction, disposition: undefined } } : {}) };
 }
 
-/** A no-action decision is void the moment current asks, native work or unresolved extraction issues appear. */
+/** A no-action decision is valid only on a complete, issue-free, error-free, zero-request/operation extraction. */
 function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boolean {
-  return draft.proposal.content.requests.length === 0 && draft.operationResults.length === 0 &&
-    !draft.extraction?.issues?.length;
+  return draft.status === 'ready' &&
+    Boolean(draft.extraction) &&
+    draft.proposal.content.requests.length === 0 &&
+    draft.operationResults.length === 0 &&
+    !draft.extraction?.issues?.length &&
+    !draft.proposal.issues?.length &&
+    draft.errors.length === 0;
 }
 
 /** The intake decision applies only while it still binds to this exact draft. */
@@ -153,7 +158,8 @@ function intakeRecordFor(draft: ReservationWorkflowV2Draft): Record<string, unkn
   const disposition = draft.disposition;
   if (!disposition || disposition.generationId !== draft.generationId ||
       disposition.sourceHash !== draft.source.sourceHash) return undefined;
-  if (disposition.decision === 'no_action' && !noActionDispositionConsistent(draft)) return undefined;
+  if (disposition.decision === 'no_action' &&
+      (!draft.prefill?.evidenceHash || !noActionDispositionConsistent(draft))) return undefined;
   return reservationWorkflowV2IntakeSchema.parse({ contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
     ...(draft.prefill?.evidenceHash ? { evidenceHash: draft.prefill.evidenceHash } : {}), disposition });
 }
@@ -179,7 +185,9 @@ export function reservationWorkflowV2DraftOf(state: State): ReservationWorkflowV
   if (intake.success) {
     const { disposition } = intake.data;
     const bound = disposition.generationId === draft.generationId && disposition.sourceHash === draft.source.sourceHash &&
-      (intake.data.evidenceHash === undefined || intake.data.evidenceHash === draft.prefill?.evidenceHash);
+      (disposition.decision === 'no_action'
+        ? Boolean(intake.data.evidenceHash && intake.data.evidenceHash === draft.prefill?.evidenceHash)
+        : (intake.data.evidenceHash === undefined || intake.data.evidenceHash === draft.prefill?.evidenceHash));
     const consistent = disposition.decision !== 'no_action' || noActionDispositionConsistent(draft);
     if (bound && consistent) draft.disposition = disposition;
   }

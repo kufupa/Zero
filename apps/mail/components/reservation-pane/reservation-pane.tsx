@@ -578,8 +578,14 @@ export function ReservationPane(props: ReservationPaneProps) {
     ['ambiguous_guest_profile', 'rate_availability_unavailable', 'mail_candidate_read_failed'].includes(issue.kind));
   const earlierIssues = scopedIssues.filter(isEarlierIssue);
   const currentIssues = scopedIssues.filter(issue => !isEarlierIssue(issue));
-  const reviewOnlyEmpty = Boolean(snapshot && !request && !sourceChanged &&
-    snapshot.session.draft.disposition?.decision === 'uncertain');
+  const reviewOnlyEmpty = Boolean(snapshot && !request && !sourceChanged && (
+    snapshot.session.draft.disposition?.decision === 'uncertain' ||
+    snapshot.session.draft.status === 'partial' ||
+    snapshot.session.draft.status === 'prefill_failed' ||
+    snapshot.session.draft.prefill?.status === 'failed' ||
+    (snapshot.session.draft.extraction?.status && snapshot.session.draft.extraction.status !== 'complete') ||
+    scopedIssues.length > 0 ||
+    snapshot.session.draft.errors.length > 0));
   const currentAttention = attention?.digest === digest ? attention : null;
   const reviewButtons = snapshot && request && currentAttention ? attentionButtons(currentAttention.fields, snapshot, request.id, request.kind) : [];
   const output = request?.kind === 'quote' && snapshot ? getQuoteOutput(source, snapshot, request.id, scopedConfiguration) : null;
@@ -656,8 +662,8 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p>This pre-stay email describes an existing reservation. It cannot create a new booking.</p>
       </div>}
       {!snapshot ? (props.skippedSource ? null : <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>)
-        : !request && !sourceChanged && snapshot.session.draft.disposition?.decision === 'no_action' ? <div className={styles.empty}><h2>No action needed</h2><p>Nava checked this email and its attachments and found nothing for staff to do.{snapshot.session.draft.disposition.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''}</p><p className={styles.small}>If this email does need work, use + Action above.</p></div>
         : reviewOnlyEmpty ? <div className={styles.empty}><h2>Needs review</h2><p>Nava could not confirm what this email needs.{snapshot.session.draft.disposition?.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''} Check the email and decide if it needs work.</p>{[...new Set(earlierIssues.map(issueText))].map(reason => <p key={reason} className={styles.notice}>{reason}</p>)}<p className={styles.small}>If this email needs work, use + Action above.</p></div>
+        : !request && !sourceChanged && snapshot.session.draft.disposition?.decision === 'no_action' && snapshot.session.draft.status === 'ready' && Boolean(snapshot.session.draft.extraction) ? <div className={styles.empty}><h2>No action needed</h2><p>Nava checked this email and its attachments and found nothing for staff to do.{snapshot.session.draft.disposition.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''}</p><p className={styles.small}>If this email does need work, use + Action above.</p></div>
         : !request ? (() => {
           const needsReview = prefill?.status === 'failed' || snapshot.session.draft.status === 'prefill_failed' || (snapshot.session.draft.status === 'partial' && ['complete', 'failed', 'superseded'].includes(prefill?.status ?? ''));
           return <div className={styles.empty}><h2>{needsReview ? 'Needs review' : 'What does this email need?'}</h2><p>{needsReview ? 'No automatic action was extracted. Add an action to begin, or retry prefill.' : 'Add an action to begin. Prefill will appear here when ready; your edits are saved.'}</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>;
