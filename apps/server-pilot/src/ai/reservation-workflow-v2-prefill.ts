@@ -5021,7 +5021,9 @@ function applyDefaultCmsSendPolicy(
   input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[] },
 ): ReservationWorkflowV2Proposal {
   const proposal = structuredClone(proposalInput);
-  if (propertyCode !== 'HRCEN') return proposal;
+  // CMS 03 + Send on is the default for Centurion and Da Vinci; the quote/meal/occupancy defaults below stay Centurion-only.
+  const centurion = propertyCode === 'HRCEN';
+  if (!centurion && propertyCode !== 'HRDAV') return proposal;
   const message = input.evidence.find((row) => row.relation === 'current_message' &&
     row.messageId === input.source.messageId && row.threadId === input.source.threadId);
   const currentBody = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText)
@@ -5047,6 +5049,7 @@ function applyDefaultCmsSendPolicy(
   });
   for (const request of proposal.content.requests) {
     if (request.kind === 'quote') {
+      if (!centurion) continue;
       const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
       const conflict = proposal.issues.some(issue => issue.kind.includes('occupancy') &&
         (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
@@ -5175,7 +5178,7 @@ function applyDefaultCmsSendPolicy(
     if (request.kind !== 'create') continue;
     if (request.body.shared.cmsMessageId == null) request.body.shared.cmsMessageId = '03';
     const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
-    for (const fields of [request.body.shared, ...request.body.dateSections.map(section => section.defaults),
+    if (centurion) for (const fields of [request.body.shared, ...request.body.dateSections.map(section => section.defaults),
       ...request.body.allocations.map(allocation => allocation.overrides)]) {
       const normalized = normalizeRequestedMealPlan(fields.requestedMealPlan);
       if (normalized.mealPlan) fields.requestedMealPlan = normalized.mealPlan;
@@ -5192,7 +5195,7 @@ function applyDefaultCmsSendPolicy(
     }
     const hasAdults = !source || source.occupancy.some((row) => Boolean(row.adults));
     const hasChildren = !source || source.occupancy.some((row) => Boolean(row.childCount || row.childAges?.length));
-    for (const allocation of request.body.allocations) {
+    if (centurion) for (const allocation of request.body.allocations) {
       const totals = request.body.dateSections.find((section) => section.id === allocation.dateSectionId)?.requestedTotals;
       if (extraction.sourceReadComplete && !hasAdults && allocation.occupancy.adults === null && totals?.adults == null) allocation.occupancy.adults = 1;
       if (extraction.sourceReadComplete && !hasChildren && allocation.occupancy.childCount === null && totals?.childCount == null && !totals?.childAges?.length &&
