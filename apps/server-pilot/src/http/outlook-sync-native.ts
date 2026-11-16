@@ -68,13 +68,13 @@ function logSyncDenial(operation: string, raw: unknown, deviceId: string | null,
   const site = error?.stack?.split('\n').slice(1)
     .map((frame) => frame.match(/(?:^|[\\/])([^\\/()\s]+\.(?:js|ts):\d+:\d+)/)?.[1])
     .find(Boolean);
-  const key = `${operation}:${kind}:${reason}:${device ?? ''}:${source ?? ''}`;
+  const key = JSON.stringify([operation, kind, reason, device, source, error?.fields, error?.roles]);
   const now = Date.now();
   if (now - (denialLogTimes.get(key) ?? 0) < 60_000) return;
   if (denialLogTimes.size >= 256 && !denialLogTimes.has(key))
     denialLogTimes.delete(denialLogTimes.keys().next().value!);
   denialLogTimes.set(key, now);
-  console.warn('outlook_sync_denied', JSON.stringify({ at: new Date(now).toISOString(), operation, kind, reason, device, source, site }));
+  console.warn('outlook_sync_denied', JSON.stringify({ at: new Date(now).toISOString(), operation, kind, reason, device, source, site, fields: error?.fields, roles: error?.roles }));
 }
 const eventInput = nativeFenced.extend({
   eventOnly: z.literal(true),

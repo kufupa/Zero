@@ -9,6 +9,16 @@ const stableJson = (value: unknown): string =>
         )
       : v,
   );
+export function immutableSemantic(semantic: SyncObservationV1['semantic']) {
+  const { isRead: _read, categories: _categories, ...immutable } = semantic;
+  return immutable;
+}
+export function differingSemanticFields(a: SyncObservationV1, b: SyncObservationV1): string[] {
+  const left: Record<string, unknown> = immutableSemantic(a.semantic);
+  const right: Record<string, unknown> = immutableSemantic(b.semantic);
+  return [...new Set([...Object.keys(left), ...Object.keys(right)])].sort()
+    .filter((key) => stableJson(left[key]) !== stableJson(right[key]));
+}
 /** Signed content identity complements immutable semantic evidence; provider attachment identities are mandatory. */
 export function reusableContent(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const left = a as unknown as SyncObservationV1,
@@ -22,10 +32,9 @@ export function reusableContent(a: Record<string, unknown>, b: Record<string, un
   )
     return false;
   const immutable = (o: typeof left) => {
-    const { isRead: _read, categories: _categories, ...semantic } = o.semantic;
     const { modifiedAt: _modified, ...timestamps } = o.timestamps;
     return {
-      semantic,
+      semantic: immutableSemantic(o.semantic),
       timestamps,
       direction: o.direction,
       requiredArtifactRoles: o.requiredArtifactRoles,
