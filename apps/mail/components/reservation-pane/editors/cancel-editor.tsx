@@ -191,7 +191,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
     </Section>
     <Section title="Cancellation details">
-      <p className={styles.warning}>Infor may show a cancellation fee only after it cancels. If it does, Nava shows the fee and you decide. Never press Cancel twice.</p>
+      <p className={styles.warning}>If Infor shows a fee before cancelling, Nava stops so you can review it and press Cancel in Infor again. A fee shown after cancelling must be checked in Infor, not by cancelling again.</p>
       {text(pendingFee.penaltyText) && <div className={styles.warning} role="alert">
         <strong>Cancellation penalty {text(pendingFee.penaltyAmount) || penaltyAmount(pendingFee.penaltyText) || '(amount unknown)'}</strong>
         <p>{text(pendingFee.penaltyText)}</p>
@@ -236,7 +236,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
       {canReview && <div className={styles.row}>{accepted ? <span>Current cancellation policy and fee reviewed.</span> : <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I checked the stay, policy and fee</button>}</div>}
-      <small className={styles.hint}>If Infor shows a different fee when you cancel, Nava stops and asks you again.</small>
+      <small className={styles.hint}>If Infor shows a different fee before cancelling, Nava stops and asks you again.</small>
     </Section>}
     <div className={styles.hint}>Cancelling does not remove Add-Ons or issue a refund.</div>
   </div>;

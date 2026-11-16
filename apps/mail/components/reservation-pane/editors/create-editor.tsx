@@ -114,8 +114,8 @@ function ownSummary(editor: Editor, base: string) {
   }).join(', ');
 }
 
-function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
-  field: BookingField; path: string; parentPaths: string[]; parentLabel: string; editor: Editor;
+function ScopedField({ field, path, parentPaths, parentLabel, ownLabel, editor }: {
+  field: BookingField; path: string; parentPaths: string[]; parentLabel: string; ownLabel: string; editor: Editor;
 }) {
   const own = hasOwn(editor, path);
   const inheritedValueAtParent = inheritedValue(editor, parentPaths);
@@ -132,7 +132,7 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
       <span><b>{field.label}</b><small>{parentLabel}: {label}</small></span>
       <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path,
         inherited === undefined || inherited === null ? (field.party ? { name: null, candidateRefs: [], suggestedRef: null }
-          : field.type === 'checkbox' ? false : field.key === 'taCommission' ? null : '') : inherited)}>Change for this room</button>
+          : field.type === 'checkbox' ? false : field.key === 'taCommission' ? null : '') : inherited)}>{ownLabel}</button>
     </div>}
   </div>;
 }
@@ -526,7 +526,7 @@ export function CreateEditor(editor: Editor) {
         <details open={allFields.some(field => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || effectiveAt(snapshot, `${sectionPath}/defaults/guestOptIn`) === true || undefined} className={styles.details}>
           <summary>Different settings for these dates{sectionHasCompleted ? ' · remaining rooms' : ''}</summary>
           <fieldset disabled={sectionAllCompleted} className={styles.plainFieldset}>{allFields.map(field => <ScopedField key={field.key} field={field} path={`${sectionPath}/defaults/${field.key}`}
-            parentPaths={[`${shared}/${field.key}`]} parentLabel="all rooms" editor={editor} />)}
+            parentPaths={[`${shared}/${field.key}`]} parentLabel="all rooms" ownLabel="Change for these dates" editor={editor} />)}
             <UnsupportedTerms editor={editor} path={`${sectionPath}/defaults/guestOptIn`} /></fieldset>
         </details>
         {rooms.map(({ allocation, index }) => {
@@ -570,7 +570,7 @@ export function CreateEditor(editor: Editor) {
                   </option>)}</select>
                 </label>
                 {allFields.map(field => <ScopedField key={field.key} field={field} path={`${overrides}/${field.key}`}
-                  parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="these dates" editor={editor} />)}
+                  parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="these dates" ownLabel="Change for this room" editor={editor} />)}
                 <UnsupportedTerms editor={editor} path={`${overrides}/guestOptIn`} />
               </div>
             </details>
