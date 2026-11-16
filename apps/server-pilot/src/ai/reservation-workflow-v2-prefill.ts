@@ -19,7 +19,7 @@ import {
   invokeBounded,
   prepareExtractionVisionImages,
 } from './extraction/extract.js';
-import { extractionVisionEnabled, extractionReasoningEffort } from './extraction/config.js';
+import { extractionVisionEnabled, extractionReasoningEffort, prefillSimpleSynthesisEnabled } from './extraction/config.js';
 import { lunaCallBudget } from './bedrock/luna.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { hmsReadTargetForProperty } from '../hms/hms-read-target.js';
@@ -6258,10 +6258,100 @@ export function classifyReservationWorkflowV2Source(input: { fromAddress?: strin
 const ANCILLARY_EXTRACTION_RULES = `For an explicitly requested ancillary service or allowance, such as a meal or transfer, preserve the exact request, including any stated amount or limit, as a source-cited serviceHints claim. Do this even when the same wording also describes a meal plan. Do not turn a bare meal plan description, existing voucher detail, invoice or account-document request into a new service.`;
 const ANCILLARY_SYNTHESIS_RULES = `For a source-cited ancillary service requested alongside Create or Amend, keep a linked entry in content.services and the owning request's serviceRefs; preserve the requested wording and any stated amount or limit. A reservation note alone is not a service entry. Put a stated amount in requestedMoney with sourceRefs and unresolved scope when its basis is unclear, not in native unitPrice. Do not infer an item, target, quantity or price basis. When these are unclear, leave code and itemCandidateRef null, targets empty, quantityRequest scope unresolved and native price fields unset. Do not convert bare meal plan, past voucher details or invoice/document requests into new services.`;
 
+type PrefillRequestFacts = ReservationWorkflowV2Extraction['requests'][number];
+
+/** A cited claim whose value is an explicit unknown marks source scope the model could not resolve. */
+function extractionClaimUnresolved(claim: { value: unknown } | undefined): boolean {
+  return claim !== undefined && claim.value === null;
+}
+
+/** True when any admitted claim on the request is an explicit cited unknown. */
+function hasUnresolvedExtractionClaim(request: PrefillRequestFacts): boolean {
+  const claims: ({ value: unknown } | undefined)[] = [
+    request.requestText, request.roomCount,
+    request.requestedPrice?.nightlyRate, request.requestedPrice?.total, request.requestedPrice?.currency,
+    ...request.dates.flatMap((row) => [row.arrival, row.departure, row.roomCount, row.mealPlan, ...(row.guestNames ?? [])]),
+    ...request.occupancy.flatMap((row) => [row.adults, row.childCount, ...(row.childAges ?? [])]),
+    ...request.guests.flatMap((guest) => [guest.name, guest.email, guest.mobile]),
+    ...request.parties.map((party) => party.name),
+    ...request.confirmationHints, ...request.roomTypeHints, ...request.rateHints,
+    ...request.mealPlanHints, ...request.serviceHints,
+  ];
+  return claims.some(extractionClaimUnresolved);
+}
+
+/**
+ * The synthesis call may use the caller's reduced-effort adapter only for a validated
+ * single Quote or Create on one bound stay, with no attachments, services, documents,
+ * room-category split, confirmation ambiguity or unresolved cited scope. The input is
+ * the current-source-filtered extraction: stay dates must be real ISO days with
+ * departure after arrival, and a Create also needs exactly one source-cited room and
+ * one unambiguous source guest bound to that stay. Anything uncertain stays on the
+ * default adapter at full effort.
+ */
+function simpleSynthesisEligibility(input: {
+  extraction: ReservationWorkflowV2Extraction;
+  attachmentCount: number;
+  sourceReadComplete: boolean;
+  errorCount: number;
+  autopickSlotCount: number;
+}): { eligible: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const [request, ...rest] = input.extraction.requests;
+  if (!request || rest.length > 0) reasons.push('request_count');
+  else {
+    if (request.kind !== 'quote' && request.kind !== 'create') reasons.push('kind');
+    const date = request.dates.length === 1 ? request.dates[0] : undefined;
+    const arrival = date?.arrival?.value, departure = date?.departure?.value;
+    if (!date) reasons.push('stay_count');
+    else if (!isoDay(arrival) || !isoDay(departure) || departure <= arrival) reasons.push('stay_unbound');
+    if (request.kind === 'create') {
+      // Every cited room count (row-level or request-level) must resolve to exactly
+      // one room; an absent, unknown, conflicting or larger count is never simple.
+      const roomCounts = [date?.roomCount, request.roomCount].flatMap((claim) => claim ? [citedInteger(claim)] : []);
+      if (!roomCounts.length || roomCounts.some((count) => count !== 1)) reasons.push('room_count');
+      // One staying guest with a usable current name, and no stay-row guestNames
+      // naming anyone else. Absence or ambiguity leaves the room assignment unbound.
+      const staying = request.guests.filter((guest) => guest.role === 'guest');
+      const names = new Set(staying.flatMap((guest) => {
+        const value = normalizeGuestName(typeof guest.name?.value === 'string' ? guest.name.value : undefined);
+        return value ? [value] : [];
+      }));
+      const rowNames = (date?.guestNames ?? []).flatMap((claim) => {
+        const value = normalizeGuestName(typeof claim.value === 'string' ? claim.value : undefined);
+        return value ? [value] : [];
+      });
+      if (staying.length !== 1 || names.size !== 1 || rowNames.some((name) => !names.has(name))) {
+        reasons.push('guest_binding');
+      }
+    }
+    if (request.confirmationHints.length > 0) reasons.push('confirmation_ambiguity');
+    if (request.serviceHints.length > 0 || request.documentHints.length > 0 || request.documentRefs.length > 0) {
+      reasons.push('services_or_documents');
+    }
+    if (request.roomTypeHints.length > 1) reasons.push('multiple_room_categories');
+    if (request.rateHints.length > 0 || request.mealPlanHints.length > 1) reasons.push('rate_or_meal_plan_ambiguity');
+    if (request.requestedPrice && (request.requestedPrice.scope === 'unknown' ||
+        (request.requestedPrice.dateIndex ?? 0) !== 0)) reasons.push('price_scope_unresolved');
+    if (request.occupancy.some((row) => row.scope === 'unknown')) reasons.push('occupancy_scope_unresolved');
+    if (hasUnresolvedExtractionClaim(request)) reasons.push('unresolved_claim');
+  }
+  if (input.extraction.issues.length > 0) reasons.push('extraction_issues');
+  if (input.attachmentCount > 0) reasons.push('attachments');
+  if (!input.sourceReadComplete) reasons.push('source_incomplete');
+  if (input.errorCount > 0) reasons.push('pipeline_errors');
+  if (input.autopickSlotCount > 0) reasons.push('autopick_ambiguity');
+  return { eligible: reasons.length === 0, reasons };
+}
+
 /** One read-only prefill run. The caller injects fixed native/mail readers or deterministic lookup fixtures. */
 export async function runReservationWorkflowV2Prefill(input: {
   db?: DB;
   adapter?: ModelAdapter | null;
+  /** Synthesis-stage adapter; defaults to `adapter`. Lets callers split stage effort without touching call budgets. */
+  synthesisAdapter?: ModelAdapter | null;
+  /** Synthesis adapter used only for a definitely simple Quote/Create when PREFILL_SIMPLE_SYNTHESIS is on. */
+  simpleSynthesisAdapter?: ModelAdapter | null;
   transportId: string;
   propertyCode: string;
   source: ReservationWorkflowV2Source;
@@ -6475,7 +6565,16 @@ export async function runReservationWorkflowV2Prefill(input: {
   const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
   // Ambiguous history (several companies behind one domain) is settled inside the existing synthesis call.
   const autopickSlots = autopickModelSlots(autopickPlan.modelSlots, observations);
-  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SOURCE_INTENT_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${autopickSlots.length ? `\n${AUTOPICK_SYNTHESIS_RULES}` : ''}${guidancePrompt(synthesisGuidance)}`,
+  const simpleSynthesis = simpleSynthesisEligibility({ extraction: candidateExtraction,
+    attachmentCount: admittedAttachments.length, sourceReadComplete: currentActions.sourceReadComplete,
+    errorCount: readErrors.length, autopickSlotCount: autopickSlots.length });
+  const simpleSynthesisRoute = prefillSimpleSynthesisEnabled(env) && simpleSynthesis.eligible &&
+    input.simpleSynthesisAdapter ? input.simpleSynthesisAdapter : null;
+  const synthesisAdapter = simpleSynthesisRoute ?? input.synthesisAdapter ?? input.adapter;
+  console.info('reservation_v2_synthesis_route', JSON.stringify({ messageId: input.source.messageId, generationId,
+    enabled: prefillSimpleSynthesisEnabled(env), eligible: simpleSynthesis.eligible, reasons: simpleSynthesis.reasons,
+    route: simpleSynthesisRoute ? 'simple' : 'default' }));
+  const finalPass = await invokeBounded({ adapter: synthesisAdapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SOURCE_INTENT_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${autopickSlots.length ? `\n${AUTOPICK_SYNTHESIS_RULES}` : ''}${guidancePrompt(synthesisGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode, source: input.source, evidence, extraction,
       observations: synthesisObservations(observations),
       ...(autopickSlots.length ? { autopickChoices: autopickSlots.map((slot) => ({ slot: slot.slot,
