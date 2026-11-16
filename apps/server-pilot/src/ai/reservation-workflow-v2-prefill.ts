@@ -6375,8 +6375,10 @@ export async function runReservationWorkflowV2Prefill(input: {
   const propertyCode = propertyCodeSchema.parse(input.propertyCode);
   const generationId = randomUUID();
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
+  // Classification consumes the full canonical body (quoted forward headers
+  // included); currentBodyText stays the authored-only extraction input.
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
-    bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam,
+    bodyText: input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam,
     hasAttachments: input.hasPersistedNonInlineAttachment === true ||
         input.selection.attachments.some((row) => row.isInline !== true)
       ? true
@@ -6810,7 +6812,7 @@ export async function ensureReservationWorkflowV2Prefill(input: {
   const admitted = await validateReservationWorkflowV2Source(input.context, input.source);
   if (admitted.status !== 'ok') return { status: 'skipped', reason: `Canonical source rejected before model/native reads (${admitted.status}).` };
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress,
-    subject: input.selection.subject, bodyText: input.selection.currentBodyText ?? input.selection.bodyText,
+    subject: input.selection.subject, bodyText: input.selection.bodyText,
     mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
   if (admission.skippedReason) return { status: 'skipped', reason: `Known ${admission.skippedReason} source is excluded.` };
   const initialized = await initializeReservationWorkflowV2Draft(input.context, input.source);

@@ -3,8 +3,7 @@ import type { DB } from '../db/client.js';
 import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
-import { classifyMailSource } from './mail-source.js';
-import { preStaySourceText } from './existing-stay-information.js';
+import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { enqueueAiRun, NOT_APPLICABLE_MODEL_ID } from './run-ledger.js';
@@ -32,11 +31,13 @@ export async function enqueueReservationArrival(db: DB, input: {
       eq(message.direction, 'inbound'), eq(message.historyOnly, false), eq(mailThread.historyOnly, false),
       isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1);
   if (!row || row.sourceProvenance?.attention != null || !row.arrivedAt) return null;
-  const body = preStaySourceText(row.textBody, row.htmlBody);
+  const body = canonicalSourceBodyText({ textBody: row.textBody, htmlBody: row.htmlBody });
   // A staff-selected message may be attachment-only; admission still waits for a body.
   if (!body.trim() && !input.requestedByPane) return null;
   const [fileAttachment] = await db.select({ id: attachment.id }).from(attachment)
     .where(and(eq(attachment.messageId, row.id), eq(attachment.isInline, false))).limit(1);
+  // Source classification shares the canonical body and notice gates with
+  // ingest, admission and the pane, including routine automated notices.
   if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body,
     hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) }).kind !== 'direct') return null;
   const sourceHash = staffQuoteSourceHash(row);
