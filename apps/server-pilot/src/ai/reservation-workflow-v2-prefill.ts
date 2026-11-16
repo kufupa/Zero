@@ -1328,7 +1328,7 @@ function cancelExceptionEvidence(input: {
 
 function buildFallbackProposal(input: {
   extraction: ReservationWorkflowV2Extraction | null; source: ReservationWorkflowV2Source;
-  evidence: ReservationWorkflowV2Evidence[]; reason: string;
+  evidence: ReservationWorkflowV2Evidence[]; reason: string; noInventedRequest?: boolean;
 }): ReservationWorkflowV2Proposal {
   const knownRefs = new Set(input.evidence.map((item) => item.ref));
   const currentRefs = new Set(input.evidence.filter((item) => item.relation !== 'prior_thread').map((item) => item.ref));
@@ -6614,12 +6614,13 @@ export async function runReservationWorkflowV2Prefill(input: {
       }
       // Any non-confirmed self-prestay stays a durable, reviewable draft: the
       // checkpointed extraction issues and adjudicated disposition are what
-      // staff need to decide, and the fallback 'other' request can never offer
-      // Create on an existing-stay email.
+      // staff need to decide. With nothing grounded the proposal keeps zero
+      // requests — an invented 'other' would mislabel the row as actionable
+      // work instead of Needs review, and Create stays impossible.
       if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
         throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
       }
-      const proposal = buildFallbackProposal({ extraction: null, source: input.source, evidence,
+      const proposal = buildFallbackProposal({ extraction: null, source: input.source, evidence, noInventedRequest: true,
         reason: 'This pre-stay email could not be confirmed as no action; unresolved details need staff review.' });
       for (const issue of extraction.issues) addProjectionIssue(proposal, '/', 'unresolved_extraction_issue',
         issue.explanation, issue.sourceRefs);
