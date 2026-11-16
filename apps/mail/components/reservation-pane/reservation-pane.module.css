@@ -103,3 +103,26 @@
 }
 
 .field .validation { color:#a34420; font-weight:600; }
+
+/* Auto-pick evidence: a full-width row under the field (mark, Why expander, Read tick). */
+.autopick { grid-column:1 / -1; min-width:0; margin:3px 0 2px; --pick-ink:#2f6b45; --pick-bg:#eaf6ee; --pick-line:#bfe0ca; }
+.autopick[data-autopick=check] { --pick-ink:#8a5a12; --pick-bg:#fdf3e1; --pick-line:#efd6a6; }
+.compactField .autopick { grid-column:1 / -1; }
+.autopickBar { display:flex; align-items:center; gap:6px; min-width:0; }
+.autopickMark { flex:none; padding:1px 6px; border:1px solid var(--pick-line); border-radius:9px; background:var(--pick-bg); color:var(--pick-ink); font-size:10.5px; font-weight:600; line-height:16px; }
+.pane .autopickWhy { flex:none; border:0; background:transparent; padding:1px 2px; color:#6546bb; font-size:11px; }
+.pane .autopickTick { display:flex; align-items:center; gap:4px; margin:0 0 0 auto; font-size:11px; font-weight:500; color:var(--muted); white-space:nowrap; cursor:pointer; }
+.pane .autopickTick input[type=checkbox] { width:15px; height:15px; margin:0; padding:0; }
+.pane .autopickTick input[type=checkbox]:checked:disabled { opacity:1; }
+.autopickBody { margin-top:4px; padding:7px 8px; border:1px solid var(--pick-line); border-radius:6px; font-size:11.5px; line-height:1.4; overflow-wrap:anywhere; }
+.autopickBody p { margin:0 0 4px; }
+.autopickBody ul { margin:0; padding-left:15px; }
+.autopickBody li { margin:1px 0; }
+.pane .autopickLink { border:0; background:transparent; padding:0 2px; color:#6546bb; font-size:11px; font-weight:600; }
+.autopickOptions { display:flex; flex-direction:column; gap:3px; margin-top:6px; }
+.autopickOptions > small { color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; }
+.pane .autopickOptions button { display:flex; justify-content:space-between; align-items:baseline; gap:8px; width:100%; padding:5px 7px; text-align:left; }
+.autopickOptions button span { min-width:0; overflow-wrap:anywhere; }
+.autopickOptions button small { flex:none; color:var(--muted); font-size:10.5px; }
+:global(.dark) .pane .autopick { --pick-ink:#9ad3ac; --pick-bg:#1d3326; --pick-line:#2f5a3e; }
+:global(.dark) .pane .autopick[data-autopick=check] { --pick-ink:#f0c47a; --pick-bg:#3a2d14; --pick-line:#6b5222; }
