@@ -1,1461 +1,1112 @@
-import type {
-  AdminDashboardActivity,
-  AdminDashboardConversations,
-  AdminDashboardDataHealth,
-  AdminDashboardDomainRow,
-  AdminDashboardMetrics,
-  AdminDashboardShadowScorecard,
-  AdminDashboardCountDenominatorStatus,
-  AdminDashboardSelection,
-  DashboardCohortId,
-  DashboardWindowPreset,
-  MetricCell,
-  MetricResult,
-} from '@/lib/admin-dashboard/types';
 import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
+  DEFAULT_ASSUMPTIONS,
+  ILLUSTRATIVE_RETRO_REPORT,
+  MAX_TIMING_MINUTES,
+  OUTCOMES,
+  OUTCOME_COLORS,
+  OUTCOME_LABELS,
+  WORKFLOW_LABELS,
+  forecastReport,
+  formatCount,
+  formatHours,
+  formatReportDate,
+  readAssumptions,
+  sourceMailLink,
+  taskCredit,
+  taskMatchesSearch,
+  timingSchema,
+  unassessedMessageCount,
+  workflowTiming,
+  writeAssumptions,
+  type Assumptions,
+  type RetroOutcome,
+  type RetroReport,
+  type RetroTask,
+  type RetroWorkflow,
+  type Timing,
+} from '@/lib/admin-dashboard/retro-roi';
 import {
-  normalizeAdminDashboardCutoff,
-  normalizeAdminDashboardSelection,
-} from '@/lib/admin-dashboard/types';
+  ArrowUpRight,
+  CheckCircle2,
+  ChevronDown,
+  Clock3,
+  FileText,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+} from 'lucide-react';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { useAdminDashboardData, useAdminDashboardExport } from '@/hooks/use-admin-dashboard';
-import { SettingsCard } from '@/components/settings/settings-card';
-import { useMemo, useState, type ReactNode } from 'react';
+  previousScopeBeforeSwitch,
+  runAccountSwitchCacheCleanup,
+} from '@/lib/mail/account-switch-cache';
+import {
+  beginMailSelectionIntent,
+  isCurrentMailSelectionIntent,
+} from '@/lib/mail/source-message-navigation';
+import { getMailCacheScope, setMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useConnections } from '@/hooks/use-connections';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import { useTRPC } from '@/providers/query-provider';
+import { useRetroRoi } from '@/hooks/use-retro-roi';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
+import { useNavigate } from 'react-router';
+import { del } from 'idb-keyval';
+import { toast } from 'sonner';
 
-type Metric<T> = MetricResult<T> | null | undefined;
+const panel = 'rounded-2xl border border-border bg-background';
+const disclosure =
+  'min-h-[44px] cursor-pointer list-none rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden';
 
-const CHART_COLORS = {
-  inbound: '#2563eb',
-  outbound: '#c026d3',
-  count: '#0f766e',
-  addresses: '#7c3aed',
-};
-
-const DATE_FORMATTER = new Intl.DateTimeFormat('en-ZA', {
-  timeZone: 'Africa/Johannesburg',
-  dateStyle: 'medium',
-  timeStyle: 'short',
-});
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat('en-ZA').format(value);
-}
-
-function formatPercent(value: number): string {
-  return `${value.toFixed(1)}%`;
-}
-
-function formatMinutes(value: number): string {
-  return `${formatNumber(Math.round(value))} calendar minutes`;
-}
-
-function displayDate(value: string | null | undefined): string {
-  if (!value) return 'Not observed';
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? DATE_FORMATTER.format(timestamp) : 'Unknown';
-}
-
-function metricIsAvailable<T>(metric: Metric<T>): metric is MetricResult<T> & { value: T } {
-  return metric?.availability === 'available' && metric.value !== null;
-}
-
-function metricReason<T>(metric: Metric<T>): string {
-  if (!metric) return 'Metric was not returned for this snapshot.';
-  if (metric.availabilityReason) return metric.availabilityReason.replaceAll('_', ' ');
-  if (metric.availability !== 'available') return 'Evidence is unavailable for this snapshot.';
-  if (metric.value === null) return 'No observed value is available.';
-  return 'Observed from the selected window.';
-}
-
-function countDenominatorStatus(
-  metric: Metric<unknown>,
-): AdminDashboardCountDenominatorStatus | null {
-  const status = (
-    metric as { denominatorStatus?: AdminDashboardCountDenominatorStatus } | null | undefined
-  )?.denominatorStatus;
-  return status ?? null;
-}
-
-function denominatorText(metric: Metric<unknown>): string {
-  const status = countDenominatorStatus(metric);
-  if (status === 'not_applicable') return 'Not applicable (absolute count)';
-  if (metric?.denominator == null) return 'Unknown';
-  return formatNumber(metric.denominator);
-}
-
-function denominatorStatusText(status: AdminDashboardCountDenominatorStatus): string {
-  if (status === 'not_applicable') return 'Not applicable (absolute count)';
-  if (status === 'known') return 'Known eligible new conversations';
-  return 'Unknown eligible population';
-}
-
-function metricFromLegacyCell(
-  cell: MetricCell | null | undefined,
-  basis: Metric<number> | undefined,
-): Metric<number> {
-  if (!basis) return null;
-  const available = cell?.availability === 'live' && cell.value !== null;
-  return {
-    ...basis,
-    availability: available ? 'available' : 'unavailable',
-    value: available ? cell.value : null,
-    availabilityReason: available ? null : 'response_evidence_unavailable',
-  };
-}
-
-function exclusionText(exclusions: Record<string, number> | undefined): string {
-  const entries = Object.entries(exclusions ?? {}).filter(([, count]) => count > 0);
-  return entries.length === 0
-    ? 'None recorded'
-    : entries
-        .map(([name, count]) => `${name.replaceAll('_', ' ')}: ${formatNumber(count)}`)
-        .join(', ');
-}
-
-function EvidenceDetails<T>({ metric, label }: { metric: Metric<T>; label: string }) {
+function OutcomeBadge({ outcome }: { outcome: RetroOutcome }) {
   return (
-    <details className="text-muted-foreground mt-3 rounded-md border border-dashed p-2 text-xs">
-      <summary className="text-foreground flex min-h-[44px] cursor-pointer select-none items-center font-medium">
-        Definition &amp; evidence
-      </summary>
-      <dl className="mt-2 grid gap-1 sm:grid-cols-2" aria-label={`${label} evidence`}>
-        <div>
-          <dt className="text-foreground font-medium">Unit</dt>
-          <dd>{metric?.unit ?? 'Not returned'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Denominator</dt>
-          <dd>{denominatorText(metric)}</dd>
-        </div>
-        {countDenominatorStatus(metric) ? (
-          <div>
-            <dt className="text-foreground font-medium">Denominator status</dt>
-            <dd>{denominatorStatusText(countDenominatorStatus(metric)!)}</dd>
-          </div>
-        ) : null}
-        <div>
-          <dt className="text-foreground font-medium">Exclusions</dt>
-          <dd>{exclusionText(metric?.exclusions)}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Timestamp basis</dt>
-          <dd>{metric?.timestampBasis ?? 'Unknown'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Capture basis</dt>
-          <dd>{metric?.captureBasis ?? 'Unknown'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Source vintage</dt>
-          <dd>{displayDate(metric?.sourceVintage)}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Measurement config version</dt>
-          <dd>{metric?.measurementConfigVersion ?? 'Unknown'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">classificationAsOf</dt>
-          <dd>{displayDate(metric?.classificationAsOf)}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Snapshot basis</dt>
-          <dd>{metric?.snapshotBasis ?? 'Not applicable'}</dd>
-        </div>
-        <div className="sm:col-span-2">
-          <dt className="text-foreground font-medium">Availability</dt>
-          <dd>{metricReason(metric)}</dd>
-        </div>
-      </dl>
-    </details>
+    <span
+      className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${OUTCOME_COLORS[outcome].badge}`}
+    >
+      {OUTCOME_LABELS[outcome]}
+    </span>
   );
 }
 
-function MetricCard<T>({
-  label,
-  metric,
-  formatter,
-  description,
-}: {
-  label: string;
-  metric: Metric<T>;
-  formatter: (value: T) => string;
-  description: ReactNode;
-}) {
-  const available = metricIsAvailable(metric);
-
-  return (
-    <Card className="min-w-0">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">{label}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-2xl font-semibold tabular-nums" aria-live="polite">
-          {available ? formatter(metric.value) : '—'}
-        </p>
-        {!available ? (
-          <p className="text-muted-foreground mt-1 text-xs">Unavailable: {metricReason(metric)}</p>
-        ) : null}
-        <EvidenceDetails label={label} metric={metric} />
-      </CardContent>
-    </Card>
-  );
-}
-
-function DataTable({
-  caption,
-  headers,
-  rows,
-}: {
-  caption: string;
-  headers: string[];
-  rows: Array<Array<string | number>>;
-}) {
-  return (
-    <details className="mt-3 rounded-md border p-2 text-xs">
-      <summary className="flex min-h-[44px] cursor-pointer select-none items-center font-medium">
-        View data table
-      </summary>
-      <div className="mt-2 overflow-x-auto">
-        <table className="min-w-full border-collapse text-left">
-          <caption className="sr-only">{caption}</caption>
-          <thead>
-            <tr>
-              {headers.map((header) => (
-                <th key={header} className="border-b px-2 py-1 font-medium" scope="col">
-                  {header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td className="text-muted-foreground px-2 py-2" colSpan={headers.length}>
-                  No observations in the selected window.
-                </td>
-              </tr>
-            ) : (
-              rows.map((row) => (
-                <tr key={`${caption}-${row.map(String).join('\u001f')}`}>
-                  {headers.map((header, column) => (
-                    <td key={header} className="border-b px-2 py-1 tabular-nums">
-                      {row[column]}
-                    </td>
-                  ))}
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </details>
-  );
-}
-
-function ChartFrame({
+function EmptyState({
   title,
-  description,
   children,
+  action,
 }: {
   title: string;
-  description: string;
   children: ReactNode;
+  action?: ReactNode;
 }) {
   return (
-    <Card className="min-w-0">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
-  );
-}
-
-function ChartUnavailable({ metric, label }: { metric: Metric<unknown>; label: string }) {
-  return (
-    <div className="text-muted-foreground flex min-h-48 items-center justify-center rounded-md border border-dashed p-4 text-center text-sm">
-      <div>
-        <p>{label} unavailable</p>
-        <p className="mt-1 text-xs">{metricReason(metric)}</p>
-        <EvidenceDetails metric={metric} label={label} />
+    <div
+      className={`${panel} flex min-h-64 flex-col items-center justify-center gap-4 px-6 py-12 text-center`}
+    >
+      <FileText className="text-muted-foreground size-8" aria-hidden="true" />
+      <div className="max-w-md space-y-2">
+        <h2 className="text-lg font-semibold">{title}</h2>
+        <div className="text-muted-foreground text-sm leading-relaxed">{children}</div>
       </div>
+      {action}
     </div>
   );
 }
 
-function DashboardControls({
-  cohortId,
-  windowPreset,
-  observationCutoff,
-  onCohortChange,
-  onWindowChange,
-  onCutoffChange,
-  onExport,
-  exporting,
+function TimingEditor({
+  timing,
+  label,
+  onApply,
+  onReset,
 }: {
-  cohortId: DashboardCohortId;
-  windowPreset: DashboardWindowPreset;
-  observationCutoff: string;
-  onCohortChange: (value: DashboardCohortId) => void;
-  onWindowChange: (value: DashboardWindowPreset) => void;
-  onCutoffChange: (value: string) => void;
-  onExport: () => void;
-  exporting: boolean;
+  timing: Timing;
+  label: string;
+  onApply: (timing: Timing) => void;
+  onReset?: () => void;
 }) {
+  const id = useId();
+  const [manual, setManual] = useState(String(timing.manualMinutes));
+  const [assisted, setAssisted] = useState(String(timing.assistedMinutes));
+  const [error, setError] = useState<string | null>(null);
   return (
-    <div className="bg-muted/20 grid gap-3 rounded-lg border p-3 lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,0.8fr)_minmax(12rem,1fr)_auto_auto] lg:items-end">
-      <div className="grid gap-1.5">
-        <Label htmlFor="dashboard-cohort">Cohort</Label>
-        <Select
-          value={cohortId}
-          onValueChange={(value) => onCohortChange(value as DashboardCohortId)}
-        >
-          <SelectTrigger
-            id="dashboard-cohort"
+    <form
+      className="space-y-2"
+      aria-label={`${label} timing assumptions`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const parsed = timingSchema.safeParse({
+          manualMinutes: Number(manual),
+          assistedMinutes: Number(assisted),
+        });
+        if (!manual.trim() || !assisted.trim() || !parsed.success) {
+          setError(`Enter finite values from 0 to ${MAX_TIMING_MINUTES} minutes.`);
+          return;
+        }
+        setError(null);
+        onApply(parsed.data);
+      }}
+    >
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-40">
+          <Label htmlFor={`${id}-manual`}>Manual minutes</Label>
+          <Input
+            id={`${id}-manual`}
             className="min-h-[44px]"
-            aria-describedby="dashboard-cohort-help"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem className="min-h-[44px] py-2" value="centurion">
-              Centurion
-            </SelectItem>
-            <SelectItem className="min-h-[44px] py-2" value="research">
-              Research
-            </SelectItem>
-          </SelectContent>
-        </Select>
-        <p id="dashboard-cohort-help" className="text-muted-foreground text-xs">
-          Configured pilot users share the same bounded dashboard and export access.
+            type="number"
+            min={0}
+            max={MAX_TIMING_MINUTES}
+            step="any"
+            required
+            value={manual}
+            onChange={(event) => setManual(event.target.value)}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? `${id}-error` : undefined}
+          />
+        </div>
+        <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-40">
+          <Label htmlFor={`${id}-assisted`}>Nava-assisted minutes</Label>
+          <Input
+            id={`${id}-assisted`}
+            className="min-h-[44px]"
+            type="number"
+            min={0}
+            max={MAX_TIMING_MINUTES}
+            step="any"
+            required
+            value={assisted}
+            onChange={(event) => setAssisted(event.target.value)}
+            aria-invalid={Boolean(error)}
+            aria-describedby={error ? `${id}-error` : undefined}
+          />
+        </div>
+        <Button type="submit" variant="outline" className="min-h-[44px]">
+          Apply
+        </Button>
+        {onReset ? (
+          <Button type="button" variant="ghost" className="min-h-[44px]" onClick={onReset}>
+            Use global
+          </Button>
+        ) : null}
+      </div>
+      {error ? (
+        <p id={`${id}-error`} role="alert" className="text-destructive text-sm">
+          {error}
         </p>
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="dashboard-window">Window</Label>
-        <Select
-          value={windowPreset}
-          onValueChange={(value) => onWindowChange(value as DashboardWindowPreset)}
-        >
-          <SelectTrigger id="dashboard-window" className="min-h-[44px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem className="min-h-[44px] py-2" value="7d">
-              7 days
-            </SelectItem>
-            <SelectItem className="min-h-[44px] py-2" value="28d">
-              28 days
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="grid gap-1.5">
-        <Label htmlFor="dashboard-cutoff">Observation cutoff</Label>
-        <input
-          id="dashboard-cutoff"
-          type="date"
-          value={observationCutoff}
-          onChange={(event) => onCutoffChange(event.currentTarget.value)}
-          className="border-input bg-background focus:outline-hidden focus:ring-ring min-h-[44px] rounded-md border px-3 py-2 text-sm focus:ring-2"
-          aria-describedby="dashboard-cutoff-help"
-        />
-        <p id="dashboard-cutoff-help" className="text-muted-foreground text-xs">
-          End of day in Africa/Johannesburg. Latest observed when blank.
-        </p>
-      </div>
-      <Button
-        type="button"
-        variant="outline"
-        className="min-h-[44px]"
-        onClick={() => onCutoffChange('')}
-        disabled={!observationCutoff}
+      ) : null}
+    </form>
+  );
+}
+
+function Coverage({ report }: { report: RetroReport }) {
+  const { coverage } = report;
+  const unassessed = unassessedMessageCount(report);
+  const values = [
+    ['Source messages', coverage.rawMessages],
+    ['Deduplicated messages', coverage.canonicalMessages],
+    ['Inbound messages', coverage.inboundMessages],
+    ['Classified messages', coverage.classifiedMessages],
+    ['Excluded messages', coverage.excludedMessages],
+    ['Duplicate copies', coverage.duplicateMessages],
+    ['Unassessed messages', unassessed],
+    ['Classification failures', coverage.failedMessages],
+    ['Unknown timestamps', coverage.unknownTimestampMessages],
+  ] satisfies [string, number][];
+  return (
+    <details className={`${panel} overflow-hidden`}>
+      <summary
+        className={`${disclosure} flex flex-wrap items-center justify-between gap-3 px-5 py-4`}
       >
-        Latest observed
-      </Button>
-      <Button
-        type="button"
-        variant="outline"
-        className="min-h-[44px]"
-        onClick={onExport}
-        disabled={exporting}
-      >
-        {exporting ? 'Preparing export…' : 'Export bounded snapshot'}
-      </Button>
-    </div>
-  );
-}
-
-function SnapshotNote({ metrics }: { metrics: AdminDashboardMetrics }) {
-  const query = metrics.query;
-  const traffic = metrics.traffic?.inbound;
-  return (
-    <div className="bg-muted/20 text-muted-foreground rounded-lg border p-3 text-xs">
-      <p className="text-foreground font-medium">Data note</p>
-      <dl className="mt-2 grid gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-4">
-        <div>
-          <dt className="text-foreground font-medium">Cohort</dt>
-          <dd>{query?.cohortId ?? 'Not returned'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Window</dt>
-          <dd>{query?.window ?? 'Not returned'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Observation cutoff</dt>
-          <dd>{displayDate(query?.observationCutoff)}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Source vintage</dt>
-          <dd>{displayDate(query?.sourceVintage ?? traffic?.sourceVintage)}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Capture basis</dt>
-          <dd>{traffic?.captureBasis ?? 'Unknown'}</dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Measurement config version</dt>
-          <dd>
-            {metrics.service?.counts.measurementConfigVersion ??
-              traffic?.measurementConfigVersion ??
-              'Unknown'}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-foreground font-medium">Timezone</dt>
-          <dd>Africa/Johannesburg</dd>
-        </div>
-      </dl>
-    </div>
-  );
-}
-
-function TrafficSection({ metrics }: { metrics: AdminDashboardMetrics }) {
-  const traffic = metrics.traffic;
-  const daily = metricIsAvailable(traffic?.daily) ? traffic.daily.value : [];
-  const rows = daily.map((day) => [day.period, day.inbound, day.outbound]);
-
-  return (
-    <section aria-labelledby="traffic-heading" className="grid gap-4">
-      <div>
-        <h2 id="traffic-heading" className="text-lg font-semibold">
-          Communication demand
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Messages, not bookings or staff effort. Event dates are used.
-        </p>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="Incoming messages"
-          metric={traffic?.inbound}
-          formatter={formatNumber}
-          description="Raw observed inbound transport messages."
-        />
-        <MetricCard
-          label="Outgoing messages"
-          metric={traffic?.outbound}
-          formatter={formatNumber}
-          description="Raw observed outbound transport messages."
-        />
-        <MetricCard
-          label="Comparable window change"
-          metric={traffic?.comparableWindowChangePercent}
-          formatter={formatPercent}
-          description="Inbound change versus the bounded previous window."
-        />
-        <MetricCard
-          label="Daily trend coverage"
-          metric={traffic?.daily}
-          formatter={(value) => `${formatNumber(value.length)} observed days`}
-          description="Known daily inbound and outbound event totals."
-        />
-      </div>
-      <ChartFrame
-        title="Incoming and outgoing messages by day"
-        description="Arrival trend; no staffing-utilization claim."
-      >
-        {metricIsAvailable(traffic?.daily) ? (
-          <>
-            <div className="h-64 min-w-0" aria-label="Incoming and outgoing messages line chart">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={daily} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="period" tick={{ fontSize: 11 }} />
-                  <YAxis allowDecimals={false} />
-                  <Tooltip />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="inbound"
-                    name="Incoming"
-                    stroke={CHART_COLORS.inbound}
-                    strokeWidth={2}
-                  />
-                  <Line
-                    type="monotone"
-                    dataKey="outbound"
-                    name="Outgoing"
-                    stroke={CHART_COLORS.outbound}
-                    strokeWidth={2}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-            <DataTable
-              caption="Incoming and outgoing messages by day"
-              headers={['Day', 'Incoming', 'Outgoing']}
-              rows={rows}
-            />
-          </>
-        ) : (
-          <ChartUnavailable metric={traffic?.daily} label="Message trend" />
-        )}
-      </ChartFrame>
-      <p className="text-muted-foreground text-xs">
-        {traffic?.inbound?.captureBasis ?? 'Unknown capture basis'}. Unknown and excluded event
-        clocks are not counted as zero.
-      </p>
-    </section>
-  );
-}
-
-function ActivitySection({ activity }: { activity: AdminDashboardActivity | undefined }) {
-  const weekday = metricIsAvailable(activity?.weekdayArrivals)
-    ? activity.weekdayArrivals.value
-    : null;
-  const hours = metricIsAvailable(activity?.hourArrivals) ? activity.hourArrivals.value : null;
-  const weekdayRows: Array<Array<string | number>> = weekday
-    ? Object.entries(weekday).map(([day, count]) => [day, count])
-    : [];
-  const hourRows: Array<Array<string | number>> = hours
-    ? Object.entries(hours)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([hour, count]) => [hour, count])
-    : [];
-
-  return (
-    <section aria-labelledby="activity-heading" className="grid gap-4">
-      <div>
-        <h2 id="activity-heading" className="text-lg font-semibold">
-          Conversation activity
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Observed starts and addresses; an address is not a person.
-        </p>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="Active conversations"
-          metric={activity?.activeConversations}
-          formatter={formatNumber}
-          description="Unique business conversations in the selected snapshot."
-        />
-        <MetricCard
-          label="Newly observed"
-          metric={activity?.newlyObservedConversations}
-          formatter={formatNumber}
-          description="Observed starts with retained pre-window evidence."
-        />
-        <MetricCard
-          label="Continuing conversations"
-          metric={activity?.continuingConversations}
-          formatter={formatNumber}
-          description="Active conversations with bounded pre-window evidence."
-        />
-        <MetricCard
-          label="External sender addresses"
-          metric={activity?.distinctExternalSenderAddresses}
-          formatter={formatNumber}
-          description="Distinct external email addresses, not customers."
-        />
-      </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ChartFrame
-          title="Arrivals by day of week"
-          description="Arrival pattern in Africa/Johannesburg."
-        >
-          {metricIsAvailable(activity?.weekdayArrivals) ? (
-            <>
-              <div className="h-56 min-w-0" aria-label="Arrivals by weekday bar chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={weekdayRows.map(([day, count]) => ({ day, count }))}
-                    margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="day" tick={{ fontSize: 11 }} />
-                    <YAxis allowDecimals={false} />
-                    <Tooltip />
-                    <Bar dataKey="count" name="Arrivals" fill={CHART_COLORS.count} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <DataTable
-                caption="Arrivals by day of week"
-                headers={['Day', 'Arrivals']}
-                rows={weekdayRows}
-              />
-            </>
-          ) : (
-            <ChartUnavailable metric={activity?.weekdayArrivals} label="Weekday arrivals" />
-          )}
-        </ChartFrame>
-        <ChartFrame
-          title="Arrivals by hour"
-          description="Calendar arrival pattern, not staffing utilization."
-        >
-          {metricIsAvailable(activity?.hourArrivals) ? (
-            <>
-              <div className="h-56 min-w-0" aria-label="Arrivals by hour bar chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={hourRows.map(([hour, count]) => ({ hour, count }))}
-                    margin={{ top: 8, right: 8, left: 0, bottom: 8 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="hour" tick={{ fontSize: 11 }} />
-                    <YAxis allowDecimals={false} />
-                    <Tooltip />
-                    <Bar dataKey="count" name="Arrivals" fill={CHART_COLORS.count} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <DataTable
-                caption="Arrivals by hour"
-                headers={['Hour', 'Arrivals']}
-                rows={hourRows}
-              />
-            </>
-          ) : (
-            <ChartUnavailable metric={activity?.hourArrivals} label="Hourly arrivals" />
-          )}
-        </ChartFrame>
-      </div>
-    </section>
-  );
-}
-
-function WorkflowSection({ metrics }: { metrics: AdminDashboardMetrics }) {
-  const workflows = metrics.v2Workflows;
-  return (
-    <section aria-labelledby="workflows-heading" className="grid gap-4">
-      <div>
-        <h2 id="workflows-heading" className="text-lg font-semibold">
-          Reservation actions
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Latest saved V2 drafts for inbound emails in the selected window. An email can contain more than one action.
-        </p>
-      </div>
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(14rem,1fr)]">
-        <ChartFrame
-          title="Emails by reservation action"
-          description="Each email is counted once per action kind in its latest saved V2 draft."
-        >
-          {workflows ? (
-            <>
-              <div
-                className="h-[20rem] min-w-0"
-                aria-label="Emails by reservation action horizontal bar chart"
-              >
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={workflows.rows}
-                    layout="vertical"
-                    margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis type="number" allowDecimals={false} />
-                    <YAxis type="category" dataKey="label" width={150} tick={{ fontSize: 11 }} />
-                    <Tooltip />
-                    <Bar
-                      dataKey="count"
-                      name="Emails"
-                      fill={CHART_COLORS.count}
-                      radius={[0, 4, 4, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-              <DataTable
-                caption="Emails by reservation action"
-                headers={['Action', 'Emails']}
-                rows={workflows.rows.map((row) => [row.label, row.count])}
-              />
-              <p className="text-muted-foreground mt-2 text-xs">
-                Saved drafts observed at {displayDate(workflows.classificationAsOf)}. Changes to attachments or
-                earlier messages may require review in the pane.
-              </p>
-            </>
-          ) : (
-            <p className="text-muted-foreground text-sm">
-              Current V2 classification is unavailable for this snapshot.
-            </p>
-          )}
-        </ChartFrame>
-        <div className="grid content-start gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Not classified in V2</CardTitle>
-              <CardDescription>
-                Includes pending, skipped, failed, or unavailable drafts.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold">{workflows ? formatNumber(workflows.unclassifiedEmails) : '—'}</p>
-              {workflows ? <p className="text-muted-foreground mt-2 text-xs">Of {formatNumber(workflows.totalEmails)} inbound emails.</p> : null}
-            </CardContent>
-          </Card>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function CorrespondentSection({ metrics }: { metrics: AdminDashboardMetrics }) {
-  const domainMetric = metrics.correspondents?.externalDomains;
-  const domains: AdminDashboardDomainRow[] = metricIsAvailable(domainMetric)
-    ? domainMetric.value
-    : [];
-  const rows: Array<Array<string | number>> = domains.map((domain) => [
-    domain.domain,
-    domain.count,
-    domain.addresses,
-  ]);
-
-  return (
-    <section aria-labelledby="correspondents-heading" className="grid gap-4">
-      <div>
-        <h2 id="correspondents-heading" className="text-lg font-semibold">
-          External correspondents
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Domain is not verified company identity or commercial value.
-        </p>
-      </div>
-      <ChartFrame
-        title="Top external domains"
-        description="Public email providers are grouped; aggregate access shows no raw messages."
-      >
-        {metricIsAvailable(domainMetric) ? (
-          <>
-            <div className="h-64 min-w-0" aria-label="External domains bar chart">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={domains}
-                  layout="vertical"
-                  margin={{ top: 8, right: 16, left: 8, bottom: 8 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis type="number" allowDecimals={false} />
-                  <YAxis type="category" dataKey="domain" width={120} tick={{ fontSize: 11 }} />
-                  <Tooltip />
-                  <Bar
-                    dataKey="count"
-                    name="Messages"
-                    fill={CHART_COLORS.addresses}
-                    radius={[0, 4, 4, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <DataTable
-              caption="External domains"
-              headers={['Domain', 'Messages', 'Addresses']}
-              rows={rows}
-            />
-          </>
-        ) : (
-          <ChartUnavailable metric={domainMetric} label="External domains" />
-        )}
-      </ChartFrame>
-    </section>
-  );
-}
-
-function ServiceSection({ metrics }: { metrics: AdminDashboardMetrics }) {
-  const service = metrics.service;
-  const serviceCounts = service?.counts;
-  const conversations: AdminDashboardConversations | undefined = metrics.conversations;
-  const firstReply = service?.firstObservedHumanReply;
-  const firstUseful = service?.firstUsefulReply;
-  const p90Reply = metricFromLegacyCell(metrics.p90FirstResponseMinutes, firstReply);
-  const responseUnavailable = !metricIsAvailable(firstReply);
-
-  return (
-    <section aria-labelledby="service-heading" className="grid gap-4">
-      <div>
-        <h2 id="service-heading" className="text-lg font-semibold">
-          Response and attention signals
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          First observed human reply is a narrow calendar-time measure, not proof that every ask or
-          hotel task was completed.
-        </p>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <MetricCard
-          label="First observed human reply"
-          metric={firstReply}
-          formatter={formatMinutes}
-          description={
-            responseUnavailable
-              ? 'Response metrics temporarily unavailable.'
-              : 'Median among valid eligible new conversations.'
-          }
-        />
-        <MetricCard
-          label="P90 first observed human reply"
-          metric={p90Reply}
-          formatter={formatMinutes}
-          description="Answered-only tail latency; not a service-level target."
-        />
-        <MetricCard
-          label="First useful reply"
-          metric={firstUseful}
-          formatter={formatMinutes}
-          description="Median calendar time to the first supported answer to an eligible ask."
-        />
-        <MetricCard
-          label="Eligible new conversations"
-          metric={serviceCounts?.eligibleNewConversations}
-          formatter={formatNumber}
-          description="T0-scoped denominator; strict service evidence only."
-        />
-        <MetricCard
-          label="Unanswered eligible"
-          metric={serviceCounts?.unansweredEligible}
-          formatter={formatNumber}
-          description="Known eligible requests without a qualifying reply."
-        />
-        <MetricCard
-          label="Unscorable / unknown"
-          metric={serviceCounts?.unscorable}
-          formatter={formatNumber}
-          description="Invalid clocks, confirmed gaps, or unknown reply evidence."
-        />
-      </div>
-      <p className="text-muted-foreground text-xs">
-        Measurement start (T0): {displayDate(serviceCounts?.measurementStartAt)}. Config version:{' '}
-        {serviceCounts?.measurementConfigVersion ?? 'Unknown'}. Legacy count fields are not rendered
-        without strict evidence.
-      </p>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <MetricCard
-          label="Awaiting hotel reply"
-          metric={conversations?.awaitingHotel}
-          formatter={formatNumber}
-          description="Request-state projection."
-        />
-        <MetricCard
-          label="Awaiting customer information"
-          metric={conversations?.awaitingCustomer}
-          formatter={formatNumber}
-          description="Request-state projection."
-        />
-        <MetricCard
-          label="Hotel action pending"
-          metric={conversations?.hotelActionPending}
-          formatter={formatNumber}
-          description="Completion is not inferred from email absence."
-        />
-        <MetricCard
-          label="Unknown request state"
-          metric={conversations?.unknown}
-          formatter={formatNumber}
-          description="Unknown evidence remains explicit."
-        />
-        <MetricCard
-          label="Answered"
-          metric={conversations?.answered}
-          formatter={formatNumber}
-          description="Exclusive primary request-state bucket."
-        />
-        <MetricCard
-          label="No reply required"
-          metric={conversations?.noReplyRequired}
-          formatter={formatNumber}
-          description="Exclusive primary request-state bucket."
-        />
-        <MetricCard
-          label="Partially answered"
-          metric={conversations?.partial}
-          formatter={formatNumber}
-          description="Overlay on primary buckets; not additive."
-        />
-        <MetricCard
-          label="Unknown evidence"
-          metric={conversations?.unknownEvidence}
-          formatter={formatNumber}
-          description="Evidence-quality overlay; not additive."
-        />
-        <MetricCard
-          label="Conversation age bands"
-          metric={conversations?.ageBands}
-          formatter={(value) => `${formatNumber(Object.keys(value).length)} bands`}
-          description="Calendar age diagnostics only."
-        />
-      </div>
-      <p className="text-muted-foreground text-xs">
-        Primary request-state buckets are mutually exclusive. Partially answered and unknown
-        evidence are overlays and must not be added to the primary totals.
-      </p>
-      <p className="text-muted-foreground text-sm">
-        Response comparison temporarily unavailable unless a comparable bounded prior window is
-        returned.
-      </p>
-    </section>
-  );
-}
-
-function DataHealthSection({
-  dataHealth,
-}: {
-  dataHealth: AdminDashboardDataHealth | null | undefined;
-}) {
-  if (!dataHealth) {
-    return (
-      <section aria-labelledby="health-heading" className="grid gap-3">
-        <h2 id="health-heading" className="text-lg font-semibold">
-          Data diagnostics
-        </h2>
-        <div
-          role="status"
-          className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm"
-        >
-          Diagnostics unavailable: no health evidence was returned.
-        </div>
-      </section>
-    );
-  }
-
-  if (dataHealth.availability !== 'available') {
-    return (
-      <section aria-labelledby="health-heading" className="grid gap-3">
-        <h2 id="health-heading" className="text-lg font-semibold">
-          Data diagnostics
-        </h2>
-        <div
-          role="status"
-          className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm"
-        >
-          Diagnostics unavailable:{' '}
-          {(dataHealth.availabilityReason ?? 'evidence unavailable').replaceAll('_', ' ')}.
-        </div>
-        <p className="text-muted-foreground text-xs">
-          Health snapshot cutoff: {displayDate(dataHealth.observationCutoff)}.
-        </p>
-      </section>
-    );
-  }
-
-  const singleton =
-    dataHealth.singleton.numerator == null ||
-    dataHealth.singleton.denominator == null ||
-    dataHealth.singleton.denominator === 0
-      ? 'Unavailable'
-      : formatPercent((dataHealth.singleton.numerator / dataHealth.singleton.denominator) * 100);
-  const inbound = dataHealth.directionCounts.inbound;
-  const outbound = dataHealth.directionCounts.outbound;
-  const directionRatio =
-    inbound == null || outbound == null
-      ? 'Unavailable'
-      : `${formatNumber(inbound)}:${formatNumber(outbound)}`;
-  const quote = dataHealth.quotedMailboxReplyNoMatchingOutbound;
-  const quotedShare =
-    quote.availability !== 'available' ||
-    quote.numerator == null ||
-    quote.denominator == null ||
-    quote.denominator === 0
-      ? 'Unavailable'
-      : `${formatPercent((quote.numerator / quote.denominator) * 100)} (${formatNumber(quote.numerator)}/${formatNumber(quote.denominator)})`;
-
-  return (
-    <section aria-labelledby="health-heading" className="grid gap-4">
-      <div>
-        <h2 id="health-heading" className="text-lg font-semibold">
-          Data diagnostics
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Compact indicators, not a completeness certificate or outage claim.
-        </p>
-      </div>
-      <Card>
-        <CardContent className="grid gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <ShieldCheck
+            className="text-muted-foreground mt-0.5 size-5 shrink-0"
+            aria-hidden="true"
+          />
           <div>
-            <p className="text-muted-foreground text-xs">Last incoming</p>
-            <p className="font-medium">{displayDate(dataHealth.lastObservedAt.inbound)}</p>
-            <p className="text-muted-foreground text-xs">
-              Inbound clock basis: {dataHealth.lastObservedBasis.inbound ?? 'Unknown'}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground text-xs">Last outgoing</p>
-            <p className="font-medium">{displayDate(dataHealth.lastObservedAt.outbound)}</p>
-            <p className="text-muted-foreground text-xs">
-              Outbound clock basis: {dataHealth.lastObservedBasis.outbound ?? 'Unknown'}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground text-xs">Direction counts</p>
             <p className="font-medium">
-              {inbound ?? 'Unknown'} in / {outbound ?? 'Unknown'} out
+              {coverage.status === 'complete'
+                ? 'Complete source coverage'
+                : 'Partial source coverage'}
+            </p>
+            <p className="text-muted-foreground mt-1 text-sm">
+              {formatCount(coverage.excludedMessages)} excluded · {formatCount(unassessed)}{' '}
+              unassessed · {formatCount(coverage.failedMessages)} failed
             </p>
           </div>
+        </div>
+        <span className="text-muted-foreground flex items-center gap-2 text-xs">
+          Coverage &amp; provenance <ChevronDown className="size-4" aria-hidden="true" />
+        </span>
+      </summary>
+      <div className="space-y-5 border-t px-5 py-5">
+        {coverage.status === 'partial' ? (
+          <p className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200">
+            These totals cover the captured and assessed records. They do not represent the entire
+            30-day workload.
+          </p>
+        ) : null}
+        <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          {values.map(([label, count]) => (
+            <div key={label}>
+              <dt className="text-muted-foreground text-xs">{label}</dt>
+              <dd className="mt-1 text-lg font-semibold tabular-nums">{formatCount(count)}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="text-muted-foreground text-xs leading-relaxed">
+          Counts above are messages; the forecast counts distinct requested tasks. Failures are
+          included in unassessed messages. Excluded traffic includes out-of-scope conversations and
+          does not receive task credit. Unknown task outcomes remain visible below.
+        </p>
+        {coverage.notes.length ? (
+          <ul className="list-disc space-y-1 pl-5 text-sm">
+            {Array.from(new Set(coverage.notes)).map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        ) : null}
+        <dl className="grid gap-4 text-xs sm:grid-cols-2">
           <div>
-            <p className="text-muted-foreground text-xs">Direction ratio</p>
-            <p className="font-medium">{directionRatio}</p>
+            <dt className="text-muted-foreground">Source exported</dt>
+            <dd className="mt-1">{formatReportDate(coverage.sourceExportedAt)} SAST</dd>
           </div>
           <div>
-            <p className="text-muted-foreground text-xs">Singleton share</p>
-            <p className="font-medium">{singleton}</p>
+            <dt className="text-muted-foreground">Source available through</dt>
+            <dd className="mt-1">
+              {coverage.sourceThrough
+                ? `${formatReportDate(coverage.sourceThrough)} SAST`
+                : 'Not established'}
+            </dd>
           </div>
           <div>
-            <p className="text-muted-foreground text-xs">Unscorable events</p>
-            <p className="font-medium">{formatNumber(dataHealth.unscorable.total)}</p>
+            <dt className="text-muted-foreground">Source snapshot</dt>
+            <dd className="mt-1 break-all font-mono">{report.provenance.sourceSnapshotId}</dd>
           </div>
           <div>
-            <p className="text-muted-foreground text-xs">Missing clocks</p>
-            <p className="font-medium">{formatNumber(dataHealth.unscorable.missingClock)}</p>
+            <dt className="text-muted-foreground">Nava version assessed</dt>
+            <dd className="mt-1 break-all font-mono">{report.provenance.productSha}</dd>
           </div>
           <div>
-            <p className="text-muted-foreground text-xs">Invalid clocks</p>
-            <p className="font-medium">{formatNumber(dataHealth.unscorable.invalidClock)}</p>
+            <dt className="text-muted-foreground">Report ID</dt>
+            <dd className="mt-1 break-all font-mono">{report.reportId}</dd>
           </div>
           <div>
-            <p className="text-muted-foreground text-xs">Singleton quoted-mailbox-reply share</p>
-            <p className="font-medium">{quotedShare}</p>
-            <p className="text-muted-foreground text-xs">
-              {quote.reason?.replaceAll('_', ' ') ?? 'Retained quote projection'}
-            </p>
+            <dt className="text-muted-foreground">Assessment version</dt>
+            <dd className="mt-1 break-all font-mono">{report.provenance.runnerVersion}</dd>
           </div>
-        </CardContent>
-      </Card>
-      <p className="text-muted-foreground text-xs">
-        Health snapshot cutoff: {displayDate(dataHealth.observationCutoff)}. Last-clock bases are
-        shown with each observed clock.
-      </p>
-    </section>
+          <div className="sm:col-span-2">
+            <dt className="text-muted-foreground">Source fingerprint</dt>
+            <dd className="mt-1 break-all font-mono">{report.provenance.sourceSha256}</dd>
+          </div>
+        </dl>
+      </div>
+    </details>
   );
 }
 
-function ShadowScorecardSection({
-  scorecard,
-}: {
-  scorecard: AdminDashboardShadowScorecard | undefined;
-}) {
-  if (!scorecard) {
-    return (
-      <section aria-labelledby="shadow-scorecard-heading" className="grid gap-3">
-        <h2 id="shadow-scorecard-heading" className="text-lg font-semibold">
-          Private prediction scorecard
-        </h2>
-        <div
-          role="status"
-          className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm"
-        >
-          Scorecard unavailable: no private shadow-store evidence was returned.
-        </div>
-      </section>
-    );
-  }
-
-  const { counts, quality } = scorecard;
-  const qualityText =
-    quality.availability === 'available' && quality.correctRate !== null
-      ? formatPercent(quality.correctRate * 100)
-      : 'Unavailable';
-  const usefulText =
-    quality.availability === 'available' && quality.usefulRate !== null
-      ? formatPercent(quality.usefulRate * 100)
-      : 'Unavailable';
-  const denominatorTextValue =
-    quality.denominator === null ? 'Unknown' : formatNumber(quality.denominator);
-  const admissionPopulation = scorecard.admissionPopulation;
-  const admissionCounts = admissionPopulation?.counts;
-  const admissionAvailable =
-    admissionPopulation?.availability === 'available' &&
-    typeof admissionCounts?.eligible === 'number' &&
-    typeof admissionCounts?.admitted === 'number' &&
-    typeof admissionCounts?.skipped === 'number' &&
-    typeof admissionCounts?.denied === 'number' &&
-    typeof admissionCounts?.pending === 'number';
-  const admissionNumber = (value: number | null | undefined) =>
-    value === null || value === undefined ? 'Unknown' : formatNumber(value);
-
+function EvidenceGroup({ title, evidence }: { title: string; evidence: RetroTask['evidence'] }) {
+  if (!evidence.length) return null;
   return (
-    <section aria-labelledby="shadow-scorecard-heading" className="grid gap-4">
-      <div>
-        <h2 id="shadow-scorecard-heading" className="text-lg font-semibold">
-          Private prediction scorecard
-        </h2>
-        <p className="text-muted-foreground text-sm">
-          Internal {scorecard.evaluationMode.replaceAll('_', ' ')} observations. Predictions never
-          create drafts, labels, read-state changes, or sends.
-        </p>
-      </div>
-      <section aria-labelledby="shadow-admission-heading" className="grid gap-3">
-        <div>
-          <h3 id="shadow-admission-heading" className="text-base font-semibold">
-            Admission coverage
-          </h3>
-          <p className="text-muted-foreground text-sm">
-            Operational receipts are selected independently from sealed prediction outcomes.
+    <div className="space-y-2">
+      <h4 className="text-xs font-semibold uppercase tracking-wide">{title}</h4>
+      {evidence.map((item) => (
+        <div key={item.id} className="bg-muted/40 rounded-lg p-3 text-sm">
+          <p className="whitespace-pre-wrap break-words">{item.detail}</p>
+          <p className="text-muted-foreground mt-2 text-xs">
+            {formatReportDate(item.observedAt)} SAST
+          </p>
+          <p className="text-muted-foreground mt-1 break-all font-mono text-xs">{item.reference}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SourceEmailAction({ to }: { to: string }) {
+  const { data, isLoading } = useConnections();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const [opening, setOpening] = useState(false);
+  const { mutateAsync: setDefaultConnection } = useMutation(
+    trpc.connections.setDefault.mutationOptions({ meta: { noGlobalError: true } }),
+  );
+  const openEmail = async () => {
+    if (opening || isFrontendOnlyDemo()) return;
+    const intent = beginMailSelectionIntent();
+    const originalUserId = getMailCacheScope().userId;
+    const isCurrentSelection = () =>
+      isCurrentMailSelectionIntent(intent) && getMailCacheScope().userId === originalUserId;
+    const centurion = data?.connections.find(
+      (connection) =>
+        connection.id === 'transport-centurion' ||
+        connection.email.toLowerCase() === 'centurion@legacyhotels.co.za',
+    );
+    if (!centurion) {
+      toast.error('Centurion mailbox access is unavailable for this account.');
+      return;
+    }
+    setOpening(true);
+    try {
+      const previousScope = previousScopeBeforeSwitch({
+        current: getMailCacheScope(),
+        nextTransportId: centurion.id,
+      });
+      if (previousScope.activeTransportId !== centurion.id) {
+        await setDefaultConnection({ connectionId: centurion.id });
+        if (!isCurrentSelection()) return;
+        setMailCacheScope({ userId: previousScope.userId, activeTransportId: centurion.id });
+        if (!isCurrentSelection()) return;
+        await runAccountSwitchCacheCleanup({ previousScope, queryClient, deleteIdbKey: del });
+        const currentScope = getMailCacheScope();
+        if (!isCurrentSelection() || currentScope.activeTransportId !== centurion.id) return;
+        queryClient.setQueryData(trpc.connections.getDefault.queryKey(), {
+          ...centurion,
+          picture: null,
+          createdAt: null,
+        });
+      }
+      if (!isCurrentSelection() || getMailCacheScope().activeTransportId !== centurion.id) return;
+      void navigate(to);
+    } catch {
+      if (isCurrentSelection())
+        toast.error('Could not open the Centurion mailbox. Please try again.');
+    } finally {
+      setOpening(false);
+    }
+  };
+  return (
+    <Button
+      variant="link"
+      className="min-h-[44px] px-0 text-xs"
+      disabled={isLoading || opening}
+      isLoading={opening}
+      loadingText="Opening Centurion…"
+      onClick={() => {
+        void openEmail();
+      }}
+    >
+      Open email <ArrowUpRight className="size-3" aria-hidden="true" />
+    </Button>
+  );
+}
+
+function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assumptions }) {
+  const [expanded, setExpanded] = useState(false);
+  const credit = taskCredit(task, assumptions);
+  return (
+    <details
+      className="rounded-xl border"
+      onToggle={(event) => {
+        if (event.target === event.currentTarget) setExpanded(event.currentTarget.open);
+      }}
+    >
+      <summary className={`${disclosure} flex flex-wrap items-start justify-between gap-3 p-4`}>
+        <div className="min-w-0 flex-1 basis-48">
+          <p className="break-words text-sm font-medium">
+            {task.sources[0]?.subject || task.originalAsk || task.id}
+          </p>
+          <p className="text-muted-foreground mt-1 text-xs">
+            {formatReportDate(task.requestedAt)} SAST
           </p>
         </div>
-        {!admissionAvailable ? (
-          <div
-            role="status"
-            className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm"
-          >
-            Admission coverage unknown:{' '}
-            {(admissionPopulation?.reason ?? 'population unavailable').replaceAll('_', ' ')}.
-          </div>
-        ) : (
-          <>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Eligible admissions</CardTitle>
-                  <CardDescription>Receipts eligible at the admission boundary.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-semibold tabular-nums">
-                    {admissionNumber(admissionCounts?.eligible)}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Admitted receipts</CardTitle>
-                  <CardDescription>Receipts allowed into the private queue.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-semibold tabular-nums">
-                    {admissionNumber(admissionCounts?.admitted)}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Pending seal</CardTitle>
-                  <CardDescription>
-                    Admitted receipts without a sealed prediction by cutoff.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-semibold tabular-nums">
-                    {admissionNumber(admissionCounts?.pending)}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Skipped admissions</CardTitle>
-                  <CardDescription>Eligible receipts skipped before queue work.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-semibold tabular-nums">
-                    {admissionNumber(admissionCounts?.skipped)}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Denied admissions</CardTitle>
-                  <CardDescription>Receipts denied at the admission boundary.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-semibold tabular-nums">
-                    {admissionNumber(admissionCounts?.denied)}
-                  </p>
-                </CardContent>
-              </Card>
+        <div className="flex flex-wrap items-center gap-3">
+          <OutcomeBadge outcome={task.outcome} />
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {formatCount(credit)} min credit
+          </span>
+          <ChevronDown className="text-muted-foreground size-4" aria-hidden="true" />
+        </div>
+      </summary>
+      {expanded ? (
+        <div className="space-y-6 border-t p-4 sm:p-5">
+          <div className="grid gap-5 sm:grid-cols-2">
+            <div>
+              <h4 className="text-sm font-semibold">Original ask</h4>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                {task.originalAsk}
+              </p>
             </div>
-            <p className="text-muted-foreground text-xs">
-              Admission clock: created at ({admissionPopulation.provenance.selectionClock}). Window:{' '}
-              {displayDate(admissionPopulation.provenance.windowStart)} to{' '}
-              {displayDate(admissionPopulation.provenance.windowEnd)}. Observation cutoff:{' '}
-              {displayDate(admissionPopulation.provenance.observationCutoff)}.{' '}
-              {admissionPopulation.reason === 'no_admission_receipts'
-                ? 'No admission receipts in this window; this is confirmed absence, not zero-filled unknown evidence.'
-                : 'Pending seal is not assessment pending.'}
-            </p>
-          </>
-        )}
-      </section>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Admitted predictions</CardTitle>
-            <CardDescription>Eligible private prediction jobs.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold tabular-nums">{formatNumber(counts.admitted)}</p>
+            <div>
+              <h4 className="text-sm font-semibold">Nava preparation</h4>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                {task.navaPreparation || 'No preparation recorded.'}
+              </p>
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold">Remaining work</h4>
+              {task.remainingWork.length ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+                  {Array.from(new Set(task.remainingWork)).map((work) => (
+                    <li key={work} className="whitespace-pre-wrap break-words">
+                      {work}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-muted-foreground mt-2 text-sm">
+                  {task.outcome === 'correct_complete'
+                    ? 'No remaining preparation recorded. Staff review and any Save or send remain part of assisted effort.'
+                    : 'No remaining-work detail recorded.'}
+                </p>
+              )}
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold">Why this outcome</h4>
+              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                {task.reason}
+              </p>
+              <p className="text-muted-foreground mt-2 text-xs">
+                {task.outcome === 'correct_complete'
+                  ? `${workflowTiming(assumptions, task.workflow).manualMinutes} manual − ${workflowTiming(assumptions, task.workflow).assistedMinutes} assisted = ${credit} estimated minutes saved.`
+                  : 'This outcome receives zero savings credit under the forecast policy.'}
+              </p>
+            </div>
+          </div>
+          <dl className="grid grid-cols-2 gap-3 rounded-lg border p-3 text-xs sm:grid-cols-4">
+            <div>
+              <dt className="text-muted-foreground">Rooms / guests / targets</dt>
+              <dd className="mt-1">
+                {task.complexity.rooms ?? 'Unknown'} / {task.complexity.guests ?? 'Unknown'} /{' '}
+                {task.complexity.targets ?? 'Unknown'}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Bookings</dt>
+              <dd className="mt-1 break-words">
+                {task.bookingReferences.join(', ') || 'None linked'}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Task ID</dt>
+              <dd className="mt-1 break-all font-mono">{task.id}</dd>
+            </div>
+            <div>
+              <dt className="text-muted-foreground">Work item</dt>
+              <dd className="mt-1 break-all font-mono">{task.workItemId ?? 'None linked'}</dd>
+            </div>
+          </dl>
+          <div className="space-y-3">
+            <h4 className="text-sm font-semibold">Source emails</h4>
+            {task.sources.map((source) => {
+              const link = sourceMailLink(source);
+              return (
+                <article key={source.messageId} className="rounded-lg border p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-medium">
+                        {source.subject || '(No subject)'}
+                      </p>
+                      <p className="text-muted-foreground mt-1 break-words text-xs">
+                        {source.from} · {formatReportDate(source.receivedAt)} SAST
+                      </p>
+                      {source.timestampBasis && source.timestampBasis !== 'received_at' ? (
+                        <p className="text-muted-foreground mt-1 text-xs">
+                          {source.timestampBasis === 'sent_at_confirmed_outbound'
+                            ? 'Hotel sent timestamp.'
+                            : source.timestampBasis === 'sent_at_fallback'
+                              ? 'Sent timestamp; receipt time was not retained.'
+                              : 'Storage timestamp; the original receipt time is unknown.'}
+                        </p>
+                      ) : null}
+                    </div>
+                    {link ? <SourceEmailAction to={link} /> : null}
+                  </div>
+                  <blockquote className="text-muted-foreground mt-3 whitespace-pre-wrap break-words border-l-2 pl-3 text-sm">
+                    {source.quote || 'No source excerpt retained.'}
+                  </blockquote>
+                  <p className="text-muted-foreground mt-3 break-all font-mono text-xs">
+                    Message: {source.messageId}
+                  </p>
+                  {source.threadId ? (
+                    <p className="text-muted-foreground mt-1 break-all font-mono text-xs">
+                      Thread: {source.threadId}
+                    </p>
+                  ) : null}
+                  {source.duplicateMessageIds.length ? (
+                    <p className="text-muted-foreground mt-1 break-all text-xs">
+                      Duplicate copies: {source.duplicateMessageIds.join(', ')}
+                    </p>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+          <div className="space-y-4">
+            <h4 className="text-sm font-semibold">Preparation checks</h4>
+            {task.replay.status === 'not_run' ? (
+              <p className="text-muted-foreground text-sm">{task.replay.reason}</p>
+            ) : (
+              <>
+                <p className="text-muted-foreground text-xs">
+                  Request-time native evidence:{' '}
+                  {task.replay.nativeEvidence === 'complete' ? 'complete' : 'missing'} · Replay{' '}
+                  {task.replay.replayId}
+                </p>
+                {task.replay.checks.map((check) => (
+                  <div
+                    key={`${check.requirement}:${check.evidenceIds.join('|')}`}
+                    className="rounded-lg border p-3 text-sm"
+                  >
+                    <p className="font-medium">
+                      {check.requirement}{' '}
+                      <span className="text-muted-foreground font-normal">· {check.status}</span>
+                    </p>
+                    <dl className="mt-2 grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <dt className="text-muted-foreground text-xs">Requested</dt>
+                        <dd className="mt-1 whitespace-pre-wrap break-words">
+                          {check.sourceValue}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground text-xs">Prepared</dt>
+                        <dd className="mt-1 whitespace-pre-wrap break-words">
+                          {check.preparedValue}
+                        </dd>
+                      </div>
+                    </dl>
+                    <p className="text-muted-foreground mt-2 break-all text-xs">
+                      Evidence: {check.evidenceIds.join(', ')}
+                    </p>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+          <EvidenceGroup
+            title="Available at the request · source and native facts"
+            evidence={task.evidence.filter(
+              (item) => item.kind === 'source' || item.kind === 'historical_native',
+            )}
+          />
+          <EvidenceGroup
+            title="Preparation evidence"
+            evidence={task.evidence.filter((item) => item.kind === 'preparation')}
+          />
+          {task.evidence.some((item) => item.kind === 'later_outcome') ? (
+            <div className="space-y-2 border-t pt-4">
+              <p className="text-muted-foreground text-xs">
+                Later outcomes are context. They do not establish what Nava knew when the request
+                arrived.
+              </p>
+              <EvidenceGroup
+                title="Later outcome evidence"
+                evidence={task.evidence.filter((item) => item.kind === 'later_outcome')}
+              />
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
+type WorkflowForecast = ReturnType<typeof forecastReport>['workflows'][number];
+
+function WorkflowDetails({
+  row,
+  assumptions,
+  onOverride,
+  onReset,
+  search,
+  outcome,
+}: {
+  row: WorkflowForecast;
+  assumptions: Assumptions;
+  onOverride: (workflow: RetroWorkflow, timing: Timing) => void;
+  onReset: (workflow: RetroWorkflow) => void;
+  search: string;
+  outcome: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [limit, setLimit] = useState(10);
+  const timing = workflowTiming(assumptions, row.workflow);
+  const overridden = Boolean(assumptions.workflows[row.workflow]);
+  const tasks = row.tasks.filter(
+    (task) => (outcome === 'all' || task.outcome === outcome) && taskMatchesSearch(task, search),
+  );
+  const filtered = Boolean(search.trim()) || outcome !== 'all';
+  return (
+    <details
+      className={`${panel} group overflow-hidden`}
+      onToggle={(event) => {
+        if (event.target === event.currentTarget) setExpanded(event.currentTarget.open);
+      }}
+    >
+      <summary className={`${disclosure} p-5`}>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="font-semibold">{WORKFLOW_LABELS[row.workflow]}</h3>
             <p className="text-muted-foreground mt-1 text-xs">
-              Sealed: {formatNumber(counts.sealed)} · unavailable:{' '}
-              {formatNumber(counts.unavailable)}
+              {formatCount(row.tasks.length)} distinct tasks ·{' '}
+              {formatCount(row.outcomes.correct_complete)} correct &amp; complete
+              {overridden ? ' · custom timing' : ''}
             </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Reference outcomes</CardTitle>
-            <CardDescription>Verified outbound observations and delays.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold tabular-nums">{formatNumber(counts.matched)}</p>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Pending: {formatNumber(counts.pending)} · late: {formatNumber(counts.late)} ·
-              unobserved: {formatNumber(counts.unobserved)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Label coverage</CardTitle>
-            <CardDescription>Bound, unique labels only.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold tabular-nums">{formatNumber(counts.labelled)}</p>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Scorable denominator: {formatNumber(counts.scorable)}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Quality</CardTitle>
-            <CardDescription>Gold labels are not inferred from missing evidence.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-2xl font-semibold tabular-nums">{qualityText}</p>
-            <p className="text-muted-foreground mt-1 text-xs">
-              Useful: {usefulText} · denominator: {denominatorTextValue}
-            </p>
-            {quality.availability !== 'available' ? (
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="text-right">
+              <p className="text-lg font-semibold tabular-nums">
+                {formatHours(row.savedMinutes)}{' '}
+                <span className="text-muted-foreground text-xs font-normal">hours</span>
+              </p>
+              <p className="text-muted-foreground text-xs">estimated savings</p>
+            </div>
+            <ChevronDown
+              className="text-muted-foreground size-4 transition-transform group-open:rotate-180"
+              aria-hidden="true"
+            />
+          </div>
+        </div>
+        <div
+          className="bg-muted mt-4 flex h-2 overflow-hidden rounded-full"
+          role="img"
+          aria-label={OUTCOMES.map((item) => `${OUTCOME_LABELS[item]}: ${row.outcomes[item]}`).join(
+            '; ',
+          )}
+        >
+          {OUTCOMES.map((item) =>
+            row.outcomes[item] > 0 ? (
+              <span
+                key={item}
+                className={OUTCOME_COLORS[item].bar}
+                style={{ width: `${(100 * row.outcomes[item]) / row.tasks.length}%` }}
+              />
+            ) : null,
+          )}
+        </div>
+        <p className="text-muted-foreground mt-3 text-xs">
+          {filtered ? `${formatCount(tasks.length)} matching tasks · ` : ''}Review outcomes, timing
+          &amp; task evidence
+        </p>
+      </summary>
+      {expanded ? (
+        <div className="space-y-5 border-t p-5">
+          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {OUTCOMES.map((item) => (
+              <div
+                key={item}
+                className="flex items-center justify-between gap-2 rounded-lg border p-3"
+              >
+                <dt className="text-xs">{OUTCOME_LABELS[item]}</dt>
+                <dd className="font-semibold tabular-nums">{formatCount(row.outcomes[item])}</dd>
+              </div>
+            ))}
+          </dl>
+          <div className="bg-muted/30 space-y-3 rounded-xl p-4">
+            <div>
+              <h4 className="text-sm font-semibold">Workflow timing assumptions</h4>
               <p className="text-muted-foreground mt-1 text-xs">
-                Unavailable: {(quality.reason ?? 'evidence unavailable').replaceAll('_', ' ')}
+                {overridden
+                  ? 'Custom values for this workflow.'
+                  : 'Using the global assumptions. Apply values to override this workflow.'}{' '}
+                Correct &amp; complete tasks receive{' '}
+                {formatCount(timing.manualMinutes - timing.assistedMinutes)} minutes each.
+              </p>
+            </div>
+            <TimingEditor
+              key={`${timing.manualMinutes}:${timing.assistedMinutes}:${overridden}`}
+              timing={timing}
+              label={WORKFLOW_LABELS[row.workflow]}
+              onApply={(value) => onOverride(row.workflow, value)}
+              onReset={overridden ? () => onReset(row.workflow) : undefined}
+            />
+          </div>
+          <div className="space-y-3">
+            <h4 className="text-sm font-semibold">
+              Task evidence{' '}
+              <span className="text-muted-foreground font-normal">
+                · {formatCount(tasks.length)}
+                {filtered ? ' matching' : ''} tasks
+              </span>
+            </h4>
+            {tasks.slice(0, limit).map((task) => (
+              <TaskDetails key={task.id} task={task} assumptions={assumptions} />
+            ))}
+            {!tasks.length ? (
+              <p className="text-muted-foreground rounded-lg border border-dashed p-4 text-sm">
+                {filtered
+                  ? 'No tasks match these filters.'
+                  : 'No tasks recorded for this workflow.'}
               </p>
             ) : null}
-          </CardContent>
-        </Card>
-      </div>
-      <p className="text-muted-foreground text-xs">
-        Source: private shadow store. Missing is not zero; mode: {scorecard.evaluationMode}.
-      </p>
-    </section>
+            {tasks.length > limit ? (
+              <Button
+                variant="outline"
+                className="min-h-[44px]"
+                onClick={() => setLimit((value) => value + 20)}
+              >
+                Show more tasks ({formatCount(tasks.length - limit)} remaining)
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </details>
   );
 }
 
-function HostedAdminDashboardView({
-  metrics,
-  isStale,
-  isError,
-  selectedCohort,
-  selectedWindow,
-  selectedObservationCutoff,
-  snapshotSelection,
+function RetroDashboard({
+  report,
+  viewerScopeKey,
+  example = false,
+  refreshing = false,
+  refresh,
 }: {
-  metrics: AdminDashboardMetrics;
-  isStale: boolean;
-  isError: boolean;
-  selectedCohort: DashboardCohortId;
-  selectedWindow: DashboardWindowPreset;
-  selectedObservationCutoff?: string;
-  snapshotSelection?: AdminDashboardSelection | null;
+  report: RetroReport;
+  viewerScopeKey: string;
+  example?: boolean;
+  refreshing?: boolean;
+  refresh?: () => void;
 }) {
-  const snapshotQuery = metrics.query;
-  const selectedQuery = normalizeAdminDashboardSelection({
-    cohortId: selectedCohort,
-    window: selectedWindow,
-    observationCutoff: selectedObservationCutoff,
-  });
-  const observedCutoff =
-    normalizeAdminDashboardCutoff(snapshotQuery?.observationCutoff) ?? 'latest';
-  const observedSelection = snapshotSelection ?? {
-    cohortId: snapshotQuery?.cohortId ?? selectedQuery.cohortId,
-    window: snapshotQuery?.window ?? selectedQuery.window,
-    observationCutoff: snapshotQuery?.observationCutoff,
+  const storageKey = `centurion-retro-roi:assumptions:1:${viewerScopeKey}`;
+  const [assumptions, setAssumptions] = useState<Assumptions>(DEFAULT_ASSUMPTIONS);
+  const [storageFailed, setStorageFailed] = useState(false);
+  const [search, setSearch] = useState('');
+  const [outcome, setOutcome] = useState('all');
+  const filterId = useId();
+  useEffect(() => {
+    setAssumptions(readAssumptions(storageKey));
+  }, [storageKey]);
+  const forecast = useMemo(() => forecastReport(report, assumptions), [report, assumptions]);
+  const saveAssumptions = (next: Assumptions) => {
+    setAssumptions(next);
+    setStorageFailed(!writeAssumptions(storageKey, next));
   };
-  const selectedCutoff = selectedQuery.observationCutoff ?? 'latest';
-  const observedSelectionCutoff = observedSelection.observationCutoff
-    ? normalizeAdminDashboardCutoff(observedSelection.observationCutoff)
-    : undefined;
-  const selectionMismatch = Boolean(
-    snapshotQuery &&
-      (snapshotQuery.cohortId !== selectedQuery.cohortId ||
-        snapshotQuery.window !== selectedQuery.window ||
-        selectedQuery.observationCutoff !== observedSelectionCutoff),
-  );
-  const selectionLabel = `Selected cohort/window/cutoff: ${selectedQuery.cohortId} / ${selectedQuery.window} / ${selectedCutoff}. Observed cohort/window/cutoff: ${snapshotQuery?.cohortId ?? 'unknown'} / ${snapshotQuery?.window ?? 'unknown'} / ${observedCutoff}.`;
-  const staleSelectionMessage = selectionMismatch
-    ? `${selectionLabel} The selected query is refreshing; showing the observed snapshot.`
-    : `${selectionLabel} Refreshing the selected query; the observed snapshot remains visible and is labelled as stale.`;
-  const errorSelectionMessage = selectionMismatch
-    ? `${selectionLabel} The selected query failed; showing the observed snapshot; no demo data is substituted.`
-    : `${selectionLabel} Refresh failed; the observed snapshot remains visible as stale; no demo data is substituted.`;
-
+  const onOverride = (workflow: RetroWorkflow, timing: Timing) =>
+    saveAssumptions({
+      ...assumptions,
+      workflows: { ...assumptions.workflows, [workflow]: timing },
+    });
+  const onReset = (workflow: RetroWorkflow) => {
+    const workflows = { ...assumptions.workflows };
+    delete workflows[workflow];
+    saveAssumptions({ ...assumptions, workflows });
+  };
   return (
-    <SettingsCard
-      title="Executive email dashboard"
-      description="Observed email operations for the selected cohort and bounded window."
-    >
-      <div className="grid gap-6">
-        {isError ? (
-          <div
-            role="alert"
-            className="border-destructive/40 bg-destructive/10 rounded-lg border p-3 text-sm"
-          >
-            {errorSelectionMessage}
+    <div className="space-y-6">
+      {example ? (
+        <div
+          className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-200"
+          role="status"
+        >
+          <strong>Illustrative example.</strong> All records and totals are fictitious. This preview
+          demonstrates the dashboard; it is not Centurion's analysis.
+        </div>
+      ) : null}
+      <section
+        className="overflow-hidden rounded-2xl border border-emerald-600/20 bg-emerald-500/5"
+        aria-label="Retrospective forecast summary"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-emerald-600/10 px-5 py-4 sm:px-6">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
+              {example ? 'Illustrative period' : 'Centurion · HRCEN'} · 30-day retrospective
+            </p>
+            <p className="mt-2 text-sm font-medium">
+              {formatReportDate(report.period.start)} → {formatReportDate(report.period.end)} SAST
+            </p>
+            <p className="text-muted-foreground mt-1 text-xs">
+              Africa/Johannesburg · start inclusive, cutoff exclusive · fixed analysis period
+            </p>
           </div>
-        ) : isStale ? (
-          <div
-            role="status"
-            className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
-          >
-            {staleSelectionMessage}
+          <div className="flex items-center gap-3">
+            <span
+              className={`rounded-full px-3 py-1.5 text-xs font-medium ${report.coverage.status === 'complete' ? 'bg-emerald-500/10 text-emerald-800 dark:text-emerald-300' : 'bg-amber-500/10 text-amber-800 dark:text-amber-300'}`}
+            >
+              {report.coverage.status === 'complete' ? 'Complete coverage' : 'Partial coverage'}
+            </span>
+            {refresh ? (
+              <Button
+                variant="ghost"
+                className="min-h-[44px]"
+                disabled={refreshing}
+                onClick={refresh}
+                aria-label="Reload published report"
+              >
+                <RefreshCw
+                  className={`size-4 ${refreshing ? 'animate-spin' : ''}`}
+                  aria-hidden="true"
+                />
+              </Button>
+            ) : null}
           </div>
-        ) : null}
-        <SnapshotNote metrics={metrics} />
-        <TrafficSection metrics={metrics} />
-        <ActivitySection activity={metrics.activity} />
-        <WorkflowSection metrics={metrics} />
-        <CorrespondentSection metrics={metrics} />
-        <ServiceSection metrics={metrics} />
-        <ShadowScorecardSection scorecard={metrics.shadowScorecard} />
-        <DataHealthSection dataHealth={metrics.dataHealth} />
-        {!metrics.traffic ? (
-          <p className="text-muted-foreground text-xs">
-            This response contains no executive traffic payload; legacy values are not used as a
-            fallback.
+        </div>
+        <div className="grid gap-6 px-5 py-6 sm:grid-cols-3 sm:px-6">
+          <div className="sm:col-span-1">
+            <div className="flex items-center gap-2 text-sm text-emerald-800 dark:text-emerald-300">
+              <Clock3 className="size-4" aria-hidden="true" />
+              <h2>Estimated hours saved</h2>
+            </div>
+            <p
+              className="mt-3 text-5xl font-semibold tabular-nums tracking-tight"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {formatHours(forecast.savedMinutes)}{' '}
+              <span className="text-muted-foreground text-xl font-normal">hours</span>
+            </p>
+            <p className="text-muted-foreground mt-2 text-xs">
+              {formatCount(forecast.savedMinutes)} forecast minutes across credited tasks
+            </p>
+          </div>
+          <div>
+            <h2 className="text-muted-foreground text-sm">Distinct tasks assessed</h2>
+            <p className="mt-3 text-4xl font-semibold tabular-nums tracking-tight">
+              {formatCount(forecast.taskCount)}
+            </p>
+            <p className="text-muted-foreground mt-2 text-xs">
+              Requested staff actions, deduplicated across source emails
+            </p>
+          </div>
+          <div>
+            <h2 className="text-muted-foreground text-sm">Correct &amp; complete preparation</h2>
+            <p className="mt-3 text-4xl font-semibold tabular-nums tracking-tight">
+              {formatCount(forecast.outcomes.correct_complete)}
+            </p>
+            <p className="text-muted-foreground mt-2 text-xs">
+              Evidence-backed tasks eligible for savings credit
+            </p>
+          </div>
+        </div>
+        <div className="border-t border-emerald-600/10 px-5 py-4 sm:px-6">
+          <p className="text-muted-foreground text-xs leading-relaxed">
+            A forecast of what the assessed Nava version could have saved on past reservation work.
+            These are editable effort assumptions, not measured staff savings or adoption. Staff
+            review remains required.
+          </p>
+          <p className="text-muted-foreground mt-2 text-xs">
+            Report as of {formatReportDate(report.generatedAt)} SAST
+            {report.coverage.status === 'partial' ? ' · captured and assessed records only' : ''}
+          </p>
+          {forecast.savedMinutes < 0 ? (
+            <p className="mt-2 text-xs text-amber-800 dark:text-amber-300" role="status">
+              Negative savings mean your assumptions estimate additional assisted effort.
+            </p>
+          ) : null}
+        </div>
+      </section>
+      <Coverage report={report} />
+      <section className={`${panel} p-5 sm:p-6`} aria-labelledby={`${filterId}-timing-title`}>
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 id={`${filterId}-timing-title`} className="font-semibold">
+              Your forecast assumptions
+            </h2>
+            <p className="text-muted-foreground mt-1 text-sm">
+              Manual effort minus Nava-assisted effort, per correct &amp; complete task.
+            </p>
+          </div>
+          <Button
+            variant="ghost"
+            className="min-h-[44px]"
+            onClick={() => saveAssumptions(DEFAULT_ASSUMPTIONS)}
+          >
+            Reset all to 6 / 2
+          </Button>
+        </div>
+        <TimingEditor
+          key={`${assumptions.global.manualMinutes}:${assumptions.global.assistedMinutes}`}
+          label="Global"
+          timing={assumptions.global}
+          onApply={(global) => saveAssumptions({ ...assumptions, global })}
+        />
+        <p className="text-muted-foreground mt-4 text-xs leading-relaxed">
+          Default: 6 manual minutes − 2 assisted minutes = 4 minutes saved. Every other outcome
+          receives zero credit. Negative differences estimate additional effort. Workflow overrides
+          stay in effect when global values change. Your edits recalculate the same assessments and
+          are saved for this viewer and mailbox.
+        </p>
+        {storageFailed ? (
+          <p className="mt-2 text-sm text-amber-800 dark:text-amber-300" role="status">
+            Browser storage is unavailable. These assumptions apply for this visit.
           </p>
         ) : null}
-      </div>
-    </SettingsCard>
-  );
-}
-
-function EmptyDashboardState({ title, message }: { title: string; message: string }) {
-  return (
-    <div role="status" className="rounded-lg border border-dashed p-6">
-      <h1 className="text-lg font-semibold">{title}</h1>
-      <p className="text-muted-foreground mt-2 text-sm">{message}</p>
+      </section>
+      <section className="space-y-4" aria-labelledby={`${filterId}-workflow-title`}>
+        <div>
+          <h2 id={`${filterId}-workflow-title`} className="text-lg font-semibold">
+            Where the time could be saved
+          </h2>
+          <p className="text-muted-foreground mt-1 text-sm">
+            Preparation outcomes by workflow. Expand a row to adjust its timing or inspect each
+            task.
+          </p>
+        </div>
+        <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          {OUTCOMES.map((item) => (
+            <div key={item} className={`${panel} p-3`}>
+              <dt className="flex items-center gap-2 text-xs">
+                <span
+                  className={`size-2 shrink-0 rounded-full ${OUTCOME_COLORS[item].bar}`}
+                  aria-hidden="true"
+                />
+                {OUTCOME_LABELS[item]}
+              </dt>
+              <dd className="mt-2 text-xl font-semibold tabular-nums">
+                {formatCount(forecast.outcomes[item])}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <div className="relative min-w-0 flex-1">
+            <Label className="sr-only" htmlFor={`${filterId}-search`}>
+              Search task evidence
+            </Label>
+            <Search
+              className="text-muted-foreground pointer-events-none absolute left-3 top-3.5 size-4"
+              aria-hidden="true"
+            />
+            <Input
+              id={`${filterId}-search`}
+              className="min-h-[44px] pl-9"
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Search asks, senders or booking references"
+            />
+          </div>
+          <div>
+            <Label className="sr-only" htmlFor={`${filterId}-outcome`}>
+              Filter tasks by preparation outcome
+            </Label>
+            <select
+              id={`${filterId}-outcome`}
+              className="border-input bg-background focus-visible:ring-ring min-h-[44px] w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 sm:w-56"
+              value={outcome}
+              onChange={(event) => setOutcome(event.target.value)}
+            >
+              <option value="all">All preparation outcomes</option>
+              {OUTCOMES.map((item) => (
+                <option key={item} value={item}>
+                  {OUTCOME_LABELS[item]}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {search || outcome !== 'all' ? (
+          <p className="text-muted-foreground text-xs" role="status">
+            Filters apply to the task lists. Forecast totals continue to include the full report.
+          </p>
+        ) : null}
+        {forecast.taskCount === 0 ? (
+          <EmptyState title="No distinct tasks assessed yet">
+            Source coverage above explains what was captured. There is no task-level savings
+            estimate to credit.
+          </EmptyState>
+        ) : null}
+        {forecast.workflows.map((row) => (
+          <WorkflowDetails
+            key={`${report.reportId}:${row.workflow}`}
+            row={row}
+            assumptions={assumptions}
+            onOverride={onOverride}
+            onReset={onReset}
+            search={search}
+            outcome={outcome}
+          />
+        ))}
+      </section>
+      <p className="text-muted-foreground flex items-start gap-2 pb-4 text-xs leading-relaxed">
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        Task outcomes and source evidence remain unchanged by timing edits. Reload checks the
+        published report; it does not run an assessment or write to HMS.
+      </p>
     </div>
   );
-}
-
-function cutoffInputToIso(value: string): string | undefined {
-  if (!value) return undefined;
-  const timestamp = new Date(`${value}T23:59:59.999+02:00`).getTime();
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
 }
 
 export default function AdminDashboardPage() {
-  const [cohortId, setCohortId] = useState<DashboardCohortId>('centurion');
-  const [windowPreset, setWindowPreset] = useState<DashboardWindowPreset>('7d');
-  const [observationCutoff, setObservationCutoff] = useState('');
-  const queryInput = useMemo(
-    () => ({
-      cohortId,
-      window: windowPreset,
-      observationCutoff: cutoffInputToIso(observationCutoff),
-    }),
-    [cohortId, observationCutoff, windowPreset],
-  );
-  const { canAccess, isLoading, metrics, isError, isStale, source, snapshotSelection } =
-    useAdminDashboardData(queryInput);
-  const { isDownloading: isExporting, download: downloadExport } =
-    useAdminDashboardExport(queryInput);
-
-  if (isLoading && !metrics) {
-    return (
-      <EmptyDashboardState
-        title="Loading executive dashboard"
-        message="Retrieving the selected aggregate snapshot…"
-      />
-    );
+  const state = useRetroRoi();
+  const [showExample, setShowExample] = useState(false);
+  let content: ReactNode;
+  switch (state.status) {
+    case 'loading':
+      content = (
+        <div className="space-y-4" role="status" aria-label="Loading retrospective report">
+          <p className="text-muted-foreground text-sm">Loading the published retrospective…</p>
+          <div className={`${panel} bg-muted/40 h-60 animate-pulse`} />
+          <div className={`${panel} bg-muted/40 h-24 animate-pulse`} />
+          <div className={`${panel} bg-muted/40 h-36 animate-pulse`} />
+        </div>
+      );
+      break;
+    case 'denied':
+      content = (
+        <EmptyState title="Dashboard access is restricted">
+          Sign in with an authorised dashboard account to view Centurion's retrospective.
+        </EmptyState>
+      );
+      break;
+    case 'error':
+      content = (
+        <EmptyState
+          title="The report could not be loaded"
+          action={
+            <Button variant="outline" className="min-h-[44px]" onClick={state.retry}>
+              Try again
+            </Button>
+          }
+        >
+          The published report is temporarily unavailable. Reload to check again.
+        </EmptyState>
+      );
+      break;
+    case 'unavailable':
+      content = (
+        <EmptyState
+          title={
+            state.reason === 'invalid_report'
+              ? 'The report needs verification'
+              : 'No retrospective published yet'
+          }
+          action={
+            <Button variant="outline" className="min-h-[44px]" onClick={state.retry}>
+              Check for a report
+            </Button>
+          }
+        >
+          {state.reason === 'invalid_report'
+            ? 'The saved report did not pass its evidence and data checks. Forecast totals will appear when a valid report is published.'
+            : 'A source-backed 30-day report has not been published for Centurion. Forecast totals will appear after its source coverage and task assessments are ready.'}
+        </EmptyState>
+      );
+      break;
+    case 'demo':
+      content = showExample ? (
+        <RetroDashboard
+          key="illustrative"
+          report={ILLUSTRATIVE_RETRO_REPORT}
+          viewerScopeKey="illustrative-preview"
+          example
+        />
+      ) : (
+        <EmptyState
+          title="Frontend preview"
+          action={
+            <Button variant="outline" className="min-h-[44px]" onClick={() => setShowExample(true)}>
+              View illustrative example
+            </Button>
+          }
+        >
+          This frontend preview has no connection to Centurion's report. You can explore a clearly
+          marked example with fictitious task records.
+        </EmptyState>
+      );
+      break;
+    case 'ready':
+      content = (
+        <RetroDashboard
+          key={state.viewerScopeKey}
+          report={state.report}
+          viewerScopeKey={state.viewerScopeKey}
+          refreshing={state.refreshing}
+          refresh={state.refresh}
+        />
+      );
+      break;
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
   }
-
-  if (isError && !metrics) {
-    return (
-      <EmptyDashboardState
-        title="Dashboard unavailable"
-        message="The selected aggregate snapshot could not be loaded. No demo data is shown."
-      />
-    );
-  }
-
-  if (!canAccess) {
-    return (
-      <EmptyDashboardState
-        title="No access"
-        message="The executive dashboard is limited to the admin account."
-      />
-    );
-  }
-
-  if (source === 'demo') {
-    return (
-      <EmptyDashboardState
-        title="Hosted dashboard required"
-        message="Frontend demo data is not used for executive metrics. Connect an authorized hosted mailbox to view observed data."
-      />
-    );
-  }
-
-  if (!metrics) {
-    return (
-      <EmptyDashboardState
-        title="Dashboard snapshot unavailable"
-        message="No aggregate snapshot was returned for this selection. Try a different bounded window."
-      />
-    );
-  }
-
   return (
-    <div className="grid gap-4">
-      <DashboardControls
-        cohortId={cohortId}
-        windowPreset={windowPreset}
-        observationCutoff={observationCutoff}
-        onCohortChange={setCohortId}
-        onWindowChange={setWindowPreset}
-        onCutoffChange={setObservationCutoff}
-        onExport={() => void downloadExport()}
-        exporting={isExporting}
-      />
-      <HostedAdminDashboardView
-        metrics={metrics}
-        isStale={isStale}
-        isError={isError}
-        selectedCohort={cohortId}
-        selectedWindow={windowPreset}
-        selectedObservationCutoff={queryInput.observationCutoff}
-        snapshotSelection={snapshotSelection}
-      />
-    </div>
+    <main className="mx-auto max-w-6xl space-y-6 p-1 sm:p-4">
+      <header className="space-y-2">
+        <p className="text-muted-foreground text-xs font-medium uppercase tracking-widest">
+          Nava / Dashboard
+        </p>
+        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+          Time back for your team
+        </h1>
+        <p className="text-muted-foreground max-w-2xl text-sm leading-relaxed">
+          A retrospective forecast for Centurion's reservation work, grounded in distinct requests
+          and the preparation Nava could provide.
+        </p>
+      </header>
+      {content}
+    </main>
   );
 }
