@@ -214,7 +214,8 @@ async function loadMemory(env: NodeJS.ProcessEnv, propertyCode: string): Promise
     : env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
       await firstExistingPath([join(dir, 'outbound.jsonl'), join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl')]));
   const observationsPath = await resolveMemoryObservationsPath(env, propertyCode);
-  const key = JSON.stringify([pmsPath, outboundPdfPath, observationsPath]);
+  const key = JSON.stringify([env.HMS_MEMORY_DATA_DIR, env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH,
+    env.HMS_MEMORY_OBSERVATIONS_PATH, pmsPath, outboundPdfPath, observationsPath]);
   const cached = memoryCache.get(propertyCode);
   if (cached && cached.key === key && Date.now() - cached.loadedAt <= 5 * 60_000) return cached.value;
   const value = (async () => {
