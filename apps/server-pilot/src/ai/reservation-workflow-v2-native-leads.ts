@@ -138,7 +138,7 @@ export function reservationEntityKey(value: string, role: PartyRole): string {
 const normalizedPartyName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
 
 type Memory = z.infer<typeof memorySchema>;
-type NativeLeadsInput = { propertyCode: string;
+type NativeLeadsInput = { propertyCode: ReservationWorkflowV2Observation['propertyCode'];
   source: ReservationWorkflowV2Source; generationId: string; proposal: ReservationWorkflowV2Proposal;
   fromAddress: string | null | undefined; env?: NodeJS.ProcessEnv; signal?: AbortSignal;
   db?: DB; transportId?: string; sourceThreadMessageIds?: readonly string[];
@@ -216,7 +216,7 @@ async function loadMemory(env: NodeJS.ProcessEnv, propertyCode: string): Promise
       pmsPath,
       outboundPdfPath,
       observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined,
-    });
+    }, { propertyCode });
     const parsed = memorySchema.safeParse(loaded.memory);
     return parsed.success && parsed.data.propertyCode === propertyCode ? parsed.data : null;
   })().catch(() => null);
@@ -661,8 +661,6 @@ export async function loadReservationAutopickHistory(input: { propertyCode: stri
       if (!current || capturedAt > current.capturedAt) latest.set(row.confirmationKey, { capturedAt, rows: [row] });
       else if (capturedAt === current.capturedAt) current.rows.push(row);
     }
-    const lastSent = new Map<string, string>();
-    for (const row of links) if (row.sentAt! > (lastSent.get(row.confirmationKey) ?? '')) lastSent.set(row.confirmationKey, row.sentAt!);
     // One determinate value per stay and field, or the stay is not counted for that field.
     const facts = new Map<string, { lastSeen: string; values: Partial<Record<AutopickHistoryField, string>> }>();
     for (const [key, stay] of latest) {
@@ -679,7 +677,7 @@ export async function loadReservationAutopickHistory(input: { propertyCode: stri
         const distinct = new Map(raw.map(value => [value.normalize('NFKC').toLocaleLowerCase('en-US'), value]));
         if (distinct.size === 1) values[field] = [...distinct.values()][0]!;
       }
-      facts.set(key, { lastSeen: lastSent.get(key) ?? stay.capturedAt, values });
+      facts.set(key, { lastSeen: stay.capturedAt, values });
     }
     const tally = (kind: AutopickHistoryKind, key: string, confirmations: Iterable<string>): AutopickHistoryKey => {
       const fields: AutopickHistoryKey['fields'] = {};

@@ -6418,12 +6418,12 @@ export async function runReservationWorkflowV2Prefill(input: {
       participants: [input.selection.fromAddress ?? '', ...(input.selection.participants ?? [])] });
   }
   const readErrors: ReservationWorkflowV2Draft['errors'] = [...base.errors];
-  if (completePlan.length > plan.length) readErrors.push({ stage: 'lookup', code: 'candidate_read_cap',
-    message: `Read plan capped at ${MAX_CANDIDATE_READS}; ${completePlan.length - plan.length} additional source-derived reads remain unrun.` });
-  if (completePlan.length > plan.length) observations.push(seedObservation({ ref: 'obs_cap',
+  if (completePlan.length > cappedPlan.length) readErrors.push({ stage: 'lookup', code: 'candidate_read_cap',
+    message: `Read plan capped at ${MAX_CANDIDATE_READS}; ${completePlan.length - cappedPlan.length} additional source-derived reads remain unrun.` });
+  if (completePlan.length > cappedPlan.length) observations.push(seedObservation({ ref: 'obs_cap',
     generationId, propertyCode, source: input.source, sourceRefs: extraction.requests.flatMap((row) => row.requestText.sourceRefs),
-    status: 'partial', kind: 'source', criteria: { cap: MAX_CANDIDATE_READS, planned: completePlan.length, selected: plan.length },
-    result: { unrunCount: completePlan.length - plan.length }, complete: false, notes: ['Some planned reads were left unrun by the bounded prefill cap.'] }));
+    status: 'partial', kind: 'source', criteria: { cap: MAX_CANDIDATE_READS, planned: completePlan.length, selected: cappedPlan.length },
+    result: { unrunCount: completePlan.length - cappedPlan.length }, complete: false, notes: ['Some planned reads were left unrun by the bounded prefill cap.'] }));
   for (const candidate of plan) {
     try {
       const result = readCandidate ? await readCandidate(candidate) : input.lookupFixtures?.[candidate.id] ?? null;
