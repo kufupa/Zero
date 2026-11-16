@@ -344,6 +344,7 @@ export type TranslationRetryResult = { status: string; translation?: StoredTrans
 export type NeedsYouRow = {
   id: string;
   kind: string;
+  reviewOnly?: boolean;
   status: 'needs_you' | 'review' | 'done' | 'dismissed';
   chip: 'needs_you' | 'queued' | 'in_hms' | 'review';
   threadId: string | null;

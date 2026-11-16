@@ -1658,7 +1658,7 @@ export async function planThreadWork(
       confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
       payload,
     }) : null;
-    const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
+    const _separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
@@ -2803,7 +2803,10 @@ export async function listWorkItems(
     // subject), and the shared validator enforces confirmation number + ask.
     const preStayCandidate = mailboxEmail === '' ? undefined : and(
       sql`strpos(lower(${message.fromAddress}), ${mailboxEmail}) > 0`,
-      sql`${message.subject} ~* '\\ypre[\\s-]?(stay|arrival)\\y'`,
+      or(
+        sql`${message.subject} ilike '%pre%stay%'`,
+        sql`${message.subject} ilike '%pre%arrival%'`,
+      ),
     );
     const fetchPage = (cursor: NeedsYouCursor | null, size: number) => tx
       .select({
@@ -2820,6 +2823,7 @@ export async function listWorkItems(
         receivedAt: message.receivedAt,
         confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
         extractionPayload: mailExtraction.payload,
+        origin: origin.as('origin'),
         sourceBody: message.textBody,
         sourceHtml: message.htmlBody,
         reopenReason: sql<string | null>`(
@@ -2859,7 +2863,7 @@ export async function listWorkItems(
     return collectNeedsYouPages({
       limit: input.limit,
       fetchPage: async (cursor, size) => fetchPage(cursor, size),
-      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, ...row }) => {
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
         const preStayAsk = selfSentPreStayAskVerdict({
@@ -2873,9 +2877,23 @@ export async function listWorkItems(
             : [],
           payload,
         });
-        const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
-        if (!preStayAsk && row.kind === 'other') return null;
-        return { ...row, kind: separateAsk ? 'other_actionable' : row.kind, chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you' };
+        if (!preStayAsk) {
+          if (
+            row.kind === 'other'
+            || !NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])
+            || rowOrigin === 'system_notice'
+          ) {
+            return null;
+          }
+        }
+        const _separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
+        const reviewOnly = preStayAsk?.status === 'review';
+        return {
+          ...row,
+          kind: separateAsk ? 'other_actionable' : row.kind,
+          chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+          ...(reviewOnly ? { reviewOnly: true } : {}),
+        };
       },
     });
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });

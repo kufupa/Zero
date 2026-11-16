@@ -363,7 +363,7 @@ function NeedsYouRowView({
     <li className="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-[#475569]">
-          {NAVA_READ_AS_LABEL[readAsForKind(row.kind)]}
+          {row.reviewOnly ? 'Needs review' : NAVA_READ_AS_LABEL[readAsForKind(row.kind)]}
         </span>
         <span
           data-chip={finished ? 'finished' : row.chip}
