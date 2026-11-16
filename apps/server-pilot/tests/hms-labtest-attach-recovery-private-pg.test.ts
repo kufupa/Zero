@@ -31,13 +31,15 @@ vi.mock('../src/ai/pane-stay-save.js', async (original) => ({
 vi.mock('../tooling/hms-cloud/pane-attach-session.mjs', async (original) => ({
   ...(await original<typeof import('../tooling/hms-cloud/pane-attach-session.mjs')>()),
   provePositiveAttachRecovery: async (intent: { nativeGuestId: string; recovery: { confirmation: string;
-    documentCode: string; documentName: string } }) => {
+    documentCode: string; documentName: string; pdfSha256: string } }) => {
     f.reads++; f.entered?.(); if (f.release) await f.release;
     if (f.failRead) return { outcome: 'unconfirmed' };
     if (f.loseQuiescence) f.quiesced = false;
     return { outcome: 'verified', confirmation: intent.recovery.confirmation, screenshot: png,
+      actualStoredSha256: intent.recovery.pdfSha256, storedBytesHashVerified: true,
       readback: { confirmation: intent.recovery.confirmation, nativeStayId: '42', nativeGuestId: intent.nativeGuestId,
         documentCode: intent.recovery.documentCode, documentName: f.mismatch ? 'wrong.pdf' : intent.recovery.documentName,
+        actualStoredSha256: intent.recovery.pdfSha256, storedBytesHashVerified: true,
         uniqueFreshListing: true } };
   },
 }));

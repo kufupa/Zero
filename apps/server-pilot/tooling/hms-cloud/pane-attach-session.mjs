@@ -114,6 +114,47 @@ export function hasUniqueDocumentListing(docs, code, name, description) {
     (description === undefined || codes[0].description === description);
 }
 
+const PDF_MAGIC_BYTES = Buffer.from('%PDF-');
+const STORED_BYTES_MODULE = './pane-document-bytes.mjs';
+const storedDocumentBytes = { reader: null };
+/**
+ * The native stored-byte reader is discovered, never assumed: only the named
+ * sibling export may supply fresh bytes. A missing module leaves the stored
+ * hash unverified rather than fabricating a read. Discovery retries while the
+ * reader stays unresolved so a later-deployed module is picked up.
+ */
+async function defaultStoredDocumentBytesReader() {
+  if (!storedDocumentBytes.reader) {
+    try {
+      const mod = await import(STORED_BYTES_MODULE);
+      storedDocumentBytes.reader = typeof mod?.readStoredDocumentBytes === 'function'
+        ? mod.readStoredDocumentBytes : null;
+    } catch { storedDocumentBytes.reader = null; }
+  }
+  return storedDocumentBytes.reader;
+}
+
+/**
+ * Independently hash fresh stored bytes the reader returns. The reader is never
+ * handed the expected digest, and a claimed digest is never trusted: missing
+ * bytes, a reader failure, oversize or non-PDF output and a mismatched hash all
+ * leave storedBytesHashVerified false.
+ */
+export async function verifyStoredDocumentBytes(page, reader, target, expectedSha256) {
+  const result = { actualStoredSha256: null, storedBytesHashVerified: false };
+  if (typeof reader !== 'function' || !/^[a-f0-9]{64}$/.test(expectedSha256 || '')) return result;
+  try {
+    const raw = await reader(page, { ...target });
+    const body = Buffer.isBuffer(raw) ? raw : raw instanceof Uint8Array ? Buffer.from(raw) : null;
+    if (!body?.length || body.length > 10 * 1024 * 1024 || !body.subarray(0, PDF_MAGIC_BYTES.length).equals(PDF_MAGIC_BYTES)) {
+      return result;
+    }
+    result.actualStoredSha256 = createHash('sha256').update(body).digest('hex');
+    result.storedBytesHashVerified = result.actualStoredSha256 === expectedSha256;
+  } catch { /* A reader failure keeps the stored hash unverified. */ }
+  return result;
+}
+
 /** Give the sealer the native evidence directory, retaining its parent for cleanup. */
 function evidenceLocation(result, root) {
   const valid = typeof result?.evidenceDir === 'string' && dirname(result.evidenceDir) === root &&
@@ -153,10 +194,13 @@ async function freshDocuments(page, input, code, setNative) {
   return { listed, nativeReadback, screenshot: listed ? await page.screenshot({ fullPage: true }) : null };
 }
 
-/** Recovery accepts only a fresh positive listing on the original stay. */
+/**
+ * Recovery accepts only fresh byte-level proof on the original stay. A unique
+ * listing without a matching stored-byte hash reports 'listed', not 'verified'.
+ */
 export async function provePositiveAttachRecovery(intent, { openSession = withCloudReadSession,
   shallow = readShallow, read = readRecord, documents = readDocuments, writerQuiesced = cloudWriterQuiesced,
-  signal, credentialLease } = {}) {
+  readStoredDocumentBytes, signal, credentialLease } = {}) {
   try {
     const recovery = intent?.recovery;
     const labtestGuest = intent?.firstName === 'Proof' && intent?.lastName === 'Labtest';
@@ -194,16 +238,31 @@ export async function provePositiveAttachRecovery(intent, { openSession = withCl
       const listing = await documents(page, recovery.confirmation);
       sessionSignal.throwIfAborted();
       if (!hasUniqueDocumentListing(listing, recovery.documentCode, recovery.documentName, recovery.documentDescription)) return { outcome: 'unconfirmed' };
+      const readback = { confirmation: record.nativePreimage.confirmation,
+        nativeStayId: record.nativePreimage.reservationStayId, nativeGuestId: intent.nativeGuestId,
+        documentCode: recovery.documentCode, documentName: recovery.documentName,
+        ...(recovery.documentDescription ? { documentDescription: recovery.documentDescription } : {}), uniqueFreshListing: true };
+      const stored = await verifyStoredDocumentBytes(page,
+        readStoredDocumentBytes !== undefined ? readStoredDocumentBytes : await defaultStoredDocumentBytesReader(),
+        { propertyCode: intent.propertyCode, confirmation: recovery.confirmation, documentCode: recovery.documentCode,
+          documentName: recovery.documentName,
+          ...(recovery.documentDescription ? { documentDescription: recovery.documentDescription } : {}),
+          nativeStayId: record.nativePreimage.reservationStayId, nativeGuestId: intent.nativeGuestId },
+        recovery.pdfSha256);
+      sessionSignal.throwIfAborted();
+      if (stored.storedBytesHashVerified !== true) {
+        return { outcome: 'listed', confirmation: recovery.confirmation,
+          actualStoredSha256: stored.actualStoredSha256, storedBytesHashVerified: false,
+          readback: { ...readback, ...(stored.actualStoredSha256 ? { actualStoredSha256: stored.actualStoredSha256 } : {}) } };
+      }
       const screenshot = await page.screenshot({ fullPage: true });
       sessionSignal.throwIfAborted();
       if (!Buffer.isBuffer(screenshot) || !screenshot.length || screenshot.length > 10 * 1024 * 1024) {
         return { outcome: 'unconfirmed' };
       }
       return { outcome: 'verified', confirmation: recovery.confirmation, screenshot,
-        readback: { confirmation: record.nativePreimage.confirmation, nativeStayId: record.nativePreimage.reservationStayId,
-          nativeGuestId: intent.nativeGuestId,
-          documentCode: recovery.documentCode, documentName: recovery.documentName,
-          ...(recovery.documentDescription ? { documentDescription: recovery.documentDescription } : {}), uniqueFreshListing: true } };
+        actualStoredSha256: stored.actualStoredSha256, storedBytesHashVerified: true,
+        readback: { ...readback, actualStoredSha256: stored.actualStoredSha256, storedBytesHashVerified: true } };
     }, { propertyCode: intent.propertyCode, transportId: intent.transportId, credentialLease, startScreen: 'OSRESS', signal: sessionSignal,
       cloudTargetKeys: savedTargetKeys(intent.propertyCode, recovery.confirmation, recovery.nativeStayId),
       ...(recovery.cloudTargetKey ? { cloudTargetKey: recovery.cloudTargetKey } : {}),
@@ -274,7 +333,7 @@ export async function runCloudPaneAttach(input, dependencies = {}) {
 async function runCloudPaneAttachWithLease(input, { openSession = withCloudWriterSession, openReadSession = withCloudReadSession,
   credentialLease,
   attach = attachLabtestDocument, freshRead = freshDocuments, shallow = readShallow, read = readRecord,
-  writerIdentity = cloudWriterIdentity } = {}) {
+  readStoredDocumentBytes, writerIdentity = cloudWriterIdentity } = {}) {
   if (!validScope(input?.target?.propertyCode, input?.transportId) ||
       (input.approvedStay?.propertyCode && input.approvedStay.propertyCode !== input.target.propertyCode) ||
       typeof input.beforeDispatch !== 'function' ||
@@ -350,30 +409,49 @@ async function runCloudPaneAttachWithLease(input, { openSession = withCloudWrite
       ...(nativeDiagnostics ? { nativeDiagnostics } : {}),
       ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
   }
+  const byteReader = readStoredDocumentBytes !== undefined ? readStoredDocumentBytes
+    : await defaultStoredDocumentBytesReader();
   let fresh;
   const reading = { current: null };
   try { if (!writerSessionClosed) throw new Error('HMS_WRITER_CLOSE_UNCONFIRMED');
-    fresh = await openReadSession((page) => freshRead(page, { ...input,
-      approvedStay: { ...input.approvedStay, propertyCode: input.target.propertyCode } }, code, (native) => {
-    reading.current = native;
-    approvedNative.current = snapshotApprovedNativeIdentity(native);
-  }),
+    fresh = await openReadSession(async (page) => {
+      const found = await freshRead(page, { ...input,
+        approvedStay: { ...input.approvedStay, propertyCode: input.target.propertyCode } }, code, (native) => {
+      reading.current = native;
+      approvedNative.current = snapshotApprovedNativeIdentity(native);
+    });
+      const stored = found?.listed === true ? await verifyStoredDocumentBytes(page, byteReader,
+        { propertyCode: input.target.propertyCode, confirmation: input.confirmation, documentCode: code,
+          documentName: input.documentName,
+          ...(input.documentDescription ? { documentDescription: input.documentDescription } : {}),
+          nativeStayId: found?.nativeReadback?.nativeStayId ?? input.approvedStay?.nativeStayId,
+          nativeGuestId: found?.nativeReadback?.nativeGuestId ?? input.approvedStay?.nativeGuestId },
+        input.pdfSha256) : { actualStoredSha256: null, storedBytesHashVerified: false };
+      return found && typeof found === 'object' ? { ...found, ...stored,
+        ...(found.nativeReadback && typeof found.nativeReadback === 'object' ? { nativeReadback: { ...found.nativeReadback,
+          ...(stored.actualStoredSha256 ? { actualStoredSha256: stored.actualStoredSha256 } : {}),
+          ...(stored.storedBytesHashVerified ? { storedBytesHashVerified: true } : {}) } } : {}) } : found;
+    },
     options(reading, 5 * 60_000)); } catch { /* Unknown remains fenced. */ }
   const listed = fresh?.listed;
   const nativeReadback = fresh?.nativeReadback;
+  const storedVerified = fresh?.storedBytesHashVerified === true && fresh?.actualStoredSha256 === input.pdfSha256;
   if (listed === true && Buffer.isBuffer(fresh?.screenshot) && fresh.screenshot.length > 0 &&
       fresh.screenshot.length <= 10 * 1024 * 1024 && evidence.screenshots.length === 2) {
     await writeFile(evidence.screenshots[1], fresh.screenshot, { mode: 0o600 });
   } else if (listed === true) {
     return { outcome: 'uncertain', uploadSent: true, documentCode: code, ...evidence,
       listed, ...(nativeReadback ? { nativeReadback } : {}),
+      actualStoredSha256: fresh?.actualStoredSha256 ?? null, storedBytesHashVerified: storedVerified,
       writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
   }
-  // Owner's confirmation bar is a clean upload followed by a unique fresh listing.
-  // The listing is not evidence of the stored file bytes or full tree completeness.
-  const outcome = result.outcome === 'awaiting_readback' && listed === true ? 'confirmed'
+  // Owner's confirmation bar is a clean upload, a unique fresh listing and fresh
+  // stored bytes whose independent SHA-256 equals the approved source. A listing,
+  // a missing digest, a reader failure or a mismatched digest stays uncertain.
+  const outcome = result.outcome === 'awaiting_readback' && listed === true && storedVerified ? 'confirmed'
     : listed === false ? 'upload_unconfirmed' : 'uncertain';
   return { outcome, uploadSent: true, documentCode: code, ...(listed === undefined ? {} : { listed }),
     ...(nativeReadback ? { nativeReadback } : {}),
+    actualStoredSha256: fresh?.actualStoredSha256 ?? null, storedBytesHashVerified: storedVerified,
     ...evidence, writerSessionClosed, dispatchCallbacksDrained: result.dispatchCallbacksDrained === true };
 }
