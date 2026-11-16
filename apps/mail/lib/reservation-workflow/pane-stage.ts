@@ -15,15 +15,16 @@ type StageInput = {
   quoteDecline: boolean;
   quoteOutput: { operationId: string; inventoryDecline: boolean; hasCover: boolean; hasFiles: boolean; saveLabel: string } | null;
   savedQuoteOperation: string | null;
+  blockedReason: string | null;
 };
 type Stage = { steps: Array<{ label: string; state: 'done' | 'current' | 'todo' }>;
-  button: string; now: string; youGet: string; guestGets: string };
+  button: string; now: string; youGet: string; guestGets: string; showOutcomes: boolean };
 
 const workflows: Record<Kind, { check: string; save: string; deliverable: string; guest: string }> = {
   create: { check: 'Check booking', save: 'Save in Infor', deliverable: 'An Infor confirmation number for each room, shown here.',
     guest: 'Infor sends a CMS confirmation to each room’s CMS Booker Email only if CMS Send Mail is ticked; otherwise nothing.' },
-  quote: { check: 'Check quote', save: 'Generate unsent quote', deliverable: 'Requested quote files for download and an unsent reply in Outlook Drafts.',
-    guest: 'Nothing until you send the draft from Outlook.' },
+  quote: { check: 'Check quote', save: 'Generate unsent quote', deliverable: 'Requested quote files for download and an unsent reply to save to your Drafts folder.',
+    guest: 'Nothing until you send the draft from your mail.' },
   amend: { check: 'Check details', save: 'Save in Infor', deliverable: 'The updated stay and result shown here.',
     guest: 'Infor sends its CMS confirmation to the CMS Booker Email only if CMS Send Mail is ticked; otherwise nothing.' },
   cancel: { check: 'Check details', save: 'Cancel in Infor', deliverable: 'The cancellation result shown here.', guest: 'Nava sends nothing.' },
@@ -80,37 +81,40 @@ export function derivePaneStage(input: StageInput): Stage {
   const outputs = Array.isArray(requestedOutputs) ? requestedOutputs : [];
   const files = [outputs.includes('pdf_quote') ? 'PDF' : '', outputs.includes('xlsx_quote') ? 'Excel' : ''].filter(Boolean).join(' and ');
   const results = snapshot.operationResults.filter(row => row.requestId === request.id && row.workflow === request.kind);
-  const saved = results.some(row => row.status === 'succeeded');
-  const uncertain = results.some(row => row.status === 'unknown');
+  const latestResults = [...results].reverse().filter((row, index, rows) =>
+    ['succeeded', 'unknown'].includes(text(row.status)) && !rows.slice(0, index).some(newer =>
+      newer.allocationId === row.allocationId && ['succeeded', 'unknown'].includes(text(newer.status))));
+  const saved = latestResults.some(row => row.status === 'succeeded');
+  const uncertain = latestResults.some(row => row.status === 'unknown');
   const targets = request.kind === 'create' ? rooms : ['amend', 'cancel'].includes(request.kind) && Array.isArray(record(body.targets).include)
     ? (record(body.targets).include as unknown[]).map(row => text(record(row).id)) : [];
-  const remaining = rooms.filter(id => !results.some(row => row.allocationId === id && row.status === 'succeeded')).length;
-  const allSaved = saved && (request.kind === 'filing' || targets.length > 0 && targets.every(id => results.some(row =>
+  const remaining = rooms.filter(id => !latestResults.some(row => row.allocationId === id && row.status === 'succeeded')).length;
+  const allSaved = saved && (request.kind === 'filing' || targets.length > 0 && targets.every(id => latestResults.some(row =>
     row.allocationId === id && row.status === 'succeeded')));
 
   const button = needsCheck ? config.check : request.kind === 'quote' ? input.quoteDecline ? 'Generate unsent decline' : config.save
     : request.kind === 'amend' && pendingAmendReview ? 'Save reviewed stay in Infor'
     : request.kind === 'amend' && amendCallback ? 'Apply changes & check price' : config.save;
-  const quoteSaved = Boolean(quoteOutput && input.savedQuoteOperation === quoteOutput.operationId);
+  const quoteSaved = Boolean(quoteOutput?.hasCover && input.savedQuoteOperation === quoteOutput.operationId);
   const generated = request.kind === 'quote' && quoteOutput !== null;
   const hasReplyStep = outputs.length === 0 || outputs.includes('email_quote') || input.quoteDecline || Boolean(quoteOutput?.inventoryDecline);
-  const steps = request.kind === 'quote'
-    ? ['Details', config.check, input.quoteDecline || quoteOutput?.inventoryDecline ? 'Generate unsent decline' : config.save,
-      ...(hasReplyStep ? [quoteOutput?.saveLabel ?? (input.quoteDecline ? 'Save unsent decline reply' : 'Save unsent reply'), 'Send from Outlook'] : ['Download files'])]
-    : request.kind === 'amend' && (amendCallback || pendingAmendReview)
-      ? ['Details', config.check, 'Apply changes & check price', 'Save reviewed stay in Infor']
-      : request.kind === 'cancel' && cancelFeeReview
-        ? ['Details', config.check, config.save, 'Review fee & cancel in Infor']
-        : ['Details', config.check, config.save];
-  const current = request.kind === 'quote' ? quoteSaved ? 4 : generated ? 3 : needsCheck ? 1 : 2
-    : allSaved ? steps.length : needsCheck ? 1 : pendingAmendReview || cancelFeeReview ? 3 : 2;
+  const steps = request.kind === 'quote' ? ['Details', 'Check', 'Generate', ...(hasReplyStep && (!generated || quoteOutput?.hasCover) ? ['Draft', 'Send'] : ['Download'])]
+    : request.kind === 'amend' && (amendCallback || pendingAmendReview) ? ['Details', 'Check', 'Apply', 'Review price', 'Saved']
+    : request.kind === 'cancel' && cancelFeeReview ? ['Details', 'Check', 'Review fee', 'Cancel', 'Done']
+    : ['Details', 'Check', request.kind === 'filing' ? 'File' : request.kind === 'cancel' ? 'Cancel' : 'Save',
+      request.kind === 'create' ? 'Booked' : request.kind === 'amend' ? 'Saved' : 'Done'];
+  const current = request.kind === 'quote' ? needsCheck ? 1 : quoteSaved ? 4 : generated ? 3 : 2
+    : needsCheck ? 1 : allSaved ? steps.length - 1 : pendingAmendReview ? 3 : 2;
   const price = request.kind === 'create' && !needsCheck ? createPrice(snapshot, request.id, rooms) : null;
-  const now = uncertain ? 'The save outcome is uncertain. Check the outcome above before trying again.'
+  const now = input.blockedReason ? input.blockedReason
+    : uncertain ? request.kind === 'quote' ? 'Quote generation could not be confirmed. Check the result above before trying again.'
+      : 'The save outcome is uncertain. Check the outcome above before trying again.'
+    : allSaved && request.kind === 'create' ? `All rooms were booked. ${needsCheck ? 'Check booking checks the current details.' : 'Review the results above before using Save in Infor.'}`
     : allSaved ? 'Completed. Check the result above.'
-    : quoteSaved ? 'Reply saved in Drafts. Send it from Outlook when ready.'
-    : generated ? quoteOutput?.hasCover ? `${quoteOutput.hasFiles ? 'Files and reply are' : 'The unsent reply is'} ready above. Use ${quoteOutput.saveLabel} above; the button below generates again.`
-      : 'Download the available files above.'
     : needsCheck ? `${config.check} checks the details${request.kind === 'create' ? ' and price' : ''}. ${request.kind === 'amend' && pendingAmendReview ? 'Details may already have changed in Infor.' : saved ? 'See earlier results above; this check does not save more changes.' : request.kind === 'quote' ? 'No quote or reply is sent by this check.' : 'This check does not save the stay or file in Infor.'}`
+    : quoteSaved ? 'Reply saved in your Drafts folder. Send it from your mail when ready.'
+    : generated ? quoteOutput?.hasCover ? `${quoteOutput.hasFiles ? 'Files and reply are' : 'The unsent reply is'} ready above. Use ${quoteOutput.saveLabel} above; the button below generates again.`
+      : quoteOutput?.hasFiles ? 'Download the available files above.' : 'Quote output could not be completed. Check the results above.'
     : input.createPriceBlocked ? 'Resolve the customer and Infor prices above before saving.'
     : input.extrasNeedReview ? 'Review the extra charges above before generating the quote.'
     : price ? `Infor priced ${roomCount} · total ${price}. ${saved ? 'See saved rooms above.' : 'Nothing saved yet.'} Next: ${button} creates ${remaining} ${remaining === 1 ? 'booking' : 'bookings'}.`
@@ -121,11 +125,13 @@ export function derivePaneStage(input: StageInput): Stage {
     : request.kind === 'create' ? `Check complete for ${roomCount}. Next: ${button} creates ${remaining} ${remaining === 1 ? 'booking' : 'bookings'}.`
     : `Check complete. Next: ${button} ${request.kind === 'cancel' ? 'cancels the stay' : request.kind === 'filing' ? 'files the PDF' : 'saves the changes'} in Infor.`;
   return { steps: steps.map((label, index) => ({ label, state: index < current ? 'done' : index === current ? 'current' : 'todo' })),
-    button, now, youGet: request.kind === 'quote' && (input.quoteDecline || quoteOutput?.inventoryDecline)
-      ? 'An unsent decline reply in Outlook Drafts; no quote files.'
-      : request.kind === 'quote' && outputs.length ? [files ? `${files} quote files for download` : '',
-        outputs.includes('email_quote') ? 'an unsent reply in Outlook Drafts' : ''].filter(Boolean).join(' and ') + '.' : config.deliverable,
+    button, now, showOutcomes: allSaved || !needsCheck && (request.kind === 'quote' && (quoteSaved || generated && !quoteOutput?.hasCover) || !input.blockedReason),
+    youGet: request.kind === 'quote' && (input.quoteDecline || quoteOutput?.inventoryDecline)
+      ? `An unsent decline reply ${quoteSaved ? 'saved in' : 'to save to'} your Drafts folder; no quote files.`
+      : request.kind === 'quote' && outputs.length ? ([generated ? quoteOutput?.hasFiles ? 'Available quote files for download' : '' : files ? `${files} quote files for download` : '',
+        outputs.includes('email_quote') && (!generated || quoteOutput?.hasCover) ? `an unsent reply ${quoteSaved ? 'saved in' : 'to save to'} your Drafts folder` : ''].filter(Boolean).join(' and ') || 'No quote files or reply are available') + '.' : config.deliverable,
     guestGets: request.kind === 'quote' && !hasReplyStep ? 'Nava sends nothing. Share the downloaded files yourself.'
+      : request.kind === 'create' && allSaved ? 'Check the saved booking’s CMS settings for confirmation details.'
       : recipient ? `Infor sends a CMS confirmation to ${recipient} only if CMS Send Mail is ticked for that room; otherwise nothing.` : config.guest };
 
 }
