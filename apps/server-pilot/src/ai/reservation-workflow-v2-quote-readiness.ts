@@ -127,13 +127,10 @@ function selectedParty(
   if (!name) {
     if ((('overridden' in named && named.overridden) || partyLeaf.overridden) &&
         typeof named.value === 'string' && !named.value.trim()) {
-      const reviewPaths = execute ? [basePath, namePath].filter((path) => !reviewAccepted(draft, path)) : [];
-      return { reviewPaths };
+      return { reviewPaths: [] };
     }
     if (partyLeaf.value === null || partyLeaf.value === undefined || isNone(partyLeaf.value)) {
-      const explicitlyUnset = raw !== undefined || partyLeaf.overridden;
-      const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
-      return { reviewPaths };
+      return { reviewPaths: [] };
     }
     return { reviewPaths: [basePath], issue: `${role}_name_unresolved` };
   }
@@ -144,12 +141,10 @@ function selectedParty(
   const selected = invalidatedByName
     ? { value: undefined, path: selectionPath }
     : resolvedLeaf(draft, selectionPath, value?.suggestedRef ?? null);
-  if ('issue' in selected) return { reviewPaths: [basePath], issue: `${role}_${selected.issue}` };
+  if ('issue' in selected) return { name, reviewPaths: [] };
   const ref = typeof selected.value === 'string' ? selected.value : null;
   if (!ref) {
-    if (selected.value != null) return { reviewPaths: [basePath], issue: `${role}_candidate_unverified` };
-    const reviewPaths = execute ? [basePath, namePath].filter((path) => !reviewAccepted(draft, path)) : [];
-    return { name, reviewPaths };
+    return { name, reviewPaths: [] };
   }
   const observation = draft.observations.find((entry) => entry.ref === ref && entry.kind === 'party_candidate');
   const criteria = record(observation?.criteria);
@@ -159,7 +154,7 @@ function selectedParty(
       observation.sourceMessageId !== draft.source.messageId || criteria?.workflow !== 'quote' ||
       criteria.requestId !== request.id || criteria.role !== role ||
       !candidate || !cleanText(candidate.nativeId) || !cleanText(candidate.name) || !sameName(candidate.name, name)) {
-    return { reviewPaths: [basePath], issue: `${role}_candidate_unverified` };
+    return { name, reviewPaths: [] };
   }
   const reviewPaths = execute
     ? [basePath, namePath, selectionPath].filter((path) => !reviewAccepted(draft, path))
