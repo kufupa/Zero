@@ -451,15 +451,31 @@ export const reservationWorkflowV2FieldOverrideSchema = z.object({
 }).strict();
 export type ReservationWorkflowV2FieldOverride = z.infer<typeof reservationWorkflowV2FieldOverrideSchema>;
 
-/** Host-adjudicated intake decision bound to the current source. Absent means uncertain. */
+/** Host-adjudicated intake decision bound to the exact generation and source hash that produced it. Absent means uncertain. */
 export const reservationWorkflowV2DispositionSchema = z.object({
   decision: reservationWorkflowV2DispositionDecisionSchema,
   /** The first pass's raw declaration, before host checks; null when it declared none. */
   modelDecision: reservationWorkflowV2DispositionDecisionSchema.nullable(),
   reason: z.string().max(1000),
   evidenceRefs: z.array(refSchema).max(20),
+  /** The adjudicating run's generation. A decision from any other generation never applies. */
+  generationId: z.string().uuid(),
+  /** The adjudicated source hash. A decision under any other source hash never applies. */
+  sourceHash: z.string().min(1).max(256),
 }).strict();
 export type ReservationWorkflowV2Disposition = z.infer<typeof reservationWorkflowV2DispositionSchema>;
+
+/**
+ * Persisted intake record kept beside the draft on WorkItem.state. It lives outside the strictly parsed
+ * draft so an older build can still read the draft; binding fields make a stale record inert instead.
+ */
+export const reservationWorkflowV2IntakeSchema = z.object({
+  contractVersion: z.literal(RESERVATION_WORKFLOW_V2_VERSION),
+  /** Attachment-evidence hash when the decision was adjudicated; checked when the draft carries one. */
+  evidenceHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  disposition: reservationWorkflowV2DispositionSchema,
+}).strict();
+export type ReservationWorkflowV2Intake = z.infer<typeof reservationWorkflowV2IntakeSchema>;
 
 /** Single canonical state JSONB value stored on WorkItem; extraction/prefill never writes into pane-owned overrides. */
 export const reservationWorkflowV2DraftSchema = z.object({

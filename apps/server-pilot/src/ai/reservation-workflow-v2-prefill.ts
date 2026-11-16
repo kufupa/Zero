@@ -1149,18 +1149,29 @@ export function sourceEvidence(input: {
   return out.slice(0, 500);
 }
 
+/**
+ * True only when every relevant current non-inline attachment has accounted contents.
+ * Metadata-only rows, unread or unsupported bytes and read failures never count as read;
+ * a no-text artifact counts only when the vision audit read it in full.
+ */
 function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection;
-  evidence: ReservationWorkflowV2Evidence[] }): boolean {
+  evidence: ReservationWorkflowV2Evidence[];
+  attachmentReads: Awaited<ReturnType<typeof prepareExtractionVisionImages>>['attachmentReads'] }): boolean {
   const { source, selection, evidence } = input;
   if (!evidence.some(row => row.ref === evidenceRef(source, 'message', source.messageId) &&
       row.relation === 'current_message' && row.text === sourceText(selection))) return false;
+  const audit = new Map(input.attachmentReads.map((row) => [row.id, row.status]));
   return [...selection.attachments, ...(selection.threadAttachments ?? [])].every(attachment => {
+    if (attachment.isInline) return true;
     if (attachment.messageId && attachment.messageId !== source.messageId) return true;
+    // Unprocessed, unread, unsupported or partially masked bytes are never complete.
+    if (attachment.readFailure || !attachment.bytesPresent) return false;
     const attachmentText = attachment.text?.trim();
-    const isPdf = !attachment.isInline && (/\.pdf$/i.test(attachment.filename) || attachment.mimeType?.toLowerCase() === 'application/pdf');
-    if (!attachmentText && !isPdf) return true;
-    const admitted = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) && row.relation === 'attachment');
-    return Boolean(admitted && (!attachmentText || admitted.text === maskCardNumbers(attachmentText)));
+    if (attachmentText) {
+      const admitted = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) && row.relation === 'attachment');
+      return Boolean(admitted && admitted.text === maskCardNumbers(attachmentText));
+    }
+    return audit.get(attachment.id) === 'read';
   });
 }
 
@@ -1500,7 +1511,10 @@ function adjudicateExtractionDisposition(input: {
   currentRefs: Set<string>;
   sourceReadComplete: boolean;
   errors: ReservationWorkflowV2Draft['errors'];
+  generationId: string;
+  sourceHash: string;
 }): ReservationWorkflowV2Disposition {
+  const binding = { generationId: input.generationId, sourceHash: input.sourceHash };
   const model = input.extraction.disposition ?? null;
   const evidenceRefs = (model?.sourceRefs ?? []).filter((ref) => input.currentRefs.has(ref)).slice(0, 20);
   const reason = (model?.reason ?? '').trim().slice(0, 1000);
@@ -1508,13 +1522,13 @@ function adjudicateExtractionDisposition(input: {
   if (modelDecision === 'no_action' && !input.currentRequestCount && evidenceRefs.length &&
       input.sourceReadComplete && !input.errors.length) {
     return { decision: 'no_action', modelDecision,
-      reason: reason || 'No staff task was found in this email.', evidenceRefs };
+      reason: reason || 'No staff task was found in this email.', evidenceRefs, ...binding };
   }
   if (input.currentRequestCount) {
     return { decision: 'actionable', modelDecision,
       reason: (modelDecision === 'no_action'
         ? 'Requests were also extracted; they remain actionable.' : reason) || 'Current requests were found.',
-      evidenceRefs };
+      evidenceRefs, ...binding };
   }
   const why = !model ? 'No intake decision was recorded.'
     : modelDecision === 'no_action'
@@ -1525,7 +1539,7 @@ function adjudicateExtractionDisposition(input: {
     : modelDecision === 'actionable' ? 'No current request was extracted to act on.'
     : reason;
   return { decision: 'uncertain', modelDecision,
-    reason: (why || 'This email still needs a staff decision.').slice(0, 1000), evidenceRefs };
+    reason: (why || 'This email still needs a staff decision.').slice(0, 1000), evidenceRefs, ...binding };
 }
 
 function citedInteger(claim: { value: unknown } | undefined): number | null | undefined {
@@ -6412,6 +6426,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   workflowGuidanceExcludedFamilies?: readonly string[];
   onWorkflowGuidance?: (receipt: WorkflowGuidanceReceipt) => void;
   onValidatedExtraction?: (generationId: string, extraction: ReservationWorkflowV2Extraction) => Promise<boolean>;
+  /** Provider-reported missing attachment parts on the current message; any gap makes the read incomplete. */
+  currentAttachmentGaps?: number;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }): Promise<ReservationWorkflowV2PrefillResult> {
@@ -6451,7 +6467,9 @@ export async function runReservationWorkflowV2Prefill(input: {
     enabled: extractionVisionEnabled(input.env ?? process.env), signal: input.signal,
   });
   const evidence = sourceEvidence({ source: input.source, selection: input.selection, vision });
-  const textCoverageComplete = completeCurrentSourceText({ source: input.source, selection: input.selection, evidence });
+  const textCoverageComplete = !(input.currentAttachmentGaps ?? 0) &&
+    completeCurrentSourceText({ source: input.source, selection: input.selection, evidence,
+      attachmentReads: vision.attachmentReads });
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });
   const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
     generationId, propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
@@ -6521,6 +6539,12 @@ export async function runReservationWorkflowV2Prefill(input: {
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete:
     observations[0]?.coverage.complete === true && textCoverageComplete };
+  const adjudicate = (currentRequestCount: number) => adjudicateExtractionDisposition({ extraction, currentRefs,
+    currentRequestCount, sourceReadComplete: currentActions.sourceReadComplete,
+    errors: base.errors, generationId, sourceHash: input.source.sourceHash });
+  const emptyProposal = () => ({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
+    content: { requests: [], services: [], documents: [] },
+    annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] });
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
@@ -6528,10 +6552,17 @@ export async function runReservationWorkflowV2Prefill(input: {
     const body = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText);
     const requests = extraction.requests.flatMap((request) =>
       groundedSeparateAsk(body, request.requestText.raw, 2000) ? [{ ...request, kind: 'other' as const }] : []);
-    if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
-      proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
-        reason: 'Self-sent pre-stay mail has no separate current request.' }),
-      errors: base.errors, skippedReason: 'self_prestay' };
+    if (!requests.length) {
+      // A confirmed, cited no-action on a fully read source is a clear no-action state, not a failed prefill.
+      const disposition = adjudicate(currentActions.requests.length);
+      if (disposition.decision === 'no_action') {
+        return { ...base, extraction, disposition, status: 'ready', proposal: emptyProposal(), errors: base.errors };
+      }
+      return { ...base, extraction, status: 'prefill_failed',
+        proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
+          reason: 'Self-sent pre-stay mail has no separate current request.' }),
+        errors: base.errors, skippedReason: 'self_prestay' };
+    }
     const separate = { ...extraction, requests };
     if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, separate))) {
       throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
@@ -6539,7 +6570,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const proposal = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction: separate, source: input.source, evidence,
       reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.' }),
       extraction: separate, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode }).proposal;
-    return { ...base, extraction: separate, status: 'partial',
+    return { ...base, extraction: separate, disposition: adjudicate(requests.length), status: 'partial',
       proposal,
       errors: base.errors };
   }
@@ -6547,15 +6578,11 @@ export async function runReservationWorkflowV2Prefill(input: {
   if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
     throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
   }
-  const disposition = adjudicateExtractionDisposition({ extraction, currentRefs,
-    currentRequestCount: currentActions.requests.length, sourceReadComplete: currentActions.sourceReadComplete,
-    errors: base.errors });
+  const disposition = adjudicate(currentActions.requests.length);
   // An evidenced no-action never starts candidate reads, synthesis or native checks.
   if (disposition.decision === 'no_action') {
     return { ...base, extraction, disposition, status: 'ready',
-      proposal: { schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
-        content: { requests: [], services: [], documents: [] },
-        annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] },
+      proposal: emptyProposal(),
       errors: base.errors };
   }
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction: candidateExtraction,

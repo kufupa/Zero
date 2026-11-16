@@ -29,8 +29,10 @@ export async function reservationArrivalEvidence(db: WorkTx, messageId: string) 
       .map((item): { messageId: string; role: string; fileName: string | null } =>
         ({ messageId: row.id, ...item })));
   const missing = missingWithParent.map(({ role, fileName }) => ({ role, fileName }));
+  const missingCurrent = missingWithParent.filter((row) => row.messageId === messageId)
+    .map(({ role, fileName }) => ({ role, fileName }));
   const sortedAttachments = attachments.map((row) => JSON.stringify(row)).sort();
   const sortedMissing = missingWithParent.map((row) => JSON.stringify(row)).sort();
   return { hash: createHash('sha256').update(JSON.stringify(['reservation-arrival-evidence/2', prior,
-    sortedAttachments, sortedMissing])).digest('hex'), missing };
+    sortedAttachments, sortedMissing])).digest('hex'), missing, missingCurrent };
 }

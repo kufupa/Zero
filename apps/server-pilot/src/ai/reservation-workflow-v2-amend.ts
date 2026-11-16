@@ -28,6 +28,7 @@ import {
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
   RESERVATION_WORKFLOW_V2_STATE_KEY,
+  withReservationWorkflowV2Draft,
   type ReservationNativeCheckBatch,
   type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
@@ -1603,8 +1604,8 @@ async function persistResolvedResult(tx: WriteTx, ctx: ReservationWorkflowV2Amen
     draftRevision: draft.revision, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary };
   const operationResults = [...draft.operationResults.filter((row) => row.id !== input.idempotencyKey), nextResult];
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations, operationResults });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${nextResult.id}`,
     value: { id: nextResult.id, requestId: nextResult.requestId, allocationId: hintId, workflow: 'amend',
@@ -1699,8 +1700,8 @@ async function authorizeCurrentAmend(tx: WriteTx, ctx: ReservationWorkflowV2Amen
     summary: 'Native Amend claim acquired; outcome pending reconciliation' };
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, attempt],
     operationResults: [...draft.operationResults.filter((row) => row.id !== input.idempotencyKey), nextResult] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${nextResult.id}`,
     value: { id: nextResult.id, requestId: nextResult.requestId, allocationId: nextResult.allocationId,
