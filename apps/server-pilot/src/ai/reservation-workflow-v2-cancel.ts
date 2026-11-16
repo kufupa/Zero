@@ -885,10 +885,12 @@ function preparedPreview(draft: ReservationWorkflowV2Draft, compiled: Extract<Ca
         candidate.status === 'complete' && candidate.generationId === draft.generationId);
       const criteria = record(item?.criteria), result = record(item?.result);
       // A ready preview must carry the exact reason and note HMS staged unsaved. A historically
-      // recorded preview without staged data can never qualify for Go.
+      // recorded preview without staged data can never qualify for Go, and neither can one that
+      // observed a cancellation charge: any fee is finished in HMS, never accepted under one Go.
       const staged = stagedCancelSchema.safeParse(result?.staged);
       return item && criteria?.stage === 'prepare' && criteria.semanticDigest === compiled.semanticDigest &&
         result?.ready === true && typeof result.approvalDigest === 'string' && staged.success &&
+        result?.penaltyText === null && staged.data.penaltyText === null &&
         staged.data.reasonLabel === compiled.reasonText && staged.data.cancellationNote === compiled.cancellationNote
         ? [{ item, result, criteria }] : [];
     });
@@ -969,21 +971,22 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   }
   const matchingReason = compiled.reasonText === null ? [] : fresh.reasons.filter((item) => item.display === compiled.reasonText);
   const reasonReady = matchingReason.length === 1;
-  // A pre-reason fee dialog can return preview_ok with nothing staged. Only an HMS-staged reason
-  // and note qualify for a reviewed Go; the fee is still reported for a separate staff decision.
-  const unstaged = reasonReady && compiled.reasonText !== null && fresh.staged === null;
-  const ready = reasonReady && compiled.reasonText !== null && fresh.staged !== null;
+  // Any HMS cancellation charge keeps the preview non-ready whether a pre-reason fee dialog
+  // pre-empted staging or the staged dialog carries the charge: staff finish it in HMS.
+  // Only an HMS-staged reason and note with no reported charge qualify for a reviewed Go.
+  const charge = fresh.penaltyText !== null;
+  const ready = !charge && reasonReady && compiled.reasonText !== null && fresh.staged !== null;
   const approval = approvalDigest(compiled, fresh);
   const item = preparedObservation(loaded.draft, input, compiled, fresh, approval, ready);
   const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, item, 'prepared',
-    ready ? 'HMS cancellation preview is fresh and unsaved' : unstaged
-      ? 'HMS showed a cancellation fee before the reason could be staged; nothing was staged for review'
+    ready ? 'HMS cancellation preview is fresh and unsaved' : charge
+      ? 'HMS reported a cancellation charge; staff must finish this cancellation in HMS'
       : 'HMS preview is ready; staff must choose a listed cancellation reason');
   if (recorded.status !== 'ok') return recorded;
   const binding = reviewBinding(loaded.draft, compiled, item, approval);
   const index = compiled.previewObservationRefs.length;
   await removeNativeRunDir(fresh.runDir);
-  return { status: ready ? 'prepared' : unstaged ? 'needs_review' : 'needs_input', requestId: compiled.requestId, hintId: compiled.hintId,
+  return { status: ready ? 'prepared' : charge ? 'needs_review' : 'needs_input', requestId: compiled.requestId, hintId: compiled.hintId,
     observationRef: item.ref, target: expectedTargetIdentity(fresh.preimage), reasons: fresh.reasons,
     selectedReason: matchingReason[0] ?? null, cancellationNote: compiled.cancellationNote, staged: fresh.staged,
     preflight: fresh.preflight, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText,
@@ -992,7 +995,7 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
     sourceRefs: compiled.sourceRefs, approvalDigest: approval,
     financialReview: { required: true, accepted: binding.accepted, observationRef: item.ref,
       approvalDigest: approval, reviewFieldPath: `${compiled.reviewPath}/${index}`, reviewNote: reviewNote(item.ref, approval) },
-    ...(!ready ? { issue: unstaged ? 'cancel_stage_preempted_by_fee' :
+    ...(!ready ? { issue: charge ? 'cancel_charge_finish_in_hms' :
       compiled.reasonText === null ? 'cancel_reason_required' : 'cancel_reason_must_match_native_option' } : {}) };
 }
 
@@ -1277,6 +1280,20 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
         return recorded.status === 'ok' ? { status: 'needs_review', issue: 'cancel_selected_native_target_changed',
           observationRef: changed.ref } : recorded;
       }
+      // A charge reported at the Go recheck is never accepted under this Go: the booking
+      // keeps a non-ready observation with the native text and staff finish it in HMS.
+      if (fresh.penaltyText !== null) {
+        const chargeApproval = approvalDigest(compiled, fresh);
+        const changed = preparedObservation(loaded.draft, input, compiled, fresh, chargeApproval, false);
+        await removeNativeRunDir(fresh.runDir);
+        const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, changed, 'prepared',
+          'HMS reported a cancellation charge; staff must finish this cancellation in HMS', changed.ref);
+        if (recorded.status !== 'ok') return recorded;
+        return { status: 'needs_review', issue: 'cancel_charge_finish_in_hms', requestId: compiled.requestId,
+          hintId: compiled.hintId, observationRef: changed.ref, target: expectedTargetIdentity(fresh.preimage),
+          preflight: fresh.preflight, penaltyText: fresh.penaltyText,
+          feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit' };
+      }
       const liveApproval = approvalDigest(compiled, fresh);
       if (liveApproval !== approval) {
         const changed = preparedObservation(loaded.draft, input, compiled, fresh, liveApproval,
@@ -1441,19 +1458,18 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             !/[\p{Cc}]/u.test(nativePenaltyText)));
         if (!activeHandle && !claimError && native.requestDispatched === false && native.writerSessionClosed === true &&
             native.dispatchCallbacksDrained === true && nativePenaltyObserved && nativePenaltyText !== fresh.penaltyText) {
+          // A charge dialog appeared between the recheck and Save; the refused session closed
+          // without a dispatch. Staff finish this cancellation in HMS, never by another Go.
           const changedFresh = { ...fresh, penaltyText: nativePenaltyText as string | null };
           const changedApproval = approvalDigest(compiled, changedFresh);
-          const changed = preparedObservation(loaded.draft, input, compiled, changedFresh, changedApproval,
-            changedFresh.staged !== null);
+          const changed = preparedObservation(loaded.draft, input, compiled, changedFresh, changedApproval, false);
           const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, changed, 'prepared',
-            'Native cancellation penalty text changed after the reviewed preview; another review and Go are required', changed.ref);
+            'Native reported a cancellation charge before Save; staff must finish this cancellation in HMS', changed.ref);
           if (recorded.status !== 'ok') return recorded;
-          const financialReview = reviewRequestFor(compiled.previewObservationRefs, compiled.reviewPath, changed,
-            changedApproval, 'native_cancellation_penalty_changed');
-          return { status: 'needs_review', issue: 'cancel_penalty_changed_requires_second_go', requestId: compiled.requestId,
+          return { status: 'needs_review', issue: 'cancel_charge_finish_in_hms', requestId: compiled.requestId,
             hintId: compiled.hintId, observationRef: changed.ref, target: expectedTargetIdentity(fresh.preimage),
             preflight: fresh.preflight, penaltyText: changedFresh.penaltyText,
-            feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', financialReview };
+            feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit' };
         }
         if (activeHandle && native.neverDispatchedProof && native.requestDispatched === false &&
             native.writerSessionClosed === true && native.dispatchCallbacksDrained === true &&
