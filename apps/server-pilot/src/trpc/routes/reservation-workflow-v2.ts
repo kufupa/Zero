@@ -381,12 +381,13 @@ export const reservationWorkflowV2Router = router({
     const attachments = await scoped.db.select({ id: attachment.id, filename: attachment.filename,
       mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, isInline: attachment.isInline })
       .from(attachment).where(eq(attachment.messageId, selected.id)).limit(50);
+    const [fileAttachment] = await scoped.db.select({ id: attachment.id }).from(attachment)
+      .where(and(eq(attachment.messageId, selected.id), eq(attachment.isInline, false))).limit(1);
     logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'ready',
       matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
     const admission = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
       bodyText: preStaySourceText(selected.textBody, selected.htmlBody), mailboxAddress: ctx.transportEmail,
-      hasAttachments: fileAttachmentPresence(attachments.some((row) => !row.isInline),
-        selected.sourceProvenance) });
+      hasAttachments: fileAttachmentPresence(fileAttachment != null, selected.sourceProvenance) });
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
