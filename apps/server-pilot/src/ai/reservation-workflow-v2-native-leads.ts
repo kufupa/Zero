@@ -86,9 +86,14 @@ async function memoryDir(env: NodeJS.ProcessEnv, propertyCode: string): Promise<
     : { dir: root, perProperty: false };
 }
 async function resolveMemoryPmsPath(env: NodeJS.ProcessEnv, propertyCode: string): Promise<string | undefined> {
+  const { dir, perProperty } = await memoryDir(env, propertyCode);
+  if (perProperty) return join(dir, 'pms.json');
   if (env.HMS_MEMORY_PMS_PATH) return env.HMS_MEMORY_PMS_PATH;
-  const { dir } = await memoryDir(env, propertyCode);
   return firstExistingPath([join(dir, 'pms.json'), join(dir, 'stay360-1a-1b-1c-20261029-run01.json')]);
+}
+async function resolveMemoryObservationsPath(env: NodeJS.ProcessEnv, propertyCode: string): Promise<string | undefined> {
+  const { dir, perProperty } = await memoryDir(env, propertyCode);
+  return perProperty ? firstExistingPath([join(dir, 'observations.jsonl')]) : env.HMS_MEMORY_OBSERVATIONS_PATH || undefined;
 }
 
 /** Native stay evidence, scoped to the selected message's arrival; no rate-code guessing. */
@@ -100,7 +105,7 @@ export async function loadReservationRateMealMapping(input: { propertyCode: stri
     const pmsPath = await resolveMemoryPmsPath(env, input.propertyCode);
     const parsed = rateMealMappingSchema.safeParse(await module.loadHmsRateMealMapping({ propertyCode: input.propertyCode,
       asOf: input.arrivedAt, pmsPaths: pmsPath ? [pmsPath] : [],
-      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
+      observationsPath: await resolveMemoryObservationsPath(env, input.propertyCode) }));
     if (!parsed.success) return { status: 'unavailable', issue: 'RATE_MEAL_MEMORY_INVALID' };
     return { status: 'available', mappings: parsed.data };
   } catch {
@@ -117,7 +122,7 @@ export async function loadReservationRateTrackMapping(input: { propertyCode: str
     const pmsPath = await resolveMemoryPmsPath(env, input.propertyCode);
     const parsed = rateTrackMappingSchema.safeParse(await module.loadHmsRateTrackMapping({ propertyCode: input.propertyCode,
       asOf: input.arrivedAt, pmsPaths: pmsPath ? [pmsPath] : [],
-      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
+      observationsPath: await resolveMemoryObservationsPath(env, input.propertyCode) }));
     if (!parsed.success) return { status: 'unavailable', issue: 'RATE_TRACK_MEMORY_INVALID' };
     return { status: 'available', mappings: parsed.data };
   } catch {
@@ -203,20 +208,18 @@ function verifiedAmendBaseline(input: NativeLeadsInput & { prepareObservation: R
 const memoryCache = new Map<string, { key: string; loadedAt: number; value: Promise<Memory | null> }>();
 /** Property-keyed: a property with no memory yet gets null (callers return empty), never another property's history. */
 async function loadMemory(env: NodeJS.ProcessEnv, propertyCode: string): Promise<Memory | null> {
-  const key = JSON.stringify([env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH, env.HMS_MEMORY_DATA_DIR, env.HMS_MEMORY_OBSERVATIONS_PATH]);
+  const { dir, perProperty } = await memoryDir(env, propertyCode);
+  const pmsPath = await resolveMemoryPmsPath(env, propertyCode);
+  const outboundPdfPath = perProperty ? await firstExistingPath([join(dir, 'outbound.jsonl')])
+    : env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
+      await firstExistingPath([join(dir, 'outbound.jsonl'), join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl')]));
+  const observationsPath = await resolveMemoryObservationsPath(env, propertyCode);
+  const key = JSON.stringify([pmsPath, outboundPdfPath, observationsPath]);
   const cached = memoryCache.get(propertyCode);
   if (cached && cached.key === key && Date.now() - cached.loadedAt <= 5 * 60_000) return cached.value;
   const value = (async () => {
     const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href);
-    const { dir } = await memoryDir(env, propertyCode);
-    const pmsPath = await resolveMemoryPmsPath(env, propertyCode);
-    const outboundPdfPath = env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
-      await firstExistingPath([join(dir, 'outbound.jsonl'), join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl')]));
-    const loaded = await tool.loadOptionalBookingMemory({
-      pmsPath,
-      outboundPdfPath,
-      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined,
-    }, { propertyCode });
+    const loaded = await tool.loadOptionalBookingMemory({ pmsPath, outboundPdfPath, observationsPath }, { propertyCode });
     const parsed = memorySchema.safeParse(loaded.memory);
     return parsed.success && parsed.data.propertyCode === propertyCode ? parsed.data : null;
   })().catch(() => null);
