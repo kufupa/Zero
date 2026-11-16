@@ -7,7 +7,7 @@ import { knownFailureCopy, staffFailureCopy } from '@/lib/reservation-workflow/f
 import { derivePaneStage, quoteReplyLabel } from '@/lib/reservation-workflow/pane-stage';
 import { getQuoteOutput } from '@/lib/reservation-workflow/quote-output';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
-import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
+import { cancelChargeForSelection, effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
 import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
@@ -492,6 +492,9 @@ export function ReservationPane(props: ReservationPaneProps) {
   };
   const save = async () => {
     if (!request || createBlocked || preview || capabilityUnavailable || filingLocked) return;
+    const latest = workbench.latestSnapshot();
+    if (request.kind === 'cancel' && latest && (cancelChargeForSelection(latest, request.id) || latest.operationResults.some(row =>
+      row.workflow === 'cancel' && row.requestId === request.id && row.status === 'unknown'))) return;
     if (capabilitySaveUnavailable && !needsCheck()) return;
     if (request.kind === 'amend' && !workbench.readyForReply()) {
       setChecked(null);
@@ -595,6 +598,8 @@ export function ReservationPane(props: ReservationPaneProps) {
       quoteOutput, savedQuoteOperation, blockedReason }) : null;
   const hadWrite = snapshot?.operationResults.some(row => row.requestId === request?.id && row.workflow === request?.kind &&
     ['succeeded', 'unknown'].includes(text(row.status))) || Boolean(pendingAmendReview);
+  const cancelHeld = request?.kind === 'cancel' && snapshot && (cancelChargeForSelection(snapshot, request.id) ||
+    snapshot.operationResults.some(row => row.workflow === 'cancel' && row.requestId === request.id && row.status === 'unknown'));
 
   return <div ref={paneRef} className={styles.pane} data-reservation-pane>
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
@@ -724,7 +729,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>)}
       </details>}
     </main>
-    {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
+    {request && !createBlocked && !cancelHeld && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
       {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}

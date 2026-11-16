@@ -62,6 +62,19 @@ export function snapshotMatchesSource(snapshot: ReservationPaneSnapshot | null, 
     && (draft.source.sourceHash === source.sourceHash || snapshot?.session.sourceChanged === true)
     && snapshot?.sourceMessageId === source.messageId);
 }
+export function cancelChargeForSelection(snapshot: ReservationPaneSnapshot, requestId: string): string | null {
+  const root = `${requestPath(requestId)}/body`, scope = record(effectiveAt(snapshot, `${root}/targets`));
+  const targets = Array.isArray(scope.include) ? scope.include.map(record) : [];
+  if (scope.mode !== 'explicit' || targets.length !== 1) return null;
+  const selected = valueAt(snapshot, `${root}/targets/include/0/suggestedRef`), draft = snapshot.session.draft;
+  if (typeof selected !== 'string' || !selected) return null;
+  const latest = [...draft.observations].reverse().find(row => row.kind === 'stay_candidate' && row.status === 'complete' &&
+    row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+    row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'cancel' && row.criteria.stage === 'prepare' &&
+    row.criteria.requestId === requestId && row.criteria.hintId === targets[0]?.id && row.criteria.selectionRef === selected);
+  const result = record(latest?.result);
+  return result.ready === false && typeof result.penaltyText === 'string' && result.penaltyText.trim() ? result.penaltyText : null;
+}
 export const record = (v: unknown): Record<string, unknown> => v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {};
 export const text = (v: unknown): string => v == null ? '' : typeof v === 'object' ? String(record(v).name ?? record(v).code ?? '') : String(v);
 export function guestProfileReceipt(row: Record<string, unknown> | undefined): { nativeId: string; observationRef: string } | null {
