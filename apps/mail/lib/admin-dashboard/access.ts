@@ -1,7 +1,7 @@
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 
 /** Cosmetic client gate; server allowlist is the real control. */
-const ALLOWED_ADMIN_EMAILS = ['navaai@legacyhotels.co.za'] as const;
+const ALLOWED_ADMIN_EMAILS = ['navaai@legacyhotels.co.za', 'ropperman@legacyhotels.co.za'] as const;
 
 type SessionLike =
   | {
