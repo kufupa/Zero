@@ -358,7 +358,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
           {unsupportedClear && <option value="clear" disabled>Requested clear</option>}
         </> : <option value={op}>Requested</option>}
       </select></div>
-    {field === 'roomCount' && <span className={styles.hint}>Add or cancel rooms as separate reservations.{!kept && ' Select Keep current to save other changes.'}</span>}
+    {field === 'roomCount' && <span className={styles.hint}>Add or cancel rooms as separate reservations.{!kept && ' Choose Don\'t change to save the other changes.'}</span>}
     {kept && field === 'roomCount' && original.value != null && <span className={styles.hint}>Requested rooms: {text(original.value)}</span>}
     {kept && field === 'requestedMealPlan' && original.value != null && <span className={styles.hint}>Original requested Meal Plan: {text(original.value)}</span>}
     {unsupportedValue !== null && <small className={styles.hint}>Requested: {unsupportedValue}</small>}
@@ -371,7 +371,7 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
         Nava can't make this change. Make it in Infor if the guest still needs it.
       </div> :
       op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to move (minus for earlier)" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay moves from its own dates." /> : <>
-        {unsupportedClear ? <div className={styles.warning} role="alert">This request asks to clear {title}. It cannot be cleared here. Choose Keep current to save other changes, or Set to choose a replacement.</div> :
+        {unsupportedClear ? <div className={styles.warning} role="alert">This request asks to clear {title}. It cannot be cleared here. Choose Don't change to save the other changes, or Change to pick a replacement.</div> :
           op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
           spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' || field === 'roomCount' ? 1 : 0} max={field === 'adults' ? 16 : field === 'roomCount' ? 8 : 9} /> :
           spec?.[2] === 'note' ? <ReservationNote path={valuePath} editor={editor} /> :
@@ -408,7 +408,7 @@ export function AmendEditor(editor: Editor) {
   return <div className={styles.stack}>
     {lunchRequested && <p className={styles.warning} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     <Section title={targets.length > 1 ? 'Find the bookings' : 'Find the booking'}>
-      <p className={styles.hint}>Only the changes you add below are saved. Everything else stays as it is in Infor.</p>
+      <p className={styles.hint}>Only the changes listed below are saved, including ones Nava filled in from the email. Everything else stays as it is in Infor.</p>
       {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Written or uncertain stays remain locked; untouched stays can still be corrected and checked. Reconcile before changing target scope.</div>}
       {scope.mode !== 'explicit' && targets.length > 0 && <div className={styles.row}>
         <div className={styles.warning}>This request covers a group. Switch to its listed stays and handle each exact stay separately.</div>
