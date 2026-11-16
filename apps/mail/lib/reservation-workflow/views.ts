@@ -676,11 +676,16 @@ export function nativeChoices(snapshot: ReservationPaneSnapshot, path: string, k
     if (!matches) return [];
     const result = record(observation.result);
     const candidates = Array.isArray(result.candidates) ? result.candidates : Array.isArray(result.options) ? result.options : [result];
+    const verified = record(result.correlation).verifiedFields ?? record(result.rowVerification).verifiedFields;
     // Entity selections need a unique observation for the candidate, not a batch ref.
     if (!catalogue && candidates.length > 1) return [];
     const rows = candidates.map(raw => { const row = record(raw); const code = text(row.code ?? row.nativeCode ?? row.name ?? [row.firstName, row.lastName].filter(Boolean).join(' '));
       const label = amendTrack ? typeof row.label === 'string' ? row.label : '' : text(row.label ?? row.name) || code;
-      return { choice: { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email].filter(Boolean).join(' · ') },
+      return { choice: { ref: observation.ref, value: code, label, detail: [row.meaning ?? row.description, row.nativeId, row.email,
+        ...(kind === 'guest_candidate' && Array.isArray(verified) ? [
+          verified.includes('phonenumber') ? row.phoneNumber : null,
+          verified.includes('city') ? row.city : null, verified.includes('country') ? row.country : null,
+        ] : [])].filter(Boolean).join(' · ') },
         candidate: row,
         nativeId: typeof row.nativeId === 'string' && row.nativeId.trim() ? row.nativeId : null }; }).filter(row => row.choice.value);
     return amendTrack ? rows.filter(({ choice }) => /^[A-Z0-9]{1,12}$/.test(choice.value) && choice.label.trim() &&
