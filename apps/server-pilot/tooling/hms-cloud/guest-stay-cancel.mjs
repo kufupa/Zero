@@ -484,8 +484,9 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     chargeApproved, chargeDispatched, browserSendRequests: sendRequests, dispatchCallbacksDrained: pendingDispatch === 0 }),
     onNativeCharge: async (dialog) => {
       // A JS confirm pauses the verified form. Before Save, hold the target before accepting it;
-      // after Save, the separate charge request must use its existing dispatch authority.
-      const beforeSave = !dispatched;
+      // after Save, the separate charge request must use its existing dispatch authority. Once the
+      // Save request exists, the dialog rides on that submission: it is never a before-Save confirm.
+      const beforeSave = !dispatched && !authorizedRequest;
       penaltyTiming = beforeSave ? 'before_save' : 'after_save';
       if (typeof awaitChargeApproval !== 'function' || (beforeSave
         ? (!armed || !preparedSnapshot || typeof prepareChargeWithAuthority !== 'function')
@@ -494,10 +495,11 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       if (await awaitChargeApproval({ text: dialog.message, button: 'OK', timing: beforeSave ? 'before_save' : 'after_save' }) !== true ||
           action.isStopped() || continuationAllowed() !== true) return false;
       if (beforeSave) {
-        if (dispatched || !armed || !preparedSnapshot || !fence || fence.isQuarantined()) return false;
+        if (dispatched || authorizedRequest || !armed || !preparedSnapshot || !fence || fence.isQuarantined()) return false;
         await prepareChargeWithAuthority();
         chargeApproved = true;
-        return !action.isStopped() && continuationAllowed() === true && !dispatched && armed && !fence.isQuarantined();
+        return !action.isStopped() && continuationAllowed() === true && !dispatched && !authorizedRequest &&
+          armed && !fence.isQuarantined();
       }
       chargeApproved = true;
       chargeArmed = true;

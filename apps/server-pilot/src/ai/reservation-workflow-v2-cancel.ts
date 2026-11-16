@@ -1544,10 +1544,10 @@ export async function reservationWorkflowV2CancelExecute(ctx: ReservationWorkflo
             return false;
           },
           prepareChargeWithAuthority: async (beforePath: string) => {
-            const approved = chargeApproval;
+            const approved = chargeApproval, fence = ctx.writeRunFence;
             // Pre-Save charge authority is bound to a consumed before_save challenge, whatever its
             // relation to the reviewed preview: the approved dialog text is the authority, not the preview.
-            if (!approved || approved.timing !== 'before_save' || !continuationAllowed()) {
+            if (!approved || approved.timing !== 'before_save' || !fence || !continuationAllowed()) {
               throw new Error('cancel_fee_review_binding_missing');
             }
             const chargeApprovalDigest = sha256({ action: 'cancel_charge_dialog', approval, penaltyText: approved.text,
@@ -1900,7 +1900,7 @@ const chargeSessionSchema = z.object({ sessionId: z.string().min(1).max(512),
 
 /** A challenge is only visible inside its exact source, revision, property and staff session. */
 function cancelChargeBound(charge: CancelCharge | null, run: { id: string }, ctx: ReservationWorkflowV2CancelContext,
-  input: CancelChargeAccessInput, draft: ReservationWorkflowV2Draft,
+  input: ReservationWorkflowV2CancelChargeAccessInput, draft: ReservationWorkflowV2Draft,
   session: z.infer<typeof chargeSessionSchema>): charge is CancelCharge {
   return Boolean(charge && charge.grantId === input.operationId && charge.workItemId === input.workItemId &&
     charge.generationId === draft.generationId && charge.actorUserId === ctx.user.id &&
@@ -1912,9 +1912,10 @@ function cancelChargeBound(charge: CancelCharge | null, run: { id: string }, ctx
 
 /** Read the live fee challenge for one in-flight cancellation Go. */
 export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflowV2CancelContext,
-  input: CancelChargeAccessInput) {
+  input: ReservationWorkflowV2CancelChargeAccessInput) {
   if (!z.string().uuid().safeParse(input.operationId).success) return { status: 'none' as const };
-  const session = chargeSessionSchema.safeParse(ctx.user);
+  const session = chargeSessionSchema.safeParse({ sessionId: ctx.user.sessionId,
+    sessionProfile: ctx.user.sessionProfile });
   if (!session.success) return { status: 'none' as const };
   const [item] = await ctx.db.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1);
@@ -1933,10 +1934,15 @@ export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflow
       eq(aiWorkflowRun.idempotencyKey, `hms-write:${input.operationId}`))).limit(1);
   const charge = run ? cancelChargeOf(run.metrics) : null;
   if (!run || !cancelChargeBound(charge, run, ctx, input, draft, session.data)) return { status: 'none' as const };
-  const live = ['claimed', 'running'].includes(run.state) && run.deadlineAt.getTime() > Date.now();
-  const status = charge.status === 'pending' ? (live && charge.expiresAt > Date.now() ? 'pending' as const : 'expired' as const)
+  const live = ['claimed', 'running'].includes(run.state) && run.deadlineAt !== null &&
+    run.deadlineAt.getTime() > Date.now();
+  const open = live && charge.expiresAt > Date.now();
+  // Only a dispatched challenge proves the fee was submitted to HMS. An approved or consumed
+  // challenge on a dead or expired run was never dispatched, so it reports expired, not submitted.
+  const status = charge.status === 'pending' ? (open ? 'pending' as const : 'expired' as const)
     : charge.status === 'declined' ? 'declined' as const
-    : charge.status === 'expired' ? 'expired' as const : 'submitted' as const;
+    : charge.status === 'dispatched' ? 'submitted' as const
+    : charge.status === 'expired' ? 'expired' as const : open ? 'submitted' as const : 'expired' as const;
   return { status, challengeId: charge.id, dialogDigest: charge.dialogDigest, penaltyText: charge.text,
     button: charge.button, timing: charge.timing, matchesReviewed: charge.matchesReviewed,
     expiresAt: new Date(charge.expiresAt).toISOString() };
@@ -1944,12 +1950,14 @@ export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflow
 
 /** The staff fee Go: records accept/decline once; the writer re-checks the exact dialog before acting. */
 export async function reservationWorkflowV2CancelChargeDecision(ctx: ReservationWorkflowV2CancelContext,
-  input: CancelChargeAccessInput & { challengeId: string; dialogDigest: string; decision: 'accept' | 'decline' }) {
+  input: ReservationWorkflowV2CancelChargeAccessInput & { challengeId: string; dialogDigest: string;
+    decision: 'accept' | 'decline' }) {
   if (!z.string().uuid().safeParse(input.operationId).success || !z.string().uuid().safeParse(input.challengeId).success ||
       !chargeDigestSchema.safeParse(input.dialogDigest).success || !['accept', 'decline'].includes(input.decision)) {
     return { status: 'unavailable' as const };
   }
-  const session = chargeSessionSchema.safeParse(ctx.user);
+  const session = chargeSessionSchema.safeParse({ sessionId: ctx.user.sessionId,
+    sessionProfile: ctx.user.sessionProfile });
   if (!session.success) return { status: 'unavailable' as const };
   try {
     return await ctx.db.transaction(async (tx) => {
