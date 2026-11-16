@@ -1157,18 +1157,6 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
   });
 }
 
-// The meaning-code fallback is trusted only when the attachment enumeration is provably
-// known and lists no files at all: a single enumerated attachment could carry an unseen
-// veto cue such as "rate BAR not allowed", and no read state proves an image's meaning
-// was actually read. Any attachment row — inline and prior-thread rows count too — or an
-// enumeration whose shape cannot be trusted withholds every meaning mapping; exact codes,
-// source notes and staff review continue unchanged.
-function hasNoEnumeratedAttachments(selection: SyncedQuoteSelection): boolean {
-  if (!Array.isArray(selection.attachments)) return false;
-  if (selection.threadAttachments !== undefined && !Array.isArray(selection.threadAttachments)) return false;
-  return selection.attachments.length === 0 && (selection.threadAttachments ?? []).length === 0;
-}
-
 /** Map page/text evidence refs back to one physical attachment, without serializing attachment IDs into evidence. */
 function sourceAttachmentIdentityByRef(input: {
   source: ReservationWorkflowV2Source;
@@ -3596,12 +3584,9 @@ function projectCurrentExtraction(input: {
   proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
-  // The meaning-code fallback is trusted only when the admitted evidence provably covers the
-  // complete current source and the attachment enumeration is a known-empty list: any
-  // enumerated file could carry an unseen veto cue against a mapped code.
-  const evidenceComplete = input.observations[0]?.coverage.complete === true &&
-    completeCurrentSourceText({ source: input.source, selection: input.selection, evidence: input.evidence });
-  const meaningEvidenceComplete = evidenceComplete && hasNoEnumeratedAttachments(input.selection);
+  // Filtered attachment lists cannot prove the source inventory is complete. Until an
+  // authoritative inventory and its invalidation are available, meaning mapping abstains.
+  const meaningEvidenceComplete = false;
   // Meaning-mapped codes ground only in what the sender authored in this message;
   // wording found only in quoted history abstains.
   const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
@@ -3981,10 +3966,6 @@ function projectCurrentExtraction(input: {
       normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
     const authoredNoteClauses = authoredSourceNoteClauses(input);
     const messageRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
-    const resolvedRateClauses: Array<{ clause: string; sourceRefs: string[] }> = [];
-    // Note removal follows the codes this request's own exact-first selection actually picked,
-    // so a hint whose resolution never reaches selection keeps its source wording.
-    const selectedRateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate', codeOptions);
     const sourceNoteCandidates = [...operationalSourceNote(input).map((clause) => ({ clause, sourceRefs: messageRefs })),
       ...extracted.rateHints.flatMap((claim) => {
         const current = currentClaim(claim, currentRefs);
@@ -4016,19 +3997,8 @@ function projectCurrentExtraction(input: {
           (!inCurrentMessage || anchoredRows.some((row) => row.relation === 'attachment')) &&
             current.raw.length <= 300 ? [{ clause: current.raw, sourceRefs: anchoredRefs }] : [])
           .filter((note) => !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(note.clause));
-        const codeBound = { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode, evidence: input.evidence };
-        const resolvedCode = exactSourceCode(current, 'rate', codeBound) ??
-          sourceMeaningCode([current], 'rate', { catalog: input.nativeCatalog, propertyCode: input.propertyCode,
-            evidence: input.evidence, evidenceComplete: meaningEvidenceComplete,
-            currentAuthoredText: currentAuthoredBody })?.code ?? null;
-        // A resolved rate hint normally lands as a native code, not a note — but only a code the
-        // exact-first selection actually picked suppresses wording. A meaning-mapped hint under a
-        // different selected code ("Rate code BAR. Negotiated rate.") keeps its clause in notes.
-        // Keep the wording aside so it can be restored when no code is actually assigned.
-        if (resolvedCode && selectedRateCodes.codes.includes(resolvedCode)) {
-          resolvedRateClauses.push(...noted);
-          return [];
-        }
+        // Extractor spans may contain separate instructions; keep the source wording even
+        // when its rate code is selected so those instructions are not lost.
         return noted;
       })];
     const dedupedNotes = new Map<string, { clause: string; sourceRefs: string[] }>();
@@ -4387,7 +4357,7 @@ function projectCurrentExtraction(input: {
       if (unresolvedRoomHintRefs.length) {
         for (const group of request.body.groups) group.roomCodes = [];
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
-          'Room preference text is not an exact native code or unique catalogue meaning; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
+          'The room preference could not be mapped to an explicit native code. Select the room code in the native-backed Quote editor.',
           unresolvedRoomHintRefs);
       } else if (roomCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
         if (roomCodes.codes.length === 1) {
@@ -4414,7 +4384,7 @@ function projectCurrentExtraction(input: {
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
           roomCodes.codes.length
             ? 'The exact source room code has no unambiguous date/group scope. Select the room code in the native-backed Quote editor.'
-            : 'Room preference text is not an exact native code or unique catalogue meaning; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
+            : 'The room preference could not be mapped to an explicit native code. Select the room code in the native-backed Quote editor.',
           roomCodes.sourceRefs.length ? roomCodes.sourceRefs :
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
@@ -4430,7 +4400,7 @@ function projectCurrentExtraction(input: {
       if (unresolvedRateHintRefs.length) {
         for (const group of request.body.groups) group.ratePlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_not_projected',
-          'The source rate hint is not an exact native rate-plan code or unique catalogue meaning; no rate code was inferred from its name. Select a native rate code in the Quote editor.',
+          'The source rate hint could not be mapped to an explicit native rate-plan code. Select a native rate code in the Quote editor.',
           unresolvedRateHintRefs);
       } else if (rateCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
         if (rateCodes.codes.length === 1) {
@@ -4459,28 +4429,6 @@ function projectCurrentExtraction(input: {
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
           'The exact source rate-plan code has no unambiguous date/group scope. Rate choices were cleared for staff resolution; source claims remain available.',
           rateCodes.sourceRefs);
-      }
-      // Same restore as the Create pass: a rate hint that resolved to a code but never got one
-      // assigned to any group keeps its source wording as a note instead of vanishing with the code.
-      if (resolvedRateClauses.length && !rateCodes.codes.some((code) =>
-            request.body.groups.some((group) => group.ratePlan === code)) &&
-          currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1) {
-        const eligibleNotes = resolvedRateClauses.filter((candidate) => {
-          const text = normalizedFact(candidate.clause);
-          return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
-            !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
-            (normalizedFact(extracted.requestText.raw).includes(text) || [...ownMarkers].some((marker) => text.includes(marker)));
-        });
-        const path = `/proposal/content/requests/${request.id}/body/notes`;
-        const clauseRefs = (clause: string) => [...new Set(eligibleNotes.filter((note) => note.clause === clause)
-          .flatMap((note) => note.sourceRefs))].slice(0, 100);
-        const { fullNote, additions } = mergeSourceNote(request.body.notes ?? '', eligibleNotes.map((note) => note.clause),
-          input.evidence);
-        if (fullNote.length <= 4000 && additions.length) {
-          request.body.notes = fullNote;
-          proposal.annotations.push({ path, basis: 'source',
-            evidenceRefs: [...new Set(additions.flatMap(clauseRefs))].slice(0, 100) });
-        }
       }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
       projectPartyRole({ proposal, parties: extracted.parties, role: 'bookingAgency', currentRefs,
@@ -4916,7 +4864,7 @@ function projectCurrentExtraction(input: {
         if (unresolvedRoomHintRefs.length) {
           request.body.shared.roomType = null;
           addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
-            'The source room preference is not an exact explicit native room code or unique catalogue meaning. It remains available in source claims for staff selection.',
+            'The source room preference could not be mapped to an explicit native room code. It remains available in source claims for staff selection.',
             unresolvedRoomHintRefs);
         } else if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
         else {
@@ -4924,7 +4872,7 @@ function projectCurrentExtraction(input: {
           addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
             roomCodes.codes.length
               ? 'The source room code cannot be mapped to one current Create date section. No shared room code was selected; staff must resolve the source scope.'
-              : 'The source room preference is not an exact explicit native room code or unique catalogue meaning. It remains available in source claims for staff selection.',
+              : 'The source room preference could not be mapped to an explicit native room code. It remains available in source claims for staff selection.',
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
       }
@@ -4960,7 +4908,7 @@ function projectCurrentExtraction(input: {
       if (unresolvedRateHintRefs.length) {
         request.body.shared.ratePlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_not_projected',
-          'The source rate hint is not an exact native rate-plan code or unique catalogue meaning; no rate code was inferred from its name. Select the native rate code with staff.',
+          'The source rate hint is not an exact native rate-plan code. Select the native rate code with staff.',
           unresolvedRateHintRefs);
       } else if (rateCodes.codes.length) {
         if (rateCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.ratePlan = rateCodes.codes[0]!;
@@ -4969,36 +4917,6 @@ function projectCurrentExtraction(input: {
           addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_scope_ambiguous',
             'The source rate-plan code cannot be mapped to one current Create date section. No shared rate code was selected; staff must resolve the source scope.',
             rateCodes.sourceRefs);
-        }
-      }
-      // A rate hint that resolved to a code but never got one assigned (for example on a multi-section
-      // Create) keeps its source wording as a note instead of vanishing with the code that never landed.
-      if (request.body.shared.ratePlan == null && resolvedRateClauses.length &&
-          currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1) {
-        const eligibleNotes = resolvedRateClauses.filter((candidate) => {
-          const text = normalizedFact(candidate.clause);
-          return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
-            !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
-            (normalizedFact(extracted.requestText.raw).includes(text) || [...ownMarkers].some((marker) => text.includes(marker)));
-        });
-        const path = `/proposal/content/requests/${request.id}/body/shared/reservationNote`;
-        const clauseRefs = (clause: string) => [...new Set(eligibleNotes.filter((note) => note.clause === clause)
-          .flatMap((note) => note.sourceRefs))].slice(0, 100);
-        const existing = request.body.shared.reservationNote;
-        if (isRecord(existing) && existing.kind === 'none') {
-          for (const note of eligibleNotes) {
-            if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && note.clause.length <= 2000 &&
-                !proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === note.clause))
-              proposal.sourceClaims.push({ path, raw: note.clause, sourceRefs: clauseRefs(note.clause) });
-          }
-        } else {
-          const { fullNote, additions } = mergeSourceNote(typeof existing === 'string' ? existing : '',
-            eligibleNotes.map((note) => note.clause), input.evidence);
-          if (fullNote.length <= 2000 && additions.length) {
-            request.body.shared.reservationNote = fullNote;
-            proposal.annotations.push({ path, basis: 'source',
-              evidenceRefs: [...new Set(additions.flatMap(clauseRefs))].slice(0, 100) });
-          }
         }
       }
     }
@@ -6620,9 +6538,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
   const sourceReadComplete = observations[0]?.coverage.complete === true && textCoverageComplete;
-  // Fallback proposals feed only the meaning-code gate with this flag, so it carries the
-  // same known-empty attachment enumeration requirement as the main projection.
-  const meaningEvidenceComplete = sourceReadComplete && hasNoEnumeratedAttachments(input.selection);
+  // Match the projection: the filtered attachment list cannot prove inventory completeness.
+  const meaningEvidenceComplete = false;
   // Meaning-mapped codes anchor only in sender-authored text, quoted history excluded — the
   // same authored slice as the main projection.
   const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
