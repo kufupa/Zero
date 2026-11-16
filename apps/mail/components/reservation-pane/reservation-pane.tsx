@@ -482,7 +482,7 @@ export function ReservationPane(props: ReservationPaneProps) {
   };
   const currentFeePreview = (current: ReservationPaneSnapshot | null) => {
     const reply = record(current?.workflowReply), review = record(reply.financialReview), draft = current?.session.draft;
-    return Boolean(request?.kind === 'cancel' && reply.requestId === request.id && reply.status === 'needs_review' &&
+    return Boolean(request?.kind === 'cancel' && reply.requestId === request.id && (reply.status === 'prepared' || reply.status === 'needs_review') &&
       review.required === true && draft && draft.operationResults.some(row => row.workflow === 'cancel' && row.requestId === request.id &&
         row.allocationId === activeTarget.current && row.generationId === draft.generationId && row.status === 'prepared' &&
         row.observationRefs.includes(text(review.observationRef))) && draft.observations.some(row =>
@@ -534,7 +534,7 @@ export function ReservationPane(props: ReservationPaneProps) {
       } else await commands.execute();
       setChecked(null);
     } catch (failure) {
-      const latest = workbench.latestSnapshot(), feePreview = currentFeePreview(latest);
+      const latest = workbench.latestSnapshot(), feePreview = record(latest?.workflowReply).status === 'needs_review' && currentFeePreview(latest);
       const currentAmendPreview = feePreview ? (setAttention(null), null) : showFailure(failure, 'save');
       setCheckedAmendReview(currentAmendPreview);
       setChecked(feePreview || currentAmendPreview ? digestFor(latest) : null);
