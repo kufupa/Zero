@@ -331,12 +331,21 @@ export async function admitLiveMessage(
   if (!trigger) throw new Error('Live admission trigger unavailable');
   if (trigger.attention === 'AMBIGUOUS_IDENTITY') return { admitted: false, receiptId: '' };
   const isCollector = resolvePropertyTransport(input.transportId).kind === 'collector';
+  const [fileAttachment] =
+    trigger.direction === 'inbound'
+      ? await db
+          .select({ id: attachment.id })
+          .from(attachment)
+          .where(and(eq(attachment.messageId, trigger.id), eq(attachment.isInline, false)))
+          .limit(1)
+      : [null];
   let mailSourceDecision =
     trigger.direction === 'inbound'
       ? classifyMailSource({
           fromAddress: trigger.fromAddress,
           subject: trigger.subject,
           bodyText: trigger.textBody ?? trigger.htmlBody,
+          hasAttachments: fileAttachment != null,
         })
       : null;
   if (mailSourceDecision && mailSourceDecision.kind !== 'direct') {

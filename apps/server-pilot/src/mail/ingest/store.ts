@@ -865,6 +865,7 @@ export async function persistInboundMessage(
           fromAddress: parsed.fromAddress,
           subject: parsed.subject,
           bodyText: parsed.textBody ?? parsed.htmlBody,
+          hasAttachments: parsed.attachments.some((a) => !a.isInline),
         })
       : null;
     const routeAsAutomatedChannel =

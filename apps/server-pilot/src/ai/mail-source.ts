@@ -22,12 +22,23 @@ export function isMailSourceClassification(value: unknown): value is MailSourceC
 
 type MailSourceRule = Omit<
   MailSourceRuleData,
-  'forwardedSubjectPatterns' | 'directSubjectPatterns' | 'skipSubjectPatterns' | 'exactHost'
+  | 'forwardedSubjectPatterns'
+  | 'directSubjectPatterns'
+  | 'skipSubjectPatterns'
+  | 'senderPatterns'
+  | 'skipBodyPatterns'
+  | 'exactHost'
+  | 'requiresNoAttachments'
+  | 'directWhenForwarded'
 > & {
   exactHost?: boolean;
   forwardedSubjectPatterns?: readonly RegExp[];
   directSubjectPatterns?: readonly RegExp[];
   skipSubjectPatterns?: readonly RegExp[];
+  senderPatterns?: readonly RegExp[];
+  skipBodyPatterns?: readonly RegExp[];
+  requiresNoAttachments?: boolean;
+  directWhenForwarded?: boolean;
 };
 
 type MailSourcePatternData = NonNullable<MailSourceRuleData['forwardedSubjectPatterns']>[number];
@@ -54,6 +65,12 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
     ...(rule.skipSubjectPatterns === undefined
       ? {}
       : { skipSubjectPatterns: compilePatterns(rule.skipSubjectPatterns) }),
+    ...(rule.senderPatterns === undefined ? {} : { senderPatterns: compilePatterns(rule.senderPatterns) }),
+    ...(rule.skipBodyPatterns === undefined
+      ? {}
+      : { skipBodyPatterns: compilePatterns(rule.skipBodyPatterns) }),
+    ...(rule.requiresNoAttachments === undefined ? {} : { requiresNoAttachments: rule.requiresNoAttachments }),
+    ...(rule.directWhenForwarded === undefined ? {} : { directWhenForwarded: rule.directWhenForwarded }),
   };
 }
 
@@ -102,18 +119,32 @@ function matchedSource(
   return { kind: rule.kind, source: rule.source, reason };
 }
 
-/** A known sender's mail stays direct when it relays a person's enquiry, or falls outside the rule's skip subjects. */
+/** A known sender's mail stays direct when it relays a person's enquiry, or fails a configured skip-evidence gate. */
 function directExemption(
   rule: MailSourceRule,
   subjects: readonly (string | null | undefined)[],
+  evidence: { fromAddress?: string | null; bodyText?: string | null; hasAttachments?: boolean },
 ): MailSourceClassification | null {
   const matches = (patterns: readonly RegExp[] | undefined) =>
     subjects.some((subject) => patterns?.some((pattern) => pattern.test(subject ?? '')));
+  if (rule.senderPatterns && !rule.senderPatterns.some((pattern) => pattern.test(evidence.fromAddress ?? ''))) {
+    return { kind: 'direct', source: null, reason: `unmatched_sender:${rule.id}` };
+  }
   if (matches(rule.directSubjectPatterns)) {
     return { kind: 'direct', source: null, reason: `relayed_enquiry:${rule.id}` };
   }
   if (rule.skipSubjectPatterns && !matches(rule.skipSubjectPatterns)) {
     return { kind: 'direct', source: null, reason: `unskipped_subject:${rule.id}` };
+  }
+  if (rule.skipBodyPatterns && !rule.skipBodyPatterns.every((pattern) => pattern.test(evidence.bodyText ?? ''))) {
+    return { kind: 'direct', source: null, reason: `unmatched_body:${rule.id}` };
+  }
+  if (rule.requiresNoAttachments && evidence.hasAttachments !== false) {
+    return {
+      kind: 'direct',
+      source: null,
+      reason: evidence.hasAttachments === true ? `attachments_present:${rule.id}` : `attachments_unverified:${rule.id}`,
+    };
   }
   return null;
 }
@@ -179,11 +210,17 @@ export function classifyMailSource(input: {
   fromAddress?: string | null;
   subject?: string | null;
   bodyText?: string | null;
+  /** Whether the message carries at least one non-inline attachment; undefined means unknown. */
+  hasAttachments?: boolean;
 }): MailSourceClassification {
   const senderDomain = extractDomain(input.fromAddress);
   const senderMatch = ruleForDomain(senderDomain);
   if (senderMatch) {
-    const exemption = directExemption(senderMatch.rule, [input.subject]);
+    const exemption = directExemption(senderMatch.rule, [input.subject], {
+      fromAddress: input.fromAddress,
+      bodyText: input.bodyText,
+      hasAttachments: input.hasAttachments,
+    });
     if (exemption) return exemption;
     return matchedSource(senderMatch.rule, `sender_domain:${senderMatch.registeredDomain}`);
   }
@@ -191,7 +228,14 @@ export function classifyMailSource(input: {
   if (isInternalForwardSender(senderDomain)) {
     const forwardedSender = originalForwardSender(plainTextBody(input.bodyText ?? ''));
     if (forwardedSender) {
-      const exemption = directExemption(forwardedSender.rule, [input.subject, forwardedSender.subject]);
+      if (forwardedSender.rule.directWhenForwarded) {
+        return { kind: 'direct', source: null, reason: `forwarded_skip_exempt:${forwardedSender.rule.id}` };
+      }
+      const exemption = directExemption(forwardedSender.rule, [input.subject, forwardedSender.subject], {
+        fromAddress: input.fromAddress,
+        bodyText: input.bodyText,
+        hasAttachments: input.hasAttachments,
+      });
       if (exemption) return exemption;
       return matchedSource(forwardedSender.rule, `forwarded_sender:${forwardedSender.domain}`);
     }

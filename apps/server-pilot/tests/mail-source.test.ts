@@ -240,20 +240,20 @@ const directExamples = [
 ] as const;
 
 describe('classifyMailSource', () => {
-  it('keeps a Profitroom website contact form direct, sent or forwarded', () => {
+  it('skips Profitroom exact-host mail regardless of subject, sent or forwarded', () => {
     expect(
       classifyMailSource({ fromAddress: 'noreply@profitroom.com', subject: 'Default contact form', bodyText: '' }),
-    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+    ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'sender_domain:profitroom.com' });
     expect(
       classifyMailSource({
         fromAddress: 'reservations@legacyhotels.co.za',
         subject: 'FW: Default contact form',
         bodyText: 'From: Profitroom <noreply@profitroom.com>\nSent: today\nSubject: Default contact form',
       }),
-    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+    ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'forwarded_sender:profitroom.com' });
   });
 
-  it('keeps a renamed forward of a Profitroom contact form direct, from its original Subject line', () => {
+  it('skips a renamed forward of a Profitroom contact form, from its original Subject line', () => {
     expect(
       classifyMailSource({
         fromAddress: 'reservations@legacyhotels.co.za',
@@ -261,7 +261,42 @@ describe('classifyMailSource', () => {
         bodyText:
           'From: Profitroom <noreply@profitroom.com>\nSent: Monday\nTo: reservations\nSubject: Default contact form\n\nHello',
       }),
-    ).toEqual({ kind: 'direct', source: null, reason: 'relayed_enquiry:profitroom' });
+    ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'forwarded_sender:profitroom.com' });
+  });
+
+  it('skips a standalone Nedbank e-pay Sale notice only when every evidence gate passes', () => {
+    const notice = {
+      fromAddress: 'Nedbank e-pay <epay-noreply@nedbank.co.za>',
+      subject: 'Order confirmation from Nedbank',
+      bodyText: 'Your Sale was successful. Merchant Reference: 45376815-1. Amount: R1,000.00',
+      hasAttachments: false,
+    };
+    expect(classifyMailSource(notice)).toEqual({
+      kind: 'system',
+      source: 'Nedbank e-pay',
+      reason: 'sender_domain:nedbank.co.za',
+    });
+    // Any missing or failed gate keeps the mail staff-visible instead of skipping it.
+    for (const input of [
+      { ...notice, hasAttachments: true },
+      { ...notice, hasAttachments: undefined },
+      { ...notice, subject: 'Payment review needed' },
+      { ...notice, bodyText: 'Please check this transaction.' },
+      { ...notice, fromAddress: 'accounts@nedbank.co.za' },
+      { ...notice, fromAddress: 'epay-noreply@mail.nedbank.co.za' },
+    ]) {
+      expect(classifyMailSource(input).kind).toBe('direct');
+    }
+    // A human-forwarded copy of the notice is never skipped.
+    expect(
+      classifyMailSource({
+        fromAddress: 'reservations@legacyhotels.co.za',
+        subject: 'FW: Order confirmation from Nedbank',
+        bodyText:
+          'From: Nedbank e-pay <epay-noreply@nedbank.co.za>\nSubject: Order confirmation from Nedbank\n\nYour Sale was successful. Merchant Reference: 45376815-1.',
+        hasAttachments: false,
+      }),
+    ).toEqual({ kind: 'direct', source: null, reason: 'forwarded_skip_exempt:nedbank-epay' });
   });
 
   it('reads the original Subject of an HTML forward whose header fields are blank-line separated', () => {

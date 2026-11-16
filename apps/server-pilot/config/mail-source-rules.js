@@ -128,7 +128,21 @@ export const MAIL_SOURCE_RULE_DATA = [
     source: 'Profitroom',
     domains: ['profitroom.com'],
     exactHost: true,
-    directSubjectPatterns: [{ source: '\\bcontact\\s+form\\b', flags: 'i' }],
+  },
+  {
+    id: 'nedbank-epay',
+    kind: 'system',
+    source: 'Nedbank e-pay',
+    domains: ['nedbank.co.za'],
+    exactHost: true,
+    senderPatterns: [{ source: '\\bepay-noreply@nedbank\\.co\\.za\\b', flags: 'i' }],
+    skipSubjectPatterns: [{ source: '^order\\s+confirmation\\s+from\\s+nedbank\\b', flags: 'i' }],
+    skipBodyPatterns: [
+      { source: '\\bmerchant\\s+reference\\b', flags: 'i' },
+      { source: '\\bsale\\b', flags: 'i' },
+    ],
+    requiresNoAttachments: true,
+    directWhenForwarded: true,
   },
   {
     id: 'ratetiger',

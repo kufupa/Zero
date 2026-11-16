@@ -6245,8 +6245,9 @@ function validateReviewRequirementRefs(
 
 /** Shared by manual initialization and the prefill runner, before attachment/model/native work. */
 export function classifyReservationWorkflowV2Source(input: { fromAddress?: string | null; subject?: string | null;
-  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean }) {
-  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject, bodyText: input.bodyText });
+  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean; hasAttachments?: boolean }) {
+  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject,
+    bodyText: input.bodyText, hasAttachments: input.hasAttachments });
   const confirmationNumbers = `${input.subject ?? ''}\n${input.bodyText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
   const selfPreStay = isSelfSentPreStayInformationMail({ fromAddress: input.fromAddress,
     mailboxAddress: input.mailboxAddress, subject: input.subject, confirmationNumbers });
@@ -6281,7 +6282,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   const generationId = randomUUID();
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
-    bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
+    bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam,
+    hasAttachments: input.selection.attachments.some((row) => row.isInline !== true) });
   const { classification, selfPreStay } = admission;
   const skippedReason = !sourceBound ? 'invalid_source' as const : admission.skippedReason;
   if (skippedReason) {
