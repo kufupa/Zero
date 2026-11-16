@@ -267,7 +267,11 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
   const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash ||
     draft.prefill?.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash;
   if (sourceChanged && !allowSourceChanged && !recovery) return { status: 'invalid_source' };
-  return { status: 'ok', draft: { ...draft, revision: item.revision }, revision: item.revision,
+  // The intake decision binds only to the generation, source and evidence it was
+  // adjudicated on. Once any of them change it is parked until a fresh extraction
+  // adjudicates again: a changed-source draft never surfaces a stale no-action.
+  const bound = sourceChanged ? { ...draft, disposition: undefined } : draft;
+  return { status: 'ok', draft: { ...bound, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };
 }
 

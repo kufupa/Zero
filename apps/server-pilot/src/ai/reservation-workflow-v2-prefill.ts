@@ -6550,12 +6550,32 @@ export async function runReservationWorkflowV2Prefill(input: {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
     // for staff review, but this existing-stay email cannot grant a new write.
     const body = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText);
-    const requests = extraction.requests.flatMap((request) =>
-      groundedSeparateAsk(body, request.requestText.raw, 2000) ? [{ ...request, kind: 'other' as const }] : []);
+    // A separate ask can also live only in a current attachment: it stays when its
+    // excerpt verifies against cited, admitted current attachment text. Quoted
+    // history stays out, and a current-sourced ask that cannot be verbatim-verified
+    // is kept for staff review rather than silently dropped.
+    const currentAttachmentText = new Map(evidence.filter((row) =>
+      row.relation === 'attachment' && row.kind === 'attachment_text').map((row) => [row.ref, row.text]));
+    const groundedAsks = extraction.requests.flatMap((request) => {
+      const raw = request.requestText.raw;
+      if (groundedSeparateAsk(body, raw, 2000)) return [{ request, verified: true }];
+      if (!currentClaim(request.requestText, currentRefs)) return [];
+      const verified = request.requestText.sourceRefs.some((ref) => {
+        const text = currentAttachmentText.get(ref);
+        return text ? Boolean(groundedSeparateAsk(text, raw, 2000)) : false;
+      });
+      return [{ request, verified }];
+    });
+    const requests = groundedAsks.map((row) => ({ ...row.request, kind: 'other' as const }));
     if (!requests.length) {
       // A confirmed, cited no-action on a fully read source is a clear no-action state, not a failed prefill.
       const disposition = adjudicate(currentActions.requests.length);
       if (disposition.decision === 'no_action') {
+        // The seeded extraction must checkpoint before returning so the state
+        // finisher accepts this generation's binding.
+        if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
+          throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
+        }
         return { ...base, extraction, disposition, status: 'ready', proposal: emptyProposal(), errors: base.errors };
       }
       return { ...base, extraction, status: 'prefill_failed',
@@ -6570,6 +6590,11 @@ export async function runReservationWorkflowV2Prefill(input: {
     const proposal = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction: separate, source: input.source, evidence,
       reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.' }),
       extraction: separate, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode }).proposal;
+    for (const { request } of groundedAsks.filter((row) => !row.verified)) {
+      addProjectionIssue(proposal, `/requests/${request.id}`, 'separate_ask_unverified',
+        'Nava could not confirm this request word-for-word in the current email or its attachments; it was kept for staff review.',
+        request.requestText.sourceRefs.filter((ref) => currentRefs.has(ref)));
+    }
     return { ...base, extraction: separate, disposition: adjudicate(requests.length), status: 'partial',
       proposal,
       errors: base.errors };
