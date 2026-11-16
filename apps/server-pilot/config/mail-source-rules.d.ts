@@ -36,3 +36,15 @@ export type MailSourceRuleData = {
 };
 
 export declare const MAIL_SOURCE_RULE_DATA: readonly MailSourceRuleData[];
+
+export type RoutineNoticeExclusionData = {
+  readonly id: string;
+  readonly kind: 'system';
+  readonly source: string;
+  /** Anchored envelope sender pattern; forwards keep authored asks visible. */
+  readonly senderPattern: { readonly source: string; readonly flags: string };
+  /** Anchored subject pattern for the routine notice. */
+  readonly subjectPattern: { readonly source: string; readonly flags: string };
+};
+
+export declare const ROUTINE_NOTICE_EXCLUSION_DATA: readonly RoutineNoticeExclusionData[];

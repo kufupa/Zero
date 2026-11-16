@@ -194,3 +194,44 @@ export const MAIL_SOURCE_RULE_DATA = [
     forwardedSubjectPatterns: [{ source: '^tripadvisor\\b', flags: 'i' }],
   },
 ];
+
+/**
+ * Exact routine-notice exclusions shared by every intake path: an internal
+ * handover or automated digest whose sender and subject both match exactly.
+ * Anchored senders keep human forwards (Fwd:/Re: prefixed subjects do not
+ * match) staff-visible.
+ */
+export const ROUTINE_NOTICE_EXCLUSION_DATA = [
+  {
+    id: 'fortimail-quarantine',
+    kind: 'system',
+    source: 'FortiMail',
+    senderPattern: { source: '@fortimail-[a-z0-9-]+\\.[a-z0-9.-]+\\s*>?$', flags: 'i' },
+    subjectPattern: { source: '^quarantine\\s+summary\\b', flags: 'i' },
+  },
+  {
+    id: 'function-sheet',
+    kind: 'system',
+    source: 'Function Sheet',
+    senderPattern: { source: '@legacyhotels\\.(?:co\\.za|com)\\s*>?$', flags: 'i' },
+    subjectPattern: { source: '^(?:re:\\s*|fw(?:d)?:\\s*)*(?:new\\s+|updated\\s+)?function\\s+sheet\\b', flags: 'i' },
+  },
+  {
+    id: 'guestrevu',
+    kind: 'system',
+    source: 'GuestRevu',
+    senderPattern: { source: '^(?:[^<>]*<)?no-reply@grfeedback-b\\.com\\s*>?$', flags: 'i' },
+    subjectPattern: {
+      source:
+        '^(?:The Centurion Hotel has received a new online review|The Centurion Hotel has received a Post-Stay survey response from |The Centurion Hotel - GuestRevu (?:Daily|Weekly) Summary)',
+      flags: 'i',
+    },
+  },
+  {
+    id: 'google-calendar',
+    kind: 'system',
+    source: 'Google Calendar',
+    senderPattern: { source: '^(?:[^<>]*<)?calendar-notification@google\\.com\\s*>?$', flags: 'i' },
+    subjectPattern: { source: '^(?:Invitation:|Declined:|Canceled event:)', flags: 'i' },
+  },
+];

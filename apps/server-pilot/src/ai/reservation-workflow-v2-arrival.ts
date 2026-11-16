@@ -39,19 +39,6 @@ export async function enqueueReservationArrival(db: DB, input: {
     .where(and(eq(attachment.messageId, row.id), eq(attachment.isInline, false))).limit(1);
   if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body,
     hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) }).kind !== 'direct') return null;
-  // FortiMail's quarantine digest is an internal wrapper, not the quarantined
-  // sender's request. Do not spend a model call on its contents.
-  if (/@fortimail-[a-z0-9-]+\.[a-z0-9.-]+\s*>?$/i.test(row.fromAddress.trim()) &&
-      /^quarantine\s+summary\b/i.test(row.subject?.trim() ?? '')) return null;
-  // A routine internal function sheet is an operations handover, not a client request.
-  if (/@legacyhotels\.(?:co\.za|com)\s*>?$/i.test(row.fromAddress.trim()) &&
-      /^(?:re:\s*|fw(?:d)?:\s*)*(?:new\s+|updated\s+)?function\s+sheet\b/i.test(row.subject?.trim() ?? '')) return null;
-  if (!input.requestedByPane) {
-    if (/^(?:[^<>]*<)?no-reply@grfeedback-b\.com\s*>?$/i.test(row.fromAddress.trim()) &&
-        /^(?:The Centurion Hotel has received a new online review|The Centurion Hotel has received a Post-Stay survey response from |The Centurion Hotel - GuestRevu (?:Daily|Weekly) Summary)/i.test(row.subject?.trim() ?? '')) return null;
-    if (/^(?:[^<>]*<)?calendar-notification@google\.com\s*>?$/i.test(row.fromAddress.trim()) &&
-        /^(?:Invitation:|Declined:|Canceled event:)/i.test(row.subject?.trim() ?? '')) return null;
-  }
   const sourceHash = staffQuoteSourceHash(row);
   const evidence = await reservationArrivalEvidence(db, row.id);
   const priority = input.requestedByPane ? PANE_REQUEST_PRIORITY : input.priority ?? 0;
