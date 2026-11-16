@@ -30,7 +30,8 @@ export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnap
 }) {
   const [body, setBody] = useState(output?.cover?.body ?? '');
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  // Success text is cleared by later edits; failure or uncertain-outcome warnings stay until the next save.
+  const [message, setMessage] = useState<{ text: string; saved: boolean } | null>(null);
   const bodyVersion = useRef(0);
   useEffect(() => { bodyVersion.current += 1; onSaved(null); setBody(output?.cover?.body ?? ''); setMessage(null);
     return () => { bodyVersion.current += 1; };
@@ -46,10 +47,11 @@ export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnap
         return readyForReply() && current?.sourceMessageId === snapshot.sourceMessageId && current.session.seq === snapshot.session.seq
           && current.session.draft.generationId === snapshot.session.draft.generationId;
       } });
-      if (version === bodyVersion.current) setMessage(result.message);
-      else if (result.status === 'saved' || result.status === 'created') setMessage('An earlier version was saved. Save the edited reply when ready.');
-      if ((result.status === 'saved' || result.status === 'created') && version === bodyVersion.current) onSaved(output.operationId);
-    } catch { setMessage('The reply could not be confirmed. Check Drafts before trying again.'); }
+      const saved = result.status === 'saved' || result.status === 'created';
+      if (!saved) setMessage({ text: result.message, saved: false });
+      else if (version === bodyVersion.current) { setMessage({ text: result.message, saved: true }); onSaved(output.operationId); }
+      else setMessage({ text: 'An earlier version was saved. Save the edited reply when ready.', saved: false });
+    } catch { setMessage({ text: 'The reply could not be confirmed. Check Drafts before trying again.', saved: false }); }
     finally { setBusy(false); }
   };
   return <section className={styles.section}><h3>{output.inventoryDecline ? 'Unsent room-unavailability reply'
@@ -58,12 +60,12 @@ export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnap
     {output.issues.map(issue => <p className={styles.notice} key={issue}>{issue}</p>)}
     {output.inventoryDecline && <p className={styles.notice}>Infor confirmed the selected room and rate had no rooms available for every requested night. This is not a whole-hotel sold-out claim. No priced PDF or Excel quote was created; nothing has been sent.</p>}
     {output.failures.map(failure => <p className={styles.notice} key={failure}>{failureMessage(failure)}</p>)}
-    {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => { bodyVersion.current += 1; onSaved(null); setMessage(null); setBody(event.target.value); }} rows={6} /></label></>}
+    {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => { bodyVersion.current += 1; onSaved(null); setMessage(current => current?.saved ? null : current); setBody(event.target.value); }} rows={6} /></label></>}
     <div className={styles.sources}>{output.artifacts.map(artifact => <a key={artifact.sha256} download={artifact.fileName}
       href={`data:${artifact.mimeType};base64,${artifact.bytesBase64}`}>{artifact.fileName}</a>)}</div>
     {output.cover && <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>
       {busy ? 'Saving reply…' : quoteReplyLabel(output)}
     </button>}
-    {message && <p role="status" className={styles.notice}>{message}</p>}
+    {message && <p role="status" className={styles.notice}>{message.text}</p>}
   </section>;
 }
