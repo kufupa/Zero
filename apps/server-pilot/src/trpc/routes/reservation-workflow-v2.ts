@@ -281,13 +281,26 @@ async function recoveryWorkflow(ctx: Awaited<ReturnType<typeof nativeContext>>,
     input: { ...input, source: current.draft.source } };
 }
 
+/** Format alone is not enough: 2026-02-30 and month 13 must fail input, not reach the state validator. */
+const isoCalendarDay = (value: string) => {
+  const date = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+};
+
 const configureFilingInput = reservationWorkflowV2ItemInputSchema.extend({
   requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
   attachmentId: z.string().min(1).max(500), confirmation: z.string().trim().regex(/^\d+-\d+$/).max(200).optional(),
+  guestName: z.string().trim().min(1).max(300).optional(),
+  bookedArrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isoCalendarDay, 'Date must be a real calendar day.').optional(),
+  bookedDeparture: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isoCalendarDay, 'Date must be a real calendar day.').optional(),
   allocationTarget: z.object({ requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
     allocationId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/) }).strict().optional(),
   kind: z.enum(['voucher', 'payment_proof']),
-}).strict().refine(input => Boolean(input.confirmation) !== Boolean(input.allocationTarget), 'Choose an existing confirmation or a new-booking room.');
+}).strict().refine(input => Boolean(input.confirmation) !== Boolean(input.allocationTarget), 'Choose an existing confirmation or a new-booking room.')
+  .refine(input => !input.allocationTarget || (input.guestName === undefined && input.bookedArrival === undefined &&
+    input.bookedDeparture === undefined), 'Stay hints apply only to an existing reservation.')
+  .refine(input => input.bookedDeparture === undefined ||
+    (input.bookedArrival !== undefined && input.bookedDeparture > input.bookedArrival), 'Departure must follow arrival.');
 
 const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
   allocationId: z.string().min(1).max(80).optional(),

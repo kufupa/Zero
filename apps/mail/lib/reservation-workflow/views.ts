@@ -28,7 +28,7 @@ export type WorkbenchCommands = {
   reconcile(operationId: string): Promise<void>;
   acceptServiceReview(fieldPath: string, note: string, expected?: { path: string; value: unknown; generationId: string }): Promise<void>;
   acceptFinancialReview(fieldPath: string, note: string, observationRef: string): Promise<void>;
-  configureFiling(attachmentId: string, target: string | { confirmation: string } | { allocationTarget: { requestId: string; allocationId: string } }, kind: 'voucher' | 'payment_proof'): Promise<void>;
+  configureFiling(attachmentId: string, target: string | { confirmation: string; guestName?: string; bookedArrival?: string; bookedDeparture?: string } | { allocationTarget: { requestId: string; allocationId: string } }, kind: 'voucher' | 'payment_proof'): Promise<void>;
   lookupServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   previewServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   executeServices(target: string | ReservationSavedServiceTarget, serviceId: string, reviewedPrepareRef?: string): Promise<void>;

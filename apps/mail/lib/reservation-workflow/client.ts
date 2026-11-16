@@ -67,7 +67,9 @@ export type ReservationWorkflowV2TrpcClient = {
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string; preparedRef?: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
-    configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string };
+    configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation?: string;
+      guestName?: string; bookedArrival?: string; bookedDeparture?: string;
+      allocationTarget?: { requestId: string; allocationId: string };
       kind: 'voucher' | 'payment_proof' }>;
     lookupServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string }>;
     prepareServices: MutationProcedure<ItemInput & ReservationServiceInput & { requestId: string; serviceId?: string; reviewedPrepareRef?: string }>;
@@ -676,6 +678,15 @@ function filingLookupNotice(result: unknown): string | undefined {
   return issues.length ? issues.join(' ') : undefined;
 }
 
+function filingConfigureNotice(result: unknown): string | undefined {
+  const notice = operationNotice(result, ['ok']);
+  if (!notice) return undefined;
+  if (isRecord(result) && result.status === 'invalid_value') {
+    return 'Filing could not apply this PDF and destination. If this filing already succeeded or is waiting for reconciliation, it is locked — review the recorded result or start a separate filing action.';
+  }
+  return `Filing: ${notice}`;
+}
+
 function cancelLookupNotice(result: unknown): string | undefined {
   if (!isRecord(result) || !Array.isArray(result.requests) ||
       !result.requests.some((request) => isRecord(request) && request.kind === 'cancel') || !Array.isArray(result.lookups)) return undefined;
@@ -1115,8 +1126,19 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     },
     async configureFiling(command) {
       const input = { ...itemInput(command), requestId: command.requestId, attachmentId: command.attachmentId,
-        ...(command.confirmation ? { confirmation: command.confirmation } : { allocationTarget: command.allocationTarget }), kind: command.kind };
-      return refreshAfter(api.configureFiling, input, command.source);
+        ...(command.confirmation ? { confirmation: command.confirmation,
+          ...(command.guestName ? { guestName: command.guestName } : {}),
+          ...(command.bookedArrival ? { bookedArrival: command.bookedArrival } : {}),
+          ...(command.bookedDeparture ? { bookedDeparture: command.bookedDeparture } : {}) } : { allocationTarget: command.allocationTarget }),
+        kind: command.kind };
+      const raw = await api.configureFiling.mutate(input, mailboxOptions(command.source));
+      await refreshAfterStale(input, command.source, raw);
+      const notice = filingConfigureNotice(raw);
+      const snapshot = await load({ workItemId: input.workItemId, source: input.source,
+        expectedRevision: isRecord(raw) && typeof raw.revision === 'number' ? raw.revision : input.expectedRevision,
+        expectedSeq: isRecord(raw) && typeof raw.seq === 'number' ? raw.seq : input.expectedSeq }, command.source);
+      return { ...snapshot, ...(notice ? { serviceNotice: notice } : {}),
+        ...(isRecord(raw) ? { workflowReply: raw } : {}) };
     },
     async lookupServices(command) {
       const input = { ...itemInput(command), requestId: command.requestId, ...(command.allocationId ? { allocationId: command.allocationId } : { targetRef: command.targetRef }),

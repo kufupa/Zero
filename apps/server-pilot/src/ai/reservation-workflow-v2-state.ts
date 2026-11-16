@@ -1903,11 +1903,25 @@ export async function editReservationWorkflowV2Draft(ctx: Context, input: Mutati
 
 /** Bind one staff-selected source attachment and an exact confirmation without a native write. */
 export async function configureReservationWorkflowV2Filing(ctx: Context, input: MutationInput & {
-  requestId: string; attachmentId: string; confirmation?: string; allocationTarget?: { requestId: string; allocationId: string }; kind: 'voucher' | 'payment_proof';
+  requestId: string; attachmentId: string; confirmation?: string; guestName?: string;
+  bookedArrival?: string; bookedDeparture?: string;
+  allocationTarget?: { requestId: string; allocationId: string }; kind: 'voucher' | 'payment_proof';
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx)) return { status: 'wrong_property' };
+  const isoDay = (value: unknown) => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  };
+  const staffHint = input.confirmation != null ? { guestName: input.guestName,
+    bookedArrival: input.bookedArrival, bookedDeparture: input.bookedDeparture } : {};
   if (!ctx.userId || Boolean(input.confirmation) === Boolean(input.allocationTarget) ||
-      (input.confirmation != null && !/^\d+-\d+$/.test(input.confirmation)) || !input.attachmentId) return { status: 'invalid_value' };
+      (input.confirmation != null && !/^\d+-\d+$/.test(input.confirmation)) || !input.attachmentId ||
+      (input.allocationTarget != null && (input.guestName !== undefined || input.bookedArrival !== undefined || input.bookedDeparture !== undefined)) ||
+      (staffHint.guestName !== undefined && (typeof staffHint.guestName !== 'string' || !staffHint.guestName.trim() || staffHint.guestName.length > 300)) ||
+      (staffHint.bookedArrival !== undefined && !isoDay(staffHint.bookedArrival)) ||
+      (staffHint.bookedDeparture !== undefined && (!isoDay(staffHint.bookedDeparture) ||
+        !isoDay(staffHint.bookedArrival) || staffHint.bookedDeparture! <= staffHint.bookedArrival!))) return { status: 'invalid_value' };
   return ctx.db.transaction(async (tx) => {
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { status: 'not_found' as const };
@@ -1957,7 +1971,11 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
     overrides[allocationPath] = input.allocationTarget ? { state: 'set', value: input.allocationTarget, updatedAt: now }
       : { state: 'unknown', updatedAt: now };
     overrides[targetsPath] = { state: 'set', value: { mode: 'explicit', include: [{ id: targetId,
-      ...(input.confirmation ? { confirmation: input.confirmation } : {}), candidateRefs: [], suggestedRef: null, sourceRefs: [] }], exclude: [], sourceRefs: [] }, updatedAt: now };
+      ...(input.confirmation ? { confirmation: input.confirmation } : {}),
+      ...(staffHint.guestName ? { guestName: staffHint.guestName.trim() } : {}),
+      ...(staffHint.bookedArrival ? { bookedArrival: staffHint.bookedArrival } : {}),
+      ...(staffHint.bookedDeparture ? { bookedDeparture: staffHint.bookedDeparture } : {}),
+      candidateRefs: [], suggestedRef: null, sourceRefs: [] }], exclude: [], sourceRefs: [] }, updatedAt: now };
     for (const [field, value] of [['documentSourceRef', documentSourceRef], ['kind', input.kind],
       ['handling', 'filing_requested']] as const) {
       const path = `${docRoot}/${field}`;
@@ -1973,7 +1991,10 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: ctx.userId,
       type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:${root}/filingSelection`,
-      value: { requestId: request.id, attachmentId: file.id, ...(input.confirmation ? { confirmation: input.confirmation } : { allocationTarget: input.allocationTarget }), kind: input.kind },
+      value: { requestId: request.id, attachmentId: file.id, ...(input.confirmation ? { confirmation: input.confirmation,
+        ...(staffHint.guestName ? { guestName: staffHint.guestName.trim() } : {}),
+        ...(staffHint.bookedArrival ? { bookedArrival: staffHint.bookedArrival } : {}),
+        ...(staffHint.bookedDeparture ? { bookedDeparture: staffHint.bookedDeparture } : {}) } : { allocationTarget: input.allocationTarget }), kind: input.kind },
       evidence: { ...advanced.evidence, trace: reservationWorkflowV2EditTrace(draft, `${root}/filingSelection`).trace } });
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
