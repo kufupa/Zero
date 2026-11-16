@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { appendFile, chmod, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { availableParallelism, cpus, loadavg, totalmem } from 'node:os';
+import { setTimeout as backoffSleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { extractionReasoningEffort, extractionVisionEnabled } from '../src/ai/extraction/config.js';
@@ -13,6 +15,7 @@ import type { QuoteAttachmentRow, SyncedQuoteAttachment, SyncedQuoteSelection } 
 import { RETRO_WORKFLOWS, RETRO_ROI_MAX_REPORT_BYTES, retroReportSchema, retroTaskSchema, type RetroTask } from '../src/metrics/centurion-retro-roi.js';
 
 const VERSION = 'centurion-retro-roi-runner/2';
+const MAX_WORKERS = 96, CONTROL_INTERVAL_MS = 300_000, ERROR_LIMIT = 0.02, MAX_429_RETRIES = 3;
 const START = '2026-10-17T04:17:49Z', END = '2026-11-16T04:17:49Z';
 const MAILBOX = 'centurion@legacyhotels.co.za';
 const instant = z.string().datetime({ offset: true });
@@ -81,6 +84,9 @@ const modelResultSchema = z.object({ modelId: z.literal('gpt-6-luna'), output: z
   usage: z.object({ inputTokens: z.number(), outputTokens: z.number(), totalTokens: z.number(), latencyMs: z.number(), estimatedCostUsd: z.number(), rateTableVersion: z.string() }),
   provenance: z.object({ routeId: z.string(), protocol: z.string(), modelId: z.string(), usageSource: z.enum(['reported', 'unknown']), purpose: z.enum(['draft', 'extraction', 'shadow', 'judge']).optional() }).optional() });
 const checkpointSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('api_attempt'), fingerprint: sha256, key: sha256, stage: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), messageIds: z.array(z.string()), attempt: z.number().int().positive(), completedAt: instant, outcome: z.enum(['success', 'rate_limited', 'timeout', 'error']), latencyMs: z.number().nonnegative(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable() }),
+  z.object({ kind: z.literal('rate_limit'), fingerprint: sha256, key: sha256, stage: z.string(), attempt: z.number().int().positive(), decision: z.enum(['retry', 'exhausted']), delayMs: z.number().nonnegative(), reason: z.string() }),
+  z.object({ kind: z.literal('runtime_metrics'), fingerprint: sha256, at: instant, metrics: z.record(z.unknown()) }),
   z.object({ kind: z.literal('model'), fingerprint: sha256, key: sha256, result: modelResultSchema, importedFrom: z.object({ path: z.string(), fingerprint: sha256 }).optional() }),
   z.object({ kind: z.literal('context'), fingerprint: sha256, start: instant, end: instant, nativeIndexSha256: sha256.nullable(), classifyOnly: z.boolean() }),
   z.object({ kind: z.literal('dispatch_failure'), fingerprint: sha256, key: sha256, purpose: z.string(), phase: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), errorName: z.string(), errorMessage: short, statusCode: z.number().optional(), latencyMs: z.number().nonnegative(), usage: z.literal('unknown') }),
@@ -114,6 +120,17 @@ function option(name: string, fallback?: string): string {
   const value = process.argv[i + 1];
   if (!value || value.startsWith('--')) throw new Error(`Missing value for ${name}`);
   return value;
+}
+function sdkStatusCode(error: unknown, depth = 0, seen = new Set<object>()): number | undefined {
+  if (error === null || typeof error !== 'object' || depth > 6 || seen.size >= 32 || seen.has(error)) return undefined;
+  seen.add(error);
+  if ('statusCode' in error && typeof error.statusCode === 'number') return error.statusCode;
+  for (const field of ['lastError', 'cause']) {
+    const value = field === 'lastError' && 'lastError' in error ? error.lastError : field === 'cause' && 'cause' in error ? error.cause : undefined;
+    const status = sdkStatusCode(value, depth + 1, seen); if (status !== undefined) return status;
+  }
+  if ('errors' in error && Array.isArray(error.errors)) for (const nested of error.errors.slice(-8).reverse()) { const status = sdkStatusCode(nested, depth + 1, seen); if (status !== undefined) return status; }
+  return undefined;
 }
 async function outsideGit(path: string, repo: string): Promise<string> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -153,8 +170,8 @@ function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, ac
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
-    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--concurrency 12] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
-      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 12, maximumConcurrency: 16 }, model: 'gpt-6-luna via approved Azure extraction adapter', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
+    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
+      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 32, maximumConcurrency: MAX_WORKERS }, model: 'gpt-6-luna via approved Azure extraction adapter', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
   const repo = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'));
@@ -163,7 +180,7 @@ async function main(): Promise<void> {
   const checkpointPath = await outsideGit(resolve(option('--checkpoint', `${out}.checkpoints.jsonl`)), repo);
   const start = instant.parse(option('--start', START)), end = instant.parse(option('--end', END));
   if (Date.parse(end) - Date.parse(start) !== 30 * 86400000 || Date.parse(end) > Date.now()) throw new Error('Require a past, literal 30-day window');
-  const concurrency = z.coerce.number().int().min(1).max(16).parse(option('--concurrency', '12'));
+  const concurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--concurrency', '32'));
   const limit = z.coerce.number().int().positive().parse(option('--limit', '15000'));
   const batchSize = z.coerce.number().int().min(1).max(20).parse(option('--classify-batch', '12'));
   const corpusBytes = await readFile(corpusPath), manifestBytes = await readFile(manifestPath);
@@ -228,6 +245,7 @@ async function main(): Promise<void> {
   }
   const selectedInbound = (selectors.length ? inbound.filter(mail => selectedIds.has(mail.sourceRowId)) : inbound).slice(0, limit), allowedIds = new Set(selectedInbound.map(mail => mail.sourceRowId));
   const classifierEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--classifier-effort', 'medium'));
+  const assessmentEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--assessment-effort', 'max'));
   const classifierOutputTokens = z.coerce.number().int().min(1000).max(32000).parse(option('--classifier-output-tokens', '16000'));
   const replayEffort = extractionReasoningEffort(process.env), replayVision = extractionVisionEnabled(process.env), replayBudget = lunaCallBudget(replayEffort);
   const productSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -237,7 +255,7 @@ async function main(): Promise<void> {
   const fingerprint = hash(JSON.stringify({
     prompts: { classify: CLASSIFY, assess: ASSESS, core: corePrompts },
     schemas: [classificationSchema, assessmentSchema, reservationWorkflowV2ExtractionSchema, reservationWorkflowV2ProposalSchema, reservationWorkflowV2ObservationSchema, retroReportSchema].map(schema => zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' })),
-    model: { id: 'gpt-6-luna', classifierEffort, classifierOutputTokens, replayEffort, replayVision, replayBudget },
+    model: { id: 'gpt-6-luna', classifierEffort, classifierOutputTokens, assessmentEffort, replayEffort, replayVision, replayBudget },
     corpusHash: hash(JSON.stringify({ source: hash(corpusBytes), manifest: hash(manifestBytes) })),
   }));
   const runContext = { kind: 'context', fingerprint, start, end, nativeIndexSha256: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, classifyOnly: process.argv.includes('--classify-only') } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'context' }>;
@@ -266,7 +284,7 @@ async function main(): Promise<void> {
   const rawAdapter = createAzureExtractionAdapter(env);
   if (process.argv.includes('--preflight')) { info({ mode: 'preflight', sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, fingerprint,
     sourceThrough: sourceThrough, sourceCoversWindow: Date.parse(sourceThrough) >= Date.parse(end), providerCoverageProven: sourceComplete, sourceScope, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0),
-    canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, selectedMessageIds: selectors.length ? selectedInbound.map(mail => mail.sourceRowId) : undefined, concurrency, maximumMessageProducers: concurrency * batchSize, eligibleImportedModelReceipts: importedModels.size, checkpointCompatibility: 'Prompt/schema/model/corpus fingerprint plus explicit window/native-index/mode check; import uses exact actual model input keys only', classifierEffort, replayEffort, replayVision, replayBudget, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
+    canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, selectedMessageIds: selectors.length ? selectedInbound.map(mail => mail.sourceRowId) : undefined, concurrency, maximumMessageProducers: MAX_WORKERS * batchSize, eligibleImportedModelReceipts: importedModels.size, checkpointCompatibility: 'Prompt/schema/model/corpus fingerprint plus explicit window/native-index/mode check; import uses exact actual model input keys only', classifierEffort, assessmentEffort, replayEffort, replayVision, replayBudget, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
   if (!rawAdapter) throw new Error('APPROVED_MODEL_ADAPTER_UNAVAILABLE');
   const { runReservationWorkflowV2Prefill } = await import('../src/ai/reservation-workflow-v2-prefill.js');
   const { staffQuoteSourceHash } = await import('../src/ai/staff-quote-workflow.js');
@@ -315,15 +333,49 @@ async function main(): Promise<void> {
     const queuedAt = Date.now(); admissions.push(() => { admissionWaitMsTotal += Date.now() - queuedAt; resolveAdmission(); }); admit();
   });
   const release = () => { activeSlots--; admit(); };
-  const extractionTimedOut = (latencyMs: number) => {
-    extractionTimeouts++;
-    if (activeLimit > 8 && latencyMs >= 175000) {
-      const elapsedMs = Date.now() - startedAt, previous = workerRegimes[workerRegimes.length - 1];
-      if (previous) previous.toElapsedMs = elapsedMs;
-      workerRegimes.push({ workers: 8, fromElapsedMs: elapsedMs, toElapsedMs: null });
-      activeLimit = 8;
-      info({ phase: 'concurrency_fallback', workers: 8, activeModelCalls, reason: 'Actual extraction hit the 180s product timeout; already admitted work finishes, new admission capped at 8' });
+  const apiAttempts: Array<Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>> = [];
+  let rateLimitResponses = 0, rateLimitRetries = 0, rateLimitExhaustions = 0, gradedTasksThisRun = 0, lastControlAt = startedAt;
+  const localWork = { attachmentLoads: 0, textArtifactsRead: 0, textReadMs: 0, byteArtifactsRead: 0, byteReadMs: 0, pdfTextReads: 0, pdfTextMs: 0, scannedPdfs: 0, pdfReadFailures: 0, classifierVisionCalls: 0, classifierVisionMs: 0, classifierVisionImages: 0, classifierVisionPdfInputs: 0, prefillPreModelCalls: 0, prefillPreModelMs: 0 };
+  const prefillStarts = new Map<string, number>();
+  const completedMessageMetrics: Array<{ messageId: string; tasks: number; latencyMs: number; reportedPreparationTokens: number; preparationAttempts: number; unknownUsageAttempts: number; reportedPreparationTokensPerTask: number | null }> = [];
+  const cpuSnapshot = () => cpus().reduce((sum, cpu) => ({ idle: sum.idle + cpu.times.idle, total: sum.total + Object.values(cpu.times).reduce((a, b) => a + b, 0) }), { idle: 0, total: 0 });
+  let previousCpu = cpuSnapshot(), previousProcCpu = process.cpuUsage(), previousSampleAt = Date.now();
+  const sampleResources = async () => {
+    const now = Date.now(), cpu = cpuSnapshot(), elapsedMs = now - previousSampleAt, procCpu = process.cpuUsage(previousProcCpu), cpuDelta = cpu.total - previousCpu.total;
+    const cpuFreePct = cpuDelta > 0 ? 100 * (cpu.idle - previousCpu.idle) / cpuDelta : null;
+    previousCpu = cpu; previousProcCpu = process.cpuUsage(); previousSampleAt = now;
+    const meminfo = await readFile('/proc/meminfo', 'utf8').catch(() => '');
+    const available = /MemAvailable:\s+(\d+) kB/.exec(meminfo)?.[1], availableBytes = available ? Number(available) * 1024 : null;
+    const memory = process.memoryUsage();
+    return { at: new Date(now).toISOString(), intervalMs: elapsedMs, hostCpuFreePct: cpuFreePct, hostMemoryAvailablePct: availableBytes === null ? null : availableBytes / totalmem() * 100,
+      hostAvailableMiB: availableBytes === null ? null : availableBytes / 1048576, hostTotalMiB: totalmem() / 1048576, hostCpuCount: cpus().length, processAvailableCpus: availableParallelism(), loadAverage: loadavg(),
+      processCpuOneCorePct: elapsedMs > 0 ? (procCpu.user + procCpu.system) / (elapsedMs * 1000) * 100 : null, processRssMiB: memory.rss / 1048576, heapUsedMiB: memory.heapUsed / 1048576 };
+  };
+  const attemptRates = (rows: typeof apiAttempts) => ({ completedAdapterAttempts: rows.length, successes: rows.filter(row => row.outcome === 'success').length,
+    rateLimited: rows.filter(row => row.outcome === 'rate_limited').length, timeouts: rows.filter(row => row.outcome === 'timeout').length, errors: rows.filter(row => row.outcome === 'error').length,
+    throttleTimeoutRate: rows.length ? rows.filter(row => row.outcome === 'rate_limited' || row.outcome === 'timeout').length / rows.length : null,
+    nonSuccessRate: rows.length ? rows.filter(row => row.outcome !== 'success').length / rows.length : null });
+  const controlConcurrency = async (host: Awaited<ReturnType<typeof sampleResources>>, allowGrowth: boolean) => {
+    const now = Date.now(), rows = apiAttempts.filter(row => Date.parse(row.completedAt) >= lastControlAt), all = attemptRates(rows), extraction = attemptRates(rows.filter(row => row.stage === 'extraction'));
+    const headroomKnown = host.hostCpuFreePct !== null && host.hostMemoryAvailablePct !== null;
+    const headroomBreach = host.hostCpuFreePct !== null && host.hostCpuFreePct <= 20 || host.hostMemoryAvailablePct !== null && host.hostMemoryAvailablePct <= 20;
+    const rateBreach = (all.nonSuccessRate ?? 0) >= ERROR_LIMIT || (extraction.nonSuccessRate ?? 0) >= ERROR_LIMIT;
+    const healthy = headroomKnown && !headroomBreach && all.completedAdapterAttempts > 0 && extraction.completedAdapterAttempts > 0 && !rateBreach;
+    const next = headroomBreach || rateBreach ? Math.max(1, Math.floor(activeLimit / 2)) : healthy && allowGrowth ? Math.min(MAX_WORKERS, activeLimit * 2) : activeLimit;
+    if (next !== activeLimit) {
+      const elapsedMs = now - startedAt, previous = workerRegimes[workerRegimes.length - 1]; if (previous) previous.toElapsedMs = elapsedMs;
+      workerRegimes.push({ workers: next, fromElapsedMs: elapsedMs, toElapsedMs: null }); activeLimit = next; admit();
     }
+    const decision = { phase: 'concurrency_control', intervalMs: now - lastControlAt, workers: activeLimit, maximumWorkers: MAX_WORKERS, allAdapterAttempts: all, extractionAdapterAttempts: extraction, host,
+      reason: headroomBreach ? 'Host headroom at or below 20%; halved admission' : rateBreach ? 'API failure rate at or above 2%; halved admission' : healthy && allowGrowth ? 'API rates below 2% and host headroom above 20%; doubled up to96' : 'Hold: missing host or completed extraction evidence' };
+    lastControlAt = now; info(decision); await save({ kind: 'runtime_metrics', fingerprint, at: new Date(now).toISOString(), metrics: decision });
+  };
+  const callMessageIds = (input: ModelInvokeInput) => {
+    try {
+      const item = z.object({ selectedMessageId: z.string().optional(), source: z.object({ messageId: z.string() }).optional(), tasks: z.array(z.object({ originMessageId: z.string() })).optional() });
+      const parsed = z.union([item, z.array(item)]).parse(JSON.parse(input.userPrompt));
+      return [...new Set((Array.isArray(parsed) ? parsed : [parsed]).flatMap(row => row.selectedMessageId ? [row.selectedMessageId] : row.source ? [row.source.messageId] : row.tasks?.map(task => task.originMessageId) ?? []))];
+    } catch { return []; }
   };
   const trackedAdapter = (model: ModelAdapter, purpose: string): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
     const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
@@ -334,40 +386,72 @@ async function main(): Promise<void> {
       await save({ kind: 'model', fingerprint, key, result: imported.result, importedFrom: { path: imported.path, fingerprint: imported.fingerprint } });
       cache.set(key, imported.result); cacheHits++; importedCacheHits++; return imported.result;
     }
-    activeModelCalls++;
-    try {
-      const startedAt = Date.now(); let invoked: ModelInvokeResult;
-      dispatchedCalls++;
-      try { invoked = await model.invoke(input); }
-      catch (error) {
-        const properties = z.object({ properties: z.record(z.unknown()) }).safeParse(input.responseSchema);
-        const phase = purpose.startsWith('classifier:') ? 'classification' : properties.success && 'tasks' in properties.data.properties ? 'assessment' : properties.success && 'proposal' in properties.data.properties ? 'synthesis' : properties.success && 'requests' in properties.data.properties ? 'extraction' : 'autopick';
-        const message = error instanceof Error ? error.message : 'Unknown model dispatch failure';
-        const errorMessage = (env.AZURE_FOUNDRY_API_KEY ? message.split(env.AZURE_FOUNDRY_API_KEY).join('[redacted credential]') : message).slice(0, 8000);
-        const statusCode = error !== null && typeof error === 'object' && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : undefined;
-        const failure = { kind: 'dispatch_failure', fingerprint, key, purpose, phase, errorName: error instanceof Error ? error.name : 'UnknownError', errorMessage, statusCode, latencyMs: Date.now() - startedAt, usage: 'unknown' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>;
-        await save(failure); dispatchFailures.push(failure);
-        if (phase === 'extraction' && failure.errorName === 'TimeoutError') extractionTimedOut(failure.latencyMs);
-        throw error;
+    const properties = z.object({ properties: z.record(z.unknown()) }).safeParse(input.responseSchema);
+    const stage = purpose.startsWith('classifier:') ? 'classification' : properties.success && 'tasks' in properties.data.properties ? 'assessment' : properties.success && 'proposal' in properties.data.properties ? 'synthesis' : properties.success && 'requests' in properties.data.properties ? 'extraction' : 'autopick';
+    const messageIds = callMessageIds(input);
+    if (stage === 'extraction') for (const id of messageIds) {
+      const start = prefillStarts.get(id); if (start !== undefined) { localWork.prefillPreModelCalls++; localWork.prefillPreModelMs += Date.now() - start; prefillStarts.delete(id); }
+    }
+    for (let attempt = 1; ; attempt++) {
+      if (input.signal?.aborted) {
+        if (attempt > 1) { rateLimitExhaustions++; await save({ kind: 'rate_limit', fingerprint, key, stage, attempt, decision: 'exhausted', delayMs: 0, reason: 'Original model deadline expired before retry dispatch' }); }
+        throw input.signal.reason;
       }
-      const result = modelResultSchema.parse(invoked);
-      successfulDispatches++;
-      await save({ kind: 'model', fingerprint, key, result }); cache.set(key, result); return result;
-    } finally { activeModelCalls--; }
+      const networkStartedAt = Date.now();
+      let dispatched: { ok: true; result: z.infer<typeof modelResultSchema> } | { ok: false; error: unknown };
+      activeModelCalls++; dispatchedCalls++;
+      try { dispatched = { ok: true, result: modelResultSchema.parse(await model.invoke(input)) }; }
+      catch (error) { dispatched = { ok: false, error }; }
+      finally { activeModelCalls--; }
+      const latencyMs = Date.now() - networkStartedAt;
+      const statusCode = dispatched.ok ? undefined : sdkStatusCode(dispatched.error);
+      const errorName = !dispatched.ok && dispatched.error instanceof Error ? dispatched.error.name : 'UnknownError';
+      const timeout = !dispatched.ok && (errorName === 'TimeoutError' || statusCode === 408 || statusCode === 504 || input.signal?.aborted && input.signal.reason instanceof Error && input.signal.reason.name === 'TimeoutError');
+      const reported = dispatched.ok && dispatched.result.provenance?.usageSource === 'reported';
+      const receipt = { kind: 'api_attempt', fingerprint, key, stage, messageIds, attempt, completedAt: new Date().toISOString(), outcome: dispatched.ok ? 'success' : statusCode === 429 ? 'rate_limited' : timeout ? 'timeout' : 'error', latencyMs,
+        inputTokens: reported && dispatched.ok ? dispatched.result.usage.inputTokens : null, outputTokens: reported && dispatched.ok ? dispatched.result.usage.outputTokens : null } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>;
+      apiAttempts.push(receipt); await save(receipt);
+      if (dispatched.ok) {
+        successfulDispatches++;
+        await save({ kind: 'model', fingerprint, key, result: dispatched.result }); cache.set(key, dispatched.result); return dispatched.result;
+      }
+      if (stage === 'extraction' && timeout) extractionTimeouts++;
+      if (statusCode === 429) {
+        rateLimitResponses++;
+        const delayMs = Math.floor(Math.min(8000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5));
+        const remainingMs = input.deadlineAt === undefined ? Infinity : input.deadlineAt - Date.now();
+        if (attempt <= MAX_429_RETRIES && !input.signal?.aborted && remainingMs > delayMs + 1000) {
+          rateLimitRetries++;
+          await save({ kind: 'rate_limit', fingerprint, key, stage, attempt, decision: 'retry', delayMs, reason: '429 backoff with jitter inside original model deadline' });
+          try { await backoffSleep(delayMs, undefined, { signal: input.signal }); continue; }
+          catch { /* The existing core deadline aborted the backoff; do not extend it. */ }
+        }
+        rateLimitExhaustions++;
+        await save({ kind: 'rate_limit', fingerprint, key, stage, attempt, decision: 'exhausted', delayMs: 0, reason: attempt > MAX_429_RETRIES ? 'Bounded 429 retries exhausted' : 'Original model deadline prevents another retry' });
+      }
+      const message = dispatched.error instanceof Error ? dispatched.error.message : 'Unknown model dispatch failure';
+      const errorMessage = (env.AZURE_FOUNDRY_API_KEY ? message.split(env.AZURE_FOUNDRY_API_KEY).join('[redacted credential]') : message).slice(0, 8000);
+      const failure = { kind: 'dispatch_failure', fingerprint, key, purpose, phase: stage, errorName, errorMessage, statusCode, latencyMs, usage: 'unknown' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>;
+      await save(failure); dispatchFailures.push(failure); throw dispatched.error;
+    }
   } });
   const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`);
   const classificationModel = createAzureExtractionAdapter({ ...env, EXTRACTION_REASONING_EFFORT: classifierEffort });
   if (!classificationModel) throw new Error('APPROVED_CLASSIFIER_ADAPTER_UNAVAILABLE');
   const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierEffort}`);
+  const assessmentModel = createAzureExtractionAdapter({ ...env, EXTRACTION_REASONING_EFFORT: assessmentEffort });
+  if (!assessmentModel) throw new Error('APPROVED_ASSESSMENT_ADAPTER_UNAVAILABLE');
+  const assessmentAdapter = trackedAdapter(assessmentModel, `prefill:${assessmentEffort}`);
   const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown, purpose: 'classify' | 'assess' = 'assess', normalizeOutput?: (value: unknown) => unknown, images?: ModelInvokeInput['images']): Promise<z.infer<T>> => {
     if (purpose === 'classify') await acquire();
     try {
-      const result = await (purpose === 'classify' ? classifierAdapter : adapter).invoke({ modelId: 'gpt-6-luna', systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : 12000, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
+      const result = await (purpose === 'classify' ? classifierAdapter : assessmentAdapter).invoke({ modelId: 'gpt-6-luna', systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : 12000, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
       return schema.parse(normalizeOutput ? normalizeOutput(result.output) : result.output);
     } finally { if (purpose === 'classify') release(); }
   };
   const body = (mail: Mail) => /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(mail.body) ? htmlToPlainText(mail.body) : mail.body;
   async function attachments(mail: Mail): Promise<SyncedQuoteAttachment[]> {
+    localWork.attachmentLoads++;
     const output: SyncedQuoteAttachment[] = [], seen = new Set<string>(), frozen = new Map<string, Buffer>();
     const byteRows: QuoteAttachmentRow[] = [];
     for (const row of mail.attachmentRows) for (const item of row.privateMessage.attachments) {
@@ -375,14 +459,14 @@ async function main(): Promise<void> {
       if (item.messageId !== row.sourceRowId) throw new Error('Attachment parent source mismatch');
       const textRef = item.textArtifact?.status === 'available' ? item.textArtifact.artifact : null;
       let text = '';
-      if (textRef) { const bytes = await readFile(join(dirname(corpusPath), 'attachment-text', `${textRef.id}.txt`));
-        if (hash(bytes) !== textRef.sha256 || bytes.length !== textRef.bytes) throw new Error('Attachment text hash mismatch'); text = bytes.toString('utf8'); }
+      if (textRef) { const localStartedAt = Date.now(); const bytes = await readFile(join(dirname(corpusPath), 'attachment-text', `${textRef.id}.txt`));
+        if (hash(bytes) !== textRef.sha256 || bytes.length !== textRef.bytes) throw new Error('Attachment text hash mismatch'); text = bytes.toString('utf8'); localWork.textArtifactsRead++; localWork.textReadMs += Date.now() - localStartedAt; }
       if (item.bytesArtifact?.status === 'available') {
         const ref = item.bytesArtifact.artifact;
         if (!ref || ref.bytes !== item.byteSize) throw new Error('Attachment bytes descriptor mismatch');
-        const bytes = await readFile(join(dirname(corpusPath), 'attachment-bytes', `${ref.id}.bin`));
+        const localStartedAt = Date.now(); const bytes = await readFile(join(dirname(corpusPath), 'attachment-bytes', `${ref.id}.bin`));
         if (hash(bytes) !== ref.sha256 || bytes.length !== ref.bytes) throw new Error('Attachment bytes hash/count mismatch');
-        frozen.set(item.id, bytes);
+        localWork.byteArtifactsRead++; localWork.byteReadMs += Date.now() - localStartedAt; frozen.set(item.id, bytes);
         byteRows.push({ id: item.id, messageId: mail.sourceRowId, filename: item.filename, mimeType: item.contentType,
           sizeBytes: item.byteSize, isInline: item.inline === true, s3Key: '', sha256: ref.sha256 });
       }
@@ -399,7 +483,10 @@ async function main(): Promise<void> {
       const text = output.find(item => item.id === row.id)?.text;
       if (text?.trim()) return { text };
       if (!isPdfAttachment(row)) return { text: null, reason: 'Frozen file type unsupported without exported text' };
+      const localStartedAt = Date.now();
       const read = await extractEmbeddedPdfText({ body: bytes, declaredSize: row.sizeBytes, declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { attachmentId: row.id, signal: AbortSignal.timeout(30_000) });
+      localWork.pdfTextReads++; localWork.pdfTextMs += Date.now() - localStartedAt;
+      if (read.data.reason === 'no_embedded_text') localWork.scannedPdfs++; else if (!read.data.text?.trim()) localWork.pdfReadFailures++;
       if (read.data.text?.trim()) return { text: read.data.text };
       return read.data.reason === 'no_embedded_text' ? { text: null, pdf: bytes } : { text: null, reason: read.data.reason.replaceAll('_', ' ') };
     }, { includeVisionImages: replayVision, trackVisionImages: true });
@@ -455,7 +542,7 @@ async function main(): Promise<void> {
       for (const mail of group) {
         activeMessages++;
         const earlier = mail.threadId ? mails.filter(row => row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)) : [];
-        let stage: 'classification' | 'replay' = 'classification', prepSlot = false;
+        let stage: 'classification' | 'replay' = 'classification', prepSlot = false, prepStartedAt = 0;
         try {
           const currentAttachments = await attachments(mail), previousAttachments = (await Promise.all(earlier.map(attachments))).flat();
           const context = [mail, ...earlier].map(row => ({ messageId: row.sourceRowId, receivedAt: row.receivedAt, direction: row.privateMessage.direction,
@@ -468,7 +555,9 @@ async function main(): Promise<void> {
           const cached = classifications.get(mail.sourceRowId);
           const classifyCurrent = async () => {
             const admitted = [...currentAttachments, ...previousAttachments];
+            const localStartedAt = Date.now();
             const vision = await prepareExtractionVisionImages(admitted, { enabled: replayVision, signal: AbortSignal.timeout(60_000) });
+            localWork.classifierVisionCalls++; localWork.classifierVisionMs += Date.now() - localStartedAt; localWork.classifierVisionImages += vision.images.length; localWork.classifierVisionPdfInputs += admitted.filter(item => item.pdf).length;
             const visionSources = vision.currentProposalSources.map(source => {
               const attachment = admitted.find(item => item.id === source.id);
               if (!attachment?.messageId) throw new Error('Vision attachment has no admitted parent source');
@@ -512,7 +601,7 @@ async function main(): Promise<void> {
             sourceHash: staffQuoteSourceHash({ subject: mail.privateMessage.subject, textBody: body(mail), htmlBody: mail.body, fromAddress: mail.privateMessage.addresses.from[0] }), arrivedAt: mail.receivedAt };
           if (!mail.threadId) selection.threadId = source.threadId;
           const nativeReads: z.infer<typeof nativeReceiptSchema>[] = replays.get(mail.sourceRowId)?.nativeReads ?? [];
-          await acquire(); prepSlot = true;
+          await acquire(); prepSlot = true; prepStartedAt = Date.now(); prefillStarts.set(mail.sourceRowId, prepStartedAt);
           const replay = process.argv.includes('--classify-only') ? null : replays.get(mail.sourceRowId)?.result ?? await runReservationWorkflowV2Prefill({ adapter, transportId: 'transport-centurion', propertyCode: 'HRCEN', source, selection, mailboxAddress: MAILBOX, env,
             lookupFixtures: {}, signal: AbortSignal.timeout(9 * 60_000), readCandidate: async candidate => {
               const key = nativeReadArgsKey(candidate.kind, candidate.criteria), cutoff = Date.parse(mail.receivedAt);
@@ -590,9 +679,15 @@ async function main(): Promise<void> {
               outcome, reason: assessment?.reason ?? 'Classification establishes demand only and earns no completion or savings credit.',
               complexity: action.complexity, workItemId: null, bookingReferences: action.bookingReferences, evidence,
               replay: replay ? { status: 'replayed', replayId: replay.generationId, nativeEvidence: nativeComplete ? 'complete' : 'missing', checks } : { status: 'not_run', reason: 'Requested classify-only mode' } });
-            await save({ kind: 'task', fingerprint, task }); tasks.set(id, task);
+            await save({ kind: 'task', fingerprint, task }); tasks.set(id, task); gradedTasksThisRun++;
           }
-          if (replay) replayedThisRun++;
+          if (replay) {
+            replayedThisRun++;
+            const rows = apiAttempts.filter(row => row.stage !== 'classification' && row.messageIds.includes(mail.sourceRowId)), unknownUsageAttempts = rows.filter(row => row.inputTokens === null || row.outputTokens === null).length;
+            const reportedPreparationTokens = rows.reduce((sum, row) => sum + ((row.inputTokens ?? 0) + (row.outputTokens ?? 0)) / row.messageIds.length, 0);
+            const completed = { messageId: mail.sourceRowId, tasks: pending.length, latencyMs: Date.now() - prepStartedAt, reportedPreparationTokens, preparationAttempts: rows.length, unknownUsageAttempts, reportedPreparationTokensPerTask: rows.length && !unknownUsageAttempts ? reportedPreparationTokens / pending.length : null };
+            completedMessageMetrics.push(completed); await save({ kind: 'runtime_metrics', fingerprint, at: new Date().toISOString(), metrics: { phase: 'completed_preparation_message', ...completed } });
+          }
           info({ messageId: mail.sourceRowId, classification: classified.disposition, newTasks: pending.length, replayStatus: replay?.status ?? 'not_run' });
         } catch (error) {
           failedThisRun++; (stage === 'classification' ? failedClassification : replayFailures).add(mail.sourceRowId);
@@ -600,27 +695,53 @@ async function main(): Promise<void> {
           const reason = error instanceof z.ZodError ? `Schema rejected ${error.issues.length} field(s): ${validationIssues?.map(issue => `${issue.code}@${issue.path.join('.')}`).join(', ')}` : error instanceof Error ? error.message.slice(0, 8000) : 'Unknown runner failure';
           await save({ kind: 'failure', fingerprint, messageId: mail.sourceRowId, stage, reason, validationIssues });
           info({ messageId: mail.sourceRowId, status: 'failed', stage, reason });
-        } finally { if (prepSlot) release(); completedThisRun++; activeMessages--; }
+        } finally { prefillStarts.delete(mail.sourceRowId); if (prepSlot) release(); completedThisRun++; activeMessages--; }
       }
     }
   }
+  const percentile = (values: number[], fraction: number) => { const sorted = [...values].sort((a, b) => a - b); return sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)] ?? null : null; };
+  const networkSummary = () => {
+    const stages: Array<Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>['stage']> = ['classification', 'extraction', 'synthesis', 'assessment', 'autopick'];
+    const reportedTokens = apiAttempts.reduce((sum, row) => sum + (row.inputTokens ?? 0) + (row.outputTokens ?? 0), 0);
+    return { attemptUnit: 'Approved adapter invocations; internal SDK HTTP request counts are unknown', allAdapterAttempts: attemptRates(apiAttempts), rateLimitResponses, rateLimitRetries, rateLimitExhaustions, gradedTasksThisRun, reportedTokens,
+      runAggregateReportedTokensPerGradedTask: gradedTasksThisRun ? reportedTokens / gradedTasksThisRun : null,
+      completedPrepAndAssessmentMessages: completedMessageMetrics.length, completedPrepAndAssessmentP50Ms: percentile(completedMessageMetrics.map(row => row.latencyMs), 0.5), completedPrepAndAssessmentP95Ms: percentile(completedMessageMetrics.map(row => row.latencyMs), 0.95),
+      knownPreparationTokensPerTaskP50: percentile(completedMessageMetrics.flatMap(row => row.reportedPreparationTokensPerTask === null ? [] : [row.reportedPreparationTokensPerTask]), 0.5), knownPreparationTokensPerTaskP95: percentile(completedMessageMetrics.flatMap(row => row.reportedPreparationTokensPerTask === null ? [] : [row.reportedPreparationTokensPerTask]), 0.95),
+      completedMessagesWithUnknownPreparationUsage: completedMessageMetrics.filter(row => row.unknownUsageAttempts).length, cacheOnlyCompletedMessages: completedMessageMetrics.filter(row => !row.preparationAttempts).length,
+      unknownUsageAttempts: apiAttempts.filter(row => row.inputTokens === null || row.outputTokens === null).length,
+      stages: stages.map(stage => {
+        const rows = apiAttempts.filter(row => row.stage === stage), successes = rows.filter(row => row.outcome === 'success'), reported = rows.filter(row => row.inputTokens !== null && row.outputTokens !== null);
+        const inputTokens = reported.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0), outputTokens = reported.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), reportedMessages = new Set(reported.flatMap(row => row.messageIds)).size;
+        return { stage, ...attemptRates(rows), attributedMessages: new Set(rows.flatMap(row => row.messageIds)).size, inputTokens, outputTokens, reportedMessages,
+          reportedTokensPerMessage: reportedMessages ? (inputTokens + outputTokens) / reportedMessages : null,
+          allAttemptP50Ms: percentile(rows.map(row => row.latencyMs), 0.5), allAttemptP95Ms: percentile(rows.map(row => row.latencyMs), 0.95), successfulAttemptP50Ms: percentile(successes.map(row => row.latencyMs), 0.5), successfulAttemptP95Ms: percentile(successes.map(row => row.latencyMs), 0.95) };
+      }) };
+  };
   let loggedAt = startedAt, lastClassified = 0, lastPrefilled = 0, lastReplayed = 0, lastCompleted = 0, lastTimeouts = 0;
-  const logProgress = () => {
+  const logProgress = async () => {
+    const host = await sampleResources();
     const now = Date.now(), minutes = (now - loggedAt) / 60000, elapsedMinutes = (now - startedAt) / 60000;
     const rate = (count: number) => minutes > 0 ? Number((count / minutes).toFixed(2)) : 0;
-    info({ phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, activeSlots, activeModelCalls, activeMessages, maximumMessageProducers: concurrency * batchSize, waitingComputeSlots: admissions.length, admissionWaitMsTotal,
+    const metrics = { phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, activeSlots, activeModelCalls, activeMessages, maximumMessageProducers: MAX_WORKERS * batchSize, waitingComputeSlots: admissions.length, admissionWaitMsTotal,
       classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, totalMessages: selectedInbound.length,
       classificationEmailsPerMinute: rate(classifiedThisRun - lastClassified), prefillEmailsPerMinute: rate(prefilledThisRun - lastPrefilled), replayAndAssessmentEmailsPerMinute: rate(replayedThisRun - lastReplayed), completedEmailsPerMinute: rate(completedThisRun - lastCompleted),
       workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, durationSeconds: Number((((regime.toElapsedMs ?? now - startedAt) - regime.fromElapsedMs) / 1000).toFixed(2)) })),
       prefillMessagesWithErrors: selectedInbound.filter(mail => replays.get(mail.sourceRowId)?.result.errors?.length).length,
       partialPrefillMessages: selectedInbound.filter(mail => replays.get(mail.sourceRowId)?.result.status === 'partial').length,
       taskOutcomes: Object.fromEntries(['correct_complete', 'minor_correction', 'wrong_preparation', 'partial', 'unsupported', 'unknown'].map(outcome => [outcome, [...tasks.values()].filter(task => task.outcome === outcome && task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).length])),
-      extractionTimeouts, extractionTimeoutsPerMinute: rate(extractionTimeouts - lastTimeouts), failedDispatches: dispatchFailures.length, dispatchedCalls, successfulDispatches, cacheHits, importedCacheHits });
+      extractionTimeouts, extractionTimeoutsPerMinute: rate(extractionTimeouts - lastTimeouts), failedDispatches: dispatchFailures.length, dispatchedCalls, successfulDispatches, cacheHits, importedCacheHits, host, network: networkSummary(), localWork: { ...localWork } };
+    info(metrics); await save({ kind: 'runtime_metrics', fingerprint, at: new Date(now).toISOString(), metrics });
+    const growthDue = now - lastControlAt >= CONTROL_INTERVAL_MS, resourceBreach = host.hostCpuFreePct !== null && host.hostCpuFreePct <= 20 || host.hostMemoryAvailablePct !== null && host.hostMemoryAvailablePct <= 20;
+    if ((growthDue || resourceBreach) && completedThisRun < selectedInbound.length) await controlConcurrency(host, growthDue);
     loggedAt = now; lastClassified = classifiedThisRun; lastPrefilled = prefilledThisRun; lastReplayed = replayedThisRun; lastCompleted = completedThisRun; lastTimeouts = extractionTimeouts;
   };
-  const progressTimer = setInterval(logProgress, 60000); progressTimer.unref();
-  try { await Promise.all(Array.from({ length: Math.min(concurrency * batchSize, groups.length) }, worker)); await checkpointQueue; }
-  finally { clearInterval(progressTimer); logProgress(); }
+  let progressInFlight: Promise<void> | undefined;
+  const progressTimer = setInterval(() => {
+    if (progressInFlight) return;
+    progressInFlight = logProgress().catch(error => { info({ phase: 'telemetry_failure', reason: error instanceof Error ? error.message : 'Unknown telemetry failure' }); }).finally(() => { progressInFlight = undefined; });
+  }, 60000); progressTimer.unref();
+  try { await Promise.all(Array.from({ length: Math.min(MAX_WORKERS * batchSize, groups.length) }, worker)); await checkpointQueue; }
+  finally { clearInterval(progressTimer); await progressInFlight; await logProgress(); }
   const successful = [...classifications.keys()].filter(id => allowedIds.has(id));
   const missingReplay = selectedInbound.flatMap(mail => {
     const classified = classifications.get(mail.sourceRowId);
@@ -652,14 +773,15 @@ async function main(): Promise<void> {
         'Source completeness and classification completeness are independent of preparation success. Live HMS, current catalog and booking memory excluded; only exact indexed observations strictly before request may verify native requirements. Sparse/missing historical facts remain partial with zero credit.',
         `Selected ${selectedInbound.length}/${inbound.length} inbound messages; ${replayFailures.size} runner/assessment failures; ${successful.filter(id => classifications.get(id)?.disposition === 'unknown').length} unknown classifications.`,
         `Private resumable checkpoint ${checkpointPath}; fingerprint ${fingerprint}; ${process.argv.includes('--classify-only') ? 'classification only' : 'real product prefill'}; no DB/native writes or live HMS calls.`,
-        `Model dispatch workers requested ${concurrency}, final admission ${activeLimit}, message producers bounded at ${concurrency * batchSize}, compute admission waits outside original classification and preparation deadlines, regimes ${JSON.stringify(workerRegimes.map(regime => ({ workers: regime.workers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })))}; exact-input cache hits ${cacheHits}, imported cache hits ${importedCacheHits}, new dispatches ${dispatchedCalls}, successful new dispatches ${successfulDispatches}. Prior snapshot grades/classifications/replays were not imported; changed inputs restarted once.`,
+        `Model dispatch workers requested ${concurrency}, final admission ${activeLimit}, message producers bounded at ${MAX_WORKERS * batchSize}, compute admission waits outside original classification and preparation deadlines, regimes ${JSON.stringify(workerRegimes.map(regime => ({ workers: regime.workers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })))}; exact-input cache hits ${cacheHits}, imported cache hits ${importedCacheHits}, new dispatches ${dispatchedCalls}, successful new dispatches ${successfulDispatches}. Prior snapshot grades/classifications/replays were not imported; changed inputs restarted once.`,
+        `Measured new adapter attempts ${JSON.stringify(networkSummary())}; local PDF/text/classifier vision work ${JSON.stringify(localWork)}. Prefill pre-model time includes native preload and vision preparation, not an isolated renderer measurement. Retry backoff stays inside original deadlines; successful and all-attempt latency distributions are separate.`,
         `Actual replay diagnostics: ${JSON.stringify(replayDiagnostics)}. Checkpoint model usage: ${JSON.stringify(usage)}; failed dispatch billing is unknown, not zero.`,
-        `Replay effort ${replayEffort}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
+        `Replay effort ${replayEffort}; assessment effort ${assessmentEffort}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
         'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
     tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > RETRO_ROI_MAX_REPORT_BYTES) throw new Error('REPORT_TOO_LARGE: previous report preserved; use private checkpoints to narrow output');
   const temporary = `${out}.${process.pid}.tmp`; await writeFile(temporary, serialized, { mode: 0o600 }); await rename(temporary, out);
-  info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayDiagnostics, throughput: { elapsedMinutes: Number(((Date.now() - startedAt) / 60000).toFixed(2)), classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })), requestedWorkers: concurrency, finalWorkers: activeLimit, maximumMessageProducers: concurrency * batchSize, admissionWaitMsTotal, extractionTimeouts, cacheHits, importedCacheHits, dispatchedCalls, successfulDispatches }, model: 'gpt-6-luna', usage });
+  info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayDiagnostics, throughput: { elapsedMinutes: Number(((Date.now() - startedAt) / 60000).toFixed(2)), classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })), requestedWorkers: concurrency, finalWorkers: activeLimit, maximumMessageProducers: MAX_WORKERS * batchSize, admissionWaitMsTotal, extractionTimeouts, cacheHits, importedCacheHits, dispatchedCalls, successfulDispatches }, model: 'gpt-6-luna', network: networkSummary(), localWork, usage });
 }
 main().catch(error => { process.stderr.write(`${error instanceof z.ZodError ? `INPUT_SCHEMA_REJECTED (${error.issues.length} fields)` : error instanceof Error ? error.message : 'RUN_FAILED'}\n`); process.exitCode = 1; });
