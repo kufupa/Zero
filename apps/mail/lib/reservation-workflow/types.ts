@@ -27,8 +27,12 @@ export type ReservationSourceContext = {
   receivedAt?: string;
   sourceText?: string;
   selfPreStay?: boolean;
+  /** Deterministic excluded sender/host; the pane shows a no-action card instead of a draft. */
+  skippedSource?: ReservationSkippedSource | null;
   attachments: ReservationAttachmentView[];
 };
+
+export type ReservationSkippedSource = { kind: 'channel' | 'system' | 'spam'; source: string | null };
 
 export type ReservationAttachmentView = {
   sourceRef: string;
