@@ -33,16 +33,18 @@ function issueText(issue: ReservationPaneSnapshot['issues'][number]) {
   const { kind, explanation } = issue;
   const failure = knownFailureCopy(kind) ?? knownFailureCopy(explanation);
   if (failure) return failure;
-  if (kind === 'rate_availability_unavailable') return `${explanation} ${/occupancy|adult|children/i.test(explanation) && /missing|not supplied|not provided|required|unknown/i.test(explanation)
-    ? 'Enter adults and children for each room so Infor can check the price.'
-    : 'Check the dates, rooms and occupancy, then try again.'}`;
-  if (kind === 'ambiguous_guest_profile') return `${explanation} ${/no matching|no match|(?:found|returned) no .*profile/i.test(explanation)
-    ? 'Search again or choose to create a guest profile here.'
-    : 'Choose the matching Infor guest profile, or choose to create a new one.'}`;
-  if (/guest/i.test(explanation) && /no matching profile|no match.*profile/i.test(explanation))
-    return `${explanation} Search again or choose to create a guest profile here.`;
-  if (/organization/i.test(explanation) && /no native candidate|no match|no matching/i.test(explanation)) {
-    return `${explanation.replace(/organization lookup returned no native candidate for /i, 'No Infor organization matches ')} Search again, choose an organization or leave it blank.`;
+  const occupancyMissing = /occupancy|adult|children/i.test(explanation) && /missing|not supplied|not provided|required|unknown/i.test(explanation);
+  if (kind === 'rate_availability_unavailable') return occupancyMissing
+    ? 'Infor can’t price these rooms yet: adults and children are missing. Enter occupancy for each room, then check again.'
+    : `${explanation} Check the dates, rooms and occupancy, then try again.`;
+  const noGuestMatch = /no matching|no match|(?:found|returned) no .*profile/i.test(explanation);
+  if (kind === 'ambiguous_guest_profile' || /guest/i.test(explanation) && /no matching profile|no match.*profile/i.test(explanation)) return noGuestMatch
+    ? 'No Infor guest profile matches this guest. Search again, or create the guest profile, then check again.'
+    : `${explanation} Choose the matching Infor guest profile, or create a new one.`;
+  if (/organi[sz]ation/i.test(explanation) && /no native candidate|no match|no matching/i.test(explanation)) {
+    const name = explanation.match(/no native candidate for (.+?)(?:\.\s|\.$|$)/i)?.[1]?.trim();
+    return name ? `No Infor organisation matches ${name}. Search again, choose an organisation or leave it blank.`
+      : `${explanation} Search again, choose an organisation or leave it blank.`;
   }
   if (/^Candidate read v2_[a-z0-9]+ failed\.$/i.test(explanation)) return 'An Infor search during email prefill failed. Search again to verify the details.';
   if (/^Candidate read v2_[a-z0-9]+ .+; coverage is not complete\.$/i.test(explanation)) return 'An Infor search during email prefill was incomplete. Search again to verify the details.';
