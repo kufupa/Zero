@@ -606,7 +606,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           }
         }
         const ensureCurrent = (next?: ReservationPaneSnapshot) => {
-          const selected = activeAction.current ?? entry.snapshot?.requests[0]?.id;
+          const selected = (entry.snapshot?.requests.find(row => row.id === activeAction.current) ?? entry.snapshot?.requests[0])?.id;
           const sameVersion = (left: ReservationPaneSnapshot | null, right: ReservationPaneSnapshot) =>
             left?.session.seq === right.session.seq && left?.session.revision === right.session.revision;
           if (!mounted.current || active.current.key !== sourceKey(context.source) ||
@@ -710,12 +710,18 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           if (!snapshotMatchesSource(refreshed, context.source) || refreshed.session.sourceChanged)
             throw new FilingActionError('The email or filing details changed. Review them before filing again.');
           apply(refreshed, context.source, entry);
-          if (filingAttemptUncertain(attemptKey, refreshed))
-            throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+          if (filingAttemptUncertain(attemptKey, refreshed)) {
+            const attempt = uncertainFilingAttempts.get(attemptKey);
+            const revoked = attempt && client.revokeUnsentFiling && await client.revokeUnsentFiling({
+              source: context.source, snapshot: refreshed, requestId, preparedRef: attempt.preparedRef,
+            }).catch(() => false);
+            if (!revoked) throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+            uncertainFilingAttempts.delete(attemptKey);
+          }
           throw new FilingActionError('The filing details changed. Check the stay and document again.');
         }
         const draft = context.snapshot.session.draft;
-        if ((activeAction.current ?? entry.snapshot?.requests[0]?.id) !== requestId || context.snapshot.session.sourceChanged)
+        if ((entry.snapshot?.requests.find(row => row.id === activeAction.current) ?? entry.snapshot?.requests[0])?.id !== requestId || context.snapshot.session.sourceChanged)
           throw new FilingActionError('The email or filing details changed. Review them before filing again.');
         const receipt = context.snapshot.session.workflowPreparations?.find(row => row.endpoint === 'execute' && row.requestId === requestId &&
           row.preparedRef === preparedRef && row.expectedRevision === context.snapshot.session.revision && row.generationId === draft.generationId);
