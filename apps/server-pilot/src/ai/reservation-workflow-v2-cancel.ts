@@ -450,7 +450,9 @@ type FreshPreview = {
   reasons: z.infer<typeof reasonOptionsSchema>; policyFacts: string[]; penaltyText: string | null;
   staged: z.infer<typeof stagedCancelSchema> | null;
   observedAt: string | null; screenshots: string[]; runDir: string | null;
-} | { outcome: 'failed'; issue: string; reasons?: z.infer<typeof reasonOptionsSchema>; runDir?: string | null };
+} | { outcome: 'failed'; issue: string; reasons?: z.infer<typeof reasonOptionsSchema>;
+  preimage?: CancelPreimage; preflight?: Record<string, unknown>; policyFacts?: string[];
+  penaltyText?: string | null; observedAt?: string | null; runDir?: string | null };
 
 async function freshPreview(target: HmsReadTarget, confirmation: string, hint: CancelHint, allowPreviewCharge = true,
   cloudTargetKey?: string, signal?: AbortSignal, allowReviewedSourceMismatch = false, transportId?: string,
@@ -474,8 +476,22 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
       penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(penaltyLine(native.penaltyText ?? null)),
       staged = stagedCancelSchema.safeParse(native.staged);
     if (native.outcome === 'refused_reason_missing' && stage) {
+      // The refused dialog still reports the verified stay and its native reason list. Reattach
+      // them only when the identity matches this preview's stay, so prepare can persist the
+      // options for staff instead of returning them in the transient reply alone.
+      const verifiedPreimage = expected.success && expected.data.propertyCode === target.propertyCode &&
+        expected.data.confirmation === confirmation && expected.data.arrival === arrival &&
+        expected.data.departure === departure &&
+        (expected.data.allowRealGuest || (expected.data.firstName === 'Proof' && expected.data.lastName === 'Labtest' &&
+          expected.data.arrival >= '2027-01-01' && expected.data.cmsSend === false)) &&
+        (matchesHint(expected.data, hint) ||
+          (allowReviewedSourceMismatch && expected.data.confirmation === hint.confirmation))
+        ? expected.data : null;
       return { outcome: 'failed', issue: 'CANCEL_REASON_MISMATCH',
         ...(reasons.success ? { reasons: reasons.data } : {}),
+        ...(verifiedPreimage ? { preimage: verifiedPreimage, preflight: initial.facts, observedAt: initial.observedAt,
+          ...(policyFacts.success ? { policyFacts: policyFacts.data } : {}),
+          ...(penaltyText.success ? { penaltyText: penaltyText.data } : {}) } : {}),
         runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
@@ -904,6 +920,30 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
   if (fresh.outcome !== 'ok') {
     await removeNativeRunDir(fresh.runDir);
     if (fresh.issue === 'CANCEL_REASON_MISMATCH') {
+      // A manual lookup never warms native options, so the editor reads reasons only from a
+      // saved prepare observation. Persist them bound to this exact selection and digest as a
+      // non-ready observation: nothing was staged, and `ready: false` keeps it away from
+      // review, Go authorization and `preparedPreview`.
+      if (fresh.preimage && fresh.reasons) {
+        const mismatch = observation(loaded.draft, input, compiled.requestId, compiled.hintId, 'prepare', 'complete',
+          { semanticDigest: compiled.semanticDigest, selectionRef: compiled.selectionRef, sourceRefs: compiled.sourceRefs },
+          { ready: false, staged: null, issue: 'cancel_reason_must_match_native_option',
+            target: expectedTargetIdentity(fresh.preimage), preimage: fresh.preimage,
+            semanticInput: compiled.semanticInput, requestedReason: compiled.reasonText,
+            reasons: fresh.reasons, sourceRefs: compiled.sourceRefs,
+            ...(fresh.preflight ? { preflight: fresh.preflight,
+              feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit',
+              roomScope: fresh.preflight.roomScope } : {}),
+            ...(fresh.observedAt ? { preflightObservedAt: fresh.observedAt } : {}),
+            ...(fresh.policyFacts ? { policyFacts: fresh.policyFacts } : {}),
+            penaltyText: fresh.penaltyText ?? null,
+            baselineChangedSinceLookup: canonicalJson(compiled.preimage) !== canonicalJson(fresh.preimage) });
+        const recorded = await recordOperation(ctx, input, compiled.requestId, compiled.hintId, mismatch, 'prepared',
+          'HMS could not stage the requested reason; its current cancellation options were recorded for staff');
+        if (recorded.status !== 'ok') return recorded;
+        return { status: 'needs_input', issue: 'cancel_reason_must_match_native_option',
+          observationRef: mismatch.ref, reasons: fresh.reasons };
+      }
       return { status: 'needs_input', issue: 'cancel_reason_must_match_native_option',
         ...(fresh.reasons ? { reasons: fresh.reasons } : {}) };
     }
