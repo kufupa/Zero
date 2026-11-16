@@ -558,6 +558,14 @@ async function priceQuote(
   const saved = await persistObservation(ctx, input, observation);
   if (saved.status !== 'ok') return saved;
   if (!observation.coverage.complete) {
+    if (quote.dinnerAddOnRequired === true) {
+      const path = `${quoteBodyPath(compiled.request.id)}/requestedMoney`;
+      return { status: 'needs_input' as const, outcomeClass: 'needs_input' as const,
+        issue: 'quote_dinner_scope_required', fields: [path],
+        readiness: [{ code: 'quote_dinner_scope_required', path,
+          message: 'Enter a dinner price and select every room group that needs dinner' }],
+        observationRef: observation.ref };
+    }
     console.warn('quote_price_incomplete', { workItemId: input.workItemId, requestId: compiled.request.id, code: observation.coverage.notes[0] ?? 'incomplete' });
     return { status: 'failed' as const, outcomeClass: 'system_fault' as const,
     issue: quote.status !== 'ready' ? 'native_quote_price_unavailable'
