@@ -1179,6 +1179,12 @@ function portablePartyImage(value: unknown): Record<string, unknown> | null {
     values: Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'bookingsessionid')) };
 }
 
+/** Keep the callback path's staged prepare failures as specific as the ordinary path. */
+function amendPrepareIssue(refusal: unknown, fallback: string) {
+  return record(refusal)?.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
+    ? 'billing_reference_requires_verified_ar' : fallback;
+}
+
 /** Read the prospective native controls without dispatching any saved-stay callback. */
 async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflowV2PrepareInput,
   draft: ReservationWorkflowV2Draft, compiled: CompiledAmend): Promise<Outcome> {
@@ -1218,7 +1224,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       if (discovery.outcome !== 'prepared' || !baseline || !preserved || typeof baseline.beforeNote !== 'string' ||
           typeof baseline.beforeGuaranteeCode !== 'string' || typeof baseline.beforeGuaranteeDisplay !== 'string' ||
           (typeof compiled.baseChanges.guaranteeType === 'string' && typeof baseline.requestedGuaranteeDisplay !== 'string')) {
-        return { issue: 'native_amend_baseline_unavailable' };
+        return { issue: amendPrepareIssue(discovery, 'native_amend_baseline_unavailable') };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const observation = draft.observations.find(item => item.ref === compiled.selectedRef);
@@ -1248,7 +1254,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
           stagedBaseline.beforeNote !== baseline.beforeNote || stagedBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
-        return { issue: 'native_amend_prepare_unverified' };
+        return { issue: amendPrepareIssue(staged, 'native_amend_prepare_unverified') };
       }
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
@@ -1329,7 +1335,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             (Object.hasOwn(ordinaryChanges, 'taCommission') && (typeof ordinaryBaseline.beforeCommission !== 'number' ||
               !Number.isFinite(ordinaryBaseline.beforeCommission) || !record(ordinaryPreserved.bookingAgency)?.nativeId)) ||
             (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
-          return { issue: 'native_amend_prepare_unverified' };
+          return { issue: amendPrepareIssue(ordinary, 'native_amend_prepare_unverified') };
         }
         if (!mealPlanVerified(draft, compiled, ordinary)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, ordinary) };
         const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
