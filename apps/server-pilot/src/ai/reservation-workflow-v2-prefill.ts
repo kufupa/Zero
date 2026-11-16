@@ -1502,8 +1502,9 @@ function currentRequestExtraction(extraction: ReservationWorkflowV2Extraction,
 
 /**
  * Host check of the first pass's declared disposition. Only an explicit, current-source-cited
- * no_action on a fully read, request-free, error-free source stands; extracted requests always
- * stay actionable, and everything else remains reviewable.
+ * no_action on a fully read, request-free, error-free and issue-free source stands; extracted
+ * requests always stay actionable, unresolved extraction issues veto no_action, and everything
+ * else remains reviewable.
  */
 function adjudicateExtractionDisposition(input: {
   extraction: ReservationWorkflowV2Extraction;
@@ -1519,8 +1520,11 @@ function adjudicateExtractionDisposition(input: {
   const evidenceRefs = (model?.sourceRefs ?? []).filter((ref) => input.currentRefs.has(ref)).slice(0, 20);
   const reason = (model?.reason ?? '').trim().slice(0, 1000);
   const modelDecision = model?.decision ?? null;
+  // An unresolved extraction issue (for example a malformed ask whose facts had to be withheld)
+  // means the read is not clean: it can never confirm that nothing was asked of staff.
+  const issueCount = input.extraction.issues.length;
   if (modelDecision === 'no_action' && !input.currentRequestCount && evidenceRefs.length &&
-      input.sourceReadComplete && !input.errors.length) {
+      input.sourceReadComplete && !input.errors.length && !issueCount) {
     return { decision: 'no_action', modelDecision,
       reason: reason || 'No staff task was found in this email.', evidenceRefs, ...binding };
   }
@@ -1530,7 +1534,11 @@ function adjudicateExtractionDisposition(input: {
         ? 'Requests were also extracted; they remain actionable.' : reason) || 'Current requests were found.',
       evidenceRefs, ...binding };
   }
-  const why = !model ? 'No intake decision was recorded.'
+  const issueRefs = input.extraction.issues.flatMap((issue) => issue.sourceRefs)
+    .filter((ref) => input.currentRefs.has(ref));
+  const why = issueCount
+    ? `The extraction reported ${issueCount === 1 ? 'an unresolved issue' : `${issueCount} unresolved issues`}; a staff decision is still needed.`
+    : !model ? 'No intake decision was recorded.'
     : modelDecision === 'no_action'
       ? !evidenceRefs.length ? 'The no-action decision lacks current-source evidence.'
         : !input.sourceReadComplete ? 'The no-action decision could not be confirmed: the source was not fully read.'
@@ -1539,7 +1547,8 @@ function adjudicateExtractionDisposition(input: {
     : modelDecision === 'actionable' ? 'No current request was extracted to act on.'
     : reason;
   return { decision: 'uncertain', modelDecision,
-    reason: (why || 'This email still needs a staff decision.').slice(0, 1000), evidenceRefs, ...binding };
+    reason: (why || 'This email still needs a staff decision.').slice(0, 1000),
+    evidenceRefs: [...new Set([...evidenceRefs, ...issueRefs])].slice(0, 20), ...binding };
 }
 
 function citedInteger(claim: { value: unknown } | undefined): number | null | undefined {
@@ -6942,6 +6951,9 @@ export async function ensureReservationWorkflowV2Prefill(input: {
       (generated.errors ?? []).some((error) => error.stage === 'extract' ||
         error.stage === 'synthesis' && ['model_timeout', 'model_error'].includes(error.code));
     return finishReservationWorkflowV2Prefill(input.context, { ...item, claim: activeClaim, failed,
+      ...(generated.skippedReason && generated.extraction?.issues?.length ? { failure: { stage: 'extract' as const,
+        code: 'unresolved_extraction_issues',
+        message: 'Nava could not read every part of this email with confidence; it needs staff review.' } } : {}),
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
         ...(generated.disposition ? { disposition: generated.disposition } : {}),

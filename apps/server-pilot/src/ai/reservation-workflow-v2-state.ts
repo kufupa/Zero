@@ -142,14 +142,18 @@ function storedReservationWorkflowV2Draft(draft: ReservationWorkflowV2Draft): Re
     ...(draft.extraction ? { extraction: { ...draft.extraction, disposition: undefined } } : {}) };
 }
 
+/** A no-action decision is void the moment current asks, native work or unresolved extraction issues appear. */
+function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boolean {
+  return draft.proposal.content.requests.length === 0 && draft.operationResults.length === 0 &&
+    !draft.extraction?.issues?.length;
+}
+
 /** The intake decision applies only while it still binds to this exact draft. */
 function intakeRecordFor(draft: ReservationWorkflowV2Draft): Record<string, unknown> | undefined {
   const disposition = draft.disposition;
   if (!disposition || disposition.generationId !== draft.generationId ||
       disposition.sourceHash !== draft.source.sourceHash) return undefined;
-  // A no-action decision is void the moment current asks or native work appear.
-  if (disposition.decision === 'no_action' &&
-      (draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0)) return undefined;
+  if (disposition.decision === 'no_action' && !noActionDispositionConsistent(draft)) return undefined;
   return reservationWorkflowV2IntakeSchema.parse({ contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
     ...(draft.prefill?.evidenceHash ? { evidenceHash: draft.prefill.evidenceHash } : {}), disposition });
 }
@@ -176,8 +180,7 @@ export function reservationWorkflowV2DraftOf(state: State): ReservationWorkflowV
     const { disposition } = intake.data;
     const bound = disposition.generationId === draft.generationId && disposition.sourceHash === draft.source.sourceHash &&
       (intake.data.evidenceHash === undefined || intake.data.evidenceHash === draft.prefill?.evidenceHash);
-    const consistent = disposition.decision !== 'no_action' ||
-      (draft.proposal.content.requests.length === 0 && draft.operationResults.length === 0);
+    const consistent = disposition.decision !== 'no_action' || noActionDispositionConsistent(draft);
     if (bound && consistent) draft.disposition = disposition;
   }
   return draft;
