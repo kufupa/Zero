@@ -477,8 +477,13 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
       staged = stagedCancelSchema.safeParse(native.staged);
     if (native.outcome === 'refused_reason_missing' && stage) {
       // The refused dialog still reports the verified stay and its native reason list. Reattach
-      // them only when the identity matches this preview's stay, so prepare can persist the
-      // options for staff instead of returning them in the transient reply alone.
+      // them only when the run proves nothing was dispatched and its writer session closed, and
+      // the identity matches this preview's stay, so prepare can persist the options for staff
+      // instead of returning them in the transient reply alone.
+      if (native.requestDispatched !== false || native.writerSessionClosed !== true) {
+        return { outcome: 'failed', issue: 'CANCEL_REASON_MISMATCH_UNVERIFIED',
+          runDir: safeRunDir(native.runDir) ? native.runDir : null };
+      }
       const verifiedPreimage = expected.success && expected.data.propertyCode === target.propertyCode &&
         expected.data.confirmation === confirmation && expected.data.arrival === arrival &&
         expected.data.departure === departure &&
