@@ -1,4 +1,4 @@
-import { MAIL_SOURCE_RULE_DATA, type MailSourceRuleData } from '../../config/mail-source-rules.js';
+import { MAIL_SOURCE_RULE_DATA, ROUTINE_NOTICE_EXCLUSION_DATA, type MailSourceRuleData, type RoutineNoticeExclusionData } from '../../config/mail-source-rules.js';
 
 export type MailSourceKind = 'channel' | 'system' | 'direct';
 
@@ -76,6 +76,19 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
 
 /** Compile configured regex data once for the browser-safe server/pane registry. */
 export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = MAIL_SOURCE_RULE_DATA.map(compileRule);
+
+type RoutineNoticeExclusion = Omit<RoutineNoticeExclusionData, 'senderPattern' | 'subjectPattern'> & {
+  senderPattern: RegExp;
+  subjectPattern: RegExp;
+};
+
+const ROUTINE_NOTICE_EXCLUSIONS: readonly RoutineNoticeExclusion[] = ROUTINE_NOTICE_EXCLUSION_DATA.map((entry) => ({
+  id: entry.id,
+  kind: entry.kind,
+  source: entry.source,
+  senderPattern: new RegExp(entry.senderPattern.source, entry.senderPattern.flags),
+  subjectPattern: new RegExp(entry.subjectPattern.source, entry.subjectPattern.flags),
+}));
 
 const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
 const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
@@ -213,6 +226,14 @@ export function classifyMailSource(input: {
   /** Whether the message carries at least one non-inline attachment; undefined means unknown. */
   hasAttachments?: boolean;
 }): MailSourceClassification {
+  const routineNotice = ROUTINE_NOTICE_EXCLUSIONS.find(
+    (exclusion) =>
+      exclusion.senderPattern.test(input.fromAddress?.trim() ?? '') &&
+      exclusion.subjectPattern.test(input.subject?.trim() ?? ''),
+  );
+  if (routineNotice) {
+    return { kind: 'system', source: routineNotice.source, reason: `routine_notice:${routineNotice.id}` };
+  }
   const senderDomain = extractDomain(input.fromAddress);
   const senderMatch = ruleForDomain(senderDomain);
   if (senderMatch) {
