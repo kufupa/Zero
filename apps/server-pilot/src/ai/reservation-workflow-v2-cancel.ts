@@ -1937,12 +1937,13 @@ export async function reservationWorkflowV2CancelCharge(ctx: ReservationWorkflow
   const live = ['claimed', 'running'].includes(run.state) && run.deadlineAt !== null &&
     run.deadlineAt.getTime() > Date.now();
   const open = live && charge.expiresAt > Date.now();
-  // Only a dispatched challenge proves the fee was submitted to HMS. An approved or consumed
-  // challenge on a dead or expired run was never dispatched, so it reports expired, not submitted.
+  // Consumption only records that staff approved this exact dialog. Keep it distinct from a
+  // native submission: dispatch is proven only after the writer records the exact request digest.
   const status = charge.status === 'pending' ? (open ? 'pending' as const : 'expired' as const)
     : charge.status === 'declined' ? 'declined' as const
     : charge.status === 'dispatched' ? 'submitted' as const
-    : charge.status === 'expired' ? 'expired' as const : open ? 'submitted' as const : 'expired' as const;
+    : charge.status === 'expired' ? 'expired' as const
+    : open ? 'approved' as const : 'expired' as const;
   return { status, challengeId: charge.id, dialogDigest: charge.dialogDigest, penaltyText: charge.text,
     button: charge.button, timing: charge.timing, matchesReviewed: charge.matchesReviewed,
     expiresAt: new Date(charge.expiresAt).toISOString() };
