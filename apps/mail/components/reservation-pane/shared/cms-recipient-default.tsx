@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { trpcClient } from '@/providers/query-provider';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { effectiveAt, text, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../editors/create-quote-editor.module.css';
 import hintStyles from '../editors/other-editors.module.css';
@@ -16,28 +17,30 @@ const listeners = new Set<() => void>();
 const emit = () => listeners.forEach(listener => listener());
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 
-function load(code: string) {
-  if (!code || remembered.has(code) || loading.has(code)) return;
-  loading.add(code);
+function load(code: string, key: string) {
+  if (!key || remembered.has(key) || loading.has(key)) return;
+  loading.add(key);
   void Promise.resolve()
     .then(() => trpcClient.settings.cmsRecipientDefault.query({ propertyCode: code }))
-    .then(result => { remembered.set(code, result?.address ?? ''); }, () => { /* no default: field stays empty */ })
-    .finally(() => { loading.delete(code); emit(); });
+    .then(result => { remembered.set(key, result?.address ?? ''); }, () => { /* no default: field stays empty */ })
+    .finally(() => { loading.delete(key); emit(); });
 }
 
 /** The signed-in user's remembered CMS recipient for this property. Empty when none is set or it cannot be read. */
 export function useCmsRecipientDefault(propertyCode: string | null | undefined) {
   const code = propertyCode && PROPERTY.test(propertyCode) ? propertyCode : '';
-  useEffect(() => load(code), [code]);
-  const address = useSyncExternalStore(subscribe, () => remembered.get(code) ?? '', () => '');
+  const userId = useSyncExternalStore(subscribeMailCacheScope, () => getMailCacheScope().userId, () => null);
+  const key = userId && code ? JSON.stringify([userId, code]) : '';
+  useEffect(() => load(code, key), [code, key]);
+  const address = useSyncExternalStore(subscribe, () => remembered.get(key) ?? '', () => '');
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const save = async (next: string | null) => {
-    if (!code) return;
+    if (!key || userId !== getMailCacheScope().userId) return;
     setBusy(true); setFailed(false);
     try {
       const result = await trpcClient.settings.setCmsRecipientDefault.mutate({ propertyCode: code, address: next });
-      remembered.set(code, result.address ?? ''); emit();
+      remembered.set(key, result.address ?? ''); emit();
     } catch { setFailed(true); } finally { setBusy(false); }
   };
   return { address: code ? address : '', busy, failed, remember: (next: string) => save(next), forget: () => save(null) };

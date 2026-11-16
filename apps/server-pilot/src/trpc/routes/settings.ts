@@ -75,10 +75,9 @@ export const settingsRouter = tRouter({
         .from(userSettings)
         .where(eq(userSettings.userId, ctx.sessionUser.id))
         .limit(1);
-      const stored = (rows[0]?.settings as Record<string, unknown> | undefined)?.cmsRecipientDefaults;
-      const address = stored && typeof stored === 'object' && !Array.isArray(stored)
-        ? (stored as Record<string, unknown>)[input.propertyCode] : undefined;
-      return { address: typeof address === 'string' && address ? address : null };
+      const parsed = z.object({ cmsRecipientDefaults: z.record(z.string().email()).optional() })
+        .safeParse(rows[0]?.settings);
+      return { address: parsed.success ? parsed.data.cmsRecipientDefaults?.[input.propertyCode] ?? null : null };
     }),
 
   setCmsRecipientDefault: privateProcedure
@@ -94,10 +93,11 @@ export const settingsRouter = tRouter({
         return { address: null };
       }
       const address = input.address;
+      const settings = { ...defaultUserSettings, cmsRecipientDefaults: { [input.propertyCode]: address } };
       await db
         .insert(userSettings)
         .values({ id: `settings-${userId}`, userId,
-          settings: { ...defaultUserSettings, cmsRecipientDefaults: { [input.propertyCode]: address } } as typeof defaultUserSettings })
+          settings })
         .onConflictDoUpdate({
           target: userSettings.userId,
           set: {
