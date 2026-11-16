@@ -462,6 +462,26 @@ Physical or virtual Windows PC on the hotel LAN running Classic Outlook 2016 wit
 
 The versioned JSON RPC message contract exchanged over `window.chrome.webview.postMessage` and `WebMessageReceived` bridging Outlook COM capabilities (active email headers, selection change events, reply draft insertion) into the web client.
 
+## Retrospective ROI domain
+
+### Reservation task
+
+A distinct staff action requested in reservation correspondence, such as Create, Amend or Filing. One task may cover several rooms or bookings and be evidenced by several emails; repeated copies and acknowledgments do not create additional tasks.
+
+*Avoid: counting emails, rooms, fields or tool calls as tasks.*
+
+### Retrospective Nava forecast
+
+An estimate of the staff effort today's specified Nava capabilities could have removed from a past source workload under stated timing assumptions. Distinct from actual adoption, measured handling time and realised savings.
+
+### Correct complete preparation
+
+Nava preparation that evidence establishes as complete and correct for the distinct requested task. Staff review and approval remain required; this classification does not establish an unattended or historical HMS Save.
+
+### Forecast time credit
+
+The estimated minutes saved assigned to a task's assessed outcome under a chosen timing policy. A zero credit for corrected, wrong or unknown preparation is a modelling choice, not measured zero effort or rework cost.
+
 ## Flagged ambiguities
 
 - **"read" / grey list styling** had been treated as “already replied” in shared Centurion triage — unread/grey is Ball-in-court auto-read; ever answered is hasReplied.
