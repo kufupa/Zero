@@ -854,7 +854,6 @@ describe('Task 2 production composition + browser guards', () => {
         loadSecret: async () => fixtureSecret(origin, {
           expectedTenant: 'DAVINCI_PRD', expectedPropertyCode: 'HRDAV', expectedPropertyName: 'Davinci Hotel',
           mailboxTransportId: 'transport-davinci',
-          mailboxTransportIds: ['transport-davinci', 'transport-faith', 'transport-ayanda', 'transport-epick', 'transport-kmgidi'],
         }),
         browserFactory: createPlaywrightBrowserFactory(),
         expectedPropertyCode: 'HRDAVS',

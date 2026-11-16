@@ -1,4 +1,4 @@
-import { getPropertyRegistration, type PropertyCode } from '../../tooling/hms-cloud/property-registry.mjs';
+import { getPropertyRegistration, hmsSecretAllowsTransport, type PropertyCode } from '../../tooling/hms-cloud/property-registry.mjs';
 /**
  * HMS browser runtime — singleton Chromium, one-session semaphore, fail-closed
  * request policy, abort-first contexts, startup canary + circuit breaker.
@@ -1719,7 +1719,7 @@ function createHmsRuntimeInternal(
     if (input.sessionAuthorization && (input.sessionAuthorization.propertyCode ?? 'HRCEN') !== targetPropertyCode) {
       throw new HmsRuntimeError('ROLE_SCOPE_INVALID', 'session authorization does not match the runtime property');
     }
-    if (!secretTransportIds(secret).includes(input.transportId)) {
+    if (!hmsSecretAllowsTransport(getPropertyRegistration(targetPropertyCode), secretTransportIds(secret), input.transportId)) {
       throw new HmsRuntimeError(
         'transport_mismatch',
         'transportId is not authorized by credential membership',
@@ -2846,7 +2846,7 @@ function createHmsRuntimeInternal(
       await revalidateRoleProof();
       revalidateEvidenceIfConfigured();
       const currentSecret = await getSecret(input.signal);
-      if (!secretTransportIds(currentSecret).includes(input.transportId)) {
+      if (!hmsSecretAllowsTransport(getPropertyRegistration(targetPropertyCode), secretTransportIds(currentSecret), input.transportId)) {
         throw new HmsRuntimeError(
           'transport_mismatch',
           'transportId is not authorized by credential membership',

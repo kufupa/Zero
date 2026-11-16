@@ -519,13 +519,22 @@ test('Cloud scope and credential lease fail closed before browser access', async
   } finally { if (previous !== undefined) process.env.DATABASE_URL = previous; }
 });
 
-test('Cloud credentials must include the authenticated transport before browser launch', async () => {
+test('Cloud credentials accept registered transports through the primary membership before browser launch', async () => {
   const davinci = getPropertyRegistration('HRDAV');
   const davinciSecret = { expectedPropertyCode: 'HRDAV', expectedTenant: 'DAVINCI_PRD',
     expectedPropertyName: 'Davinci Hotel', username: 'NAVAAI', credentialMode: 'view_only',
     mailboxTransportId: 'transport-davinci' };
   assert.equal(validateHmsPropertySecret({ ...davinci, transportId: 'transport-davinci' }, davinciSecret), davinciSecret);
-  assert.throws(() => validateHmsPropertySecret({ ...davinci, transportId: 'transport-faith' }, davinciSecret),
+  for (const propertyCode of ['HRDAV', 'HRDAVS']) {
+    const property = getPropertyRegistration(propertyCode);
+    for (const transportId of property.transportIds) {
+      assert.equal(validateHmsPropertySecret({ ...property, transportId }, davinciSecret), davinciSecret);
+    }
+  }
+  assert.throws(() => validateHmsPropertySecret({ ...davinci, transportId: 'transport-unknown' }, davinciSecret),
+    /hms_property_credential_mismatch/);
+  assert.throws(() => validateHmsPropertySecret({ ...davinci, transportId: 'transport-faith' },
+    { ...davinciSecret, mailboxTransportId: 'transport-epick' }),
     /hms_property_credential_mismatch/);
 
 
