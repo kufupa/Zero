@@ -2413,7 +2413,7 @@ describe('AmendLookupPanel amend form', () => {
     capabilities.paneSave = true;
     capabilities.paneSaveMode = 'lab';
     const preview = vi.fn(), commit = vi.fn(), findStay = vi.fn().mockResolvedValue(found({
-      guaranteeType: 'Guaranteed By Agent', depositReceived: '20',
+      guaranteeType: 'Guaranteed By Agent', depositReceived: '20', children: 1, childAges: [6],
     }));
     const trpc = amendTrpc(findStay, preview, commit);
     const session = sessionWith({ ...AMEND, requestedArrival: '2026-10-13', requestedDeparture: '2026-10-15' });
