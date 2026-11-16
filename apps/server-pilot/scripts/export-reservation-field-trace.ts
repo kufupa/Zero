@@ -53,6 +53,7 @@ const object = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
 const isParty = (value: unknown) => { const row = object(value);
   return Boolean(row && 'candidateRefs' in row && 'suggestedRef' in row && 'name' in row); };
+const isChange = (value: unknown) => typeof object(value)?.op === 'string';
 const decode = (part: string) => { try { return decodeURIComponent(part); } catch { return part; } };
 
 /** Row key for a staff path: party name / native selection edits belong to the party (or guest) field. */
@@ -110,7 +111,8 @@ function leaves(value: unknown, path: string, out: string[], depth = 0): void {
     return;
   }
   const row = object(value);
-  if (!row || isParty(value) || (row.kind === 'none' && Object.keys(row).length === 1)) { out.push(path); return; }
+  // Parties and Amend change rows ({ op, field, value }) are one field each.
+  if (!row || isParty(value) || isChange(value) || (row.kind === 'none' && Object.keys(row).length === 1)) { out.push(path); return; }
   for (const [key, child] of Object.entries(row)) {
     if (!SKIP_KEYS.has(key)) leaves(child, `${path}/${encodeURIComponent(key)}`, out, depth + 1);
   }
@@ -131,7 +133,9 @@ function scopeOf(draft: Draft, path: string): { workflow: string; requestId: str
   return { workflow: 'unknown', requestId: null };
 }
 
-function fieldKey(path: string): string {
+function fieldKey(path: string, prefill?: unknown): string {
+  const change = object(prefill);
+  if (change && typeof change.op === 'string') return typeof change.field === 'string' ? change.field : change.op;
   const parts = path.split('/').map(decode);
   return parts.at(-1) ?? path;
 }
@@ -223,7 +227,7 @@ export function fieldTraceRows(input: {
     const sentPane = op ? paneAtRevision(draft, events, op.draftRevision) : null;
     const readbackObservation = op ? draft.observations.find((row) => op.observationRefs.includes(row.ref) &&
       object(row.result)?.nativeReadback !== undefined) : undefined;
-    const readback = readbackObservation ? readbackValue(object(readbackObservation.result)!.nativeReadback, fieldKey(path)) : undefined;
+    const readback = readbackObservation ? readbackValue(object(readbackObservation.result)!.nativeReadback, fieldKey(path, prefill ?? final)) : undefined;
     const prefillComparable = comparable(prefill), finalComparable = comparable(final);
     const changed = JSON.stringify(prefillComparable) !== JSON.stringify(finalComparable);
     rows.push({
@@ -231,7 +235,7 @@ export function fieldTraceRows(input: {
       work_item_id: item.id, transport_id: item.transportId, thread_id: item.threadId,
       message_id: draft.source.messageId ?? item.sourceMessageId, generation_id: draft.generationId,
       property_code: draft.propertyCode, workflow: scope.workflow, request_id: scope.requestId,
-      field_key: fieldKey(path), field_path: path,
+      field_key: fieldKey(path, prefill ?? final), field_path: path,
       prefill: { value: prefill ?? null, basis: annotation?.basis ?? null,
         review_required: draft.fieldReviewRequirements[path]?.required ?? null },
       suggestion: autopickSuggestionSummary(suggestion),
