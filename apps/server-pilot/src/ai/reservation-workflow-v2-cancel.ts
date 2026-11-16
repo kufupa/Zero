@@ -887,25 +887,32 @@ export async function reservationWorkflowV2CancelLookup(ctx: ReadContext,
 }
 
 function preparedPreview(draft: ReservationWorkflowV2Draft, compiled: Extract<CancelCompile, { outcome: 'ok' }>) {
-  const candidates = draft.operationResults.toReversed().flatMap((entry) => {
-    if (entry.requestId !== compiled.requestId || entry.allocationId !== compiled.hintId || entry.workflow !== 'cancel' ||
-        entry.status !== 'prepared' || entry.generationId !== draft.generationId || entry.draftRevision > draft.revision) return [];
-    return entry.observationRefs.flatMap((ref) => {
-      const item = draft.observations.find((candidate) => candidate.ref === ref && candidate.kind === 'stay_candidate' &&
-        candidate.status === 'complete' && candidate.generationId === draft.generationId);
-      const criteria = record(item?.criteria), result = record(item?.result);
-      // A ready preview must carry the exact reason and note HMS staged unsaved. A historically
-      // recorded preview without staged data can never qualify for Go, and neither can one that
-      // observed a cancellation charge: any fee is finished in HMS, never accepted under one Go.
-      const staged = stagedCancelSchema.safeParse(result?.staged);
-      return item && criteria?.stage === 'prepare' && criteria.semanticDigest === compiled.semanticDigest &&
-        result?.ready === true && typeof result.approvalDigest === 'string' && staged.success &&
-        result?.penaltyText === null && staged.data.penaltyText === null &&
-        staged.data.reasonLabel === compiled.reasonText && staged.data.cancellationNote === compiled.cancellationNote
-        ? [{ item, result, criteria }] : [];
-    });
+  // The latest prepare observation for this exact request, target and semantic input is
+  // authoritative, including when it is partial or non-ready. Filtering to ready observations
+  // first would let a newer fee/reason failure fall through to an older accepted preview.
+  const item = draft.observations.toReversed().find((candidate) => {
+    const criteria = record(candidate.criteria);
+    return candidate.kind === 'stay_candidate' && candidate.generationId === draft.generationId &&
+      candidate.propertyCode === draft.propertyCode && candidate.sourceMessageId === draft.source.messageId &&
+      criteria?.workflow === 'cancel' && criteria.stage === 'prepare' && criteria.requestId === compiled.requestId &&
+      criteria.hintId === compiled.hintId && criteria.semanticDigest === compiled.semanticDigest &&
+      criteria.selectionRef === compiled.selectionRef;
   });
-  return candidates[0] ?? null;
+  if (!item || item.status !== 'complete') return null;
+  const entry = draft.operationResults.toReversed().find((candidate) => candidate.observationRefs.includes(item.ref));
+  if (!entry || entry.requestId !== compiled.requestId || entry.allocationId !== compiled.hintId ||
+      entry.workflow !== 'cancel' || entry.status !== 'prepared' || entry.generationId !== draft.generationId ||
+      entry.draftRevision > draft.revision) return null;
+  const criteria = record(item.criteria), result = record(item.result);
+  // A ready preview must carry the exact reason and note HMS staged unsaved. A historically
+  // recorded preview without staged data can never qualify for Go, and neither can one that
+  // observed a cancellation charge: any fee is finished in HMS, never accepted under one Go.
+  const staged = stagedCancelSchema.safeParse(result?.staged);
+  return criteria?.stage === 'prepare' && criteria.semanticDigest === compiled.semanticDigest &&
+    result?.ready === true && typeof result.approvalDigest === 'string' && staged.success &&
+    result?.penaltyText === null && staged.data.penaltyText === null &&
+    staged.data.reasonLabel === compiled.reasonText && staged.data.cancellationNote === compiled.cancellationNote
+    ? { item, result, criteria } : null;
 }
 
 function reviewBinding(draft: ReservationWorkflowV2Draft, compiled: Extract<CancelCompile, { outcome: 'ok' }>,
