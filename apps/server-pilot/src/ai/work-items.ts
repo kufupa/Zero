@@ -90,6 +90,11 @@ import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenc
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { handledRequestKeys, handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 import { confirmedVoucherKey, voucherReviewFiles } from './voucher-pending.js';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
+import {
+  reservationWorkflowV2DraftSchema,
+  type ReservationWorkflowV2Draft,
+} from './reservation-workflow-v2-contract.js';
 import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
@@ -2767,6 +2772,46 @@ export const FOLLOW_UP_WORK_KINDS = ['quote', 'booking'] as const;
 export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
 export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 
+// Leaf copies of reservation-workflow-v2-state's key/readers: importing that module would close an import cycle.
+const RESERVATION_WORKFLOW_V2_STATE_KEY = 'reservationWorkflowV2';
+
+function hasReservationWorkflowV2Draft(state: Record<string, unknown>): boolean {
+  return Object.hasOwn(state, RESERVATION_WORKFLOW_V2_STATE_KEY);
+}
+
+function reservationWorkflowV2DraftOf(state: Record<string, unknown>): ReservationWorkflowV2Draft | null {
+  const parsed = reservationWorkflowV2DraftSchema.safeParse(
+    hydrateStoredReservationWorkflowV2(state[RESERVATION_WORKFLOW_V2_STATE_KEY]));
+  return parsed.success ? parsed.data : null;
+}
+
+/** The staff-queue kind of a V2 request kind; `services` and `other` asks stay review-needed. */
+const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
+  quote: 'quote',
+  create: 'booking',
+  amend: 'amendment',
+  cancel: 'cancellation',
+  filing: 'voucher_pop',
+};
+
+/**
+ * The Needs-you kind of a work item's canonical V2 draft. Every request in the draft stays on the item; the row
+ * labels the first supported ask. Unsupported, empty or unreadable drafts stay visible as `other_actionable` rather
+ * than falsely reading as no action. Self-sent pre-stay mail is about an existing booking: a `create` request is
+ * never an ask, so only a genuine second ask (any non-create request) keeps the item on the list.
+ */
+function needsYouV2Kind(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): string | null {
+  const requests = draft?.proposal.content.requests ?? [];
+  if (isPreStay) {
+    return requests.some((request) => request.kind !== 'create') ? 'other_actionable' : null;
+  }
+  for (const request of requests) {
+    const kind = V2_REQUEST_MAIL_KIND[request.kind];
+    if (kind) return kind;
+  }
+  return 'other_actionable';
+}
+
 /**
  * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
  * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
@@ -2825,6 +2870,7 @@ export async function listWorkItems(
         origin: origin.as('origin'),
         sourceBody: message.textBody,
         sourceHtml: message.htmlBody,
+        state: workItem.state,
         reopenReason: sql<string | null>`(
           select we.value->>'reasonLine'
           from ${workEvent} as we
@@ -2850,6 +2896,8 @@ export async function listWorkItems(
             ...(preStayCandidate ? [preStayCandidate] : []),
             and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
             and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
+            // A canonical V2 draft is its own admission: every stored request kind reaches the queue.
+            sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
           ),
           isNull(mailThread.spamAt),
           isNull(mailThread.trashedAt),
@@ -2859,10 +2907,24 @@ export async function listWorkItems(
       )
       .orderBy(sql`chip_rank`, asc(sortAge), asc(workItem.id))
       .limit(size);
+    // One queue row per source: when a source message has canonical V2 drafts, only the draft-bearing item the
+    // ensure path would reopen (latest updated, then id) represents the mail; legacy and stale duplicate rows hide.
+    const v2Items = await tx
+      .select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId, updatedAt: workItem.updatedAt })
+      .from(workItem)
+      .where(and(eq(workItem.transportId, input.transportId), sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`));
+    const canonicalV2BySource = new Map<string, string>();
+    const orderedV2Items = [...v2Items].sort((a, b) =>
+      b.updatedAt.getTime() - a.updatedAt.getTime() || b.id.localeCompare(a.id));
+    for (const candidate of orderedV2Items) {
+      if (candidate.sourceMessageId && !canonicalV2BySource.has(candidate.sourceMessageId)) {
+        canonicalV2BySource.set(candidate.sourceMessageId, candidate.id);
+      }
+    }
     return collectNeedsYouPages({
       limit: input.limit,
       fetchPage: async (cursor, size) => fetchPage(cursor, size),
-      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, ...row }) => {
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
         const preStayAsk = selfSentPreStayAskVerdict({
@@ -2876,6 +2938,14 @@ export async function listWorkItems(
             : [],
           payload,
         });
+        const chip = NEEDS_YOU_CHIPS[rank] ?? 'needs_you';
+        const v2 = hasReservationWorkflowV2Draft(state ?? {});
+        const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId) : undefined;
+        if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
+        if (v2) {
+          const kind = needsYouV2Kind(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
+          return kind ? { ...row, kind, chip } : null;
+        }
         if (!preStayAsk) {
           if (
             row.kind === 'other'
@@ -2890,7 +2960,7 @@ export async function listWorkItems(
         return {
           ...row,
           kind: separateAsk ? 'other_actionable' : row.kind,
-          chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+          chip,
           ...(reviewOnly ? { reviewOnly: true } : {}),
         };
       },
