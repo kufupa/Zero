@@ -186,8 +186,15 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
   credentialLease, shallow = readShallow,
   read = readRecord, open = openLabtestCancellation, confirm = confirmLabtestCancellation,
   scope = verifySingleCancellationScope, freshRead = cancellationReadback, now = () => performance.now() } = {}) {
+  const previewStage = input.previewStage;
+  const stageValid = previewStage === undefined || (input.mode === 'preview' && previewStage && typeof previewStage === 'object' &&
+    typeof previewStage.reasonLabel === 'string' && previewStage.reasonLabel === previewStage.reasonLabel.trim() &&
+    previewStage.reasonLabel.length > 0 && previewStage.reasonLabel.length <= 120 && !/[\p{Cc}]/u.test(previewStage.reasonLabel) &&
+    typeof previewStage.cancellationNote === 'string' && previewStage.cancellationNote.length <= 200 &&
+    !/[\p{Cc}]/u.test(previewStage.cancellationNote));
   if (!validScope(input?.target?.propertyCode, input.transportId) || !['read', 'preview', 'commit'].includes(input.mode) ||
       !/^\d+-\d+$/.test(input.confirmation || '') || !day(input.arrival) || typeof input.allowRealGuest !== 'boolean' ||
+      !stageValid ||
       (input.mode === 'commit' && (!input.expected || typeof input.beforeDispatch !== 'function' ||
         typeof input.dispatchWithAuthority !== 'function' || typeof input.continuationAllowed !== 'function' ||
         !Number.isSafeInteger(input.commitBudgetMs) || input.commitBudgetMs < 1 || input.commitBudgetMs > COMMIT_BUDGET_MS))) {
@@ -197,7 +204,8 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
   const root = await mkdtemp(join(tmpdir(), 'pane-cloud-cancel-'));
   const sessionBudget = input.mode === 'commit' ? COMMIT_BUDGET_MS : READ_BUDGET_MS;
   const signal = phaseSignal(credentialLease?.signal ? AbortSignal.any([input.signal, credentialLease.signal].filter(Boolean)) : input.signal, sessionBudget);
-  const continuationAllowed = () => !signal.aborted && input.continuationAllowed() === true;
+  const continuationAllowed = () => !signal.aborted &&
+    (typeof input.continuationAllowed !== 'function' || input.continuationAllowed() === true);
   const writerPage = { current: null };
   const options = { propertyCode: input.target.propertyCode, transportId: input.transportId, credentialLease, startScreen: 'OSRESS', signal,
     cloudTargetKeys: savedTargetKeys(input.target.propertyCode, input.confirmation, input.expected?.nativeStayId),
@@ -255,6 +263,26 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
       if (opened.outcome !== 'reason_ready') return { ...opened,
         outcome: opened.outcome === 'fee_dialog_pending' ? 'refused_penalty' : opened.outcome,
         expected, requestDispatched: false };
+      if (input.mode === 'preview' && previewStage) {
+        const matching = (opened.reasons ?? []).filter((item) => item.display === previewStage.reasonLabel);
+        if (matching.length !== 1) return { outcome: 'refused_reason_missing', expected,
+          reasons: opened.reasons, policyFacts: opened.policyFacts ?? [], requestDispatched: false };
+        const staged = await confirm(page, expected, { reasonCode: matching[0].value, reasonLabel: matching[0].display,
+          cancellationNote: previewStage.cancellationNote, timeoutMs: Math.floor(Math.min(sessionBudget, READ_BUDGET_MS) - (now() - started)),
+          continuationAllowed, stageOnly: true });
+        if (staged.outcome !== 'staged' || staged.requestDispatched !== false || staged.chargeApproved !== false ||
+            staged.chargeDispatched !== false) {
+          return { ...staged, outcome: staged.outcome === 'fee_dialog_pending' ? 'refused_penalty' : staged.outcome,
+            expected, requestDispatched: false };
+        }
+        return { outcome: 'preview_ok', expected, reasons: opened.reasons, policyFacts: opened.policyFacts ?? [],
+          penaltyText: staged.penaltyText ?? null,
+          staged: { reasonCode: matching[0].value, reasonLabel: matching[0].display,
+            cancellationNote: previewStage.cancellationNote,
+            dialogText: typeof staged.stagedDialogText === 'string' ? staged.stagedDialogText : null,
+            penaltyText: staged.penaltyText ?? null },
+          requestDispatched: false };
+      }
       if (input.mode === 'preview') return { outcome: 'preview_ok', expected, reasons: opened.reasons,
         policyFacts: opened.policyFacts ?? [], penaltyText: opened.penaltyText ?? null, requestDispatched: false };
       if (!opened.reasons?.some((item) => item.value === input.reasonCode && item.display === input.reasonLabel)) {

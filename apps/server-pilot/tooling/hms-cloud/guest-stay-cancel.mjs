@@ -440,7 +440,8 @@ async function chargeTargetIsCurrent(frame, expected) {
 /** Confirm one observed reason. A later charge requires a second staff decision on the same dialog. */
 export async function confirmLabtestCancellation(page, expected = {}, { cancellationNote = '', reasonCode,
   reasonLabel, timeoutMs = 20_000, beforeDispatch, dispatchWithAuthority, continuationAllowed = () => true,
-  onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority, bindDepositReceived = false } = {}) {
+  onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority, bindDepositReceived = false,
+  stageOnly = false } = {}) {
   const opened = pendingPages.get(page);
   pendingPages.delete(page);
   if (!opened) return { outcome: 'refused', issue: 'CANCEL_REASON_NOT_CURRENT' };
@@ -451,7 +452,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     reasonCode ??= 'TEST'; reasonLabel ??= 'Test Reservations';
   }
   if (!opened.reasons?.some((item) => item.value === reasonCode && item.display === reasonLabel) ||
-      (expected.allowRealGuest && (typeof beforeDispatch !== 'function' || typeof dispatchWithAuthority !== 'function'))) {
+      (expected.allowRealGuest && !stageOnly &&
+        (typeof beforeDispatch !== 'function' || typeof dispatchWithAuthority !== 'function'))) {
     return { outcome: 'refused', issue: 'CANCEL_REASON_UNVERIFIED' };
   }
   let armed = false, dispatched = false, nativeDialog = null, response = null, authorizedRequest, sendRequests = 0;
@@ -663,6 +665,19 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     }
     preparedSnapshot = afterFields;
     const reasonText = (await dialog.innerText()).trim();
+    if (stageOnly) {
+      // Staging ends before the OK click: reason and note are set, the Save request is never armed, and any
+      // charge text HMS put into the reason dialog is reported for the staff review instead of approved.
+      if (/penalt|fee|charge|deposit/i.test(reasonText)) {
+        chargeText = reasonText;
+        penaltyTiming = 'before_save';
+      }
+      return { outcome: 'staged', reason: reasonLabel, requestDispatched: false,
+        stagedDialogText: reasonText.length <= 2000 ? reasonText : null, httpStatus: response?.status() || null,
+        dialogs: [reasonText], nativeDialog, blockedRequests: blocked, browserSendRequests: sendRequests,
+        penaltyText: chargeText, chargeApproved: false, chargeDispatched: false,
+        dispatchCallbacksDrained: pendingDispatch === 0 };
+    }
     if (/penalt|fee|charge|deposit/i.test(reasonText)) {
       chargeText = reasonText;
       penaltyTiming = 'before_save';
