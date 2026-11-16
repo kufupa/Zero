@@ -138,14 +138,15 @@ describe('mailbox-scoped quote pane configuration', () => {
       expect((await propertyConfigurationForScope(scope, enabled)).capabilities).toMatchObject({
         reads: { status: 'staff-enabled' }, quote: { status: 'staff-enabled' }, create: { status: 'prepare-only' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, NAVA_BUILD_COMMIT: 'other' })).capabilities)
-        .toMatchObject({ reads: { status: 'staff-enabled' }, quote: { status: 'unavailable' } });
+        .toMatchObject({ reads: { status: 'staff-enabled' }, quote: { status: 'staff-enabled' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, HMS_DAVINCI_READS: 'off' })).capabilities)
         .toMatchObject({ reads: { status: 'unavailable' }, quote: { status: 'unavailable' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, HMS_DAVINCI_MAKE_QUOTE: 'off' })).capabilities)
         .toMatchObject({ reads: { status: 'staff-enabled' }, quote: { status: 'unavailable' } });
       expect((await propertyConfigurationForScope(scope, { ...enabled, HMS_DAVINCI_ENABLED_PROPERTIES: 'HRDAVS' })).capabilities)
         .toMatchObject({ reads: { status: 'unavailable' }, quote: { status: 'unavailable' } });
-      expect((await quotePaneConfigForProperty('HRDAV', 'transport-davinci', { ...env, NAVA_BUILD_COMMIT: 'other' }))?.ratePlans).toEqual([]);
+      expect((await quotePaneConfigForProperty('HRDAV', 'transport-davinci', { ...env, NAVA_BUILD_COMMIT: 'other' }))?.ratePlans)
+        .toEqual(config?.ratePlans);
       expect((await quotePaneConfigForProperty('HRDAV', 'transport-davinci', { ...env,
         HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_HRDAV: 'b'.repeat(64) }))?.roomTypes).toEqual([]);
       expect(await loadHmsNativeCatalog({ path, propertyCode: 'HRDAV', credentialVersionHmacSha256: 'a'.repeat(64),

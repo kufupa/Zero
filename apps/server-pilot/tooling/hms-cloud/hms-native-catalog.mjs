@@ -1,7 +1,20 @@
 import { readFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { getPropertyRegistration } from './property-registry.mjs';
 
 const clean = value => value == null ? null : String(value).trim() || null;
+// Native capture implementations and their form/session policies, independent of application releases.
+const readerFiles = ['hms-native-catalog.mjs', 'hms-lookup-read-session.mjs', 'cloud-session.mjs',
+  'property-registry.mjs', 'credential-version.mjs', 'open-guest-stay.mjs', 'hms-menu-readiness.mjs',
+  'lookup.mjs', 'booking-lookup-session.mjs', 'guest-profile.mjs', 'guest-stay-form.mjs', 'guest-stay-track-catalog.mjs',
+  'guest-stay-room-rate.mjs', 'guest-stay-source-business.mjs', 'page-request-fence.mjs',
+  'quote-availability-policy.mjs', 'fetch-quote.mjs', '../../src/hms/request-policy.ts'];
+export function nativeCatalogReaderRevision() {
+  const hash = createHash('sha256');
+  for (const name of readerFiles) hash.update(name).update('\0').update(readFileSync(new URL(name, import.meta.url))).update('\0');
+  return hash.digest('hex');
+}
 const fields = {
   agencies: ['nativeId', 'nativeId', 'name'], organizations: ['nativeId', 'nativeId', 'name'],
   arAccounts: ['nativeId', 'accountNumber', 'name'], ratePlans: ['nativeId', 'code', 'name'],
@@ -146,7 +159,7 @@ export function normalizeHmsNativeCatalog({ propertyCode, capturedAt, source, ca
   }
   return { schemaVersion: 'hms-native-catalogs/v2', propertyCode: property, tenantId, landingPropertyCode,
     credentialRef, credentialVersionHmacSha256, sourceRevision, maxAgeMs, capturedAt: time,
-    source: { reader: source }, catalogs: normalized, ...(normalizedForm ? { form: normalizedForm } : {}),
+    source: { reader: source, readerRevision: nativeCatalogReaderRevision() }, catalogs: normalized, ...(normalizedForm ? { form: normalizedForm } : {}),
     ...(normalizedAvailabilityForm ? { availabilityForm: normalizedAvailabilityForm } : {}) };
 }
 
@@ -157,7 +170,7 @@ export function nativeCatalogReadOptions({ propertyCode, env = process.env } = {
   const suffix = propertyCode === 'HRCEN' ? '' : `_${propertyCode}`;
   return { propertyCode, path: env[`HMS_NATIVE_CATALOG_PATH${suffix}`],
     credentialVersionHmacSha256: env[`HMS_NATIVE_CATALOG_CREDENTIAL_VERSION_HMAC_SHA256_${propertyCode}`],
-    sourceRevision: env.NAVA_BUILD_COMMIT };
+    readerRevision: nativeCatalogReaderRevision() };
 }
 
 function validV2Contents(catalog) {
@@ -192,7 +205,7 @@ function validV2Contents(catalog) {
 
 /** Preserve absence and invalid artifacts as explicit unavailable states. */
 export async function loadHmsNativeCatalog({ path, propertyCode, tenantId, landingPropertyCode, credentialRef,
-  credentialVersionHmacSha256, sourceRevision, now = new Date() } = {}) {
+  credentialVersionHmacSha256, sourceRevision, readerRevision, now = new Date() } = {}) {
   const property = getPropertyRegistration(propertyCode);
   if (!path || !property?.active) return { status: 'unavailable', issue: 'catalog_path_or_property_missing' };
   try {
@@ -212,10 +225,12 @@ export async function loadHmsNativeCatalog({ path, propertyCode, tenantId, landi
         (credentialRef !== undefined && catalog.credentialRef !== credentialRef) ||
         typeof catalog.credentialVersionHmacSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(catalog.credentialVersionHmacSha256) ||
         (propertyCode !== 'HRCEN' && (typeof credentialVersionHmacSha256 !== 'string' ||
-          !/^[a-f0-9]{64}$/.test(credentialVersionHmacSha256) || typeof sourceRevision !== 'string' || !clean(sourceRevision))) ||
+          !/^[a-f0-9]{64}$/.test(credentialVersionHmacSha256) ||
+          !(typeof sourceRevision === 'string' && clean(sourceRevision) || typeof readerRevision === 'string' && /^[a-f0-9]{64}$/.test(readerRevision)))) ||
         (credentialVersionHmacSha256 !== undefined && catalog.credentialVersionHmacSha256 !== credentialVersionHmacSha256) ||
         typeof catalog.sourceRevision !== 'string' || !clean(catalog.sourceRevision) ||
         (sourceRevision !== undefined && catalog.sourceRevision !== sourceRevision) ||
+        (readerRevision !== undefined && (!/^[a-f0-9]{64}$/.test(readerRevision) || catalog.source?.readerRevision !== readerRevision)) ||
         !Number.isSafeInteger(catalog.maxAgeMs) || catalog.maxAgeMs <= 0) {
       return { status: 'unavailable', issue: 'catalog_identity_unverified' };
     }

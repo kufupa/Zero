@@ -97,7 +97,7 @@ describe('native catalog lookup', () => {
   });
 
   it('requires independent credential and revision bindings for HRCEN v2 snapshots', async () => {
-    const path = await writeJson('catalog.json', catalog('HRCEN'));
+    const path = await writeJson('catalog.json', { ...catalog('HRCEN'), source: { reader: 'test' } });
     for (const overrides of [{ credentialVersionHmacSha256: undefined }, { sourceRevision: undefined }]) {
       const snapshot = await preloadNativeCatalogLookup({ ...options('HRCEN', path), ...overrides });
       expect(snapshot).toMatchObject({ status: 'unavailable', issue: 'catalog_identity_unverified' });
@@ -119,7 +119,8 @@ describe('native catalog lookup', () => {
       propertyCode: 'HRDAVS', ratePlans: [{ code: 'RATE', name: 'Flexible Rate', mealPlan: 'unknown' }],
       roomTypes: [{ code: 'KING', label: 'King Room' }],
     });
-    expect((await quotePaneConfigForProperty('HRDAVS', 'transport-davinci', { ...env, NAVA_BUILD_COMMIT: 'other' }))?.ratePlans).toEqual([]);
+    expect((await quotePaneConfigForProperty('HRDAVS', 'transport-davinci', { ...env, NAVA_BUILD_COMMIT: 'other' }))?.ratePlans)
+      .toEqual([{ code: 'RATE', name: 'Flexible Rate', mealPlan: 'unknown' }]);
     expect(await quotePaneConfigForProperty('HRDAVS', 'transport-centurion', env)).toBeNull();
   });
 

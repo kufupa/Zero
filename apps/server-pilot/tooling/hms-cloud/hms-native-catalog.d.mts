@@ -6,6 +6,7 @@ export type NativeCatalogReadOptions = {
   credentialRef?: string;
   credentialVersionHmacSha256?: string;
   sourceRevision?: string;
+  readerRevision?: string;
   now?: Date;
 };
 
@@ -38,6 +39,7 @@ export declare function nativeCatalogReadOptions(input: {
   propertyCode: string;
   env?: NodeJS.ProcessEnv;
 }): NativeCatalogReadOptions;
+export declare function nativeCatalogReaderRevision(): string;
 
 export declare function loadHmsNativeCatalog(input: NativeCatalogReadOptions): Promise<
   | { status: 'available'; catalog: NativeCatalog }
