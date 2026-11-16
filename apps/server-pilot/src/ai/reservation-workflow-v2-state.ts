@@ -14,6 +14,7 @@ import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-act
 import { assertNoCreateDispatchFence } from './pane-create-dispatch-fence.js';
 import { assertNoUnresolvedHmsDispatchForWorkItem } from './hms-labtest-dispatch.js';
 import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
+import { reservationWorkflowV2EditTrace } from './reservation-workflow-v2-edit-trace.js';
 import { recoverReservationWorkflowV2SourceFields } from './reservation-workflow-v2-source-recovery.js';
 import { advancePaneRevision, redoWorkItemRevision, undoWorkItemRevision,
   rebaseReservationV2Path, rebaseReservationV2Observations, nativeStructureIsSafe,
@@ -973,9 +974,11 @@ export async function withLockedV2DraftMutation(ctx: Context, input: MutationInp
     const nextState = { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: next };
     const advanced = advancePaneRevision({ revision: item.revision, revisionHead: item.revisionHead,
       seq: item.revisionSeq, previousState: item.state, nextState, extractionId: item.extractionId });
+    const traced = reservationWorkflowV2EditTrace(current.draft, command.fieldPath);
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: ctx.userId ?? null,
       type: command.eventType ?? 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:${command.fieldPath}`,
-      value: command.value, aiSource: RESERVATION_PREFILL_SCHEMA_VERSION, evidence: advanced.evidence });
+      value: command.value, aiValue: traced.aiValue, aiSource: RESERVATION_PREFILL_SCHEMA_VERSION,
+      evidence: { ...advanced.evidence, trace: traced.trace } });
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft: next, revision: advanced.revision, revisionHead: advanced.revisionHead,
@@ -1960,7 +1963,7 @@ export async function configureReservationWorkflowV2Filing(ctx: Context, input: 
     await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'user', actorUserId: ctx.userId,
       type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:${root}/filingSelection`,
       value: { requestId: request.id, attachmentId: file.id, ...(input.confirmation ? { confirmation: input.confirmation } : { allocationTarget: input.allocationTarget }), kind: input.kind },
-      evidence: advanced.evidence });
+      evidence: { ...advanced.evidence, trace: reservationWorkflowV2EditTrace(draft, `${root}/filingSelection`).trace } });
     await tx.update(workItem).set({ state: nextState, revision: advanced.revision, revisionHead: advanced.revisionHead,
       revisionSeq: item.revisionSeq + 1, updatedAt: new Date() }).where(eq(workItem.id, item.id));
     return { status: 'ok' as const, draft: next, revision: advanced.revision,
