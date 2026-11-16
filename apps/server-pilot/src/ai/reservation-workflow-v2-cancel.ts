@@ -98,9 +98,18 @@ const sha256 = (value: unknown) => createHash('sha256').update(canonicalJson(val
 // HMS dialogs break penalty text over several lines. Staff review and the second Go bind one-line text.
 const penaltyLine = (value: unknown): unknown => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim() : value;
 const ptr = (...parts: Array<string | number>) => `/${parts.map((part) => encodeURIComponent(String(part))).join('/')}`;
-const sameName = (left: unknown, right: unknown): boolean => typeof left === 'string' && typeof right === 'string' &&
-  left.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() ===
-  right.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
+const normalizedName = (value: unknown): string | null => typeof value === 'string'
+  ? value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase() : null;
+const sameName = (left: unknown, right: unknown): boolean => {
+  const normalizedLeft = normalizedName(left), normalizedRight = normalizedName(right);
+  return normalizedLeft !== null && normalizedRight !== null && normalizedLeft === normalizedRight;
+};
+function sourceNameHasSurnameSuffix(sourceName: unknown, nativeSurname: unknown): boolean {
+  const normalizedSource = normalizedName(sourceName), normalizedSurname = normalizedName(nativeSurname);
+  // guestName may be surname-only or a full name; accept only an exact final surname token.
+  return Boolean(normalizedSource && normalizedSurname &&
+    (normalizedSource === normalizedSurname || normalizedSource.endsWith(` ${normalizedSurname}`)));
+}
 const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const date = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
@@ -328,16 +337,21 @@ function expectedTargetIdentity(preimage: CancelPreimage) {
 }
 
 function matchesHint(preimage: CancelPreimage, hint: CancelHint): boolean {
-  return (!hint.confirmation || hint.confirmation === preimage.confirmation) &&
-    (!hint.guestName || sameName(hint.guestName, `${preimage.firstName} ${preimage.lastName}`)) &&
+  return hint.confirmation === preimage.confirmation && sourceNameHasSurnameSuffix(hint.guestName, preimage.lastName) &&
+    (sameName(hint.guestName, `${preimage.firstName} ${preimage.lastName}`) || sameName(hint.guestName, preimage.lastName)) &&
     (!hint.bookedArrival || hint.bookedArrival === preimage.arrival) &&
     (!hint.bookedDeparture || hint.bookedDeparture === preimage.departure);
+}
+
+function matchesReviewedHintIdentity(preimage: CancelPreimage, hint: CancelHint): boolean {
+  return hint.confirmation === preimage.confirmation && sourceNameHasSurnameSuffix(hint.guestName, preimage.lastName);
 }
 
 function sourceHintMismatchFields(current: Record<string, unknown>, hint: CancelHint): string[] {
   const fields: string[] = [];
   const currentName = `${text(current.firstName) ?? ''} ${text(current.lastName) ?? ''}`.trim();
-  if (hint.guestName && !sameName(hint.guestName, currentName) && !sameName(hint.guestName, current.lastName)) fields.push('guestName');
+  const fullNameMatches = sameName(hint.guestName, currentName), surnameOnly = sameName(hint.guestName, current.lastName);
+  if (!sourceNameHasSurnameSuffix(hint.guestName, current.lastName) || (!fullNameMatches && !surnameOnly)) fields.push('guestName');
   if (hint.bookedArrival && hint.bookedArrival !== current.arrival) fields.push('bookedArrival');
   if (hint.bookedDeparture && hint.bookedDeparture !== current.departure) fields.push('bookedDeparture');
   return fields;
@@ -497,7 +511,7 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
         (expected.data.allowRealGuest || (expected.data.firstName === 'Proof' && expected.data.lastName === 'Labtest' &&
           expected.data.arrival >= '2027-01-01' && expected.data.cmsSend === false)) &&
         (matchesHint(expected.data, hint) ||
-          (allowReviewedSourceMismatch && expected.data.confirmation === hint.confirmation))
+          (allowReviewedSourceMismatch && matchesReviewedHintIdentity(expected.data, hint)))
         ? expected.data : null;
       return { outcome: 'failed', issue: 'CANCEL_REASON_MISMATCH',
         ...(reasons.success ? { reasons: reasons.data } : {}),
@@ -517,7 +531,8 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
       return { outcome: 'failed', issue: native.outcome === 'refused_scope_unverified' ? 'CANCELLATION_SCOPE_UNVERIFIED' :
         native.issue ?? native.outcome ?? 'CANCELLATION_PREVIEW_UNAVAILABLE', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
-    if (!matchesHint(expected.data, hint) && !(allowReviewedSourceMismatch && expected.data.confirmation === hint.confirmation)) {
+    if (!matchesHint(expected.data, hint) &&
+        !(allowReviewedSourceMismatch && matchesReviewedHintIdentity(expected.data, hint))) {
       return { outcome: 'failed', issue: 'CANCELLATION_TARGET_HINT_MISMATCH', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
     // A staged request must come back bound to that exact reason and note. A validated fee prompt may
@@ -593,7 +608,7 @@ function resolvedSelection(draft: ReservationWorkflowV2Draft, requestId: string,
   const mismatches = preimage.success ? sourceHintMismatchFields(preimage.data, hint) : [];
   const recordedMismatches = Array.isArray(result?.sourceHintMismatchFields)
     ? result.sourceHintMismatchFields.filter((field): field is string => typeof field === 'string') : [];
-  const reviewedMismatch = preimage.success && preimage.data.confirmation === hint.confirmation &&
+  const reviewedMismatch = preimage.success && matchesReviewedHintIdentity(preimage.data, hint) &&
     result?.sourceHintMismatchReviewRequired === true && canonicalJson(recordedMismatches) === canonicalJson(mismatches);
   if (!selected || !criteria || criteria.workflow !== 'cancel' || criteria.stage !== 'lookup' ||
       criteria.requestId !== requestId || criteria.hintId !== hint.id || criteria.fieldPath !== path ||
