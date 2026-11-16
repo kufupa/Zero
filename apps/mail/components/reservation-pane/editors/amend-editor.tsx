@@ -511,7 +511,7 @@ export function AmendEditor(editor: Editor) {
               })().catch(() => {})}>I reviewed the current and proposed notes</button>
           </div>}
           {(targets.length > 1 || changes.length > 0) && <ChangeList editor={editor} path={`${root}/changes`} label={targets.length > 1 ? '' : 'Only this stay'} />}
-          <Field label="Price" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
+          <Field label="Room rate" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
           {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, guest, room or rate changes need Reprice in Infor.</div>}
           {latest && <div className={styles.card}><strong>Last Infor check</strong>
             <span>{text(before.arrival)} → {text(before.departure)} · {text(before.roomType)} / {text(before.ratePlan)}</span>
