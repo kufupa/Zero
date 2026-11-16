@@ -930,10 +930,10 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       };
       const raw = await api.ensure.mutate(queryInput, mailboxOptions(source));
       if (isRecord(raw) && raw.status === 'skipped') {
-        const skipped = isRecord(raw.skippedSource) &&
+        const skipped: ReservationSkippedSource = isRecord(raw.skippedSource) &&
           (raw.skippedSource.kind === 'channel' || raw.skippedSource.kind === 'system' || raw.skippedSource.kind === 'spam')
           ? { kind: raw.skippedSource.kind, source: isString(raw.skippedSource.source) ? raw.skippedSource.source : null }
-          : { kind: 'system' as const, source: null };
+          : { kind: 'system', source: null };
         throw new ReservationSourceSkippedError(skipped, isString(raw.reason) ? raw.reason : undefined);
       }
       try {
