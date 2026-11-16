@@ -11,7 +11,7 @@ import { consumePageRequestAuthorization, hasPageRequestAuthorization } from './
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { getPropertyRegistration, validateHmsPropertySecret } from './property-registry.mjs';
 import { credentialVersionHmacSha256 } from './credential-version.mjs';
-import { isReviewedAvailabilityInquiry, isReviewedGuestStayRatePlanInquiry, isReviewedSavedRateShopRefresh,
+import { isReviewedAvailabilityInquiry, isReviewedGuestStayRatePlanInquiry, isReviewedSavedRateShopRefresh, isReviewedBlankRateShopRefresh,
   rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
 const readPosts = new Set([
@@ -254,6 +254,34 @@ export async function withCloudSavedRateReadScope(page, frame, saved, operation)
   finally { if (state.savedRateReadScope === scope) state.savedRateReadScope = null; }
 }
 
+/** Bind the blank Rate Shop refresh to the verified, unsaved native form and page fence. */
+export async function withCloudBlankRateReadScope(page, operation) {
+  const state = sessionState.get(page?.context?.());
+  if (!state?.verified || state.ownedPage !== page || state.blankRateReadScope ||
+      state.savedRateReadScope || typeof operation !== 'function') throw new Error('BLANK_RATE_READ_SCOPE_INVALID');
+  if (state.writer) return operation();
+  const propertyCode = state.identity?.propertyCode;
+  const blank = await page.evaluate(propertyCode => {
+    const visible = el => Boolean(el.offsetWidth || el.offsetHeight) && !el.closest('.x-window');
+    const confirmations = [...document.querySelectorAll('input[name="confirmationnumber"]')].filter(visible);
+    const properties = [...document.querySelectorAll('[data-qtip="Property"]')].filter(visible);
+    const confirmation = confirmations[0];
+    const record = confirmation && globalThis.Ext?.getCmp?.(confirmation.id.replace(/-inputEl$/, ''))?.up?.('form')?.getRecord?.()?.data;
+    if (confirmations.length !== 1 || confirmation.value !== '' || properties.length !== 1 ||
+        properties[0].textContent.trim().toUpperCase() !== propertyCode || !record ||
+        ['confirmationnumber', 'reservationstayid', 'reservationid', 'recordid', 'guestid'].some(name => String(record[name] ?? '') !== '')) return null;
+    return { propertyCode, confirmation: '', reservationStayId: '', reservationId: '', recordId: '', guestId: '',
+      bookingSessionId: String(record.bookingsessionid ?? '') };
+  }, propertyCode);
+  if (!blank || blank.bookingSessionId.length > 1024 || /[\p{Cc}]/u.test(blank.bookingSessionId)) {
+    throw new Error('BLANK_RATE_READ_SCOPE_INVALID');
+  }
+  const scope = Object.freeze({ ...blank, frame: page.mainFrame() });
+  state.blankRateReadScope = scope;
+  try { return await operation(); }
+  finally { if (state.blankRateReadScope === scope) state.blankRateReadScope = null; }
+}
+
 export function cloudWriterCurrent(identity) {
   try {
     const host = hostIdentity(), node = processIdentity(process.pid), browser = processIdentity(identity?.browser?.pid, true);
@@ -430,10 +458,17 @@ export async function installCloudReadGuard(context, property, state) {
       } catch { return route.abort(); }
     }
     let savedRefresh = false;
+    let blankRefresh = false;
     if (path === '/web/base/OSRASD.RatePlanChange') {
       savedRefresh = Boolean(savedScope && isReviewedSavedRateShopRefresh(request, {
         origin: property.origin, propertyCode: property.propertyCode, saved: savedScope }));
-      if (!savedRefresh) return route.abort();
+      try {
+        const blank = state.blankRateReadScope;
+        blankRefresh = Boolean(state.verified && !state.writer && state.ownedPage && blank &&
+          request.frame() === blank.frame && hasPageRequestAuthorization(request, state.ownedPage) &&
+          isReviewedBlankRateShopRefresh(request, { origin: property.origin, propertyCode: property.propertyCode, blank }));
+      } catch { return route.abort(); }
+      if (!savedRefresh && !blankRefresh) return route.abort();
     }
     if (path === '/api/internalBooking/rateshop/inquiryForGrid') {
       const options = { origin: property.origin, propertyCode: property.propertyCode,
@@ -443,7 +478,7 @@ export async function installCloudReadGuard(context, property, state) {
           !(state.verified && !state.writer && isReviewedGuestStayRatePlanInquiry(request, options))) return route.abort();
       // Earlier context guards still need the read authorization; closing its page scope revokes it.
     }
-    if (url.username || url.password || (forbiddenPath.test(path) && !savedRefresh) || hasWriteIntent(request.url()) || hasWriteIntent(body) ||
+    if (url.username || url.password || (forbiddenPath.test(path) && !savedRefresh && !blankRefresh) || hasWriteIntent(request.url()) || hasWriteIntent(body) ||
         !['GET', 'HEAD', 'OPTIONS', 'POST'].includes(method)) return route.abort();
     if (request.isNavigationRequest() && url.origin !== property.origin) return route.abort();
     if (path === '/web/base/loadmain' && url.searchParams.has('defaultproperty')) {
@@ -464,7 +499,7 @@ export async function installCloudReadGuard(context, property, state) {
         const params = new URLSearchParams(body);
         if (state.authenticated || params.get('tenant') !== property.expectedTenant ||
             params.get('SYSTEM_FUNCTION_NAME') !== 'LOGIN' || params.get('USER_FUNCTION_NAME') !== 'LOGIN') return route.abort();
-      } else if ((!readPosts.has(path) && !savedRefresh) || (path === '/web/base/OSRESV.HDR' && !safeHeaderRead(url, body, property.propertyCode))) {
+      } else if ((!readPosts.has(path) && !savedRefresh && !blankRefresh) || (path === '/web/base/OSRESV.HDR' && !safeHeaderRead(url, body, property.propertyCode))) {
         const availabilityDetail = state.verified && !state.writer &&
           (path === '/web/base/OSCCRT' || path === `/api/booking/hotelAvail/${property.propertyCode}/availabilityDetailsInquiry`);
         if (availabilityDetail && typeof state.readRequestPolicy === 'function') {

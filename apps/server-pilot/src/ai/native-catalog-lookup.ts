@@ -142,7 +142,7 @@ export async function preloadNativeCatalogLookup(options: PreloadOptions): Promi
       sourceRevision: options.sourceRevision ?? readOptions.sourceRevision, now: options.now });
   const lacksV2Binding = loaded.status === 'available' && loaded.catalog.schemaVersion === 'hms-native-catalogs/v2' &&
     (!(options.credentialVersionHmacSha256 ?? readOptions.credentialVersionHmacSha256) ||
-      !(options.sourceRevision ?? readOptions.sourceRevision));
+      !(options.sourceRevision ?? readOptions.sourceRevision ?? readOptions.readerRevision));
   const catalog = loaded.status === 'available' && !lacksV2Binding ? loaded.catalog : null;
   // Invalid artifacts cannot establish the requested property's identity at this boundary.
   const issue = lacksV2Binding ? 'catalog_identity_unverified' : loaded.status === 'unavailable'

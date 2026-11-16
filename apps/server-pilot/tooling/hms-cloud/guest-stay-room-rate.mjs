@@ -1,6 +1,6 @@
 // Current room/rate catalogs and explicit room selection on an unsaved verified Guest Stay.
 import { randomUUID } from 'node:crypto';
-import { cloudSessionIdentity, withCloudSavedRateReadScope } from './cloud-session.mjs';
+import { cloudSessionIdentity, withCloudSavedRateReadScope, withCloudBlankRateReadScope } from './cloud-session.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { isReviewedGuestStayRatePlanInquiry, isReviewedSavedRateShopRefresh, rejectDuplicateAvailabilityJsonKeys } from './quote-availability-policy.mjs';
 
@@ -540,9 +540,10 @@ async function search(page, kind, input = {}) {
         '/web/base/OSRASD.RatePlanChange', '/api/internalBooking/rateshop/inquiryForGrid',
       ]);
       const nativeScope = nativeFence.open();
-      const capture = await withFence(page, (req, origin) => allowedSearch(req, kind, origin, propertyCode, searches.get(page)) ||
+      const read = () => withFence(page, (req, origin) => allowedSearch(req, kind, origin, propertyCode, searches.get(page)) ||
         (roomKind(kind) && roomFilterResetRequest(req, origin, resetMetadata, kind, propertyCode)),
       () => collectCatalog(page, kind, () => native, (metadata) => { resetMetadata = metadata; }), nativeScope, () => nativeFence.quarantine());
+      const capture = kind === 'ratePlan' ? await withCloudBlankRateReadScope(page, read) : await read();
       if (capture.result?.criteriaUnavailable) return {
         outcome: 'criteria_unavailable', kind, issue: 'RATE_SHOP_CRITERIA_UNAVAILABLE',
         message: UNAVAILABLE_MESSAGE, criteria: { propertyCode: propertyCode, scope: 'guest_stay_rate_shop_catalog' },

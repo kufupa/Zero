@@ -116,7 +116,17 @@ function hasAvailabilityWriteIntent(value) {
 }
 
 /** The saved Rate Shop field refresh operates on the active shop form, not rate selection. */
-export function isReviewedSavedRateShopRefresh(request, { origin, propertyCode, saved }) {
+export function isReviewedSavedRateShopRefresh(request, options) {
+  return isReviewedRateShopRefresh(request, options);
+}
+
+export function isReviewedBlankRateShopRefresh(request, { origin, propertyCode, blank }) {
+  if (!blank || blank.confirmation !== '' || blank.reservationStayId !== '' || blank.reservationId !== '' ||
+      blank.recordId !== '' || blank.guestId !== '') return false;
+  return isReviewedRateShopRefresh(request, { origin, propertyCode, saved: blank });
+}
+
+function isReviewedRateShopRefresh(request, { origin, propertyCode, saved }) {
   try {
     if (!getPropertyRegistration(propertyCode)?.active || !saved || saved.propertyCode !== propertyCode ||
         request.method() !== 'POST' || !['xhr', 'fetch'].includes(request.resourceType()) ||
