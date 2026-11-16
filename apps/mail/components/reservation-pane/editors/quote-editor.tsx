@@ -274,6 +274,20 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
 }
 
 function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bodyPath: string; groups: Record<string, unknown>[]; rows: Record<string, unknown>[] }) {
+  const applying = useRef(false);
+  const [applyingExtra, setApplyingExtra] = useState(false);
+  const applyExtra = (update: () => Promise<void>) => {
+    if (applying.current) return;
+    applying.current = true;
+    setApplyingExtra(true);
+    const pending = `quote-extra:${bodyPath}`;
+    editor.commands.setUncommitted(pending, true);
+    void update().finally(() => {
+      editor.commands.setUncommitted(pending, false);
+      applying.current = false;
+      setApplyingExtra(false);
+    }).catch(() => {});
+  };
   return <Section title="Extras">
     <p className={styles.note}>Add lunch and transfers as separate lines.</p>
     <div className={styles.inlineButtons}>{[
@@ -281,7 +295,7 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
       { kind: 'airport_transfer', label: 'Airport Transfer / Shuttle' },
       { kind: 'office_transfer', label: 'Office Transfer' },
       { kind: 'dinner', label: 'Dinner' },
-    ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || rows.length >= 100}
+    ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || applyingExtra || rows.length >= 100}
       data-field-path={extra.kind === 'lunch' ? `${bodyPath}/requestedMoney` : undefined}
       onClick={() => void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })}>+ {extra.label}</button>)}</div>
     {rows.length > 0 && <p className={styles.note}>Extras are added on top of the Infor room rate. They never change it.</p>}
@@ -297,13 +311,10 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
       const allIds = groups.map((group) => text(group.id));
       const applied = scope === 'overall' ? allIds : scope === 'per_target' ? selected : [];
       // One control replaces the old scope select: every group ticked means all room groups.
-      const setApplied = (next: string[]) => {
+      const setApplied = async (next: string[]) => {
         const all = allIds.length > 0 && allIds.every((id) => next.includes(id));
-        editor.commands.setUncommitted(`${path}/scope`, true);
-        void (async () => {
-          await editor.commands.edit(`${path}/targetRefs`, all ? [] : next);
-          await editor.commands.edit(`${path}/scope`, all ? 'overall' : 'per_target');
-        })().finally(() => editor.commands.setUncommitted(`${path}/scope`, false)).catch(() => {});
+        editor.commands.stageEdit(`${path}/targetRefs`, all ? [] : next);
+        await editor.commands.edit(`${path}/scope`, all ? 'overall' : 'per_target');
       };
       return <div className={styles.roomCard} key={text(row.id) || index}>
         <div className={styles.twoCol}><Field label="Amount" path={`${path}/amount`} editor={editor} review requireReview />
@@ -316,17 +327,18 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
           { value: 'item', label: 'Once' },
         ]} />
         <label data-field-path={kindPath} className={styles.localField}>Handle as
-          <FieldReview editor={editor} path={kindPath} label="extra type" requireReview />
-          <select value={kind || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
+          <FieldReview editor={editor} path={kindPath} label="extra type" requireReview disabled={applyingExtra} />
+          <select value={kind || 'unresolved'} disabled={editor.view.busy || applyingExtra} onChange={(event) => {
             const next = event.target.value;
             if (next === 'unsupported') {
               if (kind === 'unsupported' && separateOtherSaved) return;
-              void editor.commands.changeRows({ kind: 'separate_quote_money', requestId: editor.request.id, entityId: String(index) } as never);
+              applyExtra(() => editor.commands.changeRows({ kind: 'separate_quote_money', requestId: editor.request.id, entityId: String(index) } as never));
             } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) {
-              void editor.commands.edit(kindPath, next).then(() => {
+              applyExtra(async () => {
+                await editor.commands.edit(kindPath, next);
                 // Only a single-group quote has an unambiguous default; with several groups staff tick the rooms.
-                if (allIds.length === 1 && scope !== 'overall' && scope !== 'per_target') setApplied(allIds);
-              }).catch(() => {});
+                if (allIds.length === 1 && scope !== 'overall' && scope !== 'per_target') await setApplied(allIds);
+              });
             }
           }}>
             <option value="unresolved">Choose how to handle</option>
@@ -339,11 +351,11 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
         </label>
         <fieldset className={styles.targetFields} data-field-path={`${path}/scope`}>
           <legend className={styles.countHeading}><span>Applies to</span>
-            <span className={styles.inlineButtons}><FieldReview editor={editor} path={`${path}/scope`} label="rooms for this extra" requireReview />
-              <span data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="rooms for this extra" requireReview /></span></span></legend>
+            <span className={styles.inlineButtons}><FieldReview editor={editor} path={`${path}/scope`} label="rooms for this extra" requireReview disabled={applyingExtra} />
+              <span data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="rooms for this extra" requireReview disabled={applyingExtra} /></span></span></legend>
           {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id || groupIndex}>
-            <input type="checkbox" disabled={editor.view.busy} checked={applied.includes(id)}
-              onChange={(event) => setApplied(event.target.checked ? [...applied, id] : applied.filter((value) => value !== id))} />
+            <input type="checkbox" disabled={editor.view.busy || applyingExtra} checked={applied.includes(id)}
+              onChange={(event) => { const next = event.target.checked ? [...applied, id] : applied.filter((value) => value !== id); applyExtra(() => setApplied(next)); }} />
             {groups.length === 1 ? ' All rooms' : ` Room group ${groupIndex + 1}`}
           </label>; })}
           {kind !== 'unsupported' && applied.length === 0 && <p className={styles.notice}>Tick the rooms this extra is for.</p>}
@@ -353,7 +365,7 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
           : kind === 'unsupported'
             ? <p className={styles.notice}>The separate follow-up is not saved yet. Save it as an Other request before generating this quote.</p>
             : !['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(kind) && <p className={styles.notice}>Choose the extra to include in this quote, or save it as a separate Other request.</p>}
-        {kind !== 'unsupported' && <button type="button" className={styles.linkButton} disabled={editor.view.busy}
+        {kind !== 'unsupported' && <button type="button" className={styles.linkButton} disabled={editor.view.busy || applyingExtra}
           onClick={() => void editor.commands.changeRows({ kind: 'remove_quote_extra', requestId: editor.request.id, entityId: moneyId })}>Remove extra</button>}
       </div>;
     })}
