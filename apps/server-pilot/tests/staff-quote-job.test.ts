@@ -900,14 +900,14 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
-  it('tries the property lock once for a prepared quote and requeues a busy lock uncharged', async () => {
+  it('requeues a long-waiting prepared quote after a busy property lock without charging an attempt', async () => {
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {}, true);
     const withLock = vi.fn(async (_callback: () => Promise<unknown>, _options: unknown) => {
       throw new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE);
     });
     quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock });
 
-    await expect(executeHmsJob({ run: { ...run, createdAt: new Date() }, fence, db: quoteDb })).resolves.toBe('retry_wait');
+    await expect(executeHmsJob({ run: { ...run, createdAt: new Date(Date.now() - 16 * 60_000) }, fence, db: quoteDb })).resolves.toBe('retry_wait');
 
     expect(withLock).toHaveBeenCalledOnce();
     expect(withLock).toHaveBeenCalledWith(
@@ -950,14 +950,16 @@ describe('staff_quote HMS job execution', () => {
       };
     });
 
-    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('dead_letter');
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('retry_wait');
 
     expect(quoteQueueMocks.staffQuoteInFlight).toHaveBeenCalledTimes(activeChecks.length);
     expect(workflowMocks.executeStaffQuote).toHaveBeenCalledTimes(quoteCalls);
-    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
       expect.objectContaining({
+        attempts: 0,
         failureClass: 'STAFF_QUOTE_ACTIVE',
-        lastError: 'prepared_quote_yielded_to_staff_quote',
+        lastError: 'staff quote in flight',
+        resetDeadline: true,
       }),
       quoteDb,
     );

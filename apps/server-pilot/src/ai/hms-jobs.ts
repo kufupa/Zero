@@ -3403,7 +3403,6 @@ async function requeueRun(
   return 'retry_wait';
 }
 
-const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
 const PREPARED_QUOTE_ATTACH_FAILED = 'staff quote attach failed';
 const PREPARED_QUOTE_ATTACH_MAX_ATTEMPTS = 2;
 
@@ -4016,12 +4015,6 @@ export async function executeHmsJob(input: {
     metrics.prefetchBatchSize > 0
       ? metrics.prefetchBatchSize
       : 1;
-  const recordedAdmissionAt = metrics.prefetchBatchAdmittedAt ?? metrics.prefetchAdmittedAt;
-  const parsedAdmissionAt =
-    typeof recordedAdmissionAt === 'string' ? Date.parse(recordedAdmissionAt) : Number.NaN;
-  let preparedQuoteLockWaitStart = Number.isFinite(parsedAdmissionAt)
-    ? new Date(parsedAdmissionAt)
-    : run.createdAt;
   if (systemPreparedQuote && metrics.prefetchDeferred === true) {
     const admitted = await db.transaction(async (tx) => {
       await tx.execute(
@@ -4135,7 +4128,6 @@ export async function executeHmsJob(input: {
       return { status: 'admit' as const, admittedAt: occupied.admittedAt };
     });
     if (admitted.status !== 'admit') return admitted.status;
-    preparedQuoteLockWaitStart = admitted.admittedAt;
   }
   if (
     systemPreparedQuote &&
@@ -4232,15 +4224,12 @@ export async function executeHmsJob(input: {
       return 'succeeded';
     } catch (error) {
       if (systemPreparedQuote && preparedQuoteYielded(error)) {
-        await markAiRunDeadLetter(
-          {
-            ...mark,
-            lastError: 'prepared_quote_yielded_to_staff_quote',
-            failureClass: 'STAFF_QUOTE_ACTIVE',
-          },
-          db,
-        );
-        return 'dead_letter';
+        return requeueRun(db, mark, {
+          attempts: run.attempts,
+          delayMs: JOB_YIELD_MS,
+          failureClass: 'STAFF_QUOTE_ACTIVE',
+          lastError: preparedQuoteYieldLastError(run, 'staff quote in flight'),
+        });
       }
       if (
         input.signal?.aborted &&
@@ -4258,14 +4247,6 @@ export async function executeHmsJob(input: {
         });
       }
       if (isPropertyReadLockDeadline(error)) {
-        // A prepared quote waits out a busy lock for a while, then gives up so staff never stay pinned to it.
-        if (systemPreparedQuote && Date.now() - preparedQuoteLockWaitStart.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
-          await markAiRunDeadLetter(
-            { ...mark, lastError: 'prepared_quote_lock_busy', failureClass: 'HMS_LOCK_BUSY' },
-            db,
-          );
-          return 'dead_letter';
-        }
         if (systemPreparedQuote) {
           return requeueRun(db, mark, {
             attempts: run.attempts,
@@ -4277,13 +4258,21 @@ export async function executeHmsJob(input: {
         return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
       }
       if (staffQuoteLockBusy(error)) {
+        if (systemPreparedQuote) {
+          return requeueRun(db, mark, {
+            attempts: run.attempts,
+            delayMs: JOB_YIELD_MS,
+            failureClass: 'HMS_LOCK_BUSY',
+            lastError: preparedQuoteYieldLastError(run, 'party verification lock busy'),
+          });
+        }
         return retryOrFail(
           db,
           run,
           mark,
           'HMS_LOCK_BUSY',
           'party verification lock busy',
-          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+          JOB_MAX_ATTEMPTS,
         );
       }
       const parkedLogin = await parkLoginOutageFailure(
