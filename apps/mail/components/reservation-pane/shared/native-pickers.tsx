@@ -320,6 +320,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       <button type="button" disabled={loading} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
     </div>}
   {open && catalogueSearch !== null && <small>Searching {catalogueSearch}. Select an Infor rate to apply it.</small>}
+  {party && !dirty && !open && selectedChoice && selectedChoice.label !== saved && <small>Selected: {selectedChoice.label}</small>}
   {dirty ? amendTrack ? <small>Select an Infor match. <button type="button" disabled={editor.view.busy} onClick={() => {
       editVersion.current += 1; setQuery(saved); setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false);
     }}>Cancel search</button></small> : <small>Unsaved search</small>
