@@ -132,7 +132,7 @@ export const retroReportSchema = z.object({
   }
 });
 export type RetroReport = z.infer<typeof retroReportSchema>;
-export type StaffRetroReport = Omit<RetroReport, 'provenance'>;
+export type StaffRetroReport = Omit<RetroReport, 'provenance'> & { provenance: Record<string, never> };
 
 function staffExplanation(value: string, fallback: string, sourceNames: ReadonlySet<string>): string {
   return value
@@ -149,6 +149,8 @@ export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
     propertyCode: report.propertyCode,
     generatedAt: report.generatedAt,
     period: report.period,
+    // Older open dashboards read this object before their next page reload.
+    provenance: {},
     coverage: {
       ...report.coverage,
       notes: [

@@ -302,6 +302,7 @@ export const ILLUSTRATIVE_RETRO_REPORT: RetroReport = {
     end: '2026-11-16T04:17:49Z',
     timezone: 'Africa/Johannesburg',
   },
+  provenance: {},
   coverage: {
     status: 'partial',
     sourceExportedAt: '2026-11-16T04:17:49Z',
