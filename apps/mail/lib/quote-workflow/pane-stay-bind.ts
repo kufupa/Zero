@@ -310,9 +310,18 @@ export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
     const routes = row.quoteWorkflow;
     if (!routes?.prepareStay || !routes.commitStay || !routes.getStayWrite || !stay.workItemId) throw new Error('pane_save_client_missing');
     const scope = getMailCacheScope(), options = inMailbox(scope.activeTransportId);
-    const prepared = object(await routes.prepareStay.mutate({ workItemId: stay.workItemId,
-      ...(stay.propertyCode === 'HRDAV' || stay.propertyCode === 'HRDAVS' ? { propertySwitch: stay.propertyCode } : {}),
-      rooms: rooms.map(room => ({ stayId: room.stayId, previewDigest: room.previewDigest })) }, options));
+    let prepared: Record<string, unknown>;
+    try {
+      prepared = object(await routes.prepareStay.mutate({ workItemId: stay.workItemId,
+        ...(stay.propertyCode === 'HRDAV' || stay.propertyCode === 'HRDAVS' ? { propertySwitch: stay.propertyCode } : {}),
+        rooms: rooms.map(room => ({ stayId: room.stayId, previewDigest: room.previewDigest })) }, options));
+    } catch (error) {
+      // The server's source guards throw these known refusals; they are the preview's clear scope refusal, not lost contact.
+      if (error instanceof Error && /^cloud_create_(source_changed|property_mismatch|existing_booking|scope_changed|source_blocked)$/.test(error.message)) {
+        return new Map<string, PaneStayResult>(rooms.map(room => [room.stayId, { status: 'refused', reason: 'cloud_create_scope_changed' }]));
+      }
+      throw error;
+    }
     if (!uuid(prepared.preparedRef) || !Number.isSafeInteger(prepared.revision) || Number(prepared.revision) < 0 ||
         prepared.propertyCode !== (stay.propertyCode ?? 'HRCEN')) throw new Error('pane_preparation_changed');
     const queued = object(await routes.commitStay.mutate({ ...stay, previewDigest: rooms[0]!.previewDigest,

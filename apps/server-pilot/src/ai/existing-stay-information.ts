@@ -1,5 +1,6 @@
 import { normalizeEmailAddress } from './never-spam.js';
 import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
+import { maskCardNumbers } from './card-mask.js';
 import { load } from 'cheerio';
 
 const PRE_STAY_SUBJECT = /\bpre[\s-]?(?:stay|arrival)\b/i;
@@ -102,4 +103,36 @@ export function groundedSeparateAsk(body: string | null | undefined, value: unkn
   const excerpt = value.trim();
   if (!excerpt || excerpt.length > maxCharacters) return null;
   return currentAuthoredMessageText(body).includes(excerpt) ? excerpt : null;
+}
+
+export type SelfSentPreStayAskVerdict =
+  | { status: 'none' }
+  | { status: 'ask'; excerpt: string }
+  | { status: 'review' };
+
+/**
+ * The stored read's verdict for one self-prestay candidate, on the same subject,
+ * current body and extraction confirmation numbers every gate already uses:
+ * a grounded separate current ask, an explicit no-action read, or unverified.
+ * Unverified is never "no ask" — a missing, contradicted or non-self-prestay
+ * extraction verdict leaves the current message for staff to review. Returns
+ * null when the mail is not a self-prestay candidate.
+ */
+export function selfSentPreStayAskVerdict(input: {
+  fromAddress?: string | null;
+  mailboxAddress?: string | null;
+  subject?: string | null;
+  textBody?: string | null;
+  htmlBody?: string | null;
+  confirmationNumbers?: readonly string[];
+  payload?: { needsAction?: boolean | null; separateAsk?: unknown } | null;
+}): SelfSentPreStayAskVerdict | null {
+  const bodyText = preStaySourceText(input.textBody, input.htmlBody);
+  if (!selfSentPreStayCandidate({ ...input, bodyText })) return null;
+  const excerpt = groundedSeparateAsk(maskCardNumbers(bodyText), input.payload?.separateAsk);
+  if (excerpt) return { status: 'ask', excerpt };
+  const ungroundedAsk =
+    typeof input.payload?.separateAsk === 'string' && input.payload.separateAsk.trim().length > 0;
+  if (input.payload?.needsAction === false && !ungroundedAsk) return { status: 'none' };
+  return { status: 'review' };
 }

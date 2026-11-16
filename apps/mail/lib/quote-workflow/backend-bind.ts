@@ -299,6 +299,8 @@ export type StoredWork =
       staffManual?: boolean;
       existingStayInformation?: boolean;
       separateAsk?: string | null;
+      /** True when the stored read could not verify there is no other ask; the pane asks staff to review the mail. */
+      separateAskReview?: boolean;
       confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;

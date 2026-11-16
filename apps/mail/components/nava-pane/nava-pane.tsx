@@ -174,9 +174,10 @@ function externalSenderFallback(
   };
 }
 
-function ExistingStayInformationCard({ confirmationNumbers, separateAsk }: {
+function ExistingStayInformationCard({ confirmationNumbers, separateAsk, needsReview }: {
   confirmationNumbers: string[];
   separateAsk: string | null;
+  needsReview: boolean;
 }) {
   return (
     <section
@@ -187,8 +188,14 @@ function ExistingStayInformationCard({ confirmationNumbers, separateAsk }: {
     >
       <p className="text-[13px] leading-5 text-[#475569]">
         <span className="font-semibold text-[#1e293b]">Existing stay information</span> — this confirmation is for a
-        reservation already on file. Nava takes no booking or quote action.
+        reservation already on file.{needsReview ? '' : ' Nava takes no booking or quote action.'}
       </p>
+      {needsReview ? (
+        <p className="text-[13px] leading-5 text-[#475569]">
+          <span className="font-semibold text-[#92400e]">Needs review</span>: this mail may also ask for something else.
+          Read the email and action any other request by hand in HMS — Nava cannot action it here.
+        </p>
+      ) : null}
       {confirmationNumbers.length ? (
         <p className="text-[13px] leading-5 text-[#475569]">
           <span className="font-semibold text-[#1e293b]">
@@ -1578,8 +1585,16 @@ export function NavaPane({
   const separateAsk = storedWork.pane.state === 'ready'
     ? storedWork.pane.separateAsk ?? null
     : null;
+  // Without a stored read that explicitly verified no other ask, the card never reads as "no action": a missing or
+  // non-self-prestay extraction verdict leaves the current mail for staff to review.
+  const separateAskReview =
+    isExistingStayInformation &&
+    !separateAsk &&
+    !(storedWork.pane.state === 'ready' &&
+      storedWork.pane.existingStayInformation === true &&
+      storedWork.pane.separateAskReview === false);
   const classifiedReadAs = isExistingStayInformation
-    ? separateAsk ? 'other_to_do' : 'not_for_nava'
+    ? separateAsk || separateAskReview ? 'other_to_do' : 'not_for_nava'
     : readAsForAnalysis(quoteSession.analysis, {
         kind: selectedReadKind,
         treatAs: quoteSession.treatAs,
@@ -2532,7 +2547,7 @@ export function NavaPane({
             {isExistingStayInformation ? (
               <div className="flex flex-col gap-3.5">
                 {shownScreen === 'tool' ? (
-                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} separateAsk={separateAsk} />
+                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} separateAsk={separateAsk} needsReview={separateAskReview} />
                 ) : null}
               </div>
             ) : nonActionableMailSource ? (

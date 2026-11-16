@@ -200,6 +200,9 @@ function sourceKey(input: Input, cursor: Cursor) {
     messageId: input.selection.source.messageId, cursor };
 }
 
+/** The source guards checkSource can throw; every caller maps them to the same clear scope refusal, never raw. */
+const CLOUD_CREATE_SOURCE_GUARD = /^cloud_create_(source_changed|property_mismatch|existing_booking|scope_changed|source_blocked)$/;
+
 /** Recheck the exact source, extraction, mailbox and staff access while their rows are locked. */
 async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSource, input: Input, accessId?: string) {
   await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: input.workItemId });
@@ -749,7 +752,11 @@ export async function preparePaneCloudWrite(db: DB, input: {
         mapped.outcome !== 'ok' || cloudCreatePolicyIssue(configuration.formPolicy, mapped.input) ||
         !await previewShotValid(grant, roomInput)) throw new Error('cloud_batch_stale');
     const current = await withLockedCreateSource(db, sourceKey(roomInput, grant.cursor), async (tx, source) => {
-      const checked = await checkSource(tx, source, roomInput, grant.accessId);
+      const checked = await checkSource(tx, source, roomInput, grant.accessId).catch((error: unknown) => {
+        // The same source guards the preview already maps to one clear refusal; prepare never leaks their raw names.
+        if (error instanceof Error && CLOUD_CREATE_SOURCE_GUARD.test(error.message)) throw new Error('cloud_create_scope_changed');
+        throw error;
+      });
       const parsed = safeParseStoredMailExtraction(source.effectivePayload);
       if (!parsed.success) throw new Error('cloud_batch_stale');
       const groups = formStays(parsed.data, source.item.state).filter(group => group.id === grant.identity.stayId);
