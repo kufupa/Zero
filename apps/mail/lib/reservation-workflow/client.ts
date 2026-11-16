@@ -66,6 +66,7 @@ export type ReservationWorkflowV2TrpcClient = {
       go: true; prepareRef: string; preparedRef: string; idempotencyKey: string }>;
     prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string; preparedRef?: string }>;
+    revokeUnsentFiling: MutationProcedure<ItemInput & { requestId: string; preparedRef: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
     configureFiling: MutationProcedure<ItemInput & { requestId: string; attachmentId: string; confirmation?: string;
       guestName?: string; bookedArrival?: string; bookedDeparture?: string;
@@ -1116,6 +1117,11 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
           : operationNotice(result, ['queued', 'succeeded', 'already_succeeded']);
       const displayNotice = notice ? isQuote ? `${notice} No email was sent and no reservation was saved.` : notice : null;
       return { ...snapshot, ...(displayNotice ? { serviceNotice: displayNotice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
+    },
+    async revokeUnsentFiling(command) {
+      const result = await api.revokeUnsentFiling.mutate({ ...itemInput(command), requestId: command.requestId,
+        preparedRef: command.preparedRef }, mailboxOptions(command.source));
+      return isRecord(result) && result.status === 'revoked';
     },
     async reconcile(command) {
       const input = { ...itemInput(command), operationId: command.operationId };

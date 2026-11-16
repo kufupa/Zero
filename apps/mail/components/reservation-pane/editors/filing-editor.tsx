@@ -279,7 +279,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     const picked = !useCreateTarget && pickedRow && pickedRow.confirmation === confirmation.trim() ? pickedRow : null;
     const guest = picked ? [picked.firstName, picked.lastName].filter(Boolean).join(' ').trim() : confirmation.trim() === text(hint?.confirmation) ? text(hint?.guestName) : '';
     const arrival = picked?.arrival || (picked ? searchForm.arrival : confirmation.trim() === text(hint?.confirmation) ? text(hint?.bookedArrival) : '');
-    const departure = picked?.departure || (confirmation.trim() === text(hint?.confirmation) ? text(hint?.bookedDeparture) : '');
+    const departure = picked ? text(picked.departure) : confirmation.trim() === text(hint?.confirmation) ? text(hint?.bookedDeparture) : '';
     if (!useCreateTarget && departure && !arrival) {
       setFilingError('Add the original arrival date before checking this stay.');
       filingInFlight.current = false;

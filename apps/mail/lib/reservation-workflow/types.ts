@@ -176,6 +176,7 @@ export interface ReservationWorkflowClient {
   createGuestProfile(input: ReservationGuestProfileCommand & { prepareRef: string; preparedRef: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
   prepare(input: ReservationCommandContext & { requestId: string; allocationId?: string }): Promise<ReservationPaneSnapshot>;
   execute(input: ReservationCommandContext & { requestId: string; allocationId?: string; idempotencyKey: string }): Promise<ReservationPaneSnapshot>;
+  revokeUnsentFiling?(input: ReservationCommandContext & { requestId: string; preparedRef: string }): Promise<boolean>;
   reconcile(input: ReservationCommandContext & { operationId: string }): Promise<ReservationPaneSnapshot>;
   configureFiling(input: ReservationCommandContext & { requestId: string; attachmentId: string; confirmation?: string;
     guestName?: string; bookedArrival?: string; bookedDeparture?: string;

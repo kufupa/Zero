@@ -592,8 +592,18 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           if (!snapshotMatchesSource(current, context.source) || current.session.sourceChanged)
             throw new FilingActionError('The email or filing details changed. Review them before filing again.');
           apply(current, context.source, entry);
-          if (filingAttemptUncertain(attemptKey, current))
-            throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+          if (filingAttemptUncertain(attemptKey, current)) {
+            const attempt = uncertainFilingAttempts.get(attemptKey);
+            const revoked = attempt && client.revokeUnsentFiling && await client.revokeUnsentFiling({
+              source: context.source, snapshot: current, requestId, preparedRef: attempt.preparedRef,
+            }).catch(() => false);
+            if (!revoked) throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
+            uncertainFilingAttempts.delete(attemptKey);
+            current = await client.get({ source: context.source, snapshot: current });
+            if (!snapshotMatchesSource(current, context.source) || current.session.sourceChanged)
+              throw new FilingActionError('The email or filing details changed. Review them before filing again.');
+            apply(current, context.source, entry);
+          }
         }
         const ensureCurrent = (next?: ReservationPaneSnapshot) => {
           const selected = activeAction.current ?? entry.snapshot?.requests[0]?.id;
