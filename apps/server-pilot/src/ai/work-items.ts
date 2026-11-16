@@ -2780,7 +2780,9 @@ function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationW
   const { decision, generationId, sourceHash } = intake.data.disposition;
   if (decision !== 'no_action' || generationId !== draft.generationId ||
       sourceHash !== draft.source.sourceHash) return null;
-  if (draft.status !== 'ready' || !draft.extraction || draft.extraction.issues?.length ||
+  if (draft.status !== 'ready' || !draft.extraction ||
+      draft.extractionGenerationId !== draft.generationId ||
+      draft.extraction.issues?.length ||
       draft.proposal.issues?.length ||
       draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0 ||
       draft.errors.length > 0) return null;

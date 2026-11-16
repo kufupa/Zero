@@ -146,6 +146,7 @@ function storedReservationWorkflowV2Draft(draft: ReservationWorkflowV2Draft): Re
 function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boolean {
   return draft.status === 'ready' &&
     Boolean(draft.extraction) &&
+    draft.extractionGenerationId === draft.generationId &&
     draft.proposal.content.requests.length === 0 &&
     draft.operationResults.length === 0 &&
     !draft.extraction?.issues?.length &&
