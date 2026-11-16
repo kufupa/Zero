@@ -337,8 +337,9 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
           </select>
         </label>
         <fieldset className={styles.targetFields} data-field-path={`${path}/scope`}>
-          <legend>Applies to <FieldReview editor={editor} path={`${path}/scope`} label="rooms for this extra" requireReview />
-            <span data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="rooms for this extra" requireReview /></span></legend>
+          <legend className={styles.countHeading}><span>Applies to</span>
+            <span className={styles.inlineButtons}><FieldReview editor={editor} path={`${path}/scope`} label="rooms for this extra" requireReview />
+              <span data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="rooms for this extra" requireReview /></span></span></legend>
           {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id || groupIndex}>
             <input type="checkbox" disabled={editor.view.busy} checked={applied.includes(id)}
               onChange={(event) => setApplied(event.target.checked ? [...applied, id] : applied.filter((value) => value !== id))} />
@@ -544,7 +545,7 @@ export function QuoteEditor(editor: Editor) {
           <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} requested={askedFor} />
           <NativePicker label="Rate Plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
           <div className={styles.twoCol}>
-            <Field label="Meal Plan asked for" path={`${groupPath}/requestedMealPlan`} editor={editor} maxLength={120} review />
+            <Field label="Meal Plan request" path={`${groupPath}/requestedMealPlan`} editor={editor} maxLength={120} review />
             <div data-field-path={`${groupPath}/mealPlan`} className={styles.localField}>
               <div className={styles.countHeading}><span>Meal Plan</span>
                 {group.mealPlan != null && <FieldReview editor={editor} path={`${groupPath}/mealPlan`} label="Meal Plan" requireReview />}</div>
