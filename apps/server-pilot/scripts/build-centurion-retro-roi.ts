@@ -3,20 +3,27 @@ import { execFileSync } from 'node:child_process';
 import { appendFile, chmod, mkdir, mkdtemp, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { availableParallelism, cpus, loadavg, totalmem } from 'node:os';
+import { setTimeout as backoffSleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { extractionReasoningEffort, extractionVisionEnabled } from '../src/ai/extraction/config.js';
-import { lunaCallBudget } from '../src/ai/bedrock/luna.js';
+import { createAzureLunaModel, LunaModelAdapter, lunaCallBudget } from '../src/ai/bedrock/luna.js';
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../src/ai/bedrock/adapter.js';
 import { reservationWorkflowV2ExtractionSchema, reservationWorkflowV2ProposalSchema, reservationWorkflowV2ObservationSchema } from '../src/ai/reservation-workflow-v2-contract.js';
 import type { QuoteAttachmentRow, SyncedQuoteAttachment, SyncedQuoteSelection } from '../src/ai/quote-workflow-synced-selection.js';
 import { RETRO_WORKFLOWS, RETRO_ROI_MAX_REPORT_BYTES, retroReportSchema, retroTaskSchema, type RetroTask } from '../src/metrics/centurion-retro-roi.js';
 
-const VERSION = 'centurion-retro-roi-runner/1';
+const VERSION = 'centurion-retro-roi-runner/2';
+const MAX_WORKERS = 96, MAX_REPLAY_WORKERS = 32, CONTROL_INTERVAL_MS = 300_000, ERROR_LIMIT = 0.02, MAX_429_RETRIES = 3;
+const ASSESSMENT_MODEL = 'gpt-6.1-terra';
+const replayClockCeiling = () => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: 'numeric', hourCycle: 'h23' }).format(new Date())) < 16 ? 8 : MAX_REPLAY_WORKERS;
+const CONFIRMED_INTRINSIC_TIMEOUT_KEY = 'aeed93d07c7cf88d8d566a5302b6b236910ac1ffb1fa9695560ff36236fd205b';
 const START = '2026-10-17T04:17:49Z', END = '2026-11-16T04:17:49Z';
 const MAILBOX = 'centurion@legacyhotels.co.za';
 const instant = z.string().datetime({ offset: true });
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const codeSHA = z.string().regex(/^[a-f0-9]{40,64}$/);
 const short = z.string().max(8000);
 const artifact = z.object({ id: sha256, sha256, bytes: z.number().int().nonnegative() });
 const attachment = z.object({ id: z.string(), messageId: z.string(), filename: z.string(), contentType: z.string(),
@@ -77,11 +84,20 @@ const assessmentSchema = z.object({ tasks: z.array(z.object({ key: z.string(),
   checks: z.array(z.object({ requirementIndex: z.number().int().nonnegative(), status: z.enum(['matched', 'missing', 'mismatch']),
     preparedPointer: z.string(), preparedValue: short })).max(30),
   nativeChecks: z.array(nativeCheckSchema).max(30) })).max(16) });
-const modelResultSchema = z.object({ modelId: z.literal('gpt-6-luna'), output: z.record(z.unknown()),
+const modelResultSchema = z.object({ modelId: z.enum(['gpt-6-luna', ASSESSMENT_MODEL]), output: z.record(z.unknown()),
   usage: z.object({ inputTokens: z.number(), outputTokens: z.number(), totalTokens: z.number(), latencyMs: z.number(), estimatedCostUsd: z.number(), rateTableVersion: z.string() }),
   provenance: z.object({ routeId: z.string(), protocol: z.string(), modelId: z.string(), usageSource: z.enum(['reported', 'unknown']), purpose: z.enum(['draft', 'extraction', 'shadow', 'judge']).optional() }).optional() });
 const checkpointSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('model'), fingerprint: sha256, key: sha256, result: modelResultSchema }),
+  z.object({ kind: z.literal('api_attempt'), fingerprint: sha256, key: sha256, modelId: z.enum(['gpt-6-luna', ASSESSMENT_MODEL]).optional(), stage: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), messageIds: z.array(z.string()), attempt: z.number().int().positive(), completedAt: instant, outcome: z.enum(['success', 'rate_limited', 'timeout', 'error']), latencyMs: z.number().nonnegative(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable() }),
+  z.object({ kind: z.literal('rate_limit'), fingerprint: sha256, key: sha256, stage: z.string(), attempt: z.number().int().positive(), decision: z.enum(['retry', 'exhausted']), delayMs: z.number().nonnegative(), reason: z.string() }),
+  z.object({ kind: z.literal('runtime_metrics'), fingerprint: sha256, at: instant, metrics: z.record(z.unknown()) }),
+  z.object({ kind: z.literal('measurement_pending'), fingerprint: sha256, messageId: z.string(), reason: z.string() }),
+  z.object({ kind: z.literal('measurement_completed'), fingerprint: sha256, messageId: z.string() }),
+  z.object({ kind: z.literal('assessment_rejected'), fingerprint: sha256, messageId: z.string(), key: sha256, reason: short }),
+  z.object({ kind: z.literal('classification_rejected'), fingerprint: sha256, messageId: z.string(), key: sha256, reason: short }),
+  z.object({ kind: z.literal('measurement_terminal'), fingerprint: sha256, messageId: z.string(), stage: z.enum(['classification', 'replay']), reason: short, policy: z.literal('one_end_retry') }),
+  z.object({ kind: z.literal('model'), fingerprint: sha256, key: sha256, result: modelResultSchema, importedFrom: z.object({ path: z.string(), fingerprint: sha256 }).optional() }),
+  z.object({ kind: z.literal('context'), fingerprint: sha256, start: instant, end: instant, nativeIndexSha256: sha256.nullable(), classifyOnly: z.boolean(), producerSHA: codeSHA.optional(), reviewedCompatibleProducer: z.union([codeSHA, z.literal('unknown')]).optional(), reviewedCompatibleFingerprint: sha256.optional() }),
   z.object({ kind: z.literal('dispatch_failure'), fingerprint: sha256, key: sha256, purpose: z.string(), phase: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), errorName: z.string(), errorMessage: short, statusCode: z.number().optional(), latencyMs: z.number().nonnegative(), usage: z.literal('unknown') }),
   z.object({ kind: z.literal('classification'), fingerprint: sha256, messageId: z.string(), result: classificationSchema }),
   z.object({ kind: z.literal('replay'), fingerprint: sha256, messageId: z.string(), result: replayResultSchema, nativeReads: z.array(nativeReceiptSchema) }),
@@ -113,6 +129,23 @@ function option(name: string, fallback?: string): string {
   const value = process.argv[i + 1];
   if (!value || value.startsWith('--')) throw new Error(`Missing value for ${name}`);
   return value;
+}
+function sdkStatusCode(error: unknown, depth = 0, seen = new Set<object>()): number | undefined {
+  if (error === null || typeof error !== 'object' || depth > 6 || seen.size >= 32 || seen.has(error)) return undefined;
+  seen.add(error);
+  if ('statusCode' in error && typeof error.statusCode === 'number') return error.statusCode;
+  for (const field of ['lastError', 'cause']) {
+    const value = field === 'lastError' && 'lastError' in error ? error.lastError : field === 'cause' && 'cause' in error ? error.cause : undefined;
+    const status = sdkStatusCode(value, depth + 1, seen); if (status !== undefined) return status;
+  }
+  if ('errors' in error && Array.isArray(error.errors)) for (const nested of error.errors.slice(-8).reverse()) { const status = sdkStatusCode(nested, depth + 1, seen); if (status !== undefined) return status; }
+  return undefined;
+}
+function fixedLimiter(limit: number) {
+  let active = 0;
+  const waiting: Array<() => void> = [];
+  const admit = () => { while (active < limit && waiting.length) { const next = waiting.shift(); if (next) { active++; next(); } } };
+  return { acquire: () => new Promise<void>(resolveAdmission => { waiting.push(resolveAdmission); admit(); }), release: () => { active--; admit(); }, stats: () => ({ active, waiting: waiting.length, limit }) };
 }
 async function outsideGit(path: string, repo: string): Promise<string> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -152,18 +185,25 @@ function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, ac
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
-    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--concurrency 2] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
-      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 2 }, model: 'gpt-6-luna via approved Azure extraction adapter', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
+    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA --reuse-derived-fingerprint SHA] [--concurrency 32 --maximum-concurrency 32 --classifier-concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max --assessment-output-tokens 24000] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
+      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: replayClockCeiling(), maximumConcurrency: replayClockCeiling(), classifierConcurrency: 32 }, model: 'Approved Azure gpt-6-luna prefill only, capped at32; gpt-6.1-terra classification/assessment', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
   const repo = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'));
+  if (execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }).trim()) {
+    throw new Error('Replay requires a clean committed checkout before starting or reusing checkpoints');
+  }
   const corpusPath = await realpath(resolve(option('--corpus'))), manifestPath = await realpath(resolve(option('--manifest')));
   const out = await outsideGit(resolve(option('--out')), repo);
   const checkpointPath = await outsideGit(resolve(option('--checkpoint', `${out}.checkpoints.jsonl`)), repo);
   const start = instant.parse(option('--start', START)), end = instant.parse(option('--end', END));
   if (Date.parse(end) - Date.parse(start) !== 30 * 86400000 || Date.parse(end) > Date.now()) throw new Error('Require a past, literal 30-day window');
-  const concurrency = z.coerce.number().int().min(1).max(4).parse(option('--concurrency', '2'));
+  const requestedReplayMaximum = z.coerce.number().int().min(1).max(MAX_REPLAY_WORKERS).parse(option('--maximum-concurrency', '32'));
+  let maximumReplayConcurrency = Math.min(requestedReplayMaximum, replayClockCeiling());
+  const concurrency = Math.min(maximumReplayConcurrency, z.coerce.number().int().min(1).max(requestedReplayMaximum).parse(option('--concurrency', String(requestedReplayMaximum))));
+  const classifierConcurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--classifier-concurrency', '32'));
   const limit = z.coerce.number().int().positive().parse(option('--limit', '15000'));
+  const batchSize = z.coerce.number().int().min(1).max(20).parse(option('--classify-batch', '12'));
   const corpusBytes = await readFile(corpusPath), manifestBytes = await readFile(manifestPath);
   const rawManifest: unknown = JSON.parse(manifestBytes.toString('utf8'));
   const liveManifest = liveManifestSchema.safeParse(rawManifest), threads: z.infer<typeof threadSchema>[] = [];
@@ -226,11 +266,45 @@ async function main(): Promise<void> {
   }
   const selectedInbound = (selectors.length ? inbound.filter(mail => selectedIds.has(mail.sourceRowId)) : inbound).slice(0, limit), allowedIds = new Set(selectedInbound.map(mail => mail.sourceRowId));
   const classifierEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--classifier-effort', 'medium'));
+  const classifierModelId = ASSESSMENT_MODEL;
+  const assessmentOutputTokens = z.coerce.number().int().min(1000).max(48000).parse(option('--assessment-output-tokens', '24000'));
+  const assessmentEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--assessment-effort', 'max'));
   const classifierOutputTokens = z.coerce.number().int().min(1000).max(32000).parse(option('--classifier-output-tokens', '16000'));
   const replayEffort = extractionReasoningEffort(process.env), replayVision = extractionVisionEnabled(process.env), replayBudget = lunaCallBudget(replayEffort);
   const productSha = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  const codeDelta = execFileSync('git', ['-C', repo, 'diff', 'HEAD', '--', 'apps/server-pilot/src/ai', 'apps/server-pilot/tooling', 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'], { encoding: 'utf8' });
-  const fingerprint = hash(JSON.stringify({ version: VERSION, productSha, code: hash(codeDelta), runner: hash(await readFile(fileURLToPath(import.meta.url))), source: hash(corpusBytes), manifest: hash(manifestBytes), start, end, classifyOnly: process.argv.includes('--classify-only'), nativeIndex: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, prompts: hash(CLASSIFY + ASSESS), model: 'gpt-6-luna', classifierEffort, classifierOutputTokens, reasoningEffort: replayEffort, visionEnabled: replayVision, replayBudget, contract: hash(await readFile(join(repo, 'apps/server-pilot/src/metrics/centurion-retro-roi.ts'))), classifyBatch: option('--classify-batch', '12') }));
+  const corePromptSource = await readFile(join(repo, 'apps/server-pilot/src/ai/reservation-workflow-v2-prefill.ts'), 'utf8');
+  const corePrompts = [...corePromptSource.matchAll(/\bconst ([A-Z_]+RULES) = (`(?:\\.|[^`])*`);/g)].map(match => ({ name: match[1], template: match[2] }));
+  if (!corePrompts.some(prompt => prompt.name === 'EXTRACTION_RULES') || !corePrompts.some(prompt => prompt.name === 'SYNTHESIS_RULES')) throw new Error('Core model prompts could not be fingerprinted');
+  const semanticInputs = {
+    prompts: { classify: CLASSIFY, assess: ASSESS, core: corePrompts },
+    schemas: [classificationSchema, assessmentSchema, reservationWorkflowV2ExtractionSchema, reservationWorkflowV2ProposalSchema, reservationWorkflowV2ObservationSchema, retroReportSchema].map(schema => zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' })),
+    model: { id: 'gpt-6-luna', classifierEffort, classifierOutputTokens, assessmentEffort, replayEffort, replayVision, replayBudget },
+    corpusHash: hash(JSON.stringify({ source: hash(corpusBytes), manifest: hash(manifestBytes) })),
+  };
+  const legacyFingerprint = hash(JSON.stringify(semanticInputs));
+  const terraLegacyFingerprint = hash(JSON.stringify({ ...semanticInputs, model: { ...semanticInputs.model, assessmentModel: ASSESSMENT_MODEL } }));
+  const fingerprint = hash(JSON.stringify({ ...semanticInputs, model: { ...semanticInputs.model, classifierModel: classifierModelId, assessmentModel: ASSESSMENT_MODEL, assessmentOutputTokens } }));
+  const producerSHA = hash(JSON.stringify({ productSha, runner: hash(await readFile(fileURLToPath(import.meta.url))) }));
+  const reviewedCompatibleProducer = process.argv.includes('--reuse-derived-from-producer') ? z.union([codeSHA, z.literal('unknown')]).parse(option('--reuse-derived-from-producer')) : undefined;
+  const reviewedCompatibleFingerprint = process.argv.includes('--reuse-derived-fingerprint') ? sha256.parse(option('--reuse-derived-fingerprint')) : undefined;
+  if (reviewedCompatibleFingerprint && !reviewedCompatibleProducer) throw new Error('Fingerprint migration requires explicit reviewed producer compatibility');
+  const runContext = { ...(reviewedCompatibleFingerprint ? { reviewedCompatibleFingerprint } : {}), producerSHA, ...(reviewedCompatibleProducer ? { reviewedCompatibleProducer } : {}), kind: 'context', fingerprint, start, end, nativeIndexSha256: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, classifyOnly: process.argv.includes('--classify-only') } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'context' }>;
+  const importedModels = new Map<string, { result: ModelInvokeResult; path: string; fingerprint: string }>();
+  if (process.argv.includes('--reuse-checkpoint')) {
+    const path = await realpath(resolve(option('--reuse-checkpoint')));
+    if (path === checkpointPath) throw new Error('Reuse checkpoint must be a separate immutable snapshot');
+    const records = (await readFile(path, 'utf8')).split('\n');
+    for (const [index, line] of records.entries()) {
+      if (!line) continue;
+      let record: z.infer<typeof checkpointSchema>;
+      try { record = checkpointSchema.parse(JSON.parse(line)); }
+      catch { if (index === records.length - 1) break; throw new Error('Invalid reuse checkpoint record'); }
+      if (record.kind === 'model') importedModels.set(record.key, { result: record.result, path, fingerprint: record.fingerprint });
+      if (record.kind === 'assessment_rejected') importedModels.delete(record.key);
+      if (record.kind === 'classification_rejected') importedModels.delete(record.key);
+    }
+    info({ phase: 'checkpoint_import', eligibleModelReceipts: importedModels.size, source: path, policy: 'Exact actual model input key matches only; prior classifications, replays and grades are not imported' });
+  }
   const memory = await mkdtemp(join(dirname(out), 'retro-empty-memory-')); await chmod(memory, 0o700);
   const env: NodeJS.ProcessEnv = { AZURE_OPENAI_BASE_URL: process.env.AZURE_OPENAI_BASE_URL, AZURE_FOUNDRY_API_KEY: process.env.AZURE_FOUNDRY_API_KEY,
     EXTRACTION_REASONING_EFFORT: replayEffort, EXTRACTION_VISION: replayVision ? 'on' : 'off', HMS_MEMORY_DATA_DIR: memory,
@@ -238,11 +312,20 @@ async function main(): Promise<void> {
     HMS_NATIVE_CATALOG_PATH: join(memory, 'absent-catalog.json'), PARTY_INDEX_PATH: join(memory, 'absent-party-index.json') };
   for (const name of Object.keys(process.env)) if (/^(HMS_MEMORY_|HMS_NATIVE_CATALOG_|PARTY_INDEX_PATH)/.test(name)) delete process.env[name];
   Object.assign(process.env, env);
-  const { createAzureExtractionAdapter, prepareExtractionVisionImages } = await import('../src/ai/extraction/extract.js');
-  const rawAdapter = createAzureExtractionAdapter(env);
-  if (process.argv.includes('--preflight')) { info({ mode: 'preflight', sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, fingerprint,
+  const { prepareExtractionVisionImages } = await import('../src/ai/extraction/extract.js');
+  const azureAdapter = (modelId: 'gpt-6-luna' | typeof ASSESSMENT_MODEL, effort: typeof assessmentEffort): ModelAdapter | null => {
+    if (!env.AZURE_OPENAI_BASE_URL || !env.AZURE_FOUNDRY_API_KEY) return null;
+    const model = new LunaModelAdapter({ model: createAzureLunaModel({ baseURL: env.AZURE_OPENAI_BASE_URL, apiKey: env.AZURE_FOUNDRY_API_KEY, deployment: modelId, fetch: async (input, init) => {
+      const response = await fetch(input, init), names = ['x-ratelimit-limit-tokens', 'x-ratelimit-limit-requests', 'x-ratelimit-remaining-tokens', 'x-ratelimit-remaining-requests', 'x-ratelimit-reset-tokens', 'x-ratelimit-reset-requests', 'retry-after', 'retry-after-ms'];
+      const headers = Object.fromEntries(names.flatMap(name => { const value = response.headers.get(name); return value === null ? [] : [[name, value.slice(0, 500)]]; }));
+      const metrics = { phase: 'azure_response_headers', modelId, status: response.status, headers }; info(metrics); await save({ kind: 'runtime_metrics', fingerprint, at: new Date().toISOString(), metrics }); return response;
+    } }), reasoningEffort: effort, routeId: modelId === ASSESSMENT_MODEL ? 'azure_gpt61_terra_retrospective_assessment' : 'azure_gpt6_luna_extraction', modelId, protocol: 'azure-openai-responses' });
+    return modelId === ASSESSMENT_MODEL ? { async invoke(input) { const result = await model.invoke(input); return { ...result, usage: { ...result.usage, estimatedCostUsd: 0, rateTableVersion: 'terra-pricing-unknown-placeholder-excluded' } }; } } : model;
+  };
+  const rawAdapter = azureAdapter('gpt-6-luna', replayEffort);
+  if (process.argv.includes('--preflight')) { info({ mode: 'preflight', sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, fingerprint, legacyFingerprint, terraLegacyFingerprint, producerSHA, maximumReplayConcurrency, classifierConcurrency, classifierModel: classifierModelId, assessmentOutputTokens, assessmentModel: ASSESSMENT_MODEL,
     sourceThrough: sourceThrough, sourceCoversWindow: Date.parse(sourceThrough) >= Date.parse(end), providerCoverageProven: sourceComplete, sourceScope, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0),
-    canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, selectedMessageIds: selectors.length ? selectedInbound.map(mail => mail.sourceRowId) : undefined, classifierEffort, replayEffort, replayVision, replayBudget, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
+    canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, selectedMessageIds: selectors.length ? selectedInbound.map(mail => mail.sourceRowId) : undefined, concurrency, maximumMessageProducers: MAX_WORKERS * batchSize, eligibleImportedModelReceipts: importedModels.size, checkpointCompatibility: 'Prompt/schema/model/corpus fingerprint plus explicit window/native-index/mode check; import uses exact actual model input keys only', classifierEffort, assessmentEffort, replayEffort, replayVision, replayBudget, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
   if (!rawAdapter) throw new Error('APPROVED_MODEL_ADAPTER_UNAVAILABLE');
   const { runReservationWorkflowV2Prefill } = await import('../src/ai/reservation-workflow-v2-prefill.js');
   const { staffQuoteSourceHash } = await import('../src/ai/staff-quote-workflow.js');
@@ -256,67 +339,234 @@ async function main(): Promise<void> {
   const { nativeReadArgsKey } = await import('./wave1-prefill-replay/cache.js');
   const dispatchFailures: Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>[] = [];
   const cache = new Map<string, ModelInvokeResult>(), classifications = new Map<string, z.infer<typeof classificationSchema>>(), tasks = new Map<string, RetroTask>();
+  const assessmentKeys = new Map<string, string>(), rejectedAssessmentKeys = new Set<string>(), legacyAssessmentKeys = new Map<string, Set<string>>();
+  const classificationKeys = new Map<string, Set<string>>(), discoveryPending = new Set<string>();
+  const terminalFailures = new Map<string, Extract<z.infer<typeof checkpointSchema>, { kind: 'measurement_terminal' }>>();
+  let retryPass = false;
   let checkpointQueue = Promise.resolve();
   const save = (record: z.infer<typeof checkpointSchema>) => { checkpointQueue = checkpointQueue.then(() => appendFile(checkpointPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })); return checkpointQueue; };
+  let contextSeen = false, derivedCompatible = false, lastProducerSHA: string | undefined, skippedDerived = 0;
+  const acceptedFingerprints = new Set([...(reviewedCompatibleFingerprint ? [reviewedCompatibleFingerprint] : []), fingerprint, ...(reviewedCompatibleProducer ? [legacyFingerprint, terraLegacyFingerprint] : [])]);
+  const measurementPending = new Set<string>();
+  const failedMeasurement = (replay: z.infer<typeof replayResultSchema>) => replay.errors?.some(error => error.code === 'model_timeout' || error.code === 'model_error') ?? false;
+  const reviewedProducers = new Set<string>(reviewedCompatibleProducer ? [reviewedCompatibleProducer] : []);
   try {
     const previous = (await readFile(checkpointPath, 'utf8')).split('\n');
+    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); if (record.reviewedCompatibleFingerprint) acceptedFingerprints.add(record.reviewedCompatibleFingerprint); acceptedFingerprints.add(legacyFingerprint); acceptedFingerprints.add(terraLegacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
     for (let index = 0; index < previous.length; index++) {
       const line = previous[index]; if (!line) continue;
       let record: z.infer<typeof checkpointSchema>;
       try { record = checkpointSchema.parse(JSON.parse(line)); }
       catch { if (index === previous.length - 1) { await writeFile(checkpointPath, `${previous.slice(0, index).join('\n')}\n`, { mode: 0o600 }); break; } throw new Error('Invalid checkpoint record'); }
-      if (record.fingerprint !== fingerprint) throw new Error('Checkpoint fingerprint mismatch: choose a new checkpoint path');
-      if (record.kind === 'model') cache.set(record.key, record.result);
+      if (!acceptedFingerprints.has(record.fingerprint)) throw new Error('Checkpoint fingerprint mismatch: choose a new checkpoint path or reviewed compatible producer');
+      if (record.kind === 'context') {
+        if (record.start !== start || record.end !== end || record.nativeIndexSha256 !== runContext.nativeIndexSha256 || record.classifyOnly !== runContext.classifyOnly) throw new Error('Checkpoint window/native-index/mode changed: restart with a new checkpoint');
+        lastProducerSHA = record.producerSHA; derivedCompatible = record.producerSHA === producerSHA || reviewedProducers.has(record.producerSHA ?? 'unknown');
+        if (!derivedCompatible) { classifications.clear(); replays.clear(); tasks.clear(); measurementPending.clear(); discoveryPending.clear(); terminalFailures.clear(); }
+        contextSeen = true; continue;
+      }
+      if (!contextSeen) throw new Error('Checkpoint has no validated run context: use a separate --reuse-checkpoint snapshot');
+      if (record.kind === 'model') { cache.set(record.key, record.result); rejectedAssessmentKeys.delete(record.key); }
+      if (record.kind === 'assessment_rejected') { cache.delete(record.key); importedModels.delete(record.key); rejectedAssessmentKeys.add(record.key); }
+      if (record.kind === 'classification_rejected') { cache.delete(record.key); importedModels.delete(record.key); }
+      if (record.kind === 'api_attempt' && record.stage === 'assessment') for (const id of record.messageIds) { const keys = legacyAssessmentKeys.get(id) ?? new Set<string>(); keys.add(record.key); legacyAssessmentKeys.set(id, keys); }
       if (record.kind === 'dispatch_failure') dispatchFailures.push(record);
-      if (record.kind === 'classification') classifications.set(record.messageId, record.result);
-      if (record.kind === 'replay') replays.set(record.messageId, { result: record.result, nativeReads: record.nativeReads });
+      if (!derivedCompatible && (record.kind === 'classification' || record.kind === 'replay' || record.kind === 'task' || record.kind === 'failure' || record.kind === 'measurement_pending' || record.kind === 'measurement_completed' || record.kind === 'measurement_terminal' || record.kind === 'runtime_metrics')) { skippedDerived++; continue; }
+      if (record.kind === 'classification') { classifications.set(record.messageId, record.result); if (record.result.disposition === 'unknown') discoveryPending.add(record.messageId); else discoveryPending.delete(record.messageId); }
+      if (record.kind === 'replay') { if (failedMeasurement(record.result)) { measurementPending.add(record.messageId); replays.delete(record.messageId); } else replays.set(record.messageId, { result: record.result, nativeReads: record.nativeReads }); }
+      if (record.kind === 'measurement_pending') measurementPending.add(record.messageId);
+      if (record.kind === 'measurement_completed') measurementPending.delete(record.messageId);
+      if (record.kind === 'failure' && record.stage === 'classification') { discoveryPending.add(record.messageId); classifications.delete(record.messageId); }
+      if (record.kind === 'measurement_terminal') { if (record.stage === 'classification') classifications.delete(record.messageId); terminalFailures.set(record.messageId, record); (record.stage === 'classification' ? discoveryPending : measurementPending).add(record.messageId); }
+      if (record.kind === 'runtime_metrics') { const completed = z.object({ phase: z.literal('completed_preparation_message'), messageId: z.string() }).safeParse(record.metrics); if (completed.success) measurementPending.delete(completed.data.messageId); }
       if (record.kind === 'task') tasks.set(record.task.id, record.task);
     }
     await chmod(checkpointPath, 0o600);
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
-  const trackedAdapter = (model: ModelAdapter, purpose: string): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
-    const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
-    const key = hash(JSON.stringify({ purpose, input: stableInput })), cached = cache.get(key); if (cached) return cached;
-    const startedAt = Date.now(); let invoked: ModelInvokeResult;
-    try { invoked = await model.invoke(input); }
-    catch (error) {
-      const properties = z.object({ properties: z.record(z.unknown()) }).safeParse(input.responseSchema);
-      const phase = purpose.startsWith('classifier:') ? 'classification' : properties.success && 'tasks' in properties.data.properties ? 'assessment' : properties.success && 'proposal' in properties.data.properties ? 'synthesis' : properties.success && 'requests' in properties.data.properties ? 'extraction' : 'autopick';
-      const message = error instanceof Error ? error.message : 'Unknown model dispatch failure';
-      const errorMessage = (env.AZURE_FOUNDRY_API_KEY ? message.split(env.AZURE_FOUNDRY_API_KEY).join('[redacted credential]') : message).slice(0, 8000);
-      const statusCode = error !== null && typeof error === 'object' && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : undefined;
-      const failure = { kind: 'dispatch_failure', fingerprint, key, purpose, phase, errorName: error instanceof Error ? error.name : 'UnknownError', errorMessage, statusCode, latencyMs: Date.now() - startedAt, usage: 'unknown' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>;
-      await save(failure); dispatchFailures.push(failure);
-      throw error;
+  for (const [id, task] of tasks) if (measurementPending.has(task.sources[0]?.messageId ?? '')) tasks.delete(id);
+  if (!contextSeen || lastProducerSHA !== producerSHA) {
+    if (contextSeen) info({ phase: derivedCompatible ? 'reviewed_derived_reuse' : 'derived_reset', previousProducerSHA: lastProducerSHA ?? 'unknown', producerSHA, reviewedCompatibleProducer, reviewedCompatibleFingerprint, rawModelReceiptsRetained: cache.size, skippedDerived, policy: 'Only exact actual model input keys reuse raw receipts; batch grouping and replay metadata can change keys' });
+    await save(runContext);
+  }
+  for (const messageId of measurementPending) for (const key of legacyAssessmentKeys.get(messageId) ?? []) {
+    cache.delete(key); importedModels.delete(key);
+    if (!rejectedAssessmentKeys.has(key)) { rejectedAssessmentKeys.add(key); await save({ kind: 'assessment_rejected', fingerprint, messageId, key, reason: 'Legacy pending assessment requires fresh schema and host validation; valid prefill retained' }); }
+  }
+  const markTerminal = async (messageId: string, stage: 'classification' | 'replay', reason: string) => {
+    if (terminalFailures.has(messageId)) return;
+    const record = { kind: 'measurement_terminal', fingerprint, messageId, stage, reason, policy: 'one_end_retry' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'measurement_terminal' }>;
+    await save(record); terminalFailures.set(messageId, record);
+  };
+  const rejectClassifierReceipts = async (messageId: string, reason: string) => {
+    for (const key of classificationKeys.get(messageId) ?? []) { cache.delete(key); importedModels.delete(key); await save({ kind: 'classification_rejected', fingerprint, messageId, key, reason }); }
+    classificationKeys.delete(messageId);
+  };
+  const startedAt = Date.now();
+  const workerRegimes: Array<{ workers: number; classificationWorkers: number; fromElapsedMs: number; toElapsedMs: number | null }> = [{ workers: concurrency, classificationWorkers: classifierConcurrency, fromElapsedMs: 0, toElapsedMs: null }];
+  let activeLimit = concurrency, classifierLimit = classifierConcurrency, classifierSlots = 0, activeSlots = 0, activeModelCalls = 0, activeMessages = 0, classifiedThisRun = 0, prefilledThisRun = 0, replayedThisRun = 0, completedThisRun = 0, failedThisRun = 0;
+  const activeModelCallsByModel: Record<'gpt-6-luna' | typeof ASSESSMENT_MODEL, number> = { 'gpt-6-luna': 0, 'gpt-6.1-terra': 0 };
+  let cacheHits = 0, importedCacheHits = 0, dispatchedCalls = 0, successfulDispatches = 0, extractionTimeouts = 0, admissionWaitMsTotal = 0;
+  const admissions: Array<() => void> = [];
+  const admit = () => { activeLimit = Math.min(activeLimit, requestedReplayMaximum, replayClockCeiling(), retryPass ? 8 : MAX_REPLAY_WORKERS); while (activeSlots < activeLimit && admissions.length) { const next = admissions.shift(); if (next) { activeSlots++; next(); } } };
+  const acquire = () => new Promise<void>(resolveAdmission => {
+    const queuedAt = Date.now(); admissions.push(() => { admissionWaitMsTotal += Date.now() - queuedAt; resolveAdmission(); }); admit();
+  });
+  const release = () => { activeSlots--; admit(); };
+  const classifierAdmissions: Array<() => void> = [];
+  const admitClassifier = () => { while (classifierSlots < classifierLimit && classifierAdmissions.length) { const next = classifierAdmissions.shift(); if (next) { classifierSlots++; next(); } } };
+  const acquireClassifier = () => new Promise<void>(resolveAdmission => { classifierAdmissions.push(resolveAdmission); admitClassifier(); });
+  const releaseClassifier = () => { classifierSlots--; admitClassifier(); };
+  const graders = fixedLimiter(32), frozenProducers = fixedLimiter(4), localReaders = fixedLimiter(4);
+  const withLocalReader = async <T>(run: () => Promise<T>): Promise<T> => { await localReaders.acquire(); try { return await run(); } finally { localReaders.release(); } };
+  const apiAttempts: Array<Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>> = [];
+  let rateLimitResponses = 0, rateLimitRetries = 0, rateLimitExhaustions = 0, gradedTasksThisRun = 0, lastControlAt = startedAt, nextGrowthBoundary = CONTROL_INTERVAL_MS;
+  const localWork = { attachmentLoads: 0, textArtifactsRead: 0, textReadMs: 0, byteArtifactsRead: 0, byteReadMs: 0, pdfTextReads: 0, pdfTextMs: 0, scannedPdfs: 0, pdfReadFailures: 0, classifierVisionCalls: 0, classifierVisionMs: 0, classifierVisionImages: 0, classifierVisionPdfInputs: 0, prefillPreModelCalls: 0, prefillPreModelMs: 0 };
+  const prefillStarts = new Map<string, number>();
+  const completedMessageMetrics: Array<{ messageId: string; tasks: number; latencyMs: number; reportedPreparationTokens: number; preparationAttempts: number; unknownUsageAttempts: number; reportedPreparationTokensPerTask: number | null }> = [];
+  const cpuSnapshot = () => cpus().reduce((sum, cpu) => ({ idle: sum.idle + cpu.times.idle, total: sum.total + Object.values(cpu.times).reduce((a, b) => a + b, 0) }), { idle: 0, total: 0 });
+  let previousCpu = cpuSnapshot(), previousProcCpu = process.cpuUsage(), previousSampleAt = Date.now();
+  const sampleResources = async () => {
+    const now = Date.now(), cpu = cpuSnapshot(), elapsedMs = now - previousSampleAt, procCpu = process.cpuUsage(previousProcCpu), cpuDelta = cpu.total - previousCpu.total;
+    const cpuFreePct = cpuDelta > 0 ? 100 * (cpu.idle - previousCpu.idle) / cpuDelta : null;
+    previousCpu = cpu; previousProcCpu = process.cpuUsage(); previousSampleAt = now;
+    const meminfo = await readFile('/proc/meminfo', 'utf8').catch(() => '');
+    const available = /MemAvailable:\s+(\d+) kB/.exec(meminfo)?.[1], availableBytes = available ? Number(available) * 1024 : null;
+    const memory = process.memoryUsage();
+    return { at: new Date(now).toISOString(), intervalMs: elapsedMs, hostCpuFreePct: cpuFreePct, hostMemoryAvailablePct: availableBytes === null ? null : availableBytes / totalmem() * 100,
+      hostAvailableMiB: availableBytes === null ? null : availableBytes / 1048576, hostTotalMiB: totalmem() / 1048576, hostCpuCount: cpus().length, processAvailableCpus: availableParallelism(), loadAverage: loadavg(),
+      processCpuOneCorePct: elapsedMs > 0 ? (procCpu.user + procCpu.system) / (elapsedMs * 1000) * 100 : null, processRssMiB: memory.rss / 1048576, heapUsedMiB: memory.heapUsed / 1048576 };
+  };
+  const attemptRates = (rows: typeof apiAttempts) => ({ completedAdapterAttempts: rows.length, successes: rows.filter(row => row.outcome === 'success').length,
+    rateLimited: rows.filter(row => row.outcome === 'rate_limited').length, timeouts: rows.filter(row => row.outcome === 'timeout').length, errors: rows.filter(row => row.outcome === 'error').length,
+    throttleTimeoutRate: rows.length ? rows.filter(row => row.outcome === 'rate_limited' || row.outcome === 'timeout').length / rows.length : null,
+    nonSuccessRate: rows.length ? rows.filter(row => row.outcome !== 'success').length / rows.length : null });
+  const controlConcurrency = async (host: Awaited<ReturnType<typeof sampleResources>>, allowGrowth: boolean) => {
+    const now = Date.now(), rows = apiAttempts.filter(row => Date.parse(row.completedAt) >= lastControlAt), all = attemptRates(rows);
+    const lunaRows = rows.filter(row => row.modelId === 'gpt-6-luna'), extractionRows = lunaRows.filter(row => row.stage === 'extraction');
+    const guardRates = (calls: typeof rows) => attemptRates(calls.filter(row => !(row.outcome === 'timeout' && row.key === CONFIRMED_INTRINSIC_TIMEOUT_KEY)));
+    const extraction = attemptRates(extractionRows), extractionGuard = guardRates(extractionRows);
+    const classification = attemptRates(rows.filter(row => row.stage === 'classification')), replay = attemptRates(lunaRows), replayGuard = guardRates(lunaRows);
+    const headroomKnown = host.hostCpuFreePct !== null && host.hostMemoryAvailablePct !== null;
+    const headroomBreach = host.hostCpuFreePct !== null && host.hostCpuFreePct <= 20 || host.hostMemoryAvailablePct !== null && host.hostMemoryAvailablePct <= 20;
+    const nextLimit = (current: number, rates: ReturnType<typeof attemptRates>, requireExtraction: boolean) => {
+      const observedThrottle = rates.completedAdapterAttempts > 0 && rates.rateLimited / rates.completedAdapterAttempts >= ERROR_LIMIT;
+      const unexplainedFailures = (rates.nonSuccessRate ?? 0) >= ERROR_LIMIT || requireExtraction && (extractionGuard.nonSuccessRate ?? 0) >= ERROR_LIMIT;
+      if (headroomBreach || observedThrottle) return { limit: Math.max(1, Math.floor(current / 2)), reason: headroomBreach ? 'Measured host headroom breach' : 'Observed 429 rate breach' };
+      if (unexplainedFailures) return { limit: current, reason: 'Diagnostic hold: timeout/errors remain counted; no paired evidence distinguishes intrinsic complexity from concurrency pressure' };
+      if (allowGrowth && headroomKnown && rates.completedAdapterAttempts > 0 && (!requireExtraction || extraction.completedAdapterAttempts > 0)) return { limit: Math.min(MAX_WORKERS, current * 2), reason: 'Healthy completed adapter attempts and strict >20% headroom' };
+      return { limit: current, reason: 'Hold pending five-minute boundary, headroom or completed stage evidence' };
+    };
+    const classifierDecision = nextLimit(classifierLimit, classification, false), proposedReplayDecision = nextLimit(activeLimit, replayGuard, true);
+    const replayDecision = { ...proposedReplayDecision, limit: Math.min(maximumReplayConcurrency, proposedReplayDecision.limit), reason: proposedReplayDecision.limit > maximumReplayConcurrency ? 'Owner Luna prefill clock ceiling:8 before16:00 UK,32 after' : proposedReplayDecision.reason };
+    if (classifierDecision.limit !== classifierLimit || replayDecision.limit !== activeLimit) {
+      const elapsedMs = now - startedAt, previous = workerRegimes[workerRegimes.length - 1]; if (previous) previous.toElapsedMs = elapsedMs;
+      classifierLimit = classifierDecision.limit; activeLimit = replayDecision.limit;
+      workerRegimes.push({ workers: activeLimit, classificationWorkers: classifierLimit, fromElapsedMs: elapsedMs, toElapsedMs: null }); admit(); admitClassifier();
     }
-    const result = modelResultSchema.parse(invoked);
-    await save({ kind: 'model', fingerprint, key, result }); cache.set(key, result); return result;
+    const decision = { phase: 'concurrency_control', intervalMs: now - lastControlAt, replayWorkers: activeLimit, classificationWorkers: classifierLimit, maximumWorkersPerPool: MAX_WORKERS, allAdapterAttempts: all, classificationAdapterAttempts: classification, replayAdapterAttempts: replay, extractionAdapterAttempts: extraction, replayGuard, confirmedIntrinsicTimeoutKey: CONFIRMED_INTRINSIC_TIMEOUT_KEY, host, classifierDecision, replayDecision };
+    lastControlAt = now; info(decision); await save({ kind: 'runtime_metrics', fingerprint, at: new Date(now).toISOString(), metrics: decision });
+  };
+  const callMessageIds = (input: ModelInvokeInput) => {
+    try {
+      const item = z.object({ selectedMessageId: z.string().optional(), source: z.object({ messageId: z.string() }).optional(), tasks: z.array(z.object({ originMessageId: z.string() })).optional() });
+      const parsed = z.union([item, z.array(item)]).parse(JSON.parse(input.userPrompt));
+      return [...new Set((Array.isArray(parsed) ? parsed : [parsed]).flatMap(row => row.selectedMessageId ? [row.selectedMessageId] : row.source ? [row.source.messageId] : row.tasks?.map(task => task.originMessageId) ?? []))];
+    } catch { return []; }
+  };
+  const trackedAdapter = (model: ModelAdapter, purpose: string, modelId: keyof typeof activeModelCallsByModel): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
+    const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
+    const key = hash(JSON.stringify({ purpose, input: stableInput }));
+    if (purpose.startsWith('classifier:')) for (const id of callMessageIds(input)) {
+      const keys = classificationKeys.get(id) ?? new Set<string>(); keys.add(key); classificationKeys.set(id, keys);
+      if (retryPass && discoveryPending.has(id)) { cache.delete(key); importedModels.delete(key); await save({ kind: 'classification_rejected', fingerprint, messageId: id, key, reason: 'Single discovery end retry must dispatch afresh, preserving prior raw receipt' }); }
+    }
+    const cached = cache.get(key);
+    if (purpose.startsWith('assessment:')) for (const id of callMessageIds(input)) assessmentKeys.set(id, key);
+    if (cached) { cacheHits++; return cached; }
+    const imported = importedModels.get(key);
+    if (imported) {
+      await save({ kind: 'model', fingerprint, key, result: imported.result, importedFrom: { path: imported.path, fingerprint: imported.fingerprint } });
+      cache.set(key, imported.result); cacheHits++; importedCacheHits++; return imported.result;
+    }
+    const properties = z.object({ properties: z.record(z.unknown()) }).safeParse(input.responseSchema);
+    const stage = purpose.startsWith('classifier:') ? 'classification' : properties.success && 'tasks' in properties.data.properties ? 'assessment' : properties.success && 'proposal' in properties.data.properties ? 'synthesis' : properties.success && 'requests' in properties.data.properties ? 'extraction' : 'autopick';
+    const messageIds = callMessageIds(input);
+    if (stage === 'extraction') for (const id of messageIds) {
+      const start = prefillStarts.get(id); if (start !== undefined) { localWork.prefillPreModelCalls++; localWork.prefillPreModelMs += Date.now() - start; prefillStarts.delete(id); }
+    }
+    for (let attempt = 1; ; attempt++) {
+      if (input.signal?.aborted) {
+        if (attempt > 1) { rateLimitExhaustions++; await save({ kind: 'rate_limit', fingerprint, key, stage, attempt, decision: 'exhausted', delayMs: 0, reason: 'Original model deadline expired before retry dispatch' }); }
+        throw input.signal.reason;
+      }
+      const networkStartedAt = Date.now();
+      let dispatched: { ok: true; result: z.infer<typeof modelResultSchema> } | { ok: false; error: unknown };
+      activeModelCalls++; activeModelCallsByModel[modelId]++; dispatchedCalls++;
+      try { dispatched = { ok: true, result: modelResultSchema.parse(await model.invoke(input)) }; }
+      catch (error) { dispatched = { ok: false, error }; }
+      finally { activeModelCalls--; activeModelCallsByModel[modelId]--; }
+      const latencyMs = Date.now() - networkStartedAt;
+      const statusCode = dispatched.ok ? undefined : sdkStatusCode(dispatched.error);
+      const errorName = !dispatched.ok && dispatched.error instanceof Error ? dispatched.error.name : 'UnknownError';
+      const timeout = !dispatched.ok && (errorName === 'TimeoutError' || statusCode === 408 || statusCode === 504 || input.signal?.aborted && input.signal.reason instanceof Error && input.signal.reason.name === 'TimeoutError');
+      const reported = dispatched.ok && dispatched.result.provenance?.usageSource === 'reported';
+      const receipt = { kind: 'api_attempt', fingerprint, key, modelId, stage, messageIds, attempt, completedAt: new Date().toISOString(), outcome: dispatched.ok ? 'success' : statusCode === 429 ? 'rate_limited' : timeout ? 'timeout' : 'error', latencyMs,
+        inputTokens: reported && dispatched.ok ? dispatched.result.usage.inputTokens : null, outputTokens: reported && dispatched.ok ? dispatched.result.usage.outputTokens : null } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>;
+      apiAttempts.push(receipt); await save(receipt);
+      if (dispatched.ok) {
+        successfulDispatches++;
+        await save({ kind: 'model', fingerprint, key, result: dispatched.result }); cache.set(key, dispatched.result); rejectedAssessmentKeys.delete(key); return dispatched.result;
+      }
+      if (stage === 'extraction' && timeout) extractionTimeouts++;
+      if (statusCode === 429) {
+        rateLimitResponses++;
+        const delayMs = Math.floor(Math.min(8000, 1000 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5));
+        const remainingMs = input.deadlineAt === undefined ? Infinity : input.deadlineAt - Date.now();
+        if (attempt <= MAX_429_RETRIES && !input.signal?.aborted && remainingMs > delayMs + 1000) {
+          rateLimitRetries++;
+          await save({ kind: 'rate_limit', fingerprint, key, stage, attempt, decision: 'retry', delayMs, reason: '429 backoff with jitter inside original model deadline' });
+          try { await backoffSleep(delayMs, undefined, { signal: input.signal }); continue; }
+          catch { /* The existing core deadline aborted the backoff; do not extend it. */ }
+        }
+        rateLimitExhaustions++;
+        await save({ kind: 'rate_limit', fingerprint, key, stage, attempt, decision: 'exhausted', delayMs: 0, reason: attempt > MAX_429_RETRIES ? 'Bounded 429 retries exhausted' : 'Original model deadline prevents another retry' });
+      }
+      const message = dispatched.error instanceof Error ? dispatched.error.message : 'Unknown model dispatch failure';
+      const errorMessage = (env.AZURE_FOUNDRY_API_KEY ? message.split(env.AZURE_FOUNDRY_API_KEY).join('[redacted credential]') : message).slice(0, 8000);
+      const failure = { kind: 'dispatch_failure', fingerprint, key, purpose, phase: stage, errorName, errorMessage, statusCode, latencyMs, usage: 'unknown' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>;
+      await save(failure); dispatchFailures.push(failure); throw dispatched.error;
+    }
   } });
-  const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`);
-  const classificationModel = createAzureExtractionAdapter({ ...env, EXTRACTION_REASONING_EFFORT: classifierEffort });
+  const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`, 'gpt-6-luna');
+  const classificationModel = azureAdapter(classifierModelId, classifierEffort);
   if (!classificationModel) throw new Error('APPROVED_CLASSIFIER_ADAPTER_UNAVAILABLE');
-  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierEffort}`);
+  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierModelId}:${classifierEffort}`, classifierModelId);
+  const assessmentModel = azureAdapter(ASSESSMENT_MODEL, assessmentEffort);
+  if (!assessmentModel) throw new Error('APPROVED_ASSESSMENT_ADAPTER_UNAVAILABLE');
+  const assessmentAdapter = trackedAdapter(assessmentModel, `assessment:${ASSESSMENT_MODEL}:${assessmentEffort}`, ASSESSMENT_MODEL);
   const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown, purpose: 'classify' | 'assess' = 'assess', normalizeOutput?: (value: unknown) => unknown, images?: ModelInvokeInput['images']): Promise<z.infer<T>> => {
-    const result = await (purpose === 'classify' ? classifierAdapter : adapter).invoke({ modelId: 'gpt-6-luna', systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : 12000, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
-    return schema.parse(normalizeOutput ? normalizeOutput(result.output) : result.output);
+    if (purpose === 'classify') await acquireClassifier(); else await graders.acquire();
+    try {
+      const result = await (purpose === 'classify' ? classifierAdapter : assessmentAdapter).invoke({ modelId: purpose === 'classify' ? classifierModelId : ASSESSMENT_MODEL, systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : assessmentOutputTokens, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
+      return schema.parse(normalizeOutput ? normalizeOutput(result.output) : result.output);
+    } finally { if (purpose === 'classify') releaseClassifier(); else graders.release(); }
   };
   const body = (mail: Mail) => /<(?:html|body|div|p|br|table|blockquote)(?:\s|>|\/)/i.test(mail.body) ? htmlToPlainText(mail.body) : mail.body;
   async function attachments(mail: Mail): Promise<SyncedQuoteAttachment[]> {
-    const output: SyncedQuoteAttachment[] = [], seen = new Set<string>(), frozen = new Map<string, Buffer>();
+    localWork.attachmentLoads++;
+    const output: SyncedQuoteAttachment[] = [], seen = new Set<string>(), byteRefs = new Map<string, z.infer<typeof artifact>>();
     const byteRows: QuoteAttachmentRow[] = [];
     for (const row of mail.attachmentRows) for (const item of row.privateMessage.attachments) {
       if (seen.has(item.id)) continue; seen.add(item.id);
       if (item.messageId !== row.sourceRowId) throw new Error('Attachment parent source mismatch');
       const textRef = item.textArtifact?.status === 'available' ? item.textArtifact.artifact : null;
       let text = '';
-      if (textRef) { const bytes = await readFile(join(dirname(corpusPath), 'attachment-text', `${textRef.id}.txt`));
-        if (hash(bytes) !== textRef.sha256 || bytes.length !== textRef.bytes) throw new Error('Attachment text hash mismatch'); text = bytes.toString('utf8'); }
+      if (textRef) { const localStartedAt = Date.now(); const bytes = await withLocalReader(() => readFile(join(dirname(corpusPath), 'attachment-text', `${textRef.id}.txt`)));
+        if (hash(bytes) !== textRef.sha256 || bytes.length !== textRef.bytes) throw new Error('Attachment text hash mismatch'); text = bytes.toString('utf8'); localWork.textArtifactsRead++; localWork.textReadMs += Date.now() - localStartedAt; }
       if (item.bytesArtifact?.status === 'available') {
         const ref = item.bytesArtifact.artifact;
         if (!ref || ref.bytes !== item.byteSize) throw new Error('Attachment bytes descriptor mismatch');
-        const bytes = await readFile(join(dirname(corpusPath), 'attachment-bytes', `${ref.id}.bin`));
-        if (hash(bytes) !== ref.sha256 || bytes.length !== ref.bytes) throw new Error('Attachment bytes hash/count mismatch');
-        frozen.set(item.id, bytes);
+        byteRefs.set(item.id, ref);
         byteRows.push({ id: item.id, messageId: mail.sourceRowId, filename: item.filename, mimeType: item.contentType,
           sizeBytes: item.byteSize, isInline: item.inline === true, s3Key: '', sha256: ref.sha256 });
       }
@@ -324,7 +574,11 @@ async function main(): Promise<void> {
         isInline: item.inline === true, text, bytesPresent: Boolean(text), ...(text ? {} : { readFailure: `Frozen source text unavailable (${item.textArtifact?.status ?? 'not_exported'})` }) });
     }
     const reads = await readQuoteAttachments(byteRows, async row => {
-      const bytes = frozen.get(row.id); if (!bytes) throw new Error('Verified attachment bytes unavailable');
+      const ref = byteRefs.get(row.id); if (!ref) throw new Error('Frozen attachment bytes descriptor unavailable');
+      const localStartedAt = Date.now();
+      const bytes = await withLocalReader(() => readFile(join(dirname(corpusPath), 'attachment-bytes', `${ref.id}.bin`)));
+      if (hash(bytes) !== ref.sha256 || bytes.length !== ref.bytes) throw new Error('Attachment bytes hash/count mismatch');
+      localWork.byteArtifactsRead++; localWork.byteReadMs += Date.now() - localStartedAt;
       const mime = row.mimeType.split(';')[0]?.trim().toLowerCase();
       if (mime === 'image/png' || mime === 'image/jpeg') {
         const valid = mime === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) : bytes.subarray(0, 3).equals(Buffer.from([255, 216, 255]));
@@ -333,62 +587,75 @@ async function main(): Promise<void> {
       const text = output.find(item => item.id === row.id)?.text;
       if (text?.trim()) return { text };
       if (!isPdfAttachment(row)) return { text: null, reason: 'Frozen file type unsupported without exported text' };
-      const read = await extractEmbeddedPdfText({ body: bytes, declaredSize: row.sizeBytes, declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { attachmentId: row.id, signal: AbortSignal.timeout(30_000) });
+      const pdfStartedAt = Date.now();
+      const read = await withLocalReader(() => extractEmbeddedPdfText({ body: bytes, declaredSize: row.sizeBytes, declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { attachmentId: row.id, signal: AbortSignal.timeout(30_000) }));
+      localWork.pdfTextReads++; localWork.pdfTextMs += Date.now() - pdfStartedAt;
+      if (read.data.reason === 'no_embedded_text') localWork.scannedPdfs++; else if (!read.data.text?.trim()) localWork.pdfReadFailures++;
       if (read.data.text?.trim()) return { text: read.data.text };
       return read.data.reason === 'no_embedded_text' ? { text: null, pdf: bytes } : { text: null, reason: read.data.reason.replaceAll('_', ' ') };
     }, { includeVisionImages: replayVision, trackVisionImages: true });
     const byId = new Map(reads.map(item => [item.id, item]));
-    return output.map(item => !frozen.has(item.id) ? item : { ...(byId.get(item.id) ?? { ...item, text: '', bytesPresent: false, readFailure: 'Frozen attachment excluded by normal attachment reader' }), messageId: mail.sourceRowId });
+    return output.map(item => !byteRefs.has(item.id) ? item : { ...(byId.get(item.id) ?? { ...item, text: '', bytesPresent: false, readFailure: 'Frozen attachment excluded by normal attachment reader' }), messageId: mail.sourceRowId });
   }
-  const batched = new Map<string, z.infer<typeof classificationSchema>>();
-  const batchSize = z.coerce.number().int().min(1).max(20).parse(option('--classify-batch', '12'));
-  if (batchSize > 1) {
-    const batchSchema = z.object({ messages: z.array(z.object({ selectedMessageId: z.string(), result: classificationSchema })).max(20) });
-    const contextSizes = new Map(selectedInbound.map(mail => [mail.sourceRowId, mails.filter(row => row === mail || mail.threadId !== null && row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)).reduce((sum, row) => sum + row.body.length, 0)]));
-    // Visual files stay in a single-source model call; batch images must not cross client journeys.
-    const remaining = selectedInbound.filter(mail => !classifications.has(mail.sourceRowId) && !mails.some(row => (row === mail || mail.threadId !== null && row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)) && row.attachmentRows.some(copy => copy.privateMessage.attachments.some(item => item.bytesArtifact?.status === 'available'))));
-    const batches: Mail[][] = [];
-    while (remaining.length) {
-      const batch: Mail[] = [], threadIds = new Set<string>(); let chars = 0;
-      for (let index = 0; index < remaining.length && batch.length < batchSize;) {
-        const mail = remaining[index]; if (!mail) break;
-        const thread = mail.threadId ?? mail.sourceRowId;
-        const size = contextSizes.get(mail.sourceRowId) ?? mail.body.length;
-        if (threadIds.has(thread) || batch.length > 0 && chars + size > 140000) { index++; continue; }
-        batch.push(mail); threadIds.add(thread); chars += size; remaining.splice(index, 1);
-      }
-      batches.push(batch);
+  const batchSchema = z.object({ messages: z.array(z.object({ selectedMessageId: z.string(), result: classificationSchema })).max(20) });
+  type QueuedClassification = { mail: Mail; payload: unknown; chars: number; resolve: (result: z.infer<typeof classificationSchema>) => void; reject: (error: unknown) => void };
+  const classificationQueue: QueuedClassification[] = [];
+  let classificationFlush: ReturnType<typeof setTimeout> | undefined;
+  const flushClassifications = async () => {
+    classificationFlush = undefined;
+    const batch: QueuedClassification[] = []; let chars = 0;
+    while (classificationQueue.length && batch.length < batchSize) {
+      const next = classificationQueue[0]; if (!next || batch.length > 0 && chars + next.chars > 140000) break;
+      batch.push(next); chars += next.chars; classificationQueue.shift();
     }
-    let batchIndex = 0;
-    await Promise.all(Array.from({ length: Math.min(concurrency, batches.length) }, async () => {
-      for (;;) {
-        const batch = batches[batchIndex++]; if (!batch) return;
-        const payload = await Promise.all(batch.map(async mail => ({ selectedMessageId: mail.sourceRowId, window: { start, end }, priorTasks: [], messages: await Promise.all([mail, ...mails.filter(row => mail.threadId !== null && row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt))].map(async row => ({ messageId: row.sourceRowId, receivedAt: row.receivedAt, direction: row.privateMessage.direction,
-          subject: row.privateMessage.subject, from: row.privateMessage.addresses.from.join(', '), bodyText: row === mail ? currentAuthoredMessageText(row.body) : body(row), attachments: (await attachments(row)).map(item => ({ id: item.id, filename: item.filename, text: item.text ?? '', readFailure: item.readFailure })) }))) })));
-        try {
-          const result = await invoke(batchSchema, `${CLASSIFY} Classify each input independently, using only its own messages. No two selected messages share a thread. Output ONLY the selectedMessageId values ${JSON.stringify(batch.map(mail => mail.sourceRowId))}. Earlier context messageIds are evidence ONLY and must NEVER get output entries. Output exactly one messages entry per selectedMessageId, wrapping the classification in result.`, payload, 'classify', value => {
-            const envelope = z.object({ messages: z.array(z.unknown()) }).parse(value);
-            return { messages: envelope.messages.filter(item => { const identity = z.object({ selectedMessageId: z.string() }).safeParse(item); return identity.success && batch.some(mail => mail.sourceRowId === identity.data.selectedMessageId); }) };
-          });
-          const ids = new Set(result.messages.map(item => item.selectedMessageId));
-          if (ids.size !== batch.length || result.messages.length !== batch.length || batch.some(mail => !ids.has(mail.sourceRowId))) throw new Error('Batch classification identity mismatch');
-          for (const item of result.messages) batched.set(item.selectedMessageId, item.result);
-          info({ phase: 'classification_batch', messages: batch.length, completedMessages: batched.size + classifications.size, totalMessages: selectedInbound.length });
-        } catch { info({ phase: 'classification_batch', messages: batch.length, status: 'retry_individually' }); }
-      }
-    }));
-  }
-  const failedClassification = new Set<string>(), replayFailures = new Set<string>();
+    if (classificationQueue.length) classificationFlush = setTimeout(() => { void flushClassifications(); }, 10);
+    const individually = async (entry: QueuedClassification) => {
+      try { entry.resolve(await invoke(classificationSchema, CLASSIFY, entry.payload, 'classify')); } catch (error) { entry.reject(error); }
+    };
+    if (batch.length < 2) { await Promise.all(batch.map(individually)); return; }
+    try {
+      const ids = batch.map(entry => entry.mail.sourceRowId);
+      const result = await invoke(batchSchema, `${CLASSIFY} Classify each input independently, using only its own messages and priorTasks. No two selected messages share a thread. Output ONLY selectedMessageId values ${JSON.stringify(ids)}. Earlier context messageIds are evidence ONLY and must NEVER get output entries. Output exactly one messages entry per selectedMessageId, wrapping classification in result.`, batch.map(entry => entry.payload), 'classify', value => {
+        const envelope = z.object({ messages: z.array(z.unknown()) }).parse(value);
+        return { messages: envelope.messages.filter(item => { const identity = z.object({ selectedMessageId: z.string() }).safeParse(item); return identity.success && ids.includes(identity.data.selectedMessageId); }) };
+      });
+      if (result.messages.length !== batch.length || new Set(result.messages.map(entry => entry.selectedMessageId)).size !== batch.length) throw new Error('Batch classification identity mismatch');
+      for (const entry of batch) { const selected = result.messages.find(item => item.selectedMessageId === entry.mail.sourceRowId); if (!selected) throw new Error('Batch omitted selected source'); }
+      for (const entry of batch) { const selected = result.messages.find(item => item.selectedMessageId === entry.mail.sourceRowId); if (selected) entry.resolve(selected.result); }
+      info({ phase: 'classification_batch', messages: batch.length, mode: 'streaming', classifiedMessages: classifiedThisRun, totalMessages: selectedInbound.length });
+    } catch {
+      await Promise.all(batch.map(entry => rejectClassifierReceipts(entry.mail.sourceRowId, 'Batch classifier schema/identity rejected before individual fallback')));
+      info({ phase: 'classification_batch', messages: batch.length, status: 'retry_individually' });
+      await Promise.all(batch.map(individually));
+    }
+  };
+  const classifyQueued = (mail: Mail, payload: unknown, images: ModelInvokeInput['images']) => {
+    const chars = JSON.stringify(payload).length;
+    if (batchSize === 1 || images?.length || chars > 140000) return invoke(classificationSchema, CLASSIFY, payload, 'classify', undefined, images);
+    return new Promise<z.infer<typeof classificationSchema>>((resolveClassification, reject) => {
+      classificationQueue.push({ mail, payload, chars, resolve: resolveClassification, reject });
+      if (!classificationFlush) classificationFlush = setTimeout(() => { void flushClassifications(); }, 10);
+    });
+  };
+  const failedClassification = new Set([...discoveryPending].filter(id => allowedIds.has(id))), replayFailures = new Set<string>();
   const byThread = new Map<string, Mail[]>();
   for (const mail of selectedInbound) { const key = mail.threadId ?? `unresolved:${mail.sourceRowId}`; byThread.set(key, [...(byThread.get(key) ?? []), mail]); }
-  const groups = [...byThread.values()]; let nextGroup = 0;
+  const chronologicalGroups = (values: Mail[][]) => values.map(group => group.sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt) || a.sourceRowId.localeCompare(b.sourceRowId))).sort((a, b) => (a[0] ? Date.parse(a[0].receivedAt) : Infinity) - (b[0] ? Date.parse(b[0].receivedAt) : Infinity));
+  let groups = chronologicalGroups([...byThread.values()]), nextGroup = 0;
+  const loadedPendingMeasurements = new Set(measurementPending);
+  const loadedDiscoveryPending = new Set(discoveryPending);
+  const classifiedVisited = new Set<string>(), completedVisited = new Set<string>();
   async function worker(): Promise<void> {
     for (;;) {
       const group = groups[nextGroup++]; if (!group) return;
       for (const mail of group) {
+        if (terminalFailures.has(mail.sourceRowId) || !retryPass && (loadedPendingMeasurements.has(mail.sourceRowId) || loadedDiscoveryPending.has(mail.sourceRowId))) continue;
+        if (retryPass && discoveryPending.has(mail.sourceRowId)) classifications.delete(mail.sourceRowId);
+        activeMessages++;
         const earlier = mail.threadId ? mails.filter(row => row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)) : [];
-        let stage: 'classification' | 'replay' = 'classification';
+        let stage: 'classification' | 'replay' = 'classification', prepSlot = false, frozenSlot = false, prepStartedAt = 0, gradeValidated = false;
         try {
+          if ([mail, ...earlier].some(row => row.attachmentRows.some(copy => copy.privateMessage.attachments.some(item => item.bytesArtifact?.status === 'available' || item.textArtifact?.status === 'available')))) { await frozenProducers.acquire(); frozenSlot = true; }
           const currentAttachments = await attachments(mail), previousAttachments = (await Promise.all(earlier.map(attachments))).flat();
           const context = [mail, ...earlier].map(row => ({ messageId: row.sourceRowId, receivedAt: row.receivedAt, direction: row.privateMessage.direction,
             subject: row.privateMessage.subject, from: row.privateMessage.addresses.from.join(', '), bodyText: row === mail ? currentAuthoredMessageText(row.body) : body(row),
@@ -397,10 +664,12 @@ async function main(): Promise<void> {
             const classified = classifications.get(previous.sourceRowId);
             return classified?.disposition === 'actionable' ? classified.tasks.filter(action => !action.repeatTaskId && action.originMessageId === previous.sourceRowId).map(action => ({ id: `task-${hash(`${previous.canonicalId}\0${action.key}`).slice(0, 32)}`, originalAsk: action.originalAsk, workflow: action.workflow, requestedAt: previous.receivedAt, bookingReferences: action.bookingReferences, complexity: action.complexity, requirements: action.requirements })) : [];
           });
-          const cached = classifications.get(mail.sourceRowId), batch = batched.get(mail.sourceRowId);
-          const classifyCurrent = async (reconcile: boolean) => {
+          const cached = classifications.get(mail.sourceRowId);
+          const classifyCurrent = async () => {
             const admitted = [...currentAttachments, ...previousAttachments];
-            const vision = await prepareExtractionVisionImages(admitted, { enabled: replayVision, signal: AbortSignal.timeout(60_000) });
+            const localStartedAt = Date.now();
+            const vision = await withLocalReader(() => prepareExtractionVisionImages(admitted, { enabled: replayVision, signal: AbortSignal.timeout(60_000) }));
+            localWork.classifierVisionCalls++; localWork.classifierVisionMs += Date.now() - localStartedAt; localWork.classifierVisionImages += vision.images.length; localWork.classifierVisionPdfInputs += admitted.filter(item => item.pdf).length;
             const visionSources = vision.currentProposalSources.map(source => {
               const attachment = admitted.find(item => item.id === source.id);
               if (!attachment?.messageId) throw new Error('Vision attachment has no admitted parent source');
@@ -410,11 +679,9 @@ async function main(): Promise<void> {
               const source = visionSources[index]; if (!source) throw new Error('Vision image has no admitted source receipt');
               return { ...image, filename: `${source.messageId}::${source.id}::${image.filename}` };
             });
-            return invoke(classificationSchema, CLASSIFY, { selectedMessageId: mail.sourceRowId, window: { start, end }, messages: context, priorTasks,
-              visionSources, visionAttachmentReads: vision.attachmentReads,
-              ...(reconcile ? { instruction: 'Reconcile this current ask with the supplied earlier task identities. Preserve genuinely new or changed actions; mark only unchanged same-workflow requests as repeats.' } : {}) }, 'classify', undefined, images);
+            return classifyQueued(mail, { selectedMessageId: mail.sourceRowId, window: { start, end }, messages: context, priorTasks, visionSources, visionAttachmentReads: vision.attachmentReads }, images);
           };
-          const classified = cached ?? (batch?.disposition === 'actionable' && priorTasks.length > 0 ? await classifyCurrent(true) : batch ?? await classifyCurrent(false));
+          const classified = cached ?? await classifyCurrent();
           const keys = new Set<string>();
           for (const action of classified.tasks) {
             if (keys.has(action.key)) throw new Error('Repeated classifier action key'); keys.add(action.key);
@@ -432,6 +699,9 @@ async function main(): Promise<void> {
               if (!source || ![source.bodyText, ...source.attachments.map(item => item.text)].some(text => text.includes(requirement.quote))) throw new Error('Ungrounded requirement quote'); }
           }
           if (!classifications.has(mail.sourceRowId)) { await save({ kind: 'classification', fingerprint, messageId: mail.sourceRowId, result: classified }); classifications.set(mail.sourceRowId, classified); }
+          if (!classifiedVisited.has(mail.sourceRowId)) { classifiedVisited.add(mail.sourceRowId); classifiedThisRun++; }
+          if (classified.disposition === 'unknown') throw new Error('Discovery classification remained unknown; no primary task inference');
+          discoveryPending.delete(mail.sourceRowId); failedClassification.delete(mail.sourceRowId); classificationKeys.delete(mail.sourceRowId);
           const actions = classified.disposition === 'actionable' ? classified.tasks.filter(action => !action.repeatTaskId && action.originMessageId === mail.sourceRowId) : [];
           stage = 'replay';
           const pending = actions.filter(action => !tasks.has(`task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`));
@@ -445,6 +715,7 @@ async function main(): Promise<void> {
             sourceHash: staffQuoteSourceHash({ subject: mail.privateMessage.subject, textBody: body(mail), htmlBody: mail.body, fromAddress: mail.privateMessage.addresses.from[0] }), arrivedAt: mail.receivedAt };
           if (!mail.threadId) selection.threadId = source.threadId;
           const nativeReads: z.infer<typeof nativeReceiptSchema>[] = replays.get(mail.sourceRowId)?.nativeReads ?? [];
+          await acquire(); prepSlot = true; prepStartedAt = Date.now(); prefillStarts.set(mail.sourceRowId, prepStartedAt);
           const replay = process.argv.includes('--classify-only') ? null : replays.get(mail.sourceRowId)?.result ?? await runReservationWorkflowV2Prefill({ adapter, transportId: 'transport-centurion', propertyCode: 'HRCEN', source, selection, mailboxAddress: MAILBOX, env,
             lookupFixtures: {}, signal: AbortSignal.timeout(9 * 60_000), readCandidate: async candidate => {
               const key = nativeReadArgsKey(candidate.kind, candidate.criteria), cutoff = Date.parse(mail.receivedAt);
@@ -461,9 +732,12 @@ async function main(): Promise<void> {
               return { status: 'unavailable', result: { reason: 'No exact historical native observation captured before request.' }, coverage: { complete: false, notes: ['No live HMS call. Exact historical native evidence unavailable.'] } };
 
             } });
-          if (replay && !replays.has(mail.sourceRowId)) { const validated = replayResultSchema.parse(replay); await save({ kind: 'replay', fingerprint, messageId: mail.sourceRowId, result: validated, nativeReads }); replays.set(mail.sourceRowId, { result: validated, nativeReads }); }
+          if (replay && !replays.has(mail.sourceRowId)) { const validated = replayResultSchema.parse(replay); await save({ kind: 'replay', fingerprint, messageId: mail.sourceRowId, result: validated, nativeReads }); replays.set(mail.sourceRowId, { result: validated, nativeReads }); prefilledThisRun++; }
+          release(); prepSlot = false;
+          if (replay && failedMeasurement(replay)) { measurementPending.add(mail.sourceRowId); replays.delete(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Core model timeout/error is a failed measurement; no grading or task credit until retry completes' }); if (retryPass) await markTerminal(mail.sourceRowId, 'replay', 'Core model failed after exactly one end retry'); info({ messageId: mail.sourceRowId, status: retryPass ? 'measurement_terminal' : 'measurement_pending' }); continue; }
           const assessmentMessages = context.filter(message => message.messageId === mail.sourceRowId || pending.some(action => action.requirements.some(requirement => requirement.messageId === message.messageId))).map(message => message.messageId === mail.sourceRowId ? message : { ...message, bodyText: pending.flatMap(action => action.requirements.filter(requirement => requirement.messageId === message.messageId).map(requirement => requirement.quote)).join('\n'), attachments: [] });
           const assessed = replay ? await invoke(assessmentSchema, ASSESS, { tasks: pending.map(action => ({ ...action, requiredNativeChecks: NATIVE_REQUIREMENTS[action.workflow] })), messages: assessmentMessages, replay: { generationId: replay.generationId, status: replay.status, proposal: replay.proposal, observations: replay.observations.filter(observation => observation.kind !== 'source' && observation.kind !== 'mail_candidate'), errors: replay.errors }, nativeReads }) : null;
+          const stagedTasks: RetroTask[] = [];
           for (const action of pending) {
             const id = `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`;
             const assessment = assessed?.tasks.find(task => task.key === action.key);
@@ -481,7 +755,7 @@ async function main(): Promise<void> {
                 if (check.status === 'missing') { if (check.preparedPointer || check.preparedValue) throw new Error('Missing field claimed preparation'); }
                 else { const actual = pointerValue(replay, check.preparedPointer);
                   if (!preparedForAction(replay, action, check.preparedPointer) || actual === undefined || (typeof actual === 'string' ? actual : JSON.stringify(actual)) !== check.preparedValue) throw new Error('Assessment preparation pointer/value mismatch'); }
-                checks.push({ requirement: requirement.requirement, sourceValue: requirement.sourceValue, preparedValue: check.preparedValue, status: check.status,
+                checks.push({ kind: 'email', requirement: requirement.requirement, sourceValue: requirement.sourceValue, preparedValue: check.preparedValue, status: check.status,
                   evidenceIds: [`${id}-source-${check.requirementIndex}`, `${id}-preparation`] });
               }
               if (indices.size !== action.requirements.length) throw new Error('Assessment omitted source requirements');
@@ -491,7 +765,7 @@ async function main(): Promise<void> {
             for (const check of assessment?.nativeChecks ?? []) {
               if (!requiredNative.includes(check.requirement) || mentionedNative.has(check.requirement)) throw new Error('Unknown or duplicated native assessment requirement');
               mentionedNative.add(check.requirement);
-              if (check.status === 'missing') { checks.push({ requirement: check.requirement, status: 'missing', sourceValue: 'Historical native verification required', preparedValue: '', evidenceIds: [`${id}-source-0`, `${id}-preparation`] }); continue; }
+              if (check.status === 'missing') { checks.push({ kind: 'hms', requirement: check.requirement, status: 'missing', sourceValue: 'Historical native verification required', preparedValue: '', evidenceIds: [`${id}-source-0`, `${id}-preparation`] }); continue; }
               const receipt = nativeReads[check.nativeReadIndex];
               if (!receipt?.complete || !receipt.observedAt || !receipt.result || !requiredNative.includes(check.requirement) || verifiedNative.has(check.requirement)) throw new Error('Invalid native assessment receipt');
               const hostObservation = replay?.observations.find(row => row.ref === check.observationRef && row.kind === receipt.kind && row.status === 'complete' && row.coverage.complete);
@@ -510,8 +784,9 @@ async function main(): Promise<void> {
                 'existing stay identity': ['stay_candidate'], 'current stay fields and dates': ['stay_candidate'], 'amendment eligibility and rate handling': ['stay_candidate', 'rate_availability'], 'room and rate identity': ['rate_availability'], 'availability and native prices': ['rate_availability'], 'cancellation policy and financial state': ['stay_candidate'], 'current Documents inventory and document targets': ['document'], 'supported native workflow and validated action': ['service_preview'] };
               const actualFact = receipt.kind === 'document' ? /^\/documents\/\d+\/(?:name|documentCode|label|description)$/.test(check.nativePointer) : /^(?:\/candidates\/\d+\/(?:nativeId|firstName|lastName|name|code|email|phoneNumber)|\/stay\/|\/commercial\/|\/groups\/\d+\/|\/documents\/\d+\/|\/items\/\d+\/)/.test(check.nativePointer);
               if (!fieldKinds[check.requirement]?.includes(receipt.kind) || !actualFact || !preparedForAction(replay, action, check.preparedPointer) || native == null || prepared == null || stringify(native) !== check.nativeValue || stringify(prepared) !== check.preparedValue || check.nativeValue !== check.preparedValue || !check.nativeValue.trim()) throw new Error('Native check value/pointer mismatch');
-              verifiedNative.add(check.requirement); checks.push({ requirement: check.requirement, status: 'matched', sourceValue: check.nativeValue, preparedValue: check.preparedValue, evidenceIds: [`${id}-native-${check.nativeReadIndex}`, `${id}-preparation`] });
+              verifiedNative.add(check.requirement); checks.push({ kind: 'hms', requirement: check.requirement, status: 'matched', sourceValue: check.nativeValue, preparedValue: check.preparedValue, evidenceIds: [`${id}-native-${check.nativeReadIndex}`, `${id}-preparation`] });
             }
+            for (const requirement of requiredNative) if (!mentionedNative.has(requirement)) checks.push({ kind: 'hms', requirement, status: 'missing', sourceValue: 'Historical native verification required', preparedValue: '', evidenceIds: [`${id}-source-0`, `${id}-preparation`] });
             const nativeComplete = verifiedNative.size === requiredNative.length;
             const complete = mail.timestampBasis === 'received_at' && assessment?.outcome === 'correct_complete' && nativeComplete && replay && !replay.errors?.length && !replay.proposal.issues.length && assessment.remainingWork.length === 0 && checks.every(check => check.status === 'matched');
             const outcome = assessment?.outcome === 'correct_complete' && !complete ? 'partial' : assessment?.outcome ?? 'unknown';
@@ -522,58 +797,133 @@ async function main(): Promise<void> {
               outcome, reason: assessment?.reason ?? 'Classification establishes demand only and earns no completion or savings credit.',
               complexity: action.complexity, workItemId: null, bookingReferences: action.bookingReferences, evidence,
               replay: replay ? { status: 'replayed', replayId: replay.generationId, nativeEvidence: nativeComplete ? 'complete' : 'missing', checks } : { status: 'not_run', reason: 'Requested classify-only mode' } });
-            await save({ kind: 'task', fingerprint, task }); tasks.set(id, task);
+            stagedTasks.push(task);
+          }
+          gradeValidated = true;
+          await save({ kind: 'measurement_completed', fingerprint, messageId: mail.sourceRowId });
+          for (const task of stagedTasks) { await save({ kind: 'task', fingerprint, task }); tasks.set(task.id, task); gradedTasksThisRun++; }
+          assessmentKeys.delete(mail.sourceRowId);
+          measurementPending.delete(mail.sourceRowId);
+          if (replay) {
+            replayedThisRun++;
+            const rows = apiAttempts.filter(row => row.stage !== 'classification' && row.messageIds.includes(mail.sourceRowId)), unknownUsageAttempts = rows.filter(row => row.inputTokens === null || row.outputTokens === null).length;
+            const reportedPreparationTokens = rows.reduce((sum, row) => sum + ((row.inputTokens ?? 0) + (row.outputTokens ?? 0)) / row.messageIds.length, 0);
+            const completed = { messageId: mail.sourceRowId, tasks: pending.length, latencyMs: Date.now() - prepStartedAt, reportedPreparationTokens, preparationAttempts: rows.length, unknownUsageAttempts, reportedPreparationTokensPerTask: rows.length && !unknownUsageAttempts ? reportedPreparationTokens / pending.length : null };
+            completedMessageMetrics.push(completed); await save({ kind: 'runtime_metrics', fingerprint, at: new Date().toISOString(), metrics: { phase: 'completed_preparation_message', ...completed } });
           }
           info({ messageId: mail.sourceRowId, classification: classified.disposition, newTasks: pending.length, replayStatus: replay?.status ?? 'not_run' });
         } catch (error) {
-          (stage === 'classification' ? failedClassification : replayFailures).add(mail.sourceRowId);
+          if (stage === 'classification') { discoveryPending.add(mail.sourceRowId); classifications.delete(mail.sourceRowId); await rejectClassifierReceipts(mail.sourceRowId, 'Classifier schema/source host validation or unknown discovery failed'); }
+          const rejectedKey = assessmentKeys.get(mail.sourceRowId); assessmentKeys.delete(mail.sourceRowId);
+          if (stage === 'replay' && rejectedKey && !gradeValidated) { cache.delete(rejectedKey); importedModels.delete(rejectedKey); rejectedAssessmentKeys.add(rejectedKey); await save({ kind: 'assessment_rejected', fingerprint, messageId: mail.sourceRowId, key: rejectedKey, reason: 'Assessment schema or sibling host validation failed; raw assessment evicted for fresh retry' }); }
+          if (stage === 'replay') { measurementPending.add(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Preparation/assessment measurement did not validate; retry pending' }); }
+          failedThisRun++; (stage === 'classification' ? failedClassification : replayFailures).add(mail.sourceRowId);
           const validationIssues = error instanceof z.ZodError ? error.issues.slice(0, 40).map(issue => ({ path: issue.path.map(String), code: issue.code, message: issue.message.slice(0, 8000) })) : undefined;
           const reason = error instanceof z.ZodError ? `Schema rejected ${error.issues.length} field(s): ${validationIssues?.map(issue => `${issue.code}@${issue.path.join('.')}`).join(', ')}` : error instanceof Error ? error.message.slice(0, 8000) : 'Unknown runner failure';
           await save({ kind: 'failure', fingerprint, messageId: mail.sourceRowId, stage, reason, validationIssues });
+          if (retryPass) await markTerminal(mail.sourceRowId, stage, reason);
           info({ messageId: mail.sourceRowId, status: 'failed', stage, reason });
-        }
+        } finally { prefillStarts.delete(mail.sourceRowId); if (prepSlot) release(); if (frozenSlot) frozenProducers.release(); if (!completedVisited.has(mail.sourceRowId)) { completedVisited.add(mail.sourceRowId); completedThisRun++; } activeMessages--; }
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, groups.length) }, worker)); await checkpointQueue;
-  const successful = [...classifications.keys()].filter(id => allowedIds.has(id));
-  const missingReplay = selectedInbound.flatMap(mail => {
-    const classified = classifications.get(mail.sourceRowId);
-    return classified?.tasks.filter(action => classified.disposition === 'actionable' && !action.repeatTaskId && action.originMessageId === mail.sourceRowId && !tasks.has(`task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`)).map(action => ({ mail, action })) ?? [];
-  });
-  for (const { mail, action } of missingReplay) {
-    const id = `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`;
-    const captured = replays.get(mail.sourceRowId), replay = captured?.result;
-    const evidence: RetroTask['evidence'] = [{ id: `${id}-source-0`, kind: 'source', reference: mail.sourceRowId, observedAt: mail.receivedAt, detail: action.quote }];
-    if (replay) evidence.push({ id: `${id}-preparation`, kind: 'preparation', reference: `${checkpointPath}#replay:${replay.generationId}`, observedAt: new Date().toISOString(), detail: JSON.stringify(replay.proposal).slice(0, 8000) });
-    tasks.set(id, retroTaskSchema.parse({ id, workflow: action.workflow, requestedAt: mail.receivedAt, sources: [{ messageId: mail.sourceRowId, threadId: mail.threadId, subject: mail.privateMessage.subject.slice(0, 8000), from: mail.privateMessage.addresses.from.join(', '), receivedAt: mail.receivedAt, timestampBasis: mail.timestampBasis, quote: action.quote, duplicateMessageIds: mail.duplicates }],
-      originalAsk: action.originalAsk, navaPreparation: replay ? `Actual prefill returned ${replay.status}. Prepared proposal: ${JSON.stringify(replay.proposal.content).slice(0, 7200)}` : 'Actual replay did not complete; no verified preparation.',
-      remainingWork: [STAFF_WORK[action.workflow], 'Review unresolved preparation and historical native verification.'], outcome: 'unknown', reason: replay ? `Grounded assessment failed after the real prefill. Replay errors: ${replay.errors?.map(error => `${error.stage}:${error.code}`).join(', ') || 'none'}. No completion credit; inspect the private checkpoint.` : 'Unresolved replay failure; see private checkpoint receipt.',
-      complexity: action.complexity, workItemId: null, bookingReferences: action.bookingReferences, evidence,
-      replay: replay ? { status: 'replayed', replayId: replay.generationId, nativeEvidence: 'missing', checks: [] } : { status: 'not_run', reason: 'Actual replay did not complete' } }));
-
+  const percentile = (values: number[], fraction: number) => { const sorted = [...values].sort((a, b) => a - b); return sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)] ?? null : null; };
+  const networkSummary = () => {
+    const stages: Array<Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>['stage']> = ['classification', 'extraction', 'synthesis', 'assessment', 'autopick'];
+    const reportedTokens = apiAttempts.reduce((sum, row) => sum + (row.inputTokens ?? 0) + (row.outputTokens ?? 0), 0);
+    return { attemptUnit: 'Approved adapter invocations; internal SDK HTTP request counts are unknown', allAdapterAttempts: attemptRates(apiAttempts), rateLimitResponses, rateLimitRetries, rateLimitExhaustions, gradedTasksThisRun, reportedTokens,
+      runAggregateReportedTokensPerGradedTask: gradedTasksThisRun ? reportedTokens / gradedTasksThisRun : null,
+      completedPrepAndAssessmentMessages: completedMessageMetrics.length, completedPrepAndAssessmentP50Ms: percentile(completedMessageMetrics.map(row => row.latencyMs), 0.5), completedPrepAndAssessmentP95Ms: percentile(completedMessageMetrics.map(row => row.latencyMs), 0.95),
+      knownPreparationTokensPerTaskP50: percentile(completedMessageMetrics.flatMap(row => row.reportedPreparationTokensPerTask === null ? [] : [row.reportedPreparationTokensPerTask]), 0.5), knownPreparationTokensPerTaskP95: percentile(completedMessageMetrics.flatMap(row => row.reportedPreparationTokensPerTask === null ? [] : [row.reportedPreparationTokensPerTask]), 0.95),
+      completedMessagesWithUnknownPreparationUsage: completedMessageMetrics.filter(row => row.unknownUsageAttempts).length, cacheOnlyCompletedMessages: completedMessageMetrics.filter(row => !row.preparationAttempts).length,
+      unknownUsageAttempts: apiAttempts.filter(row => row.inputTokens === null || row.outputTokens === null).length,
+      stages: stages.map(stage => {
+        const rows = apiAttempts.filter(row => row.stage === stage), successes = rows.filter(row => row.outcome === 'success'), reported = rows.filter(row => row.inputTokens !== null && row.outputTokens !== null);
+        const inputTokens = reported.reduce((sum, row) => sum + (row.inputTokens ?? 0), 0), outputTokens = reported.reduce((sum, row) => sum + (row.outputTokens ?? 0), 0), reportedMessages = new Set(reported.flatMap(row => row.messageIds)).size;
+        return { stage, ...attemptRates(rows), attributedMessages: new Set(rows.flatMap(row => row.messageIds)).size, inputTokens, outputTokens, reportedMessages,
+          reportedTokensPerMessage: reportedMessages ? (inputTokens + outputTokens) / reportedMessages : null,
+          allAttemptP50Ms: percentile(rows.map(row => row.latencyMs), 0.5), allAttemptP95Ms: percentile(rows.map(row => row.latencyMs), 0.95), successfulAttemptP50Ms: percentile(successes.map(row => row.latencyMs), 0.5), successfulAttemptP95Ms: percentile(successes.map(row => row.latencyMs), 0.95) };
+      }) };
+  };
+  let loggedAt = startedAt, lastClassified = 0, lastPrefilled = 0, lastReplayed = 0, lastCompleted = 0, lastTimeouts = 0;
+  const logProgress = async () => {
+    const priorMaximum = maximumReplayConcurrency;
+    maximumReplayConcurrency = Math.min(requestedReplayMaximum, replayClockCeiling(), retryPass ? 8 : MAX_REPLAY_WORKERS);
+    activeLimit = Math.min(activeLimit, maximumReplayConcurrency);
+    if (maximumReplayConcurrency > priorMaximum) nextGrowthBoundary = Date.now() - startedAt;
+    const host = await sampleResources();
+    const now = Date.now(), minutes = (now - loggedAt) / 60000, elapsedMinutes = (now - startedAt) / 60000;
+    const rate = (count: number) => minutes > 0 ? Number((count / minutes).toFixed(2)) : 0;
+    const metrics = { phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, replayWorkers: activeLimit, classificationWorkers: classifierLimit, activeReplaySlots: activeSlots, activeClassificationSlots: classifierSlots, activeModelCalls, activeModelCallsByModel: { ...activeModelCallsByModel }, activeMessages, maximumMessageProducers: MAX_WORKERS * batchSize, waitingReplaySlots: admissions.length, waitingClassificationSlots: classifierAdmissions.length, assessmentSlots: graders.stats(), frozenArtifactProducers: frozenProducers.stats(), localReaderWork: localReaders.stats(), admissionWaitMsTotal,
+      classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, totalMessages: selectedInbound.length,
+      classificationEmailsPerMinute: rate(classifiedThisRun - lastClassified), prefillEmailsPerMinute: rate(prefilledThisRun - lastPrefilled), replayAndAssessmentEmailsPerMinute: rate(replayedThisRun - lastReplayed), completedEmailsPerMinute: rate(completedThisRun - lastCompleted),
+      workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, classificationWorkers: regime.classificationWorkers, durationSeconds: Number((((regime.toElapsedMs ?? now - startedAt) - regime.fromElapsedMs) / 1000).toFixed(2)) })),
+      prefillMessagesWithErrors: selectedInbound.filter(mail => replays.get(mail.sourceRowId)?.result.errors?.length).length,
+      partialPrefillMessages: selectedInbound.filter(mail => replays.get(mail.sourceRowId)?.result.status === 'partial').length,
+      taskOutcomes: Object.fromEntries(['correct_complete', 'minor_correction', 'wrong_preparation', 'partial', 'unsupported', 'unknown'].map(outcome => [outcome, [...tasks.values()].filter(task => task.outcome === outcome && task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).length])),
+      extractionTimeouts, extractionTimeoutsPerMinute: rate(extractionTimeouts - lastTimeouts), failedDispatches: dispatchFailures.length, dispatchedCalls, successfulDispatches, cacheHits, importedCacheHits, host, network: networkSummary(), localWork: { ...localWork } };
+    info(metrics); await save({ kind: 'runtime_metrics', fingerprint, at: new Date(now).toISOString(), metrics });
+    const growthDue = now - startedAt >= nextGrowthBoundary, resourceBreach = host.hostCpuFreePct !== null && host.hostCpuFreePct <= 20 || host.hostMemoryAvailablePct !== null && host.hostMemoryAvailablePct <= 20;
+    if ((growthDue || resourceBreach) && completedThisRun < selectedInbound.length) await controlConcurrency(host, growthDue);
+    if (growthDue) nextGrowthBoundary = (Math.floor((now - startedAt) / CONTROL_INTERVAL_MS) + 1) * CONTROL_INTERVAL_MS;
+    loggedAt = now; lastClassified = classifiedThisRun; lastPrefilled = prefilledThisRun; lastReplayed = replayedThisRun; lastCompleted = completedThisRun; lastTimeouts = extractionTimeouts;
+  };
+  let progressInFlight: Promise<void> | undefined;
+  const progressTimer = setInterval(() => {
+    if (progressInFlight) return;
+    progressInFlight = logProgress().catch(error => { info({ phase: 'telemetry_failure', reason: error instanceof Error ? error.message : 'Unknown telemetry failure' }); }).finally(() => { progressInFlight = undefined; });
+  }, 60000); progressTimer.unref();
+  try { await Promise.all(Array.from({ length: Math.min(MAX_WORKERS * batchSize, groups.length) }, worker)); await checkpointQueue;
+    const retryMails = selectedInbound.filter(mail => !terminalFailures.has(mail.sourceRowId) && (measurementPending.has(mail.sourceRowId) || discoveryPending.has(mail.sourceRowId)));
+    if (retryMails.length) {
+      activeLimit = Math.min(8, activeLimit); nextGroup = 0; retryPass = true;
+      const retryGroups = new Map<string, Mail[]>();
+      for (const mail of retryMails) { const key = mail.threadId ?? mail.sourceRowId; retryGroups.set(key, [...(retryGroups.get(key) ?? []), mail]); }
+      groups = chronologicalGroups([...retryGroups.values()]); info({ phase: 'measurement_retry_once', replayWorkers: activeLimit, messages: retryMails.length });
+      await Promise.all(Array.from({ length: Math.min(8, groups.length) }, worker)); await checkpointQueue;
+      for (const mail of retryMails) if (discoveryPending.has(mail.sourceRowId) || measurementPending.has(mail.sourceRowId)) await markTerminal(mail.sourceRowId, discoveryPending.has(mail.sourceRowId) ? 'classification' : 'replay', 'Measurement remained invalid after exactly one end retry');
+    }
   }
+  finally { clearInterval(progressTimer); await progressInFlight; await logProgress(); }
+  const successful = [...classifications.keys()].filter(id => allowedIds.has(id));
+  const publishableTasks = [...tasks.values()].filter(task => {
+    const origin = task.sources[0];
+    return origin && allowedIds.has(origin.messageId) && Date.parse(origin.receivedAt) === Date.parse(task.requestedAt) &&
+      !measurementPending.has(origin.messageId) && !discoveryPending.has(origin.messageId) && !terminalFailures.has(origin.messageId);
+  }).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id));
+  const publishedTaskIds = new Set(publishableTasks.map(task => task.id));
+  const unmeasuredActions = selectedInbound.flatMap(mail => { const classified = classifications.get(mail.sourceRowId); return classified?.disposition === 'actionable' ? classified.tasks.filter(action => !action.repeatTaskId && action.originMessageId === mail.sourceRowId).map(action => ({ messageId: mail.sourceRowId, id: `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}` })) : []; }).filter(action => !publishedTaskIds.has(action.id));
+  const terminalTasks = unmeasuredActions.filter(action => terminalFailures.has(action.messageId)).length;
+  const pendingTasks = unmeasuredActions.length - terminalTasks;
+  const selectedTerminals = [...terminalFailures.values()].filter(record => allowedIds.has(record.messageId));
+  const pendingMessages = new Set([...measurementPending, ...discoveryPending].filter(id => allowedIds.has(id) && !terminalFailures.has(id))).size;
   const selectedReplays = selectedInbound.flatMap(mail => { const replay = replays.get(mail.sourceRowId); return replay ? [replay.result] : []; });
   const replayDiagnostics = { replayedMessages: selectedReplays.length, prefillMessagesWithErrors: selectedReplays.filter(replay => replay.errors?.length).length, extractionTimeoutMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_timeout')).length, extractionErrorMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_error')).length, runnerOrAssessmentFailures: replayFailures.size };
   const reportedCalls = [...cache.values()].filter(result => result.provenance?.usageSource === 'reported');
-  const usage = { successfulCalls: cache.size, callsWithReportedUsage: reportedCalls.length, successfulCallsWithUnknownUsage: cache.size - reportedCalls.length, inputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.inputTokens, 0), outputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.outputTokens, 0), reportedCostUsd: reportedCalls.reduce((sum, result) => sum + result.usage.estimatedCostUsd, 0), failedDispatchesWithUnknownUsage: dispatchFailures.length };
+  const usage = { successfulCalls: cache.size, callsWithReportedUsage: reportedCalls.length, successfulCallsWithUnknownUsage: cache.size - reportedCalls.length, inputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.inputTokens, 0), outputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.outputTokens, 0), reportedCostUsd: reportedCalls.filter(result => result.modelId === 'gpt-6-luna').reduce((sum, result) => sum + result.usage.estimatedCostUsd, 0), successfulTerraCallsWithUnknownPricing: [...cache.values()].filter(result => result.modelId === ASSESSMENT_MODEL).length, failedDispatchesWithUnknownUsage: dispatchFailures.length };
+  const regimeSummary = { changes: workerRegimes.length, initialReplayWorkers: concurrency, initialClassificationWorkers: classifierConcurrency, finalReplayWorkers: activeLimit, finalClassificationWorkers: classifierLimit,
+    recent: workerRegimes.slice(-8).map(regime => ({ replayWorkers: regime.workers, classificationWorkers: regime.classificationWorkers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })) };
   const report = retroReportSchema.parse({ version: 'centurion-retro-roi/1', reportId: `retro-${fingerprint.slice(0, 32)}`, propertyCode: 'HRCEN', generatedAt: new Date().toISOString(), period: { start, end, timezone: 'Africa/Johannesburg' },
-    provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna' },
+    provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna prefill maximum32; gpt-6.1-terra classification/assessment; retained reviewed prior valid grades' },
     coverage: { status: sourceComplete && successful.length === inbound.length && unknownTimestamps === 0 && failedClassification.size === 0 && Date.parse(sourceThrough) >= Date.parse(end) ? 'complete' : 'partial',
       sourceExportedAt, sourceThrough: sourceThrough, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0), canonicalMessages: population.length,
       inboundMessages: inbound.length, classifiedMessages: successful.length, excludedMessages: successful.filter(id => classifications.get(id)?.disposition === 'excluded').length,
       duplicateMessages: population.reduce((sum, mail) => sum + mail.duplicates.length, 0), unknownTimestampMessages: unknownTimestamps, failedMessages: failedClassification.size,
       notes: [`Authoritative export manifest hash and source counts verified; scope ${sourceScope}; source cutoff is export snapshot cutoff, not latest mail.`,
+        `Pending measurements: ${pendingMessages} messages/${pendingTasks} tasks; terminal failed measurements: ${selectedTerminals.length} messages/${terminalTasks} inferred tasks. Both remain outside credited and uncredited totals. Terminal receipts preserve exactly one end retry and are excluded on resume. Terra pricing unknown; Luna estimates exclude Terra placeholder costs.`,
+        `Terminal discovery ${selectedTerminals.filter(record => record.stage === 'classification').length}, terminal preparation/assessment ${selectedTerminals.filter(record => record.stage === 'replay').length}; source IDs ${JSON.stringify(selectedTerminals.slice(0, 80).map(record => record.messageId))}. Full source-specific reasons remain in private terminal checkpoint receipts.`,
         'Source completeness and classification completeness are independent of preparation success. Live HMS, current catalog and booking memory excluded; only exact indexed observations strictly before request may verify native requirements. Sparse/missing historical facts remain partial with zero credit.',
         `Selected ${selectedInbound.length}/${inbound.length} inbound messages; ${replayFailures.size} runner/assessment failures; ${successful.filter(id => classifications.get(id)?.disposition === 'unknown').length} unknown classifications.`,
         `Private resumable checkpoint ${checkpointPath}; fingerprint ${fingerprint}; ${process.argv.includes('--classify-only') ? 'classification only' : 'real product prefill'}; no DB/native writes or live HMS calls.`,
+        `Model dispatch workers requested ${concurrency}, final admission ${activeLimit}, message producers bounded at ${MAX_WORKERS * batchSize}, compute admission waits outside original classification and preparation deadlines, regimes ${JSON.stringify(regimeSummary)}; exact-input cache hits ${cacheHits}, imported cache hits ${importedCacheHits}, new dispatches ${dispatchedCalls}, successful new dispatches ${successfulDispatches}. Producer ${producerSHA}; reviewed compatible producer ${reviewedCompatibleProducer ?? 'none'}. Same/reviewed compatible derived records retained with original checkpoint provenance; failed measurements excluded; changed actual model keys rerun.`,
+        `Measured new adapter attempts ${JSON.stringify(networkSummary())}; local PDF/text/classifier vision work ${JSON.stringify(localWork)}. Prefill pre-model time includes native preload and vision preparation, not an isolated renderer measurement. Retry backoff stays inside original deadlines; successful and all-attempt latency distributions are separate.`,
         `Actual replay diagnostics: ${JSON.stringify(replayDiagnostics)}. Checkpoint model usage: ${JSON.stringify(usage)}; failed dispatch billing is unknown, not zero.`,
-        `Replay effort ${replayEffort}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
+        `Luna prefill maximum ${maximumReplayConcurrency} (8 before16:00 UK,32 after); no live HMS reads are enabled in this offline runner; Terra grading independent fixed32; classifier ${classifierModelId}/${classifierEffort}; replay effort ${replayEffort}; assessment ${ASSESSMENT_MODEL}/${assessmentEffort} output cap ${assessmentOutputTokens}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
         'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
-    tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
+    tasks: publishableTasks });
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > RETRO_ROI_MAX_REPORT_BYTES) throw new Error('REPORT_TOO_LARGE: previous report preserved; use private checkpoints to narrow output');
   const temporary = `${out}.${process.pid}.tmp`; await writeFile(temporary, serialized, { mode: 0o600 }); await rename(temporary, out);
-  info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayDiagnostics, model: 'gpt-6-luna', usage });
+  info({ status: 'published', out, coverage: report.coverage.status, tasks: report.tasks.length, positiveCreditTasks: report.tasks.filter(task => task.outcome === 'correct_complete').length, replayDiagnostics, throughput: { elapsedMinutes: Number(((Date.now() - startedAt) / 60000).toFixed(2)), classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })), requestedWorkers: concurrency, finalWorkers: activeLimit, finalClassificationWorkers: classifierLimit, maximumMessageProducers: MAX_WORKERS * batchSize, admissionWaitMsTotal, extractionTimeouts, cacheHits, importedCacheHits, dispatchedCalls, successfulDispatches }, model: 'gpt-6-luna', network: networkSummary(), localWork, usage });
 }
 main().catch(error => { process.stderr.write(`${error instanceof z.ZodError ? `INPUT_SCHEMA_REJECTED (${error.issues.length} fields)` : error instanceof Error ? error.message : 'RUN_FAILED'}\n`); process.exitCode = 1; });

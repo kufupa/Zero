@@ -39,7 +39,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql } from 'drizzle-o
 import { privateProcedure, router as tRouter } from '../trpc.js';
 import { getDb } from '../../db/client.js';
 import { z } from 'zod';
-import { loadCenturionRetroRoiReport } from '../../metrics/centurion-retro-roi.js';
+import { loadCenturionRetroRoiReport, toStaffRetroReport } from '../../metrics/centurion-retro-roi.js';
 
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const LONG_WINDOW_MS = 28 * 24 * 60 * 60 * 1000;
@@ -550,7 +550,10 @@ export const adminDashboardRouter = tRouter({
     const grant = resolveAdminDashboardGrant(ctx.sessionUser.email, 'centurion');
     assertAdminDashboardGrant(grant, 'aggregate');
     assertAdminDashboardGrant(grant, 'drilldown');
-    return loadCenturionRetroRoiReport();
+    const result = await loadCenturionRetroRoiReport();
+    return result.status === 'ready'
+      ? { status: result.status, report: toStaffRetroReport(result.report) }
+      : result;
   }),
   getMetrics: privateProcedure.input(executiveDashboardQueryInput).query(async ({ input, ctx }) => {
     // Resolve and authorize the cohort/grant before touching the database.
