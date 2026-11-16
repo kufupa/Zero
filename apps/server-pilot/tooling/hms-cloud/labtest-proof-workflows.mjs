@@ -190,7 +190,8 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     const requested = occupancy ? null : requestedCombinedAmend(journal);
     if (occupancy) {
       verifyLabtestWorkflowProof(journal, 'amend', journal.workflowProofs?.amend);
-      check(propertyCode === 'HRCEN' && selected.ratePlan === 'CMPRO' && selected.adults === 1 &&
+      check(!combinedAmendChanges(journal.workflowProofs?.amend?.changes) &&
+        propertyCode === 'HRCEN' && selected.ratePlan === 'CMPRO' && selected.adults === 1 &&
         selected.children === 0, 'AMEND_OCCUPANCY_LAB_ONLY');
     }
     const changes = { ...(occupancy ? { adults: 2, retainRates: 'no' }
@@ -455,9 +456,14 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
 }
 
 // Create evidence stays immutable; only a verified amendment can change the cleanup expectation.
-export function labtestProofStayAdults(journal) {
+export function labtestProofStayExpected(journal) {
   const amend = journal.workflowProofs?.amend, occupancy = journal.workflowProofs?.amend_adults;
-  if (!amend && !occupancy) return journal.effectiveRequest.stay.adults;
-  const adults = verifyLabtestWorkflowProof(journal, 'amend', amend).adults;
-  return occupancy ? verifyLabtestWorkflowProof(journal, 'amend_adults', occupancy).adults : adults;
+  if (!amend && !occupancy) return labtestExpectedStay(journal);
+  const readback = verifyLabtestWorkflowProof(journal, 'amend', amend);
+  const expected = { arrival: readback.arrival, departure: readback.departure,
+    roomType: readback.roomType, adults: readback.adults };
+  return occupancy ? { ...expected, adults: verifyLabtestWorkflowProof(journal, 'amend_adults', occupancy).adults } : expected;
+}
+export function labtestProofStayAdults(journal) {
+  return labtestProofStayExpected(journal).adults;
 }
