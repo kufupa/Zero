@@ -2911,21 +2911,33 @@ export async function listWorkItems(
       .limit(size);
     // One queue row per source: when a source message has canonical V2 drafts, only the draft-bearing item the
     // ensure path would reopen (latest updated, then id) represents the mail; legacy and stale duplicate rows hide.
-    const v2Items = await tx
-      .select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId, updatedAt: workItem.updatedAt })
-      .from(workItem)
-      .where(and(eq(workItem.transportId, input.transportId), sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`));
-    const canonicalV2BySource = new Map<string, string>();
-    const orderedV2Items = [...v2Items].sort((a, b) =>
-      b.updatedAt.getTime() - a.updatedAt.getTime() || b.id.localeCompare(a.id));
-    for (const candidate of orderedV2Items) {
-      if (candidate.sourceMessageId && !canonicalV2BySource.has(candidate.sourceMessageId)) {
-        canonicalV2BySource.set(candidate.sourceMessageId, candidate.id);
+    // Probed per candidate page so the lookup stays proportional to the page, not mailbox history.
+    const canonicalV2BySource = new Map<string, { id: string; updatedAt: Date }>();
+    const fetchPageWithDrafts = async (cursor: NeedsYouCursor | null, size: number) => {
+      const rows = await fetchPage(cursor, size);
+      const sourceIds = [...new Set(rows.map((row) => row.sourceMessageId).filter((id): id is string => id !== null))];
+      if (sourceIds.length === 0) return rows;
+      const drafts = await tx
+        .select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId, updatedAt: workItem.updatedAt })
+        .from(workItem)
+        .where(and(
+          eq(workItem.transportId, input.transportId),
+          inArray(workItem.sourceMessageId, sourceIds),
+          sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
+        ));
+      for (const draft of drafts) {
+        if (!draft.sourceMessageId) continue;
+        const current = canonicalV2BySource.get(draft.sourceMessageId);
+        if (!current || draft.updatedAt.getTime() > current.updatedAt.getTime()
+            || (draft.updatedAt.getTime() === current.updatedAt.getTime() && draft.id > current.id)) {
+          canonicalV2BySource.set(draft.sourceMessageId, { id: draft.id, updatedAt: draft.updatedAt });
+        }
       }
-    }
+      return rows;
+    };
     return collectNeedsYouPages({
       limit: input.limit,
-      fetchPage: async (cursor, size) => fetchPage(cursor, size),
+      fetchPage: fetchPageWithDrafts,
       validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
@@ -2942,13 +2954,15 @@ export async function listWorkItems(
         });
         const chip = NEEDS_YOU_CHIPS[rank] ?? 'needs_you';
         const v2 = hasReservationWorkflowV2Draft(state ?? {});
-        const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId) : undefined;
+        const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId)?.id : undefined;
         if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
         if (v2) {
-          // The same deterministic source door the ensure/prefill paths keep: a known channel or system source
-          // never queues (self-sent pre-stay is handled inside the admission). Anything uncertain stays reviewable.
-          if (!preStayAsk && classifyMailSource({ fromAddress: row.sender, subject: row.subject,
-              bodyText: preStaySourceText(sourceBody, sourceHtml) }).kind !== 'direct') return null;
+          // The same deterministic source door the ensure/prefill paths keep: a stored system notice or a
+          // known channel/system source never queues (self-sent pre-stay is handled inside the admission —
+          // it is an automated notice by nature yet its separate asks stay reviewable). Anything uncertain
+          // stays reviewable.
+          if (!preStayAsk && (payload?.origin === 'system_notice' || classifyMailSource({ fromAddress: row.sender,
+              subject: row.subject, bodyText: preStaySourceText(sourceBody, sourceHtml) }).kind !== 'direct')) return null;
           const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
           return { ...row, kind: admission.kind, chip, actions: admission.actions };
         }
