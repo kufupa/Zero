@@ -5936,23 +5936,23 @@ function bindGuestProfileObservations(input: {
           input.observations.some((observation) => observation.ref === ref))])].slice(0, 100);
         proposal.issues.push({ path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`,
           kind: 'unbound_guest_candidate',
-          explanation: 'Some guest profiles could not be verified. Search Infor and choose the right profile.',
+          explanation: 'Unbound or empty guest-profile references were removed from selectable candidates; only source-identity-matched host reads can populate this field.',
           evidenceRefs });
       }
       if (bound.length === 0 && sourceGuests.length && reads.length) proposal.issues.push({
         path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`, kind: 'guest_profile_identity_unverified',
-        explanation: 'The guest profile could not be verified. Search Infor and choose the right profile, or create a new one here.',
+        explanation: 'No complete, correlated native profile matched all available source identity claims; staff must search or select a profile manually.',
         evidenceRefs: [...new Set([...matchedGuestRefs, ...reads.map((read) => read.ref)])].slice(0, 100) });
       if (eligibleByNativeId.size > bound.length) proposal.issues.push({
         path: `/requests/${request.id}/allocations/${allocation.id}/guest/candidateRefs`, kind: 'guest_profile_candidate_cap',
-        explanation: 'The top three guest profiles are shown. Search Infor for other profiles.',
+        explanation: 'The top three native guest-profile matches are shown; other profiles remain available through search.',
         evidenceRefs: [...new Set([...matchedGuestRefs, ...reads.map((read) => read.ref)])].slice(0, 100) });
       if (!sourceGuests.length && (guest.firstName || guest.lastName || guest.email)) {
         const queryRefs = input.observations.filter((observation) => observation.kind === 'guest_candidate' &&
           observation.criteria.requestId === extractedRequest.id).map((observation) => observation.ref);
         if (queryRefs.length) proposal.issues.push({ path: `/requests/${request.id}/allocations/${allocation.id}/guest`,
           kind: 'guest_identity_unmatched',
-          explanation: 'The guest details changed. Search Infor and choose the right profile again.',
+          explanation: 'Native guest candidates were not linked because the final Create identity did not exactly match an extracted guest claim.',
           evidenceRefs: [...new Set([...sourceRequestRefs, ...queryRefs])].slice(0, 100) });
       }
     }
