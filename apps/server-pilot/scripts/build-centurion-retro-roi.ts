@@ -366,6 +366,7 @@ async function main(): Promise<void> {
   const startedAt = Date.now();
   const workerRegimes: Array<{ workers: number; classificationWorkers: number; fromElapsedMs: number; toElapsedMs: number | null }> = [{ workers: concurrency, classificationWorkers: classifierConcurrency, fromElapsedMs: 0, toElapsedMs: null }];
   let activeLimit = concurrency, classifierLimit = classifierConcurrency, classifierSlots = 0, activeSlots = 0, activeModelCalls = 0, activeMessages = 0, classifiedThisRun = 0, prefilledThisRun = 0, replayedThisRun = 0, completedThisRun = 0, failedThisRun = 0;
+  const activeModelCallsByModel: Record<'gpt-6-luna' | typeof ASSESSMENT_MODEL, number> = { 'gpt-6-luna': 0, 'gpt-6.1-terra': 0 };
   let cacheHits = 0, importedCacheHits = 0, dispatchedCalls = 0, successfulDispatches = 0, extractionTimeouts = 0, admissionWaitMsTotal = 0;
   const admissions: Array<() => void> = [];
   const admit = () => { while (activeSlots < activeLimit && admissions.length) { const next = admissions.shift(); if (next) { activeSlots++; next(); } } };
@@ -431,7 +432,7 @@ async function main(): Promise<void> {
       return [...new Set((Array.isArray(parsed) ? parsed : [parsed]).flatMap(row => row.selectedMessageId ? [row.selectedMessageId] : row.source ? [row.source.messageId] : row.tasks?.map(task => task.originMessageId) ?? []))];
     } catch { return []; }
   };
-  const trackedAdapter = (model: ModelAdapter, purpose: string): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
+  const trackedAdapter = (model: ModelAdapter, purpose: string, modelId: keyof typeof activeModelCallsByModel): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
     const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
     const key = hash(JSON.stringify({ purpose, input: stableInput })), cached = cache.get(key);
     if (cached) { cacheHits++; return cached; }
@@ -453,10 +454,10 @@ async function main(): Promise<void> {
       }
       const networkStartedAt = Date.now();
       let dispatched: { ok: true; result: z.infer<typeof modelResultSchema> } | { ok: false; error: unknown };
-      activeModelCalls++; dispatchedCalls++;
+      activeModelCalls++; activeModelCallsByModel[modelId]++; dispatchedCalls++;
       try { dispatched = { ok: true, result: modelResultSchema.parse(await model.invoke(input)) }; }
       catch (error) { dispatched = { ok: false, error }; }
-      finally { activeModelCalls--; }
+      finally { activeModelCalls--; activeModelCallsByModel[modelId]--; }
       const latencyMs = Date.now() - networkStartedAt;
       const statusCode = dispatched.ok ? undefined : sdkStatusCode(dispatched.error);
       const errorName = !dispatched.ok && dispatched.error instanceof Error ? dispatched.error.name : 'UnknownError';
@@ -489,13 +490,13 @@ async function main(): Promise<void> {
       await save(failure); dispatchFailures.push(failure); throw dispatched.error;
     }
   } });
-  const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`);
+  const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`, 'gpt-6-luna');
   const classificationModel = azureAdapter(classifierModelId, classifierEffort);
   if (!classificationModel) throw new Error('APPROVED_CLASSIFIER_ADAPTER_UNAVAILABLE');
-  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierModelId}:${classifierEffort}`);
+  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierModelId}:${classifierEffort}`, classifierModelId);
   const assessmentModel = azureAdapter(ASSESSMENT_MODEL, assessmentEffort);
   if (!assessmentModel) throw new Error('APPROVED_ASSESSMENT_ADAPTER_UNAVAILABLE');
-  const assessmentAdapter = trackedAdapter(assessmentModel, `assessment:${ASSESSMENT_MODEL}:${assessmentEffort}`);
+  const assessmentAdapter = trackedAdapter(assessmentModel, `assessment:${ASSESSMENT_MODEL}:${assessmentEffort}`, ASSESSMENT_MODEL);
   const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown, purpose: 'classify' | 'assess' = 'assess', normalizeOutput?: (value: unknown) => unknown, images?: ModelInvokeInput['images']): Promise<z.infer<T>> => {
     if (purpose === 'classify') await acquireClassifier();
     try {
@@ -682,6 +683,7 @@ async function main(): Promise<void> {
           if (replay && failedMeasurement(replay)) { measurementPending.add(mail.sourceRowId); replays.delete(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Core model timeout/error is a failed measurement; no grading or task credit until retry completes' }); info({ messageId: mail.sourceRowId, status: 'measurement_pending' }); continue; }
           const assessmentMessages = context.filter(message => message.messageId === mail.sourceRowId || pending.some(action => action.requirements.some(requirement => requirement.messageId === message.messageId))).map(message => message.messageId === mail.sourceRowId ? message : { ...message, bodyText: pending.flatMap(action => action.requirements.filter(requirement => requirement.messageId === message.messageId).map(requirement => requirement.quote)).join('\n'), attachments: [] });
           const assessed = replay ? await invoke(assessmentSchema, ASSESS, { tasks: pending.map(action => ({ ...action, requiredNativeChecks: NATIVE_REQUIREMENTS[action.workflow] })), messages: assessmentMessages, replay: { generationId: replay.generationId, status: replay.status, proposal: replay.proposal, observations: replay.observations.filter(observation => observation.kind !== 'source' && observation.kind !== 'mail_candidate'), errors: replay.errors }, nativeReads }) : null;
+          const stagedTasks: RetroTask[] = [];
           for (const action of pending) {
             const id = `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`;
             const assessment = assessed?.tasks.find(task => task.key === action.key);
@@ -740,8 +742,9 @@ async function main(): Promise<void> {
               outcome, reason: assessment?.reason ?? 'Classification establishes demand only and earns no completion or savings credit.',
               complexity: action.complexity, workItemId: null, bookingReferences: action.bookingReferences, evidence,
               replay: replay ? { status: 'replayed', replayId: replay.generationId, nativeEvidence: nativeComplete ? 'complete' : 'missing', checks } : { status: 'not_run', reason: 'Requested classify-only mode' } });
-            await save({ kind: 'task', fingerprint, task }); tasks.set(id, task); gradedTasksThisRun++;
+            stagedTasks.push(task);
           }
+          for (const task of stagedTasks) { await save({ kind: 'task', fingerprint, task }); tasks.set(task.id, task); gradedTasksThisRun++; }
           measurementPending.delete(mail.sourceRowId);
           if (replay) {
             replayedThisRun++;
@@ -785,7 +788,7 @@ async function main(): Promise<void> {
     const host = await sampleResources();
     const now = Date.now(), minutes = (now - loggedAt) / 60000, elapsedMinutes = (now - startedAt) / 60000;
     const rate = (count: number) => minutes > 0 ? Number((count / minutes).toFixed(2)) : 0;
-    const metrics = { phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, replayWorkers: activeLimit, classificationWorkers: classifierLimit, activeReplaySlots: activeSlots, activeClassificationSlots: classifierSlots, activeModelCalls, activeMessages, maximumMessageProducers: MAX_WORKERS * batchSize, waitingReplaySlots: admissions.length, waitingClassificationSlots: classifierAdmissions.length, frozenArtifactProducers: frozenProducers.stats(), localReaderWork: localReaders.stats(), admissionWaitMsTotal,
+    const metrics = { phase: 'throughput', elapsedMinutes: Number(elapsedMinutes.toFixed(2)), workers: activeLimit, replayWorkers: activeLimit, classificationWorkers: classifierLimit, activeReplaySlots: activeSlots, activeClassificationSlots: classifierSlots, activeModelCalls, activeModelCallsByModel: { ...activeModelCallsByModel }, activeMessages, maximumMessageProducers: MAX_WORKERS * batchSize, waitingReplaySlots: admissions.length, waitingClassificationSlots: classifierAdmissions.length, frozenArtifactProducers: frozenProducers.stats(), localReaderWork: localReaders.stats(), admissionWaitMsTotal,
       classifiedThisRun, prefilledThisRun, replayedThisRun, completedThisRun, failedThisRun, totalMessages: selectedInbound.length,
       classificationEmailsPerMinute: rate(classifiedThisRun - lastClassified), prefillEmailsPerMinute: rate(prefilledThisRun - lastPrefilled), replayAndAssessmentEmailsPerMinute: rate(replayedThisRun - lastReplayed), completedEmailsPerMinute: rate(completedThisRun - lastCompleted),
       workerRegimes: workerRegimes.map(regime => ({ admissionWorkers: regime.workers, classificationWorkers: regime.classificationWorkers, durationSeconds: Number((((regime.toElapsedMs ?? now - startedAt) - regime.fromElapsedMs) / 1000).toFixed(2)) })),
