@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../bedrock/adapter.js';
-import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
+import { createAzureLunaModel, createLunaModel, LUNA_MODEL_ID, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
 import { maskCardNumbers } from '../card-mask.js';
 import { hotelRulesForProperty } from '../reservationist-decision.js';
 import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
@@ -563,6 +563,19 @@ export function createAzureExtractionAdapter(env: NodeJS.ProcessEnv = process.en
     routeId: 'azure_gpt6_luna_extraction',
     modelId: EXTRACTION_MODEL_ID,
     protocol: 'azure-openai-responses',
+  });
+}
+
+export function createReservationPrefillAdapter(env: NodeJS.ProcessEnv = process.env): ModelAdapter | null {
+  const provider = env.RESERVATION_PREFILL_MODEL_PROVIDER?.trim() || 'azure';
+  if (provider === 'azure') return createAzureExtractionAdapter(env);
+  if (provider !== 'bedrock') throw new Error('RESERVATION_PREFILL_MODEL_PROVIDER must be azure or bedrock');
+  return new LunaModelAdapter({
+    model: createLunaModel({ region: 'us-east-1', modelId: LUNA_MODEL_ID }),
+    reasoningEffort: extractionReasoningEffort(env),
+    routeId: 'bedrock_gpt6_luna_prefill',
+    modelId: LUNA_MODEL_ID,
+    protocol: 'bedrock-openai-responses',
   });
 }
 
