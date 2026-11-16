@@ -503,6 +503,17 @@ async function applyCurrency(page,currency) {
 }
 
 export async function resetPublicControls(page) {
+  try {
+    await resetPublicControlsOnce(page);
+  } catch (error) {
+    // The form may repopulate a cleared control while the sales strategy settles.
+    // Reapply the same reset once; the complete final verification still gates the search.
+    if (error?.message !== 'PUBLIC_RESET_FIELD_NOT_EMPTY') throw error;
+    await resetPublicControlsOnce(page);
+  }
+}
+
+async function resetPublicControlsOnce(page) {
   const fields=['groupname','organization','travelagency','roomtypes','rateplans'];
   let step='dismiss_calendar';
   try {
@@ -1363,7 +1374,9 @@ export function executionFailure(error,phase,secret) {
   return resultEnvelope({
     outcome:'execution_failure',
     phase,
-    error:{name:error.name,message},
+    error:{name:error.name,message,
+      ...(/^(?:clear|verify)_(?:groupname|organization|travelagency|roomtypes|rateplans|currency|convertcurrency|includemultirateoptions|sales_strategy)$/.test(error?.quoteResetStep ?? '')
+        ? {resetStep:error.quoteResetStep} : {})},
     issues:[issue('EXECUTION_FAILURE',phase??'run',message,'Retry after restoring the authenticated Hotel Availability session.')],
     allocation:{status:'unknown',reason:'Execution failed before a selected allocation could be checked.',pools:[]},
   });
