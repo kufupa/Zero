@@ -392,14 +392,14 @@ export const reservationWorkflowV2Router = router({
       return withPreparation(Promise.resolve(initialized), scoped.propertyCode);
     const item = { workItemId: initialized.draft.workItemId, source: canonicalSource,
       expectedRevision: initialized.revision, expectedSeq: initialized.seq };
-    if (scoped.propertyCode !== 'HRCEN' || !reservationArrivalEnabled()) return withPreparation(prefillDraft(scoped, item, ctx.transportEmail, false), scoped.propertyCode);
+    if (!reservationArrivalEnabled(scoped.propertyCode)) return withPreparation(prefillDraft(scoped, item, ctx.transportEmail, false), scoped.propertyCode);
     if (initialized.draft.prefill?.status !== 'idle') return withPreparation(Promise.resolve(initialized), scoped.propertyCode);
     const job = await enqueueReservationArrival(scoped.db, { transportId: scoped.transportId, messageId: canonicalSource.messageId, requestedByPane: true });
     return withPreparation(job ? markReservationWorkflowV2Queued(scoped, { ...item, jobRunId: job.id }) : Promise.resolve(initialized), scoped.propertyCode);
   }),
   prefill: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
-    if (scoped.propertyCode !== 'HRCEN' || !reservationArrivalEnabled()) return withPreparation(prefillDraft(scoped, input, ctx.transportEmail, true), scoped.propertyCode);
+    if (!reservationArrivalEnabled(scoped.propertyCode)) return withPreparation(prefillDraft(scoped, input, ctx.transportEmail, true), scoped.propertyCode);
     const current = await getReservationWorkflowV2Draft(scoped, input);
     if (current.status !== 'ok' || current.revision !== input.expectedRevision || current.seq !== input.expectedSeq ||
         current.draft.prefill?.status === 'complete' || current.draft.prefill?.status === 'superseded')

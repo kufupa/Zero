@@ -111,13 +111,14 @@ export async function executeReservationArrival(input: {
   run: AiWorkflowRun; fence: AiRunFence; signal: AbortSignal; db: DB;
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
   const { run, fence, db, signal } = input;
-  if (!reservationArrivalEnabled()) {
+  const resolved = resolvePropertyTransport(run.transportId);
+  if (!reservationArrivalEnabled() || (resolved.kind === 'property' &&
+      resolved.property.propertyCode === 'HRDAV' && !reservationArrivalEnabled('HRDAV'))) {
     const deferred = await markAiRunRetry({ ...fence, expectedStates: ['running'], attempts: run.attempts,
       nextRunAt: new Date(Date.now() + 5 * 60_000), lastError: 'arrival prefill disabled',
       failureClass: 'POLICY_BLOCK', resetDeadline: true }, db);
     return deferred ? 'retry_wait' : 'dead_letter';
   }
-  const resolved = resolvePropertyTransport(run.transportId);
   const [row] = await db.select({ id: message.id, threadId: message.threadId, subject: message.subject,
     textBody: message.textBody, htmlBody: message.htmlBody, fromAddress: message.fromAddress,
     arrivedAt: MESSAGE_ARRIVED_AT, mailboxAddress: mailboxTransport.email }).from(message)
@@ -128,9 +129,10 @@ export async function executeReservationArrival(input: {
   const sourceHash = run.metrics?.sourceHash;
   const evidenceHash = run.metrics?.evidenceHash;
   const arrivedAt = run.metrics?.arrivedAt;
-  const origin = await guardCenturionHmsMailboxOrigin({ transportId: run.transportId,
-    threadId: run.threadId, messageId: run.triggerMessageId });
-  if (resolved.kind !== 'property' || resolved.property.propertyCode !== 'HRCEN' || !origin.ok || !row ||
+  const origin = resolved.kind === 'property' && resolved.property.propertyCode === 'HRDAV'
+    ? { ok: true } : await guardCenturionHmsMailboxOrigin({ transportId: run.transportId,
+      threadId: run.threadId, messageId: run.triggerMessageId });
+  if (resolved.kind !== 'property' || !reservationArrivalEnabled(resolved.property.propertyCode) || !origin.ok || !row ||
       typeof sourceHash !== 'string' || typeof evidenceHash !== 'string' || typeof arrivedAt !== 'string' || !row.arrivedAt ||
       (await reservationArrivalEvidence(db, run.triggerMessageId)).hash !== evidenceHash ||
       row.arrivedAt.toISOString() !== arrivedAt || staffQuoteSourceHash(row) !== sourceHash) {
@@ -138,9 +140,12 @@ export async function executeReservationArrival(input: {
       failureClass: 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
-  const source = { threadId: row.threadId, messageId: row.id, sourceHash, arrivedAt };
-  const scoped: ReservationWorkflowV2Context = { db, transportId: run.transportId, propertyCode: 'HRCEN' };
-  const initialized = await initializeReservationWorkflowV2Draft(scoped, source);
+  const propertyCode = resolved.property.propertyCode;
+  const source = { ...(propertyCode === 'HRDAV' ? { propertyId: propertyCode } : {}),
+    threadId: row.threadId, messageId: row.id, sourceHash, arrivedAt };
+  const scoped: ReservationWorkflowV2Context = { db, transportId: run.transportId, propertyCode };
+  const initialized = await initializeReservationWorkflowV2Draft(scoped, source,
+    { allowPropertySwitch: propertyCode !== 'HRDAV' });
   if (initialized.status !== 'ok') {
     await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: `source rejected: ${initialized.status}`,
       failureClass: 'POLICY_BLOCK' }, db);

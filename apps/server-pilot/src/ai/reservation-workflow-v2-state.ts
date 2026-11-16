@@ -288,6 +288,7 @@ function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[numbe
 /** Creates/reuses one source WorkItem and seeds its only canonical v2 draft. Existing edits/results are never replaced. */
 export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   source: ReservationWorkflowV2SourceInput; extractionId?: string | null; seed: ReservationWorkflowV2Seed; allowSourceChanged?: boolean;
+  allowPropertySwitch?: boolean;
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx) || (input.source.propertyId ?? 'HRCEN') !== ctx.propertyCode) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
@@ -360,6 +361,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     if ((existing && existing.propertyCode !== ctx.propertyCode) ||
         (!existing && !hasReservationWorkflowV2Draft(itemRow.state) && itemRow.state.propertyCode !== undefined &&
           itemRow.state.propertyCode !== ctx.propertyCode)) {
+      if (input.allowPropertySwitch === false) return { status: 'wrong_property' as const };
       // Every source item is locked in ID order. Existing dispatch holds and
       // queued/claimed runs must finish or reconcile before the scope changes.
       const ids = sourceItems.map((row) => row.id);
@@ -453,8 +455,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
 }
 
 export async function initializeReservationWorkflowV2Draft(ctx: Context, source: ReservationWorkflowV2SourceInput,
-  options?: { allowSourceChanged?: boolean }) {
-  return ensureReservationWorkflowV2Draft(ctx, { source, allowSourceChanged: options?.allowSourceChanged, seed: { status: 'partial',
+  options?: { allowSourceChanged?: boolean; allowPropertySwitch?: boolean }) {
+  return ensureReservationWorkflowV2Draft(ctx, { source, allowSourceChanged: options?.allowSourceChanged,
+    allowPropertySwitch: options?.allowPropertySwitch, seed: { status: 'partial',
     proposal: { schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
       content: { requests: [], services: [], documents: [] }, annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] },
     observations: [], prefill: { status: 'idle', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: null } } });

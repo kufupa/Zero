@@ -10,7 +10,9 @@ import { enqueueAiRun, NOT_APPLICABLE_MODEL_ID } from './run-ledger.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 
 export const RESERVATION_ARRIVAL_VERSION = 'reservation-prefill/1';
-export const reservationArrivalEnabled = () => process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on';
+export const reservationArrivalEnabled = (propertyCode = 'HRCEN') =>
+  process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' && (propertyCode === 'HRCEN' ||
+    (propertyCode === 'HRDAV' && process.env.RESERVATION_V2_ARRIVAL_PREFILL_HRDAV === 'on'));
 
 /** Called with the admission transaction, or with an authenticated pane's current source. */
 export async function enqueueReservationArrival(db: DB, input: {
@@ -18,7 +20,7 @@ export async function enqueueReservationArrival(db: DB, input: {
 }) {
   if (!reservationArrivalEnabled()) return null;
   const property = resolvePropertyTransport(input.transportId);
-  if (property.kind !== 'property' || property.property.propertyCode !== 'HRCEN') return null;
+  if (property.kind !== 'property' || !reservationArrivalEnabled(property.property.propertyCode)) return null;
   const [row] = await db.select({ id: message.id, threadId: message.threadId, subject: message.subject,
     textBody: message.textBody, htmlBody: message.htmlBody, fromAddress: message.fromAddress,
     sourceProvenance: message.sourceProvenance, arrivedAt: MESSAGE_ARRIVED_AT, mailboxAddress: mailboxTransport.email,
