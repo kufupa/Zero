@@ -119,10 +119,18 @@ describe('quote workbook totals and formulas', () => {
 
   it('totals in the workbook equal the PDF total for the same revision', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
-    const { bytes, totalMinor } = quoteWorkbookForRevision({ revision, facts, header });
-    const html = renderRevisionProposalHtml(revision, pdfHeader, facts);
+    const displayBookingAgency = 'Travel & Co International Booking Agency';
+    const { bytes, totalMinor } = quoteWorkbookForRevision({ revision, facts, header: { ...header, displayBookingAgency } });
+    const html = renderRevisionProposalHtml(revision, { ...pdfHeader, displayBookingAgency }, facts);
     const pdfTotal = pdfTotalMinor(html);
     const sheet = sheetOf(bytes);
+    expect(cellXml(sheet, 'B13')).toContain('CIDB');
+    expect(cellXml(sheet, 'A16')).toContain('Agency:');
+    expect(cellXml(sheet, 'B16')).toContain('Travel &amp; Co International Booking Agency');
+    expect(sheet).toContain('ref="B16:D16"');
+    expect(sheet).toMatch(/<row r="16"[^>]*ht="34"/);
+    expect(html).toContain('Organization:</strong> CIDB');
+    expect(html).toContain('Agency:</strong> Travel &amp; Co International Booking Agency');
     expect(html).toContain('total of displayed line amounts');
     expect(cellXml(sheet, 'A34')).toContain('Total of displayed line amounts');
     expect(totalMinor).toBe(pdfTotal);

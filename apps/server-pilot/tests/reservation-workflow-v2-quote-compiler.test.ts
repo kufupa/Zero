@@ -146,13 +146,26 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
     ).toBe(false);
   });
 
-  it('clears organization selection blockers after native selection and staff acceptance', () => {
+  it('accepts a name without a selection and reviews an explicitly selected organization', () => {
     const value = draft();
-    expect(fields(value)).toContain('organization_selection_required');
-    // O8: bare code plus mounted picker path for Review/focus.
-    expect(fields(value)).toContain(`${requestRoot}/parties/organization`);
-
+    const request = value.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('quote fixture missing');
+    request.body.groups[0]!.ratePlan = 'BAR';
+    request.body.groups[0]!.occupancy.childCount = 0;
+    request.body.groups[0]!.occupancy.childAges = [];
+    if (!request.body.parties.organization || !('suggestedRef' in request.body.parties.organization)) throw new Error('organization fixture missing');
+    request.body.parties.organization.suggestedRef = candidateRef;
+    const namePath = `${requestRoot}/parties/organization/name`;
     const selectionPath = `${requestRoot}/parties/organization/nativeSelectionRef`;
+    value.fieldOverrides[namePath] = { state: 'set', value: 'Manual Ltd', updatedAt: now };
+    value.fieldOverrides[selectionPath] = { state: 'unknown', updatedAt: now };
+    const unbound = compile(value);
+    expect(unbound.status).toBe('ok');
+    if (unbound.status !== 'ok') throw new Error('name-only quote did not compile');
+    expect(unbound.input.organization).toBe('Manual Ltd');
+    expect(unbound.input.parties).toBeUndefined();
+
+    value.fieldOverrides[namePath] = { state: 'set', value: 'Acme Ltd', updatedAt: now };
     value.fieldOverrides[selectionPath] = { state: 'set', value: candidateRef, updatedAt: now };
     expect(fields(value, true)).toContain('organization_requires_staff_acceptance');
 
@@ -171,7 +184,6 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
   it('surfaces focus paths for poisoned org/agency names (Pass4/Pass6 fail modes)', () => {
     // Former workItemIds: 7940e9dc… unknown_staff; e497761d… name_unresolved; 6678481f… agency.
     const orgPath = `${requestRoot}/parties/organization`;
-    const agencyPath = `${requestRoot}/parties/bookingAgency`;
 
     const unknownStaff = draft();
     unknownStaff.fieldOverrides[`${orgPath}/name`] = { state: 'unknown', updatedAt: now };
@@ -193,10 +205,7 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
     agency.proposal.content.requests[0]!.body.parties.bookingAgency = {
       name: 'Poisoned Agency', candidateRefs: [], suggestedRef: null,
     } as never;
-    expect(fields(agency)).toEqual(expect.arrayContaining([
-      'bookingAgency_selection_required',
-      agencyPath,
-    ]));
+    expect(fields(agency)).not.toContain('bookingAgency_selection_required');
   });
 
   it('clears native rate code blocker when staff sets a valid rate plan', () => {

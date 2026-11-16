@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { renderRevisionProposalHtml, buildRevisionProposalPdf } from '../src/quote-proposal/proposal-pdf.js';
-const header={attention:'Synthetic <script>alert(1)</script>',company:'Test',clientEmail:'test@example.invalid',clientTelephone:'',agency:'Synthetic',signerName:'Test',signerEmail:'test@example.invalid'};
+const header={attention:'Synthetic <script>alert(1)</script>',organization:'Test',clientEmail:'test@example.invalid',clientTelephone:'',bookingAgency:'Synthetic',signerName:'Test',signerEmail:'test@example.invalid'};
 describe('complete revision proposal rendering',()=>{
  it.each([1,7,13])('renders %s varying price runs with complete pages and one total',async(count)=>{
   const r=await syntheticRevision(Array.from({length:count},(_,i)=>`${100+i}.01`));

@@ -36,8 +36,8 @@ export function usePickerPosition(open: boolean, picker: RefObject<HTMLDivElemen
 }
 
 /** One editable code/identity search with persistent access to native alternatives. */
-export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint, disabled = false, partyRole = false }: {
-  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string; disabled?: boolean; partyRole?: boolean;
+export function NativePicker({ label, path, editor, kind, allowNone = false, compact = false, hint, disabled = false, partyRole = false, quoteName = false }: {
+  label: string; path: string; editor: WorkbenchEditorProps; kind?: string; allowNone?: boolean; compact?: boolean; hint?: string; disabled?: boolean; partyRole?: boolean; quoteName?: boolean;
 }) {
   const id = useId();
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -79,6 +79,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const [reviewing, setReviewing] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
+  const [applyingName, setApplyingName] = useState(false);
+  const applyingNameRef = useRef(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [trackReady, setTrackReady] = useState(false);
   const trackPreviousRefs = useRef(new Set<string>());
@@ -121,7 +123,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     };
   }, [open]);
   const normalized = (value: string) => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-  const recommendations = !dirty || normalized(query) === normalized(saved)
+  const recommendations = !quoteName && (!dirty || normalized(query) === normalized(saved))
     ? nativeRecommendationLeads(editor.snapshot, selectionPath, choiceKind).slice(0, 3) : [];
   const recommendationRank = (value: string) => {
     const index = recommendations.findIndex(lead => normalized(lead.value) === normalized(value));
@@ -137,12 +139,15 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
     ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
   useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
-  useEffect(() => () => { if (catalogueField) editor.commands.setUncommitted(path, false); }, [path, catalogueField]);
-  const editValue = (value: string) => party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
+  useEffect(() => () => { if (catalogueField || quoteName) editor.commands.setUncommitted(path, false); }, [path, catalogueField, quoteName]);
+  const editValue = (value: string) => quoteName && !value.trim() ? null : party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
+  const editState = (value: string) => quoteName && !value.trim() ? 'none' as const : 'set' as const;
   const editPath = party ? path : inputPath;
   const choose = async (ref: string, value: string, label: string) => {
+    if (quoteName && applyingNameRef.current) return;
     editVersion.current += 1;
     const before = editVersion.current;
+    if (quoteName) { applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true); }
     try { if (entity) await editor.commands.selectNative(selectionPath, ref);
       else {
         await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
@@ -157,16 +162,34 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
           await editor.commands.edit(path.replace(/\/ratePlan$/u, '/mealPlan'), mealPlan);
       }
       if (editVersion.current === before) {
-        if (catalogueField) editor.commands.setUncommitted(path, false);
+        if (catalogueField || quoteName) editor.commands.setUncommitted(path, false);
         setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1);
       } }
-    catch { /* controller retains failure */ }
+    catch { if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); } }
+    finally { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } }
   };
   const saveSearch = async () => {
-    if (!dirty || amendTrack) return;
+    if (!dirty || amendTrack || applyingNameRef.current) return;
     const before = editVersion.current;
-    await editor.commands.edit(editPath, editValue(query));
-    if (editVersion.current === before) { setDirty(false); if (catalogueField) editor.commands.setUncommitted(path, false); }
+    try {
+      await editor.commands.edit(editPath, editValue(query), editState(query));
+      if (editVersion.current === before) { setDirty(false); if (catalogueField || quoteName) editor.commands.setUncommitted(path, false); }
+    } catch (error) {
+      if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); }
+      throw error;
+    }
+  };
+  const useTypedName = async () => {
+    if (applyingNameRef.current) return;
+    const before = ++editVersion.current;
+    applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true);
+    try {
+      editor.commands.stageEdit(editPath, editValue(query), editState(query));
+      editor.commands.stageEdit(selectionPath, null, 'none');
+      await editor.commands.edit(selectionPath, null, 'none');
+      if (editVersion.current === before) { setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false); }
+    } catch { if (editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); } }
+    finally { applyingNameRef.current = false; setApplyingName(false); }
   };
   const searchRecommendation = async (value: string) => {
     if (loadingRef.current) return;
@@ -176,14 +199,16 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     if (catalogueField) setCatalogueSearch(value);
     else {
       setQuery(value); setDirty(true);
-      editor.commands.stageEdit(editPath, editValue(value));
+      if (quoteName) editor.commands.setUncommitted(path, true);
+      editor.commands.stageEdit(editPath, editValue(value), editState(value));
     }
     loadingRef.current = true; setLoading(true); setLookupError(null);
     try {
       if (!catalogueField) {
-        await editor.commands.edit(editPath, editValue(value));
+        await editor.commands.edit(editPath, editValue(value), editState(value));
         if (editVersion.current !== before) return;
         setDirty(false);
+        if (quoteName) editor.commands.setUncommitted(path, false);
       }
       if (catalogueField && editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
       else await editor.commands.lookup();
@@ -192,7 +217,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   };
   const search = catalogueSearch ?? (dirty || entity ? query : '');
   const visible = choices.filter(row => !search || `${row.value} ${row.label} ${row.detail ?? ''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  const shown = visible.length ? visible : choices;
+  const shown = quoteName ? visible : visible.length ? visible : choices;
   const selectionOverride = editor.snapshot.session.draft.fieldOverrides[selectionPath];
   const selectedRef = entity ? selectionOverride && selectionOverride.state !== 'inherit'
     ? valueAt(editor.snapshot, selectionPath)
@@ -257,13 +282,16 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   return <div data-field-path={path} className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && !suggestion && <FieldSource editor={editor} path={path} label={label} />}</div><div ref={pickerRef} className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={activeId}
-      value={display} disabled={disabled || reviewing} onFocus={openChoices} onClick={openChoices} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
+      value={display} disabled={disabled || reviewing || (quoteName && applyingName)} onFocus={quoteName ? undefined : openChoices} onClick={quoteName ? undefined : openChoices} placeholder={quoteName ? 'Name for quote (optional)' : guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         editVersion.current += 1;
-        const value = event.target.value; setCatalogueSearch(null); setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
+        const value = event.target.value; setCatalogueSearch(null); setQuery(value); setDirty(true); if (!quoteName) setOpen(true); setActiveIndex(-1);
         if (catalogueField) {
           editor.commands.setUncommitted(path, true);
           if (!amendTrack) editor.commands.stageEdit(editPath, editValue(value), 'set', { notify: false });
-        } else editor.commands.stageEdit(editPath, editValue(value));
+        } else {
+          if (quoteName) editor.commands.setUncommitted(path, true);
+          editor.commands.stageEdit(editPath, editValue(value), editState(value));
+        }
       }}
       onBlur={() => { void saveSearch().catch(() => {}); }} onKeyDown={event => {
         if (event.key === 'Escape') {
@@ -274,10 +302,16 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
           event.preventDefault(); if (!open) openChoices();
           setActiveIndex(index => shown.length ? (event.key === 'ArrowDown' ? Math.min(index + 1, shown.length - 1) : index < 0 ? shown.length - 1 : Math.max(0, index - 1)) : -1);
         }
-        if (event.key === 'Enter') { event.preventDefault(); const row = open && (shown[activeIndex] ?? (visible.length === 1 ? visible[0] : undefined));
-          if (row) void choose(row.ref, row.value, row.label); else void saveSearch().catch(() => {}); }
+        if (event.key === 'Enter') { event.preventDefault(); const row = open && (shown[activeIndex] ?? (!quoteName && visible.length === 1 ? visible[0] : undefined));
+          if (row) void choose(row.ref, row.value, row.label); else if (quoteName) void useTypedName(); else void saveSearch().catch(() => {}); }
       }} />
-      <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing} onMouseDown={event => event.preventDefault()} onClick={() => open ? setOpen(false) : openChoices()}>⌄</button></div>
+      <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing || (quoteName && applyingName)} onMouseDown={event => event.preventDefault()} onClick={() => open ? setOpen(false) : quoteName ? (setOpen(true), void loadChoices()) : openChoices()}>⌄</button></div>
+    {quoteName && <div>
+      <button type="button" disabled={disabled || reviewing || applyingName || !query.trim()} onMouseDown={event => event.preventDefault()}
+        onClick={() => { setOpen(true); void loadChoices(); }}>Find in Infor</button>{' '}
+      <button type="button" disabled={disabled || reviewing || applyingName || !query.trim()} onMouseDown={event => event.preventDefault()}
+        onClick={() => { void useTypedName(); }}>Use typed name on quote</button>
+    </div>}
     {open && !disabled && <div id={`${id}-options`} role="listbox" className={styles.options} style={position}>
       {recommendations.length > 0 && <div role="group" aria-label="Suggested searches">
         <small><strong>Suggested searches</strong> · Check the Infor matches before selecting.</small>
@@ -292,13 +326,16 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
             {' · '}read {new Date(lead.stock.observedAt).toLocaleString()} · whole-stay availability not confirmed</small>}
         </button>)}
       </div>}
-      {allowNone && <button type="button" role="option" aria-selected={!query} onMouseDown={event => event.preventDefault()} onClick={() => {
+      {allowNone && <button type="button" role="option" aria-selected={!query} disabled={quoteName && applyingName} onMouseDown={event => event.preventDefault()} onClick={() => {
         editVersion.current += 1; const before = editVersion.current;
+        if (quoteName) { applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true); }
         void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => {
-          if (editVersion.current === before) { setQuery(''); setDirty(false); setOpen(false); if (catalogueField) editor.commands.setUncommitted(path, false); }
-        }).catch(() => {});
+          if (editVersion.current === before) { setQuery(''); setDirty(false); setOpen(false); if (catalogueField || quoteName) editor.commands.setUncommitted(path, false); }
+        }).catch(() => {
+          if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); }
+        }).finally(() => { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } });
       }}>None</button>}
-      {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" aria-selected={entity ? selectedRef === row.ref : saved === row.value}
+      {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" disabled={quoteName && applyingName} aria-selected={entity ? selectedRef === row.ref : saved === row.value}
         onMouseDown={event => event.preventDefault()} onClick={() => { void choose(row.ref, row.value, row.label); }}><strong>{choiceKind === 'reason_for_stay' ? row.label : row.value}</strong>{choiceKind !== 'reason_for_stay' && row.label !== row.value && <span> — {row.label}</span>}{row.detail && <small>{row.detail}</small>}</button>)}
       {selectedVerified && <small role="note">This row was checked; the earlier search may still be incomplete.</small>}
       {leads.length > 0 && <div role="note"><small><strong>Infor matches</strong> · {editor.commands.verifyNativeLead
@@ -313,19 +350,23 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         })}</div>}
       {loading && <small role="status">Loading {label.toLocaleLowerCase()} from Infor…</small>}
       {lookupError && <small role="alert">{lookupError}</small>}
+      {quoteName && choices.length > 0 && !shown.length && !loading && <small>No matching Infor profiles. Use the typed name on the quote or search again.</small>}
       {!choices.length && !loading && !lookupError && <small>{trackScopeChanged ? 'The stay selection changed. Refresh Infor choices.'
         : amendTrack && trackReady ? 'No common Track choices for the selected stays.'
+        : quoteName && query.trim() ? 'No Infor profiles returned. Use the typed name on the quote or search again.'
         : entity ? 'Enter a name to find Infor matches.' : 'No Infor choices loaded yet.'}</small>}
       {!entity && ['room_type', 'room_type_for_charge', 'rate_plan'].includes(choiceKind ?? '') && <small>Hotel codes and meanings. The booking check verifies prices and availability for these dates and guests.</small>}
-      <button type="button" disabled={loading} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
+      <button type="button" disabled={loading || (quoteName && applyingName)} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
     </div>}
   {open && catalogueSearch !== null && <small>Searching {catalogueSearch}. Select an Infor rate to apply it.</small>}
   {party && !dirty && !open && selectedChoice && selectedChoice.label !== saved && <small>Selected: {selectedChoice.label}</small>}
   {dirty ? amendTrack ? <small>Select an Infor match. <button type="button" disabled={editor.view.busy} onClick={() => {
       editVersion.current += 1; setQuery(saved); setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false);
-    }}>Cancel search</button></small> : <small>Unsaved search</small>
+    }}>Cancel search</button></small> : <small>{quoteName ? 'Unsaved name' : 'Unsaved search'}</small>
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
-    : entity && !selectedRef && query ? <small>Select an Infor match</small> : null}
+    : entity && !selectedRef && query && !quoteName ? <small>Select an Infor match</small> : null}
+    {quoteName && !dirty && query.trim() && <small>{selectedChoice ? `Infor profile selected: ${selectedChoice.label}.`
+      : selectedRef ? 'The selected Infor profile needs checking.' : 'Quote name only. Public rates apply unless another verified profile is selected.'}</small>}
     {staleIdentity && <small role="alert">The selected Infor match changed. Choose a current match or search again.</small>}
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>

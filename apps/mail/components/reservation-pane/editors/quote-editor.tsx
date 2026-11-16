@@ -512,8 +512,9 @@ export function QuoteEditor(editor: Editor) {
           <small>Unresolved requests above are not included in this total.</small>}</div>}
     </Section>
     <Section title="Organization and booking agency">
-      <NativePicker label="Organization" path={`${bodyPath}/parties/organization`} editor={editor} kind="party_candidate" allowNone compact />
-      <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact />
+      <p className={styles.note}>Enter names for the quote. Find and select an Infor profile when a contract rate is needed; typing a name does not create a profile.</p>
+      <NativePicker label="Organization" path={`${bodyPath}/parties/organization`} editor={editor} kind="party_candidate" allowNone compact quoteName />
+      <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact quoteName />
       <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
       {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
         This source price used BAR as a discovery default; no sales strategy was selected. Choose the intended strategy above before Review/Check. If it is not BAR, check and prepare the price again.

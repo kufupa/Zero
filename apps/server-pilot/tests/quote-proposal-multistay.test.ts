@@ -27,13 +27,13 @@ const GOTENBERG = 'http://local.test';
 const PDF_BYTES = '%PDF-1.4 synthetic';
 const header = {
   attention: 'David Miller',
-  company: 'CIDB',
+  organization: 'CIDB',
   clientEmail: 'guest@example.com',
   clientTelephone: '',
   signerName: 'R Opperman',
   signerEmail: 'ropperman@legacyhotels.co.za',
 };
-const proposalHeader = { ...header, agency: 'CIDB' };
+const proposalHeader = { ...header, bookingAgency: 'CIDB', displayBookingAgency: 'CIDB' };
 /** Ten line rows: the six template rows plus four inserted below them, which move every row from 30 down. */
 const INSERTED = 4;
 const THREE_NIGHTS = ['100.00', '110.00', '120.00'];
@@ -217,6 +217,8 @@ describe('combined quote PDF', () => {
     expect(url).toBe(`${GOTENBERG}/forms/libreoffice/convert`);
     const sent = new Uint8Array(await ((init!.body as FormData).get('files') as Blob).arrayBuffer());
     expect(new TextDecoder().decode(sent.subarray(0, 2))).toBe('PK');
+    expect(cellXml(sheetOf(sent), 'A16')).toContain('Agency:');
+    expect(cellXml(sheetOf(sent), 'B16')).toContain('CIDB');
     expect(cachedCents(sheetOf(sent), 'H33')).toBe(result.totalMinor);
     expect(result.totalMinor).toBe(roomTotalOf(stays));
     expect(new TextDecoder().decode(result.pdf)).toBe(PDF_BYTES);

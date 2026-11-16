@@ -51,6 +51,7 @@ export type WorkbookLine = {
 export type WorkbookHeader = {
   attention: string;
   organization: string;
+  displayBookingAgency?: string;
   clientEmail: string;
   clientTelephone: string;
   signerName: string;
@@ -491,6 +492,14 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   sheet = setText(sheet, 'B13', input.header.organization);
   sheet = setText(sheet, 'B14', input.header.clientEmail);
   sheet = setText(sheet, 'B15', input.header.clientTelephone);
+  const bookingAgency = input.header.displayBookingAgency?.trim();
+  if (bookingAgency) {
+    sheet = setText(sheet, 'A16', 'Agency:');
+    sheet = setText(sheet, 'B16', bookingAgency, NOTE_STYLE);
+    sheet = addMerge(sheet, 'B16:D16');
+    const lines = bookingAgency.split('\n').reduce((count, part) => count + Math.max(1, Math.ceil(part.length / 28)), 0);
+    sheet = setRowHeight(sheet, 16, Math.max(17.4, lines * 15 + 4));
+  }
   const lineRows = Math.max(TEMPLATE_LINE_ROWS, input.lines.length);
   for (let index = 0; index < lineRows; index += 1) {
     const row = FIRST_LINE_ROW + index;
