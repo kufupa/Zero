@@ -451,7 +451,7 @@ async function collectCatalog(page, kind, nativeDialog, allowReset, surface = pa
     if (!res) break;
     if (res.status() !== 200) throw new Error('PICKER_PAGE_FAILED');
     const pageData = responseGrid(parseResponse(await responseText(res)));
-    if (!pageData.rows.length || ['GRIDID', 'GRIDNAME', 'DATASPYID', 'RECORDS']
+    if (!pageData.rows.length || ['GRIDID', 'GRIDNAME', 'DATASPYID']
       .some((key) => clean(pageData.metadata[key]) !== clean(initialMetadata[key]))) {
       throw new Error('PICKER_PAGE_INVALID');
     }
