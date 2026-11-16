@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
+import { effectiveOptionalMissing } from '../mail/ingest/attachment-evidence.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { orderThreadContext } from './quote-workflow-synced-selection.js';
 
@@ -23,15 +24,10 @@ export async function reservationArrivalEvidence(db: WorkTx, messageId: string) 
     mimeType: attachment.mimeType, bytes: attachment.sizeBytes, sha256: attachment.sha256,
     contentId: attachment.contentId, inline: attachment.isInline }).from(attachment)
     .where(inArray(attachment.messageId, [...admitted]));
-  const missingWithParent = thread.filter((row) => admitted.has(row.id)).flatMap((row) => {
-    const raw = row.provenance?.optionalMissing;
-    return Array.isArray(raw) ? raw.flatMap((value): { messageId: string; role: string; fileName: string | null }[] => {
-      if (!value || typeof value !== 'object') return [];
-      const item = value as Record<string, unknown>;
-      if (typeof item.role !== 'string') return [];
-      return [{ messageId: row.id, role: item.role, fileName: typeof item.fileName === 'string' ? item.fileName : null }];
-    }) : [];
-  });
+  const missingWithParent = thread.filter((row) => admitted.has(row.id)).flatMap((row) =>
+    effectiveOptionalMissing(row.provenance)
+      .map((item): { messageId: string; role: string; fileName: string | null } =>
+        ({ messageId: row.id, ...item })));
   const missing = missingWithParent.map(({ role, fileName }) => ({ role, fileName }));
   const sortedAttachments = attachments.map((row) => JSON.stringify(row)).sort();
   const sortedMissing = missingWithParent.map((row) => JSON.stringify(row)).sort();
