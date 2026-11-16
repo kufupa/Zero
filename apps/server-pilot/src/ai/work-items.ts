@@ -2945,15 +2945,22 @@ export async function listWorkItems(
       validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
+        const sourceText = preStaySourceText(sourceBody, sourceHtml);
+        // The same self-prestay evidence the ensure/prefill door uses: a confirmation number may live only in
+        // the body, so a missing or empty extraction must not turn real pre-stay mail into a channel/system hide.
+        const sourceConfirmationNumbers = `${row.subject ?? ''}\n${sourceText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
         const preStayAsk = selfSentPreStayAskVerdict({
           fromAddress: row.sender,
           mailboxAddress: mailbox?.email,
           subject: row.subject,
           textBody: sourceBody,
           htmlBody: sourceHtml,
-          confirmationNumbers: Array.isArray(confirmationNumbers)
-            ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
-            : [],
+          confirmationNumbers: [
+            ...(Array.isArray(confirmationNumbers)
+              ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
+              : []),
+            ...sourceConfirmationNumbers,
+          ],
           payload,
         });
         const chip = NEEDS_YOU_CHIPS[rank] ?? 'needs_you';
@@ -2966,7 +2973,7 @@ export async function listWorkItems(
           // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no
           // binding to this source or generation, so it never hides a V2 draft: anything uncertain stays reviewable.
           if (!preStayAsk && classifyMailSource({ fromAddress: row.sender,
-              subject: row.subject, bodyText: preStaySourceText(sourceBody, sourceHtml) }).kind !== 'direct') return null;
+              subject: row.subject, bodyText: sourceText }).kind !== 'direct') return null;
           const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
           return { ...row, kind: admission.kind, chip, actions: admission.actions,
             ...(admission.reviewOnly ? { reviewOnly: true } : {}) };
