@@ -39,6 +39,10 @@ import {
   previousScopeBeforeSwitch,
   runAccountSwitchCacheCleanup,
 } from '@/lib/mail/account-switch-cache';
+import {
+  beginMailSelectionIntent,
+  isCurrentMailSelectionIntent,
+} from '@/lib/mail/source-message-navigation';
 import { getMailCacheScope, setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -309,6 +313,10 @@ function SourceEmailAction({ to }: { to: string }) {
   );
   const openEmail = async () => {
     if (opening || isFrontendOnlyDemo()) return;
+    const intent = beginMailSelectionIntent();
+    const originalUserId = getMailCacheScope().userId;
+    const isCurrentSelection = () =>
+      isCurrentMailSelectionIntent(intent) && getMailCacheScope().userId === originalUserId;
     const centurion = data?.connections.find(
       (connection) =>
         connection.id === 'transport-centurion' ||
@@ -326,25 +334,23 @@ function SourceEmailAction({ to }: { to: string }) {
       });
       if (previousScope.activeTransportId !== centurion.id) {
         await setDefaultConnection({ connectionId: centurion.id });
-        if (getMailCacheScope().userId !== previousScope.userId) return;
+        if (!isCurrentSelection()) return;
         setMailCacheScope({ userId: previousScope.userId, activeTransportId: centurion.id });
+        if (!isCurrentSelection()) return;
         await runAccountSwitchCacheCleanup({ previousScope, queryClient, deleteIdbKey: del });
         const currentScope = getMailCacheScope();
-        if (
-          currentScope.userId !== previousScope.userId ||
-          currentScope.activeTransportId !== centurion.id
-        )
-          return;
+        if (!isCurrentSelection() || currentScope.activeTransportId !== centurion.id) return;
         queryClient.setQueryData(trpc.connections.getDefault.queryKey(), {
           ...centurion,
           picture: null,
           createdAt: null,
         });
       }
-      if (getMailCacheScope().activeTransportId !== centurion.id) return;
+      if (!isCurrentSelection() || getMailCacheScope().activeTransportId !== centurion.id) return;
       void navigate(to);
     } catch {
-      toast.error('Could not open the Centurion mailbox. Please try again.');
+      if (isCurrentSelection())
+        toast.error('Could not open the Centurion mailbox. Please try again.');
     } finally {
       setOpening(false);
     }
