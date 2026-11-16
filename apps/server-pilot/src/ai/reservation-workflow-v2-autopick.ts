@@ -413,9 +413,10 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
       const pick = candidates[pickIndex]!;
       const target = rec(owner[field])!;
       target.name = pick.name;
-      target.candidateRefs = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((row) => row.ref);
+      const candidateRefs = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((row) => row.ref);
+      target.candidateRefs = candidateRefs;
       target.suggestedRef = pick.ref;
-      proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...target.candidateRefs])].slice(0, 1000);
+      proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...candidateRefs])].slice(0, 1000);
       const uniqueNative = candidates.filter((row) => same(row.name, pick.name)).length === 1;
       const usual = Boolean(key && stats && uniqueNative && gateFor(stats, pick.name, same));
       record(request, field, valuePath, selectionPath, { ref: pick.ref, value: pick.nativeId, label: pick.name,
