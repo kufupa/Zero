@@ -6,7 +6,9 @@ const sourceSchema = z.object({ threadId: z.string().min(1), messageId: z.string
   sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
 const changesSchema = z.object({ arrival: z.string().optional(), departure: z.string().optional(),
   adults: z.number().int().optional(), children: z.number().int().optional(), childAges: z.array(z.number().int()).optional(),
-  roomType: z.string().min(1).optional(), ratePlan: z.string().min(1), retainRates: z.enum(['yes', 'no']),
+  roomType: z.string().min(1).optional(), roomTypeForCharge: z.string().regex(/^[A-Z0-9]{0,12}$/).optional(),
+  reservationNote: z.string().max(2000).optional(), billingReference: z.string().max(1000).optional(),
+  ratePlan: z.string().min(1), retainRates: z.enum(['yes', 'no']),
   firstName: z.string().optional(), lastName: z.string().optional(), guestEmail: z.string().optional(),
   bookerName: z.string().optional(), bookerContact: z.string().optional(), cmsSend: z.boolean(),
   cmsMessageId: z.string(), cmsRecipient: z.string() }).strict();

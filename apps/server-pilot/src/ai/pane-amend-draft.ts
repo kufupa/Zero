@@ -4,13 +4,15 @@ import { formatBookerContact } from './reservation-workflow-v2-booker-contact.js
 
 export type DraftSource = { threadId: string; messageId: string; sourceHash: string };
 export type AmendField =
-  | 'target' | 'roomType' | 'childAges' | 'ratePlan' | 'retainRates' | 'firstName' | 'lastName' | 'guestEmail'
-  | 'bookerName' | 'bookerContact' | 'cms.send' | 'cms.messageId' | 'cms.recipient';
+  | 'target' | 'roomType' | 'roomTypeForCharge' | 'childAges' | 'ratePlan' | 'retainRates' | 'firstName' | 'lastName'
+  | 'guestEmail' | 'bookerName' | 'bookerContact' | 'reservationNote' | 'billingReference'
+  | 'cms.send' | 'cms.messageId' | 'cms.recipient';
 type State = Record<string, unknown>;
 
 const FIELDS = new Set<AmendField>([
-  'target', 'roomType', 'childAges', 'ratePlan', 'retainRates', 'firstName', 'lastName', 'guestEmail',
-  'bookerName', 'bookerContact', 'cms.send', 'cms.messageId', 'cms.recipient',
+  'target', 'roomType', 'roomTypeForCharge', 'childAges', 'ratePlan', 'retainRates', 'firstName', 'lastName',
+  'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference',
+  'cms.send', 'cms.messageId', 'cms.recipient',
 ]);
 
 /** The id identifies the source ask, not its editable action or values. */
@@ -49,6 +51,9 @@ export function validAmendRequestValue(field: AmendField, value: unknown): boole
         typeof value.confirmation === 'string' && /^\d{6,}-\d+$/.test(value.confirmation) && date(value.arrival);
     case 'roomType':
     case 'ratePlan': return typeof value === 'string' && /^[A-Z0-9]{1,12}$/.test(value);
+    case 'roomTypeForCharge': return typeof value === 'string' && /^[A-Z0-9]{0,12}$/.test(value);
+    case 'reservationNote': return typeof value === 'string' && value.length <= 2000 &&
+      !/[\p{Cc}]/u.test(value.replace(/\n/g, ''));
     case 'childAges': return Array.isArray(value) && value.length <= 9 &&
       value.every((age) => Number.isInteger(age) && age >= 0 && age <= 17);
     case 'retainRates': return value === 'yes' || value === 'no';
@@ -153,9 +158,11 @@ export function projectAmendRequests(source: DraftSource, payload: MailExtractio
       children: Object.hasOwn(state, childPath) ? state[childPath] : stay.totalChildren ?? null,
       childAges: Object.hasOwn(state, `requests[${requestId}].childAges`) ? requestedChildAges :
         agesPath && Object.hasOwn(state, agesPath) ? state[agesPath] : singleRow?.childAges ?? null,
-      roomType: valueOf('roomType'), ratePlan: valueOf('ratePlan'), retainRates: valueOf('retainRates'),
+      roomType: valueOf('roomType'), roomTypeForCharge: valueOf('roomTypeForCharge'),
+      ratePlan: valueOf('ratePlan'), retainRates: valueOf('retainRates'),
       firstName: valueOf('firstName'), lastName: valueOf('lastName'), guestEmail: valueOf('guestEmail'),
       bookerName: valueOf('bookerName'), bookerContact: valueOf('bookerContact'),
+      reservationNote: valueOf('reservationNote'), billingReference: valueOf('billingReference'),
       cms: { send: valueOf('cms.send'), messageId: valueOf('cms.messageId'), recipient: valueOf('cms.recipient') },
     };
     const proposalDigest = createHash('sha256').update(JSON.stringify({ action: 'amend', fields })).digest('hex');

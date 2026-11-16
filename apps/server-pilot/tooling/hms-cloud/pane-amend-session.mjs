@@ -423,7 +423,10 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
       return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
     }, protectedSession.options);
   } catch (error) {
-    return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE', diagnostic: safeReadError(error, phase) };
+    // Bounded native refusal codes (for example CHILD_AGE_GO_AUTHORIZATION_REQUIRED)
+    // tell the caller exactly what could not be staged; anything else stays generic.
+    const issue = /^[A-Z][A-Z0-9_]{2,80}$/.test(error?.message || '') ? error.message : 'NATIVE_READ_UNAVAILABLE';
+    return { outcome: 'refused', issue, diagnostic: safeReadError(error, phase) };
   }
 }
 

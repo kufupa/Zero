@@ -221,6 +221,7 @@ export type AmendDraftFields = {
   childAges: number[] | null; roomType: string | null; ratePlan: string | null; retainRates: 'yes' | 'no' | null;
   firstName: string | null; lastName: string | null; guestEmail: string | null;
   bookerName: string | null; bookerContact: string | null;
+  roomTypeForCharge: string | null; reservationNote: string | null; billingReference: string | null;
   cms: { send: boolean | null; messageId: string | null; recipient: { mode: 'self' | 'client' | 'custom'; address: string } | null };
 };
 export type WorkflowDraftRequest = {
