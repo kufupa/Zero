@@ -140,8 +140,8 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
           { name: 'old-booking', kind: 'booking' },
           { name: 'blank', excerpt: '   ' },
           ...Array.from({ length: 92 }, (_, index) => ({
-            name: `invalid-${index}`, body: 'No separate request here.',
-            needsAction: false, excerpt: '', verdict: 'none',
+            name: `invalid-${index}`, subject: 'Pre Stay information', confirmations: [],
+            body: 'No separate request here.', needsAction: false, excerpt: '',
           })),
           { name: 'separate', receivedAt: '2027-01-01 00:00:10.000001' },
           { name: 'booking', kind: 'booking', from: 'guest@example.invalid', receivedAt: '2027-01-01 00:00:10.000002' },
@@ -179,10 +179,11 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
         });
         expect((await list(1)).map((row) => row.sourceMessageId)).toEqual(['pagination-ungrounded']);
         expect((await list(2)).map((row) => row.sourceMessageId)).toEqual([
-          'pagination-ungrounded', 'pagination-stale-noaction',
+          'pagination-ungrounded', 'pagination-adjudicated-none',
         ]);
         expect((await list(10)).map((row) => [row.sourceMessageId, row.kind, row.chip])).toEqual([
           ['pagination-ungrounded', 'other', 'needs_you'],
+          ['pagination-adjudicated-none', 'other', 'needs_you'],
           ['pagination-stale-noaction', 'other', 'needs_you'],
           ['pagination-wrong-action', 'other_actionable', 'needs_you'],
           ['pagination-old-booking', 'other_actionable', 'needs_you'],
@@ -202,7 +203,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
           'pagination-separate', 'pagination-tie-before', 'pagination-booking', 'pagination-review',
         ]));
         expect((await list(2)).map((row) => row.sourceMessageId)).toEqual([
-          'pagination-ungrounded', 'pagination-stale-noaction',
+          'pagination-ungrounded', 'pagination-adjudicated-none',
         ]);
       });
     });
