@@ -975,6 +975,11 @@ export async function selectedDetailDate(panel,date,timeout=20000) {
 
 export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, cachedRoom) {
   const row=rateRow(page,chosen.nativeRoom.code,chosen.rate.code);
+  const detailsEndpoint=`${new URL(page.url()).origin}/api/booking/hotelAvail/${chosen.propertyCode}/availabilityDetailsInquiry`;
+  const settled=()=>page.waitForFunction(()=>{
+    const visible=e=>!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
+    return !Ext.Ajax.isLoading()&&![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(visible);
+  },undefined,{timeout:30000});
   const rowInformation=await row.locator('td').first().evaluate(e=>({
     rateInfoControlPresent:!!e.querySelector('.cell-info'),
     labels:[...e.querySelectorAll('[data-qtip]')].map(n=>({kind:n.className,text:n.getAttribute('data-qtip')})),
@@ -982,20 +987,33 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
   const details=[];
   const panel=page.getByText('Availability Details',{exact:true}).locator('xpath=ancestor::div[contains(concat(" ",normalize-space(@class)," ")," x-panel ")][1]');
   for (const [n,index] of chosen.indexes.entries()) {
-    await row.locator('td').nth(index+1).click();
-    const selected=await selectedDetailDate(panel,chosen.nightly[n].date);
+    const date=chosen.nightly[n].date;
+    const pending=page.waitForResponse(response=>{
+      const request=response.request();
+      if(request.method()!=='POST'||response.url()!==detailsEndpoint)return false;
+      try {
+        const body=request.postDataJSON();
+        return body?.roomType===chosen.nativeRoom.code&&body.startDate===date&&body.endDate===date;
+      } catch {return false;}
+    },{timeout:30000});
+    pending.catch(()=>{});
+    const [response]=await Promise.all([pending,row.locator('td').nth(index+1).click()]);
+    if(!response.ok())throw new Error(`DETAILS_HTTP_${response.status()}`);
+    const responseError=await response.finished();
+    if(responseError)throw responseError;
+    await settled();
+    const selected=await selectedDetailDate(panel,date);
     const roomLabel=`Room Type : ${chosen.nativeRoom.code} - ${chosen.nativeRoom.desc}`;
     const rateLabel=`Rate Plan : ${chosen.rate.code} - ${chosen.rate.desc}`;
     await panel.getByText(roomLabel,{exact:true}).waitFor();
     await panel.getByText(rateLabel,{exact:true}).waitFor();
-    let sourceText=await panel.innerText();
     const roomHeader=panel.locator('.x-panel-header').filter({hasText:/^Room Type$/});
     if(await roomHeader.count()) {
       const collapsed=await roomHeader.evaluate(e=>e.closest('.x-panel')?.classList.contains('x-panel-collapsed'));
-      if(collapsed)await roomHeader.click();
-      const expanded=await panel.innerText();if(expanded!==sourceText)sourceText+='\n'+expanded;
+      if(collapsed){await roomHeader.click();await settled();}
     }
-    details.push({date:chosen.nightly[n].date,selectedDate:selected,room:roomLabel,rate:rateLabel,sourceText});
+    const sourceText=await panel.innerText();
+    details.push({date,selectedDate:selected,room:roomLabel,rate:rateLabel,sourceText});
     await checkpoint(`${prefix}-night-${n+1}-details`);
   }
   if(cachedRoom)return {details,roomInformation:cachedRoom,rowInformation};
@@ -1051,7 +1069,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
             const observations=stayDates(request).filter(d=>!seen.has(d)).map(d=>option.observations.get(d)).filter(Boolean);
             if(!observations.length||option.issues.some(i=>i.code!=='INCOMPLETE_DATES'))continue;
             try {
-              const read=await clock.time('details',()=>readDetails(page,{nativeRoom:option._nativeRoom,rate:option._rate,
+              const read=await clock.time('details',()=>readDetails(page,{propertyCode:request.propertyCode,nativeRoom:option._nativeRoom,rate:option._rate,
                 nightly:observations.map(o=>o.fact),indexes:observations.map(o=>o.index)},
               `${prefix}-window-${windowIndex+1}-offer-${allowedDetails.size===1?1:[...allowedDetails].indexOf(option.id)+1}`,checkpoint,roomCache.get(option.room.code)));
               roomCache.set(option.room.code,read.roomInformation);
