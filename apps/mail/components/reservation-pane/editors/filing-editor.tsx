@@ -1,12 +1,33 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { effectiveAt, record, requestPath, text, valueAt } from '@/lib/reservation-workflow/views';
 import { sameGuestName } from '../../../../server-pilot/src/ai/guest-name-match.js';
 import { Field, Section } from '../shared/stay-fields';
 import { isExactConfirmation, latestStayCandidates, StayFacts } from './amend-editor';
+import {
+  AMEND_FIND_COPY,
+  amendFindClientFromTrpc,
+  formatStayDate,
+  hmsJobTransport,
+  pendingJobView,
+  pollHmsJob,
+  searchRequestFor,
+  searchRunFromJob,
+  type GuestSearchRow,
+  type HmsJobView,
+} from '@/lib/quote-workflow/amend-find';
+import { trpcClient } from '@/providers/query-provider';
 import styles from './other-editors.module.css';
+
+/** A filename that clearly names one document family fills the category; ambiguous or silent names leave the choice to staff. */
+export function inferFilingDocumentKind(name: string): 'voucher' | 'payment_proof' | null {
+  const lower = ` ${name.toLowerCase().replace(/[\s_-]+/g, ' ')} `;
+  const voucher = /\bvouchers?\b/.test(lower);
+  const proof = /\bproof of payment\b|\bpayment (?:proof|receipt|confirmation|advice)\b|\bremittance(?: advice| receipt)?\b|\bdeposit receipt\b|\bp o p\b|\bpop\b(?!\s*ups?\b)/.test(lower);
+  return voucher && !proof ? 'voucher' : proof && !voucher ? 'payment_proof' : null;
+}
 
 export function FilingEditor(editor: WorkbenchEditorProps) {
   const draft = editor.snapshot.session.draft;
@@ -134,16 +155,65 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
     && selectedAttachment.uploadability !== 'unsupported' && (selectedAttachment.size === undefined || selectedAttachment.size <= 10 * 1024 * 1024));
   useEffect(() => { setConfirmation(text(hint?.confirmation)); }, [editor.request.id, hint?.id, hint?.confirmation]);
   useEffect(() => { setKind(documentKind === 'voucher' || documentKind === 'payment_proof' ? documentKind : ''); }, [doc?.id, documentKind]);
+  const [searchForm, setSearchForm] = useState({ lastName: '', arrival: '', departure: '' });
+  const [searchRun, setSearchRun] = useState<{ key: string; view: HmsJobView | null; queueFailed: boolean; queueMessage: string | null } | null>(null);
+  const [pickedRow, setPickedRow] = useState<GuestSearchRow | null>(null);
+  const searchGeneration = useRef(0);
+  const jobClient = useMemo(() => amendFindClientFromTrpc(trpcClient, editor.source.mailboxId), [editor.source.mailboxId]);
+  const searchTransport = useMemo(() => hmsJobTransport(jobClient, editor.source.threadId, editor.source.messageId,
+    { exactSource: true, sourceHash: editor.source.sourceHash,
+      ...(editor.source.propertySwitch ? { propertySwitch: editor.source.propertySwitch } : {}) }),
+    [jobClient, editor.source.threadId, editor.source.messageId, editor.source.sourceHash, editor.source.propertySwitch]);
+  useEffect(() => () => { searchGeneration.current += 1; }, []);
+  const searchResult = searchRun ? searchRunFromJob(searchRun.view, searchRun.queueFailed, searchRun.queueMessage) : null;
+  const searchRows = searchResult?.kind === 'rows' ? searchResult.rows : [];
+  const searching = Boolean(searchRun && !searchRun.queueFailed && searchRun.view &&
+    ['queued', 'running', 'retrying'].includes(searchRun.view.status));
+  const updateSearchForm = (field: 'lastName' | 'arrival' | 'departure', value: string) => {
+    searchGeneration.current += 1;
+    setSearchRun(null);
+    if (pickedRow && confirmation.trim() === pickedRow.confirmation) setConfirmation(text(hint?.confirmation));
+    setPickedRow(null);
+    setSearchForm(form => ({ ...form, [field]: value }));
+  };
+  const runGuestSearch = () => {
+    if (!searchTransport) return;
+    const built = searchRequestFor({ lastName: searchForm.lastName, arrival: searchForm.arrival || null,
+      departure: searchForm.departure || null });
+    if ('error' in built) { setSearchRun({ key: 'invalid', view: null, queueFailed: true, queueMessage: built.error }); return; }
+    const request = built.request, key = JSON.stringify(request), generation = ++searchGeneration.current;
+    setPickedRow(null);
+    setSearchRun({ key, view: pendingJobView('', request), queueFailed: false, queueMessage: null });
+    void searchTransport.queue(request).then(start => {
+      if (generation !== searchGeneration.current) return;
+      if (start.runId) {
+        setSearchRun(current => current?.key === key && start.runId ? { ...current, view: pendingJobView(start.runId, request) } : current);
+        void pollHmsJob(searchTransport, start.runId, { live: () => generation === searchGeneration.current,
+          onView: view => { if (generation === searchGeneration.current) setSearchRun(current => current?.key === key ? { ...current, view } : current); } });
+      } else {
+        setSearchRun(current => current?.key === key ? { ...current, view: start.view ?? null,
+          queueFailed: !start.view, queueMessage: start.view ? null : AMEND_FIND_COPY.searchFailed } : current);
+      }
+    }).catch(() => { if (generation === searchGeneration.current)
+      setSearchRun(current => current?.key === key ? { ...current, queueFailed: true, queueMessage: null } : current); });
+  };
   const configuredByStaff = Boolean(doc && effectiveDocument.handling === 'filing_requested' && ['documentSourceRef', 'kind', 'handling'].every(field =>
     draft.staffReviews[`${documentRoot}/${field}`]?.status === 'accepted'));
+  const pickedTarget = !useCreateTarget && pickedRow && pickedRow.confirmation === confirmation.trim() ? pickedRow : null;
+  const pickedGuest = pickedTarget ? [pickedTarget.firstName, pickedTarget.lastName].filter(Boolean).join(' ').trim() : '';
+  const pickedHintsDirty = Boolean(pickedTarget && (pickedGuest !== text(hint?.guestName) ||
+    (pickedTarget.arrival ?? '') !== text(hint?.bookedArrival) ||
+    (pickedTarget.departure ?? '') !== text(hint?.bookedDeparture)));
   const dirty = (chosenAttachment !== null && chosenAttachment !== resolvedAttachment) ||
     destinationKind !== defaultDestinationKind ||
     (!useCreateTarget && confirmation.trim() !== text(hint?.confirmation)) ||
+    pickedHintsDirty ||
     (useCreateTarget && Boolean(selectedAllocationKey) && selectedAllocationKey !== savedAllocationKey) ||
     kind !== documentKind || targetBindingMissing || Boolean(doc && !configuredByStaff);
   const localSplitDirty = (chosenAttachment !== null && chosenAttachment !== resolvedAttachment) ||
     destinationKind !== defaultDestinationKind ||
     (!useCreateTarget && confirmation.trim() !== text(hint?.confirmation)) ||
+    pickedHintsDirty ||
     (useCreateTarget && Boolean(selectedAllocationKey) && selectedAllocationKey !== savedAllocationKey) ||
     (Boolean(kind) && kind !== documentKind);
   const filingLocked = draft.operationResults.some(row => row.workflow === 'filing' && row.requestId === editor.request.id &&
@@ -151,9 +221,9 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
   const canSeparate = Boolean(doc && !filingLocked && !localSplitDirty && !editor.view.busy && !editor.view.saving);
   useEffect(() => {
     const key = `filing-selection:${editor.request.id}`;
-    editor.commands.setUncommitted(key, dirty);
+    editor.commands.setUncommitted(key, dirty && !filingLocked);
     return () => editor.commands.setUncommitted(key, false);
-  }, [dirty, editor.request.id]);
+  }, [dirty, filingLocked, editor.request.id]);
   const path = hint ? `${body}/targets/include/${encodeURIComponent(text(hint.id))}/suggestedRef` : '';
   const selected = path ? valueAt(editor.snapshot, path) : null;
   const candidates = hint ? latestStayCandidates(draft.observations.flatMap(observation => {
@@ -233,7 +303,12 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
         }).catch(() => {})}>{docs.length > 1 ? 'Create separate Filing for this PDF and stay' : 'Create separate Filing for this excluded stay'}</button>}
       </div>)}
       <label className={styles.label}>Attachment from this email
-        <select value={attachmentId} disabled={editor.view.busy} onChange={event => setChosenAttachment(event.target.value)}>
+        <select value={attachmentId} disabled={editor.view.busy || filingLocked} onChange={event => {
+          const nextId = event.target.value;
+          setChosenAttachment(nextId);
+          const picked = attachments.find(attachment => attachment.sourceRef === nextId);
+          setKind(picked ? inferFilingDocumentKind(picked.name) ?? '' : '');
+        }}>
           <option value="">Choose attachment</option>
           {attachments.map(attachment => <option key={attachment.sourceRef} value={attachment.sourceRef}>{attachment.name}</option>)}
         </select>
@@ -244,14 +319,14 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
       {!attachments.length && <div className={styles.warning}>No attachment is available in this email. A promised voucher or payment proof cannot be filed until its bytes are available.</div>}
       <div className={styles.grid}>
         <label className={styles.label}>Destination type
-          <select value={destinationKind} disabled={editor.view.busy} onChange={event => {
+          <select value={destinationKind} disabled={editor.view.busy || filingLocked} onChange={event => {
             setDestinationKind(event.target.value === 'created' ? 'created' : 'existing');
           }}>
             <option value="existing">Existing Infor reservation</option><option value="created">Create allocation from this email</option>
           </select>
         </label>
         {useCreateTarget && allocationOptions.length ? <label className={styles.label}>Exact Create allocation
-          <select value={selectedAllocationKey} disabled={editor.view.busy}
+          <select value={selectedAllocationKey} disabled={editor.view.busy || filingLocked}
             onChange={event => setAllocationChoice(event.target.value)}>
             <option value="">Choose exact Create allocation</option>
             {allocationOptions.map(option => <option key={option.key} value={option.key}>
@@ -261,25 +336,62 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           </select>
         </label> : useCreateTarget ? <div className={styles.warning}>No exact Create allocation is available in this email. Choose an existing reservation or add a valid Create action first.</div>
           : <label className={styles.label}>Existing Infor confirmation
-          <input value={confirmation} disabled={editor.view.busy} onChange={event => setConfirmation(event.target.value)} placeholder="12345678-1" />
+          <input value={confirmation} disabled={editor.view.busy || filingLocked} onChange={event => setConfirmation(event.target.value)} placeholder="12345678-1" />
         </label>}
         <label className={styles.label}>Attachment category
-          <select value={kind} disabled={editor.view.busy} onChange={event => setKind(event.target.value === 'voucher' || event.target.value === 'payment_proof' ? event.target.value : '')}>
+          <select value={kind} disabled={editor.view.busy || filingLocked} onChange={event => setKind(event.target.value === 'voucher' || event.target.value === 'payment_proof' ? event.target.value : '')}>
             <option value="">Choose category</option><option value="voucher">Voucher</option><option value="payment_proof">Payment proof</option>
           </select>
         </label>
       </div>
       <small className={styles.hint}>The category identifies the voucher or payment proof. Infor saves the PDF name and description with a generated Document Code.</small>
+      {!useCreateTarget && !filingLocked && <div className={styles.card}>
+        <strong>Find the stay by guest name</strong>
+        <small className={styles.hint}>Use this when the email has no HMS booking number. Search by surname and arrival day; it takes about a minute. The stay you pick is verified in Infor before filing.</small>
+        <div className={styles.grid}>
+          <label className={styles.label}>Guest surname
+            <input value={searchForm.lastName} disabled={editor.view.busy || searching}
+              onChange={event => updateSearchForm('lastName', event.target.value)} placeholder="Smith" />
+          </label>
+          <label className={styles.label}>Arrival Date
+            <input type="date" value={searchForm.arrival} disabled={editor.view.busy || searching}
+              onChange={event => updateSearchForm('arrival', event.target.value)} />
+          </label>
+          <label className={styles.label}>Departure Date — optional
+            <input type="date" value={searchForm.departure} disabled={editor.view.busy || searching}
+              onChange={event => updateSearchForm('departure', event.target.value)} />
+          </label>
+        </div>
+        <div className={styles.row}>
+          <button type="button" disabled={editor.view.busy || searching || !searchTransport}
+            onClick={runGuestSearch}>{searching ? 'Searching HMS…' : 'Search HMS'}</button>
+        </div>
+        {searching && <small className={styles.hint}>{AMEND_FIND_COPY.searching} {AMEND_FIND_COPY.lookupWait}</small>}
+        {searchResult?.kind === 'none' && <small className={styles.hint}>Not found in HMS by surname {searchResult.lastName} and arrival {formatStayDate(searchResult.arrival)}.</small>}
+        {searchResult?.kind === 'capped' && <small className={styles.hint}>{AMEND_FIND_COPY.searchCapped}</small>}
+        {searchResult?.kind === 'error' && <div className={styles.warning}>{searchResult.message}</div>}
+        {searchRows.map(row => {
+          const rowPicked = pickedRow?.confirmation === row.confirmation;
+          return <div className={styles.card} key={`${row.confirmation}:${row.arrival ?? ''}`}>
+            <strong>{[row.firstName, row.lastName].filter(Boolean).join(' ') || 'Guest'} · {row.confirmation}</strong>
+            <small className={styles.hint}>{[row.status, row.arrival ? `arrives ${formatStayDate(row.arrival)}` : 'arrival unknown',
+              row.departure ? `departs ${formatStayDate(row.departure)}` : null].filter(Boolean).join(' · ')}</small>
+            <div className={styles.row}><button type="button" disabled={editor.view.busy}
+              onClick={() => { setConfirmation(row.confirmation); setPickedRow(row); }}>{rowPicked ? 'Selected stay' : 'Use this stay'}</button></div>
+          </div>;
+        })}
+        {pickedRow && <small className={styles.hint}>Picked stay {pickedRow.confirmation} fills the confirmation above. Its guest and dates are checked against a fresh Infor read before filing.</small>}
+      </div>}
       {doc && <div className={styles.grid}>
         <Field label="Document name" path={`${documentRoot}/requestedName`} editor={editor} maxLength={150} emptyState="none" review
-          hint="Optional PDF name in Infor. Leave blank to use the attachment name." />
+          disabled={filingLocked || editor.view.busy} hint="Optional PDF name in Infor. Leave blank to use the attachment name." />
         <Field label="Description" path={`${documentRoot}/requestedDescription`} editor={editor} maxLength={200} emptyState="none" review
-          hint="Optional description in Infor. Leave blank to use the default." />
+          disabled={filingLocked || editor.view.busy} hint="Optional description in Infor. Leave blank to use the default." />
         {(['requestedName', 'requestedDescription'] as const).map(field => {
           const path = `${documentRoot}/${field}`, value = valueAt(editor.snapshot, path);
           if (typeof value !== 'string' || !value.trim() || draft.staffReviews[path]?.status === 'accepted') return null;
           const label = field === 'requestedName' ? 'document name' : 'description';
-          return <button type="button" key={field} disabled={editor.view.busy} onClick={() => void editor.commands.acceptServiceReview(
+          return <button type="button" key={field} disabled={editor.view.busy || filingLocked} onClick={() => void editor.commands.acceptServiceReview(
             path, `Reviewed ${label}`, { path, value, generationId: draft.generationId }).catch(() => {})}>Confirm {label}</button>;
         })}
       </div>}
@@ -289,16 +401,21 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
           onClick={() => void editor.commands.reconcile(createUnknown[0]!.id)}>Reconcile Create</button></div>}
       </div>}
       {hint && doc && !useCreateTarget && <div className={styles.grid}>
-        <Field label="Guest name" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/guestName`} editor={editor} resolvedValue={hint.guestName ?? null} disabled={dirty || editor.view.busy} />
-        <Field label="Original Arrival Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedArrival`} type="date" editor={editor} resolvedValue={hint.bookedArrival ?? null} disabled={dirty || editor.view.busy} />
-        <Field label="Original Departure Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedDeparture`} type="date" editor={editor} resolvedValue={hint.bookedDeparture ?? null} disabled={dirty || editor.view.busy} />
+        <Field label="Guest name" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/guestName`} editor={editor} resolvedValue={hint.guestName ?? null} disabled={dirty || editor.view.busy || filingLocked} />
+        <Field label="Original Arrival Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedArrival`} type="date" editor={editor} resolvedValue={hint.bookedArrival ?? null} disabled={dirty || editor.view.busy || filingLocked} />
+        <Field label="Original Departure Date" path={`${body}/targets/include/${encodeURIComponent(text(hint.id))}/bookedDeparture`} type="date" editor={editor} resolvedValue={hint.bookedDeparture ?? null} disabled={dirty || editor.view.busy || filingLocked} />
       </div>}
-      {dirty && <div className={styles.warning}>Apply the PDF and destination to confirm the attachment, category and filing request before checking.</div>}
-      <div className={styles.row}><button type="button" disabled={editor.view.busy || !dirty || !pdf || !validConfirmation || !kind || docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all'}
+      {dirty && !filingLocked && <div className={styles.warning}>Apply the PDF and destination to confirm the attachment, category and filing request before checking.</div>}
+      <div className={styles.row}><button type="button" disabled={editor.view.busy || filingLocked || !dirty || !pdf || !validConfirmation || !kind || docs.length > 1 || include.length > 1 || exclude.length > 0 || scope.mode === 'scoped_all'}
         onClick={() => {
           if (!kind || useCreateTarget && !selectedAllocation) return;
+          const picked = !useCreateTarget && pickedRow && pickedRow.confirmation === confirmation.trim() ? pickedRow : null;
+          const pickedGuest = picked ? [picked.firstName, picked.lastName].filter(Boolean).join(' ').trim() : '';
           const target = useCreateTarget && selectedAllocation ? { allocationTarget: { requestId: selectedAllocation.requestId,
-            allocationId: selectedAllocation.allocationId } } : { confirmation: confirmation.trim() };
+            allocationId: selectedAllocation.allocationId } } : { confirmation: confirmation.trim(),
+            ...(picked ? { ...(pickedGuest ? { guestName: pickedGuest } : {}),
+              ...(picked.arrival ? { bookedArrival: picked.arrival } : {}),
+              ...(picked.departure ? { bookedDeparture: picked.departure } : {}) } : {}) };
           void editor.commands.configureFiling(attachmentId, target, kind);
         }}>Apply PDF and destination</button>
         <button type="button" disabled={editor.view.busy || dirty || docs.length !== 1 || !hint || !doc || exclude.length > 0 || !canRunLookup}
@@ -310,7 +427,7 @@ export function FilingEditor(editor: WorkbenchEditorProps) {
         <StayFacts stay={stay} />
         {guestMismatch && <div className={styles.warning}>The guest name differs from the source. Update the guest name and find the stay again before filing.</div>}
         {dateMismatch && <div className={styles.warning}>The stay dates differ from the source. Update the dates and find the stay again before filing.</div>}
-        <div className={styles.row}><button type="button" disabled={editor.view.busy || dirty || guestMismatch || dateMismatch}
+        <div className={styles.row}><button type="button" disabled={editor.view.busy || filingLocked || dirty || guestMismatch || dateMismatch}
           onClick={() => void editor.commands.selectNative(path, observation.ref)}>{selected === observation.ref ? 'Selected stay' : 'Select this stay'}</button></div>
       </div>)}
       {selectionNeedsReview && <div className={styles.warning}>The selected stay needs review. Find and select the current Infor record before continuing.</div>}

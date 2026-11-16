@@ -388,6 +388,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const createPriceBlocked = request?.kind === 'create' && snapshot?.preparationViews.some(view => view.requestId === request.id && record(record(view).priceComparison).blocksGo === true && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && row.status === 'succeeded'));
   const quotePrepared = request?.kind === 'quote' && snapshot ? [...snapshot.session.draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === request.id && row.status === 'prepared') : null;
   const quoteObservation = quotePrepared && snapshot?.session.draft.observations.find(row => quotePrepared.observationRefs.includes(row.ref) && row.kind === 'rate_availability');
+  const filingLocked = request?.kind === 'filing' && Boolean(snapshot?.session.draft.operationResults.some(row =>
+    row.workflow === 'filing' && row.requestId === request.id && (row.status === 'succeeded' || row.status === 'unknown')));
   const amendCallbackTargets = snapshot && request?.kind === 'amend' ? ids.flatMap((id, index) => {
     if (snapshot.operationResults.some(row => row.workflow === 'amend' && row.requestId === request.id && row.allocationId === id &&
       ['succeeded', 'unknown'].includes(text(row.status))) || amendPriceReviews.some(row => row.id === id)) return [];
@@ -489,7 +491,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         row.ref === review.observationRef && row.generationId === draft.generationId && record(row.result).ready === true));
   };
   const save = async () => {
-    if (!request || createBlocked || preview || capabilityUnavailable) return;
+    if (!request || createBlocked || preview || capabilityUnavailable || filingLocked) return;
     if (capabilitySaveUnavailable && !needsCheck()) return;
     if (request.kind === 'amend' && !workbench.readyForReply()) {
       setChecked(null);
@@ -739,7 +741,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p><strong>Guest gets:</strong> {stage.guestGets}</p></>}
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || (capabilitySaveUnavailable && !needsCheck()) || filingLocked || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
       {!currentAttention && (workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;
