@@ -6271,6 +6271,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   isSpam?: boolean;
   /** Set when the source's attachment enumeration is incomplete (e.g. sync optionalMissing gaps). */
   attachmentEvidenceUnknown?: boolean;
+  /** Set when a persisted non-inline attachment row exists for the source, even if the synced selection omits it. */
+  hasPersistedNonInlineAttachment?: boolean;
   readCandidate?: (candidate: ReservationWorkflowV2CandidateRead) => Promise<ReservationWorkflowV2ReadResult | null>;
   lookupFixtures?: Record<string, ReservationWorkflowV2ReadResult | null | undefined>;
   workflowGuidance?: WorkflowGuidanceCatalog | null;
@@ -6285,7 +6287,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
     bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam,
-    hasAttachments: input.selection.attachments.some((row) => row.isInline !== true)
+    hasAttachments: input.hasPersistedNonInlineAttachment === true ||
+        input.selection.attachments.some((row) => row.isInline !== true)
       ? true
       : input.attachmentEvidenceUnknown === true
         ? undefined

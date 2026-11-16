@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
@@ -17,7 +17,7 @@ import { runReservationWorkflowV2Prefill } from './reservation-workflow-v2-prefi
 import { createAzureExtractionAdapter } from './extraction/extract.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
-import { attachmentEvidenceUnknown } from '../mail/ingest/attachment-evidence.js';
+import { attachmentEvidenceUnknown, fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import { runReservationArrivalChecks } from './reservation-workflow-v2-arrival-checks.js';
 
 /** Preserve model failure timing even when a bounded retry keeps its original fallback. */
@@ -73,10 +73,14 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     const [sourceMessage] = await scoped.db.select({ sourceProvenance: message.sourceProvenance })
       .from(message).where(and(eq(message.id, input.source.messageId),
         eq(message.transportId, scoped.transportId))).limit(1);
+    const [fileAttachment] = await scoped.db.select({ id: attachment.id })
+      .from(attachment).where(and(eq(attachment.messageId, input.source.messageId),
+        eq(attachment.isInline, false))).limit(1);
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
       attachmentEvidenceUnknown: attachmentEvidenceUnknown(sourceMessage?.sourceProvenance),
+      hasPersistedNonInlineAttachment: fileAttachmentPresence(fileAttachment != null, sourceMessage?.sourceProvenance) === true,
       signal: operationSignal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
       onValidatedExtraction: async (generationId, extraction) => {
         const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...input, claim: activeClaim,
