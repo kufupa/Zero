@@ -136,9 +136,10 @@ export type StaffRetroReport = Omit<RetroReport, 'provenance'> & { provenance: R
 
 function staffExplanation(value: string, fallback: string, sourceNames: ReadonlySet<string>): string {
   return value
+    .replace(/\s*Prior valid (?:luna|terra|sol|astra|gpt-[a-z0-9_.-]+) assessment retained from owner-reviewed compatible producer\.?/gi, '')
     .replace(/\s*Prior valid .*? grade retained from the compatible reviewed producer\.?/gi, '')
     .replace(/\b(?:gpt-[a-z0-9_.-]+|luna|terra|sol|astra)\b/gi, name => sourceNames.has(name.toLowerCase()) ? name : 'Nava')
-    .replace(/(?<![\w:/])(?:\/[^\s"'<>]+|[a-z]:[\\/][^\s"'<>]+)/gi, 'supporting evidence')
+    .replace(/(?<![\w:/])(?:\/(?:home|tmp|private|var|opt|usr|etc|root|mnt|srv|proc|sys|run)(?![\w.-])(?:\/[^\s"'<>]*)?|[a-z]:[\\/][^\s"'<>]+|(?:apps\/(?:server-pilot|mail)|tooling\/hms-cloud|docs\/(?:research|plans|solutions)|\.local|\.codex)\/[^\s"'<>]+)/gi, 'supporting evidence')
     .trim() || fallback;
 }
 

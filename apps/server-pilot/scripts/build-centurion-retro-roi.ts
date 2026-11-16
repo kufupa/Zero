@@ -190,6 +190,9 @@ async function main(): Promise<void> {
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
   const repo = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'));
+  if (execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' }).trim()) {
+    throw new Error('Replay requires a clean committed checkout before starting or reusing checkpoints');
+  }
   const corpusPath = await realpath(resolve(option('--corpus'))), manifestPath = await realpath(resolve(option('--manifest')));
   const out = await outsideGit(resolve(option('--out')), repo);
   const checkpointPath = await outsideGit(resolve(option('--checkpoint', `${out}.checkpoints.jsonl`)), repo);
@@ -376,7 +379,7 @@ async function main(): Promise<void> {
       if (record.kind === 'failure' && record.stage === 'classification') { discoveryPending.add(record.messageId); classifications.delete(record.messageId); }
       if (record.kind === 'measurement_terminal') { if (record.stage === 'classification') classifications.delete(record.messageId); terminalFailures.set(record.messageId, record); (record.stage === 'classification' ? discoveryPending : measurementPending).add(record.messageId); }
       if (record.kind === 'runtime_metrics') { const completed = z.object({ phase: z.literal('completed_preparation_message'), messageId: z.string() }).safeParse(record.metrics); if (completed.success) measurementPending.delete(completed.data.messageId); }
-      if (record.kind === 'task') tasks.set(record.task.id, record.fingerprint === fingerprint ? record.task : retroTaskSchema.parse({ ...record.task, reason: `${record.task.reason.slice(0, 7600)} Prior valid Luna assessment retained from owner-reviewed compatible producer.` }));
+      if (record.kind === 'task') tasks.set(record.task.id, record.task);
     }
     await chmod(checkpointPath, 0o600);
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
