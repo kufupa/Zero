@@ -139,6 +139,7 @@ const forwardedExamples = [
       fromAddress: 'ops@legacyhotels.co.za',
       subject: 'FW: New feedback',
       bodyText: 'From: TrustYou <alerts@trustyou.com>\nSubject: New feedback',
+      hasAttachments: false,
     },
     kind: 'system',
     source: 'TrustYou',
@@ -252,6 +253,7 @@ describe('classifyMailSource', () => {
         fromAddress: 'reservations@legacyhotels.co.za',
         subject: 'FW: Default contact form',
         bodyText: 'From: Profitroom <noreply@profitroom.com>\nSent: today\nSubject: Default contact form',
+        hasAttachments: false,
       }),
     ).toEqual({ kind: 'channel', source: 'Profitroom', reason: 'forwarded_sender:profitroom.com' });
   });
@@ -267,15 +269,15 @@ describe('classifyMailSource', () => {
     ).toEqual({ kind: 'direct', source: null, reason: 'forwarded_rewritten_subject:profitroom' });
   });
 
-  it('reads the original Subject of an HTML forward whose header fields are blank-line separated', () => {
+  it('keeps an HTML forward reviewable when unaccounted content follows the blank-line separated headers', () => {
     const result = classifyMailSource({
       fromAddress: 'reservations@legacyhotels.co.za',
       subject: 'FW: Secure payment link',
       bodyText:
         'From: H-Pay <noreply@hospitality.cloud>\n\nSent: Monday\n\nTo: reservations\n\nCc: finance\n\nSubject: Secure payment link\n\nHello',
+      hasAttachments: false,
     });
-    expect(result.kind).toBe('system');
-    expect(result.source).toBe('H-Pay');
+    expect(result).toEqual({ kind: 'direct', source: null, reason: 'forwarded_authored_tail:h-pay' });
   });
 
   it('skips all exact-host H-Pay mail; the skip is not subject-limited, and subdomains stay direct', () => {
@@ -351,6 +353,7 @@ describe('classifyMailSource', () => {
           '&lt;noreply@synxis.com&gt;</div>',
           '<div>Subject: Guest message</div>',
         ].join(''),
+        hasAttachments: false,
       }),
     ).toEqual({
       kind: 'channel',

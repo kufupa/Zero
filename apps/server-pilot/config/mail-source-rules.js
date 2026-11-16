@@ -200,8 +200,9 @@ export const MAIL_SOURCE_RULE_DATA = [
  * handover or automated digest whose sender and subject both match exactly.
  * Anchored senders keep human forwards (Fwd:/Re: prefixed subjects do not
  * match) staff-visible. Entries marked `humanOrigin` allow Re:/Fwd: subjects
- * but only suppress an unannotated re-send: any authored content ahead of the
- * forwarded material, or a subject the staff member rewrote, stays reviewable.
+ * but only suppress a proven unannotated re-send: authored content ahead of or
+ * after the forwarded material, a subject the staff member rewrote, or any
+ * present/unverified attachment all keep the mail reviewable.
  */
 export const ROUTINE_NOTICE_EXCLUSION_DATA = [
   {
