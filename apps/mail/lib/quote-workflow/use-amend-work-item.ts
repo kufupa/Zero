@@ -4,6 +4,7 @@ import { selectedAmendRequest, workItemsFromTrpc, type AmendDraftSnapshot, type 
 
 export type AmendDraftField = 'target' | 'arrival' | 'departure' | 'adults' | 'children' | 'childAges' | 'roomType' |
   'ratePlan' | 'retainRates' | 'firstName' | 'lastName' | 'guestEmail' | 'bookerName' | 'bookerContact' |
+  'roomTypeForCharge' | 'reservationNote' | 'billingReference' |
   'cms.send' | 'cms.messageId' | 'cms.recipient';
 type Entry = { value: RecordFieldEventInput['value']; valid: boolean };
 type Session = {

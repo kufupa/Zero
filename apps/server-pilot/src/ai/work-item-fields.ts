@@ -7,9 +7,10 @@ import type { ExtractionStay, MailExtractionPayload } from './extraction/schema.
 import type { AttachmentRead } from './extraction/extract.js';
 
 const BASE_FIELDS = new Set([
-  'action', 'target', 'roomType', 'childAges', 'ratePlan', 'retainRates', 'guest.profile', 'firstName', 'lastName',
+  'action', 'target', 'roomType', 'roomTypeForCharge', 'childAges', 'ratePlan', 'retainRates', 'guest.profile',
+  'firstName', 'lastName',
   'guestEmail', 'guestMobile', 'bookerName', 'bookerEmail', 'bookerContact', 'parties.bookingAgency', 'parties.organization',
-  'sourceOfBusiness', 'track', 'guaranteeType', 'reservationNote', 'cms.send', 'cms.messageId', 'cms.recipient',
+  'sourceOfBusiness', 'track', 'guaranteeType', 'reservationNote', 'billingReference', 'cms.send', 'cms.messageId', 'cms.recipient',
   'quote.selectedOfferIds', 'quote.amountOverride', 'cancel.reason', 'cancel.note',
 ]);
 const ROOM_FIELDS = new Set([
@@ -58,8 +59,9 @@ export function requestFieldApplies(request: RequestField, action: MailAction | 
     return action === 'new_booking' || action === 'quote_availability';
   }
   const fields: Partial<Record<MailAction, readonly string[]>> = {
-    amend: ['target', 'roomType', 'childAges', 'ratePlan', 'retainRates', 'firstName', 'lastName', 'guestEmail',
-      'bookerName', 'bookerContact', 'cms.send', 'cms.messageId', 'cms.recipient'],
+    amend: ['target', 'roomType', 'roomTypeForCharge', 'childAges', 'ratePlan', 'retainRates', 'firstName', 'lastName',
+      'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference',
+      'cms.send', 'cms.messageId', 'cms.recipient'],
     quote_availability: ['ratePlan', 'parties.bookingAgency', 'parties.organization', 'quote.selectedOfferIds', 'quote.amountOverride'],
     new_booking: ['guest.profile', 'firstName', 'lastName', 'guestEmail', 'guestMobile', 'bookerName', 'bookerEmail',
       'parties.bookingAgency', 'parties.organization', 'ratePlan', 'sourceOfBusiness', 'track', 'guaranteeType',
@@ -81,8 +83,9 @@ export function validRequestValue(field: string, value: unknown): boolean {
   if (field === 'cms.send') return typeof value === 'boolean';
   if (field === 'cancel.reason' || field === 'cancel.note') return validCancelRequestValue(field as CancelField, value);
   if (value === null) return true;
-  if (field === 'target' || field === 'roomType' || field === 'childAges' || field === 'ratePlan' ||
-      field === 'retainRates' || field === 'cms.messageId' || field === 'cms.recipient') {
+  if (field === 'target' || field === 'roomType' || field === 'roomTypeForCharge' || field === 'childAges' ||
+      field === 'ratePlan' || field === 'retainRates' || field === 'reservationNote' || field === 'billingReference' ||
+      field === 'cms.messageId' || field === 'cms.recipient') {
     return validAmendRequestValue(field as AmendField, value);
   }
   switch (field) {
@@ -111,8 +114,6 @@ export function validRequestValue(field: string, value: unknown): boolean {
     case 'sourceOfBusiness':
     case 'track':
     case 'guaranteeType': return text(value, 80);
-    case 'reservationNote': return typeof value === 'string' && value.length <= 2000 &&
-      !/\p{Cc}/u.test(value.replace(/\n/g, ''));
     case 'firstName':
     case 'lastName':
     case 'guestEmail':

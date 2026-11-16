@@ -39,10 +39,14 @@ export const cloudAmendSourceBindingSchema = z.object({ selected: cloudAmendSour
   draft: amendDraftIdentitySchema.optional(),
 }).strict().refine((binding) => binding.revision <= binding.revisionHead);
 const editableText = z.string().max(1000).refine((value) => !/[\p{Cc}]/u.test(value));
+const billingReferenceText = z.string().max(50).refine((value) => !/[\p{Cc}]/u.test(value));
+const reservationNoteText = z.string().max(2000).refine((value) => !/[\p{Cc}]/u.test(value.replace(/\n/g, '')));
 export const cloudAmendChangesSchema = z.object({
   arrival: day.optional(), departure: day.optional(), adults: z.number().int().min(1).max(16).optional(),
   children: z.number().int().min(0).max(9).optional(), childAges: z.array(z.number().int().min(0).max(17)).max(9).optional(),
-  roomType: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), ratePlan: z.string().regex(/^[A-Z0-9]{1,12}$/),
+  roomType: z.string().regex(/^[A-Z0-9]{1,12}$/).optional(), roomTypeForCharge: z.string().regex(/^[A-Z0-9]{0,12}$/).optional(),
+  ratePlan: z.string().regex(/^[A-Z0-9]{1,12}$/),
+  reservationNote: reservationNoteText.optional(), billingReference: billingReferenceText.optional(),
   retainRates: z.enum(['yes', 'no']), firstName: editableText.optional(), lastName: editableText.optional(),
   guestEmail: editableText.optional(), bookerName: editableText.optional(), bookerContact: editableText.optional(),
   cmsSend: z.boolean(), cmsMessageId: editableText, cmsRecipient: editableText,
@@ -156,8 +160,8 @@ export function cloudAmendFirstPilotScopeSupported(current: NativeAmendScope, fi
         (fields.lastName !== undefined && fields.lastName !== 'Labtest')))) return false;
   // Retained-rate staging currently observes the old stay total, not a verified
   // total for changed dates, occupancy, room or rate. Do not approve it as the new price.
-  if (fields.retainRates === 'yes' && (['arrival', 'departure', 'adults', 'children', 'roomType', 'ratePlan'] as const)
-    .some((key) => fields[key] !== undefined && fields[key] !== current[key])) return false;
+  if (fields.retainRates === 'yes' && (['arrival', 'departure', 'adults', 'children', 'roomType', 'roomTypeForCharge', 'ratePlan'] as const)
+    .some((key) => fields[key] !== undefined && fields[key] !== (current as Record<string, unknown>)[key])) return false;
   if (fields.retainRates === 'yes' && fields.childAges !== undefined &&
       JSON.stringify(fields.childAges) !== JSON.stringify(current.childAges)) return false;
   const businessChange = Object.entries(fields).some(([key, value]) => {
@@ -321,14 +325,15 @@ export async function bindCloudAmendForm(input: z.infer<typeof bindCloudAmendInp
   const nativeModule = await import(nativeUrl.href) as { prepareCloudPaneAmend(input: {
     target: HmsReadTarget; transportId: string; selected: CloudAmendPreimage['native']; confirmation: string; arrival: string;
     changes: CloudAmendChanges; allowRealGuest: boolean; cloudTargetKey: string; signal: AbortSignal;
-  }): Promise<{ outcome: string; nativeDigest?: string; approvedPrices?: unknown; preserved?: unknown }> };
+  }): Promise<{ outcome: string; issue?: string; nativeDigest?: string; approvedPrices?: unknown; preserved?: unknown }> };
   const native = await nativeModule.prepareCloudPaneAmend({ target: target.target, transportId, selected: preimage.native,
     confirmation: data.confirmation, arrival: data.arrival, changes: data.changes, allowRealGuest,
     cloudTargetKey: hmsDispatchTargetKey({ propertyCode: scope.propertyCode, kind: 'saved',
       confirmation: preimage.native.confirmation, nativeStayId: preimage.native.reservationStayId }),
     signal: AbortSignal.timeout(5 * 60_000) });
   if (native.outcome !== 'prepared' || !native.nativeDigest || !/^[a-f0-9]{64}$/.test(native.nativeDigest)) {
-    return { status: 'refused' as const, reason: 'hms_preimage_unverified' };
+    return { status: 'refused' as const, reason: native.outcome === 'refused' && native.issue === 'CHILD_AGE_GO_AUTHORIZATION_REQUIRED'
+      ? 'children_change_unsupported' : 'hms_preimage_unverified' };
   }
   // The current HMS price is shown for staff review before Go.
   const preserved = cloudAmendPreservedSchema.safeParse(native.preserved);

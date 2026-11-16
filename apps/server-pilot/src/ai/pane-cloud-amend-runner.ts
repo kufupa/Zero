@@ -34,6 +34,7 @@ const readbackSchema = z.object({ confirmation: z.string(), nativeStayId: z.stri
   childAges: z.union([z.literal('unknown'), z.array(z.number().int())]), firstName: z.string(), lastName: z.string(),
   guestEmail: z.string(), bookerName: z.string(), bookerContact: z.string(), cmsSend: z.boolean(),
   cmsMessageId: z.string(), cmsRecipient: z.string(), reservationNote: z.string(), guaranteeType: z.string(),
+  billingReference: z.string().optional(), roomTypeForCharge: z.string().optional(),
   price: z.unknown().nullable() }).passthrough();
 
 /** Complete only after a fresh read of the selected stay and requested business fields. */
@@ -53,6 +54,9 @@ export function verifiedCloudAmendReadback(form: z.infer<typeof cloudAmendDispat
   for (const name of ['guestEmail', 'bookerName', 'bookerContact'] as const) {
     if (changes[name] !== undefined && read[name] !== changes[name]) return null;
   }
+  if (changes.reservationNote !== undefined && read.reservationNote !== changes.reservationNote) return null;
+  if (changes.billingReference !== undefined && read.billingReference !== changes.billingReference) return null;
+  if (changes.roomTypeForCharge !== undefined && read.roomTypeForCharge !== changes.roomTypeForCharge) return null;
   if (read.cmsSend !== changes.cmsSend ||
       (changes.cmsSend && (read.cmsMessageId !== changes.cmsMessageId || read.cmsRecipient !== changes.cmsRecipient))) return null;
   return read;

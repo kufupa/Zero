@@ -1513,6 +1513,9 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
   const [guestEmail, setGuestEmail] = useState(initialGuestEmail);
   const [bookerName, setBookerName] = useState(initialBookerName);
   const [bookerContact, setBookerContact] = useState(initialBookerContact);
+  const [roomTypeForCharge, setRoomTypeForCharge] = useState(saved?.roomTypeForCharge ?? '');
+  const [reservationNote, setReservationNote] = useState(saved?.reservationNote ?? '');
+  const [billingReference, setBillingReference] = useState(saved?.billingReference ?? '');
   const [editedDetails, setEditedDetails] = useState<string[]>([]);
   const sources = useConfirmationSources();
   const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(recipientCleared ? 'custom' : saved?.cms.recipient?.mode ?? sources?.setting?.mode ?? 'self');
@@ -1541,6 +1544,9 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
     if (!editedDetails.includes('guestEmail')) setGuestEmail(initialGuestEmail);
     if (!editedDetails.includes('bookerName')) setBookerName(initialBookerName);
     if (!editedDetails.includes('bookerContact')) setBookerContact(initialBookerContact);
+    if (!editedDetails.includes('roomTypeForCharge')) setRoomTypeForCharge(saved?.roomTypeForCharge ?? '');
+    if (!editedDetails.includes('reservationNote')) setReservationNote(saved?.reservationNote ?? '');
+    if (!editedDetails.includes('billingReference')) setBillingReference(saved?.billingReference ?? '');
     if (!editedDetails.includes('retainRates')) setRetainRates(saved?.retainRates ?? 'no');
     if (!cmsEdited && saved) {
       setCmsSend(labtest ? false : saved.cms.send ?? true);
@@ -1576,13 +1582,20 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
     ...(guestEmail.trim() !== (contactObservations?.guestEmail?.value ?? '') ? { guestEmail: guestEmail.trim() } : {}),
     ...(bookerName.trim() !== (contactObservations?.bookerName?.value ?? '') ? { bookerName: bookerName.trim() } : {}),
     ...(bookerContact.trim() !== (contactObservations?.bookerContact?.value ?? '') ? { bookerContact: bookerContact.trim() } : {}),
+    // The lookup does not show these baselines, so only a typed value is sent; clear them in HMS.
+    ...(roomTypeForCharge.trim() ? { roomTypeForCharge: roomTypeForCharge.trim() } : {}),
+    ...(reservationNote !== '' ? { reservationNote } : {}),
+    ...(billingReference.trim() ? { billingReference: billingReference.trim() } : {}),
   };
   const retainedPriceChange = retainRates === 'yes' &&
-    ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'ratePlan'].some((key) => Object.hasOwn(changes, key));
+    ['arrival', 'departure', 'adults', 'children', 'childAges', 'roomType', 'roomTypeForCharge', 'ratePlan'].some((key) => Object.hasOwn(changes, key));
+  const childChangeUnsupported = Object.hasOwn(changes, 'children') || Object.hasOwn(changes, 'childAges');
   const validRecipient = !cmsNeedsChoice && (!cmsSend || (!recipientLoading && recipient.ok && Boolean(cmsMessageId.trim())));
   const validChanges = Boolean(writeContext && choicesValid && stay.arrival && stay.departure &&
     firstName.trim() && lastName.trim() && /^[A-Z0-9]{1,12}$/.test(ratePlan) && !pendingRateMatch &&
-    /^[A-Z0-9]{1,12}$/.test(roomType) && validRecipient && !retainedPriceChange &&
+    /^[A-Z0-9]{1,12}$/.test(roomType) && /^[A-Z0-9]{0,12}$/.test(roomTypeForCharge.trim()) &&
+    billingReference.trim().length <= 50 && !/[\p{Cc}]/u.test(billingReference.trim()) &&
+    validRecipient && !retainedPriceChange && !childChangeUnsupported &&
     (Object.keys(changes).length > 0 || cmsTouched));
   const request: CloudAmendRequest | null = validChanges && writeContext && stay.arrival ? {
     workItemId: writeContext.workItemId,
@@ -1653,6 +1666,17 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
               : 'Meaning not yet read from HMS.'}</span>
       </div>
       <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
+        <span className="font-semibold">Room type for charge</span>
+        <span className={captionClass}>HMS: Not shown at lookup</span>
+        <input aria-label="Room type for charge" className={selectClass} value={roomTypeForCharge}
+          onChange={(event) => {
+            const value = event.target.value.toUpperCase();
+            setRoomTypeForCharge(value); markDetail('roomTypeForCharge');
+            durableDraft?.record('roomTypeForCharge', value, /^[A-Z0-9]{0,12}$/.test(value.trim()));
+          }} />
+        <span className={captionClass}>Only type a code to change it.</span>
+      </label>
+      <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
         <span className="font-semibold">Retain the current rate?</span>
         <select aria-label="Retain the current rate?" className={selectClass} value={retainRates} onChange={(event) => {
           const value = event.target.value as 'yes' | 'no'; setRetainRates(value); markDetail('retainRates'); durableDraft?.record('retainRates', value);
@@ -1664,6 +1688,7 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
       </label>
     </div>
     {retainedPriceChange ? <p className={warnNoteClass}>The new total cannot be verified while retaining rates. Choose No to reprice, or make this change in HMS.</p> : null}
+    {childChangeUnsupported ? <p className={warnNoteClass}>Nava can't change children or ages here yet — HMS may save them before the price check. Revert the children change to prepare the rest, or amend it in HMS.</p> : null}
     {rates.available ? <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className={buttonClass} disabled={rateLocked || rates.view?.status === 'checking'}
@@ -1730,9 +1755,28 @@ function LocalAmendChoices({ stay, ratePlans, propertyCode, draft, identity, con
             }
           }} />
         </label>)}
+        <label className="col-span-2 flex min-w-0 flex-col gap-1 text-[11.5px] text-[#334155]">
+          <span className="font-semibold">Reservation note</span>
+          <span className={captionClass}>HMS: Not shown at lookup</span>
+          <textarea data-pii rows={2} className={selectClass} value={reservationNote} onChange={(event) => {
+            setReservationNote(event.target.value); markDetail('reservationNote');
+            durableDraft?.record('reservationNote', event.target.value,
+              event.target.value.length <= 2000 && !/[\p{Cc}]/u.test(event.target.value.replace(/\n/g, '')));
+          }} />
+        </label>
+        <label className="flex min-w-0 flex-col gap-1 text-[11.5px] text-[#334155]">
+          <span className="font-semibold">Billing reference</span>
+          <span className={captionClass}>HMS: Not shown at lookup · needs an A/R account on the booking</span>
+          <input data-pii className={selectClass} value={billingReference} onChange={(event) => {
+            setBillingReference(event.target.value); markDetail('billingReference');
+            durableDraft?.record('billingReference', event.target.value,
+              event.target.value.length <= 50 && !/[\p{Cc}]/u.test(event.target.value));
+          }} />
+        </label>
       </div>
     </details>
     {!firstName.trim() || !lastName.trim() ? <p className={warnNoteClass}>Enter guest first name and surname under More.</p> : null}
+    {billingReference.trim().length > 50 ? <p className={warnNoteClass}>Billing reference is limited to 50 characters.</p> : null}
     {!/^[A-Z0-9]{1,12}$/.test(ratePlan) || !/^[A-Z0-9]{1,12}$/.test(roomType) ? <p className={warnNoteClass}>Choose a room type and enter a rate code (letters and numbers).</p> : null}
     {cmsNeedsChoice ? <label className="flex flex-col gap-1 text-[11.5px] text-[#334155]">
       <span>Send HMS confirmation?</span>
