@@ -2798,19 +2798,12 @@ export async function listWorkItems(
       .where(eq(mailboxTransport.id, input.transportId))
       .limit(1);
     const mailboxEmail = normalizeEmailAddress(mailbox?.email ?? '');
-    // A self-prestay candidate must also reach the validator: an unproven or stale
-    // read is review work, so SQL admits only the same source evidence the verdict
-    // checks — the mailbox's own sender, a pre-stay subject and a confirmation
-    // shape — never the read's own no-action judgment.
+    // A self-prestay candidate must also reach the validator regardless of model
+    // kind/origin: SQL admits the narrow superset (own mailbox sender + pre-stay
+    // subject), and the shared validator enforces confirmation number + ask.
     const preStayCandidate = mailboxEmail === '' ? undefined : and(
       sql`strpos(lower(${message.fromAddress}), ${mailboxEmail}) > 0`,
       sql`${message.subject} ~* '\\ypre[\\s-]?(stay|arrival)\\y'`,
-      or(
-        sql`${message.subject} ~ '\\d{6,10}-\\d{1,4}'`,
-        sql`(${message.subject} ~* '\\yconf' and ${message.subject} ~ '\\d')`,
-        sql`${message.textBody} ~ '\\d{6,10}-\\d{1,4}'`,
-        sql`(jsonb_typeof(${mailExtraction.payload}->'confirmationNumbers') = 'array' and jsonb_array_length(${mailExtraction.payload}->'confirmationNumbers') > 0)`,
-      ),
     );
     const fetchPage = (cursor: NeedsYouCursor | null, size: number) => tx
       .select({
@@ -2851,11 +2844,9 @@ export async function listWorkItems(
           eq(workItem.transportId, input.transportId),
           inArray(workItem.status, [...input.statuses]),
           or(
+            ...(preStayCandidate ? [preStayCandidate] : []),
             and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
-            and(eq(workItem.kind, 'other'), or(
-              sql`${mailExtraction.payload}->>'separateAsk' is not null`,
-              ...(preStayCandidate ? [preStayCandidate] : []),
-            )),
+            and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
           ),
           isNull(mailThread.spamAt),
           isNull(mailThread.trashedAt),
@@ -2883,7 +2874,7 @@ export async function listWorkItems(
           payload,
         });
         const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
-        if (preStayAsk ? preStayAsk.status === 'none' : row.kind === 'other') return null;
+        if (!preStayAsk && row.kind === 'other') return null;
         return { ...row, kind: separateAsk ? 'other_actionable' : row.kind, chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you' };
       },
     });

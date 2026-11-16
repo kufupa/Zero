@@ -264,12 +264,6 @@ const storedExtractionStaySchema = sourceStaySchema.extend({
 /** Stored mail-extraction payload. Action fields, origin, and per-stay guests/action stay optional for legacy rows. */
 export const mailExtractionPayloadSchema = z.object({
   separateAsk: z.string().max(200).optional(),
-  separateAskVerdict: z
-    .enum(['ask', 'none', 'unverified'])
-    .optional()
-    .describe(
-      'For self-sent pre-stay mail, the read\'s separate-ask adjudication: ask = a grounded current ask was stored, none = the read checked this source and found no separate current ask, unverified = a claimed ask could not be bound to the current text. Absent on reads that never ran the check.',
-    ),
   needsAction: z.boolean().optional(),
   action: z.enum(MAIL_ACTIONS).optional(),
   actionEvidence: z.string().max(200).optional(),
