@@ -22,7 +22,7 @@ function load(code: string, key: string) {
   loading.add(key);
   void Promise.resolve()
     .then(() => trpcClient.settings.cmsRecipientDefault.query({ propertyCode: code }))
-    .then(result => { remembered.set(key, result?.address ?? ''); }, () => { /* no default: field stays empty */ })
+    .then(result => { if (!remembered.has(key)) remembered.set(key, result?.address ?? ''); }, () => { /* no default: field stays empty */ })
     .finally(() => { loading.delete(key); emit(); });
 }
 
