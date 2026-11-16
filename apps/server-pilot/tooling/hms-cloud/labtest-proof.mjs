@@ -576,12 +576,14 @@ async function main() {
         const expected = cancellationNativePreimage(initial, { propertyCode: args.propertyCode, allowRealGuest: false });
         const observedAges = native => native?.children === 0 ? [] : native?.childAges;
         const sortedAges = ages => hash([...ages].sort((a, b) => a - b));
-        assert(expected && expected.allowRealGuest === false && expected.cmsSend === false &&
+        assert(effective.room.ratePlan === 'BAR' && expected && expected.allowRealGuest === false &&
+          expected.cmsSend === false && expected.ratePlan === 'BAR' &&
           expected.firstName === 'Proof' && expected.lastName === 'Labtest' &&
           expected.arrival === effective.stay.arrival && expected.departure === effective.stay.departure &&
           expected.confirmation === own.confirmation && expected.nativeStayId === own.nativeStayId &&
           expected.guestId === own.guestId && expected.note === own.note &&
-          initial.nativePreimage?.adults === expectedAdults && Array.isArray(observedAges(initial.nativePreimage)) &&
+          initial.nativePreimage?.ratePlan === 'BAR' && initial.nativePreimage?.adults === expectedAdults &&
+          Array.isArray(observedAges(initial.nativePreimage)) &&
           sortedAges(observedAges(initial.nativePreimage)) === sortedAges(effective.stay.childAges),
         'CANCEL_STAGE_PREIMAGE_INVALID');
         // If the preview invariant is ever violated, a durable hold survives until an operator reconciles HMS.
