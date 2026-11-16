@@ -220,8 +220,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       const candidate = record(Array.isArray(result.candidates) && result.candidates.length === 1 ? result.candidates[0] : result);
       const query = [criteria.query, criteria.searchName, criteria.name, candidate.name, option.label]
         .find((value): value is string => typeof value === 'string' && Boolean(value.trim())) ?? option.label;
-      if (normalized(text(valueAt(editor.snapshot, `${path}/name`))) !== normalized(query))
-        await editor.commands.edit(path, { name: query, candidateRefs: [], suggestedRef: null });
+      if (text(valueAt(editor.snapshot, `${path}/name`)) !== query)
+        await editor.commands.edit(`${path}/name`, query);
     }
     await choose(option.ref, option.ref, option.label);
   };
