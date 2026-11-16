@@ -34,19 +34,54 @@ const MODEL_CALL_ERROR_CODES = new Set([
   'UND_ERR_SOCKET', 'UND_ERR_ABORTED', 'UND_ERR_DESTROYED',
 ]);
 
-/** Bounded failure metadata: allowlisted class/code or numeric HTTP status, never messages or stacks. */
+/** Object check that survives revoked Proxies, whose typeof throws. */
+function isErrorLikeObject(value: unknown): boolean {
+  try {
+    return value !== null && typeof value === 'object';
+  } catch {
+    return false;
+  }
+}
+
+/** Single guarded property read: a throwing getter or Proxy trap yields undefined
+ *  instead of throwing, so classification keeps metadata already read. */
+function readErrorProp(value: unknown, key: 'name' | 'code' | 'statusCode' | 'status' | 'cause'): unknown {
+  try {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
+    return (value as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+}
+
+/** Bounded failure metadata: allowlisted class/code or numeric HTTP status, never messages or stacks.
+ *  Fetch wrappers keep the transport code under `cause`, so walk a bounded, cycle-safe chain;
+ *  each field keeps the first allowlisted value, outermost first. */
 function classifyModelCallError(error: unknown): { errorClass: string; errorCode?: string; httpStatus?: number } {
-  const record = (error && typeof error === 'object' ? error : {}) as
-    { name?: unknown; code?: unknown; statusCode?: unknown; status?: unknown };
-  const name = typeof record.name === 'string' ? record.name : undefined;
-  const code = typeof record.code === 'string' ? record.code : undefined;
-  const rawStatus = typeof record.statusCode === 'number' ? record.statusCode
-    : typeof record.status === 'number' ? record.status : undefined;
+  let errorClass: string | undefined;
+  let errorCode: string | undefined;
+  let httpStatus: number | undefined;
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && isErrorLikeObject(current) && !seen.has(current); depth++) {
+    seen.add(current);
+    const name = readErrorProp(current, 'name');
+    const code = readErrorProp(current, 'code');
+    const statusCode = readErrorProp(current, 'statusCode');
+    const status = readErrorProp(current, 'status');
+    const rawStatus = typeof statusCode === 'number' ? statusCode
+      : typeof status === 'number' ? status : undefined;
+    if (errorClass === undefined && typeof name === 'string' && MODEL_CALL_ERROR_CLASSES.has(name)) errorClass = name;
+    if (errorCode === undefined && typeof code === 'string' && MODEL_CALL_ERROR_CODES.has(code)) errorCode = code;
+    if (httpStatus === undefined && rawStatus !== undefined &&
+        Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599) httpStatus = rawStatus;
+    if (errorClass !== undefined && errorCode !== undefined && httpStatus !== undefined) break;
+    current = readErrorProp(current, 'cause');
+  }
   return {
-    errorClass: name !== undefined && MODEL_CALL_ERROR_CLASSES.has(name) ? name : 'other',
-    ...(code !== undefined && MODEL_CALL_ERROR_CODES.has(code) ? { errorCode: code } : {}),
-    ...(rawStatus !== undefined && Number.isInteger(rawStatus) && rawStatus >= 100 && rawStatus <= 599
-      ? { httpStatus: rawStatus } : {}),
+    errorClass: errorClass ?? 'other',
+    ...(errorCode !== undefined ? { errorCode } : {}),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
   };
 }
 
@@ -91,7 +126,7 @@ function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: s
             adapterLatencyMs: result.usage.latencyMs } : {}),
           ...(failure ?? {}) }));
       };
-      const aborted = () => report(input.signal?.reason?.name === 'TimeoutError' ? 'timeout' : 'aborted',
+      const aborted = () => report(readErrorProp(input.signal?.reason, 'name') === 'TimeoutError' ? 'timeout' : 'aborted',
         undefined, classifyModelCallError(input.signal?.reason));
       input.signal?.addEventListener('abort', aborted, { once: true });
       if (input.signal?.aborted) aborted();
