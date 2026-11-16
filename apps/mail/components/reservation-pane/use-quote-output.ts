@@ -200,7 +200,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (output.artifacts.length && host.capabilities?.preservesAttachmentFilenames !== true) throw new Error('Update the Outlook add-in to attach correctly named PDF and Excel files.');
       if (output.artifacts.some(item => item.sizeBytes > MAX_OUTLOOK_ATTACHMENT_BYTES)) throw new Error('A quotation file exceeds the Outlook add-in limit. No reply was created.');
       if (source.internetMessageId && canonicalMessageId(email.internetMessageId) !== canonicalMessageId(source.internetMessageId)) throw new Error('The selected Outlook email changed. Select it again.');
-      if (!output.cover?.to.trim() || address(output.cover.to) !== address(email.senderEmail)) throw new Error('Outlook replies to the original sender. Check the quote recipient before creating this draft.');
+      const recipientDiffers = !output.cover?.to.trim() || address(output.cover.to) !== address(email.senderEmail);
       const fingerprint = await fingerprintFor(source, email, output, html);
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
       let attempt = pending.current;
@@ -288,7 +288,9 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Check Outlook Drafts.');
       if (storedAttempt(readMarker())?.createOperationId === attempt.create.operationId) writeMarker(null);
       pending.current = null;
-      return report('created', 'Quote saved in Outlook Drafts. Review it there before sending.');
+      return report('created', recipientDiffers
+        ? 'Quote saved in Outlook Drafts. The reply is addressed to the original sender; check the recipient before sending.'
+        : 'Quote saved in Outlook Drafts. Review it there before sending.');
     } catch (error) {
       if (submitted || pending.current?.location || (pending.current && storedAttempt(readMarker())?.createOperationId === pending.current.create.operationId))
         return report('unknown', `${failure(error)} Retry the same reply, or check Outlook Drafts.`);
