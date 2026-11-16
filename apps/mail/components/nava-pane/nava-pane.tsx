@@ -179,10 +179,15 @@ function ExistingStayInformationCard({ confirmationNumbers, separateAsk, needsRe
   separateAsk: string | null;
   needsReview: boolean;
 }) {
+  const ariaLabel = needsReview
+    ? 'Existing stay information — needs review'
+    : separateAsk
+      ? 'Existing stay information — also needs attention'
+      : 'Existing stay information — no booking or quote action';
   return (
     <section
       role="status"
-      aria-label="Existing stay information — no booking or quote action"
+      aria-label={ariaLabel}
       data-testid="existing-stay-information"
       className="flex flex-col gap-2 rounded-[4px] border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2.5"
     >
@@ -205,9 +210,14 @@ function ExistingStayInformationCard({ confirmationNumbers, separateAsk, needsRe
         </p>
       ) : null}
       {separateAsk ? (
-        <p className="text-[13px] leading-5 text-[#475569]">
-          <span className="font-semibold text-[#1e293b]">Also needs attention</span>: {separateAsk}
-        </p>
+        <>
+          <p className="text-[13px] leading-5 text-[#475569]">
+            <span className="font-semibold text-[#1e293b]">Also needs attention</span>: {separateAsk}
+          </p>
+          <p className="text-[13px] leading-5 text-[#475569]">
+            Read the original email to check for any other requests — Nava may only show one request here.
+          </p>
+        </>
       ) : null}
     </section>
   );
