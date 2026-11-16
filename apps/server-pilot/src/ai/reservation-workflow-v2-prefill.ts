@@ -151,8 +151,21 @@ function recoverExtractionFacts(value: unknown, input: {
   const known = new Set(input.evidence.map((row) => row.ref));
   const current = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const issues: ReservationWorkflowV2Extraction['issues'] = [];
+  const cited = (entry: unknown): string[] => {
+    if (Array.isArray(entry)) return entry.flatMap(cited);
+    if (!isRecord(entry)) return [];
+    return [...(Array.isArray(entry.sourceRefs) ? entry.sourceRefs.filter((ref): ref is string =>
+      typeof ref === 'string' && known.has(ref)) : []), ...Object.entries(entry)
+      .filter(([key]) => key !== 'sourceRefs').flatMap(([, child]) => cited(child))];
+  };
   const requests = extractedRequests.flatMap((item, index) => {
-    if (!isRecord(item)) return [];
+    // Every discarded request fact stays unresolved for staff review; nothing
+    // malformed may be dropped silently into a confident no-action read.
+    if (!isRecord(item)) {
+      issues.push({ explanation: 'A malformed request entry could not be read and was withheld for staff review.', sourceRefs: [] });
+      return [];
+    }
+    let withheldClaims = 0;
     const omitInvalidCitation = (entry: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
       if (Array.isArray(entry)) return entry.flatMap((child) => {
         const kept = omitInvalidCitation(child);
@@ -160,29 +173,34 @@ function recoverExtractionFacts(value: unknown, input: {
       });
       if (!isRecord(entry)) return entry;
       if (typeof entry.raw === 'string' && Object.hasOwn(entry, 'value') && Array.isArray(entry.sourceRefs) &&
-          entry.sourceRefs.some((ref) => typeof ref !== 'string' || !known.has(ref))) return OMIT_UNKNOWN_CLAIM;
+          entry.sourceRefs.some((ref) => typeof ref !== 'string' || !known.has(ref))) {
+        withheldClaims += 1;
+        return OMIT_UNKNOWN_CLAIM;
+      }
       return Object.fromEntries(Object.entries(entry).flatMap(([key, child]) => {
         const kept = omitInvalidCitation(child);
         return kept === OMIT_UNKNOWN_CLAIM ? [] : [[key, kept]];
       }));
     };
     const clean = omitInvalidCitation(item);
-    if (!isRecord(clean)) return [];
+    if (!isRecord(clean)) {
+      issues.push({ explanation: 'A request entry was withheld because its only evidence could not be verified.', sourceRefs: [...new Set(cited(item))].slice(0, 20) });
+      return [];
+    }
     const request = structuredClone(clean);
+    const docFactsBefore = (Array.isArray(request.documentRefs) ? request.documentRefs.length : 0) +
+      (Array.isArray(request.documentHints) ? request.documentHints.length : 0);
     if (Array.isArray(request.documentRefs)) request.documentRefs = request.documentRefs.filter((ref) => typeof ref === 'string' && known.has(ref));
     if (Array.isArray(request.documentHints)) request.documentHints = request.documentHints.filter((hint) => isRecord(hint) &&
       typeof hint.documentRef === 'string' && known.has(hint.documentRef) && Array.isArray(hint.sourceRefs) &&
       hint.sourceRefs.every((ref) => typeof ref === 'string' && known.has(ref)));
+    const withheldDocFacts = docFactsBefore - (Array.isArray(request.documentRefs) ? request.documentRefs.length : 0) -
+      (Array.isArray(request.documentHints) ? request.documentHints.length : 0);
     request.id = stableId(input.source.messageId, 'extracted_request', String(index),
       typeof request.kind === 'string' ? request.kind : 'invalid');
-    const cited = (entry: unknown): string[] => {
-      if (Array.isArray(entry)) return entry.flatMap(cited);
-      if (!isRecord(entry)) return [];
-      return [...(Array.isArray(entry.sourceRefs) ? entry.sourceRefs.filter((ref): ref is string =>
-        typeof ref === 'string' && known.has(ref)) : []), ...Object.entries(entry)
-        .filter(([key]) => key !== 'sourceRefs').flatMap(([, child]) => cited(child))];
-    };
     const refs = [...new Set(cited(request))].slice(0, 20);
+    if (withheldClaims + withheldDocFacts) issues.push({
+      explanation: 'Some cited facts could not be verified against the admitted evidence and were withheld.', sourceRefs: refs });
     if (!Object.hasOwn(item, 'requestText') && extractedRequests.length === 1 && refs.some((ref) => current.has(ref))) {
       const message = input.evidence.find((row) => row.relation === 'current_message');
       const raw = input.body.trim().slice(0, 2000);
@@ -195,6 +213,7 @@ function recoverExtractionFacts(value: unknown, input: {
     // request text are never replaced with a guessed/default workflow.
     const arrays = new Set(['dates', 'occupancy', 'guests', 'parties', 'confirmationHints',
       'roomTypeHints', 'rateHints', 'mealPlanHints', 'serviceHints', 'documentRefs', 'documentHints']);
+    let requestWithheld = false;
     for (let remaining = 32; remaining > 0; remaining--) {
       const parsed = requestSchema.safeParse(request);
       if (parsed.success) return [parsed.data];
@@ -224,20 +243,26 @@ function recoverExtractionFacts(value: unknown, input: {
         removed = true;
       }
       issues.push({ explanation: `Extraction field ${issue.path.join('.').slice(0, 160) || 'request'} failed validation; only its affected fact${removed ? '' : ' request'} was withheld.`, sourceRefs: refs });
-      if (!removed) break;
+      if (!removed) { requestWithheld = true; break; }
     }
+    if (!requestWithheld) issues.push({ explanation:
+      'A malformed request could not be fully validated; it was withheld for staff review.', sourceRefs: refs });
     return [];
   });
   const issueSchema = reservationWorkflowV2ExtractionSchema.shape.issues.removeDefault().element;
   const suppliedIssues = Array.isArray(value.issues) ? value.issues.flatMap((row) => {
     const parsed = issueSchema.safeParse(row);
-    return parsed.success ? [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }] : [];
+    if (parsed.success) return [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }];
+    issues.push({ explanation: 'A malformed issue entry could not be read and was withheld for staff review.', sourceRefs: [] });
+    return [];
   }) : [];
   const dispositionSchema = reservationWorkflowV2ExtractionSchema.shape.disposition.unwrap();
   const parsedDisposition = dispositionSchema.safeParse(value.disposition);
   const disposition = parsedDisposition.success
     ? { ...parsedDisposition.data, sourceRefs: parsedDisposition.data.sourceRefs.filter((ref) => known.has(ref)) }
     : undefined;
+  if (!parsedDisposition.success && value.disposition !== undefined) issues.push({
+    explanation: 'The intake decision could not be read and was disregarded; the email stays open for staff review.', sourceRefs: [] });
   return { requests, issues: [...suppliedIssues, ...issues].slice(0, 200), ...(disposition ? { disposition } : {}) };
 }
 
@@ -6587,10 +6612,18 @@ export async function runReservationWorkflowV2Prefill(input: {
         }
         return { ...base, extraction, disposition, status: 'ready', proposal: emptyProposal(), errors: base.errors };
       }
-      return { ...base, extraction, status: 'prefill_failed',
-        proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
-          reason: 'Self-sent pre-stay mail has no separate current request.' }),
-        errors: base.errors, skippedReason: 'self_prestay' };
+      // Any non-confirmed self-prestay stays a durable, reviewable draft: the
+      // checkpointed extraction issues and adjudicated disposition are what
+      // staff need to decide, and the fallback 'other' request can never offer
+      // Create on an existing-stay email.
+      if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
+        throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
+      }
+      const proposal = buildFallbackProposal({ extraction: null, source: input.source, evidence,
+        reason: 'This pre-stay email could not be confirmed as no action; unresolved details need staff review.' });
+      for (const issue of extraction.issues) addProjectionIssue(proposal, '/', 'unresolved_extraction_issue',
+        issue.explanation, issue.sourceRefs);
+      return { ...base, extraction, disposition, status: 'partial', proposal, errors: base.errors };
     }
     const separate = { ...extraction, requests };
     if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, separate))) {
