@@ -108,10 +108,7 @@ function leaves(value: unknown, path: string, out: string[], depth = 0): void {
   if (depth > 10) return;
   if (Array.isArray(value)) {
     if (value.every((entry) => !object(entry))) { out.push(path); return; }
-    value.forEach((entry, index) => {
-      const id = object(entry)?.id;
-      leaves(entry, `${path}/${encodeURIComponent(typeof id === 'string' ? id : String(index))}`, out, depth + 1);
-    });
+    value.forEach((entry, index) => leaves(entry, `${path}/${index}`, out, depth + 1));
     return;
   }
   const row = object(value);
@@ -230,8 +227,15 @@ export function fieldTraceRows(input: {
     const annotation = draft.proposal.annotations.filter((row) => row.path === path || path.startsWith(`${row.path}/`))
       .sort((left, right) => right.path.length - left.path.length)[0];
     const allocation = /\/allocations\/([^/]+)\//u.exec(path)?.[1];
+    const request = draft.proposal.content.requests.find((row) => row.id === scope.requestId);
+    const section = /\/dateSections\/(\d+)\//u.exec(path)?.[1];
+    const perTarget = /\/perTarget\/(\d+)\//u.exec(path)?.[1];
+    const targetId = request?.kind === 'create' && allocation ? request.body.allocations[Number(allocation)]?.id
+      : request?.kind === 'amend' && perTarget ? request.body.perTarget[Number(perTarget)]?.hintId : null;
+    const sectionId = request?.kind === 'create' && section ? request.body.dateSections[Number(section)]?.id : null;
     const relatedOperations = operations.filter((row) => row.requestId === scope.requestId &&
-      (!allocation || !row.allocationId || encodeURIComponent(row.allocationId) === allocation));
+      (!targetId || row.allocationId === targetId) && (!sectionId || request?.kind === 'create' &&
+        request.body.allocations.some((item) => item.id === row.allocationId && item.dateSectionId === sectionId)));
     const op = relatedOperations.at(-1);
     const sentPane = op ? paneAtRevision(draft, events, op.draftRevision) : null;
     const readbackObservation = op ? draft.observations.find((row) => op.observationRefs.includes(row.ref) &&
