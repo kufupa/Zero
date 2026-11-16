@@ -324,7 +324,8 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
               void editor.commands.changeRows({ kind: 'separate_quote_money', requestId: editor.request.id, entityId: String(index) } as never);
             } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) {
               void editor.commands.edit(kindPath, next).then(() => {
-                if (scope !== 'overall' && scope !== 'per_target') setApplied(allIds);
+                // Only a single-group quote has an unambiguous default; with several groups staff tick the rooms.
+                if (allIds.length === 1 && scope !== 'overall' && scope !== 'per_target') setApplied(allIds);
               }).catch(() => {});
             }
           }}>
