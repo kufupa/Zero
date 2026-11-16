@@ -206,19 +206,20 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     record(observation.criteria).kind === 'verified_native_row' && choices.some(choice => choice.ref === observation.ref));
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
   // Host auto-pick (contract v1): evidence expander + Read tick replace the right-side confirm for this field.
-  const suggestion = autopickSuggestion(editor.snapshot, editor.request.id, selectionPath);
+  const picked = autopickSuggestion(editor.snapshot, editor.request.id, selectionPath);
   const staffSet = Object.entries(editor.snapshot.session.draft.fieldOverrides).some(([key, value]) => value.state !== 'inherit' &&
     [path, selectionPath].some(target => target === key || target.startsWith(`${key}/`) || (party && key.startsWith(`${path}/`))));
   const suggestionCurrent = entity ? typeof selectedRef === 'string' ? selectedRef : '' : saved;
+  const suggestion = picked && suggestionCurrent === (entity ? picked.ref : picked.value) ? picked : null;
   const chooseSuggested = async (option: { ref: string; label: string }) => {
     if (!entity) { await choose(option.ref, option.ref, option.label); return; }
     if (party && editor.request.kind !== 'quote') {
-      // Create/Amend bind a party only when its typed name matches the Infor search that returned the row.
+      // Create/Amend require the lookup query before selectNative; Create/Quote then store the native display name.
       const observation = editor.snapshot.session.draft.observations.find(row => row.ref === option.ref);
       const result = record(observation?.result), criteria = record(observation?.criteria);
       const candidate = record(Array.isArray(result.candidates) && result.candidates.length === 1 ? result.candidates[0] : result);
       const query = [criteria.query, criteria.searchName, criteria.name, candidate.name, option.label]
-        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))!;
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim())) ?? option.label;
       if (normalized(text(valueAt(editor.snapshot, `${path}/name`))) !== normalized(query))
         await editor.commands.edit(path, { name: query, candidateRefs: [], suggestedRef: null });
     }
@@ -328,7 +329,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
     {suggestion ? <AutopickPanel editor={editor} suggestion={suggestion} selectionPath={selectionPath} label={label}
-      isPick={suggestionCurrent === (entity ? suggestion.ref : suggestion.value)} changed={staffSet} currentValue={suggestionCurrent}
-      onChoose={chooseSuggested} disabled={disabled} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />
+      changed={staffSet}
+      onChoose={chooseSuggested} disabled={disabled || dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />
       : compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }

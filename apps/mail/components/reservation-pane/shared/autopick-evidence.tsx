@@ -69,11 +69,9 @@ export function evidenceSentence(row: AutopickEvidence): string {
  * alternatives, and a Read tick. There is no reject control: staff who disagree change the value, and the
  * edit trace records it.
  */
-export function AutopickPanel({ editor, suggestion, selectionPath, isPick, changed, currentValue, onChoose, onPendingChange, disabled = false, label }: {
+export function AutopickPanel({ editor, suggestion, selectionPath, changed, onChoose, onPendingChange, disabled = false, label }: {
   editor: WorkbenchEditorProps; suggestion: AutopickSuggestion; selectionPath: string; label: string;
-  /** True when the field's current value is Nava's pick. */ isPick: boolean;
   /** True when staff set this field themselves. */ changed: boolean;
-  /** Current option ref (party native ref or code) for marking the selected alternative. */ currentValue: string;
   onChoose: (option: { ref: string; label: string }) => Promise<void>;
   onPendingChange?: (pending: boolean) => void; disabled?: boolean;
 }) {
@@ -83,8 +81,6 @@ export function AutopickPanel({ editor, suggestion, selectionPath, isPick, chang
   const draft = editor.snapshot.session.draft;
   const accepted = draft.staffReviews[selectionPath]?.status === 'accepted';
   const busy = disabled || pending || editor.view.busy;
-  const options = [...(!isPick ? [{ ref: suggestion.ref, label: suggestion.label, count: null, total: null, pick: true }] : []),
-    ...suggestion.alternatives.map(option => ({ ...option, pick: false }))];
   const choose = async (option: { ref: string; label: string }) => {
     setPending(true); onPendingChange?.(true);
     try { await onChoose(option); } catch { /* the workbench shows the failure */ }
@@ -98,32 +94,29 @@ export function AutopickPanel({ editor, suggestion, selectionPath, isPick, chang
       .catch(() => {}).finally(() => { setPending(false); onPendingChange?.(false); });
   };
   const emailRef = editor.onOpenEvidence ? suggestion.sourceRefs[0] : undefined;
-  const mark = changed && !isPick ? 'changed' : suggestion.confidence;
+  const mark = suggestion.confidence;
   return <div className={styles.autopick} data-autopick={mark}>
     <div className={styles.autopickBar}>
-      <span className={styles.autopickMark}>{mark === 'changed' ? 'Changed' : mark === 'usual' ? 'Usual choice' : 'Check this'}</span>
+      <span className={styles.autopickMark}>{mark === 'usual' ? 'Usual choice' : 'Check this'}</span>
       <button type="button" className={styles.autopickWhy} aria-expanded={open} aria-controls={`${id}-why`}
-        onClick={() => setOpen(value => !value)}>{mark === 'changed' ? 'Nava’s pick' : 'Why'} {open ? '▴' : '▾'}</button>
+        onClick={() => setOpen(value => !value)}>Why {open ? '▴' : '▾'}</button>
       {!changed && <label className={styles.autopickTick} title={accepted ? 'Marked as read' : `Tick when you have read ${label}`}>
         <input type="checkbox" aria-label={`Read ${label}`} checked={accepted} disabled={accepted || busy}
           onChange={event => { if (event.target.checked) tick(); }} />Read</label>}
     </div>
     {open && <div id={`${id}-why`} className={styles.autopickBody}>
-      {mark === 'changed' && <p>Nava picked <strong>{suggestion.label}</strong>.</p>}
+      <p><strong>{suggestion.label}</strong></p>
       {suggestion.reason && <p>{suggestion.reason}</p>}
       <ul>{suggestion.evidence.map((row, index) => <li key={`${row.kind}:${index}`}>{evidenceSentence(row)}
         {(row.kind === 'email_text' || row.kind === 'model_choice') && emailRef && <> <button type="button" className={styles.autopickLink}
           onClick={() => editor.onOpenEvidence?.(emailRef)}>Show</button></>}</li>)}</ul>
-      {options.length > 0 && <div role="group" aria-label={`Other ${label} choices`} className={styles.autopickOptions}>
-        <small>{isPick ? 'Other choices' : 'Choices'}</small>
-        {options.map(option => {
-          const current = option.ref === currentValue;
-          return <button key={option.ref} type="button" aria-pressed={current} disabled={busy || current}
+      {suggestion.alternatives.length > 0 && <div role="group" aria-label={`Other ${label} choices`} className={styles.autopickOptions}>
+        <small>Other choices</small>
+        {suggestion.alternatives.map(option => <button key={option.ref} type="button" disabled={busy}
             onClick={() => { void choose(option); }}>
             <span>{option.label}</span>
-            <small>{option.pick ? 'Nava’s pick' : ratio(option) ? `${ratio(option)} bookings` : ''}{current ? ' · Current' : ''}</small>
-          </button>;
-        })}
+            <small>{ratio(option) ? `${ratio(option)} bookings` : ''}</small>
+          </button>)}
       </div>}
     </div>}
   </div>;

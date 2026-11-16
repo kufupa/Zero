@@ -107,7 +107,6 @@
 /* Auto-pick evidence: a full-width row under the field (mark, Why expander, Read tick). */
 .autopick { grid-column:1 / -1; min-width:0; margin:3px 0 2px; --pick-ink:#2f6b45; --pick-bg:#eaf6ee; --pick-line:#bfe0ca; }
 .autopick[data-autopick=check] { --pick-ink:#8a5a12; --pick-bg:#fdf3e1; --pick-line:#efd6a6; }
-.autopick[data-autopick=changed] { --pick-ink:var(--muted); --pick-bg:transparent; --pick-line:var(--border); }
 .compactField .autopick { grid-column:1 / -1; }
 .autopickBar { display:flex; align-items:center; gap:6px; min-width:0; }
 .autopickMark { flex:none; padding:1px 6px; border:1px solid var(--pick-line); border-radius:9px; background:var(--pick-bg); color:var(--pick-ink); font-size:10.5px; font-weight:600; line-height:16px; }
@@ -125,8 +124,5 @@
 .pane .autopickOptions button { display:flex; justify-content:space-between; align-items:baseline; gap:8px; width:100%; padding:5px 7px; text-align:left; }
 .autopickOptions button span { min-width:0; overflow-wrap:anywhere; }
 .autopickOptions button small { flex:none; color:var(--muted); font-size:10.5px; }
-.pane .autopickOptions button[aria-pressed=true] { border-color:#cbbcf3; background:#f4f2ff; opacity:1; }
 :global(.dark) .pane .autopick { --pick-ink:#9ad3ac; --pick-bg:#1d3326; --pick-line:#2f5a3e; }
 :global(.dark) .pane .autopick[data-autopick=check] { --pick-ink:#f0c47a; --pick-bg:#3a2d14; --pick-line:#6b5222; }
-:global(.dark) .pane .autopick[data-autopick=changed] { --pick-ink:var(--muted); --pick-bg:transparent; --pick-line:var(--border); }
-:global(.dark) .pane .autopickOptions button[aria-pressed=true] { background:#2a2440; border-color:#5b4a9a; }

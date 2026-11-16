@@ -15,7 +15,7 @@ import { dirname, join, resolve } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { and, asc, gte, inArray, sql } from 'drizzle-orm';
+import { and, asc, gte, inArray, or, sql } from 'drizzle-orm';
 import { createDb } from '../src/db/client.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { user } from '../src/db/schema/auth.js';
@@ -58,6 +58,8 @@ const decode = (part: string) => { try { return decodeURIComponent(part); } catc
 
 /** Row key for a staff path: party name / native selection edits belong to the party (or guest) field. */
 export function rowPathOf(path: string): string {
+  const change = /^(\/proposal\/content\/requests\/[^/]+\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+))(?:\/|$)/u.exec(path);
+  if (change) return change[1]!;
   return path.replace(/\/nativeSelectionRef$/u, '').replace(/(\/(?:bookingAgency|organization|arAccount))\/name$/u, '$1');
 }
 
@@ -97,6 +99,8 @@ export function comparable(value: unknown): unknown {
   if (row?.kind === 'none' && Object.keys(row).length === 1) return null;
   if (isParty(value)) return { name: row!.name ?? null, ref: row!.nativeSelectionRef ?? row!.suggestedRef ?? null };
   if (row && 'profileIntent' in row) return { ref: row.nativeSelectionRef ?? row.suggestedRef ?? null };
+  if (row && isChange(value)) return { op: row.op, field: row.field ?? null,
+    ...('value' in row ? { value: comparable(row.value) } : { days: row.days ?? null }) };
   return value === undefined ? null : value;
 }
 
@@ -125,7 +129,10 @@ function scopeOf(draft: Draft, path: string): { workflow: string; requestId: str
     const request = draft.proposal.content.requests.find((row) => row.id === rowId);
     return { workflow: WORKFLOW_LABEL[request?.kind ?? ''] ?? 'unknown', requestId: request?.id ?? rowId };
   }
-  if (collection === 'services') return { workflow: 'addons', requestId: rowId };
+  if (collection === 'services') {
+    const service = draft.proposal.content.services.find((row) => row.id === rowId);
+    return { workflow: 'addons', requestId: service?.ownerRequestId ?? rowId };
+  }
   if (collection === 'documents') {
     const document = draft.proposal.content.documents.find((row) => row.id === rowId);
     return { workflow: 'filing', requestId: document?.ownerRequestId ?? rowId };
@@ -196,7 +203,8 @@ export function fieldTraceRows(input: {
     ...suggestions.map((row) => String(row.criteria.selectionPath))];
   for (const path of activity) if (path.startsWith('/proposal/content/') && path.split('/').length > 5) paths.add(rowPathOf(path));
 
-  const operations = draft.operationResults.filter((row) => row.status === 'succeeded' || row.status === 'unknown')
+  const operations = draft.operationResults.filter((row) => row.generationId === draft.generationId &&
+    (row.status === 'succeeded' || row.status === 'unknown'))
     .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
   const builds = [...new Set(events.map((event) => object(object(event.evidence)?.trace)?.build).filter((build) => typeof build === 'string'))];
   const who = (id: string | null) => id ? users.get(id) ?? id : null;
@@ -222,8 +230,9 @@ export function fieldTraceRows(input: {
     const annotation = draft.proposal.annotations.filter((row) => row.path === path || path.startsWith(`${row.path}/`))
       .sort((left, right) => right.path.length - left.path.length)[0];
     const allocation = /\/allocations\/([^/]+)\//u.exec(path)?.[1];
-    const op = [...operations].reverse().find((row) => row.requestId === scope.requestId &&
+    const relatedOperations = operations.filter((row) => row.requestId === scope.requestId &&
       (!allocation || !row.allocationId || encodeURIComponent(row.allocationId) === allocation));
+    const op = relatedOperations.at(-1);
     const sentPane = op ? paneAtRevision(draft, events, op.draftRevision) : null;
     const readbackObservation = op ? draft.observations.find((row) => op.observationRefs.includes(row.ref) &&
       object(row.result)?.nativeReadback !== undefined) : undefined;
@@ -237,7 +246,8 @@ export function fieldTraceRows(input: {
       property_code: draft.propertyCode, workflow: scope.workflow, request_id: scope.requestId,
       field_key: fieldKey(path, prefill ?? final), field_path: path,
       prefill: { value: prefill ?? null, basis: annotation?.basis ?? null,
-        review_required: draft.fieldReviewRequirements[path]?.required ?? null },
+        review_required: draft.fieldReviewRequirements[path]?.required ??
+          (suggestion ? draft.fieldReviewRequirements[String(suggestion.criteria.selectionPath)]?.required : null) ?? null },
       suggestion: autopickSuggestionSummary(suggestion),
       staff: {
         ticked: accepted || ticks.length > 0,
@@ -246,12 +256,36 @@ export function fieldTraceRows(input: {
         first_edit_at: edits[0]?.at.toISOString() ?? null, last_edit_at: edits.at(-1)?.at.toISOString() ?? null,
         edited_by: [...new Set(edits.map((event) => who(event.actorUserId)).filter(Boolean))],
         edited_value: overridden ? final ?? null : null,
+        edits: edits.map((event) => {
+          const evidence = object(event.evidence), before = object(object(evidence?.previousPaneState)?.[KEY]),
+            after = object(object(evidence?.paneState)?.[KEY]);
+          const state = (pane: Record<string, unknown> | null) => pane?.proposal
+            ? effectiveValueAt({ proposal: pane.proposal, fieldOverrides: (object(pane.fieldOverrides) ?? {}) as Overrides }, path) ?? null : null;
+          return { event_id: event.id, field_path: event.fieldPath?.slice(PREFIX.length), at: event.at.toISOString(),
+            by: who(event.actorUserId), value: event.value, before: state(before), after: state(after) };
+        }),
       },
       final_value: final ?? null,
       outcome: !changed ? (accepted || ticks.length ? 'accepted' : 'unchanged') : prefillComparable === null ? 'filled_by_staff' : 'changed',
       sent: op ? { value: sentPane ? effectiveValueAt(sentPane, path) ?? null : null, operation_id: op.id,
         operation_status: op.status, workflow: op.workflow, draft_revision: op.draftRevision, at: op.updatedAt,
         reconstructed: Boolean(sentPane) } : null,
+      sent_history: relatedOperations.map((operation) => {
+        const pane = paneAtRevision(draft, events, operation.draftRevision);
+        const intent = events.find((event) => event.fieldPath === 'nava.hms.labtest.dispatch.v1' &&
+          object(event.value)?.kind === 'intent' && object(event.value)?.grantId === operation.id &&
+          object(event.value)?.sourceDigest === draft.source.sourceHash);
+        const claim = object(intent?.value), recovery = object(claim?.recovery);
+        const receipt = draft.observations.find((observation) => operation.observationRefs.includes(observation.ref) &&
+          object(observation.result)?.nativeReadback !== undefined);
+        return { operation_id: operation.id, allocation_id: operation.allocationId, status: operation.status,
+          draft_revision: operation.draftRevision, at: intent?.at.toISOString() ?? operation.updatedAt,
+          by: who(intent?.actorUserId ?? (typeof claim?.actorUserId === 'string' ? claim.actorUserId : null)),
+          value: pane ? effectiveValueAt(pane, path) ?? null : null, reconstructed: Boolean(pane),
+          dispatch_event_id: intent?.id ?? null, request_digest: claim?.requestDigest ?? null,
+          approved_request: recovery?.request ?? null, readback: object(receipt?.result)?.nativeReadback ?? null,
+          readback_observation_ref: receipt?.ref ?? null };
+      }),
       readback: readbackObservation ? { value: readback ?? null, mapped: readback !== undefined,
         observation_ref: readbackObservation.ref } : null,
       builds, item_created_at: item.createdAt.toISOString(),
@@ -287,7 +321,8 @@ export async function main(argv: string[], env: NodeJS.ProcessEnv = process.env)
           actorKind: workEvent.actorKind, actorUserId: workEvent.actorUserId, fieldPath: workEvent.fieldPath,
           value: workEvent.value, aiValue: workEvent.aiValue, evidence: workEvent.evidence, at: workEvent.at })
           .from(workEvent).where(and(inArray(workEvent.workItemId, batch.map((row) => row.id)),
-            sql`${workEvent.fieldPath} like ${`${PREFIX}%`}`)).orderBy(asc(workEvent.at), asc(workEvent.id));
+            or(sql`${workEvent.fieldPath} like ${`${PREFIX}%`}`,
+              sql`${workEvent.fieldPath} = 'nava.hms.labtest.dispatch.v1'`))).orderBy(asc(workEvent.at), asc(workEvent.id));
         for (const item of batch) {
           const parsed = reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2(object(item.state)?.[KEY]));
           if (!parsed.success || (values.property && parsed.data.propertyCode !== values.property)) { skipped += 1; continue; }

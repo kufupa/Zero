@@ -1116,7 +1116,8 @@ export function selectReservationWorkflowV2Native(ctx: ReservationWorkflowV2Cont
           if (!name || name !== normalize(query) && !(selected === observation.ref && name === normalize(candidate.name))) return null;
         }
         for (const key of Object.keys(overrides)) if (key.startsWith(`${parent}/`)) delete overrides[key];
-        set(parent, { name: candidate.name, candidateRefs: [], suggestedRef: null }); set(input.fieldPath, observation.ref);
+        set(parent, { name: amendPath ? valueAt(draft, `${parent}/name`) : candidate.name,
+          candidateRefs: [], suggestedRef: null }); set(input.fieldPath, observation.ref);
       } else return null;
       return { draft: { ...draft, proposal, fieldOverrides: overrides, staffReviews: reviews } };
     } });

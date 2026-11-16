@@ -51,13 +51,16 @@ export function autopickSuggestionSummary(row: Observation | undefined) {
   const alternatives = Array.isArray(result.alternatives) ? result.alternatives.map(object).filter(Boolean) as Record<string, unknown>[] : [];
   return {
     ref: row.ref,
+    selectionRef: typeof result.ref === 'string' ? result.ref : null,
+    sourceRefs: row.sourceRefs,
     field: typeof result.field === 'string' ? result.field : null,
     value: typeof result.value === 'string' ? result.value : null,
     label: typeof result.label === 'string' ? result.label : null,
     confidence: result.confidence === 'usual' || result.confidence === 'check' ? result.confidence : null,
+    reason: typeof result.reason === 'string' ? result.reason : null,
     evidenceKinds: evidence.map((entry) => String(entry.kind ?? '')).filter(Boolean),
     evidence: evidence.map((entry) => ({ kind: entry.kind ?? null, count: entry.count ?? null, total: entry.total ?? null,
-      lastSeen: entry.lastSeen ?? null })),
+      lastSeen: entry.lastSeen ?? null, key: entry.key ?? null, quote: entry.quote ?? null })),
     alternatives: alternatives.slice(0, 5).map((entry) => ({ ref: entry.ref ?? null, label: entry.label ?? null,
       count: entry.count ?? null, total: entry.total ?? null })),
   };
