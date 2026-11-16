@@ -1360,9 +1360,9 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         observation.result = { ...observation.result, callbackNoop: true };
         return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
       }
+      if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
       // Fail closed before any persistent callback can be authorized: the staged price above excludes them.
       if (!callbackPriceBeforeWriteAvailable()) return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: callbackFields(plan) };
-      if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
       if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
       const planDigest = sha256(plan);
       const recoveryBaseline = { ...stagedBaseline, beforeChildAges: beforeAges,
@@ -1579,6 +1579,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
             key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
           canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+      // A stale stay lookup can hide a live guarantee change; its Go-time callback is not in this staged price.
+      if (typeof changes.guaranteeType === 'string' && changes.guaranteeType !== recoveryBaseline.beforeGuaranteeCode) {
+        return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: ['guaranteeType'] };
+      }
       if (!mealPlanVerified(loaded.draft!, compiled, native)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(loaded.draft!, compiled, native) };
       const preserved = afterPreserved;
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
@@ -1589,6 +1593,9 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) {
       if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      if ('finishInHmsFields' in prepared && Array.isArray(prepared.finishInHmsFields)) {
+        return { status: 'unsupported', issue: prepared.issue, fields: prepared.finishInHmsFields };
+      }
       return { status: 'failed', issue: prepared.issue };
     }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
@@ -2299,6 +2306,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       !mealPlanVerified(loaded.draft, compiled, preparedResult) ||
       typeof preparedResult.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preparedResult.nativeDigest)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
+  }
+  if (typeof nativeChanges.guaranteeType === 'string' &&
+      nativeChanges.guaranteeType !== record(preparedResult.recoveryBaseline)?.beforeGuaranteeCode) {
+    return { status: 'unsupported', issue: CALLBACK_FINISH_IN_HMS, fields: ['guaranteeType'] };
   }
   if (amendMode(ctx) === 'off') return { status: 'refused', issue: 'amend_save_unavailable' };
   const locked = targetWriteLock(ctx, compiled.selected);
