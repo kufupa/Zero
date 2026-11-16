@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { getQuoteOutput, quoteCoverHtml, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
-import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import { useEffect, useRef, useState } from 'react';
+import { quoteCoverHtml, type QuoteOutput, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
+import { quoteReplyLabel } from '@/lib/reservation-workflow/pane-stage';
+import type { ReservationPaneSnapshot } from '@/lib/reservation-workflow/types';
 import styles from './reservation-pane.module.css';
 
 export type SaveQuoteOutput = (input: { snapshot: ReservationPaneSnapshot; requestId: string; html: string;
@@ -23,43 +24,48 @@ function failureMessage(code: string): string {
   }
 }
 
-export function QuoteOutputPanel({ source, configuration, snapshot, requestId, save, latestSnapshot, readyForReply, blocked }: {
-  source: ReservationSourceContext; snapshot: ReservationPaneSnapshot; requestId: string;
-  configuration: PropertyConfiguration | null;
-  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; blocked: boolean;
+export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnapshot, readyForReply, onSaved, blocked }: {
+  output: QuoteOutput | null; snapshot: ReservationPaneSnapshot; requestId: string;
+  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; onSaved(operationId: string | null): void; blocked: boolean;
 }) {
-  const output = getQuoteOutput(source, snapshot, requestId, configuration);
   const [body, setBody] = useState(output?.cover?.body ?? '');
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
-  useEffect(() => { setBody(output?.cover?.body ?? ''); setMessage(null); }, [output?.operationId]);
+  // Success text is cleared by later edits; failure or uncertain-outcome warnings stay until the next save.
+  const [message, setMessage] = useState<{ text: string; saved: boolean } | null>(null);
+  const bodyVersion = useRef(0);
+  useEffect(() => { bodyVersion.current += 1; onSaved(null); setBody(output?.cover?.body ?? ''); setMessage(null);
+    return () => { bodyVersion.current += 1; };
+  }, [output?.operationId, onSaved]);
   if (!output) return null;
   const saveReply = async () => {
     if (!save || busy || blocked || !readyForReply()) return;
-    setBusy(true); setMessage(null);
+    const version = bodyVersion.current;
+    onSaved(null); setBusy(true); setMessage(null);
     try {
       const result = await save({ snapshot, requestId, html: quoteCoverHtml(body), isCurrentSnapshot: () => {
         const current = latestSnapshot();
         return readyForReply() && current?.sourceMessageId === snapshot.sourceMessageId && current.session.seq === snapshot.session.seq
           && current.session.draft.generationId === snapshot.session.draft.generationId;
       } });
-      setMessage(result.message);
-    } catch { setMessage('The reply could not be confirmed. Check Drafts before trying again.'); }
+      const saved = result.status === 'saved' || result.status === 'created';
+      if (!saved) setMessage({ text: result.message, saved: false });
+      else if (version === bodyVersion.current) { setMessage({ text: result.message, saved: true }); onSaved(output.operationId); }
+      else setMessage({ text: 'An earlier version was saved. Save the edited reply when ready.', saved: false });
+    } catch { setMessage({ text: 'The reply could not be confirmed. Check Drafts before trying again.', saved: false }); }
     finally { setBusy(false); }
   };
   return <section className={styles.section}><h3>{output.inventoryDecline ? 'Unsent room-unavailability reply'
-    : output.cover ? 'Unsent quote reply' : 'Quote files'}</h3>
+    : output.cover ? 'Quote files and unsent reply' : 'Quote files for download'}</h3>
+    <p className={styles.small}>{output.artifacts.length ? 'Download the available files below. ' : ''}{output.cover ? `${quoteReplyLabel(output)} puts the reply and available files in your Drafts folder. The client receives nothing until you send it from your mail.` : 'Nothing has been sent to the client.'}</p>
     {output.issues.map(issue => <p className={styles.notice} key={issue}>{issue}</p>)}
     {output.inventoryDecline && <p className={styles.notice}>Infor confirmed the selected room and rate had no rooms available for every requested night. This is not a whole-hotel sold-out claim. No priced PDF or Excel quote was created; nothing has been sent.</p>}
     {output.failures.map(failure => <p className={styles.notice} key={failure}>{failureMessage(failure)}</p>)}
-    {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => setBody(event.target.value)} rows={6} /></label></>}
+    {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => { bodyVersion.current += 1; onSaved(null); setMessage(current => current?.saved ? null : current); setBody(event.target.value); }} rows={6} /></label></>}
     <div className={styles.sources}>{output.artifacts.map(artifact => <a key={artifact.sha256} download={artifact.fileName}
       href={`data:${artifact.mimeType};base64,${artifact.bytesBase64}`}>{artifact.fileName}</a>)}</div>
     {output.cover && <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>
-      {busy ? 'Saving reply…' : output.inventoryDecline ? 'Save unsent decline reply'
-        : output.failures.length && !output.artifacts.length ? 'Save unsent reply without quotation files'
-        : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply'}
+      {busy ? 'Saving reply…' : quoteReplyLabel(output)}
     </button>}
-    {message && <p role="status" className={styles.notice}>{message}</p>}
+    {message && <p role="status" className={styles.notice}>{message.text}</p>}
   </section>;
 }

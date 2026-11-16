@@ -126,3 +126,10 @@
 .autopickOptions button small { flex:none; color:var(--muted); font-size:10.5px; }
 :global(.dark) .pane .autopick { --pick-ink:#9ad3ac; --pick-bg:#1d3326; --pick-line:#2f5a3e; }
 :global(.dark) .pane .autopick[data-autopick=check] { --pick-ink:#f0c47a; --pick-bg:#3a2d14; --pick-line:#6b5222; }
+
+.stage { font-size:11px; line-height:1.3; max-height:min(120px, 25vh); overflow:auto; }
+.stage ol { display:flex; flex-wrap:wrap; gap:3px 8px; padding:0; margin:0 0 5px; list-style:none; }
+.stage li { color:var(--muted); }
+.stage li[data-state=done] { color:#35764c; }
+.stage li[data-state=current] { color:var(--ink); font-weight:700; }
+.stage p { margin:2px 0; }
