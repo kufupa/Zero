@@ -1,6 +1,6 @@
 /** Server access guard for the configured executive dashboard metrics. */
 import { TRPCError } from '@trpc/server';
-import { NAVA_USER_EMAIL } from '../db/seed.js';
+import { NAVA_USER_EMAIL, ROPPERMAN_USER_EMAIL } from '../db/seed.js';
 
 export type AdminDashboardCohort = 'centurion' | 'research';
 export type AdminDashboardGrantKind = 'aggregate' | 'drilldown' | 'export';
@@ -14,7 +14,7 @@ export type AdminDashboardGrant = {
 };
 
 /** Allowlist, not mailbox_access role, because admin is app-wide not per-mailbox. */
-export const ADMIN_DASHBOARD_EMAILS = [NAVA_USER_EMAIL] as const;
+export const ADMIN_DASHBOARD_EMAILS = [NAVA_USER_EMAIL, ROPPERMAN_USER_EMAIL] as const;
 
 function normalizeEmail(email: string | null | undefined): string {
   return (email ?? '').trim().toLowerCase();
