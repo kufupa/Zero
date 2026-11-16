@@ -217,6 +217,12 @@ NODE
     'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health && curl --disable --noproxy "*" -fsS --connect-to "nava-admin.trynava.io:8443:172.31.12.112:8443" -H "Host: nava-admin.trynava.io" "http://nava-admin.trynava.io:8443/" >/dev/null'
 
   step_finish
+  echo "== ops-deploy: Centurion quote gate =="
+  step_mark 'ops-deploy: Centurion quote gate'
+  remote_bound \
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero/apps/server-pilot && timeout 420s node deploy/quote-runtime-gate.mjs ${Q_EXPECTED_DEPLOY_SHA} || { echo 'ops-deploy: Centurion quote gate failed; deploy is not ready' >&2; exit 20; }"
+
+  step_finish
   echo "== ops-deploy: read last-good deploy marker =="
   step_mark 'ops-deploy: read last-good deploy marker'
   # A failed SSM read must not stop the deploy: the empty result falls back to the 24-hour window below.
