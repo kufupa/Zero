@@ -6384,7 +6384,9 @@ export async function runReservationWorkflowV2Prefill(input: {
   }
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction: candidateExtraction,
     propertyCode, source: input.source });
-  const plan = completePlan.slice(0, MAX_CANDIDATE_READS);
+  const cappedPlan = completePlan.slice(0, MAX_CANDIDATE_READS);
+  const plan = [...cappedPlan.filter((candidate) => candidate.kind === 'mail_candidate'),
+    ...cappedPlan.filter((candidate) => candidate.kind !== 'mail_candidate')];
   const budgetSignal = AbortSignal.timeout(CANDIDATE_READ_START_BUDGET_MS);
   const readSignal = input.signal ? AbortSignal.any([input.signal, budgetSignal]) : budgetSignal;
   let readCandidate = input.readCandidate;

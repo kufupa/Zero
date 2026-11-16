@@ -451,8 +451,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
         await tx.update(workItem).set({ state: itemRow.state, updatedAt: new Date() }).where(eq(workItem.id, itemRow.id));
       }
       const current = await buildResult(tx, ctx, itemRow, input.source, input.allowSourceChanged);
-      const recovered = await recoverSourceFields(tx, itemRow, current);
-      return releaseDisabledHrdavPrefill(tx, ctx, itemRow, recovered);
+      return recoverSourceFields(tx, itemRow, current);
     }
     if (hasReservationWorkflowV2Draft(itemRow.state)) return { status: 'invalid_state' as const };
     const evidenceHash = (await reservationArrivalEvidence(tx, input.source.messageId)).hash;
@@ -550,7 +549,8 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
       ...(nativeResume && run.heartbeatAt ? { interruptedHeartbeatAt: run.heartbeatAt.toISOString() } : {}) };
     await tx.update(aiWorkflowRun).set({ state: 'queued', nextRunAt: new Date(), deadlineAt: null,
       claimOwner: null, claimToken: null, finishedAt: null, lastError: null, failureClass: null,
-      metrics, updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
+      // Staff asked for this retry: claim it ahead of admission work (priority 1).
+      priority: Math.max(run.priority, 2), metrics, updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { ...meta,
       status: meta.status === 'running' ? 'running' : 'queued', jobRunId: run.id } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
@@ -558,32 +558,6 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
     return { ...current, draft };
   });
 }
-async function releaseDisabledHrdavPrefill(tx: WorkTx, ctx: Context, item: ItemRow,
-  current: ReservationWorkflowV2StateResult): Promise<ReservationWorkflowV2StateResult> {
-  if (ctx.propertyCode !== 'HRDAV' || (process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' &&
-      process.env.RESERVATION_V2_ARRIVAL_PREFILL_HRDAV === 'on') || current.status !== 'ok' || current.sourceChanged)
-    return current;
-  const meta = current.draft.prefill;
-  if (!meta?.jobRunId || !['queued', 'running'].includes(meta.status)) return current;
-  const [run] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun)
-    .where(and(eq(aiWorkflowRun.id, meta.jobRunId), eq(aiWorkflowRun.runKind, 'reservation_prefill'),
-      eq(aiWorkflowRun.transportId, ctx.transportId), eq(aiWorkflowRun.threadId, current.draft.source.threadId),
-      eq(aiWorkflowRun.triggerMessageId, current.draft.source.messageId))).limit(1).for('update');
-  if (!run) return current;
-  // Fence the old worker before handing an untouched generation back to the pane.
-  await tx.update(aiWorkflowRun).set({ state: 'superseded', claimOwner: null, claimToken: null,
-    finishedAt: new Date(), updatedAt: new Date(), lastError: 'HRDAV arrival prefill disabled' })
-    .where(and(eq(aiWorkflowRun.id, run.id), inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait'])));
-  const intervened = Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
-    current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq);
-  const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
-    prefill: intervened ? { ...meta, status: 'superseded', finishedAt: new Date().toISOString() }
-      : { status: 'idle', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: null, evidenceHash: meta.evidenceHash } });
-  await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
-    updatedAt: new Date() }).where(eq(workItem.id, item.id));
-  return { ...current, draft };
-}
-
 function prefillSnapshot(draft: ReservationWorkflowV2Draft): string {
   const { prefill: _prefill, ...rest } = draft;
   return createHash('sha256').update(JSON.stringify(rest)).digest('hex');
@@ -607,12 +581,10 @@ export async function claimReservationWorkflowV2Prefill(ctx: Context, input: Mut
     if (input.jobFence && !evidenceHash) return { result: { status: 'stale_revision' as const } };
     const item = await loadItem(tx, ctx, input.workItemId, true);
     if (!item) return { result: { status: 'not_found' as const } };
-    const loaded = await buildResult(tx, ctx, item, input.source);
-    if (loaded.status !== 'ok') return { result: loaded };
+    const current = await buildResult(tx, ctx, item, input.source);
+    if (current.status !== 'ok') return { result: current };
     if (item.revision !== input.expectedRevision || item.revisionSeq !== input.expectedSeq)
       return { result: { status: 'stale_revision' as const } };
-    const current = input.jobFence ? loaded : await releaseDisabledHrdavPrefill(tx, ctx, item, loaded);
-    if (current.status !== 'ok') return { result: current };
     // Older untouched fallback drafts predate prefill metadata. Give those one
     // guarded retry; successful and staff-edited legacy drafts stay untouched.
     const meta = current.draft.prefill ?? (input.allowRetry && retryablePrefill(current.draft)

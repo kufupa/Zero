@@ -40,7 +40,7 @@ function validateReleaseControl(key, value) {
       'PANE_WRITE_CANCEL_UNPAID', 'PANE_WRITE_CANCEL_PAID', 'PANE_WRITE_ATTACH'], ['off', 'lab', 'on']],
     [['PANE_HMS_LAB_CREATE_WORKER', 'PANE_HMS_LAB_ATTACH_WORKER', 'PANE_HMS_LAB_AMEND_WORKER',
       'PANE_CLOUD_CREATE_DISPATCH', 'HMS_JOB_QUEUE', 'HMS_AVAILABILITY_PREFETCH',
-      'LEGACY_INBOUND_TRIAGE_PIPELINE', 'RESERVATION_V2_ARRIVAL_PREFILL', 'RESERVATION_V2_ARRIVAL_PREFILL_HRDAV', 'PANE_STAY_LOOKUP'], ['off', 'on']],
+      'LEGACY_INBOUND_TRIAGE_PIPELINE', 'RESERVATION_V2_ARRIVAL_PREFILL', 'PANE_STAY_LOOKUP'], ['off', 'on']],
     [['HMS_PREFETCH_ENABLED', 'HMS_LANE_PAUSED', 'PARTY_MATCH_V2'], ['true', 'false', '1', '0']],
     [['HMS_QUOTE_PREPARE'], ['true', 'false', '1', '0', 'on', 'off']],
   ];
@@ -88,7 +88,6 @@ try {
   for (const key of allowlist) {
     const value = values.get(key);
     validateReleaseControl(key, value);
-    if (key === 'RESERVATION_V2_ARRIVAL_PREFILL_HRDAV' && value !== 'on') continue;
     if (key === 'PANE_BRAIN' && value && !['agent', 'classifier'].includes(value)) {
       throw new Error('invalid');
     }

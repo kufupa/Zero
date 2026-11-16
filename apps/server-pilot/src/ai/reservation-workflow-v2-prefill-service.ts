@@ -111,14 +111,13 @@ export async function executeReservationArrival(input: {
   run: AiWorkflowRun; fence: AiRunFence; signal: AbortSignal; db: DB;
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
   const { run, fence, db, signal } = input;
-  const resolved = resolvePropertyTransport(run.transportId);
-  if (!reservationArrivalEnabled() || (resolved.kind === 'property' &&
-      resolved.property.propertyCode === 'HRDAV' && !reservationArrivalEnabled('HRDAV'))) {
+  if (!reservationArrivalEnabled()) {
     const deferred = await markAiRunRetry({ ...fence, expectedStates: ['running'], attempts: run.attempts,
       nextRunAt: new Date(Date.now() + 5 * 60_000), lastError: 'arrival prefill disabled',
       failureClass: 'POLICY_BLOCK', resetDeadline: true }, db);
     return deferred ? 'retry_wait' : 'dead_letter';
   }
+  const resolved = resolvePropertyTransport(run.transportId);
   const [row] = await db.select({ id: message.id, threadId: message.threadId, subject: message.subject,
     textBody: message.textBody, htmlBody: message.htmlBody, fromAddress: message.fromAddress,
     arrivedAt: MESSAGE_ARRIVED_AT, mailboxAddress: mailboxTransport.email }).from(message)
@@ -132,7 +131,7 @@ export async function executeReservationArrival(input: {
   const origin = resolved.kind === 'property' && resolved.property.propertyCode === 'HRDAV'
     ? { ok: true } : await guardCenturionHmsMailboxOrigin({ transportId: run.transportId,
       threadId: run.threadId, messageId: run.triggerMessageId });
-  if (resolved.kind !== 'property' || !reservationArrivalEnabled(resolved.property.propertyCode) || !origin.ok || !row ||
+  if (resolved.kind !== 'property' || !['HRCEN', 'HRDAV'].includes(resolved.property.propertyCode) || !origin.ok || !row ||
       typeof sourceHash !== 'string' || typeof evidenceHash !== 'string' || typeof arrivedAt !== 'string' || !row.arrivedAt ||
       (await reservationArrivalEvidence(db, run.triggerMessageId)).hash !== evidenceHash ||
       row.arrivedAt.toISOString() !== arrivedAt || staffQuoteSourceHash(row) !== sourceHash) {
