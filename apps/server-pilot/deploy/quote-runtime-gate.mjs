@@ -43,11 +43,12 @@ try {
   const example = JSON.parse(readFileSync('tooling/hms-cloud/examples/v2-broad.json', 'utf8'));
   const request = { ...example, arrivalDate: date(30), departureDate: date(31),
     rooms: [{ ...example.rooms[0], adults: 1, required: { mealPlanBases: ['breakfast'] } }],
-    search: { salesStrategy: 'BAR', includeRestricted: false, includeAlternatives: true }, details: 'full', maxOptionsPerGroup: 1 };
+    search: { salesStrategy: 'BAR', includeRestricted: false, includeAlternatives: true }, details: 'full', maxOptionsPerGroup: 200 };
   const normalized = normalizeQuoteRequest(request);
   if (!normalized.ok) throw new Error();
   const started = Date.now(), signal = AbortSignal.timeout(360000);
-  const read = () => fetchQuote({ request, propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: config.outputDir, signal });
+  const read = () => fetchQuote({ request, propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: config.outputDir,
+    signal, env: { ...process.env, QUOTE_DETAIL_BUDGET_MS: '10000' } });
   const busy = result => result.outcome === 'execution_failure' && result.phase === 'login' && result.error?.message === 'HMS_CREDENTIAL_LEASE_CONTENDED';
   let result = await read();
   if (busy(result)) {
