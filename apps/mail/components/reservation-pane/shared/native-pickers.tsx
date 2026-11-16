@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties
 import { autoTransferHistory, effectiveAt, hasCompleteNativeCatalogue, nativeChoices, nativeRecommendationLeads, partialNativeLeads, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import styles from '../reservation-pane.module.css';
 import { FieldReview, FieldSource } from './stay-fields';
+import { AutopickPanel, autopickSuggestion } from './autopick-evidence';
 
 const leadBlockReason: Record<string, string> = {
   support_below_min: 'Fewer than two prior stays', purity_below_threshold: 'History is inconsistent',
@@ -204,6 +205,23 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedVerified = entity && editor.snapshot.session.draft.observations.find(observation => observation.ref === selectedRef &&
     record(observation.criteria).kind === 'verified_native_row' && choices.some(choice => choice.ref === observation.ref));
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
+  // Host auto-pick (contract v1): evidence expander + Read tick replace the right-side confirm for this field.
+  const suggestion = autopickSuggestion(editor.snapshot, editor.request.id, selectionPath);
+  const staffSet = Object.entries(editor.snapshot.session.draft.fieldOverrides).some(([key, value]) => value.state !== 'inherit' &&
+    [path, selectionPath].some(target => target === key || target.startsWith(`${key}/`) || (party && key.startsWith(`${path}/`))));
+  const suggestionCurrent = entity ? typeof selectedRef === 'string' ? selectedRef : '' : saved;
+  const chooseSuggested = async (option: { ref: string; label: string }) => {
+    if (!entity) { await choose(option.ref, option.ref, option.label); return; }
+    if (party && editor.request.kind !== 'quote') {
+      // Create/Amend bind a party only when its name matches the Infor row; set the row's name first.
+      const row = record(editor.snapshot.session.draft.observations.find(observation => observation.ref === option.ref)?.result);
+      const candidate = record(Array.isArray(row.candidates) && row.candidates.length === 1 ? row.candidates[0] : row);
+      const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : option.label;
+      if (normalized(text(valueAt(editor.snapshot, `${path}/name`))) !== normalized(name))
+        await editor.commands.edit(path, { name, candidateRefs: [], suggestedRef: null });
+    }
+    await choose(option.ref, option.ref, option.label);
+  };
   const staleIdentity = Boolean(entity && selectedRef && !selectedChoice);
   const staleCode = Boolean(!entity && catalogueField && saved && !selectedChoice &&
     hasCompleteNativeCatalogue(editor.snapshot, path, choiceKind));
@@ -233,7 +251,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     if (bounds.bottom > bottom) menu.scrollTop += Math.ceil(bounds.bottom - bottom);
     else if (bounds.top < top) menu.scrollTop -= Math.ceil(top - bounds.top);
   }, [activeId, recommendations.length]);
-  return <div data-field-path={path} className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && <FieldSource editor={editor} path={path} label={label} />}</div><div ref={pickerRef} className={`${styles.picker} ${styles.controlSlot}`}>
+  return <div data-field-path={path} className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && !suggestion && <FieldSource editor={editor} path={path} label={label} />}</div><div ref={pickerRef} className={`${styles.picker} ${styles.controlSlot}`}>
     <div className={styles.pickerInput}><input id={id} role="combobox" aria-expanded={open} aria-controls={`${id}-options`} aria-autocomplete="list"
       aria-activedescendant={activeId}
       value={display} disabled={disabled || reviewing} onFocus={openChoices} onClick={openChoices} placeholder={guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
@@ -307,5 +325,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     {staleIdentity && <small role="alert">The selected Infor match changed. Choose a current match or search again.</small>}
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
-    {compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
+    {suggestion ? <AutopickPanel editor={editor} suggestion={suggestion} selectionPath={selectionPath} label={label}
+      isPick={suggestionCurrent === (entity ? suggestion.ref : suggestion.value)} changed={staffSet} currentValue={suggestionCurrent}
+      onChoose={chooseSuggested} disabled={disabled} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />
+      : compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
 }
