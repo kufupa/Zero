@@ -56,6 +56,20 @@ const isParty = (value: unknown) => { const row = object(value);
 const isChange = (value: unknown) => typeof object(value)?.op === 'string';
 const decode = (part: string) => { try { return decodeURIComponent(part); } catch { return part; } };
 
+function canonicalPath(proposal: unknown, path: string): string {
+  const parts = path.split('/').slice(1);
+  if (parts[0] !== 'proposal' || parts[1] !== 'content') return path;
+  const collection = object(object(proposal)?.content)?.[parts[2] ?? ''];
+  if (!Array.isArray(collection)) return path;
+  const key = decode(parts[3] ?? '');
+  const row = collection.find((entry) => object(entry)?.id === key) ??
+    (/^\d+$/u.test(key) ? collection[Number(key)] : undefined);
+  const id = object(row)?.id;
+  if (typeof id !== 'string') return path;
+  parts[3] = encodeURIComponent(id);
+  return `/${parts.join('/')}`;
+}
+
 /** Row key for a staff path: party name / native selection edits belong to the party (or guest) field. */
 export function rowPathOf(path: string): string {
   const change = /^(\/proposal\/content\/requests\/[^/]+\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+))(?:\/|$)/u.exec(path);
@@ -79,6 +93,11 @@ function walk(root: unknown, path: string, overrides: Overrides): unknown {
 
 /** Effective value with staff overrides, including overrides on children (the pane's effectiveAt). */
 export function effectiveValueAt(draft: PaneDraft, path: string, depth = 0): unknown {
+  if (depth === 0) {
+    draft = { ...draft, fieldOverrides: Object.fromEntries(Object.entries(draft.fieldOverrides)
+      .map(([key, override]) => [canonicalPath(draft.proposal, key), override])) };
+  }
+  path = canonicalPath(draft.proposal, path);
   const raw = walk(draft, path, draft.fieldOverrides);
   if (depth > 12) return raw;
   const direct = draft.fieldOverrides[path];
@@ -157,17 +176,29 @@ function readbackValue(nativeReadback: unknown, key: string): unknown {
 }
 
 /** Pane state (proposal + overrides) at one draft revision, from the event log's before/after snapshots. */
-function paneAtRevision(draft: Draft, events: TraceEvent[], revision: number): PaneDraft | null {
+function paneAtRevision(draft: Draft, events: TraceEvent[], operation: Draft['operationResults'][number]): PaneDraft | null {
+  const revision = operation.draftRevision;
   const pane = (state: unknown): PaneDraft | null => {
     const v2 = object(object(state)?.[KEY]);
-    return v2 ? { proposal: v2.proposal ?? draft.proposal, fieldOverrides: (object(v2.fieldOverrides) ?? {}) as Overrides } : null;
+    return v2?.proposal ? { proposal: v2.proposal, fieldOverrides: (object(v2.fieldOverrides) ?? {}) as Overrides } : null;
   };
   const evidence = (event: TraceEvent) => object(event.evidence);
-  const at = [...events].reverse().find((event) => evidence(event)?.paneRevision === revision);
-  if (at) return pane(evidence(at)!.paneState);
-  const next = events.find((event) => evidence(event)?.paneRevision === revision + 1);
-  if (next) return pane(evidence(next)!.previousPaneState);
-  return draft.revision === revision ? { proposal: draft.proposal, fieldOverrides: draft.fieldOverrides } : null;
+  const intent = events.find((event) => event.fieldPath === 'nava.hms.labtest.dispatch.v1' &&
+    object(event.value)?.kind === 'intent' && object(event.value)?.grantId === operation.id &&
+    object(event.value)?.sourceDigest === draft.source.sourceHash);
+  const cutoff = intent?.at.getTime() ?? Date.parse(operation.updatedAt);
+  const sequences = [...new Set(events.filter((event) => event.fieldPath === `${PREFIX}operationResults:${operation.id}` &&
+    event.at.getTime() <= cutoff && object(event.value)?.workflow === operation.workflow &&
+    ['unknown', 'succeeded'].includes(String(object(event.value)?.status)) && evidence(event)?.sourceHash === draft.source.sourceHash)
+    .map((event) => evidence(event)?.seq).filter((seq): seq is number => typeof seq === 'number' && Number.isInteger(seq) && seq >= 0))];
+  if (sequences.length > 1) return null;
+  const seq = sequences[0];
+  const at = events.filter((event) => event.at.getTime() <= cutoff && evidence(event)?.paneRevision === revision &&
+    (seq === undefined || evidence(event)?.paneSeq === seq));
+  if (at.length) return at.length === 1 ? pane(evidence(at[0]!)!.paneState) : null;
+  const next = events.filter((event) => evidence(event)?.paneRevision === revision + 1 &&
+    (seq === undefined ? event.at.getTime() <= cutoff : evidence(event)?.paneSeq === seq + 1));
+  return next.length === 1 ? pane(evidence(next[0]!)!.previousPaneState) : null;
 }
 
 export function fieldTraceRows(input: {
@@ -175,6 +206,8 @@ export function fieldTraceRows(input: {
   draft: Draft; events: TraceEvent[]; users: Map<string, string>;
 }): Record<string, unknown>[] {
   const { item, draft, users } = input;
+  const fieldPath = (path: string) => canonicalPath(draft.proposal, path);
+  const rowPath = (path: string) => rowPathOf(fieldPath(path));
   // Current generation only: traced events carry their generation; older ones count from the last source rebind.
   const rebind = input.events.filter((event) => event.fieldPath === `${PREFIX}source`).at(-1)?.at.getTime() ?? 0;
   const events = input.events.filter((event) => {
@@ -198,7 +231,7 @@ export function fieldTraceRows(input: {
   const activity = [...Object.keys(draft.fieldOverrides), ...Object.keys(draft.staffReviews),
     ...fieldEvents.map((event) => event.fieldPath!.slice(PREFIX.length)),
     ...suggestions.map((row) => String(row.criteria.selectionPath))];
-  for (const path of activity) if (path.startsWith('/proposal/content/') && path.split('/').length > 5) paths.add(rowPathOf(path));
+  for (const path of activity) if (path.startsWith('/proposal/content/') && path.split('/').length > 5) paths.add(rowPath(path));
 
   const operations = draft.operationResults.filter((row) => row.generationId === draft.generationId &&
     (row.status === 'succeeded' || row.status === 'unknown'))
@@ -208,23 +241,24 @@ export function fieldTraceRows(input: {
   const rows: Record<string, unknown>[] = [];
   for (const path of [...paths].sort()) {
     const scope = scopeOf(draft, path);
-    const mine = (eventPath: string | null) => Boolean(eventPath && rowPathOf(eventPath.slice(PREFIX.length)) === path);
+    const mine = (eventPath: string | null) => Boolean(eventPath && rowPath(eventPath.slice(PREFIX.length)) === path);
     const own = fieldEvents.filter((event) => mine(event.fieldPath));
     const edits = own.filter((event) => event.type !== 'field.accept');
     const ticks = own.filter((event) => event.type === 'field.accept');
     const firstTraced = own.find((event) => object(object(event.evidence)?.trace));
     const firstEvent = own[0];
     const priorPane = firstEvent ? object(object(object(firstEvent.evidence)?.previousPaneState)?.[KEY]) : null;
-    const prefill = firstTraced && firstTraced.fieldPath === `${PREFIX}${path}` ? firstTraced.aiValue
+    const prefill = firstTraced && fieldPath(firstTraced.fieldPath!.slice(PREFIX.length)) === path ? firstTraced.aiValue
       : prefillValueAt(priorPane?.proposal ? { proposal: priorPane.proposal as Draft['proposal'] } : draft, path);
     const final = effectiveValueAt(draft, path);
     // Own overrides (incl. a party's name / native selection) and whole-object overrides above this field.
-    const overridePaths = Object.keys(draft.fieldOverrides).filter((key) => rowPathOf(key) === path || path.startsWith(`${key}/`));
+    const overridePaths = Object.keys(draft.fieldOverrides).filter((key) => rowPath(key) === path || path.startsWith(`${fieldPath(key)}/`));
     const overridden = overridePaths.some((key) => draft.fieldOverrides[key]!.state !== 'inherit');
-    const reviewKeys = Object.keys(draft.staffReviews).filter((key) => rowPathOf(key) === path);
+    const reviewKeys = Object.keys(draft.staffReviews).filter((key) => rowPath(key) === path);
     const accepted = reviewKeys.some((key) => draft.staffReviews[key]!.status === 'accepted');
-    const suggestion = suggestions.find((row) => rowPathOf(String(row.criteria.selectionPath)) === path);
-    const annotation = draft.proposal.annotations.filter((row) => row.path === path || path.startsWith(`${row.path}/`))
+    const suggestion = suggestions.find((row) => rowPath(String(row.criteria.selectionPath)) === path);
+    const requirement = Object.entries(draft.fieldReviewRequirements).find(([key]) => fieldPath(key) === path)?.[1];
+    const annotation = draft.proposal.annotations.filter((row) => fieldPath(row.path) === path || path.startsWith(`${fieldPath(row.path)}/`))
       .sort((left, right) => right.path.length - left.path.length)[0];
     const allocation = /\/allocations\/([^/]+)\//u.exec(path)?.[1];
     const request = draft.proposal.content.requests.find((row) => row.id === scope.requestId);
@@ -233,11 +267,12 @@ export function fieldTraceRows(input: {
     const targetId = request?.kind === 'create' && allocation ? request.body.allocations[Number(allocation)]?.id
       : request?.kind === 'amend' && perTarget ? request.body.perTarget[Number(perTarget)]?.hintId : null;
     const sectionId = request?.kind === 'create' && section ? request.body.dateSections[Number(section)]?.id : null;
-    const relatedOperations = operations.filter((row) => row.requestId === scope.requestId &&
+    const relatedOperations = operations.filter((row) => row.workflow === (scope.workflow === 'addons' ? 'services' : scope.workflow) &&
+      row.requestId === scope.requestId &&
       (!targetId || row.allocationId === targetId) && (!sectionId || request?.kind === 'create' &&
         request.body.allocations.some((item) => item.id === row.allocationId && item.dateSectionId === sectionId)));
     const op = relatedOperations.at(-1);
-    const sentPane = op ? paneAtRevision(draft, events, op.draftRevision) : null;
+    const sentPane = op ? paneAtRevision(draft, events, op) : null;
     const readbackObservation = op ? draft.observations.find((row) => op.observationRefs.includes(row.ref) &&
       object(row.result)?.nativeReadback !== undefined) : undefined;
     const readback = readbackObservation ? readbackValue(object(readbackObservation.result)!.nativeReadback, fieldKey(path, prefill ?? final)) : undefined;
@@ -250,7 +285,7 @@ export function fieldTraceRows(input: {
       property_code: draft.propertyCode, workflow: scope.workflow, request_id: scope.requestId,
       field_key: fieldKey(path, prefill ?? final), field_path: path,
       prefill: { value: prefill ?? null, basis: annotation?.basis ?? null,
-        review_required: draft.fieldReviewRequirements[path]?.required ??
+        review_required: requirement?.required ??
           (suggestion ? draft.fieldReviewRequirements[String(suggestion.criteria.selectionPath)]?.required : null) ?? null },
       suggestion: autopickSuggestionSummary(suggestion),
       staff: {
@@ -275,7 +310,7 @@ export function fieldTraceRows(input: {
         operation_status: op.status, workflow: op.workflow, draft_revision: op.draftRevision, at: op.updatedAt,
         reconstructed: Boolean(sentPane) } : null,
       sent_history: relatedOperations.map((operation) => {
-        const pane = paneAtRevision(draft, events, operation.draftRevision);
+        const pane = paneAtRevision(draft, events, operation);
         const intent = events.find((event) => event.fieldPath === 'nava.hms.labtest.dispatch.v1' &&
           object(event.value)?.kind === 'intent' && object(event.value)?.grantId === operation.id &&
           object(event.value)?.sourceDigest === draft.source.sourceHash);
