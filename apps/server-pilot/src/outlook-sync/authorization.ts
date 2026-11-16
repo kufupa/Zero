@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 
 export const hashSyncSecret = (value: string) => createHash('sha256').update(value).digest('hex');
 export class SyncDeniedError extends Error {
-  constructor(readonly reason = 'unspecified') {
+  constructor(readonly reason = 'unspecified', readonly fields?: string[], readonly roles?: boolean) {
     super('Outlook sync denied');
   }
 }

@@ -24,7 +24,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { SyncQuotaError } from './authorization.js';
 import { isExportEligible } from './eligibility.js';
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { reusableContent } from './content.js';
+import { differingSemanticFields, reusableContent } from './content.js';
 import type { DB } from '../db/client.js';
 import type { z } from 'zod';
 
@@ -495,12 +495,11 @@ export async function recordInventory(
           const old = obs.evidence as unknown as z.infer<
             typeof import('./contracts.js').syncObservationV1
           >;
-          if (
-            o.semanticReady &&
-            (stableJson(old.semantic) !== stableJson(o.semantic) ||
-              !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles))
-          )
-            throw new SyncDeniedError('inventory-item-conflict');
+          if (o.semanticReady) {
+            const fields = differingSemanticFields(old, o);
+            const roles = !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles);
+            if (fields.length || roles) throw new SyncDeniedError('inventory-item-conflict', fields, roles);
+          }
           await t
             .update(observationTable)
             .set({ evidence: { ...old, locator: o.locator } })
@@ -1000,9 +999,9 @@ export async function recordLiveHint(
           })
           .where(eq(observationTable.id, obs.id));
       } else {
-        if (stableJson(old.semantic) !== stableJson(o.semantic) ||
-            !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles))
-          throw new SyncDeniedError('live-item-conflict');
+        const fields = differingSemanticFields(old, o);
+        const roles = !sameDiscoveredRoles(old.requiredArtifactRoles, o.requiredArtifactRoles);
+        if (fields.length || roles) throw new SyncDeniedError('live-item-conflict', fields, roles);
         if (old.event.kind === 'inventory')
           await t
             .update(observationTable)
