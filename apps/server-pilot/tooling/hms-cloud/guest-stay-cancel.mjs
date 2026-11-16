@@ -86,7 +86,7 @@ function actionDeadline(page, timeoutMs, hooks) {
 
 async function cancellationFeeStageEvidence(frame) {
   try {
-    return await frame.evaluate(() => {
+    const captured = await frame.evaluate(() => {
       const visible = (element) => Boolean((element.offsetWidth || element.offsetHeight) &&
         getComputedStyle(element).visibility !== 'hidden');
       const windows = [...document.querySelectorAll('.x-window')].filter(visible);
@@ -104,19 +104,53 @@ async function cancellationFeeStageEvidence(frame) {
       const notes = [...document.querySelectorAll('textarea[name="cancellationnote"]')].filter(visible);
       const reasonDialogHasFeeText = ranked.some((item) => item.kind === 'reason' &&
         /penalt|fee|charge|deposit/i.test(item.element.innerText || ''));
+      const feeWindow = feeWindowCount === 1 ? ranked.find((item) => item.kind === 'fee')?.element : null;
+      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() ?? feeWindow?.innerText?.trim() ?? null;
+      const feeButtons = feeWindow ? [...feeWindow.querySelectorAll('.x-btn')].filter(visible) : [];
       return { visibleWindowCount: windows.length, feeWindowCount, reasonWindowCount, topWindowKind,
         reasonDialogHasFeeText, reasonControlCount: reasons.length,
         reasonControlEnabled: reasons.length === 1 && !reasons[0].disabled && !reasons[0].readOnly,
         noteControlCount: notes.length,
         noteControlEnabled: notes.length === 1 && !notes[0].disabled && !notes[0].readOnly,
-        feePromptMayObstructReason: feeWindowCount > 0 };
+        feePromptMayObstructReason: feeWindowCount > 0, feeDialogText,
+        feeButtonCount: feeButtons.length, feeButtonLabels: feeButtons.map((button) => button.innerText.trim()) };
     });
+    const { feeDialogText, feeButtonLabels, feeButtonCount, ...evidence } = captured ?? {};
+    return { ...evidence, ...feeDialogEvidence({ text: feeDialogText, buttonLabels: feeButtonLabels,
+      buttonCount: feeButtonCount, buttonSource: 'dom' }) };
   } catch { return null; }
+}
+
+const feeActionLabels = new Set(['OK', 'Yes', 'Accept']);
+function cancellationPenaltyNoticeText(value) {
+  if (typeof value !== 'string') return null;
+  const match = /Cancellation\s+Penalty\s+of\s+\d{1,12}\.\d{2}\s+may\s+be\s+added\s+to\s+account\./i.exec(value);
+  return match?.[0]?.replace(/\s+/g, ' ') ?? null;
+}
+
+function feeDialogEvidence({ text, buttonLabels = [], buttonCount = 0, buttonSource }) {
+  const feeLike = typeof text === 'string' && /penalt|fee|charge|deposit/i.test(text);
+  const noticeText = cancellationPenaltyNoticeText(text);
+  const notice = noticeText ? cancellationPenaltyNotice(noticeText) : null;
+  const observedLabels = Array.isArray(buttonLabels) ? buttonLabels.filter((label) =>
+    typeof label === 'string' && feeActionLabels.has(label.trim())) : [];
+  const buttonLabel = observedLabels.length === 1 && buttonCount === 1 ? observedLabels[0].trim() : null;
+  return {
+    penaltyNoticeValidated: notice !== null,
+    penaltyAmount: notice?.amount ?? null,
+    positivePenaltyObserved: Boolean(notice && !/^0+\.00$/.test(notice.amount)),
+    feeTiming: feeLike ? 'before_save' : null,
+    feeButtonLabel: buttonLabel,
+    feeButtonEvidence: !feeLike ? 'not_observed' : buttonSource === 'native_dialog'
+      ? 'browser_native_dialog_control_unavailable' : buttonLabel ? 'unique_visible_native_button'
+        : buttonCount === 0 ? 'no_visible_button' : 'ambiguous_or_unsupported_button',
+    feeButtonCount: Number.isSafeInteger(buttonCount) && buttonCount >= 0 ? buttonCount : null,
+  };
 }
 
 async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValue) {
   try {
-    return await frame.evaluate(({ expectedReason, noteValue }) => {
+    const captured = await frame.evaluate(({ expectedReason, noteValue }) => {
       const visible = element => Boolean((element.offsetWidth || element.offsetHeight) &&
         getComputedStyle(element).visibility !== 'hidden');
       const windows = [...document.querySelectorAll('.x-window')].filter(visible);
@@ -130,6 +164,9 @@ async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValu
       const topWindowKind = top.length === 1 ? top[0].kind : windows.length ? 'ambiguous' : 'none';
       const feeWindowCount = ranked.filter(item => item.kind === 'fee').length;
       const reasonWindowCount = ranked.filter(item => item.kind === 'reason').length;
+      const feeWindow = feeWindowCount === 1 ? ranked.find(item => item.kind === 'fee')?.element : null;
+      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() ?? feeWindow?.innerText?.trim() ?? null;
+      const feeButtons = feeWindow ? [...feeWindow.querySelectorAll('.x-btn')].filter(visible) : [];
       const reasons = [...document.querySelectorAll('input[name="cancelreason"]')].filter(visible);
       const notes = [...document.querySelectorAll('textarea[name="cancellationnote"]')].filter(visible);
       const evidence = { visibleWindowCount: windows.length, feeWindowCount, reasonWindowCount, topWindowKind,
@@ -139,7 +176,8 @@ async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValu
         reasonControlEnabled: reasons.length === 1 && !reasons[0].disabled && !reasons[0].readOnly,
         noteControlCount: notes.length,
         noteControlEnabled: notes.length === 1 && !notes[0].disabled && !notes[0].readOnly,
-        feePromptMayObstructReason: feeWindowCount > 0 };
+        feePromptMayObstructReason: feeWindowCount > 0, feeDialogText,
+        feeButtonCount: feeButtons.length, feeButtonLabels: feeButtons.map(button => button.innerText.trim()) };
       if (evidence.visibleWindowCount !== 1 || evidence.feeWindowCount !== 0 ||
           evidence.reasonWindowCount !== 1 || evidence.topWindowKind !== 'reason' ||
           evidence.reasonControlCount !== 1 || !evidence.reasonControlEnabled ||
@@ -152,6 +190,10 @@ async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValu
       noteComponent.fireEvent?.('blur', noteComponent);
       return { evidence, noteStaged: notes[0].value === noteValue && noteComponent.getValue?.() === noteValue };
     }, { expectedReason, noteValue });
+    const { feeDialogText, feeButtonLabels, feeButtonCount, ...evidence } = captured?.evidence ?? {};
+    return { evidence: { ...evidence, ...feeDialogEvidence({ text: feeDialogText,
+      buttonLabels: feeButtonLabels, buttonCount: feeButtonCount, buttonSource: 'dom' }) },
+      noteStaged: captured?.noteStaged === true };
   } catch { return { evidence: null, noteStaged: false }; }
 }
 
@@ -317,7 +359,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
         nativeDialogFeeLike: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
         nativeDialogTextLength: typeof dialog?.message === 'string' ? dialog.message.length : null,
         feeDialogVisible: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
-        reasonDialogVisible: false, reasonControlCount: null, noteControlCount: null },
+        reasonDialogVisible: false, reasonControlCount: null, noteControlCount: null,
+        ...feeDialogEvidence({ text: dialog?.message, buttonSource: 'native_dialog' }) },
     }) : ({ outcome: preChargeStarted ? 'fee_accepted_unconfirmed' :
       (preChargeText ?? seenChargeText) || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
       dialogOpenDispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
@@ -605,7 +648,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
         nativeDialogObserved: Boolean(dialog), nativeDialogType: dialog?.type ?? null,
         nativeDialogFeeLike: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
         nativeDialogTextLength: typeof dialog?.message === 'string' ? dialog.message.length : null,
-        feeDialogVisible: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) },
+        feeDialogVisible: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+        ...feeDialogEvidence({ text: dialog?.message, buttonSource: 'native_dialog' }) },
     }) : ({ outcome: chargeApproved ? 'fee_accepted_unconfirmed' :
       chargeText || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
       dispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,

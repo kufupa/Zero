@@ -257,6 +257,15 @@ function safeCancelStageEvidence(result) {
   const raw = result?.feeStageObservation && typeof result.feeStageObservation === 'object'
     ? result.feeStageObservation : {};
   const integer = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const validatedPenalty = typeof raw.penaltyAmount === 'string'
+    ? cancellationPenaltyNotice(`Cancellation Penalty of ${raw.penaltyAmount} may be added to account.`) : null;
+  const penaltyAmount = raw.penaltyNoticeValidated === true ? validatedPenalty?.amount ?? null : null;
+  const noDispatch = result?.requestDispatched === false && result?.chargeDispatched === false &&
+    result?.feeButtonClicked === false && result?.feeApprovalPerformed === false;
+  const feeButtonLabel = ['OK', 'Yes', 'Accept'].includes(raw.feeButtonLabel) ? raw.feeButtonLabel : null;
+  const feeButtonEvidence = ['not_observed', 'browser_native_dialog_control_unavailable', 'unique_visible_native_button',
+    'no_visible_button', 'ambiguous_or_unsupported_button'].includes(raw.feeButtonEvidence)
+    ? raw.feeButtonEvidence : 'not_observed';
   const kind = ['fee', 'reason', 'other', 'ambiguous', 'none'].includes(raw.topWindowKind) ? raw.topWindowKind : null;
   const state = ['native_dialog', 'unavailable'].includes(raw.state) ? raw.state : 'window_inspection';
   const stageWasRecorded = result?.outcome === 'preview_ok' && result.requestDispatched === false &&
@@ -292,7 +301,11 @@ function safeCancelStageEvidence(result) {
       topWindowKind: kind, reasonDialogHasFeeText: feeObservedInReason,
       reasonControlCount: integer(raw.reasonControlCount), reasonControlEnabled: raw.reasonControlEnabled === true,
       noteControlCount: integer(raw.noteControlCount), noteControlEnabled: raw.noteControlEnabled === true,
-      feePromptMayObstructReason: raw.feePromptMayObstructReason === true },
+      feePromptMayObstructReason: raw.feePromptMayObstructReason === true,
+      penaltyNoticeValidated: penaltyAmount !== null, penaltyAmount,
+      positivePenaltyObserved: Boolean(penaltyAmount && !/^0+\.00$/.test(penaltyAmount)),
+      feeTiming: noDispatch && raw.feeTiming === 'before_save' ? 'before_save' : null,
+      feeButtonLabel, feeButtonEvidence, feeButtonCount: integer(raw.feeButtonCount) },
   };
 }
 
