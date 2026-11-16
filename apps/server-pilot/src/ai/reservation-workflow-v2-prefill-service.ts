@@ -200,6 +200,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed, jobFence,
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
+        ...(generated.disposition ? { disposition: generated.disposition } : {}),
         proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch (error) {

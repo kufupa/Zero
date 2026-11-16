@@ -27,6 +27,7 @@ import {
   reservationWorkflowV2ExtractionSchema,
   reservationWorkflowV2FieldOverrideSchema,
   reservationWorkflowV2ObservationSchema,
+  type ReservationWorkflowV2Disposition,
   type ReservationWorkflowV2Draft,
   type ReservationWorkflowV2Extraction,
   type ReservationWorkflowV2Observation,
@@ -87,7 +88,7 @@ function invalidatePropertyDraft(prior: ReservationWorkflowV2Draft, input: {
   return reservationWorkflowV2DraftSchema.parse({ ...prior, ...(input.propertyCode ? { propertyCode: input.propertyCode } : {}),
     ...(input.source ? { source: input.source } : {}), generationId: input.generationId, revision: input.revision,
     status: 'partial', proposal: withoutPropertyNativeSelections(prior.proposal, observations), observations: [],
-    fieldReviewRequirements: {}, staffReviews: {}, fieldOverrides,
+    disposition: undefined, fieldReviewRequirements: {}, staffReviews: {}, fieldOverrides,
     operationResults: prior.operationResults.filter((result) => result.status !== 'prepared'),
     prefill: { status: 'superseded', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: input.at,
       ...(prior.prefill?.evidenceHash ? { evidenceHash: prior.prefill.evidenceHash } : {}) },
@@ -120,6 +121,7 @@ export type ReservationWorkflowV2Seed = {
   generationId?: string;
   status: ReservationWorkflowV2Draft['status'];
   extraction?: ReservationWorkflowV2Extraction;
+  disposition?: ReservationWorkflowV2Disposition;
   proposal: ReservationWorkflowV2Proposal;
   observations: ReservationWorkflowV2Observation[];
   fieldReviewRequirements?: ReservationWorkflowV2Draft['fieldReviewRequirements'];
@@ -683,7 +685,9 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
       current.draft.generationId !== input.claim.generationId || extractionGenerationMismatch ||
       prefillSnapshot(current.draft) !== input.claim.snapshot ||
       await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq);
-    const checking = Boolean(input.jobFence && !superseded && !input.failed && input.seed);
+    // A source-bound no-action draft finishes generation with no native checks to run.
+    const checking = Boolean(input.jobFence && !superseded && !input.failed && input.seed &&
+      input.seed.disposition?.decision !== 'no_action');
     const prefill = { ...meta, status: superseded ? 'superseded' as const : input.failed ? 'failed' as const : checking ? 'running' as const : 'complete' as const,
       phase: checking ? 'native_checks' as const : 'complete' as const,
       ...(checking ? { nativeStartedAt: new Date().toISOString(), nativeSpentMs: 0, nativeActive: null, nativeChecks: [] } : {}),
@@ -692,6 +696,7 @@ export async function finishReservationWorkflowV2Prefill(ctx: Context, input: Mu
     const next = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill,
       ...(install ? { generationId: install.generationId ?? randomUUID(), status: install.status,
         ...(install.extraction ? { extraction: install.extraction, extractionGenerationId: install.generationId } : {}),
+        disposition: install.disposition,
         proposal: install.proposal, observations: install.observations,
         fieldReviewRequirements: install.fieldReviewRequirements ?? {}, errors: install.errors ?? [], revision: item.revision + 1 }
         : !superseded && input.failed ? { status: 'prefill_failed', errors: [input.failure ?? { stage: 'extract', code: 'prefill_unavailable',

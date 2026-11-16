@@ -116,10 +116,20 @@ const prefillRequestFactsSchema = z.object({
     sourceRefs: z.array(refSchema).min(1).max(20) }).strict()).max(200).default([]),
 }).strict();
 
+/** Evidence-only judgment the first pass may declare about the current message. */
+export const reservationWorkflowV2DispositionDecisionSchema = z.enum(['actionable', 'no_action', 'uncertain']);
+export type ReservationWorkflowV2DispositionDecision = z.infer<typeof reservationWorkflowV2DispositionDecisionSchema>;
+const extractionDispositionSchema = z.object({
+  decision: reservationWorkflowV2DispositionDecisionSchema,
+  reason: z.string().max(1000),
+  sourceRefs: z.array(refSchema).max(20),
+}).strict();
+
 /** Typed first pass. Host derives lookups from these cited facts; the model does not author arbitrary queries. */
 export const reservationWorkflowV2ExtractionSchema = z.object({
   requests: z.array(prefillRequestFactsSchema).max(200).default([]),
   issues: z.array(z.object({ explanation: z.string().max(1000), sourceRefs: z.array(refSchema).max(20) }).strict()).max(200).default([]),
+  disposition: extractionDispositionSchema.optional(),
 }).strict();
 export type ReservationWorkflowV2Extraction = z.infer<typeof reservationWorkflowV2ExtractionSchema>;
 export const reservationWorkflowV2PrefillInputSchema = z.object({
@@ -441,6 +451,16 @@ export const reservationWorkflowV2FieldOverrideSchema = z.object({
 }).strict();
 export type ReservationWorkflowV2FieldOverride = z.infer<typeof reservationWorkflowV2FieldOverrideSchema>;
 
+/** Host-adjudicated intake decision bound to the current source. Absent means uncertain. */
+export const reservationWorkflowV2DispositionSchema = z.object({
+  decision: reservationWorkflowV2DispositionDecisionSchema,
+  /** The first pass's raw declaration, before host checks; null when it declared none. */
+  modelDecision: reservationWorkflowV2DispositionDecisionSchema.nullable(),
+  reason: z.string().max(1000),
+  evidenceRefs: z.array(refSchema).max(20),
+}).strict();
+export type ReservationWorkflowV2Disposition = z.infer<typeof reservationWorkflowV2DispositionSchema>;
+
 /** Single canonical state JSONB value stored on WorkItem; extraction/prefill never writes into pane-owned overrides. */
 export const reservationWorkflowV2DraftSchema = z.object({
   contractVersion: z.literal(RESERVATION_WORKFLOW_V2_VERSION),
@@ -454,6 +474,7 @@ export const reservationWorkflowV2DraftSchema = z.object({
   status: z.enum(['ready', 'partial', 'prefill_failed']),
   extraction: reservationWorkflowV2ExtractionSchema.optional(),
   extractionGenerationId: z.string().uuid().optional(),
+  disposition: reservationWorkflowV2DispositionSchema.optional(),
   proposal: storedProposalSchema,
   observations: z.array(reservationWorkflowV2ObservationSchema).max(5000),
   fieldReviewRequirements: z.record(fieldReviewRequirementSchema),

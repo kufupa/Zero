@@ -48,6 +48,7 @@ import {
   reservationWorkflowV2ModelOutputSchema,
   reservationWorkflowV2ProposalSchema,
   reservationWorkflowV2EvidenceSchema,
+  type ReservationWorkflowV2Disposition,
   type ReservationWorkflowV2Draft,
   type ReservationWorkflowV2Evidence,
   type ReservationWorkflowV2Extraction,
@@ -232,7 +233,12 @@ function recoverExtractionFacts(value: unknown, input: {
     const parsed = issueSchema.safeParse(row);
     return parsed.success ? [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }] : [];
   }) : [];
-  return { requests, issues: [...suppliedIssues, ...issues].slice(0, 200) };
+  const dispositionSchema = reservationWorkflowV2ExtractionSchema.shape.disposition.unwrap();
+  const parsedDisposition = dispositionSchema.safeParse(value.disposition);
+  const disposition = parsedDisposition.success
+    ? { ...parsedDisposition.data, sourceRefs: parsedDisposition.data.sourceRefs.filter((ref) => known.has(ref)) }
+    : undefined;
+  return { requests, issues: [...suppliedIssues, ...issues].slice(0, 200), ...(disposition ? { disposition } : {}) };
 }
 
 /** Validate proposal entities independently; malformed siblings retain source fallback below. */
@@ -651,6 +657,7 @@ export type ReservationWorkflowV2ReadResult = {
 export type ReservationWorkflowV2PrefillResult = Omit<ReservationWorkflowV2Seed, 'extraction'> & {
   generationId: string;
   extraction: ReservationWorkflowV2Extraction | null;
+  disposition?: ReservationWorkflowV2Disposition;
   skippedReason?: 'channel' | 'system' | 'self_prestay' | 'spam' | 'invalid_source';
   sourceBound: boolean;
 };
@@ -1480,6 +1487,45 @@ function currentCandidateExtraction(extraction: ReservationWorkflowV2Extraction,
 function currentRequestExtraction(extraction: ReservationWorkflowV2Extraction,
   currentRefs: Set<string>): ReservationWorkflowV2Extraction {
   return { ...extraction, requests: extraction.requests.filter((request) => currentClaim(request.requestText, currentRefs)) };
+}
+
+/**
+ * Host check of the first pass's declared disposition. Only an explicit, current-source-cited
+ * no_action on a fully read, request-free, error-free source stands; extracted requests always
+ * stay actionable, and everything else remains reviewable.
+ */
+function adjudicateExtractionDisposition(input: {
+  extraction: ReservationWorkflowV2Extraction;
+  currentRequestCount: number;
+  currentRefs: Set<string>;
+  sourceReadComplete: boolean;
+  errors: ReservationWorkflowV2Draft['errors'];
+}): ReservationWorkflowV2Disposition {
+  const model = input.extraction.disposition ?? null;
+  const evidenceRefs = (model?.sourceRefs ?? []).filter((ref) => input.currentRefs.has(ref)).slice(0, 20);
+  const reason = (model?.reason ?? '').trim().slice(0, 1000);
+  const modelDecision = model?.decision ?? null;
+  if (modelDecision === 'no_action' && !input.currentRequestCount && evidenceRefs.length &&
+      input.sourceReadComplete && !input.errors.length) {
+    return { decision: 'no_action', modelDecision,
+      reason: reason || 'No staff task was found in this email.', evidenceRefs };
+  }
+  if (input.currentRequestCount) {
+    return { decision: 'actionable', modelDecision,
+      reason: (modelDecision === 'no_action'
+        ? 'Requests were also extracted; they remain actionable.' : reason) || 'Current requests were found.',
+      evidenceRefs };
+  }
+  const why = !model ? 'No intake decision was recorded.'
+    : modelDecision === 'no_action'
+      ? !evidenceRefs.length ? 'The no-action decision lacks current-source evidence.'
+        : !input.sourceReadComplete ? 'The no-action decision could not be confirmed: the source was not fully read.'
+        : input.errors.length ? 'The no-action decision could not be confirmed: the read had errors.'
+        : 'The no-action decision could not be confirmed.'
+    : modelDecision === 'actionable' ? 'No current request was extracted to act on.'
+    : reason;
+  return { decision: 'uncertain', modelDecision,
+    reason: (why || 'This email still needs a staff decision.').slice(0, 1000), evidenceRefs };
 }
 
 function citedInteger(claim: { value: unknown } | undefined): number | null | undefined {
@@ -6252,6 +6298,7 @@ export function classifyReservationWorkflowV2Source(input: { fromAddress?: strin
   return { classification, selfPreStay, skippedReason };
 }
 
+const DISPOSITION_EXTRACTION_RULES = `You may also emit a top-level disposition for the current message: {"decision":"actionable"|"no_action"|"uncertain","reason":"short plain reason staff can read","sourceRefs":[admitted evidence refs from the current message or its attachments]}. Choose no_action only when the current message asks staff for nothing at all: for example general marketing or newsletters, internal reports or handovers with no request, or a genuinely canned automated notice (such as a travel-agent system notification that only reports something already done and asks for nothing). A person's own ask, including a person asking to cancel or change, is always actionable; so is any supplied document that needs filing, and any separate current request. When the message might contain an ask you cannot confidently classify, choose uncertain. Always cite the current-message or current-attachment refs that ground the decision; never cite only prior-thread refs for a decision about the current message. A no_action decision with no extracted requests is only accepted when the source was fully read; when in doubt choose uncertain.`;
 const ANCILLARY_EXTRACTION_RULES = `For an explicitly requested ancillary service or allowance, such as a meal or transfer, preserve the exact request, including any stated amount or limit, as a source-cited serviceHints claim. Do this even when the same wording also describes a meal plan. Do not turn a bare meal plan description, existing voucher detail, invoice or account-document request into a new service.`;
 const ANCILLARY_SYNTHESIS_RULES = `For a source-cited ancillary service requested alongside Create or Amend, keep a linked entry in content.services and the owning request's serviceRefs; preserve the requested wording and any stated amount or limit. A reservation note alone is not a service entry. Put a stated amount in requestedMoney with sourceRefs and unresolved scope when its basis is unclear, not in native unitPrice. Do not infer an item, target, quantity or price basis. When these are unclear, leave code and itemCandidateRef null, targets empty, quantityRequest scope unresolved and native price fields unset. Do not convert bare meal plan, past voucher details or invoice/document requests into new services.`;
 
@@ -6441,7 +6488,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const guidancePrompt = (projection: WorkflowGuidanceProjection[]): string => projection.length ?
     `\nHost workflow guidance follows. It is advisory interpretation; current explicit evidence, source/native validation and staff review rules take precedence. It cannot introduce facts, source refs, native choices or policy approvals.\n${JSON.stringify(projection)}` : '';
   const extractGuidance = selectGuidance('extract', input.selection.currentBodyText ?? input.selection.bodyText);
-  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${SOURCE_INTENT_RULES}\n${ANCILLARY_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
+  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${SOURCE_INTENT_RULES}\n${ANCILLARY_EXTRACTION_RULES}\n${DISPOSITION_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode, source: input.source, evidence }),
     responseSchema: structuredClone(extractionResponseSchema ??= zodToJsonSchema(reservationWorkflowV2ExtractionSchema, { $refStrategy: 'none' }) as Record<string, unknown>),
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
@@ -6499,6 +6546,17 @@ export async function runReservationWorkflowV2Prefill(input: {
   base.extraction = extraction;
   if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
     throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
+  }
+  const disposition = adjudicateExtractionDisposition({ extraction, currentRefs,
+    currentRequestCount: currentActions.requests.length, sourceReadComplete: currentActions.sourceReadComplete,
+    errors: base.errors });
+  // An evidenced no-action never starts candidate reads, synthesis or native checks.
+  if (disposition.decision === 'no_action') {
+    return { ...base, extraction, disposition, status: 'ready',
+      proposal: { schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
+        content: { requests: [], services: [], documents: [] },
+        annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] },
+      errors: base.errors };
   }
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction: candidateExtraction,
     propertyCode, source: input.source });
@@ -6774,7 +6832,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
     const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
-    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+    return { ...base, disposition, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
       proposal, fieldReviewRequirements: { ...autopick.requirements, ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(proposal) },
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
@@ -6784,7 +6842,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
   const historicalLeads = rankHistoricalRoomLeads({ proposal: finalProposal!, leads: nativeLeads, observations: finalObservations,
     extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map() });
-  return { ...base, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+  return { ...base, disposition, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||
       Boolean(extractionProjection?.addedRequests || extractionProjection?.addedIssues) ? 'partial' : 'ready',
     proposal: finalProposal!, fieldReviewRequirements: { ...finalReviewRequirements, ...inferredQuoteQuantityRequirements(finalProposal!) }, errors: readErrors };
@@ -6834,6 +6892,7 @@ export async function ensureReservationWorkflowV2Prefill(input: {
     return finishReservationWorkflowV2Prefill(input.context, { ...item, claim: activeClaim, failed,
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
+        ...(generated.disposition ? { disposition: generated.disposition } : {}),
         proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch {
