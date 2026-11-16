@@ -332,6 +332,7 @@ export function validateAutopickModelOutput(raw: unknown, slots: AutopickModelSl
 type Choice = { code: string; meaning: string };
 type ApplyInput = {
   proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[]; history: AutopickHistory | null;
+  extraction: ReservationWorkflowV2Extraction;
   evidence: ReservationWorkflowV2Evidence[]; catalog: PreloadedNativeCatalog | null; guaranteeChoices: Choice[];
   modelResults: AutopickModelResult[]; extractionIdByProposalRequestId: ReadonlyMap<string, string>;
   generationId: string; propertyCode: ReservationWorkflowV2Observation['propertyCode'];
@@ -599,10 +600,28 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
         const code = row.value ? native(row.value) : null;
         return code ? [{ row, code }] : [];
       });
-      if (blockedIssue) {
+      const extractionId = input.extractionIdByProposalRequestId.get(request.id);
+      const sourceRequests = input.extraction.requests.filter((row) => row.id === extractionId && row.kind === 'create');
+      const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
+      const currentClaim = (claim: { sourceRefs: string[] } | undefined) =>
+        Boolean(claim?.sourceRefs.some((ref) => currentRefs.has(ref)));
+      const sourceMealRequested = sourceRequests.length !== 1 || sourceRequests.some((row) =>
+        row.mealPlanHints.some(currentClaim) || row.dates.some((date) => currentClaim(date.mealPlan)) ||
+        row.rateHints.some((hint) => currentClaim(hint) &&
+          /\b(?:dbb|bb|b\s*&\s*b|ro|breakfast|dinner|lunch|room[\s-]*only)\b/i.test(hint.raw)));
+      // A catalogue proves the code exists, but carries no observed meal plan. A past
+      // booking cannot prove that its rate satisfies this Create's current request.
+      const mealNeedsNativeCheck = request.kind === 'create' && slot.field === 'ratePlan' && (
+        sourceMealRequested ||
+        [request.body.shared, ...request.body.dateSections.map((section) => section.defaults),
+          ...request.body.allocations.map((allocation) => allocation.overrides)].some((fields) =>
+          [fields.requestedMealPlan, fields.mealPlan].some((value) => typeof value === 'string' && value.trim())) ||
+        proposal.issues.some((issue) => issue.path.startsWith(`/requests/${request.id}/body/`) &&
+          (issue.kind.includes('board') || issue.path.endsWith('/requestedMealPlan'))));
+      if (blockedIssue || mealNeedsNativeCheck) {
         record(request, slot.field, slot.path, slot.path, { ref: '', value: '', label: `No ${kind} code auto-selected`,
           confidence: 'check', evidence: [{ kind: 'policy_default', count: null, total: null, lastSeen: null,
-            key: blockedIssue.explanation.replace(/\.+$/, '') },
+            key: blockedIssue?.explanation.replace(/\.+$/, '') ?? 'Check which rate includes the requested meal plan in Infor' },
             ...(key && stats && options.length ? [historyEvidence(key, options[0]!.row, stats.total)] : [])],
           alternatives: options.slice(0, AUTOPICK_MAX_ALTERNATIVES).map(({ row, code }) => ({ ref: code.code,
             label: `${code.code} - ${code.meaning}`, count: row.count, total: stats!.total })) }, 'native_read');

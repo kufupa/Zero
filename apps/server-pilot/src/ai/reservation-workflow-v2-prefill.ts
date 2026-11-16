@@ -6751,7 +6751,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     { source: input.source, selection: input.selection, evidence }) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
-    const autopick = applyAutopick({ proposal: finalProposal, observations: finalObservations, history: autopickHistory,
+    const autopick = applyAutopick({ proposal: finalProposal, observations: finalObservations, history: autopickHistory, extraction: currentActions,
       evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
       modelResults: autopickModelResults, extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map(),
       generationId, propertyCode, source: input.source });
@@ -6886,7 +6886,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     // A failed synthesis records no model choice: that is a synthesis failure, not an autopick parse failure.
     const autopick = applyAutopick({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId,
-      { source: input.source, selection: input.selection, evidence }), observations: finalObservations, history: autopickHistory,
+      { source: input.source, selection: input.selection, evidence }), observations: finalObservations, history: autopickHistory, extraction: currentActions,
       evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
       modelResults: [], extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       generationId, propertyCode, source: input.source });
