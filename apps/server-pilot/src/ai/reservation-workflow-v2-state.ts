@@ -288,6 +288,7 @@ function initialKind(seed: ReservationWorkflowV2Seed): (typeof MAIL_KINDS)[numbe
 /** Creates/reuses one source WorkItem and seeds its only canonical v2 draft. Existing edits/results are never replaced. */
 export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
   source: ReservationWorkflowV2SourceInput; extractionId?: string | null; seed: ReservationWorkflowV2Seed; allowSourceChanged?: boolean;
+  allowPropertySwitch?: boolean;
 }): Promise<ReservationWorkflowV2StateResult> {
   if (!propertyMatches(ctx) || (input.source.propertyId ?? 'HRCEN') !== ctx.propertyCode) return { status: 'wrong_property' };
   const saved = await ctx.db.transaction(async (tx) => {
@@ -360,6 +361,7 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
     if ((existing && existing.propertyCode !== ctx.propertyCode) ||
         (!existing && !hasReservationWorkflowV2Draft(itemRow.state) && itemRow.state.propertyCode !== undefined &&
           itemRow.state.propertyCode !== ctx.propertyCode)) {
+      if (input.allowPropertySwitch === false) return { status: 'wrong_property' as const };
       // Every source item is locked in ID order. Existing dispatch holds and
       // queued/claimed runs must finish or reconcile before the scope changes.
       const ids = sourceItems.map((row) => row.id);
@@ -383,9 +385,21 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       const revision = Math.max(itemRow.revision, itemRow.revisionHead) + 1;
       const switchedAt = new Date();
       const priorDraft = existing ?? seedDraft(evidenceHash);
-      const draft = invalidatePropertyDraft(priorDraft, { propertyCode: ctx.propertyCode,
+      let draft = invalidatePropertyDraft(priorDraft, { propertyCode: ctx.propertyCode,
         source: { ...priorDraft.source, propertyId: input.source.propertyId }, generationId: randomUUID(), revision,
         at: switchedAt.toISOString() });
+      const switchArrival = existing?.propertyCode === 'HRDAV' && ctx.propertyCode === 'HRDAVS' &&
+        input.seed.prefill?.status === 'idle' && existing.source.sourceHash === input.source.sourceHash && existing.prefill &&
+        existing.prefill.evidenceHash === evidenceHash &&
+        ['idle', 'queued', 'running', 'failed'].includes(existing.prefill.status) &&
+        existing.prefill.phase !== 'native_checks' && !Object.keys(existing.fieldOverrides).length &&
+        !Object.keys(existing.staffReviews).length && !existing.operationResults.length &&
+        !(await hasPrefillRetryActivity(tx, itemRow.id, existing.generationId, itemRow.revisionSeq));
+      const [arrival] = switchArrival ? await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun)
+        .where(and(eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, ctx.transportId),
+          eq(aiWorkflowRun.triggerMessageId, input.source.messageId), eq(aiWorkflowRun.threadId, input.source.threadId)))
+        .limit(1) : [];
+      if (arrival) draft = seedDraft(evidenceHash, revision, draft.generationId);
       const sourceChanged = draft.source.sourceHash !== input.source.sourceHash || draft.prefill?.evidenceHash !== evidenceHash;
       const selectedUpdatedAt = new Date(Math.max(switchedAt.getTime(), ...sourceItems.map((row) => row.updatedAt.getTime())) + 1);
       for (const row of sourceItems) {
@@ -414,6 +428,15 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
       await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'user', actorUserId: ctx.userId ?? null,
         type: 'field.edit', fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:property`,
         value: { propertyCode: ctx.propertyCode, generationId: draft.generationId }, evidence: advanced.evidence });
+      if (arrival) {
+        // The property switch is the new baseline; later staff activity still blocks prefill.
+        const prefillActivityCount = await countPrefillRetryActivity(tx, itemRow.id);
+        await tx.insert(workEvent).values({ workItemId: itemRow.id, actorKind: 'ai', type: 'field.seed',
+          fieldPath: RESERVATION_WORKFLOW_V2_STATE_KEY, value: { contractVersion: RESERVATION_WORKFLOW_V2_VERSION,
+            status: draft.status, generationId: draft.generationId }, aiSource: RESERVATION_PREFILL_SCHEMA_VERSION,
+          evidence: { sourceMessageId: input.source.messageId, sourceHash: input.source.sourceHash,
+            prefillActivityCount, prefillActivitySeq: itemRow.revisionSeq + 1 } });
+      }
       await tx.update(workItem).set({ state, revision: advanced.revision, revisionHead: advanced.revisionHead,
         revisionSeq: itemRow.revisionSeq + 1, updatedAt: selectedUpdatedAt }).where(eq(workItem.id, itemRow.id));
       return { status: 'ok' as const, draft, revision: advanced.revision, revisionHead: advanced.revisionHead,
@@ -453,8 +476,9 @@ export async function ensureReservationWorkflowV2Draft(ctx: Context, input: {
 }
 
 export async function initializeReservationWorkflowV2Draft(ctx: Context, source: ReservationWorkflowV2SourceInput,
-  options?: { allowSourceChanged?: boolean }) {
-  return ensureReservationWorkflowV2Draft(ctx, { source, allowSourceChanged: options?.allowSourceChanged, seed: { status: 'partial',
+  options?: { allowSourceChanged?: boolean; allowPropertySwitch?: boolean }) {
+  return ensureReservationWorkflowV2Draft(ctx, { source, allowSourceChanged: options?.allowSourceChanged,
+    allowPropertySwitch: options?.allowPropertySwitch, seed: { status: 'partial',
     proposal: { schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
       content: { requests: [], services: [], documents: [] }, annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] },
     observations: [], prefill: { status: 'idle', attemptId: null, attemptCount: 0, startedAt: null, finishedAt: null } } });

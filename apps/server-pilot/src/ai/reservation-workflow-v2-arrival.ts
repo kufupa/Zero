@@ -20,7 +20,7 @@ export async function enqueueReservationArrival(db: DB, input: {
 }) {
   if (!reservationArrivalEnabled()) return null;
   const property = resolvePropertyTransport(input.transportId);
-  if (property.kind !== 'property' || property.property.propertyCode !== 'HRCEN') return null;
+  if (property.kind !== 'property' || !['HRCEN', 'HRDAV'].includes(property.property.propertyCode)) return null;
   const [row] = await db.select({ id: message.id, threadId: message.threadId, subject: message.subject,
     textBody: message.textBody, htmlBody: message.htmlBody, fromAddress: message.fromAddress,
     sourceProvenance: message.sourceProvenance, arrivedAt: MESSAGE_ARRIVED_AT, mailboxAddress: mailboxTransport.email,
