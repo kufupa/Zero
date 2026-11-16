@@ -97,7 +97,7 @@ const checkpointSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('classification_rejected'), fingerprint: sha256, messageId: z.string(), key: sha256, reason: short }),
   z.object({ kind: z.literal('measurement_terminal'), fingerprint: sha256, messageId: z.string(), stage: z.enum(['classification', 'replay']), reason: short, policy: z.literal('one_end_retry') }),
   z.object({ kind: z.literal('model'), fingerprint: sha256, key: sha256, result: modelResultSchema, importedFrom: z.object({ path: z.string(), fingerprint: sha256 }).optional() }),
-  z.object({ kind: z.literal('context'), fingerprint: sha256, start: instant, end: instant, nativeIndexSha256: sha256.nullable(), classifyOnly: z.boolean(), producerSHA: codeSHA.optional(), reviewedCompatibleProducer: z.union([codeSHA, z.literal('unknown')]).optional() }),
+  z.object({ kind: z.literal('context'), fingerprint: sha256, start: instant, end: instant, nativeIndexSha256: sha256.nullable(), classifyOnly: z.boolean(), producerSHA: codeSHA.optional(), reviewedCompatibleProducer: z.union([codeSHA, z.literal('unknown')]).optional(), reviewedCompatibleFingerprint: sha256.optional() }),
   z.object({ kind: z.literal('dispatch_failure'), fingerprint: sha256, key: sha256, purpose: z.string(), phase: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), errorName: z.string(), errorMessage: short, statusCode: z.number().optional(), latencyMs: z.number().nonnegative(), usage: z.literal('unknown') }),
   z.object({ kind: z.literal('classification'), fingerprint: sha256, messageId: z.string(), result: classificationSchema }),
   z.object({ kind: z.literal('replay'), fingerprint: sha256, messageId: z.string(), result: replayResultSchema, nativeReads: z.array(nativeReceiptSchema) }),
@@ -185,7 +185,7 @@ function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, ac
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
-    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA] [--concurrency 32 --maximum-concurrency 32 --classifier-concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max --assessment-output-tokens 24000] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
+    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA --reuse-derived-fingerprint SHA] [--concurrency 32 --maximum-concurrency 32 --classifier-concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max --assessment-output-tokens 24000] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
       sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: replayClockCeiling(), maximumConcurrency: replayClockCeiling(), classifierConcurrency: 32 }, model: 'Approved Azure gpt-6-luna prefill only, capped at32; gpt-6.1-terra classification/assessment', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
@@ -283,7 +283,9 @@ async function main(): Promise<void> {
   const fingerprint = hash(JSON.stringify({ ...semanticInputs, model: { ...semanticInputs.model, classifierModel: classifierModelId, assessmentModel: ASSESSMENT_MODEL, assessmentOutputTokens } }));
   const producerSHA = hash(JSON.stringify({ productSha, runner: hash(await readFile(fileURLToPath(import.meta.url))) }));
   const reviewedCompatibleProducer = process.argv.includes('--reuse-derived-from-producer') ? z.union([codeSHA, z.literal('unknown')]).parse(option('--reuse-derived-from-producer')) : undefined;
-  const runContext = { producerSHA, ...(reviewedCompatibleProducer ? { reviewedCompatibleProducer } : {}), kind: 'context', fingerprint, start, end, nativeIndexSha256: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, classifyOnly: process.argv.includes('--classify-only') } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'context' }>;
+  const reviewedCompatibleFingerprint = process.argv.includes('--reuse-derived-fingerprint') ? sha256.parse(option('--reuse-derived-fingerprint')) : undefined;
+  if (reviewedCompatibleFingerprint && !reviewedCompatibleProducer) throw new Error('Fingerprint migration requires explicit reviewed producer compatibility');
+  const runContext = { ...(reviewedCompatibleFingerprint ? { reviewedCompatibleFingerprint } : {}), producerSHA, ...(reviewedCompatibleProducer ? { reviewedCompatibleProducer } : {}), kind: 'context', fingerprint, start, end, nativeIndexSha256: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, classifyOnly: process.argv.includes('--classify-only') } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'context' }>;
   const importedModels = new Map<string, { result: ModelInvokeResult; path: string; fingerprint: string }>();
   if (process.argv.includes('--reuse-checkpoint')) {
     const path = await realpath(resolve(option('--reuse-checkpoint')));
@@ -341,13 +343,13 @@ async function main(): Promise<void> {
   let checkpointQueue = Promise.resolve();
   const save = (record: z.infer<typeof checkpointSchema>) => { checkpointQueue = checkpointQueue.then(() => appendFile(checkpointPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })); return checkpointQueue; };
   let contextSeen = false, derivedCompatible = false, lastProducerSHA: string | undefined, skippedDerived = 0;
-  const acceptedFingerprints = new Set([fingerprint, ...(reviewedCompatibleProducer ? [legacyFingerprint, terraLegacyFingerprint] : [])]);
+  const acceptedFingerprints = new Set([...(reviewedCompatibleFingerprint ? [reviewedCompatibleFingerprint] : []), fingerprint, ...(reviewedCompatibleProducer ? [legacyFingerprint, terraLegacyFingerprint] : [])]);
   const measurementPending = new Set<string>();
   const failedMeasurement = (replay: z.infer<typeof replayResultSchema>) => replay.errors?.some(error => error.code === 'model_timeout' || error.code === 'model_error') ?? false;
   const reviewedProducers = new Set<string>(reviewedCompatibleProducer ? [reviewedCompatibleProducer, 'unknown'] : []);
   try {
     const previous = (await readFile(checkpointPath, 'utf8')).split('\n');
-    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); reviewedProducers.add('unknown'); acceptedFingerprints.add(legacyFingerprint); acceptedFingerprints.add(terraLegacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
+    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); reviewedProducers.add('unknown'); if (record.reviewedCompatibleFingerprint) acceptedFingerprints.add(record.reviewedCompatibleFingerprint); acceptedFingerprints.add(legacyFingerprint); acceptedFingerprints.add(terraLegacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
     for (let index = 0; index < previous.length; index++) {
       const line = previous[index]; if (!line) continue;
       let record: z.infer<typeof checkpointSchema>;
@@ -380,7 +382,7 @@ async function main(): Promise<void> {
   } catch (error) { if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error; }
   for (const [id, task] of tasks) if (measurementPending.has(task.sources[0]?.messageId ?? '')) tasks.delete(id);
   if (!contextSeen || lastProducerSHA !== producerSHA) {
-    if (contextSeen) info({ phase: derivedCompatible ? 'reviewed_derived_reuse' : 'derived_reset', previousProducerSHA: lastProducerSHA ?? 'unknown', producerSHA, reviewedCompatibleProducer, rawModelReceiptsRetained: cache.size, skippedDerived, policy: 'Only exact actual model input keys reuse raw receipts; batch grouping and replay metadata can change keys' });
+    if (contextSeen) info({ phase: derivedCompatible ? 'reviewed_derived_reuse' : 'derived_reset', previousProducerSHA: lastProducerSHA ?? 'unknown', producerSHA, reviewedCompatibleProducer, reviewedCompatibleFingerprint, rawModelReceiptsRetained: cache.size, skippedDerived, policy: 'Only exact actual model input keys reuse raw receipts; batch grouping and replay metadata can change keys' });
     await save(runContext);
   }
   for (const messageId of measurementPending) for (const key of legacyAssessmentKeys.get(messageId) ?? []) {
@@ -402,7 +404,7 @@ async function main(): Promise<void> {
   const activeModelCallsByModel: Record<'gpt-6-luna' | typeof ASSESSMENT_MODEL, number> = { 'gpt-6-luna': 0, 'gpt-6.1-terra': 0 };
   let cacheHits = 0, importedCacheHits = 0, dispatchedCalls = 0, successfulDispatches = 0, extractionTimeouts = 0, admissionWaitMsTotal = 0;
   const admissions: Array<() => void> = [];
-  const admit = () => { activeLimit = Math.min(activeLimit, requestedReplayMaximum, replayClockCeiling()); while (activeSlots < activeLimit && admissions.length) { const next = admissions.shift(); if (next) { activeSlots++; next(); } } };
+  const admit = () => { activeLimit = Math.min(activeLimit, requestedReplayMaximum, replayClockCeiling(), retryPass ? 8 : MAX_REPLAY_WORKERS); while (activeSlots < activeLimit && admissions.length) { const next = admissions.shift(); if (next) { activeSlots++; next(); } } };
   const acquire = () => new Promise<void>(resolveAdmission => {
     const queuedAt = Date.now(); admissions.push(() => { admissionWaitMsTotal += Date.now() - queuedAt; resolveAdmission(); }); admit();
   });
@@ -843,7 +845,7 @@ async function main(): Promise<void> {
   let loggedAt = startedAt, lastClassified = 0, lastPrefilled = 0, lastReplayed = 0, lastCompleted = 0, lastTimeouts = 0;
   const logProgress = async () => {
     const priorMaximum = maximumReplayConcurrency;
-    maximumReplayConcurrency = Math.min(requestedReplayMaximum, replayClockCeiling());
+    maximumReplayConcurrency = Math.min(requestedReplayMaximum, replayClockCeiling(), retryPass ? 8 : MAX_REPLAY_WORKERS);
     activeLimit = Math.min(activeLimit, maximumReplayConcurrency);
     if (maximumReplayConcurrency > priorMaximum) nextGrowthBoundary = Date.now() - startedAt;
     const host = await sampleResources();
