@@ -10,6 +10,8 @@ import { enqueueAiRun, NOT_APPLICABLE_MODEL_ID } from './run-ledger.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 
 export const RESERVATION_ARRIVAL_VERSION = 'reservation-prefill/1';
+// Admission enqueues at 1; staff-requested work must be claimed first.
+const PANE_REQUEST_PRIORITY = 2;
 export const reservationArrivalEnabled = () => process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on';
 
 /** Called with the admission transaction, or with an authenticated pane's current source. */
@@ -48,16 +50,20 @@ export async function enqueueReservationArrival(db: DB, input: {
   }
   const sourceHash = staffQuoteSourceHash(row);
   const evidence = await reservationArrivalEvidence(db, row.id);
-  const priority = input.requestedByPane ? 2 : input.priority ?? 0;
+  const priority = input.requestedByPane ? PANE_REQUEST_PRIORITY : input.priority ?? 0;
   const job = await enqueueAiRun({ transportId: input.transportId, threadId: row.threadId, triggerMessageId: row.id,
     runKind: 'reservation_prefill', idempotencyKey: `reservation-prefill:${input.transportId}:${row.id}:${sourceHash}:${evidence.hash}`,
     modelId: NOT_APPLICABLE_MODEL_ID, promptVersion: RESERVATION_ARRIVAL_VERSION,
     priority, metrics: { sourceHash, evidenceHash: evidence.hash, arrivedAt: row.arrivedAt.toISOString(), phase: 'queued' } }, db);
-  if (input.requestedByPane) {
-    const [promoted] = await db.update(aiWorkflowRun).set({ priority, updatedAt: new Date() })
-      .where(and(eq(aiWorkflowRun.id, job.id), inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
-        lt(aiWorkflowRun.priority, priority))).returning();
-    return promoted ?? job;
-  }
-  return job;
+  if (!input.requestedByPane) return job;
+  return await promoteReservationArrival(db, { transportId: input.transportId, jobRunId: job.id }) ?? job;
+}
+
+/** Moves a waiting prefill job ahead of admission work when staff open its email. Never inserts or restarts a job. */
+export async function promoteReservationArrival(db: DB, input: { transportId: string; jobRunId: string }) {
+  const [promoted] = await db.update(aiWorkflowRun).set({ priority: PANE_REQUEST_PRIORITY, updatedAt: new Date() })
+    .where(and(eq(aiWorkflowRun.id, input.jobRunId), eq(aiWorkflowRun.transportId, input.transportId),
+      eq(aiWorkflowRun.runKind, 'reservation_prefill'), inArray(aiWorkflowRun.state, ['queued', 'retry_wait']),
+      lt(aiWorkflowRun.priority, PANE_REQUEST_PRIORITY))).returning();
+  return promoted ?? null;
 }
