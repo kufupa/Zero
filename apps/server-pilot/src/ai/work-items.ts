@@ -2771,8 +2771,9 @@ export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 /**
  * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
  * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
- * booking, amendment, cancellation and voucher_pop items are included, plus grounded separate pre-stay requests.
- * Spam, trashed and deleted threads are left out.
+ * booking, amendment, cancellation and voucher_pop items are included, plus self-prestay mail whose stored read left a
+ * separate ask grounded or could not prove none: an unread, stale or unverified pre-stay read stays visible for review,
+ * only its own adjudicated no-ask verdict is dropped. Spam, trashed and deleted threads are left out.
  * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
  * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
  * NEEDS_YOU_CHIPS order, then the oldest mail first.
@@ -2791,6 +2792,26 @@ export async function listWorkItems(
     const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
       .mapWith(Number);
     const sortAge = sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`;
+    const [mailbox] = await tx
+      .select({ email: mailboxTransport.email })
+      .from(mailboxTransport)
+      .where(eq(mailboxTransport.id, input.transportId))
+      .limit(1);
+    const mailboxEmail = normalizeEmailAddress(mailbox?.email ?? '');
+    // A self-prestay candidate must also reach the validator: an unproven or stale
+    // read is review work, so SQL admits only the same source evidence the verdict
+    // checks — the mailbox's own sender, a pre-stay subject and a confirmation
+    // shape — never the read's own no-action judgment.
+    const preStayCandidate = mailboxEmail === '' ? undefined : and(
+      sql`strpos(lower(${message.fromAddress}), ${mailboxEmail}) > 0`,
+      sql`${message.subject} ~* '\\ypre[\\s-]?(stay|arrival)\\y'`,
+      or(
+        sql`${message.subject} ~ '\\d{6,10}-\\d{1,4}'`,
+        sql`(${message.subject} ~* '\\yconf' and ${message.subject} ~ '\\d')`,
+        sql`${message.textBody} ~ '\\d{6,10}-\\d{1,4}'`,
+        sql`(jsonb_typeof(${mailExtraction.payload}->'confirmationNumbers') = 'array' and jsonb_array_length(${mailExtraction.payload}->'confirmationNumbers') > 0)`,
+      ),
+    );
     const fetchPage = (cursor: NeedsYouCursor | null, size: number) => tx
       .select({
         id: workItem.id,
@@ -2831,7 +2852,10 @@ export async function listWorkItems(
           inArray(workItem.status, [...input.statuses]),
           or(
             and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
-            and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
+            and(eq(workItem.kind, 'other'), or(
+              sql`${mailExtraction.payload}->>'separateAsk' is not null`,
+              ...(preStayCandidate ? [preStayCandidate] : []),
+            )),
           ),
           isNull(mailThread.spamAt),
           isNull(mailThread.trashedAt),
@@ -2841,11 +2865,6 @@ export async function listWorkItems(
       )
       .orderBy(sql`chip_rank`, asc(sortAge), asc(workItem.id))
       .limit(size);
-    const [mailbox] = await tx
-      .select({ email: mailboxTransport.email })
-      .from(mailboxTransport)
-      .where(eq(mailboxTransport.id, input.transportId))
-      .limit(1);
     return collectNeedsYouPages({
       limit: input.limit,
       fetchPage: async (cursor, size) => fetchPage(cursor, size),

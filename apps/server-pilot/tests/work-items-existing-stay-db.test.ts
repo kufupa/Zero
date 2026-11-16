@@ -129,17 +129,19 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
         const candidates: Array<{
           name: string; from?: string; body?: string; needsAction?: boolean; action?: string;
           subject?: string; confirmations?: string[]; kind?: string; excerpt?: string;
-          receivedAt?: string; status?: string;
+          verdict?: string; receivedAt?: string; status?: string;
         }> = [
           { name: 'not-self', from: 'guest@example.invalid' },
           { name: 'ungrounded', body: 'No separate request here.' },
-          { name: 'not-actionable', needsAction: false },
+          { name: 'adjudicated-none', needsAction: false, excerpt: '', verdict: 'none' },
+          { name: 'stale-noaction', needsAction: false, excerpt: '' },
           { name: 'wrong-action', action: 'booking' },
           { name: 'no-confirmation', subject: 'Pre Stay information', confirmations: [] },
           { name: 'old-booking', kind: 'booking' },
           { name: 'blank', excerpt: '   ' },
           ...Array.from({ length: 92 }, (_, index) => ({
             name: `invalid-${index}`, body: 'No separate request here.',
+            needsAction: false, excerpt: '', verdict: 'none',
           })),
           { name: 'separate', receivedAt: '2027-01-01 00:00:10.000001' },
           { name: 'booking', kind: 'booking', from: 'guest@example.invalid', receivedAt: '2027-01-01 00:00:10.000002' },
@@ -162,6 +164,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
               origin: 'person', needsAction: candidate.needsAction ?? true,
               action: candidate.action ?? 'group_event', separateAsk: candidate.excerpt ?? ask,
               confirmationNumbers: candidate.confirmations ?? ['57291630-1'],
+              ...(candidate.verdict ? { separateAskVerdict: candidate.verdict } : {}),
             },
           }).returning({ id: mailExtraction.id });
           await db.insert(workItem).values({
@@ -175,11 +178,16 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
         const list = (limit: number) => listWorkItems(db, {
           transportId: TRANSPORT_ID, statuses: ['needs_you', 'review'], limit,
         });
-        expect((await list(1)).map((row) => row.sourceMessageId)).toEqual(['pagination-separate']);
+        expect((await list(1)).map((row) => row.sourceMessageId)).toEqual(['pagination-ungrounded']);
         expect((await list(2)).map((row) => row.sourceMessageId)).toEqual([
-          'pagination-separate', 'pagination-tie-before',
+          'pagination-ungrounded', 'pagination-stale-noaction',
         ]);
         expect((await list(10)).map((row) => [row.sourceMessageId, row.kind, row.chip])).toEqual([
+          ['pagination-ungrounded', 'other', 'needs_you'],
+          ['pagination-stale-noaction', 'other', 'needs_you'],
+          ['pagination-wrong-action', 'other_actionable', 'needs_you'],
+          ['pagination-old-booking', 'other_actionable', 'needs_you'],
+          ['pagination-blank', 'other', 'needs_you'],
           ['pagination-separate', 'other_actionable', 'needs_you'],
           ['pagination-tie-before', 'booking', 'needs_you'],
           ['pagination-booking', 'booking', 'needs_you'],
@@ -194,7 +202,9 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
         await db.update(workItem).set({ status: 'done' }).where(inArray(workItem.sourceMessageId, [
           'pagination-separate', 'pagination-tie-before', 'pagination-booking', 'pagination-review',
         ]));
-        expect(await list(2)).toEqual([]);
+        expect((await list(2)).map((row) => row.sourceMessageId)).toEqual([
+          'pagination-ungrounded', 'pagination-stale-noaction',
+        ]);
       });
     });
 
@@ -202,7 +212,11 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
       await withTestDb(async (db) => {
         await seedExistingStayMail(db);
         await db.update(message).set({ direction: 'outbound' }).where(eq(message.id, MESSAGE_ID));
-        await db.update(mailExtraction).set({ kind: 'other' }).where(eq(mailExtraction.messageId, MESSAGE_ID));
+        await db.update(mailExtraction).set({ kind: 'other', payload: {
+          origin: 'person', needsAction: false, action: 'no_action', separateAskVerdict: 'none',
+          contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+          confirmationNumbers: ['57291630-1'], stays: [], missing: [],
+        } }).where(eq(mailExtraction.messageId, MESSAGE_ID));
         const input = { transportId: TRANSPORT_ID, messageId: MESSAGE_ID };
         const pure = await ensureWorkItemForMessage(db, input);
         expect(pure?.status).toBe('done');
@@ -221,7 +235,7 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
       });
     });
 
-    it('keeps a booking item opened before the rule out of Needs You, but not real booking work', async () => {
+    it('keeps an unverified booking read on self-prestay mail visible for review beside real booking work', async () => {
       await withTestDb(async (db) => {
         await seedExistingStayMail(db);
         const [extraction] = await db
@@ -262,7 +276,11 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
           limit: 10,
         });
 
-        expect(listed.map((row) => row.sourceMessageId)).toEqual([
+        // The legacy booking read on the confirmation mail never proved no separate
+        // ask, so it stays in Needs You for staff review; the pane still shows the
+        // existing-stay card and never offers Create on it.
+        expect(listed.map((row) => row.sourceMessageId).sort()).toEqual([
+          MESSAGE_ID,
           'work-items-existing-stay-db-guest-message',
         ]);
       });

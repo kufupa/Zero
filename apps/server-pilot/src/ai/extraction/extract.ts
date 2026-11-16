@@ -730,6 +730,7 @@ export async function extractInboundMail(input: {
     sanitized.payload.stays = sanitized.payload.stays.map((stay) => ({ ...stay, action: 'no_action' as const }));
     if (separateAsk) {
       sanitized.payload.separateAsk = separateAsk;
+      sanitized.payload.separateAskVerdict = 'ask';
       sanitized.needsAction = true;
       sanitized.payload.needsAction = true;
       sanitized.actionEvidence = separateAsk;
@@ -747,6 +748,13 @@ export async function extractInboundMail(input: {
       sanitized.payload.needsAction = false;
       sanitized.payload.action = 'no_action';
       sanitized.payload.actionEvidence = '';
+      // The adjudication ran on this source: only a read where the model claimed
+      // nothing at all is a proven no-ask read. A claim that failed grounding
+      // stays unverified for staff review, never a hidden "no action".
+      sanitized.payload.separateAskVerdict =
+        typeof parsed.data.separateAsk === 'string' && parsed.data.separateAsk.trim().length > 0
+          ? 'unverified'
+          : 'none';
     }
   }
   return { ok: true, ...sanitized, kind: existingStayInformation ? 'other' : sanitized.kind, usage, attachments: reads };

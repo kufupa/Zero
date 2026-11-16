@@ -113,10 +113,15 @@ export type SelfSentPreStayAskVerdict =
 /**
  * The stored read's verdict for one self-prestay candidate, on the same subject,
  * current body and extraction confirmation numbers every gate already uses:
- * a grounded separate current ask, an explicit no-action read, or unverified.
+ * a grounded separate current ask, an adjudicated no-ask read, or unverified.
  * Unverified is never "no ask" — a missing, contradicted or non-self-prestay
  * extraction verdict leaves the current message for staff to review. Returns
  * null when the mail is not a self-prestay candidate.
+ *
+ * A bare `needsAction: false` never proves "no ask": the read may predate the
+ * separate-ask check, may have failed before reaching it, or may have claimed an
+ * ask the source could not bind. Only the read's own `separateAskVerdict: 'none'`
+ * — stamped when that source-bound check actually ran on this mail — clears it.
  */
 export function selfSentPreStayAskVerdict(input: {
   fromAddress?: string | null;
@@ -125,7 +130,7 @@ export function selfSentPreStayAskVerdict(input: {
   textBody?: string | null;
   htmlBody?: string | null;
   confirmationNumbers?: readonly string[];
-  payload?: { needsAction?: boolean | null; separateAsk?: unknown } | null;
+  payload?: { needsAction?: boolean | null; separateAsk?: unknown; separateAskVerdict?: unknown } | null;
 }): SelfSentPreStayAskVerdict | null {
   const bodyText = preStaySourceText(input.textBody, input.htmlBody);
   if (!selfSentPreStayCandidate({ ...input, bodyText })) return null;
@@ -133,6 +138,6 @@ export function selfSentPreStayAskVerdict(input: {
   if (excerpt) return { status: 'ask', excerpt };
   const ungroundedAsk =
     typeof input.payload?.separateAsk === 'string' && input.payload.separateAsk.trim().length > 0;
-  if (input.payload?.needsAction === false && !ungroundedAsk) return { status: 'none' };
+  if (input.payload?.separateAskVerdict === 'none' && !ungroundedAsk) return { status: 'none' };
   return { status: 'review' };
 }
