@@ -48,8 +48,13 @@ function completeCodeEnvelope(catalog: PreloadedNativeCatalog | null | undefined
   propertyCode?: string) {
   if (!catalog || (propertyCode !== undefined && catalog.propertyCode !== propertyCode)) return null;
   const envelope = kind === 'room' ? catalog.roomsEnvelope() : catalog.ratesEnvelope();
-  const complete = envelope.coverage.scope === 'whole_catalog' && envelope.coverage.complete &&
-    envelope.items.every((item) => item.provenance === 'native_catalog_v2' || item.provenance === 'native_catalog_v1');
+  // Only a v2 artefact proves validated row bindings, completeness and freshness; v1 rows and the static
+  // fallback never established them. The loader already rejects stale v2 artefacts at read time, and
+  // expiresAt is checked again here so a snapshot that outlived its max age cannot issue codes either.
+  const complete = envelope.status === 'available' && envelope.coverage.scope === 'whole_catalog' &&
+    envelope.coverage.complete && Array.isArray(envelope.items) && envelope.items.length > 0 &&
+    (envelope.expiresAt === null || Date.parse(envelope.expiresAt) > Date.now()) &&
+    envelope.items.every((item) => item.provenance === 'native_catalog_v2');
   return complete ? envelope : null;
 }
 
@@ -66,29 +71,31 @@ export function uniqueCatalogMeaningCode(catalog: PreloadedNativeCatalog | null 
   return matches.length === 1 ? { code: matches[0]!.code, meaning: matches[0]!.meaning } : null;
 }
 
-// Negation mirrors the exact-code resolver's predicate words, including curly apostrophes. A coordinated
-// list shares one clause, so a trailing negation covers every member: "Standard rooms or Executive rooms
-// are unavailable" negates both.
+// Negation mirrors the exact-code resolver's predicate words, including curly apostrophes; the
+// alternative cues sit beside them because either kind makes a stated meaning unsafe to trust.
 const MEANING_NEGATION = /\b(?:no|not|never|neither|unavailable|unwanted|unable|sold\s+out|fully\s+booked|closed|(?:is|are|was|were|do|does|did|ca|could|wo|would|should)n['’]t|cannot)\b/i;
-const MEANING_NEGATIVE = new RegExp(`${MEANING_NEGATION.source}|\\b(?:without|avoid|avoided|except|exclude[ds]?|instead\\s+of|rather\\s+than)\\b`, 'i');
-// Sentence and contrastive boundaries split clauses; coordination (commas, slashes, and/or/nor) does not.
-const MEANING_CLAUSE = /[;.!?\n]|\b(?:but|however)\b/gi;
+const MEANING_NEGATIVE = new RegExp(`${MEANING_NEGATION.source}|\\b(?:without|avoid|avoided|except|exclude[ds]?|instead\\s+of|rather\\s+than|other\\s+than|apart\\s+from|or|either|versus|vs\\.?|alternatively|otherwise)\\b`, 'i');
 
 /**
- * The raw span cannot support a meaning when it negates itself, has no verbatim occurrence, or every
- * verbatim occurrence sits inside a clause containing a negation. An unverifiable or fully negated
- * wording yields abstention rather than a guessed code.
+ * The raw span cannot support a meaning when it negates itself, has no verbatim occurrence, or any
+ * cited row carries a negative or alternative cue anywhere — including cited rows that never quote
+ * the raw wording ("All rooms are unavailable", "King Room or Twin Room").
+ * Clause scope is not parsed: mail wraps and mixes sentences, so a positive mention sharing a cited
+ * row with unrelated negative wording ("No breakfast needed; use Standard") also abstains and staff
+ * resolve the code. An unverifiable or cue-bearing wording yields abstention rather than a guessed
+ * code. The exact-code resolver in the prefill projector shares this same predicate so a
+ * stated code and a stated meaning abstain on identical evidence.
  */
-function sourceMeaningNegated(raw: string, context: string): boolean {
-  if (MEANING_NEGATIVE.test(raw)) return true;
-  return !context.split(MEANING_CLAUSE).some((clause) => clause.includes(raw) && !MEANING_NEGATIVE.test(clause));
+export function sourceMeaningNegated(raw: string, context: string): boolean {
+  return MEANING_NEGATIVE.test(raw) || MEANING_NEGATIVE.test(context);
 }
 
 /**
  * Resolve cited code hints to at most one native code. A hint contributes only when its raw wording sits verbatim
  * in one of its own cited, non-prior evidence rows, equals exactly one catalogue meaning under matchKey in full,
- * stays unnegated there, and every contributing hint picks the same code. Model-normalized values, missing
- * evidence, decorated or partial wording, and ambiguous or negated spans all yield no code at all.
+ * and no cited row carries a negative or alternative cue anywhere; every contributing hint picks the same code.
+ * Model-normalized values, missing evidence, decorated or partial wording, and ambiguous or cue-bearing spans
+ * all yield no code at all.
  */
 export function sourceMeaningCode(claims: ReadonlyArray<{ raw: string; value: unknown; sourceRefs: string[] }>,
   kind: 'room' | 'rate', options: { catalog: PreloadedNativeCatalog | null | undefined; propertyCode?: string;
@@ -98,11 +105,12 @@ export function sourceMeaningCode(claims: ReadonlyArray<{ raw: string; value: un
   for (const claim of claims) {
     const raw = claim.raw.trim();
     if (!raw) continue;
-    const anchored = options.evidence.filter((row) => row.relation !== 'prior_thread' &&
-      claim.sourceRefs.includes(row.ref) && row.text.includes(raw));
+    const cited = options.evidence.filter((row) => row.relation !== 'prior_thread' &&
+      claim.sourceRefs.includes(row.ref));
+    const anchored = cited.filter((row) => row.text.includes(raw));
     if (!anchored.length) continue;
     const match = uniqueCatalogMeaningCode(options.catalog, kind, raw, options.propertyCode);
-    if (!match || anchored.some((row) => sourceMeaningNegated(raw, row.text))) continue;
+    if (!match || cited.some((row) => sourceMeaningNegated(raw, row.text))) continue;
     const entry = byCode.get(match.code) ?? { meaning: match.meaning, sourceRefs: new Set<string>() };
     entry.meaning = match.meaning;
     anchored.forEach((row) => entry.sourceRefs.add(row.ref));
@@ -539,23 +547,40 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
       ? (['ratePlan', 'roomType'] as const).filter((field) => !overridden(field)).map((field) => ({ field, fields: request.body.shared as Record<string, unknown>, path: `${root}/shared/${field}` }))
       : request.body.groups.map((group, index) => ({ field: 'ratePlan' as const, fields: group as Record<string, unknown>, path: `${root}/groups/${index}/ratePlan` }));
     for (const slot of codeSlots) {
-      if (slot.fields[slot.field] != null || !history || !catalog) continue;
+      if (slot.fields[slot.field] != null) continue;
       if (slot.field === 'roomType' && request.kind === 'create' && [request.body.shared,
         ...request.body.dateSections.map((section) => section.defaults), ...request.body.allocations.map((allocation) => allocation.overrides)]
         .some((fields) => typeof fields.requestedRoomDescription === 'string' && fields.requestedRoomDescription.trim())) continue;
       const kind = slot.field === 'ratePlan' ? 'rate' : 'room';
+      // The projector cleared a source-stated code it could not map to one scope and flagged it for
+      // staff. History must not fill that cleared value back in; earlier stays stay visible only as
+      // alternatives and the slot keeps its required review. Other requests still autofill normally.
+      const blockedIssue = proposal.issues.find((issue) => issue.kind.includes(`${kind}_code`) &&
+        issue.path === `/requests/${request.id}/body/${request.kind === 'create' ? `shared/${slot.field}` : 'groups'}`);
+      // History values verify against the same bound, fresh and complete v2 catalogue as source meanings.
+      const envelope = history && catalog ? completeCodeEnvelope(catalog, kind, input.propertyCode) : null;
       const native = (code: string) => {
+        if (!envelope) return null;
         const found = catalog!.lookupVerifiedCode(kind, code);
         return found.status === 'unique' && found.record ? found.record : null;
       };
-      const keys = orderedKeys(history, companyKeys, slot.field);
+      const keys = envelope && history ? orderedKeys(history, companyKeys, slot.field) : [];
       const key = keys.find((row) => row.fields[slot.field]!.values.some((value) => value.value && native(value.value)));
-      if (!key) continue;
-      const stats = key.fields[slot.field]!;
-      const options = stats.values.flatMap((row) => {
+      const stats = key?.fields[slot.field];
+      const options = (stats?.values ?? []).flatMap((row) => {
         const code = row.value ? native(row.value) : null;
         return code ? [{ row, code }] : [];
       });
+      if (blockedIssue) {
+        record(request, slot.field, slot.path, slot.path, { ref: '', value: '', label: `No ${kind} code auto-selected`,
+          confidence: 'check', evidence: [{ kind: 'policy_default', count: null, total: null, lastSeen: null,
+            key: blockedIssue.explanation.replace(/\.+$/, '') },
+            ...(key && stats && options.length ? [historyEvidence(key, options[0]!.row, stats.total)] : [])],
+          alternatives: options.slice(0, AUTOPICK_MAX_ALTERNATIVES).map(({ row, code }) => ({ ref: code.code,
+            label: `${code.code} - ${code.meaning}`, count: row.count, total: stats!.total })) }, 'native_read');
+        continue;
+      }
+      if (!key || !stats || !options.length) continue;
       const pick = options[0]!;
       const sameCode = (a: string, b: string) => a.toLocaleUpperCase('en-US') === b.toLocaleUpperCase('en-US');
       slot.fields[slot.field] = pick.code.code;
