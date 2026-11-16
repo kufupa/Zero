@@ -103,7 +103,9 @@ const QUOTED_TEXT_LINE = /^\s*>/;
 const FORWARD_SEPARATOR_LINE =
   /^\s*(?:-{2,}\s*(?:forwarded|original)\s+message\s*-{2,}\s*|begin\s+forwarded\s+message\s*:?\s*|forwarded\s+message\s*:?\s*)$/i;
 const REPLY_INTRO_LINE = /^\s*on\s.+?\bwrote\s*:\s*$/i;
-const ENVELOPE_FIELD_LINE = /^\s*(?:from|sender|sent|to|cc|bcc|date|subject)\s*:/i;
+const ENVELOPE_FIELD_LINE = /^\s*(from|sender|sent|to|cc|bcc|date|subject)\s*:/i;
+/** Field names that share one header role: a repeat is a duplicate, not a new field. */
+const ENVELOPE_FIELD_ROLE: Record<string, string> = { sender: 'from', sent: 'date' };
 const EMAIL_ADDRESS = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9-]{2,63}/i;
 const HTML_TAG = /<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/i;
 const HTML_BLOCK_TAG = /<\/?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^<>]*)?\s*\/?>/gi;
@@ -197,7 +199,7 @@ function plainTextBody(bodyText: string): string {
     });
 }
 
-/** Lines the forwarding staff member could have authored: no quotes, forward markers, reply intros or embedded envelope fields. */
+/** Lines the forwarding staff member could have authored: no quotes, forward markers or reply intros. */
 function authoredForwardLines(lines: readonly string[]): string {
   return lines
     .filter(
@@ -205,11 +207,31 @@ function authoredForwardLines(lines: readonly string[]): string {
         line.trim() !== '' &&
         !QUOTED_TEXT_LINE.test(line) &&
         !FORWARD_SEPARATOR_LINE.test(line) &&
-        !REPLY_INTRO_LINE.test(line) &&
-        !ENVELOPE_FIELD_LINE.test(line),
+        !REPLY_INTRO_LINE.test(line),
     )
     .join('\n')
     .trim();
+}
+
+/**
+ * Exclusive end of the embedded envelope header: the contiguous run of
+ * unquoted field lines after the anchor From. Blank lines may separate fields
+ * (HTML forwards), but the run ends at the first other content — quoted body,
+ * a forward marker, a second From, or a repeated field — because a duplicate
+ * or ambiguous line cannot be proven to be envelope. Header-looking text
+ * after that stays reviewable instead of being ignored.
+ */
+function embeddedHeaderEnd(lines: readonly string[], block: { index: number }): number {
+  const seen = new Set(['from']);
+  for (let index = block.index + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() === '') continue;
+    const field = ENVELOPE_FIELD_LINE.exec(line)?.[1].toLowerCase();
+    const role = field ? (ENVELOPE_FIELD_ROLE[field] ?? field) : undefined;
+    if (role === undefined || seen.has(role)) return index;
+    seen.add(role);
+  }
+  return lines.length;
 }
 
 /**
@@ -228,10 +250,11 @@ function forwardedSubjectAuthoredText(bodyLines: readonly string[]): string {
 /**
  * Authored-capable text around an embedded forwarded header block. `before`
  * covers everything ahead of its From line, including between a forward
- * separator and the headers; `after` covers the rest of the body. The
- * forwarded message has no end marker, so unquoted content after the headers
- * cannot be attributed to the original — a staff ask appended there stays
- * reviewable instead of being folded into the forwarded source.
+ * separator and the headers; `after` covers everything after the provable
+ * header run. The forwarded message has no end marker, so unquoted content
+ * after the headers cannot be attributed to the original — a staff ask
+ * appended there stays reviewable instead of being folded into the forwarded
+ * source, and so does header-looking text past the boundary.
  */
 function forwardedAuthoredText(
   lines: readonly string[],
@@ -239,7 +262,7 @@ function forwardedAuthoredText(
 ): { before: string; after: string } {
   return {
     before: authoredForwardLines(lines.slice(0, block.index)),
-    after: authoredForwardLines(lines.slice(block.index + 1)),
+    after: authoredForwardLines(lines.slice(embeddedHeaderEnd(lines, block))),
   };
 }
 
