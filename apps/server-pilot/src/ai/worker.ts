@@ -5821,8 +5821,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     : scope;
   // Lane hms also claims HMS reads (jobs-only and read-service modes), so it waits for the restart sweep first.
   if (lane === 'hms' && hmsRecovery && !(await hmsRecovery.mayClaim())) return false;
-  const claimed = await claimNextAiRun({
-    ownerId: owner, lane, ...claimScope,
+  const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope,
     preferDeferredWork: lane === 'default' && (fairness?.backgroundPrefills ?? 0) >= 5,
   });
   if (!claimed) {
