@@ -11,6 +11,11 @@ export type QuoteOutput = {
   artifacts: QuoteOutputArtifact[]; failures: string[]; issues: string[]; stale: boolean; inventoryDecline: boolean;
 };
 export type QuoteOutputResult = { status: 'saved' | 'created' | 'cancelled' | 'error' | 'unknown'; message: string };
+export function completeQuotePackage(output: QuoteOutput): boolean {
+  return Boolean(output.cover) && output.issues.length === 0 && output.failures.length === 0 &&
+    (output.inventoryDecline || (output.artifacts.some(item => item.kind === 'pdf_quote') &&
+      output.artifacts.some(item => item.kind === 'xlsx_quote')));
+}
 const rec = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
 
@@ -189,8 +194,6 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   if (result.sourceHash !== source.sourceHash) issues.push('The generated output no longer matches this email.');
   if (raw.length > 32 || new Set(artifacts.map((item) => item.kind)).size !== artifacts.length) issues.push('The generated attachments are ambiguous.');
   if (artifacts.some((item) => !outputKinds.includes(item.kind))) issues.push('A generated attachment was not requested. Generate the quote again.');
-  // An independently generated cover is still useful when one or both document builders fail. Keep
-  // that unsent draft actionable and let staff decide whether to continue without those files.
   if (!artifacts.length && !textOnly && failures.length === 0 && !inventoryDecline) issues.push('No quotation file was generated. Generate the quote again.');
   if (!inventoryDecline && outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
   if (!inventoryDecline && outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');

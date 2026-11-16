@@ -366,7 +366,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
     : entity && !selectedRef && query && !quoteName ? <small>Select an Infor match</small> : null}
     {quoteName && !dirty && query.trim() && <small>{selectedChoice ? `Infor profile selected: ${selectedChoice.label}.`
-      : 'Quote name only. Public rates apply unless another verified profile is selected.'}</small>}
+      : 'Quote name only; no Infor profile selected.'}</small>}
     {staleIdentity && !quoteName && <small role="alert">The selected Infor match changed. Choose a current match or search again.</small>}
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>

@@ -1,13 +1,15 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { z } from 'zod';
 import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
-import { createOperationId, type AttachmentMeta, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
+import { AttachmentContentSchema, AttachmentMetaSchema, MailLocationSchema, createOperationId,
+  type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { trpcClient } from '@/providers/query-provider';
-import { getQuoteOutput, type QuoteOutput, type QuoteOutputArtifact, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
+import { completeQuotePackage, getQuoteOutput, type QuoteOutput, type QuoteOutputArtifact, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
 export { getQuoteOutput, quoteCoverHtml } from '@/lib/reservation-workflow/quote-output';
 export type { QuoteOutput, QuoteOutputArtifact, QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
 
@@ -44,10 +46,36 @@ async function verifyAttachments(artifacts: QuoteOutputArtifact[]): Promise<void
   }
 }
 
-function readMarker(): string | null { try { return sessionStorage.getItem(MARKER); } catch { return null; } }
+const storedAttemptBase = z.object({ version: z.literal(2), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  startedAt: z.number().int().positive(), createOperationId: z.string().regex(/^op_\d+_[a-f0-9]{32}$/) });
+const storedAttemptSchema = z.discriminatedUnion('phase', [
+  storedAttemptBase.extend({ phase: z.literal('creating') }),
+  storedAttemptBase.extend({ phase: z.literal('attaching'), location: MailLocationSchema,
+    attachmentOperationIds: z.array(z.string().regex(/^op_\d+_[a-f0-9]{32}$/)).max(20) }),
+]);
+type StoredAttempt = z.infer<typeof storedAttemptSchema>;
+
+function readMarker(): string | null {
+  try { return localStorage.getItem(MARKER) ?? sessionStorage.getItem(MARKER); } catch { return null; }
+}
 function writeMarker(value: string | null): boolean {
-  try { if (value === null) sessionStorage.removeItem(MARKER); else sessionStorage.setItem(MARKER, value); return true; }
+  try {
+    if (value === null) { localStorage.removeItem(MARKER); sessionStorage.removeItem(MARKER); }
+    else localStorage.setItem(MARKER, value);
+    return true;
+  }
   catch { return false; }
+}
+function storedAttempt(raw: string | null): StoredAttempt | null {
+  if (!raw) return null;
+  try { const parsed = storedAttemptSchema.safeParse(JSON.parse(raw)); return parsed.success ? parsed.data : null; }
+  catch { return null; }
+}
+async function fingerprintFor(source: ReservationSourceContext, email: WorkstationEmailPayload, output: QuoteOutput, html: string): Promise<string> {
+  const input = JSON.stringify([source.mailboxId, source.propertyId, source.messageId, source.threadId, source.sourceHash,
+    email.entryId, email.storeId, email.folderEntryId, output.operationId, html, output.artifacts.map(item => [item.fileName, item.sha256])]);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 // Same rule as canonicalMessageId in apps/server-pilot/src/mail/ingest/message-id.ts: strip angle
 // brackets, unquote a quoted local part, lowercase. Outlook gives the raw header; the server returns this form.
@@ -88,6 +116,15 @@ type Pending = {
   completed: number;
 };
 
+function persistAttempt(attempt: Pending): boolean {
+  const base = { version: 2 as const, fingerprint: attempt.fingerprint, startedAt: attempt.startedAt,
+    createOperationId: attempt.create.operationId };
+  const journal: StoredAttempt = attempt.location && attempt.attachments
+    ? { ...base, phase: 'attaching', location: attempt.location, attachmentOperationIds: attempt.attachments.map(item => item.operationId) }
+    : { ...base, phase: 'creating' };
+  return writeMarker(JSON.stringify(journal));
+}
+
 /** Source and mailbox remain host-owned. The caller supplies a live selection guard and reviewed HTML. */
 export function useQuoteOutput({ source, configuration, bridge, isCurrentSource }: {
   source: ReservationSourceContext; bridge?: PaneBridge;
@@ -110,12 +147,12 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
   const getReady = async (requestId: string, html: string, snapshot: ReservationPaneSnapshot, isCurrentSnapshot?: () => boolean) => {
     if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
     const output = getQuoteOutput(source, snapshot, requestId, configuration);
-    if (!output || output.issues.length || !output.cover) throw new Error(output?.issues[0] ?? 'Generate the quote and cover reply first.');
+    if (!output || !completeQuotePackage(output)) throw new Error(output?.issues[0] ?? 'Generate the complete quote with PDF and Excel first.');
     if (!html.trim()) throw new Error('Review the cover reply before creating a draft.');
     await verifyAttachments(output.artifacts);
     if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
     const latest = getQuoteOutput(source, snapshot, requestId, live.current.configuration);
-    if (!latest || latest.operationId !== output.operationId || latest.issues.length) throw new Error('The quote changed. Review the latest output.');
+    if (!latest || latest.operationId !== output.operationId || !completeQuotePackage(latest)) throw new Error('The quote changed. Review the latest output.');
     return output;
   };
 
@@ -147,7 +184,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
     finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };
 
-  const createOutlookReply = async ({ snapshot, requestId, html, confirmUnknown, isCurrentSnapshot }: {
+  const createOutlookReplyLocked = async ({ snapshot, requestId, html, confirmUnknown, isCurrentSnapshot }: {
     snapshot: ReservationPaneSnapshot; requestId: string; html: string; confirmUnknown?: Confirm; isCurrentSnapshot?: () => boolean;
   }): Promise<QuoteOutputResult> => {
     if (busy.current) return { status: 'error', message: 'A reply is already being prepared.' };
@@ -158,15 +195,31 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!host || !email || !email.entryId || !email.storeId || !email.folderEntryId ||
           !host.supportsAction('GET_ACTIVE_EMAIL') || !host.supportsAction('CREATE_REPLY_DRAFT') ||
           !host.supportsAction('GET_EMAIL_BY_ENTRY_ID') || !host.supportsAction('GET_ATTACHMENT_METADATA') ||
-          (output.artifacts.length && !host.supportsAction('ADD_ATTACHMENT_TO_DRAFT'))) throw new Error('Connect Outlook and update the add-in before creating this draft.');
+          (output.artifacts.length && (!host.supportsAction('ADD_ATTACHMENT_TO_DRAFT') || !host.supportsAction('READ_ATTACHMENT_BASE64'))))
+        throw new Error('Connect Outlook and update the add-in before creating this draft.');
       if (output.artifacts.length && host.capabilities?.preservesAttachmentFilenames !== true) throw new Error('Update the Outlook add-in to attach correctly named PDF and Excel files.');
       if (output.artifacts.some(item => item.sizeBytes > MAX_OUTLOOK_ATTACHMENT_BYTES)) throw new Error('A quotation file exceeds the Outlook add-in limit. No reply was created.');
       if (source.internetMessageId && canonicalMessageId(email.internetMessageId) !== canonicalMessageId(source.internetMessageId)) throw new Error('The selected Outlook email changed. Select it again.');
       if (!output.cover?.to.trim() || address(output.cover.to) !== address(email.senderEmail)) throw new Error('Outlook replies to the original sender. Check the quote recipient before creating this draft.');
-      const fingerprint = JSON.stringify([key, output.operationId, html, output.artifacts.map((item) => [item.fileName, item.sha256])]);
+      const fingerprint = await fingerprintFor(source, email, output, html);
+      if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
       let attempt = pending.current;
+      const marker = readMarker(), saved = storedAttempt(marker), age = saved ? Date.now() - saved.startedAt : -1;
+      if (!attempt && saved && saved.fingerprint === fingerprint && age >= 0 && age < RETRY_WINDOW_MS &&
+          (saved.phase !== 'attaching' || saved.attachmentOperationIds.length === output.artifacts.length)) {
+        attempt = { key, fingerprint, startedAt: saved.startedAt, output, html, email, completed: 0,
+          create: { operationId: saved.createOperationId, entryId: email.entryId, storeId: email.storeId,
+            folderEntryId: email.folderEntryId, htmlBody: html, replyAll: false, openInComposer: false } };
+        if (saved.phase === 'attaching') {
+          attempt.location = saved.location;
+          attempt.attachments = output.artifacts.map((item, index) => ({ operationId: saved.attachmentOperationIds[index]!,
+            entryId: saved.location.entryId, storeId: saved.location.storeId, folderEntryId: saved.location.folderEntryId,
+            fileName: item.fileName, base64Data: item.bytesBase64 }));
+        }
+        pending.current = attempt;
+      }
       if ((attempt && (attempt.key !== key || attempt.fingerprint !== fingerprint ||
-          Date.now() - attempt.startedAt >= RETRY_WINDOW_MS)) || (!attempt && readMarker())) {
+          Date.now() - attempt.startedAt >= RETRY_WINDOW_MS)) || (!attempt && marker)) {
         if (!confirmUnknown || !await confirmUnknown()) return report('cancelled', 'Check Outlook Drafts before starting another reply.');
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
         pending.current = null; attempt = null;
@@ -180,7 +233,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!attempt.location) {
         const selected = await host.sendCommand<Record<string, never>, WorkstationEmailPayload | null>('GET_ACTIVE_EMAIL', {});
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot() || !sameEmail(selected, attempt.email) || !sameEmail(live.current.bridge?.activeEmail ?? null, attempt.email)) throw new Error('The selected Outlook email changed. Select it again.');
-        if (!writeMarker(attempt.create.operationId)) throw new Error('Outlook retry protection is unavailable. Reopen the pane and try again.');
+        if (!persistAttempt(attempt)) throw new Error('Outlook retry protection is unavailable. Reopen the pane and try again.');
         submitted = true;
         const location = await host.sendCommand<typeof attempt.create, MailLocation>('CREATE_REPLY_DRAFT', attempt.create);
         if (!location?.entryId || !location.storeId || !location.folderEntryId) throw new Error('Outlook did not confirm the draft location.');
@@ -193,17 +246,34 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       attempt.attachments ??= attempt.output.artifacts.map((item) => ({ operationId: createOperationId(),
         entryId: location.entryId, storeId: location.storeId, folderEntryId: location.folderEntryId,
         fileName: item.fileName, base64Data: item.bytesBase64 }));
+      if (!persistAttempt(attempt)) throw new Error('Outlook could not retain the draft for a safe retry.');
+      const identity = { entryId: location.entryId, storeId: location.storeId, folderEntryId: location.folderEntryId };
+      const readMetadata = async () => {
+        const result = await host.sendCommand<typeof identity, unknown>('GET_ATTACHMENT_METADATA', identity);
+        return z.array(AttachmentMetaSchema).parse(result);
+      };
+      const matchesArtifact = async (item: QuoteOutputArtifact, metadata: z.infer<typeof AttachmentMetaSchema>[]) => {
+        const matches = metadata.filter(att => att.fileName === item.fileName);
+        if (!matches.length) return false;
+        if (matches.length !== 1 || matches[0]!.byteSize !== item.sizeBytes) throw new Error('The draft contains an unexpected attachment. Check Outlook Drafts.');
+        const payload = { ...identity, attachmentIndex: matches[0]!.index };
+        const content = AttachmentContentSchema.parse(await host.sendCommand<typeof payload, unknown>('READ_ATTACHMENT_BASE64', payload));
+        if (content.fileName !== item.fileName || content.byteSize !== item.sizeBytes || content.base64Data !== item.bytesBase64)
+          throw new Error('A draft attachment did not match the generated file. Check Outlook Drafts.');
+        return true;
+      };
       for (let index = attempt.completed; index < attempt.attachments.length; index++) {
-        if (!current()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
+        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
+        if (await matchesArtifact(attempt.output.artifacts[index]!, await readMetadata())) { attempt.completed = index + 1; continue; }
+        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
         submitted = true;
         const attachment = attempt.attachments[index]!;
         const added = await host.sendCommand<typeof attachment, boolean>('ADD_ATTACHMENT_TO_DRAFT', attachment);
         if (added !== true) throw new Error('Outlook did not confirm an attachment.');
         attempt.completed = index + 1;
       }
-      const identity = { entryId: location.entryId, storeId: location.storeId, folderEntryId: location.folderEntryId };
       const draft = await host.sendCommand<typeof identity, WorkstationEmailPayload | null>('GET_EMAIL_BY_ENTRY_ID', identity);
-      const metadata = await host.sendCommand<typeof identity, AttachmentMeta[]>('GET_ATTACHMENT_METADATA', identity);
+      const metadata = await readMetadata();
       const normalize = (value: string) => value.replace(/\s+/gu, ' ').trim();
       const body = document.createElement('div');
       body.innerHTML = attempt.html;
@@ -211,18 +281,25 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       const expectedBody = normalize(body.textContent ?? '');
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot() || !draft || draft.entryId !== location.entryId ||
           draft.storeId !== location.storeId || draft.folderEntryId !== location.folderEntryId ||
-          !expectedBody || !normalize(draft.bodyText).includes(expectedBody) || !Array.isArray(metadata) ||
-          attempt.output.artifacts.some(item => metadata.filter(att => att.fileName === item.fileName && att.byteSize === item.sizeBytes).length !== 1))
+          !expectedBody || !normalize(draft.bodyText).includes(expectedBody))
         throw new Error('Outlook could not confirm the draft and attachments.');
-      if (readMarker() === attempt.create.operationId) writeMarker(null);
+      for (const item of attempt.output.artifacts) if (!await matchesArtifact(item, metadata))
+        throw new Error('Outlook could not confirm the draft and attachments.');
+      if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Check Outlook Drafts.');
+      if (storedAttempt(readMarker())?.createOperationId === attempt.create.operationId) writeMarker(null);
       pending.current = null;
       return report('created', 'Quote saved in Outlook Drafts. Review it there before sending.');
     } catch (error) {
-      if (submitted || pending.current?.location || (pending.current && readMarker() === pending.current.create.operationId))
+      if (submitted || pending.current?.location || (pending.current && storedAttempt(readMarker())?.createOperationId === pending.current.create.operationId))
         return report('unknown', `${failure(error)} Retry the same reply, or check Outlook Drafts.`);
       if (pending.current && !readMarker()) pending.current = null;
       return report('error', failure(error));
     } finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
+  };
+  const createOutlookReply = async (input: Parameters<typeof createOutlookReplyLocked>[0]): Promise<QuoteOutputResult> => {
+    if (!navigator.locks) return report('error', 'Update the Outlook browser to safely prepare the draft.');
+    return navigator.locks.request('nava-v2-quote-outlook-draft', { ifAvailable: true }, lock =>
+      lock ? createOutlookReplyLocked(input) : report('error', 'A quote draft is already being prepared.'));
   };
   return { outputFor, saveWebReply, createOutlookReply, saving, error };
 }

@@ -31,10 +31,8 @@ const workflows: Record<Kind, { check: string; save: string; deliverable: string
   filing: { check: 'Check details', save: 'File PDF in Infor', deliverable: 'The PDF in the stay’s Infor Documents.', guest: 'Nava sends nothing.' },
 };
 
-export function quoteReplyLabel(output: Pick<QuoteOutput, 'inventoryDecline' | 'failures' | 'artifacts'>): string {
-  return output.inventoryDecline ? 'Save unsent decline reply'
-    : output.failures.length && !output.artifacts.length ? 'Save unsent reply without quotation files'
-    : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply';
+export function quoteReplyLabel(output: Pick<QuoteOutput, 'inventoryDecline'>): string {
+  return output.inventoryDecline ? 'Save unsent decline reply' : 'Save unsent reply';
 }
 
 function createPrice(snapshot: ReservationPaneSnapshot, requestId: string, ids: string[]): string | null {
@@ -111,7 +109,7 @@ export function derivePaneStage(input: StageInput): Stage {
     : quoteSaved ? 'Reply saved in your Drafts folder. Send it from your mail when ready.'
     : generated ? 'Review the quote results above. If a draft was not created, use the available reply action above.'
     : request.kind === 'quote' ? 'Generate quote checks Infor and creates an unsent draft with PDF and Excel. This can take more than 30 seconds.'
-    : needsCheck ? `${config.check} checks the details${request.kind === 'create' ? ' and price' : ''}. ${request.kind === 'amend' && pendingAmendReview ? 'Details may already have changed in Infor.' : saved ? 'See earlier results above; this check does not save more changes.' : 'This check does not save the stay or file in Infor.'}`
+    : needsCheck ? `${config.check} checks the details${request.kind === 'create' ? ' and price' : ''}. ${request.kind === 'amend' && pendingAmendReview ? 'Details may already have changed in Infor.' : saved ? 'See earlier results above; this check does not save more changes.' : request.kind === 'filing' ? 'This check does not file the document.' : request.kind === 'cancel' ? 'This check does not cancel the booking.' : request.kind === 'amend' ? 'This check does not change the booking.' : 'This check does not save the booking.'}`
     : input.createPriceBlocked ? 'Resolve the customer and Infor prices above before saving.'
     : input.extrasNeedReview ? 'Review the extra charges above before generating the quote.'
     : price ? `Infor priced ${roomCount} · total ${price}. ${saved ? 'See saved rooms above.' : 'Nothing saved yet.'} Next: ${button} creates ${remaining} ${remaining === 1 ? 'booking' : 'bookings'}.`
