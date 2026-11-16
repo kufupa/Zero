@@ -2798,18 +2798,19 @@ const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
 /**
  * The Needs-you admission of a work item's canonical V2 draft. `actions` carries every distinct request kind in
  * draft order so the row names each ask; `kind` stays the first supported action for older readers. Unsupported,
- * empty or unreadable drafts stay visible as `other`/`other_actionable` — an unfinished, failed or ambiguous draft
- * can still hide an unseen second ask, so it never reads as affirmed no-action. Self-sent pre-stay mail is about an
- * existing booking: a `create` request is never an ask, so it is dropped from the actions; the item still lists
- * because nothing yet records a typed, evidence-backed no-action for it (skipped sources are filtered upstream).
- * When no ask survives that drop — an empty, create-only, pending or failed pre-stay draft — the row carries
- * `reviewOnly` and no actions: it is for staff review, and `other` must not claim a task no request supports.
+ * empty or unreadable drafts stay visible as `other_actionable` with `reviewOnly: true` and no actions — an
+ * unfinished, failed or ambiguous draft can still hide an unseen ask, so it never reads as affirmed no-action and
+ * never invents an `other` task. Self-sent pre-stay mail is about an existing booking: a `create` request is never
+ * an ask, so it is dropped from the actions; the item still lists because nothing yet records a typed,
+ * evidence-backed no-action for it (skipped sources are filtered upstream). When no ask survives — an empty,
+ * create-only, pending or failed draft — the row carries `reviewOnly` and no actions: it is for staff review, and
+ * `other` must not claim a task no request supports.
  */
 function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[]; reviewOnly: boolean } {
   const kinds = [...new Set((draft?.proposal.content.requests ?? []).map((request) => request.kind))];
   const asks = isPreStay ? kinds.filter((kind) => kind !== 'create') : kinds;
-  const reviewOnly = isPreStay && asks.length === 0;
-  const actions = asks.length > 0 ? asks : reviewOnly ? [] : ['other'];
+  const reviewOnly = asks.length === 0;
+  const actions = asks;
   for (const action of actions) {
     const kind = V2_REQUEST_MAIL_KIND[action];
     if (kind) return { kind, actions, reviewOnly };
