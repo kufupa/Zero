@@ -19,6 +19,20 @@ export type MailSourceRuleData = {
     readonly source: string;
     readonly flags: string;
   }[];
+  /** Envelope gate: the sender address must match one pattern or the mail stays direct. */
+  readonly senderPatterns?: readonly {
+    readonly source: string;
+    readonly flags: string;
+  }[];
+  /** Evidence gate: every pattern must match the body or the mail stays direct. */
+  readonly skipBodyPatterns?: readonly {
+    readonly source: string;
+    readonly flags: string;
+  }[];
+  /** Evidence gate: skip only when the caller confirms no non-inline attachment. */
+  readonly requiresNoAttachments?: boolean;
+  /** A human-forwarded copy of this source stays staff-visible; the skip only applies to direct send. */
+  readonly directWhenForwarded?: boolean;
 };
 
 export declare const MAIL_SOURCE_RULE_DATA: readonly MailSourceRuleData[];
