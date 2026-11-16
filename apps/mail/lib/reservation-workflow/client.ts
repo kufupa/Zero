@@ -575,7 +575,7 @@ function inputFieldLabels(values: unknown): string {
 
 function operationNotice(result: unknown, success: string[]): string | undefined {
   if (!isRecord(result)) return 'The reservation service returned an unreadable native-tool result.';
-  if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Select Check to continue.';
+  if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Use the action button below to continue.';
   if (success.includes(String(result.status))) return undefined;
   const failure = knownFailureCopy(result.failureClass ?? result.issue ?? result.status,
     result.status === 'unknown' || result.status === 'needs_reconcile');
@@ -718,7 +718,7 @@ function amendLookupNotice(result: unknown): string | undefined {
 
 function quoteOperationNotice(result: unknown, success: string[], action: string): string | undefined {
   if (!isRecord(result)) return `${action}: Nava problem, not yours. Contact Nava support.`;
-  if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Select Check to continue.';
+  if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Use the action button below to continue.';
   if (success.includes(String(result.status))) return undefined;
   if (result.status === 'unknown' || result.status === 'needs_reconcile') {
     return `${action}: The result is uncertain. Check the recorded result before trying again.`;

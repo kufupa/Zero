@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { attentionFieldPath, inputFieldLabel } from '@/lib/reservation-workflow/client';
 import { knownFailureCopy, staffFailureCopy } from '@/lib/reservation-workflow/failure-copy';
 import { derivePaneStage, quoteReplyLabel } from '@/lib/reservation-workflow/pane-stage';
-import { getQuoteOutput } from '@/lib/reservation-workflow/quote-output';
+import { getQuoteOutput, quoteCoverHtml } from '@/lib/reservation-workflow/quote-output';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
 import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
@@ -155,6 +155,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const workbench = useReservationWorkbench(props);
   const [checked, setChecked] = useState<string | null>(null);
   const [savedQuoteOperation, setSavedQuoteOperation] = useState<string | null>(null);
+  const [generatingQuote, setGeneratingQuote] = useState(false);
+  const [quoteDeliveryMessage, setQuoteDeliveryMessage] = useState<string | null>(null);
   const [checkedAmendReview, setCheckedAmendReview] = useState<string | null>(null);
   const [formReset, setFormReset] = useState(0);
   const [actionMenu, setActionMenu] = useState<string | null>(null);
@@ -165,6 +167,9 @@ export function ReservationPane(props: ReservationPaneProps) {
   const activeTarget = useRef<string | null>(null);
   const { source, preview = false } = props;
   const { snapshot, request, commands, busy } = workbench;
+  const activeQuoteRequest = useRef<string | null>(null);
+  activeQuoteRequest.current = request?.kind === 'quote' ? request.id : null;
+  useEffect(() => { setQuoteDeliveryMessage(null); setSavedQuoteOperation(null); }, [source.messageId, request?.id]);
   const rememberedRecipient = useCmsRecipientDefault(snapshot?.session.draft.propertyCode).address;
   const createBlocked = source.selfPreStay && request?.kind === 'create';
   const capabilityKind = request?.kind === 'filing' ? 'attach' : request?.kind === 'services' ? 'addons' : request?.kind;
@@ -417,16 +422,16 @@ export function ReservationPane(props: ReservationPaneProps) {
     request?.kind === 'quote' && (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
   const quoteMissing = snapshot && request?.kind === 'quote'
     ? needsCheck() ? quoteReadinessBeforeSplit(snapshot.session.draft, request.id)
-      : quoteReadiness(snapshot.session.draft, request.id, 'execute') : [];
+      : quoteReadiness(snapshot.session.draft, request.id, 'execute').filter(item => item.code !== 'output_required') : [];
   const extrasNeedReview = quoteMissing.some(item => item.code === 'quote_extras_require_staff_acceptance');
   const pendingAmendReview = amendPriceReviews.find(row => row.observation.ref === checkedAmendReview) ??
     amendPriceReviews.find(row => row.id === activeTarget.current) ?? amendPriceReviews[0];
   const check = async () => {
-    if (!request || createBlocked) return;
+    if (!request || createBlocked) return false;
     if (['create', 'amend', 'cancel'].includes(request.kind) && !ids.length) {
       showAttention(request.kind === 'create' ? 'Add at least one room and fill in its guest, occupancy and booking details.' : 'Choose at least one stay to check.',
         [`${requestPath(request.id)}/body/${request.kind === 'create' ? 'allocations' : 'targets'}`]);
-      return;
+      return false;
     }
     setAttention(null);
     try {
@@ -475,10 +480,12 @@ export function ReservationPane(props: ReservationPaneProps) {
       } else await commands.prepare();
       setCheckedAmendReview(null);
       setChecked(digestFor(workbench.latestSnapshot()));
+      return true;
     } catch (failure) {
       const reviewRef = showFailure(failure);
       setCheckedAmendReview(reviewRef);
       setChecked(reviewRef ? digestFor(workbench.latestSnapshot()) : null);
+      return false;
     }
   };
   const currentFeePreview = (current: ReservationPaneSnapshot | null) => {
@@ -489,8 +496,56 @@ export function ReservationPane(props: ReservationPaneProps) {
         row.observationRefs.includes(text(review.observationRef))) && draft.observations.some(row =>
         row.ref === review.observationRef && row.generationId === draft.generationId && record(row.result).ready === true));
   };
+  const generateQuote = async () => {
+    if (!request || request.kind !== 'quote' || !snapshot) return;
+    setGeneratingQuote(true); setQuoteDeliveryMessage(null); setSavedQuoteOperation(null);
+    try {
+      const outputPath = `${requestPath(request.id)}/body/outputIntent/artifacts`;
+      const requested = valueAt(workbench.latestSnapshot() ?? snapshot, outputPath);
+      const packageKinds = ['email_quote', 'pdf_quote', 'xlsx_quote'];
+      const changed = !Array.isArray(requested) || requested.length !== packageKinds.length ||
+        packageKinds.some(kind => !requested.includes(kind));
+      if (changed) await commands.edit(outputPath, packageKinds);
+      const before = workbench.latestSnapshot();
+      const quoteIds = new Set(before?.requests.filter(row => row.kind === 'quote').map(row => row.id));
+      if ((needsCheck() || changed) && !await check()) return;
+      const prepared = workbench.latestSnapshot();
+      if (!prepared || activeQuoteRequest.current !== request.id || !workbench.readyForReply()) throw new Error('The email or quote changed. Review it before continuing.');
+      if (prepared.requests.some(row => row.kind === 'quote' && !quoteIds.has(row.id))) {
+        showAttention('Different dates were separated into quote actions. Generate each quote from its tab.', [], 'review');
+        return;
+      }
+      const missing = quoteReadiness(prepared.session.draft, request.id, 'execute');
+      if (missing.length) {
+        showAttention(missing.map(item => item.message).join(' '), missing.map(item => item.path), 'review');
+        return;
+      }
+      await commands.execute();
+      const generated = workbench.latestSnapshot();
+      const output = getQuoteOutput(source, generated, request.id, scopedConfiguration);
+      if (!generated || !output || output.issues.length || !output.cover || output.failures.length ||
+          (!output.inventoryDecline && (!output.artifacts.some(item => item.kind === 'pdf_quote') ||
+            !output.artifacts.some(item => item.kind === 'xlsx_quote')))) {
+        setQuoteDeliveryMessage('The quote package is incomplete. Review the results above before creating a draft.');
+        return;
+      }
+      if (!props.onSaveQuoteOutput) throw new Error('The mail draft is unavailable. Review the quote above.');
+      const result = await props.onSaveQuoteOutput({ snapshot: generated, requestId: request.id,
+        html: quoteCoverHtml(output.cover.body), isCurrentSnapshot: () => {
+          const current = workbench.latestSnapshot();
+          return activeQuoteRequest.current === request.id && workbench.readyForReply() && current?.sourceMessageId === generated.sourceMessageId &&
+            current.session.seq === generated.session.seq && current.session.draft.generationId === generated.session.draft.generationId;
+        } });
+      if (activeQuoteRequest.current === request.id) {
+        setQuoteDeliveryMessage(result.message);
+        if (result.status === 'saved' || result.status === 'created') setSavedQuoteOperation(output.operationId);
+      }
+    } catch (failure) { if (activeQuoteRequest.current === request.id) showFailure(failure, 'save'); }
+    finally { setGeneratingQuote(false); }
+  };
   const save = async () => {
     if (!request || createBlocked || preview || capabilityUnavailable) return;
+    if (request.kind === 'quote') { await generateQuote(); return; }
     if (capabilitySaveUnavailable && !needsCheck()) return;
     if (request.kind === 'amend' && !workbench.readyForReply()) {
       setChecked(null);
@@ -691,7 +746,8 @@ export function ReservationPane(props: ReservationPaneProps) {
               onClick={() => { if (workbench.readyForReply()) void commands.acceptFinancialReview(review.path, review.note, review.observation.ref).then(() => setAttention(null)).catch(() => {}); }}>I reviewed this Infor price</button>}
         </section>;
       })}
-      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel output={output} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} onSaved={setSavedQuoteOperation} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
+      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel output={output} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} onSaved={setSavedQuoteOperation} saved={Boolean(output && savedQuoteOperation === output.operationId)} blocked={generatingQuote || busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
+      {request?.kind === 'quote' && quoteDeliveryMessage && <p className={styles.notice} role="status">{quoteDeliveryMessage}</p>}
       {request?.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => {
         const comparison = record(record(view).priceComparison), requested = record(comparison.requested);
         const hasSourcePrice = !['', 'not_requested', 'not_applicable'].includes(text(comparison.status));
@@ -731,7 +787,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}
       {quoteMissing.length > 0 && <div className={`${styles.notice} ${styles.readiness}`} role="status">
-        <strong>Complete before {needsCheck() ? 'checking' : 'generating'} the quote:</strong>
+        <strong>Complete before generating the quote:</strong>
         <ul>{quoteMissing.map((item, index) => <li key={`${item.code}:${item.path}:${index}`}>
           <button type="button" onClick={() => focusField(item.path)}>{item.message}</button>
         </li>)}</ul>
@@ -749,7 +805,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p><strong>Guest gets:</strong> {stage.guestGets}</p></>}
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || quoteMissing.length > 0 || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
+        <button type="button" className={styles.primary} disabled={busy || generatingQuote || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || quoteMissing.length > 0 || (request.kind === 'quote' && Boolean(output && savedQuoteOperation === output.operationId && !output.stale && !output.issues.length)) || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{generatingQuote ? 'Generating quote…' : stage?.button}</button></div>
       {!currentAttention && (workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;

@@ -166,6 +166,20 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
     hasCurrentUnavailableInventoryProof(snapshot, source, requestId, observation, configuration);
   if (result.unavailableInventory !== undefined && !inventoryDecline)
     issues.push('The unavailability reply no longer matches a complete current Infor result. Refresh the search before using it.');
+  if (result.unavailableInventory === undefined) {
+    const priceRef = typeof result.preparedObservationRef === 'string' ? result.preparedObservationRef : '';
+    const price = draft.observations.find((item) => item.ref === priceRef);
+    const priceCriteria = rec(price?.criteria), priceResult = rec(price?.result);
+    const expiry = Date.parse(typeof priceResult.freshUntil === 'string' ? priceResult.freshUntil : '');
+    if (!price || !observation.sourceRefs.includes(priceRef) || price.kind !== 'rate_availability' ||
+        price.status !== 'complete' || !price.coverage.complete || price.generationId !== draft.generationId ||
+        price.propertyCode !== draft.propertyCode || price.sourceMessageId !== source.messageId ||
+        priceCriteria.workflow !== 'quote' || priceCriteria.requestId !== requestId ||
+        priceCriteria.sourceHash !== source.sourceHash || priceCriteria.inputDigest !== rec(observation.criteria).inputDigest ||
+        !Number.isFinite(expiry) || expiry <= Date.now()) {
+      issues.push('The Infor price is no longer current. Generate the quote again.');
+    }
+  }
   const textOnly = Array.isArray(result.artifacts) && raw.length === 0 && outputKinds.length === 1 && outputKinds[0] === 'email_quote' &&
     Array.isArray(result.outputKinds) && result.outputKinds.length === 1 && result.outputKinds[0] === 'email_quote' &&
     operation.status === 'succeeded' && observation.status === 'complete' && observation.coverage.complete &&

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
-import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
+import { createOperationId, type AttachmentMeta, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { trpcClient } from '@/providers/query-provider';
@@ -157,6 +157,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       const output = await getReady(requestId, html, snapshot, isCurrentSnapshot), host = live.current.bridge, email = host?.activeEmail;
       if (!host || !email || !email.entryId || !email.storeId || !email.folderEntryId ||
           !host.supportsAction('GET_ACTIVE_EMAIL') || !host.supportsAction('CREATE_REPLY_DRAFT') ||
+          !host.supportsAction('GET_EMAIL_BY_ENTRY_ID') || !host.supportsAction('GET_ATTACHMENT_METADATA') ||
           (output.artifacts.length && !host.supportsAction('ADD_ATTACHMENT_TO_DRAFT'))) throw new Error('Connect Outlook and update the add-in before creating this draft.');
       if (output.artifacts.length && host.capabilities?.preservesAttachmentFilenames !== true) throw new Error('Update the Outlook add-in to attach correctly named PDF and Excel files. The files remain available to download.');
       if (output.artifacts.some(item => item.sizeBytes > MAX_OUTLOOK_ATTACHMENT_BYTES)) throw new Error('A quotation file exceeds the Outlook add-in limit. Download and attach it manually; no reply was created.');
@@ -183,6 +184,8 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
         submitted = true;
         const location = await host.sendCommand<typeof attempt.create, MailLocation>('CREATE_REPLY_DRAFT', attempt.create);
         if (!location?.entryId || !location.storeId || !location.folderEntryId) throw new Error('Outlook did not confirm the draft location.');
+        if (location.locationUnverified || location.draftPlacementWarning || location.storeId !== email.storeId)
+          throw new Error('Outlook could not confirm where the draft was saved.');
         attempt.location = location;
       }
       if (!current()) return report('unknown', 'A reply may have been created. Check Outlook Drafts before continuing.');
@@ -193,12 +196,27 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       for (let index = attempt.completed; index < attempt.attachments.length; index++) {
         if (!current()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
         submitted = true;
-        await host.sendCommand('ADD_ATTACHMENT_TO_DRAFT', attempt.attachments[index]!);
+        const attachment = attempt.attachments[index]!;
+        const added = await host.sendCommand<typeof attachment, boolean>('ADD_ATTACHMENT_TO_DRAFT', attachment);
+        if (added !== true) throw new Error('Outlook did not confirm an attachment.');
         attempt.completed = index + 1;
       }
+      const identity = { entryId: location.entryId, storeId: location.storeId, folderEntryId: location.folderEntryId };
+      const draft = await host.sendCommand<typeof identity, WorkstationEmailPayload | null>('GET_EMAIL_BY_ENTRY_ID', identity);
+      const metadata = await host.sendCommand<typeof identity, AttachmentMeta[]>('GET_ATTACHMENT_METADATA', identity);
+      const normalize = (value: string) => value.replace(/\s+/gu, ' ').trim();
+      const body = document.createElement('div');
+      body.innerHTML = attempt.html;
+      body.querySelectorAll('br').forEach(lineBreak => lineBreak.replaceWith('\n'));
+      const expectedBody = normalize(body.textContent ?? '');
+      if (!current() || isCurrentSnapshot && !isCurrentSnapshot() || !draft || draft.entryId !== location.entryId ||
+          draft.storeId !== location.storeId || draft.folderEntryId !== location.folderEntryId ||
+          !expectedBody || !normalize(draft.bodyText).includes(expectedBody) || !Array.isArray(metadata) ||
+          attempt.output.artifacts.some(item => metadata.filter(att => att.fileName === item.fileName && att.byteSize === item.sizeBytes).length !== 1))
+        throw new Error('Outlook could not confirm the draft and attachments.');
       if (readMarker() === attempt.create.operationId) writeMarker(null);
       pending.current = null;
-      return report('created', 'The reviewed reply and available files were created in Outlook Drafts.');
+      return report('created', 'Quote saved in Outlook Drafts. Review it there before sending.');
     } catch (error) {
       if (submitted || pending.current?.location || (pending.current && readMarker() === pending.current.create.operationId))
         return report('unknown', `${failure(error)} Retry the same reply, or check Outlook Drafts.`);

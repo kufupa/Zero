@@ -271,7 +271,7 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
   const options = Array.isArray(result.rateOptions) ? result.rateOptions.map(record).filter((option) => option.groupId === groupId) : [];
   const current = quoteOffersCurrent(editor, observation);
   return <div className={styles.offerList}>
-    {observation && !current && <p className={styles.notice}>Earlier availability shown. Check the quote again before choosing.</p>}
+    {observation && !current && <p className={styles.notice}>Earlier availability shown. Generate the quote again before choosing.</p>}
     {result.availabilityTruncated === true && <p className={styles.notice}>Infor's availability results were truncated; some offers may be missing.</p>}
     {!options.length && <p className={styles.note}>{observation ? 'No selectable Infor offers were returned for this group.' : 'Available Infor offers appear after lookup.'}</p>}
     {options.map((option, index) => {
@@ -347,8 +347,8 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
             <option value="unsupported">Other request · handle separately</option>
           </select>
         </label>
-        <label data-field-path={`${path}/scope`} className={styles.localField}>Scope
-          <FieldReview editor={editor} path={`${path}/scope`} label="extra scope" requireReview />
+        <label data-field-path={`${path}/scope`} className={styles.localField}>Apply this amount to
+          <FieldReview editor={editor} path={`${path}/scope`} label="groups for this amount" requireReview />
           <select value={scope || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
             const nextScope = event.target.value;
             editor.commands.setUncommitted(`${path}/scope`, true);
@@ -356,11 +356,11 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
               if (nextScope === 'overall' && selected.length) await editor.commands.edit(`${path}/targetRefs`, []);
               await editor.commands.edit(`${path}/scope`, nextScope);
             })().finally(() => editor.commands.setUncommitted(`${path}/scope`, false)).catch(() => {});
-          }}><option value="unresolved">Unresolved</option><option value="overall">All groups</option>
-            <option value="per_target">Selected groups</option></select>
+          }}><option value="unresolved">Choose groups</option><option value="overall">All room groups</option>
+            <option value="per_target">Selected room groups</option></select>
         </label>
         <div data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="extra groups" requireReview /></div>
-        {scope === 'per_target' && <fieldset className={styles.targetFields}><legend>Apply to groups</legend>
+        {scope === 'per_target' && <fieldset className={styles.targetFields}><legend>Select room groups</legend>
           {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id}>
             <input type="checkbox" checked={selected.includes(id)} onChange={(event) => void editor.commands.edit(`${path}/targetRefs`,
               event.target.checked ? [...selected, id] : selected.filter((value) => value !== id))} /> Group {groupIndex + 1}
@@ -455,21 +455,12 @@ export function QuoteEditor(editor: Editor) {
   const selectedStrategy = text(valueAt(snapshot, `${bodyPath}/salesStrategy`)).trim();
   const offersCurrent = quoteOffersCurrent(editor, observation);
   const availabilityNotice = availabilityMessage(result);
-  const artifactPath = `${bodyPath}/outputIntent/artifacts`;
-  const artifactsValue = valueAt(snapshot, artifactPath);
-  const artifacts = Array.isArray(artifactsValue) ? artifactsValue.map(text) : [];
-  const outputOptions = [
-    { kind: 'email_quote', label: 'Cover email' },
-    { kind: 'pdf_quote', label: 'PDF quote' },
-    { kind: 'xlsx_quote', label: 'Excel quote' },
-  ] as const;
-  const allOutputsSelected = outputOptions.every((option) => artifacts.includes(option.kind));
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
     <Section title="Stay and rooms">
       <GuestRoster editor={editor} path={`${bodyPath}/guestNames`} />
       {!groups.length && <p className={styles.notice}>Add a room group to start a manual quote.</p>}
-      {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Check the quote again before relying on it.`}</p>}
+      {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Generate the quote again before relying on it.`}</p>}
       <div className={styles.groupHeading}><strong>Room groups</strong>
         <button type="button" className={styles.linkButton} aria-label="Add room group"
           data-field-path={`${bodyPath}/groups`}
@@ -527,7 +518,7 @@ export function QuoteEditor(editor: Editor) {
       <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact quoteName />
       <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
       {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
-        This source price used BAR as a discovery default; no sales strategy was selected. Choose the intended strategy above before Review/Check. If it is not BAR, check and prepare the price again.
+        This price search used BAR as a default. Choose the intended sales strategy above before generating the quote.
       </p>}
     </Section>
     <MoneyRequests editor={editor} bodyPath={bodyPath} groups={groups} rows={rows} />
@@ -537,17 +528,7 @@ export function QuoteEditor(editor: Editor) {
       <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
       <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
-      <p className={styles.note}>Choose outputs from the same current Infor-priced facts. Saving the cover email creates an unsent draft; quote files stay available to download.</p>
-      <fieldset data-field-path={artifactPath} className={styles.targetFields}><legend>Quote outputs</legend>
-        {outputOptions.map((option) => <label key={option.kind}>
-          <input type="checkbox" checked={artifacts.includes(option.kind)} disabled={view.busy}
-            onChange={(event) => void commands.edit(artifactPath, event.target.checked
-              ? [...artifacts, option.kind] : artifacts.filter((kind) => kind !== option.kind))} /> {option.label}
-        </label>)}
-      </fieldset>
-      {!artifacts.length && <p className={styles.notice}>Select at least one output before generating the quote.</p>}
-      {!allOutputsSelected && <button type="button" className={styles.linkButton} disabled={view.busy}
-        onClick={() => void commands.edit(artifactPath, outputOptions.map((option) => option.kind))}>Select full quote package</button>}
+      <p className={styles.note}>Generate quote creates an unsent draft with the cover email, PDF and Excel in Drafts.</p>
       <p className={styles.note}>A provisional booking needs a separate Create action.</p>
       {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`} className={styles.notice}>This request has not been confirmed as quote-only.
         <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>

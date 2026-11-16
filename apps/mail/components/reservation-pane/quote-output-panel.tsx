@@ -24,16 +24,16 @@ function failureMessage(code: string): string {
   }
 }
 
-export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnapshot, readyForReply, onSaved, blocked }: {
+export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnapshot, readyForReply, onSaved, blocked, saved }: {
   output: QuoteOutput | null; snapshot: ReservationPaneSnapshot; requestId: string;
-  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; onSaved(operationId: string | null): void; blocked: boolean;
+  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; onSaved(operationId: string | null): void; blocked: boolean; saved: boolean;
 }) {
   const [body, setBody] = useState(output?.cover?.body ?? '');
   const [busy, setBusy] = useState(false);
   // Success text is cleared by later edits; failure or uncertain-outcome warnings stay until the next save.
   const [message, setMessage] = useState<{ text: string; saved: boolean } | null>(null);
   const bodyVersion = useRef(0);
-  useEffect(() => { bodyVersion.current += 1; onSaved(null); setBody(output?.cover?.body ?? ''); setMessage(null);
+  useEffect(() => { bodyVersion.current += 1; setBody(output?.cover?.body ?? ''); setMessage(null);
     return () => { bodyVersion.current += 1; };
   }, [output?.operationId, onSaved]);
   if (!output) return null;
@@ -56,14 +56,14 @@ export function QuoteOutputPanel({ output, snapshot, requestId, save, latestSnap
   };
   return <section className={styles.section}><h3>{output.inventoryDecline ? 'Unsent room-unavailability reply'
     : output.cover ? 'Quote files and unsent reply' : 'Quote files for download'}</h3>
-    <p className={styles.small}>{output.artifacts.length ? 'Download the available files below. ' : ''}{output.cover ? `${quoteReplyLabel(output)} puts the reply and available files in your Drafts folder. The client receives nothing until you send it from your mail.` : 'Nothing has been sent to the client.'}</p>
+    <p className={styles.small}>{saved ? 'Saved in Drafts. Open the draft to review and send it.' : output.cover ? `${quoteReplyLabel(output)} puts the reply and available files in Drafts. Nothing is sent until you send it from your mail.` : 'Nothing has been sent to the client.'}</p>
     {output.issues.map(issue => <p className={styles.notice} key={issue}>{issue}</p>)}
     {output.inventoryDecline && <p className={styles.notice}>Infor confirmed the selected room and rate had no rooms available for every requested night. This is not a whole-hotel sold-out claim. No priced PDF or Excel quote was created; nothing has been sent.</p>}
     {output.failures.map(failure => <p className={styles.notice} key={failure}>{failureMessage(failure)}</p>)}
-    {output.cover && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" value={body} onChange={event => { bodyVersion.current += 1; onSaved(null); setMessage(current => current?.saved ? null : current); setBody(event.target.value); }} rows={6} /></label></>}
+    {output.cover && !saved && <><p className={styles.small}>To: {output.cover.to}</p><label className={styles.field}>Cover reply<textarea aria-label="Quote cover reply" disabled={blocked} value={body} onChange={event => { bodyVersion.current += 1; onSaved(null); setMessage(current => current?.saved ? null : current); setBody(event.target.value); }} rows={6} /></label></>}
     <div className={styles.sources}>{output.artifacts.map(artifact => <a key={artifact.sha256} download={artifact.fileName}
       href={`data:${artifact.mimeType};base64,${artifact.bytesBase64}`}>{artifact.fileName}</a>)}</div>
-    {output.cover && <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>
+    {output.cover && !saved && <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>
       {busy ? 'Saving reply…' : quoteReplyLabel(output)}
     </button>}
     {message && <p role="status" className={styles.notice}>{message.text}</p>}
