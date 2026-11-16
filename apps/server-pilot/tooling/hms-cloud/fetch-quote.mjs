@@ -149,13 +149,19 @@ export async function createAudit(directory, {video=false,trace='failure',secret
             if(report.trace.status!=='failed')
               report.trace.status=disk.usedPercent===null?'refused_disk_usage_unavailable':'refused_disk_limit';
           } else {
+            let failureStage='storage';
             try {
               await collectStorage();
+              failureStage='trace_stop';
               await context.tracing.stop({path:rawPath});
+              failureStage='permissions';
               await chmod(rawPath,0o600);
+              failureStage='sanitize';
               const receipt=await sanitizePlaywrightTraceFile(rawPath,join(directory,'trace.zip'),[...secretValues]);
+              failureStage='artifact';
               report.trace={status:'complete',...await artifact('trace.zip'),sanitizerVersion:receipt.sanitizerVersion};
             } catch {
+              try {event('trace_failure_stage',{stage:failureStage});} catch { /* Keep cleanup independent of diagnostics. */ }
               report.trace.status='failed';fail('TRACE_CAPTURE_FAILED');
               await rm(join(directory,'trace.zip'),{force:true});
             } finally {
