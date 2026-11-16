@@ -15,13 +15,14 @@ import { checkpointReservationWorkflowV2Extraction, claimReservationWorkflowV2Pr
   finishReservationWorkflowV2Prefill } from './reservation-workflow-v2-state.js';
 import { runReservationWorkflowV2Prefill } from './reservation-workflow-v2-prefill.js';
 import { createAzureExtractionAdapter } from './extraction/extract.js';
+import { prefillSimpleSynthesisEnabled } from './extraction/config.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
 import { runReservationArrivalChecks } from './reservation-workflow-v2-arrival-checks.js';
 
 /** Preserve model failure timing even when a bounded retry keeps its original fallback. */
 function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: string,
-  reasoningEffort: string): ModelAdapter | null {
+  stage: 'extract' | 'synthesis', reasoningEffort: string): ModelAdapter | null {
   if (!adapter) return null;
   let callNumber = 0;
   return {
@@ -33,7 +34,7 @@ function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: s
       const report = (outcome: string, usage?: { inputTokens: number; outputTokens: number }) => {
         if (reported) return;
         reported = true;
-        console.info('reservation_v2_model_call', JSON.stringify({ sourceMessageId, callNumber: call,
+        console.info('reservation_v2_model_call', JSON.stringify({ sourceMessageId, stage, callNumber: call,
           reasoningEffort, outcome, elapsedMs: Date.now() - startedAt,
           ...(usage ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens } : {}) }));
       };
@@ -70,9 +71,15 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     operationSignal.throwIfAborted();
     if (!selection) return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true, jobFence });
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
+    const azureAdapter = createAzureExtractionAdapter(modelEnv);
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
-      signal: operationSignal, adapter: observedPrefillAdapter(createAzureExtractionAdapter(modelEnv), input.source.messageId, modelEnv.EXTRACTION_REASONING_EFFORT),
+      signal: operationSignal,
+      adapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'extract', modelEnv.EXTRACTION_REASONING_EFFORT),
+      synthesisAdapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'synthesis', modelEnv.EXTRACTION_REASONING_EFFORT),
+      simpleSynthesisAdapter: prefillSimpleSynthesisEnabled(modelEnv) ? observedPrefillAdapter(
+        createAzureExtractionAdapter({ ...modelEnv, EXTRACTION_REASONING_EFFORT: 'medium' }),
+        input.source.messageId, 'synthesis', 'medium') : null,
       onValidatedExtraction: async (generationId, extraction) => {
         const checkpoint = await checkpointReservationWorkflowV2Extraction(scoped, { ...input, claim: activeClaim,
           generationId, extraction, jobFence });
