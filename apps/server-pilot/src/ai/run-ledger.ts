@@ -328,7 +328,7 @@ export interface AiRunScopeFilter {
 export interface ClaimNextAiRunInput extends AiRunScopeFilter {
   ownerId: string;
   lane: AiExecutorLane;
-  /** Allow one due analytics or reply check ahead of background prefills on the default lane. */
+  /** Allow one due priority-zero run ahead of background prefills on the default lane. */
   preferDeferredWork?: boolean;
   now?: Date;
   staleRunTimeoutMs?: number;
@@ -747,8 +747,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           ...(input.lane === 'default' && input.preferDeferredWork
             ? [desc(sql`CASE
                 WHEN ${aiWorkflowRun.priority} >= 2 OR (${aiWorkflowRun.priority} = 1 AND ${aiWorkflowRun.runKind} <> 'reservation_prefill') THEN 2
-                WHEN ${aiWorkflowRun.priority} = 0 AND (${aiWorkflowRun.runKind} = 'reply_check' OR
-                  (${aiWorkflowRun.runKind} = 'inbound_triage' AND ${aiWorkflowRun.idempotencyKey} = 'external-sent-baseline:' || ${aiWorkflowRun.triggerMessageId}::text)) THEN 1
+                WHEN ${aiWorkflowRun.priority} = 0 THEN 1
                 ELSE 0 END`)]
             : []),
           desc(aiWorkflowRun.priority),
