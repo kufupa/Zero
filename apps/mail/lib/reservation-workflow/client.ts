@@ -188,6 +188,7 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
           !isString(value.requestId) || !isUuid(value.grantId) || value.operationId !== value.grantId ||
           !(isUuid(value.runId) || (status === 'needs_reconcile' || status === 'needs_review' || status === 'succeeded' || status === 'failed') && value.runId === null)) return [];
       return [{ endpoint, status, requestId: value.requestId, runId: value.runId, grantId: value.grantId, operationId: value.grantId,
+        ...(isUuid(value.preparedRef) ? { preparedRef: value.preparedRef } : {}),
         ...(knownFailureCopy(value.failureClass) ? { failureClass: value.failureClass as string } : {}),
         ...(isString(value.allocationId) ? { allocationId: value.allocationId } : {}),
         ...(isString(value.serviceId) ? { serviceId: value.serviceId } : {}) }];
@@ -1105,6 +1106,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       if (queued && kind !== 'create' && !snapshot.operationResults.some(row => row.id === queued.operationId) &&
           !snapshot.session.workflowDispatches?.some(row => row.grantId === queued.grantId)) {
         const dispatch = { ...queued, endpoint: 'execute' as const, requestId: command.requestId,
+          ...(receipt ? { preparedRef: receipt.preparedRef } : {}),
           ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
         snapshot = { ...snapshot, session: { ...snapshot.session, workflowDispatches: [...snapshot.session.workflowDispatches ?? [], dispatch] } };
       }

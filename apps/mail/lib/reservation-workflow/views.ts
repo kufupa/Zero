@@ -9,6 +9,8 @@ export type RowChange =
   | { kind: 'separate_filing_target'; requestId: string; documentId: string; targetHintId: string;
       targetDisposition: 'included' | 'excluded' }
   | { kind: 'link_created_addon_target'; requestId: string; allocationId: string; serviceId: string };
+export type FilingTarget = { confirmation: string; guestName?: string; bookedArrival?: string; bookedDeparture?: string }
+  | { allocationTarget: { requestId: string; allocationId: string } };
 export type WorkbenchCommands = {
   stageEdit(path: string, value: unknown, state?: ReservationFieldOverride['state'], options?: { notify?: boolean }): void;
   setUncommitted(key: string, dirty: boolean): void;
@@ -29,6 +31,8 @@ export type WorkbenchCommands = {
   acceptServiceReview(fieldPath: string, note: string, expected?: { path: string; value: unknown; generationId: string }): Promise<void>;
   acceptFinancialReview(fieldPath: string, note: string, observationRef: string): Promise<void>;
   configureFiling(attachmentId: string, target: string | { confirmation: string; guestName?: string; bookedArrival?: string; bookedDeparture?: string } | { allocationTarget: { requestId: string; allocationId: string } }, kind: 'voucher' | 'payment_proof'): Promise<void>;
+  prepareFiling(attachmentId: string, target: FilingTarget, kind: 'voucher' | 'payment_proof'): Promise<void>;
+  fileFiling(preparedRef: string, observationRef: string): Promise<void>;
   lookupServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   previewServices(target: string | ReservationSavedServiceTarget, serviceId?: string): Promise<void>;
   executeServices(target: string | ReservationSavedServiceTarget, serviceId: string, reviewedPrepareRef?: string): Promise<void>;

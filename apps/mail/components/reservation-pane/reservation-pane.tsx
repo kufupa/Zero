@@ -729,7 +729,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>)}
       </details>}
     </main>
-    {request && !createBlocked && !cancelHeld && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
+    {request && !createBlocked && !cancelHeld && request.kind !== 'services' && request.kind !== 'other' && request.kind !== 'filing' && <footer className={styles.footer}>
       {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}

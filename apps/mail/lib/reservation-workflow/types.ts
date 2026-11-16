@@ -61,7 +61,7 @@ export type ReservationWorkflowDispatch = {
   endpoint: 'execute' | 'createGuestProfile' | 'executeServices' | 'executeSavedServices';
   requestId: string; allocationId?: string; serviceId?: string;
   status: 'queued' | 'claimed' | 'running' | 'retry_wait' | 'needs_reconcile' | 'needs_review' | 'succeeded' | 'failed';
-  runId: string | null; grantId: string; operationId: string;
+  runId: string | null; grantId: string; operationId: string; preparedRef?: string;
   failureClass?: string;
 };
 

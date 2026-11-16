@@ -9,7 +9,7 @@ import { workEvent, workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import { canonicalJson } from '../../ai/draft-approval.js';
-import { approveHmsWrite, formDigest, hmsAllocationOperationId, prepareNativeHmsWrite, type V2HmsNativePreparation } from '../../ai/hms-approval.js';
+import { approveHmsWrite, formDigest, hmsAllocationOperationId, HmsApprovalError, prepareNativeHmsWrite, type V2HmsNativePreparation } from '../../ai/hms-approval.js';
 import { hmsConfigurationIdentities, hmsPreparationSchema, hmsWriteGrantV2Schema, loadHmsPreparation,
   preparationDigest } from '../../hms/hms-preparation.js';
 import { propertyConfigurationForScope } from '../../hms/rate-catalogue.js';
@@ -150,12 +150,19 @@ async function queuePreparedV2(ctx: Awaited<ReturnType<typeof nativeContext>>, p
       prepared.session.sessionId !== ctx.user.sessionId || prepared.session.sessionProfile !== ctx.user.sessionProfile) {
     return { status: 'needs_prepare' as const, issue: 'staff_go_preparation_changed' };
   }
-  const approved = await approveHmsWrite({ db: ctx.db, transportId: ctx.transport.id, workItemId: input.workItemId,
-    actorUserId: ctx.user.id, sessionId: ctx.user.sessionId, sessionProfile: ctx.user.sessionProfile,
-    propertySwitch: input.propertySwitch, preparedRef, expectedRevision: input.expectedRevision,
-    selectedSource: { threadId: input.source.threadId, messageId: input.source.messageId, sourceHash: input.source.sourceHash },
-    formDigest: prepared.businessDigest });
-  return { status: 'queued' as const, ...approved, operationId: approved.grantId };
+  try {
+    const approved = await approveHmsWrite({ db: ctx.db, transportId: ctx.transport.id, workItemId: input.workItemId,
+      actorUserId: ctx.user.id, sessionId: ctx.user.sessionId, sessionProfile: ctx.user.sessionProfile,
+      propertySwitch: input.propertySwitch, preparedRef, expectedRevision: input.expectedRevision,
+      selectedSource: { threadId: input.source.threadId, messageId: input.source.messageId, sourceHash: input.source.sourceHash },
+      formDigest: prepared.businessDigest });
+    return { status: 'queued' as const, ...approved, operationId: approved.grantId };
+  } catch (error) {
+    if (prepared.operation === 'attach_document' && error instanceof HmsApprovalError &&
+        (error.refusal === 'snapshot_stale' || error.refusal === 'state_changed'))
+      return { status: 'needs_prepare' as const, issue: 'filing_preparation_expired_or_changed' };
+    throw error;
+  }
 }
 
 const sourceInput = z.object({
@@ -506,7 +513,7 @@ export const reservationWorkflowV2Router = router({
       return [{ endpoint: captured.endpoint, requestId: captured.input.requestId,
         ...(captured.input.allocationId ? { allocationId: captured.input.allocationId } : {}),
         ...('serviceId' in captured.input ? { serviceId: captured.input.serviceId } : {}),
-        runId: run?.id ?? null, grantId: grant.grantId, operationId: grant.grantId, status,
+        runId: run?.id ?? null, grantId: grant.grantId, operationId: grant.grantId, preparedRef: grant.preparedRef, status,
         // Only closed codes leave the server; never expose stored error text.
         ...(run?.failureClass && ['failed', 'needs_reconcile', 'retry_wait'].includes(status)
           ? { failureClass: ['BEDROCK_TRANSIENT', 'ARTIFACT_TRANSIENT', 'AUDIT_CAPTURE', 'STAFF_QUOTE_ACTIVE',
