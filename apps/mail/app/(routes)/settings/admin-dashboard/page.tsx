@@ -335,7 +335,11 @@ function SourceEmailAction({ to }: { to: string }) {
           currentScope.activeTransportId !== centurion.id
         )
           return;
-        queryClient.setQueryData(trpc.connections.getDefault.queryKey(), centurion);
+        queryClient.setQueryData(trpc.connections.getDefault.queryKey(), {
+          ...centurion,
+          picture: null,
+          createdAt: null,
+        });
       }
       if (getMailCacheScope().activeTransportId !== centurion.id) return;
       void navigate(to);
