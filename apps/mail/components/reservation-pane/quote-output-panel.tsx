@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { getQuoteOutput, quoteCoverHtml, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
+import { quoteReplyLabel } from '@/lib/reservation-workflow/pane-stage';
 import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import styles from './reservation-pane.module.css';
 
@@ -23,10 +24,10 @@ function failureMessage(code: string): string {
   }
 }
 
-export function QuoteOutputPanel({ source, configuration, snapshot, requestId, save, latestSnapshot, readyForReply, blocked }: {
+export function QuoteOutputPanel({ source, configuration, snapshot, requestId, save, latestSnapshot, readyForReply, onSaved, blocked }: {
   source: ReservationSourceContext; snapshot: ReservationPaneSnapshot; requestId: string;
   configuration: PropertyConfiguration | null;
-  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; blocked: boolean;
+  save?: SaveQuoteOutput; latestSnapshot(): ReservationPaneSnapshot | null; readyForReply(): boolean; onSaved(operationId: string): void; blocked: boolean;
 }) {
   const output = getQuoteOutput(source, snapshot, requestId, configuration);
   const [body, setBody] = useState(output?.cover?.body ?? '');
@@ -44,11 +45,13 @@ export function QuoteOutputPanel({ source, configuration, snapshot, requestId, s
           && current.session.draft.generationId === snapshot.session.draft.generationId;
       } });
       setMessage(result.message);
+      if (result.status === 'saved' || result.status === 'created') onSaved(output.operationId);
     } catch { setMessage('The reply could not be confirmed. Check Drafts before trying again.'); }
     finally { setBusy(false); }
   };
   return <section className={styles.section}><h3>{output.inventoryDecline ? 'Unsent room-unavailability reply'
-    : output.cover ? 'Unsent quote reply' : 'Quote files'}</h3>
+    : output.cover ? 'Quote files and unsent reply' : 'Quote files for download'}</h3>
+    <p className={styles.small}>{output.artifacts.length ? 'Download the available files below. ' : ''}{output.cover ? `${quoteReplyLabel(output)} puts the reply and available files in Outlook Drafts. The client receives nothing until you send it from Outlook.` : 'Nothing has been sent to the client.'}</p>
     {output.issues.map(issue => <p className={styles.notice} key={issue}>{issue}</p>)}
     {output.inventoryDecline && <p className={styles.notice}>Infor confirmed the selected room and rate had no rooms available for every requested night. This is not a whole-hotel sold-out claim. No priced PDF or Excel quote was created; nothing has been sent.</p>}
     {output.failures.map(failure => <p className={styles.notice} key={failure}>{failureMessage(failure)}</p>)}
@@ -56,9 +59,7 @@ export function QuoteOutputPanel({ source, configuration, snapshot, requestId, s
     <div className={styles.sources}>{output.artifacts.map(artifact => <a key={artifact.sha256} download={artifact.fileName}
       href={`data:${artifact.mimeType};base64,${artifact.bytesBase64}`}>{artifact.fileName}</a>)}</div>
     {output.cover && <button type="button" disabled={!save || busy || blocked || output.issues.length > 0 || !body.trim()} onClick={() => { void saveReply(); }}>
-      {busy ? 'Saving reply…' : output.inventoryDecline ? 'Save unsent decline reply'
-        : output.failures.length && !output.artifacts.length ? 'Save unsent reply without quotation files'
-        : output.failures.length ? 'Save unsent reply with available files' : 'Save unsent reply'}
+      {busy ? 'Saving reply…' : quoteReplyLabel(output)}
     </button>}
     {message && <p role="status" className={styles.notice}>{message}</p>}
   </section>;

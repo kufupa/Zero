@@ -405,7 +405,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       if (preview) return Promise.reject(new Error('Preview only. Profile creation is disabled.'));
       if (!canCreateGuest) return Promise.reject(new Error('Guest profile creation is not available for this hotel yet.'));
       if (liveInputs.current.key === key && [...liveInputs.current.uncommitted].some(hold =>
-        !hold.startsWith('service-candidate:/proposal/content/services/'))) return Promise.reject(new Error('Apply changed fields before creating a profile.'));
+        !hold.startsWith('service-candidate:/proposal/content/services/'))) return Promise.reject(new Error('Finish the field you’re typing in (press Tab), then create the profile again.'));
       const requestId = requireRequest();
       const inFlightKey = guestAttemptKey(source, requestId, allocationId);
       if (guestCreatesInFlight.has(inFlightKey)) return Promise.reject(new Error('Profile creation is already in progress.'));
@@ -523,9 +523,9 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         return result;
       });
     },
-    prepare(allocationId) { if (!canPrepareRequest || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
+    prepare(allocationId) { if (!canPrepareRequest || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish the field you’re typing in (press Tab), then check again.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
     review(scope, ids) { return run(context => client.reviewScope({ ...context, requestId: requireRequest(), scope, ids })); },
-    execute(allocationId) { if (!canExecuteRequest) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
+    execute(allocationId) { if (!canExecuteRequest) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish the field you’re typing in (press Tab), then save again.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
     reconcile(operationId) { return run(context => {
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });
@@ -554,8 +554,8 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
     }); },
     configureFiling(attachmentId, target, kind) { return run(context => client.configureFiling({ ...context, requestId: requireRequest(), attachmentId, ...(typeof target === 'string' ? { confirmation: target } : target), kind })); },
     lookupServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
-    previewServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before checking Infor.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
-    executeServices(target, serviceId, reviewedPrepareRef) { if (!canSaveAddons) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Apply changed fields before saving.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
+    previewServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish the field you’re typing in (press Tab), then check again.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
+    executeServices(target, serviceId, reviewedPrepareRef) { if (!canSaveAddons) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish the field you’re typing in (press Tab), then save again.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
   };
   const initialLookup = useRef(new Set<string>());
   const prefill = current?.session.draft.prefill;

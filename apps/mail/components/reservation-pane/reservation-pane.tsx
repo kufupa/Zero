@@ -4,6 +4,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { attentionFieldPath, inputFieldLabel } from '@/lib/reservation-workflow/client';
 import { knownFailureCopy, staffFailureCopy } from '@/lib/reservation-workflow/failure-copy';
+import { derivePaneStage, quoteReplyLabel } from '@/lib/reservation-workflow/pane-stage';
+import { getQuoteOutput } from '@/lib/reservation-workflow/quote-output';
 import type { ReservationPaneSnapshot, ReservationSourceContext, ReservationWorkflowClient, ReservationWorkflowKind } from '@/lib/reservation-workflow/types';
 import { effectiveAt, guestProfileReceipt, nativeChoices, record, requestPath, text, valueAt, type WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
 import { QuoteOutputPanel, type SaveQuoteOutput } from './quote-output-panel';
@@ -27,12 +29,40 @@ const editors = { create: CreateEditor, quote: QuoteEditor, amend: AmendEditor, 
 const actionKinds = Object.keys(editors) as Array<Exclude<ReservationWorkflowKind, 'other'>>;
 const createScopedFields = new Set(['requestedMealPlan', 'mealPlan', 'taCommission', 'roomType', 'roomTypeForCharge', 'ratePlan', 'guaranteeType', 'bookingAgency', 'organization', 'arAccount',
   'sourceOfBusiness', 'reasonForStay', 'billingReference', 'track', 'guestOptIn', 'bookerName', 'bookerEmail', 'bookerMobile', 'reservationNote', 'cmsSend', 'cmsMessageId', 'cmsRecipient']);
-function issueText(explanation: string) {
-  const failure = knownFailureCopy(explanation);
+function issueText(issue: ReservationPaneSnapshot['issues'][number]) {
+  const { kind, explanation } = issue;
+  const failure = knownFailureCopy(kind) ?? knownFailureCopy(explanation);
   if (failure) return failure;
+  if (kind === 'rate_availability_unavailable') return /occupancy|adult|children/i.test(explanation) && /missing|not supplied|not provided|required|unknown/i.test(explanation)
+    ? 'Enter adults and children for each room so Infor can check the price.'
+    : 'Infor could not check the price. Check the dates, rooms and occupancy, then try again.';
+  if (kind === 'ambiguous_guest_profile') return /no matching|no match|(?:found|returned) no .*profile/i.test(explanation)
+    ? 'No matching Infor guest profile was found. Search again or choose to create a guest profile here.'
+    : 'Choose the matching Infor guest profile, or choose to create a new one.';
+  if (/guest/i.test(explanation) && /no matching profile|no match.*profile/i.test(explanation))
+    return 'No matching Infor guest profile was found. Search again or choose to create a guest profile here.';
+  if (/organization/i.test(explanation) && /no native candidate|no match|no matching/i.test(explanation)) {
+    const name = explanation.match(/organization lookup returned no native candidate for (.+?)(?:\.\s|\.$|$)/i)?.[1];
+    return `${name ? `No Infor organization matches ${name}` : 'No matching Infor organization was found'}. Search again, choose an organization or leave it blank.`;
+  }
   if (/^Candidate read v2_[a-z0-9]+ failed\.$/i.test(explanation)) return 'An Infor search during email prefill failed. Search again to verify the details.';
   if (/^Candidate read v2_[a-z0-9]+ .+; coverage is not complete\.$/i.test(explanation)) return 'An Infor search during email prefill was incomplete. Search again to verify the details.';
+  if (/\b(native|candidate|source claim|coverage|observation|reads)\b/i.test(explanation)) return 'Check the highlighted details and search Infor again if needed.';
   return explanation;
+}
+
+function attentionButtons(fields: string[], snapshot: ReservationPaneSnapshot, requestId: string, kind: ReservationWorkflowKind) {
+  const buttons = fields.map(field => {
+    const room = field.match(/\/allocations\/(\d+)(?:\/|:|$)/);
+    const section = field.match(/\/dateSections\/(\d+)(?:\/|:|$)/);
+    const group = field.match(/\/groups\/(\d+)(?:\/|:|$)/);
+    const view = snapshot.preparationViews.find(row => row.requestId === requestId && row.issue && row.fields?.includes(field));
+    const scope = room ? `Room ${Number(room[1]) + 1}` : section ? `Date section ${Number(section[1]) + 1}`
+      : group ? `Room group ${Number(group[1]) + 1}` : kind !== 'create' ? 'Details' : 'All rooms';
+    const label = /\/guest(?:\/|:|$)/.test(field) || field === 'guest' ? 'Guest' : inputFieldLabel(field);
+    return { field, target: view?.allocationId, label: `${scope} · ${label.charAt(0).toUpperCase()}${label.slice(1)}` };
+  });
+  return [...new Map(buttons.map(button => [button.label, button])).values()];
 }
 
 function issueBelongsToRequest(snapshot: ReservationPaneSnapshot, requestId: string, path?: string): boolean {
@@ -123,11 +153,12 @@ function actionLabel(snapshot: ReservationPaneSnapshot, request: ReservationPane
 export function ReservationPane(props: ReservationPaneProps) {
   const workbench = useReservationWorkbench(props);
   const [checked, setChecked] = useState<string | null>(null);
+  const [savedQuoteOperation, setSavedQuoteOperation] = useState<string | null>(null);
   const [checkedAmendReview, setCheckedAmendReview] = useState<string | null>(null);
   const [formReset, setFormReset] = useState(0);
   const [actionMenu, setActionMenu] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [attention, setAttention] = useState<{ digest: string; message: string; fields: string[] } | null>(null);
+  const [attention, setAttention] = useState<{ digest: string; message: string; fields: string[]; phase: 'check' | 'save' | 'review' } | null>(null);
   const paneRef = useRef<HTMLDivElement>(null);
   const submitting = useRef(false);
   const activeTarget = useRef<string | null>(null);
@@ -304,11 +335,12 @@ export function ReservationPane(props: ReservationPaneProps) {
     const content = pane.querySelector<HTMLElement>('main');
     if (content) content.scrollTop += destination.getBoundingClientRect().top - content.getBoundingClientRect().top - 16;
   };
-  const showAttention = (message: string, fields: string[] = []) => {
-    setAttention({ digest: digestFor(workbench.latestSnapshot()), message: knownFailureCopy(message) ?? message, fields: [...new Set(fields)] });
-    if (fields[0]) requestAnimationFrame(() => focusField(fields[0]!));
+  const showAttention = (message: string, fields: string[] = [], phase: 'check' | 'save' | 'review' = 'check') => {
+    const reason = (knownFailureCopy(message) ?? message).replace(/^Infor check: (?:needs input|needs review|unsupported|failed|invalid state) — /, '');
+    setAttention({ digest: digestFor(workbench.latestSnapshot()), message: reason, fields: [...new Set(fields)], phase });
+    requestAnimationFrame(() => { const content = paneRef.current?.querySelector<HTMLElement>('main'); if (content) content.scrollTop = 0; });
   };
-  const showFailure = (failure: unknown) => {
+  const showFailure = (failure: unknown, phase: 'check' | 'save' = 'check') => {
     const latest = workbench.latestSnapshot();
     const reply = record(latest?.workflowReply);
     const fields = Array.isArray(reply.fields) ? reply.fields.filter((field): field is string => typeof field === 'string')
@@ -347,7 +379,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         row.workflow === 'amend' && row.requestId === request.id && row.allocationId === activeTarget.current &&
         row.generationId === draft.generationId && row.status === 'prepared' && row.observationRefs.includes(observation.ref));
     if (currentAmendReview) setAttention(null);
-    else showAttention(failure instanceof Error ? failure.message : 'Infor could not complete this check. Review the details and try again.', fields);
+    else showAttention(failure instanceof Error ? failure.message : 'Infor could not complete this step. Review the details and try again.', fields, phase);
     return currentAmendReview && observation ? observation.ref : null;
   };
   const createPriceBlocked = request?.kind === 'create' && snapshot?.preparationViews.some(view => view.requestId === request.id && record(record(view).priceComparison).blocksGo === true && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && row.status === 'succeeded'));
@@ -450,17 +482,17 @@ export function ReservationPane(props: ReservationPaneProps) {
     if (capabilitySaveUnavailable && !needsCheck()) return;
     if (request.kind === 'amend' && !workbench.readyForReply()) {
       setChecked(null);
-      showAttention('Finish editing and check the current details before saving.');
+      showAttention('Finish editing and check the current details before saving.', [], 'review');
       return;
     }
     if (needsCheck()) { await check(); return; }
-    if (extrasNeedReview) { showAttention('Review the extra charges shown in the prepared quote before generating it.', [`${requestPath(request.id)}/body`]); return; }
-    if (createPriceBlocked) { showAttention('Resolve the customer price and current Infor price before saving. Refresh the Infor price after correcting it.'); return; }
+    if (extrasNeedReview) { showAttention('Review the extra charges shown in the prepared quote before generating it.', [`${requestPath(request.id)}/body`], 'review'); return; }
+    if (createPriceBlocked) { showAttention('Resolve the customer price and current Infor price before saving. Refresh the Infor price after correcting it.', [], 'review'); return; }
     setAttention(null);
     try {
       if (request.kind === 'amend' && pendingAmendReview) {
         if (!pendingAmendReview.accepted) {
-          showAttention(`Review the Infor price for ${text(pendingAmendReview.target.confirmation)} before saving.`);
+          showAttention(`Review the Infor price for ${text(pendingAmendReview.target.confirmation)} before saving.`, [], 'review');
           return;
         }
         activeTarget.current = pendingAmendReview.id;
@@ -497,7 +529,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           row.allocationId === activeTarget.current && row.generationId === latest.session.draft.generationId && row.status === 'prepared' &&
           row.observationRefs.includes(text(review.observationRef))) && latest.session.draft.observations.some(row =>
           row.ref === review.observationRef && row.generationId === latest.session.draft.generationId && record(row.result).ready === true);
-      const currentAmendPreview = showFailure(failure);
+      const currentAmendPreview = currentFeePreview ? (setAttention(null), null) : showFailure(failure, 'save');
       setCheckedAmendReview(currentAmendPreview);
       setChecked(currentFeePreview || currentAmendPreview ? digestFor(latest) : null);
     }
@@ -533,6 +565,23 @@ export function ReservationPane(props: ReservationPaneProps) {
     ['ambiguous_guest_profile', 'rate_availability_unavailable', 'mail_candidate_read_failed'].includes(issue.kind));
   const earlierIssues = scopedIssues.filter(isEarlierIssue);
   const currentIssues = scopedIssues.filter(issue => !isEarlierIssue(issue));
+  const currentAttention = attention?.digest === digest ? attention : null;
+  const reviewButtons = snapshot && request && currentAttention ? attentionButtons(currentAttention.fields, snapshot, request.id, request.kind) : [];
+  const output = request?.kind === 'quote' && snapshot ? getQuoteOutput(source, snapshot, request.id, scopedConfiguration) : null;
+  const quoteOutput = output && !output.stale && output.issues.length === 0
+    ? { operationId: output.operationId, inventoryDecline: output.inventoryDecline, hasCover: Boolean(output.cover),
+      hasFiles: output.artifacts.length > 0, saveLabel: quoteReplyLabel(output) } : null;
+  const feeReply = record(snapshot?.workflowReply);
+  const feeReview = request?.kind === 'cancel' && feeReply.status === 'needs_review' &&
+    record(feeReply.financialReview).required === true;
+  const stage = snapshot && request && request.kind !== 'services' && request.kind !== 'other'
+    ? derivePaneStage({ snapshot, request: { ...request, kind: request.kind }, needsCheck: needsCheck(),
+      pendingAmendReview: Boolean(pendingAmendReview), amendCallback: amendCallbackTargets.length > 0,
+      cancelFeeReview: feeReview, createPriceBlocked: Boolean(createPriceBlocked), extrasNeedReview, quoteDecline: record(quoteObservation?.result).failureKind === 'proven_shortage',
+      quoteOutput, savedQuoteOperation }) : null;
+  const hadWrite = snapshot?.operationResults.some(row => row.requestId === request?.id && row.workflow === request?.kind &&
+    ['succeeded', 'unknown'].includes(text(row.status))) || Boolean(pendingAmendReview);
+
   return <div ref={paneRef} className={styles.pane} data-reservation-pane>
     <header className={styles.header}><div><strong>Nava</strong><span>{preview ? 'Interactive preview · Save disabled' : workbench.saving ? 'Saving changes…' : busy ? 'Checking Infor…' : 'Saved draft'}</span></div>
       <div className={styles.history}><button type="button" aria-label="Undo draft change" disabled={disabled || !snapshot?.session.revision} onClick={() => { void workbench.undo().catch(() => {}); }}>↶</button><button type="button" aria-label="Redo draft change" disabled={disabled || snapshot?.session.revision === snapshot?.session.revisionHead} onClick={() => { void workbench.redo().catch(() => {}); }}>↷</button></div>
@@ -555,7 +604,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     </div>}</nav>
     <div className={styles.sources}>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     <main className={`${styles.content} nava-pane-scroll`}>
-    {(props.loadError || workbench.error) && <div className={styles.error} role="alert">{knownFailureCopy(workbench.error || props.loadError) ?? (workbench.error || props.loadError)}{workbench.conflict && <>
+    {(props.loadError || workbench.error && (!currentAttention || workbench.conflict)) && <div className={styles.error} role="alert">{knownFailureCopy(workbench.error || props.loadError) ?? (workbench.error || props.loadError)}{workbench.conflict && <>
       {workbench.unresolvedPending.length > 0 && <div><p>These edits need to be entered again. Copy the values before discarding:</p>
         {workbench.unresolvedPending.map(edit => <p key={edit.path}><strong>{edit.label}:</strong> {edit.value || '(empty)'}</p>)}</div>}
       <div><button type="button" disabled={sourceChanged || busy || !workbench.applicablePendingCount} onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div></>}</div>}
@@ -568,6 +617,14 @@ export function ReservationPane(props: ReservationPaneProps) {
           <div key={text(row.id)}>{row.workflow === 'guest_profile' ? 'Guest profile outcome unknown.' : text(row.summary) || text(row.workflow)} <button type="button" disabled={busy} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
         : <button type="button" disabled={busy || preview || Boolean(pendingDispatch)} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
     </div>}
+      {currentAttention && <div className={styles.notice} role="alert">
+        <strong>{currentAttention.phase === 'review' ? 'Review needed before continuing.'
+          : currentAttention.phase === 'save' ? 'Save didn’t finish — check the outcome in Infor before trying again.'
+          : hadWrite ? 'Check didn’t finish — review the details below.' : 'Check didn’t finish — no booking, stay or file was saved by this check.'}</strong>
+        <p>{currentAttention.message}</p>
+        {[...new Set(currentIssues.map(issueText))].map(reason => <p key={reason}>{reason}</p>)}
+        {reviewButtons.length > 0 && <div>{reviewButtons.map(({ field, label, target }) => <button type="button" key={label} onClick={() => { if (target) activeTarget.current = target; focusField(field); }}>{label}</button>)}</div>}
+      </div>}
       {!snapshot ? <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>
         : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
@@ -618,7 +675,7 @@ export function ReservationPane(props: ReservationPaneProps) {
               onClick={() => { if (workbench.readyForReply()) void commands.acceptFinancialReview(review.path, review.note, review.observation.ref).then(() => setAttention(null)).catch(() => {}); }}>I reviewed this Infor price</button>}
         </section>;
       })}
-      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} configuration={scopedConfiguration} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
+      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel source={source} configuration={scopedConfiguration} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} onSaved={setSavedQuoteOperation} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
       {request?.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => {
         const comparison = record(record(view).priceComparison), requested = record(comparison.requested);
         const hasSourcePrice = !['', 'not_requested', 'not_applicable'].includes(text(comparison.status));
@@ -639,9 +696,6 @@ export function ReservationPane(props: ReservationPaneProps) {
           : receipt ? `Guest profile ${receipt.nativeId} created` : text(row.summary) || labels[request?.kind ?? 'other'];
         return <div className={styles.receipt} key={text(row.id)}>{summary} · {missingReceipt ? 'Needs confirmation' : text(row.status)}{!guest && row.confirmation ? ` · ${text(row.confirmation)}` : ''}{row.status === 'unknown' && <button type="button" onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button>}</div>;
       })}
-      {attention?.digest === digest && <div className={styles.notice} role="alert">{attention.message}
-        {attention.fields.length > 0 && <div>{attention.fields.map(field => <button type="button" key={field} onClick={() => focusField(field)}>Review {inputFieldLabel(field)}</button>)}</div>}
-      </div>}
       {dispatchNotices.map(dispatch =>
         <p key={dispatch.grantId} className={styles.notice} role="status">{staffFailureCopy(dispatch.failureClass, true)}</p>)}
       {pendingDispatch && !dispatchNotices.some(dispatch => dispatch.grantId === pendingDispatch.grantId) &&
@@ -650,31 +704,33 @@ export function ReservationPane(props: ReservationPaneProps) {
       {['queued', 'running'].includes(prefill?.status ?? '') && <p className={styles.small}>{prefill?.status === 'queued' ? 'Prefill is queued.' : prefill?.phase === 'native_checks' ? 'Checking the extracted details in Infor.' : 'Reading the email and attachments.'} You can start editing now.</p>}
       {directPrefillAbandoned && prefill.attemptCount < 2 && <p className={styles.small}>Prefill appears interrupted. Your edits are kept. <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
       {prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2 || prefill.jobRunId) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
-      {currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{knownFailureCopy(issue.kind) ?? issueText(issue.explanation)}</p>)}
+      {!currentAttention && currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>)}
       {earlierIssues.length > 0 && <details className={styles.earlierChecks}>
         <summary>Earlier email checks · {earlierIssues.length} notices</summary>
-        {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{knownFailureCopy(issue.kind) ?? issueText(issue.explanation)}</p>)}
+        {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>)}
       </details>}
     </main>
     {request && !createBlocked && request.kind !== 'services' && request.kind !== 'other' && <footer className={styles.footer}>
-      {attention?.digest === digest && <small className={styles.small}>{attention.message}
-        {attention.fields[0] && <button type="button" onClick={() => focusField(attention.fields[0]!)}>Review {inputFieldLabel(attention.fields[0])}</button>}
-      </small>}
       {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}
       {capabilityUnavailable && <small role="status">{capability?.reason || 'This action is not available for this hotel yet.'}</small>}
       {capabilitySaveUnavailable && !needsCheck() && <small role="status">{capability?.reason || 'Saving is not available for this hotel yet.'}</small>}
-      {needsCheck() && <small className={styles.small}>Check the current details and Infor price first. Then approve the final action.</small>}
       {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <div className={styles.notice}>
         For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)}.
         {amendCallbackTargets[0].commission && <><br />Agency {amendCallbackTargets[0].commission.name}: Infor selection default TA commission {amendCallbackTargets[0].commission.nativeDefault}%.
           {amendCallbackTargets[0].commission.requested !== null && <> Requested final TA commission: {amendCallbackTargets[0].commission.requested}%.</>}</>}
         <br />Infor details may change when you check the price. Review that price before saving.
       </div>}
+      {stage && <div className={styles.stage} aria-label="Workflow progress">
+        <ol>{stage.steps.map((step, index) => <li key={`${index}:${step.label}`} data-state={step.state} aria-current={step.state === 'current' ? 'step' : undefined} aria-label={`${index + 1}. ${step.label}: ${step.state}`}>{index + 1}. {step.label}</li>)}</ol>
+        <p><strong>Now / Next:</strong> {currentAttention ? `Fix ${reviewButtons.length || 'the'} ${reviewButtons.length === 1 ? 'item' : 'items'} above. ` : ''}{stage.now}</p>
+        <p><strong>You get:</strong> {stage.youGet}</p>
+        <p><strong>Guest gets:</strong> {stage.guestGets}</p>
+      </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{needsCheck() ? request.kind === 'quote' ? 'Check quote' : request.kind === 'create' ? 'Check booking' : 'Check details' : request.kind === 'quote' ? record(quoteObservation?.result).failureKind === 'proven_shortage' ? 'Generate unsent decline' : 'Generate unsent quote' : request.kind === 'cancel' ? 'Cancel in Infor' : request.kind === 'filing' ? 'File PDF in Infor' : pendingAmendReview ? 'Save reviewed stay in Infor' : amendCallbackTargets.length ? 'Apply changes & check price' : 'Save in Infor'}</button></div>
-      {(workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || (capabilitySaveUnavailable && !needsCheck()) || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
+      {!currentAttention && (workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;
 }
