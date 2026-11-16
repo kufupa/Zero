@@ -512,7 +512,7 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
                   Historical HMS work:{' '}
                   {task.replay.nativeEvidence === 'complete'
                     ? 'verified from history'
-                    : 'not measurable from history'}{' '}
+                    : 'not fully verified'}{' '}
                   · Replay {task.replay.replayId}
                 </p>
                 {task.replay.checks.map((check) => (
@@ -525,7 +525,7 @@ function TaskDetails({ task, assumptions }: { task: RetroTask; assumptions: Assu
                       <span className="text-muted-foreground font-normal">
                         · {preparationCheckKind(task, check) === 'email' ? 'email' : 'HMS'} ·{' '}
                         {preparationCheckKind(task, check) === 'hms' && check.status === 'missing'
-                          ? 'not measurable from history'
+                          ? 'unverified'
                           : check.status}
                       </span>
                     </p>
@@ -847,12 +847,12 @@ function RetroDashboard({
           <div>
             <h2 className="text-muted-foreground text-sm">HMS-dependent work</h2>
             <p className="mt-3 text-4xl font-semibold tabular-nums tracking-tight">
-              {formatCount(forecast.extraction.hmsUnmeasurableTasks)}
+              {formatCount(forecast.extraction.hmsUnverifiedTasks)}
             </p>
-            <p className="mt-2 text-sm font-medium">Tasks not measurable from history</p>
+            <p className="mt-2 text-sm font-medium">Tasks with unverified HMS requirements</p>
             <p className="text-muted-foreground mt-2 text-xs">
               {formatCount(forecast.extraction.hmsMatched)} verified ·{' '}
-              {formatCount(forecast.extraction.hmsMismatch)} incorrect ·{' '}
+              {formatCount(forecast.extraction.hmsUnverified)} unverified checks ·{' '}
               {formatCount(forecast.extraction.hmsDependentTasks)} dependent tasks
             </p>
           </div>
@@ -861,7 +861,8 @@ function RetroDashboard({
           <p className="text-muted-foreground text-xs leading-relaxed">
             Quality measures captured email requirements in valid replays, including details
             retained in notes. It does not establish completed HMS work. Missing historical HMS
-            evidence is a measurement gap; staff still review and complete the task. These results
+            evidence is not measurable from history. Unverified checks can also reflect incomplete
+            preparation; staff still review and complete the task. These results
             are not measured staff savings or adoption.
           </p>
           <p className="text-muted-foreground mt-2 text-xs">

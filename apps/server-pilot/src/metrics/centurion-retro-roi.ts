@@ -170,7 +170,7 @@ export function toStaffRetroReport(report: RetroReport): StaffRetroReport {
       ],
     },
     tasks: report.tasks.map(task => {
-      const sourceValues = [...task.sources.map(source => source.quote), ...(task.replay.status === 'replayed' ? task.replay.checks.map(check => check.sourceValue) : [])];
+      const sourceValues = [...task.sources.map(source => source.quote), ...(task.replay.status === 'replayed' ? task.replay.checks.flatMap(check => [check.sourceValue, check.preparedValue]) : [])];
       const sourceNames = new Set(sourceValues.flatMap(value => value.toLowerCase().match(/\b(?:luna|terra|sol|astra)\b/g) ?? []));
       const preparation = staffExplanation(task.navaPreparation, 'No preparation recorded.', sourceNames);
       return {

@@ -886,10 +886,14 @@ async function main(): Promise<void> {
   }
   finally { clearInterval(progressTimer); await progressInFlight; await logProgress(); }
   const successful = [...classifications.keys()].filter(id => allowedIds.has(id));
-  const publishableTasks = [...tasks.values()].filter(task => task.sources.every(source => !measurementPending.has(source.messageId) && !discoveryPending.has(source.messageId) && !terminalFailures.has(source.messageId)) && task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id));
+  const publishableTasks = [...tasks.values()].filter(task => {
+    const origin = task.sources[0];
+    return origin && allowedIds.has(origin.messageId) && Date.parse(origin.receivedAt) === Date.parse(task.requestedAt) &&
+      !measurementPending.has(origin.messageId) && !discoveryPending.has(origin.messageId) && !terminalFailures.has(origin.messageId);
+  }).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id));
   const publishedTaskIds = new Set(publishableTasks.map(task => task.id));
   const unmeasuredActions = selectedInbound.flatMap(mail => { const classified = classifications.get(mail.sourceRowId); return classified?.disposition === 'actionable' ? classified.tasks.filter(action => !action.repeatTaskId && action.originMessageId === mail.sourceRowId).map(action => ({ messageId: mail.sourceRowId, id: `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}` })) : []; }).filter(action => !publishedTaskIds.has(action.id));
-  const terminalTasks = unmeasuredActions.filter(action => terminalFailures.has(action.messageId) || tasks.get(action.id)?.sources.some(source => terminalFailures.has(source.messageId))).length;
+  const terminalTasks = unmeasuredActions.filter(action => terminalFailures.has(action.messageId)).length;
   const pendingTasks = unmeasuredActions.length - terminalTasks;
   const selectedTerminals = [...terminalFailures.values()].filter(record => allowedIds.has(record.messageId));
   const pendingMessages = new Set([...measurementPending, ...discoveryPending].filter(id => allowedIds.has(id) && !terminalFailures.has(id))).size;

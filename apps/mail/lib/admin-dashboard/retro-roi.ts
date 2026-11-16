@@ -134,10 +134,10 @@ export function extractionQuality(tasks: RetroTask[]) {
     measuredTasks = 0,
     completeTasks = 0;
   let hmsMatched = 0,
-    hmsUnmeasurable = 0,
+    hmsUnverified = 0,
     hmsMismatch = 0,
     hmsDependentTasks = 0,
-    hmsUnmeasurableTasks = 0;
+    hmsUnverifiedTasks = 0;
   for (const task of tasks) {
     if (task.replay.status !== 'replayed') continue;
     const email = task.replay.checks.filter(
@@ -152,9 +152,9 @@ export function extractionQuality(tasks: RetroTask[]) {
     missing += email.filter((check) => check.status === 'missing').length;
     mismatch += email.filter((check) => check.status === 'mismatch').length;
     hmsDependentTasks++;
-    hmsUnmeasurableTasks += Number(task.replay.nativeEvidence === 'missing');
+    hmsUnverifiedTasks += Number(task.replay.nativeEvidence === 'missing');
     hmsMatched += hms.filter((check) => check.status === 'matched').length;
-    hmsUnmeasurable +=
+    hmsUnverified +=
       hms.filter((check) => check.status === 'missing').length +
       Math.max(0, HMS_CHECK_COUNTS[task.workflow] - hms.length);
     hmsMismatch += hms.filter((check) => check.status === 'mismatch').length;
@@ -169,10 +169,10 @@ export function extractionQuality(tasks: RetroTask[]) {
     completeTasks,
     percent: total ? (100 * matched) / total : null,
     hmsMatched,
-    hmsUnmeasurable,
+    hmsUnverified,
     hmsMismatch,
     hmsDependentTasks,
-    hmsUnmeasurableTasks,
+    hmsUnverifiedTasks,
   };
 }
 
