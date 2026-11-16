@@ -1,0 +1,422 @@
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Evidence, ReservationWorkflowV2Extraction, ReservationWorkflowV2Observation,
+  ReservationWorkflowV2Proposal, ReservationWorkflowV2Source } from './reservation-workflow-v2-contract.js';
+import { reservationEntityKey, type AutopickHistory, type AutopickHistoryField, type AutopickHistoryKey,
+  type AutopickHistoryValue } from './reservation-workflow-v2-native-leads.js';
+import type { PreloadedNativeCatalog } from './native-catalog-lookup.js';
+
+/**
+ * Auto-pick with evidence: one host-side mechanism for every coded Create/Quote field. Every pick is a real native
+ * row/code, carries machine-computed counts, and lands where a staff choice already goes. Contract (v1):
+ * /home/orca/.local/share/zero/research/autopick-backtest-20261116/suggestion-contract.md
+ */
+export const AUTOPICK_MAX_ALTERNATIVES = 5;
+const MAX_HISTORY_READS = 3;
+const MODEL_CANDIDATES = 3;
+
+type PartyField = 'bookingAgency' | 'organization' | 'arAccount';
+type CodeField = 'ratePlan' | 'roomType' | 'guaranteeType' | 'sourceOfBusiness';
+type Field = PartyField | CodeField;
+type PartyRole = 'bookingAgency' | 'organization' | 'ar_account';
+type EntityRole = 'agency' | 'organization' | 'ar_account';
+type Evidence = { kind: 'sender_history' | 'company_history' | 'agency_domain' | 'email_text' | 'attachment' | 'policy_default' | 'model_choice';
+  count: number | null; total: number | null; lastSeen: string | null; key?: string; quote?: string };
+type Option = { ref: string; label: string; count: number | null; total: number | null };
+export type AutopickSuggestion = { version: 1; field: Field; ref: string; value: string; label: string;
+  confidence: 'usual' | 'check'; reason: string; evidence: Evidence[]; alternatives: Option[] };
+
+const partyRole: Record<PartyField, PartyRole> = { bookingAgency: 'bookingAgency', organization: 'organization', arAccount: 'ar_account' };
+const entityRole: Record<PartyField, EntityRole> = { bookingAgency: 'agency', organization: 'organization', arAccount: 'ar_account' };
+const rec = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const norm = (value: unknown) => typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
+const hash = (...parts: string[]) => createHash('sha256').update(parts.join('\u001f')).digest('hex').slice(0, 24);
+
+/** The Track precedent, shared: >= 2 supporting stays, >= 80% agreement and a clear leader. */
+export function clearsHistoryGate(leader: { count: number; agreement: number } | undefined, runnerUp?: { count: number }): boolean {
+  return Boolean(leader && leader.count >= 2 && leader.agreement >= 0.8 && (!runnerUp || runnerUp.count < leader.count));
+}
+
+const gateFor = (stats: { total: number; values: AutopickHistoryValue[] }, value: string, same: (a: string, b: string) => boolean) => {
+  const [leader, runnerUp] = stats.values;
+  return Boolean(leader && same(leader.value, value) && clearsHistoryGate({ count: leader.count, agreement: leader.count / stats.total }, runnerUp));
+};
+
+/** Exact email span naming `name` (token-wise, case-insensitive), or null. */
+export function emailQuote(text: string, name: string, role: EntityRole): string | null {
+  const key = reservationEntityKey(name, role);
+  if (key.length < 4) return null;
+  const tokens = name.normalize('NFKC').match(/[\p{L}\p{N}]+/gu) ?? [];
+  // Drop the same trailing legal/agency suffixes the entity key drops, so "Acme (Pty) Ltd" also matches "Acme".
+  while (tokens.length > 1 && reservationEntityKey(tokens.slice(0, -1).join(' '), role) === key) tokens.pop();
+  if (!tokens.length) return null;
+  const escaped = tokens.map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const match = new RegExp(`(?<![\\p{L}\\p{N}])${escaped.join('[^\\p{L}\\p{N}\\n]{0,3}')}(?![\\p{L}\\p{N}])`, 'iu').exec(text);
+  return match?.[0] ?? null;
+}
+
+function historyEvidence(key: AutopickHistoryKey, row: AutopickHistoryValue | undefined, total: number): Evidence {
+  return { kind: key.kind, count: row?.count ?? 0, total, lastSeen: row?.lastSeen ?? null, key: key.key };
+}
+
+function reasonFor(evidence: Evidence[], confidence: 'usual' | 'check'): string {
+  const first = evidence[0]!;
+  const from = first.kind === 'sender_history' ? `from ${first.key}` : first.kind === 'agency_domain' ? `from @${first.key}` : `for ${first.key}`;
+  const sentence = first.kind === 'email_text' ? `Named in this email ("${first.quote}").`
+    : first.kind === 'model_choice' ? `Matched to "${first.quote}" in this email.`
+    : first.kind === 'attachment' ? `${first.key} attached.`
+    : first.kind === 'policy_default' ? `${first.key}.`
+    : `Used on ${first.count} of ${first.total} earlier bookings ${from}.`;
+  return confidence === 'check' ? `${sentence} Check before Go.` : sentence;
+}
+
+/** History keys for a field in priority order: exact sender, company (named or already picked), sender domain. */
+function orderedKeys(history: AutopickHistory, companyKeys: AutopickHistoryKey[], field: AutopickHistoryField,
+  exclude?: string): AutopickHistoryKey[] {
+  const sender = history.keys.filter((row) => row.kind === 'sender_history');
+  const company = [...history.keys.filter((row) => row.kind === 'company_history'), ...companyKeys]
+    .filter((row, index, all) => all.findIndex((other) => norm(other.key) === norm(row.key)) === index && norm(row.key) !== norm(exclude));
+  const domain = history.keys.filter((row) => row.kind === 'agency_domain');
+  return [...sender, ...company, ...domain].filter((row) => (row.fields[field]?.total ?? 0) > 0);
+}
+
+/** Party names worth an HMS read before synthesis, for party fields the email did not name. */
+export function planAutopickPartyReads(input: { extraction: ReservationWorkflowV2Extraction; history: AutopickHistory | null;
+  evidence: ReservationWorkflowV2Evidence[] }): { reads: Array<{ role: PartyRole; name: string; requestId: string }>;
+    modelSlots: Array<{ requestId: string; field: 'organization'; names: string[] }> } {
+  const reads: Array<{ role: PartyRole; name: string; requestId: string }> = [];
+  const modelSlots: Array<{ requestId: string; field: 'organization'; names: string[] }> = [];
+  if (!input.history) return { reads, modelSlots };
+  const text = currentText(input.evidence);
+  const add = (role: PartyRole, name: string, requestId: string) => {
+    if (reads.length < MAX_HISTORY_READS && !reads.some((row) => row.role === role && norm(row.name) === norm(name)))
+      reads.push({ role, name, requestId });
+  };
+  for (const request of input.extraction.requests) {
+    if (request.kind !== 'create' && request.kind !== 'quote') continue;
+    const fields: PartyField[] = request.kind === 'create' ? ['organization', 'bookingAgency', 'arAccount'] : ['organization', 'bookingAgency'];
+    for (const field of fields) {
+      if (request.parties.some((party) => party.role === partyRole[field])) continue;
+      const key = orderedKeys(input.history, [], field)[0];
+      const stats = key?.fields[field];
+      if (!key || !stats || !stats.values[0]?.value) continue;
+      const named = stats.values.filter((row) => row.value);
+      const quoted = named.filter((row) => emailQuote(text, row.value, entityRole[field]));
+      if (quoted.length === 1) { add(partyRole[field], quoted[0]!.value, request.id); continue; }
+      const ambiguous = field === 'organization' && key.kind === 'agency_domain' && named.length > 1 &&
+        !gateFor(stats, named[0]!.value, (a, b) => norm(a) === norm(b));
+      if (ambiguous) {
+        const names = named.slice(0, MODEL_CANDIDATES).map((row) => row.value);
+        names.forEach((name) => add(partyRole[field], name, request.id));
+        modelSlots.push({ requestId: request.id, field, names });
+      } else add(partyRole[field], named[0]!.value, request.id);
+    }
+  }
+  return { reads, modelSlots };
+}
+
+function currentText(evidence: ReservationWorkflowV2Evidence[]): string {
+  return evidence.filter((row) => row.relation === 'current_message').map((row) => row.text).join('\n');
+}
+
+type NativeRow = { nativeId: string; name: string; read: ReservationWorkflowV2Observation; row: Record<string, unknown> };
+function readRows(observations: ReservationWorkflowV2Observation[], role: PartyRole): NativeRow[] {
+  return observations.filter((row) => row.kind === 'party_candidate' && row.status === 'complete' && row.coverage.complete &&
+    row.criteria.autopick === true && row.criteria.role === role && row.criteria.fieldPath === undefined).flatMap((read) =>
+    (Array.isArray(read.result.candidates) ? read.result.candidates : []).flatMap((raw) => {
+      const row = rec(raw);
+      return row && /^\d{1,30}$/.test(String(row.nativeId ?? '')) && typeof row.name === 'string' && row.name.trim()
+        ? [{ nativeId: String(row.nativeId), name: row.name.trim(), read, row }] : [];
+    }));
+}
+
+/** Model choice among host-read candidates, reusing the synthesis call. */
+export type AutopickModelSlot = { slot: string; requestId: string; field: 'organization';
+  candidates: Array<{ token: string; label: string; nativeId: string }> };
+export type AutopickModelResult = { slot: string; requestId: string; field: 'organization';
+  outcome: 'chosen' | 'abstained' | 'hallucination' | 'parse_failure'; candidateRefs: string[];
+  choice: string | null; quote: string | null; problems: string[]; nativeId: string | null };
+
+export function autopickModelSlots(planned: Array<{ requestId: string; field: 'organization'; names: string[] }>,
+  observations: ReservationWorkflowV2Observation[]): AutopickModelSlot[] {
+  const rows = readRows(observations, 'organization');
+  return planned.flatMap((slot) => {
+    const candidates = slot.names.flatMap((name) => rows.filter((row) =>
+      reservationEntityKey(row.name, 'organization') === reservationEntityKey(name, 'organization')).slice(0, 1))
+      .filter((row, index, all) => all.findIndex((other) => other.nativeId === row.nativeId) === index)
+      .map((row, index) => ({ token: `c${index + 1}`, label: row.name, nativeId: row.nativeId }));
+    return candidates.length > 1 ? [{ slot: `${slot.requestId}:${slot.field}`, requestId: slot.requestId, field: slot.field, candidates }] : [];
+  });
+}
+
+export const AUTOPICK_SYNTHESIS_RULES = 'Host autopick choices: for each entry in autopickChoices, return one autopick item ' +
+  '{ slot, choice, quote }. choice must be one of that slot\'s candidate tokens, or "abstain" when the current email does not ' +
+  'clearly indicate one candidate. quote must be the exact text copied from the current email that names or clearly indicates ' +
+  'the chosen candidate (null only when abstaining). Never invent a candidate.';
+
+/** Constrain the response schema: choices are enum-limited to supplied tokens or abstain. */
+export function withAutopickResponseSchema(schema: Record<string, unknown>, slots: AutopickModelSlot[]): Record<string, unknown> {
+  if (!slots.length) return schema;
+  const properties = rec(schema.properties) ?? {};
+  return { ...schema, properties: { ...properties, autopick: { type: 'array', maxItems: slots.length, items: {
+    type: 'object', additionalProperties: false, required: ['slot', 'choice', 'quote'],
+    properties: { slot: { type: 'string', enum: slots.map((slot) => slot.slot) },
+      choice: { type: 'string', enum: [...new Set([...slots.flatMap((slot) => slot.candidates.map((row) => row.token)), 'abstain'])] },
+      quote: { type: ['string', 'null'], maxLength: 300 } } } } } };
+}
+
+const modelEntrySchema = z.object({ slot: z.string().min(1).max(200), choice: z.string().min(1).max(40),
+  quote: z.string().max(300).nullable() }).strict();
+const squash = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
+
+/** Deterministic check of model output: parse failures and hallucinations are recorded separately, never merged. */
+export function validateAutopickModelOutput(raw: unknown, slots: AutopickModelSlot[],
+  evidence: ReservationWorkflowV2Evidence[]): AutopickModelResult[] {
+  const text = squash(currentText(evidence));
+  const entries = Array.isArray(raw) ? raw : null;
+  return slots.map((slot) => {
+    const base = { slot: slot.slot, requestId: slot.requestId, field: slot.field,
+      candidateRefs: slot.candidates.map((row) => row.token), choice: null, quote: null, nativeId: null };
+    if (!entries) return { ...base, outcome: 'parse_failure' as const, problems: [raw === undefined ? 'autopick_missing' : 'autopick_not_array'] };
+    const matching = entries.filter((entry) => rec(entry)?.slot === slot.slot);
+    if (matching.length !== 1) return { ...base, outcome: 'parse_failure' as const,
+      problems: [matching.length ? 'slot_duplicated' : 'slot_missing'] };
+    const parsed = modelEntrySchema.safeParse(matching[0]);
+    if (!parsed.success) return { ...base, outcome: 'parse_failure' as const, problems: ['schema_invalid'] };
+    const { choice, quote } = parsed.data;
+    const result = { ...base, choice, quote };
+    if (choice === 'abstain') return { ...result, outcome: 'abstained' as const, problems: [] };
+    const problems: string[] = [];
+    const candidate = slot.candidates.find((row) => row.token === choice);
+    if (!candidate) problems.push('choice_not_in_candidates');
+    if (!quote?.trim()) return { ...result, outcome: problems.length ? 'hallucination' as const : 'parse_failure' as const,
+      problems: problems.length ? problems : ['quote_missing'] };
+    if (!text.includes(squash(quote))) problems.push('quote_not_in_email');
+    return problems.length ? { ...result, outcome: 'hallucination' as const, problems }
+      : { ...result, outcome: 'chosen' as const, problems, nativeId: candidate!.nativeId };
+  });
+}
+
+type Choice = { code: string; meaning: string };
+type ApplyInput = {
+  proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[]; history: AutopickHistory | null;
+  evidence: ReservationWorkflowV2Evidence[]; catalog: PreloadedNativeCatalog | null; guaranteeChoices: Choice[];
+  modelResults: AutopickModelResult[]; extractionIdByProposalRequestId: ReadonlyMap<string, string>;
+  generationId: string; propertyCode: ReservationWorkflowV2Observation['propertyCode'];
+  source: ReservationWorkflowV2Source;
+};
+
+/** Pre-select the best native candidate for each coded field that is still empty, with evidence and alternatives. */
+export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflowV2Proposal;
+  observations: ReservationWorkflowV2Observation[]; requirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] } {
+  const proposal = structuredClone(input.proposal);
+  const added: ReservationWorkflowV2Observation[] = [];
+  const requirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
+  const text = currentText(input.evidence);
+  const now = new Date().toISOString();
+  const observation = (criteria: Record<string, unknown>, result: Record<string, unknown>, sourceRefs: string[] = []) => {
+    const row: ReservationWorkflowV2Observation = { ref: `obs_autopick_${hash(input.generationId, JSON.stringify(criteria))}`,
+      generationId: input.generationId, kind: 'source', status: 'complete', observedAt: now, propertyCode: input.propertyCode,
+      sourceMessageId: input.source.messageId, sourceRefs, criteria: { version: 1, ...criteria },
+      coverage: { complete: true, notes: [] }, result };
+    added.push(row);
+    return row;
+  };
+  for (const result of input.modelResults) {
+    const owner = proposal.content.requests.find((row) => (input.extractionIdByProposalRequestId.get(row.id) ?? row.id) === result.requestId);
+    observation({ kind: 'autopick_model_choice', workflow: owner?.kind ?? null, requestId: owner?.id ?? result.requestId,
+      extractionRequestId: result.requestId, field: result.field, valuePath: owner ? `/proposal/content/requests/${encodeURIComponent(owner.id)}/body/${
+        owner.kind === 'quote' ? 'parties' : 'shared'}/${result.field}` : null }, { outcome: result.outcome, candidateRefs: result.candidateRefs,
+      choice: result.choice, quote: result.quote, problems: result.problems });
+    console.info('autopick_model_choice', { outcome: result.outcome, field: result.field, problems: result.problems });
+  }
+  const quoteRefs = (quote: string | undefined) => quote ? input.evidence.filter((row) =>
+    row.relation === 'current_message' && row.text.includes(quote)).map((row) => row.ref).slice(0, 20) : [];
+  const record = (request: ReservationWorkflowV2Proposal['content']['requests'][number], field: Field, valuePath: string,
+    selectionPath: string, suggestion: Omit<AutopickSuggestion, 'version' | 'field' | 'reason'>, basis: 'native_read' | 'policy') => {
+    const full: AutopickSuggestion = { version: 1, field, ...suggestion, alternatives: suggestion.alternatives.slice(0, AUTOPICK_MAX_ALTERNATIVES),
+      reason: reasonFor(suggestion.evidence, suggestion.confidence) };
+    const row = observation({ kind: 'autopick_suggestion', workflow: request.kind, requestId: request.id, field, valuePath, selectionPath },
+      full, quoteRefs(suggestion.evidence.find((item) => item.quote)?.quote));
+    proposal.annotations.push({ path: valuePath, basis, evidenceRefs: [row.ref] });
+    proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, row.ref])].slice(0, 1000);
+    if (full.confidence === 'check') requirements[selectionPath] = { required: true, reasons: [full.reason], evidenceRefs: [row.ref] };
+  };
+
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'create' && request.kind !== 'quote') continue;
+    const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
+    const companyKeys: AutopickHistoryKey[] = [];
+    const allocationId = request.kind === 'create' ? request.body.allocations[0]?.id : undefined;
+    if (request.kind === 'create' && !allocationId) continue;
+    const owner = (request.kind === 'create' ? request.body.shared : request.body.parties) as Record<string, unknown>;
+    const ownerPath = request.kind === 'create' ? `${root}/shared` : `${root}/parties`;
+    // Do not fight a per-room or per-date value: shared picks only when nothing below overrides the field.
+    const overridden = (field: Field) => request.kind === 'create' && [...request.body.dateSections.map((row) => row.defaults),
+      ...request.body.allocations.map((row) => row.overrides)].some((fields) => (fields as Record<string, unknown>)[field] != null);
+
+    const partyFields: PartyField[] = request.kind === 'create' ? ['organization', 'bookingAgency', 'arAccount'] : ['organization', 'bookingAgency'];
+    for (const field of partyFields) {
+      if (overridden(field)) continue;
+      const current = owner[field], valuePath = `${ownerPath}/${field}`, selectionPath = `${valuePath}/nativeSelectionRef`;
+      const party = rec(current);
+      if (party?.kind === 'none' || (party && typeof party.suggestedRef === 'string')) continue;
+      const role = entityRole[field];
+      const same = (a: string, b: string) => reservationEntityKey(a, role) === reservationEntityKey(b, role);
+      const keys = input.history ? orderedKeys(input.history, companyKeys, field, party && typeof party.name === 'string' ? party.name : undefined) : [];
+      const key = keys[0], stats = key?.fields[field];
+      const statFor = (name: string) => stats?.values.find((row) => row.value && same(row.value, name));
+      let candidates: Array<{ ref: string; nativeId: string; name: string }> = [];
+      let pickIndex = -1;
+      const evidence: Evidence[] = [];
+      if (party && typeof party.name === 'string' && party.name.trim()) {
+        candidates = (Array.isArray(party.candidateRefs) ? party.candidateRefs : []).flatMap((ref) => {
+          const row = input.observations.find((obs) => obs.ref === ref);
+          const native = rec((Array.isArray(row?.result.candidates) ? row.result.candidates : [])[0]);
+          return row && native && typeof native.name === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(String(native.nativeId ?? ''))
+            ? [{ ref: row.ref, nativeId: String(native.nativeId), name: native.name }] : [];
+        });
+        if (!candidates.length) continue;
+        const score = (row: { name: string }) => (statFor(row.name)?.count ?? 0) * 2 + Number(norm(row.name) === norm(party.name));
+        candidates = candidates.map((row, index) => ({ row, index })).sort((a, b) => score(b.row) - score(a.row) || a.index - b.index).map(({ row }) => row);
+        pickIndex = 0;
+        const quote = emailQuote(text, party.name, role) ?? undefined;
+        if (quote) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote });
+        if (key && stats && statFor(candidates[0]!.name)) evidence.unshift(historyEvidence(key, statFor(candidates[0]!.name), stats.total));
+        if (!evidence.length) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote: party.name });
+      } else {
+        if (!key || !stats || !stats.values[0]?.value) continue;
+        const rows = readRows(input.observations, partyRole[field]);
+        const named = stats.values.filter((row) => row.value);
+        const matched = named.flatMap((row) => {
+          const native = rows.filter((candidate) => same(candidate.name, row.value));
+          return native.length ? [{ stat: row, native }] : [];
+        });
+        if (!matched.length) continue;
+        const extractionId = input.extractionIdByProposalRequestId.get(request.id) ?? request.id;
+        const model = input.modelResults.find((row) => row.requestId === extractionId && row.field === field && row.outcome === 'chosen');
+        const quoted = matched.filter((row) => emailQuote(text, row.stat.value, role));
+        const chosen = model ? matched.find((row) => row.native.some((native) => native.nativeId === model.nativeId))
+          : quoted.length === 1 ? quoted[0] : matched[0];
+        if (!chosen) continue;
+        const ordered = [chosen, ...matched.filter((row) => row !== chosen)];
+        const bound = ordered.flatMap((row) => row.native.map((native) => ({ native, stat: row.stat })))
+          .filter((row, index, all) => all.findIndex((other) => other.native.nativeId === row.native.nativeId) === index)
+          .slice(0, AUTOPICK_MAX_ALTERNATIVES + 1);
+        candidates = bound.map(({ native }) => {
+          const fieldPath = selectionPath;
+          const ref = `obs_autopick_${hash(input.generationId, request.id, fieldPath, native.nativeId)}`;
+          const result = { ...native.read.result, ...(request.kind === 'quote' ? { nativeId: native.nativeId, name: native.name } : {}),
+            candidates: [native.row] };
+          added.push({ ...native.read, ref, generationId: input.generationId, criteria: { ...native.read.criteria,
+            workflow: request.kind, requestId: request.id, role: partyRole[field], ...(allocationId ? { allocationId } : {}),
+            fieldPath, fieldPaths: [fieldPath], nativeCandidateCount: Array.isArray(native.read.result.candidates) ? native.read.result.candidates.length : 0 },
+          result });
+          return { ref, nativeId: native.nativeId, name: native.name };
+        });
+        pickIndex = 0;
+        evidence.push(historyEvidence(key, chosen.stat, stats.total));
+        const quote = quoted.length === 1 && quoted[0] === chosen ? emailQuote(text, chosen.stat.value, role) : null;
+        if (model?.quote) evidence.unshift({ kind: 'model_choice', count: null, total: null, lastSeen: null, quote: model.quote });
+        else if (quote) evidence.unshift({ kind: 'email_text', count: null, total: null, lastSeen: null, quote });
+        owner[field] = { name: candidates[0]!.name, candidateRefs: [], suggestedRef: null };
+      }
+      const pick = candidates[pickIndex]!;
+      const target = rec(owner[field])!;
+      target.candidateRefs = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((row) => row.ref);
+      target.suggestedRef = pick.ref;
+      const uniqueNative = candidates.filter((row) => same(row.name, pick.name)).length === 1;
+      const usual = Boolean(key && stats && uniqueNative && gateFor(stats, pick.name, same));
+      record(request, field, valuePath, selectionPath, { ref: pick.ref, value: pick.nativeId, label: pick.name,
+        confidence: usual ? 'usual' : 'check', evidence,
+        alternatives: candidates.filter((row) => row !== pick).map((row) => ({ ref: row.ref, label: row.name,
+          count: statFor(row.name)?.count ?? null, total: statFor(row.name) ? stats!.total : null })) }, 'native_read');
+      if (input.history && field !== 'arAccount') {
+        const keyed = input.history.companyHistory(pick.name);
+        if (keyed) companyKeys.push(keyed);
+      }
+    }
+    // Company keys also come from parties already chosen in the email or by staff.
+    for (const field of partyFields) {
+      const name = rec(owner[field])?.name;
+      if (input.history && typeof name === 'string' && name.trim() && !companyKeys.some((row) => norm(row.key) === norm(name))) {
+        const keyed = input.history.companyHistory(name);
+        if (keyed) companyKeys.push(keyed);
+      }
+    }
+
+    const codeSlots: Array<{ field: 'ratePlan' | 'roomType'; fields: Record<string, unknown>; path: string }> = request.kind === 'create'
+      ? (['ratePlan', 'roomType'] as const).filter((field) => !overridden(field)).map((field) => ({ field, fields: request.body.shared as Record<string, unknown>, path: `${root}/shared/${field}` }))
+      : request.body.groups.map((group, index) => ({ field: 'ratePlan' as const, fields: group as Record<string, unknown>, path: `${root}/groups/${index}/ratePlan` }));
+    for (const slot of codeSlots) {
+      if (slot.fields[slot.field] != null || !input.history || !input.catalog) continue;
+      const kind = slot.field === 'ratePlan' ? 'rate' : 'room';
+      const native = (code: string) => {
+        const found = input.catalog!.lookupVerifiedCode(kind, code);
+        return found.status === 'unique' && found.record ? found.record : null;
+      };
+      const keys = orderedKeys(input.history, companyKeys, slot.field);
+      const key = keys.find((row) => row.fields[slot.field]!.values.some((value) => value.value && native(value.value)));
+      if (!key) continue;
+      const stats = key.fields[slot.field]!;
+      const options = stats.values.flatMap((row) => {
+        const code = row.value ? native(row.value) : null;
+        return code ? [{ row, code }] : [];
+      });
+      const pick = options[0]!;
+      const sameCode = (a: string, b: string) => a.toLocaleUpperCase('en-US') === b.toLocaleUpperCase('en-US');
+      slot.fields[slot.field] = pick.code.code;
+      record(request, slot.field, slot.path, slot.path, { ref: pick.code.code, value: pick.code.code,
+        label: `${pick.code.code} - ${pick.code.meaning}`, confidence: gateFor(stats, pick.row.value, sameCode) ? 'usual' : 'check',
+        evidence: [historyEvidence(key, pick.row, stats.total)],
+        alternatives: options.slice(1).map(({ row, code }) => ({ ref: code.code, label: `${code.code} - ${code.meaning}`,
+          count: row.count, total: stats.total })) }, 'native_read');
+    }
+    if (request.kind !== 'create') continue;
+    const shared = request.body.shared as Record<string, unknown>;
+
+    if (shared.guaranteeType == null && !overridden('guaranteeType') && input.guaranteeChoices.length) {
+      const resolve = (value: string) => input.guaranteeChoices.filter((row) => norm(row.code) === norm(value) || norm(row.meaning) === norm(value));
+      const choice = (value: string) => resolve(value).length === 1 ? resolve(value)[0]! : null;
+      const keys = input.history ? orderedKeys(input.history, companyKeys, 'guaranteeType') : [];
+      // Guarantee follows the sender's or company's own history only; a shared domain is too loose for a payment term.
+      const gated = keys.filter((key) => key.kind !== 'agency_domain').map((key) => ({ key, stats: key.fields.guaranteeType! })).find(({ stats }) =>
+        stats.values[0]?.value && choice(stats.values[0].value) && gateFor(stats, stats.values[0].value, (a, b) => norm(a) === norm(b)));
+      const documentKinds = new Set(proposal.content.documents.map((row) => row.kind));
+      const attached = documentKinds.has('payment_proof') ? { meaning: 'Guaranteed By Deposit', key: 'Proof of payment' }
+        : documentKinds.has('voucher') ? { meaning: 'Guaranteed By Agent', key: 'Voucher' } : null;
+      const first = keys[0]?.fields.guaranteeType;
+      let picked: { choice: Choice; evidence: Evidence[]; usual: boolean } | null = null;
+      if (gated) picked = { choice: choice(gated.stats.values[0]!.value)!, usual: true,
+        evidence: [historyEvidence(gated.key, gated.stats.values[0], gated.stats.total)] };
+      else if (attached && choice(attached.meaning)) picked = { choice: choice(attached.meaning)!, usual: false,
+        evidence: [{ kind: 'attachment', count: null, total: null, lastSeen: null, key: attached.key }] };
+      else if (choice('Deposit Requested')) picked = { choice: choice('Deposit Requested')!, usual: false,
+        evidence: [{ kind: 'policy_default', count: null, total: null, lastSeen: null, key: 'Default when history does not decide' }] };
+      if (picked) {
+        const pickedChoice = picked.choice;
+        shared.guaranteeType = pickedChoice.code;
+        const alternatives = (first?.values ?? []).flatMap((row) => {
+          const option = row.value ? choice(row.value) : null;
+          return option && option.code !== pickedChoice.code ? [{ ref: option.code, label: option.meaning, count: row.count, total: first!.total }] : [];
+        });
+        record(request, 'guaranteeType', `${root}/shared/guaranteeType`, `${root}/shared/guaranteeType`, { ref: pickedChoice.code,
+          value: pickedChoice.code, label: pickedChoice.meaning, confidence: picked.usual ? 'usual' : 'check',
+          evidence: picked.evidence, alternatives }, picked.usual ? 'native_read' : 'policy');
+      }
+    }
+    if (shared.sourceOfBusiness == null && !overridden('sourceOfBusiness')) {
+      shared.sourceOfBusiness = 'E-Mail';
+      record(request, 'sourceOfBusiness', `${root}/shared/sourceOfBusiness`, `${root}/shared/sourceOfBusiness`, { ref: 'E-Mail',
+        value: 'E-Mail', label: 'E-Mail', confidence: 'usual',
+        evidence: [{ kind: 'policy_default', count: null, total: null, lastSeen: null, key: 'Booked from an email' }], alternatives: [] }, 'policy');
+    }
+  }
+  return { proposal, observations: added, requirements };
+}
+
+/** Planned history reads as ordinary party lookups; criteria.autopick marks them as history-derived, not source-cited. */
+export function autopickReadCriteria(read: { role: PartyRole; name: string; requestId: string }): Record<string, unknown> {
+  return { role: read.role, name: read.name, raw: read.name, autopick: true, requestId: read.requestId };
+}

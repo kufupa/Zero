@@ -27,7 +27,10 @@ import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.
 import { PANE_PROPERTY_LOCK_WAIT_MS, acquisitionWithin } from '../hms/property-read-lock.js';
 import { paneStayPropertyLock } from './pane-stay-save.js';
 import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
-import { loadReservationMemoryGuidance, loadReservationNativeLeads, loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
+import { loadReservationAutopickHistory, loadReservationMemoryGuidance, loadReservationNativeLeads,
+  loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
+import { applyAutopick, AUTOPICK_MAX_ALTERNATIVES, AUTOPICK_SYNTHESIS_RULES, autopickModelSlots, autopickReadCriteria, clearsHistoryGate,
+  planAutopickPartyReads, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
 import { loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
@@ -5386,6 +5389,15 @@ async function applyNoteMemory(input: { proposal: ReservationWorkflowV2Proposal;
   return { proposal, observations };
 }
 
+/** Guarantee choices for this property: the native catalogue, else the property profile's read create-form choices. */
+async function autopickGuaranteeChoices(propertyCode: PropertyCode, env: NodeJS.ProcessEnv): Promise<Array<{ code: string; meaning: string }>> {
+  const catalog = await loadNativeBookingCodes({ propertyCode, kind: 'guaranteeTypes', env }).catch(() => null);
+  if (catalog?.status === 'available') return catalog.records.flatMap((row) => row.code ? [{ code: row.code, meaning: row.meaning ?? row.code }] : []);
+  try {
+    return (profileFor(propertyCode)?.createForm?.options?.guaranteetype?.choices ?? []).map((row) => ({ code: row.value, meaning: row.display }));
+  } catch { return []; }
+}
+
 async function applyRateTrackMemory(input: { proposal: ReservationWorkflowV2Proposal; source: ReservationWorkflowV2Source;
   propertyCode: PropertyCode; generationId: string; env: NodeJS.ProcessEnv }): Promise<{
     proposal: ReservationWorkflowV2Proposal; observations: ReservationWorkflowV2Observation[] }> {
@@ -5403,8 +5415,8 @@ async function applyRateTrackMemory(input: { proposal: ReservationWorkflowV2Prop
     const mapping = matches[0]!;
     const ranked = [...mapping.candidates].sort((a, b) => b.support - a.support);
     const leader = ranked[0];
-    if (!leader || !normalizedFact(leader.track) || leader.support < 2 || leader.confidence < 0.8 ||
-        ranked[1] && ranked[1].support >= leader.support) return;
+    if (!leader || !normalizedFact(leader.track) || !clearsHistoryGate({ count: leader.support, agreement: leader.confidence },
+      ranked[1] && { count: ranked[1].support })) return;
     const native = catalog.records.filter((row) => row.code &&
       (normalizedFact(row.code) === normalizedFact(leader.track) || normalizedFact(row.meaning) === normalizedFact(leader.track)));
     if (native.length !== 1 || !native[0]?.code) return;
@@ -6024,7 +6036,7 @@ function bindPartyObservations(input: { proposal: ReservationWorkflowV2Proposal;
       }
       candidates.sort((a, b) => Number(norm((b.result.candidates as Array<Record<string, unknown>>)[0]?.name) === norm(slot.party.name)) -
         Number(norm((a.result.candidates as Array<Record<string, unknown>>)[0]?.name) === norm(slot.party.name)));
-      slot.party.candidateRefs = candidates.slice(0, 3).map((row) => row.ref);
+      slot.party.candidateRefs = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((row) => row.ref);
       slot.party.suggestedRef = null;
     }
   }
@@ -6385,8 +6397,18 @@ export async function runReservationWorkflowV2Prefill(input: {
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction: candidateExtraction,
     propertyCode, source: input.source });
   const cappedPlan = completePlan.slice(0, MAX_CANDIDATE_READS);
+  const threadMessageIds = (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []);
+  // Memory-keyed party reads for fields the email did not name, so a pick is always a real native row.
+  const autopickHistory = await loadReservationAutopickHistory({ propertyCode, source: input.source,
+    fromAddress: input.selection.fromAddress, partyNames: candidateExtraction.requests.flatMap((request) =>
+      request.parties.flatMap((party) => typeof party.name.value === 'string' ? [party.name.value] : [])),
+    sourceThreadMessageIds: threadMessageIds, db: input.db, transportId: input.transportId, env, signal: input.signal });
+  const autopickPlan = planAutopickPartyReads({ extraction: candidateExtraction, history: autopickHistory, evidence });
   const plan = [...cappedPlan.filter((candidate) => candidate.kind === 'mail_candidate'),
-    ...cappedPlan.filter((candidate) => candidate.kind !== 'mail_candidate')];
+    ...cappedPlan.filter((candidate) => candidate.kind !== 'mail_candidate'),
+    ...autopickPlan.reads.map((read, index): ReservationWorkflowV2CandidateRead => ({
+      id: stableId(input.source.messageId, 'autopick', read.role, read.name), ref: `obs_autopick_read_${index}`,
+      kind: 'party_candidate', propertyCode, criteria: autopickReadCriteria(read), sourceRefs: [] }))];
   const budgetSignal = AbortSignal.timeout(CANDIDATE_READ_START_BUDGET_MS);
   const readSignal = input.signal ? AbortSignal.any([input.signal, budgetSignal]) : budgetSignal;
   let readCandidate = input.readCandidate;
@@ -6405,6 +6427,13 @@ export async function runReservationWorkflowV2Prefill(input: {
   for (const candidate of plan) {
     try {
       const result = readCandidate ? await readCandidate(candidate) : input.lookupFixtures?.[candidate.id] ?? null;
+      // History reads are optional enrichment: keep only a complete one, and never turn a miss into a draft error.
+      if (candidate.criteria.autopick === true) {
+        if (result?.status === 'complete' && result.coverage?.complete) observations.push(seedObservation({ ref: candidate.ref,
+          generationId, propertyCode, source: input.source, sourceRefs: [], kind: candidate.kind, criteria: candidate.criteria,
+          status: 'complete', result: result.result, complete: true, notes: result.coverage.notes ?? [] }));
+        continue;
+      }
       observations.push(seedObservation({ ref: candidate.ref, generationId, propertyCode, source: input.source,
         sourceRefs: candidate.sourceRefs, kind: candidate.kind, criteria: candidate.criteria,
         status: result?.status ?? 'unavailable', result: result?.result ?? {}, complete: result?.coverage?.complete ?? false,
@@ -6413,6 +6442,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       if (!result || result.status !== 'complete') readErrors.push({ stage: 'lookup', code: result?.status ?? 'unavailable',
         message: `Candidate read ${candidate.id} ${result?.status ?? 'unavailable'}; coverage is not complete.` });
     } catch {
+      if (candidate.criteria.autopick === true) continue;
       observations.push(seedObservation({ ref: candidate.ref, generationId, propertyCode, source: input.source,
         sourceRefs: candidate.sourceRefs, kind: candidate.kind, criteria: candidate.criteria,
         status: 'failed', result: {}, complete: false, notes: ['Reader failed; no result was admitted.'],
@@ -6436,13 +6466,22 @@ export async function runReservationWorkflowV2Prefill(input: {
   // Selection may report a final-stage failure after lookup errors were assembled.
   for (const error of base.errors) if (!readErrors.includes(error)) readErrors.push(error);
   const createShapeContext = extraction.requests.some((request) => request.kind === 'create') ? `\n${CREATE_SYNTHESIS_SHAPE_RULES}` : '';
-  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SOURCE_INTENT_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${guidancePrompt(synthesisGuidance)}`,
+  // Ambiguous history (several companies behind one domain) is settled inside the existing synthesis call.
+  const autopickSlots = autopickModelSlots(autopickPlan.modelSlots, observations);
+  const finalPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${SYNTHESIS_RULES}\n${VOUCHER_SYNTHESIS_RULES}\n${SOURCE_INTENT_RULES}\n${SYNTHESIS_SHAPE_RULES}\n${ANCILLARY_SYNTHESIS_RULES}${createShapeContext}${cmsCapabilityContext}${autopickSlots.length ? `\n${AUTOPICK_SYNTHESIS_RULES}` : ''}${guidancePrompt(synthesisGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode, source: input.source, evidence, extraction,
-      observations: synthesisObservations(observations) }),
-    responseSchema: structuredClone(synthesisResponseSchema ??= zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>),
+      observations: synthesisObservations(observations),
+      ...(autopickSlots.length ? { autopickChoices: autopickSlots.map((slot) => ({ slot: slot.slot,
+        candidates: slot.candidates.map((row) => ({ token: row.token, label: row.label })) })) } : {}) }),
+    responseSchema: withAutopickResponseSchema(structuredClone(synthesisResponseSchema ??= zodToJsonSchema(reservationWorkflowV2ModelOutputSchema, { $refStrategy: 'none' }) as Record<string, unknown>), autopickSlots),
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
+  const rawSynthesis = finalPass.ok ? finalPass.result.output : undefined;
+  // The autopick answer is validated on its own, so it can neither fail nor rescue the proposal parse.
+  const synthesisOutput = isRecord(rawSynthesis) ? Object.fromEntries(Object.entries(rawSynthesis).filter(([key]) => key !== 'autopick')) : rawSynthesis;
+  const autopickModelResults = finalPass.ok ? validateAutopickModelOutput(isRecord(rawSynthesis) ? rawSynthesis.autopick : undefined,
+    autopickSlots, evidence) : [];
   const finalParsed = finalPass.ok ? reservationWorkflowV2ModelOutputSchema.safeParse(recoverSynthesisEntities(
-    recoverSynthesisReferences(normalizeSynthesisOutput(finalPass.result.output, evidence), evidence, observations))) : null;
+    recoverSynthesisReferences(normalizeSynthesisOutput(synthesisOutput, evidence), evidence, observations))) : null;
   // Native/source reference guards remain authoritative on the host-projected
   // proposal. A fault in one entity recovers only its own source workflow.
   const projectionInput = finalParsed?.success ? { proposal: finalParsed.data.proposal,
@@ -6475,8 +6514,13 @@ export async function runReservationWorkflowV2Prefill(input: {
     finalObservations.push(...amendNotes.observations);
     finalObservations.push(...noteCompositionObservations({ before: trackResult.proposal, proposal: amendNotes.proposal,
       observations: finalObservations, source: input.source, generationId, propertyCode, evidence }));
-    finalProposal = amendNotes.proposal;
-    amendNoteRequirements = amendNotes.requirements;
+    const autopick = applyAutopick({ proposal: amendNotes.proposal, observations: finalObservations, history: autopickHistory,
+      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
+      modelResults: autopickModelResults, extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map(),
+      generationId, propertyCode, source: input.source });
+    finalObservations.push(...autopick.observations);
+    finalProposal = autopick.proposal;
+    amendNoteRequirements = { ...autopick.requirements, ...amendNotes.requirements };
   }
   const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
   let unverifiedReviewEvidence = false;
@@ -6603,7 +6647,12 @@ export async function runReservationWorkflowV2Prefill(input: {
     finalObservations.push(...amendNotes.observations);
     finalObservations.push(...noteCompositionObservations({ before: trackResult.proposal, proposal: amendNotes.proposal,
       observations: finalObservations, source: input.source, generationId, propertyCode, evidence }));
-    const proposal = amendNotes.proposal;
+    // A failed synthesis records no model choice: that is a synthesis failure, not an autopick parse failure.
+    const autopick = applyAutopick({ proposal: amendNotes.proposal, observations: finalObservations, history: autopickHistory,
+      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env), modelResults: [],
+      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, generationId, propertyCode, source: input.source });
+    finalObservations.push(...autopick.observations);
+    const proposal = autopick.proposal;
     const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
       db: input.db, transportId: input.transportId,
@@ -6611,7 +6660,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
     return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
-      proposal, fieldReviewRequirements: { ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(proposal) },
+      proposal, fieldReviewRequirements: { ...autopick.requirements, ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(proposal) },
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
   const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
