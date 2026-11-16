@@ -66,6 +66,7 @@ describe('self-sent pre-stay information', () => {
       fromAddress,
       subject,
       bodyText: `From: Booking.com <noreply@messages.booking.com>\nSubject: ${subject}`,
+      hasAttachments: false,
     });
     expect(noticeOnly.kind).toBe('channel');
     expect(admissionMailSource(noticeOnly, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({

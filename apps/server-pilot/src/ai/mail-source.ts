@@ -225,6 +225,24 @@ function forwardedSubjectAuthoredText(bodyLines: readonly string[]): string {
   return authoredForwardLines(contentStart < 0 ? bodyLines : bodyLines.slice(0, contentStart));
 }
 
+/**
+ * Authored-capable text around an embedded forwarded header block. `before`
+ * covers everything ahead of its From line, including between a forward
+ * separator and the headers; `after` covers the rest of the body. The
+ * forwarded message has no end marker, so unquoted content after the headers
+ * cannot be attributed to the original — a staff ask appended there stays
+ * reviewable instead of being folded into the forwarded source.
+ */
+function forwardedAuthoredText(
+  lines: readonly string[],
+  block: { index: number },
+): { before: string; after: string } {
+  return {
+    before: authoredForwardLines(lines.slice(0, block.index)),
+    after: authoredForwardLines(lines.slice(block.index + 1)),
+  };
+}
+
 /** The first embedded forwarded header block (From/Sender line plus its lookahead Subject). */
 function forwardedHeaderBlock(
   lines: readonly string[],
@@ -245,18 +263,18 @@ function forwardedHeaderBlock(
 }
 
 function originalForwardSender(
-  bodyText: string,
-): { rule: MailSourceRule; domain: string; subject: string | null; authoredText: string } | null {
-  const lines = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
-  const block = forwardedHeaderBlock(lines);
-  if (!block) return null;
+  lines: readonly string[],
+  block: { index: number; domain: string; subject: string | null },
+): { rule: MailSourceRule; domain: string; subject: string | null; authoredText: string; tailText: string } | null {
   const match = ruleForDomain(block.domain);
   if (!match) return null;
+  const authored = forwardedAuthoredText(lines, block);
   return {
     rule: match.rule,
     domain: match.registeredDomain,
     subject: block.subject,
-    authoredText: authoredForwardLines(lines.slice(0, block.index)),
+    authoredText: authored.before,
+    tailText: authored.after,
   };
 }
 
@@ -286,21 +304,29 @@ function forwardSubjectGuardReason(embeddedSubject: string | null | undefined): 
  * A human-origin routine notice is suppressed only by a proven unannotated
  * send: an envelope re-send whose staff subject restates the embedded one, or
  * a bare template subject over an empty body. Any authored content — ahead of
- * the forwarded material or as the whole body — stays reviewable, because the
- * notice template itself cannot be told apart from a current staff ask.
+ * the forwarded material, appended after it, or as the whole body — stays
+ * reviewable, because the notice template itself cannot be told apart from a
+ * current staff ask. Attachments are never read at this gate, so only a
+ * proven-empty file set allows a skip; a present or unverified file can carry
+ * a whole separate ask.
  */
 function humanOriginNoticeSuppressed(input: {
   subject?: string | null;
   /** Body already reduced to plain text by the caller. */
   plainBody: string;
+  /** Tri-state attachment evidence; only `false` (proven none) counts. */
+  hasAttachments?: boolean;
 }): boolean {
+  if (input.hasAttachments !== false) return false;
   const subject = input.subject?.trim() ?? '';
-  const lines = input.plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
-  if (forwardedSubjectAuthoredText(lines)) return false;
-  const block = forwardedHeaderBlock(lines);
-  if (block || ENVELOPE_SUBJECT_PREFIX.test(subject)) {
-    return !envelopeSubjectAnnotated(subject, block?.subject);
+  const lines = input.plainBody.split(/\r?\n/);
+  const block = forwardedHeaderBlock(input.plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/));
+  if (block) {
+    if (envelopeSubjectAnnotated(subject, block.subject)) return false;
+    const authored = forwardedAuthoredText(lines, block);
+    return !authored.before && !authored.after;
   }
+  if (ENVELOPE_SUBJECT_PREFIX.test(subject)) return false;
   return !input.plainBody.trim();
 }
 
@@ -318,7 +344,7 @@ export function classifyMailSource(input: {
   fromAddress?: string | null;
   subject?: string | null;
   bodyText?: string | null;
-  /** Whether the message carries at least one non-inline attachment; undefined means unknown. */
+  /** Whether the message carries at least one non-inline attachment; undefined means unknown. A human-origin or forwarded send skips only on a proven-empty set, since a file can carry the whole ask. */
   hasAttachments?: boolean;
 }): MailSourceClassification {
   const plainBody = plainTextBody(input.bodyText ?? '');
@@ -326,7 +352,8 @@ export function classifyMailSource(input: {
     (exclusion) =>
       exclusion.senderPattern.test(input.fromAddress?.trim() ?? '') &&
       exclusion.subjectPattern.test(input.subject?.trim() ?? '') &&
-      (exclusion.humanOrigin !== true || humanOriginNoticeSuppressed({ subject: input.subject, plainBody })),
+      (exclusion.humanOrigin !== true ||
+        humanOriginNoticeSuppressed({ subject: input.subject, plainBody, hasAttachments: input.hasAttachments })),
   );
   if (routineNotice) {
     return { kind: 'system', source: routineNotice.source, reason: `routine_notice:${routineNotice.id}` };
@@ -344,7 +371,9 @@ export function classifyMailSource(input: {
   }
 
   if (isInternalForwardSender(senderDomain)) {
-    const forwardedSender = originalForwardSender(plainBody);
+    const lines = plainBody.split(/\r?\n/);
+    const block = forwardedHeaderBlock(plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/));
+    const forwardedSender = block ? originalForwardSender(lines, block) : null;
     if (forwardedSender) {
       // Fresh authored content above the forward keeps the message reviewable;
       // only an empty preamble is a clearly notice-only envelope.
@@ -359,6 +388,18 @@ export function classifyMailSource(input: {
           source: null,
           reason: `${forwardSubjectGuardReason(forwardedSender.subject)}:${forwardedSender.rule.id}`,
         };
+      }
+      // This gate runs before attachment reads, so only a proven-empty file
+      // set allows a skip; a present or unverified file can carry a separate ask.
+      if (input.hasAttachments !== false) {
+        return {
+          kind: 'direct',
+          source: null,
+          reason: `${input.hasAttachments === true ? 'forwarded_attachments_present' : 'forwarded_attachments_unverified'}:${forwardedSender.rule.id}`,
+        };
+      }
+      if (forwardedSender.tailText) {
+        return { kind: 'direct', source: null, reason: `forwarded_authored_tail:${forwardedSender.rule.id}` };
       }
       if (forwardedSender.rule.directWhenForwarded) {
         return { kind: 'direct', source: null, reason: `forwarded_skip_exempt:${forwardedSender.rule.id}` };
@@ -376,21 +417,28 @@ export function classifyMailSource(input: {
     if (originalSubject) {
       for (const rule of MAIL_SOURCE_RULES) {
         if (rule.forwardedSubjectPatterns?.some((pattern) => pattern.test(originalSubject))) {
-          const authoredText = forwardedSubjectAuthoredText(plainBody.split(/\r?\n/));
-          if (authoredText) {
+          const authored = block ? forwardedAuthoredText(lines, block) : null;
+          if (authored ? authored.before : forwardedSubjectAuthoredText(lines)) {
             return { kind: 'direct', source: null, reason: `forwarded_authored_content:${rule.id}` };
           }
           // The branded subject template alone cannot prove the forward is
           // unannotated; it must restate an embedded subject to still skip.
-          const embeddedSubject = forwardedHeaderBlock(
-            plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/),
-          )?.subject;
-          if (envelopeSubjectAnnotated(input.subject ?? '', embeddedSubject)) {
+          if (envelopeSubjectAnnotated(input.subject ?? '', block?.subject)) {
             return {
               kind: 'direct',
               source: null,
-              reason: `${forwardSubjectGuardReason(embeddedSubject)}:${rule.id}`,
+              reason: `${forwardSubjectGuardReason(block?.subject)}:${rule.id}`,
             };
+          }
+          if (input.hasAttachments !== false) {
+            return {
+              kind: 'direct',
+              source: null,
+              reason: `${input.hasAttachments === true ? 'forwarded_attachments_present' : 'forwarded_attachments_unverified'}:${rule.id}`,
+            };
+          }
+          if (authored?.after) {
+            return { kind: 'direct', source: null, reason: `forwarded_authored_tail:${rule.id}` };
           }
           return matchedSource(rule, `forwarded_subject:${rule.id}`);
         }
