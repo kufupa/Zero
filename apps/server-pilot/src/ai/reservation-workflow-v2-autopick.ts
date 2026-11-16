@@ -5,6 +5,7 @@ import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Evidence, Reserva
 import { isExcludedRefundArAccount, reservationEntityKey, type AutopickHistory, type AutopickHistoryField, type AutopickHistoryKey,
   type AutopickHistoryValue } from './reservation-workflow-v2-native-leads.js';
 import type { PreloadedNativeCatalog } from './native-catalog-lookup.js';
+import { matchKey } from './party-match.js';
 
 /**
  * Auto-pick with evidence: one host-side mechanism for every coded Create/Quote field. Every pick is a real native
@@ -42,6 +43,75 @@ const gateFor = (stats: { total: number; values: AutopickHistoryValue[] }, value
   const [leader, runnerUp] = stats.values;
   return Boolean(leader && same(leader.value, value) && clearsHistoryGate({ count: leader.count, agreement: leader.count / stats.total }, runnerUp));
 };
+
+function completeCodeEnvelope(catalog: PreloadedNativeCatalog | null | undefined, kind: 'room' | 'rate',
+  propertyCode?: string) {
+  if (!catalog || (propertyCode !== undefined && catalog.propertyCode !== propertyCode)) return null;
+  const envelope = kind === 'room' ? catalog.roomsEnvelope() : catalog.ratesEnvelope();
+  const complete = envelope.coverage.scope === 'whole_catalog' && envelope.coverage.complete &&
+    envelope.items.every((item) => item.provenance === 'native_catalog_v2' || item.provenance === 'native_catalog_v1');
+  return complete ? envelope : null;
+}
+
+/**
+ * A source-stated room/rate meaning selects a native code only when the property's complete live catalogue binds
+ * exactly that one normalized meaning. Partial, ambiguous, legacy or unverifiable catalogue data never yields a code.
+ */
+export function uniqueCatalogMeaningCode(catalog: PreloadedNativeCatalog | null | undefined, kind: 'room' | 'rate',
+  text: unknown, propertyCode?: string): { code: string; meaning: string } | null {
+  const envelope = completeCodeEnvelope(catalog, kind, propertyCode);
+  const key = typeof text === 'string' ? matchKey(text) : '';
+  if (!envelope || !key) return null;
+  const matches = envelope.items.filter((item) => item.normalizedMeaning === key);
+  return matches.length === 1 ? { code: matches[0]!.code, meaning: matches[0]!.meaning } : null;
+}
+
+// Negation mirrors the exact-code resolver's predicate words, including curly apostrophes. A coordinated
+// list shares one clause, so a trailing negation covers every member: "Standard rooms or Executive rooms
+// are unavailable" negates both.
+const MEANING_NEGATION = /\b(?:no|not|never|neither|unavailable|unwanted|unable|sold\s+out|fully\s+booked|closed|(?:is|are|was|were|do|does|did|ca|could|wo|would|should)n['’]t|cannot)\b/i;
+const MEANING_NEGATIVE = new RegExp(`${MEANING_NEGATION.source}|\\b(?:without|avoid|avoided|except|exclude[ds]?|instead\\s+of|rather\\s+than)\\b`, 'i');
+// Sentence and contrastive boundaries split clauses; coordination (commas, slashes, and/or/nor) does not.
+const MEANING_CLAUSE = /[;.!?\n]|\b(?:but|however)\b/gi;
+
+/**
+ * The raw span cannot support a meaning when it negates itself, has no verbatim occurrence, or every
+ * verbatim occurrence sits inside a clause containing a negation. An unverifiable or fully negated
+ * wording yields abstention rather than a guessed code.
+ */
+function sourceMeaningNegated(raw: string, context: string): boolean {
+  if (MEANING_NEGATIVE.test(raw)) return true;
+  return !context.split(MEANING_CLAUSE).some((clause) => clause.includes(raw) && !MEANING_NEGATIVE.test(clause));
+}
+
+/**
+ * Resolve cited code hints to at most one native code. A hint contributes only when its raw wording sits verbatim
+ * in one of its own cited, non-prior evidence rows, equals exactly one catalogue meaning under matchKey in full,
+ * stays unnegated there, and every contributing hint picks the same code. Model-normalized values, missing
+ * evidence, decorated or partial wording, and ambiguous or negated spans all yield no code at all.
+ */
+export function sourceMeaningCode(claims: ReadonlyArray<{ raw: string; value: unknown; sourceRefs: string[] }>,
+  kind: 'room' | 'rate', options: { catalog: PreloadedNativeCatalog | null | undefined; propertyCode?: string;
+    evidence: ReadonlyArray<{ ref: string; relation: string; text: string }> }):
+  { code: string; meaning: string; sourceRefs: string[] } | null {
+  const byCode = new Map<string, { meaning: string; sourceRefs: Set<string> }>();
+  for (const claim of claims) {
+    const raw = claim.raw.trim();
+    if (!raw) continue;
+    const anchored = options.evidence.filter((row) => row.relation !== 'prior_thread' &&
+      claim.sourceRefs.includes(row.ref) && row.text.includes(raw));
+    if (!anchored.length) continue;
+    const match = uniqueCatalogMeaningCode(options.catalog, kind, raw, options.propertyCode);
+    if (!match || anchored.some((row) => sourceMeaningNegated(raw, row.text))) continue;
+    const entry = byCode.get(match.code) ?? { meaning: match.meaning, sourceRefs: new Set<string>() };
+    entry.meaning = match.meaning;
+    anchored.forEach((row) => entry.sourceRefs.add(row.ref));
+    byCode.set(match.code, entry);
+  }
+  if (byCode.size !== 1) return null;
+  const [code, entry] = [...byCode.entries()][0]!;
+  return { code, meaning: entry.meaning, sourceRefs: [...entry.sourceRefs] };
+}
 
 /** Exact email span naming `name` (token-wise, case-insensitive), or null. */
 export function emailQuote(text: string, name: string, role: EntityRole): string | null {
@@ -373,6 +443,28 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
         candidates = candidates.map((row, index) => ({ row, index })).sort((a, b) =>
           Number(same(b.row.name, String(party.name))) - Number(same(a.row.name, String(party.name))) ||
           (statFor(b.row.name)?.count ?? 0) - (statFor(a.row.name)?.count ?? 0) || a.index - b.index).map(({ row }) => row);
+        // Create auto-selects only one distinct canonical-name identity. Zero or duplicate
+        // same-name identities keep the source text and stay a required staff pick.
+        if (request.kind === 'create') {
+          const sourceName = party.name;
+          const matching = candidates.filter((row) => same(row.name, sourceName));
+          if (matching.length !== 1) {
+            const candidateRefs = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((row) => row.ref);
+            const target = rec(owner[field])!;
+            target.candidateRefs = candidateRefs;
+            target.suggestedRef = null;
+            proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, ...candidateRefs])].slice(0, 1000);
+            evidence.push({ kind: 'policy_default', count: null, total: null, lastSeen: null,
+              key: matching.length ? 'Several Infor profiles share this name' : 'No Infor profile uses this exact name' });
+            if (key && stats && statFor(sourceName)) evidence.push(historyEvidence(key, statFor(sourceName), stats.total));
+            const namedQuote = emailQuoteAny(text, sourceName, role) ?? undefined;
+            if (namedQuote) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote: namedQuote });
+            record(request, field, valuePath, selectionPath, { ref: '', value: '', label: sourceName, confidence: 'check',
+              evidence, alternatives: candidates.map((row) => ({ ref: row.ref, label: row.name,
+                count: statFor(row.name)?.count ?? null, total: statFor(row.name) ? stats!.total : null })) }, 'native_read');
+            continue;
+          }
+        }
         pickIndex = 0;
         const quote = emailQuoteAny(text, party.name, role) ?? undefined;
         if (quote) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote });

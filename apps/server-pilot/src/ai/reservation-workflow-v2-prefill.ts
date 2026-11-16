@@ -30,7 +30,7 @@ import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { loadReservationAutopickHistory, loadReservationMemoryGuidance, loadReservationNativeLeads,
   loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
 import { applyAutopick, AUTOPICK_MAX_ALTERNATIVES, AUTOPICK_SYNTHESIS_RULES, autopickModelSlots, autopickReadCriteria, clearsHistoryGate,
-  planAutopickPartyReads, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
+  planAutopickPartyReads, sourceMeaningCode, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
 import { loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
@@ -1724,6 +1724,18 @@ function normalizedFact(value: unknown): string {
   return typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
 }
 
+/** Deterministic first/last split for an editable prefill name; titles drop, "Last, First" is honoured. */
+function splitSourceGuestName(value: string): { first: string | null; last: string | null } {
+  const clean = value.trim().replace(/\s+/g, ' ');
+  if (!clean) return { first: null, last: null };
+  const comma = clean.split(/\s*,\s*/);
+  if (comma.length === 2 && comma.every(Boolean)) return { first: comma[1]!, last: comma[0]! };
+  const tokens = clean.split(' ').filter((token) => !/^(?:mr|mrs|ms|miss|dr|prof|professor)\.?$/i.test(token));
+  if (!tokens.length) return { first: null, last: null };
+  if (tokens.length === 1) return { first: null, last: tokens[0]! };
+  return { first: tokens.slice(0, -1).join(' '), last: tokens[tokens.length - 1]! };
+}
+
 function mergeSourceNote(existing: string, sourceNotes: string[], evidence: ReservationWorkflowV2Evidence[]) {
   const retained = existing.split('\n').filter((line) => {
     const fragment = line.trim();
@@ -2039,13 +2051,16 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
 
 function currentSourceCodes(claims: Array<{ raw: string; value: unknown; sourceRefs: string[] }>,
   currentRefs: Set<string>, kind: 'room' | 'rate',
-  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string; messageRefs?: Set<string> } = {}): { codes: string[]; sourceRefs: string[] } {
+  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string; messageRefs?: Set<string>;
+    evidence?: ReservationWorkflowV2Evidence[] } = {}): { codes: string[]; sourceRefs: string[] } {
   const byCode = new Map<string, Set<string>>();
   for (const claim of claims) {
     const current = currentClaim(claim, currentRefs);
     if (!current) continue;
-    const code = exactSourceCode(current, kind, options.messageRefs && !current.sourceRefs.some(ref => options.messageRefs!.has(ref))
-      ? {} : options);
+    const bound = options.messageRefs && !current.sourceRefs.some(ref => options.messageRefs!.has(ref));
+    const code = exactSourceCode(current, kind, bound ? {} : options) ?? (bound ? null :
+      sourceMeaningCode([current], kind, { catalog: options.nativeCatalog, propertyCode: options.propertyCode,
+        evidence: options.evidence ?? [] })?.code ?? null);
     if (!code) continue;
     const refs = byCode.get(code) ?? new Set<string>();
     current.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
@@ -3521,7 +3536,7 @@ function projectCurrentExtraction(input: {
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const codeOptions = { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode,
-    rawContext: input.selection.currentBodyText ?? input.selection.bodyText,
+    rawContext: input.selection.currentBodyText ?? input.selection.bodyText, evidence: input.evidence,
     messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) };
   const pdfs = currentPdfEvidence(input);
   appendExtractionSourceClaims(proposal, input.extraction, knownRefs);
@@ -3892,16 +3907,33 @@ function projectCurrentExtraction(input: {
     const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row),
       normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
     const authoredNoteClauses = authoredSourceNoteClauses(input);
-    const sourceNoteCandidates = [...operationalSourceNote(input), ...extracted.rateHints.flatMap((claim) =>
-      currentClaim(claim, currentRefs) && /\brate\b/i.test(claim.raw) &&
-      !exactSourceCode(claim, 'rate', { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode }) &&
-      input.evidence.some(row => row.relation === 'current_message' && claim.sourceRefs.includes(row.ref) &&
-        row.text.includes(claim.raw)) ? authoredNoteClauses.filter(clause =>
-        clause.includes(claim.raw) && !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(clause)) : [])];
+    const messageRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
+    const sourceNoteCandidates = [...operationalSourceNote(input).map((clause) => ({ clause, sourceRefs: messageRefs })),
+      ...extracted.rateHints.flatMap((claim) => {
+        const current = currentClaim(claim, currentRefs);
+        if (!current || !/\brate\b/i.test(current.raw)) return [];
+        const codeBound = { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode };
+        if (exactSourceCode(current, 'rate', codeBound) ||
+            sourceMeaningCode([current], 'rate', { catalog: input.nativeCatalog, propertyCode: input.propertyCode,
+              evidence: input.evidence })) return [];
+        const anchoredRefs = input.evidence.filter((row) => row.relation !== 'prior_thread' &&
+          claim.sourceRefs.includes(row.ref) && row.text.includes(current.raw)).map((row) => row.ref);
+        if (!anchoredRefs.length) return [];
+        const clauses = authoredNoteClauses.filter((clause) => clause.includes(current.raw));
+        return (clauses.length ? clauses : current.raw.length <= 300 ? [current.raw] : [])
+          .filter((clause) => !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(clause))
+          .map((clause) => ({ clause, sourceRefs: anchoredRefs }));
+      })];
+    const dedupedNotes = new Map<string, { clause: string; sourceRefs: string[] }>();
+    for (const candidate of sourceNoteCandidates) {
+      const existing = dedupedNotes.get(candidate.clause);
+      if (existing) existing.sourceRefs = [...new Set([...existing.sourceRefs, ...candidate.sourceRefs])].slice(0, 100);
+      else dedupedNotes.set(candidate.clause, candidate);
+    }
     const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
       currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1
-      ? [...new Set(sourceNoteCandidates)].filter((clause) => {
-        const text = normalizedFact(clause);
+      ? [...dedupedNotes.values()].filter((candidate) => {
+        const text = normalizedFact(candidate.clause);
         return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
           !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
           (normalizedFact(extracted.requestText.raw).includes(text) || [...ownMarkers].some((marker) => text.includes(marker)));
@@ -3910,32 +3942,35 @@ function projectCurrentExtraction(input: {
       const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
       const limit = request.kind === 'create' ? 2000 : 4000;
       const path = `/proposal/content/requests/${request.id}/body/${request.kind === 'create' ? 'shared/reservationNote' : 'notes'}`;
-      const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
+      const clauseRefs = (clause: string) => [...new Set(sourceNotes.filter((note) => note.clause === clause)
+        .flatMap((note) => note.sourceRefs))].slice(0, 100);
       const existingText = typeof existing === 'string' ? existing : '';
-      const { fullNote, additions } = mergeSourceNote(existingText, sourceNotes, input.evidence);
+      const { fullNote, additions } = mergeSourceNote(existingText, sourceNotes.map((note) => note.clause), input.evidence);
       const explicitlyNone = request.kind === 'create' && isRecord(existing) && existing.kind === 'none';
-      if (explicitlyNone) for (const clause of sourceNotes) {
-        if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && clause.length <= 2000 &&
-            !proposal.sourceClaims.some(claim => claim.path === path && claim.raw === clause))
-          proposal.sourceClaims.push({ path, raw: clause, sourceRefs });
+      if (explicitlyNone) for (const note of sourceNotes) {
+        if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && note.clause.length <= 2000 &&
+            !proposal.sourceClaims.some(claim => claim.path === path && claim.raw === note.clause))
+          proposal.sourceClaims.push({ path, raw: note.clause, sourceRefs: clauseRefs(note.clause) });
       }
       if (!explicitlyNone && fullNote.length <= limit && additions.length) {
         if (request.kind === 'create') request.body.shared.reservationNote = fullNote;
         else request.body.notes = fullNote;
-        proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
+        proposal.annotations.push({ path, basis: 'source', evidenceRefs: [...new Set(additions.flatMap(clauseRefs))].slice(0, 100) });
       }
       if (fullNote.length > limit) {
-        for (const clause of sourceNotes) for (let offset = 0; offset < clause.length; offset += 2000) {
+        for (const note of sourceNotes) for (let offset = 0; offset < note.clause.length; offset += 2000) {
           if (proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS) break;
-          const raw = clause.slice(offset, offset + 2000);
-          if (!proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === raw)) proposal.sourceClaims.push({ path, raw, sourceRefs });
+          const raw = note.clause.slice(offset, offset + 2000);
+          if (!proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === raw))
+            proposal.sourceClaims.push({ path, raw, sourceRefs: clauseRefs(note.clause) });
         }
         addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
-          `This note exceeds HMS's ${limit}-character limit. Review and shorten it before saving; the source remains available in the selected email.`, sourceRefs);
+          `This note exceeds HMS's ${limit}-character limit. Review and shorten it before saving; the source remains available in the selected email.`,
+          [...new Set(sourceNotes.flatMap((note) => note.sourceRefs))].slice(0, 100));
       }
       if (fullNote.length <= limit) proposal.issues = proposal.issues.filter((issue) => {
         const description = normalizedFact(issue.explanation).replace(/^special request(?:ed)?\s*:?\s*/u, '');
-        return !sourceNotes.some((clause) => normalizedFact(clause) === description);
+        return !sourceNotes.some((note) => normalizedFact(note.clause) === description);
       });
     }
     if (request.kind === 'create' && extracted.requestedPrice) {
@@ -4265,7 +4300,7 @@ function projectCurrentExtraction(input: {
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
           roomCodes.codes.length
             ? 'The exact source room code has no unambiguous date/group scope. Select the room code in the native-backed Quote editor.'
-            : 'Room preference text is not an exact native code; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
+            : 'Room preference text is not an exact native code or unique catalogue meaning; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
           roomCodes.sourceRefs.length ? roomCodes.sourceRefs :
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
@@ -4306,7 +4341,7 @@ function projectCurrentExtraction(input: {
         !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))) {
         for (const group of request.body.groups) group.ratePlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_not_projected',
-          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select a native rate code in the Quote editor.',
+          'The source rate hint is not an exact native rate-plan code or unique catalogue meaning; no rate code was inferred from its name. Select a native rate code in the Quote editor.',
           [...new Set(currentRateHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
@@ -4662,6 +4697,47 @@ function projectCurrentExtraction(input: {
               appendProjectedSource(proposal, `${bookingRoot}/dateSections/0/requestedTotals/${field}`, occupancyRow[field], currentRefs);
           }
         }
+        // One source-bound stay with exactly one source-cited room may take exactly one cited guest
+        // name; anything wider keeps the unassigned roster instead of guessing which room it belongs
+        // to. The guards mirror projectSourceCreateAllocations: one valid current stay, an explicit
+        // room count of one, the allocation bound to the single date section, and no unmapped dates.
+        const currentSourceStays = extracted.dates.filter((candidate) => currentClaim(candidate.arrival, currentRefs) &&
+          currentClaim(candidate.departure, currentRefs));
+        const sourceStay = currentSourceStays.length === 1 ? currentSourceStays[0] : undefined;
+        const sourceArrival = currentClaim(sourceStay?.arrival, currentRefs);
+        const sourceDeparture = currentClaim(sourceStay?.departure, currentRefs);
+        const sourceStayDays = isoDay(sourceArrival?.value) && isoDay(sourceDeparture?.value) &&
+          sourceDeparture.value > sourceArrival.value
+          ? { arrival: sourceArrival.value, departure: sourceDeparture.value } : null;
+        const singleRoomSourceStay = Boolean(sourceStay && sourceStayDays &&
+          citedInteger(currentClaim(extracted.roomCount, currentRefs)) === 1 &&
+          section.arrival === sourceStayDays.arrival && section.departure === sourceStayDays.departure &&
+          dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
+          request.body.allocations.length === 1 &&
+          request.body.allocations.every((allocation) => allocation.dateSectionId === section.id));
+        const guestNameClaims = singleRoomSourceStay
+          ? [...extracted.guests.filter((item) => item.role === 'guest').map((item) => item.name),
+            ...extracted.dates.flatMap((date) => date.guestNames ?? [])].flatMap((claim) => {
+            const current = currentClaim(claim, currentRefs);
+            const raw = current?.raw.trim() ?? '';
+            return current && typeof current.value === 'string' && current.value.trim() && raw &&
+              sameGuestName(raw, current.value) &&
+              input.evidence.some((row) => currentRefs.has(row.ref) && current.sourceRefs.includes(row.ref) &&
+                row.text.includes(raw)) ? [current] : [];
+          }) : [];
+        if (guestNameClaims.length && new Set(guestNameClaims.map((claim) => normalizeGuestName(String(claim.value)))).size === 1) {
+          const claim = guestNameClaims[0]!, name = claim.raw.trim().replace(/\s+/g, ' ');
+          const allocation = request.body.allocations[0]!;
+          const parts = splitSourceGuestName(name);
+          if (!allocation.guest.firstName && !allocation.guest.lastName && /\p{L}/u.test(name) && name.length <= 300 &&
+              (!parts.first || parts.first.length <= 200) && (!parts.last || parts.last.length <= 200)) {
+            const guestRoot = `${bookingRoot}/allocations/0/guest`;
+            if (parts.first) { allocation.guest.firstName = parts.first;
+              appendProjectedSource(proposal, `${guestRoot}/firstName`, claim, currentRefs); }
+            if (parts.last) { allocation.guest.lastName = parts.last;
+              appendProjectedSource(proposal, `${guestRoot}/lastName`, claim, currentRefs); }
+          }
+        }
         const knownGuestNames = new Set(request.body.allocations.map((allocation) =>
           normalizedFact([allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' '))).filter(Boolean));
         for (const guest of extracted.guests) {
@@ -4740,7 +4816,7 @@ function projectCurrentExtraction(input: {
           addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
             roomCodes.codes.length
               ? 'The source room code cannot be mapped to one current Create date section. No shared room code was selected; staff must resolve the source scope.'
-              : 'The source room preference is not an exact explicit native room code. It remains available in source claims for staff selection.',
+              : 'The source room preference is not an exact explicit native room code or unique catalogue meaning. It remains available in source claims for staff selection.',
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
       }
@@ -4785,7 +4861,7 @@ function projectCurrentExtraction(input: {
       } else if (nonPriceRateHintRefs.length) {
         request.body.shared.ratePlan = null;
         addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_not_projected',
-          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select the native rate code with staff.',
+          'The source rate hint is not an exact native rate-plan code or unique catalogue meaning; no rate code was inferred from its name. Select the native rate code with staff.',
           nonPriceRateHintRefs);
       }
     }
@@ -6744,8 +6820,9 @@ export async function runReservationWorkflowV2Prefill(input: {
     const autopick = applyAutopick({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId,
       { source: input.source, selection: input.selection, evidence }), observations: finalObservations, history: autopickHistory,
-      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env), modelResults: [],
-      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, generationId, propertyCode, source: input.source });
+      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
+      modelResults: [], extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
+      generationId, propertyCode, source: input.source });
     finalObservations.push(...autopick.observations);
     const trackResult = await applyRateTrackMemory({ proposal: autopick.proposal, source: input.source,
       propertyCode, generationId, env });
