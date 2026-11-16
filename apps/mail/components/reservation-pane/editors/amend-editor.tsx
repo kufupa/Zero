@@ -295,7 +295,7 @@ function ChangeList({ editor, path, label }: { editor: Editor; path: string; lab
     <div className={styles.row}>
       <label className={styles.changeAdd}><span className={styles.visuallyHidden}>Add requested change</span>
         <select value="" disabled={editor.view.busy} onChange={event => add(event.target.value)}>
-          <option value="">+ Change</option>
+          <option value="">+ Add a change</option>
           {fields.filter(([name]) => name !== 'roomCount').map(([name, title]) => <option value={name} key={name}>{name === 'guestOptIn' ? `Clear ${title}` : title}</option>)}
           <option value="shift_dates">Shift both dates</option><option value="shift_departure">Shift departure</option>
         </select>
@@ -351,10 +351,10 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
     <div className={styles.changeHeading}><strong>{title}</strong>
       {!known && <span>Needs Infor</span>}
       <select aria-label={`Change ${title}`} value={kept ? 'keep' : op} disabled={editor.view.busy} onChange={event => setOp(event.target.value)}>
-        <option value="keep">Keep current</option>
+        <option value="keep">Don't change</option>
         {field === 'guestOptIn' ? <option value={op === 'clear' ? 'clear' : 'set'}>Clear setting</option>
-          : op === 'shift_dates' || op === 'shift_departure' ? <option value={op}>Apply shift</option> : known ? <>
-          <option value="set">Set</option>{clearable.has(field) && <option value="clear">Clear</option>}
+          : op === 'shift_dates' || op === 'shift_departure' ? <option value={op}>Move dates</option> : known ? <>
+          <option value="set">Change</option>{clearable.has(field) && <option value="clear">Clear it</option>}
           {unsupportedClear && <option value="clear" disabled>Requested clear</option>}
         </> : <option value={op}>Requested</option>}
       </select></div>
@@ -366,11 +366,11 @@ function ChangeRow({ editor, path, change }: { editor: Editor; path: string; cha
     {!kept && field === 'taCommission' && op === 'set' && typeof original.value === 'string' && <span className={styles.hint}>
       Requested commission: {original.value}.{typeof valueAt(editor.snapshot, valuePath) === 'string' && ' Enter the percentage as a number.'}
     </span>}
-    {kept ? sourceClear ? null : <span className={styles.hint}>{known ? 'Original request can be restored here.'
-      : 'Infor will leave this field unchanged. Handle the displayed request manually if it is still essential.'}</span> : !known ? <div className={styles.warning}>
-        Nava cannot apply this additional requested change in Amend. Keep the saved stay unchanged here and handle the request manually in Infor if it remains essential.
+    {kept ? sourceClear ? null : <span className={styles.hint}>{known ? 'Infor keeps the current value.'
+      : 'Infor keeps this unchanged. Make it in Infor if the guest still needs it.'}</span> : !known ? <div className={styles.warning}>
+        Nava can't make this change. Make it in Infor if the guest still needs it.
       </div> :
-      op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to shift" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay uses its own original dates." /> : <>
+      op === 'shift_dates' || op === 'shift_departure' ? <Field label="Days to move (minus for earlier)" path={`${path}/days`} type="number" editor={editor} compact hint="Each stay moves from its own dates." /> : <>
         {unsupportedClear ? <div className={styles.warning} role="alert">This request asks to clear {title}. It cannot be cleared here. Choose Keep current to save other changes, or Set to choose a replacement.</div> :
           op === 'clear' ? <span className={styles.hint}>Clear this field on the selected stay.</span> : spec?.[2] === 'ages' ? <AgeInput editor={editor} path={valuePath} /> :
           spec?.[2] === 'count' ? <Count label={spec[1]} path={valuePath} editor={editor} min={field === 'adults' || field === 'roomCount' ? 1 : 0} max={field === 'adults' ? 16 : field === 'roomCount' ? 8 : 9} /> :
@@ -407,8 +407,8 @@ export function AmendEditor(editor: Editor) {
     change.op === 'set' && change.field === 'requestedMealPlan' && /\blunch\b/i.test(text(change.value)));
   return <div className={styles.stack}>
     {lunchRequested && <p className={styles.warning} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
-    <Section title="Find saved stays">
-      <p className={styles.hint}>Select exact Infor stays. Unmentioned fields stay unchanged. Each stay is checked and saved separately.</p>
+    <Section title={targets.length > 1 ? 'Find the bookings' : 'Find the booking'}>
+      <p className={styles.hint}>Only the changes you add below are saved. Everything else stays as it is in Infor.</p>
       {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Written or uncertain stays remain locked; untouched stays can still be corrected and checked. Reconcile before changing target scope.</div>}
       {scope.mode !== 'explicit' && targets.length > 0 && <div className={styles.row}>
         <div className={styles.warning}>This request covers a group. Switch to its listed stays and handle each exact stay separately.</div>
@@ -428,7 +428,7 @@ export function AmendEditor(editor: Editor) {
         <small className={styles.hint}>Correct missing or ambiguous identity facts above, then Find in Infor. This stay remains excluded until you explicitly include it.</small>
         <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit' || !safelyDistinct}
           onClick={() => void correctAmendScope(editor, body, targets, exclusions, hint, 'exclude').catch(() => {})}>
-          Include this exact stay in this Amend action
+          Include this stay
         </button>
         {!safelyDistinct && <small className={styles.warning}>This exclusion may overlap an included stay. Correct its exact confirmation or enter a different guest and fully disjoint original dates before including it.</small>}
         </div>;
@@ -437,13 +437,13 @@ export function AmendEditor(editor: Editor) {
         <strong>Stay {i + 1}</strong><TargetSearch editor={editor} body={body} hint={hint} index={i} workflow="amend" locked={lockedTarget(editor, text(hint.id))} />
         {targets.length > 1 && <button type="button" disabled={editor.view.busy || scopeLocked || scope.mode !== 'explicit'}
           onClick={() => void correctAmendScope(editor, body, targets, exclusions, hint, 'include').catch(() => {})}>
-          Exclude this exact stay; preserve its change details
+          Leave this stay out
         </button>}
       </div>)}
       <div className={styles.row}><button type="button" disabled={editor.view.busy || scopeLocked} onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id })}>Add stay</button>
         <button type="button" disabled={editor.view.busy || !targets.length} onClick={() => void editor.commands.lookup()}>Find in Infor</button></div>
     </Section>
-    <Section title="Changes for all included stays"><ChangeList editor={editor} path={sharedPath} label="" /></Section>
+    <Section title={targets.length > 1 ? 'Changes for every stay' : 'Changes'}><ChangeList editor={editor} path={sharedPath} label="" /></Section>
     {targets.map((hint, i) => {
       const hintId = text(hint.id), perIndex = per.findIndex(row => row.hintId === hintId);
       const root = `${perPath}/${perIndex}`; const changes = perIndex < 0 ? [] : rows(effectiveAt(editor.snapshot, `${root}/changes`));
@@ -491,8 +491,8 @@ export function AmendEditor(editor: Editor) {
         const history = savedAutoTransferHistory(editor.snapshot, editor.request.id, hintId, partyKind);
         return history ? [{ ...history, partyKind }] : [];
       });
-      return <Section key={hintId || i} title={`Changes for ${text(hint.confirmation) || text(hint.guestName) || `stay ${i + 1}`}`}>
-        {perIndex < 0 ? <div className={styles.warning}>Add this stay’s change and rate handling before checking.
+      return <Section key={hintId || i} title={targets.length > 1 ? `Only for ${text(hint.confirmation) || text(hint.guestName) || `stay ${i + 1}`}` : 'Price'}>
+        {perIndex < 0 ? <div className={styles.warning}>Add this stay's changes and price choice before checking.
           <button type="button" disabled={editor.view.busy || scopeLocked || !hintId} onClick={() => void editor.commands.changeRows({
             kind: 'add_target', requestId: editor.request.id, entityId: hintId,
           })}>Add changes for this stay</button></div> : <div className={styles.stack}>
@@ -510,9 +510,9 @@ export function AmendEditor(editor: Editor) {
                 });
               })().catch(() => {})}>I reviewed the current and proposed notes</button>
           </div>}
-          <ChangeList editor={editor} path={`${root}/changes`} label="Only this stay" />
-          <Field label="Rate handling" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
-          {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, occupancy, room or rate changes require repricing.</div>}
+          {(targets.length > 1 || changes.length > 0) && <ChangeList editor={editor} path={`${root}/changes`} label={targets.length > 1 ? '' : 'Only this stay'} />}
+          <Field label="Price" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
+          {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, guest, room or rate changes need Reprice in Infor.</div>}
           {latest && <div className={styles.card}><strong>Last Infor check</strong>
             <span>{text(before.arrival)} → {text(before.departure)} · {text(before.roomType)} / {text(before.ratePlan)}</span>
             <span>Requested: {text(target.arrival)} → {text(target.departure)} · {text(target.roomType)} / {text(target.ratePlan)}</span>
