@@ -179,8 +179,8 @@ function preparedForAction(replay: z.infer<typeof replayResultSchema> | null, ac
 
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
-    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA] [--concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
-      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 32, maximumConcurrency: MAX_WORKERS }, model: 'Approved Azure gpt-6-luna classification/prefill; gpt-6.1-terra assessment', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
+    info({ usage: 'tsx scripts/build-centurion-retro-roi.ts --corpus /private/corpus.jsonl --manifest /private/manifest.json --out /private/report.json [--start ISO --end ISO] [--checkpoint /private/checkpoints.jsonl] [--reuse-checkpoint /private/previous.jsonl] [--reuse-derived-from-producer SHA] [--concurrency 8 --maximum-concurrency 8 --classifier-concurrency 32] [--limit N] [--message-id comma-separated-source-IDs] [--classifier-effort medium] [--assessment-effort max --assessment-output-tokens 24000] [--classifier-output-tokens 16000] [--native-index /private/index.jsonl] [--classify-batch 12] [--preflight] [--classify-only]',
+      sourceFormat: 'Authoritative connected-mailbox-corpus-v4 or centurion-nine-day-corpus-v1 JSONL and hash-matched manifest; sibling attachment-text and attachment-bytes artifacts.', defaults: { start: START, end: END, concurrency: 8, maximumConcurrency: 8, classifierConcurrency: 32 }, model: 'Approved Azure gpt-6-luna prefill only, held at8; gpt-6.1-terra classification/assessment', writes: 'Private checkpoint/report files only; no database or HMS calls' }); return;
   }
   delete process.env.DATABASE_URL; delete process.env.TEST_DATABASE_URL; delete process.env.VITEST_ALLOW_PILOT_RDS;
   const repo = await realpath(resolve(dirname(fileURLToPath(import.meta.url)), '../../..'));
@@ -189,7 +189,9 @@ async function main(): Promise<void> {
   const checkpointPath = await outsideGit(resolve(option('--checkpoint', `${out}.checkpoints.jsonl`)), repo);
   const start = instant.parse(option('--start', START)), end = instant.parse(option('--end', END));
   if (Date.parse(end) - Date.parse(start) !== 30 * 86400000 || Date.parse(end) > Date.now()) throw new Error('Require a past, literal 30-day window');
-  const concurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--concurrency', '32'));
+  const maximumReplayConcurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--maximum-concurrency', '8'));
+  const concurrency = z.coerce.number().int().min(1).max(maximumReplayConcurrency).parse(option('--concurrency', '8'));
+  const classifierConcurrency = z.coerce.number().int().min(1).max(MAX_WORKERS).parse(option('--classifier-concurrency', '32'));
   const limit = z.coerce.number().int().positive().parse(option('--limit', '15000'));
   const batchSize = z.coerce.number().int().min(1).max(20).parse(option('--classify-batch', '12'));
   const corpusBytes = await readFile(corpusPath), manifestBytes = await readFile(manifestPath);
@@ -254,6 +256,8 @@ async function main(): Promise<void> {
   }
   const selectedInbound = (selectors.length ? inbound.filter(mail => selectedIds.has(mail.sourceRowId)) : inbound).slice(0, limit), allowedIds = new Set(selectedInbound.map(mail => mail.sourceRowId));
   const classifierEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--classifier-effort', 'medium'));
+  const classifierModelId = ASSESSMENT_MODEL;
+  const assessmentOutputTokens = z.coerce.number().int().min(1000).max(48000).parse(option('--assessment-output-tokens', '24000'));
   const assessmentEffort = z.enum(['low', 'medium', 'high', 'max']).parse(option('--assessment-effort', 'max'));
   const classifierOutputTokens = z.coerce.number().int().min(1000).max(32000).parse(option('--classifier-output-tokens', '16000'));
   const replayEffort = extractionReasoningEffort(process.env), replayVision = extractionVisionEnabled(process.env), replayBudget = lunaCallBudget(replayEffort);
@@ -268,7 +272,8 @@ async function main(): Promise<void> {
     corpusHash: hash(JSON.stringify({ source: hash(corpusBytes), manifest: hash(manifestBytes) })),
   };
   const legacyFingerprint = hash(JSON.stringify(semanticInputs));
-  const fingerprint = hash(JSON.stringify({ ...semanticInputs, model: { ...semanticInputs.model, assessmentModel: ASSESSMENT_MODEL } }));
+  const terraLegacyFingerprint = hash(JSON.stringify({ ...semanticInputs, model: { ...semanticInputs.model, assessmentModel: ASSESSMENT_MODEL } }));
+  const fingerprint = hash(JSON.stringify({ ...semanticInputs, model: { ...semanticInputs.model, classifierModel: classifierModelId, assessmentModel: ASSESSMENT_MODEL, assessmentOutputTokens } }));
   const producerSHA = hash(JSON.stringify({ productSha, runner: hash(await readFile(fileURLToPath(import.meta.url))) }));
   const reviewedCompatibleProducer = process.argv.includes('--reuse-derived-from-producer') ? z.union([codeSHA, z.literal('unknown')]).parse(option('--reuse-derived-from-producer')) : undefined;
   const runContext = { producerSHA, ...(reviewedCompatibleProducer ? { reviewedCompatibleProducer } : {}), kind: 'context', fingerprint, start, end, nativeIndexSha256: process.argv.includes('--native-index') ? hash(await readFile(resolve(option('--native-index')))) : null, classifyOnly: process.argv.includes('--classify-only') } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'context' }>;
@@ -304,7 +309,7 @@ async function main(): Promise<void> {
     return modelId === ASSESSMENT_MODEL ? { async invoke(input) { const result = await model.invoke(input); return { ...result, usage: { ...result.usage, estimatedCostUsd: 0, rateTableVersion: 'terra-pricing-unknown-placeholder-excluded' } }; } } : model;
   };
   const rawAdapter = azureAdapter('gpt-6-luna', replayEffort);
-  if (process.argv.includes('--preflight')) { info({ mode: 'preflight', sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, fingerprint, legacyFingerprint, producerSHA, assessmentModel: ASSESSMENT_MODEL,
+  if (process.argv.includes('--preflight')) { info({ mode: 'preflight', sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, fingerprint, legacyFingerprint, terraLegacyFingerprint, producerSHA, maximumReplayConcurrency, classifierConcurrency, classifierModel: classifierModelId, assessmentOutputTokens, assessmentModel: ASSESSMENT_MODEL,
     sourceThrough: sourceThrough, sourceCoversWindow: Date.parse(sourceThrough) >= Date.parse(end), providerCoverageProven: sourceComplete, sourceScope, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0),
     canonicalMessages: population.length, inboundMessages: inbound.length, selectedMessages: selectedInbound.length, selectedMessageIds: selectors.length ? selectedInbound.map(mail => mail.sourceRowId) : undefined, concurrency, maximumMessageProducers: MAX_WORKERS * batchSize, eligibleImportedModelReceipts: importedModels.size, checkpointCompatibility: 'Prompt/schema/model/corpus fingerprint plus explicit window/native-index/mode check; import uses exact actual model input keys only', classifierEffort, assessmentEffort, replayEffort, replayVision, replayBudget, unknownTimestampMessages: unknownTimestamps, approvedAdapterAvailable: Boolean(rawAdapter), nativeEvidence: 'unavailable', writes: 'private files only' }); return; }
   if (!rawAdapter) throw new Error('APPROVED_MODEL_ADAPTER_UNAVAILABLE');
@@ -323,13 +328,13 @@ async function main(): Promise<void> {
   let checkpointQueue = Promise.resolve();
   const save = (record: z.infer<typeof checkpointSchema>) => { checkpointQueue = checkpointQueue.then(() => appendFile(checkpointPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })); return checkpointQueue; };
   let contextSeen = false, derivedCompatible = false, lastProducerSHA: string | undefined, skippedDerived = 0;
-  const acceptedFingerprints = new Set([fingerprint, ...(reviewedCompatibleProducer ? [legacyFingerprint] : [])]);
+  const acceptedFingerprints = new Set([fingerprint, ...(reviewedCompatibleProducer ? [legacyFingerprint, terraLegacyFingerprint] : [])]);
   const measurementPending = new Set<string>();
   const failedMeasurement = (replay: z.infer<typeof replayResultSchema>) => replay.errors?.some(error => error.code === 'model_timeout' || error.code === 'model_error') ?? false;
   const reviewedProducers = new Set<string>(reviewedCompatibleProducer ? [reviewedCompatibleProducer, 'unknown'] : []);
   try {
     const previous = (await readFile(checkpointPath, 'utf8')).split('\n');
-    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); reviewedProducers.add('unknown'); acceptedFingerprints.add(legacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
+    for (const line of previous) { try { const record = checkpointSchema.parse(JSON.parse(line)); if (record.kind === 'context' && record.fingerprint === fingerprint && record.producerSHA === producerSHA && record.reviewedCompatibleProducer) { reviewedProducers.add(record.reviewedCompatibleProducer); reviewedProducers.add('unknown'); acceptedFingerprints.add(legacyFingerprint); acceptedFingerprints.add(terraLegacyFingerprint); } } catch { /* Main reader below still rejects malformed non-final records. */ } }
     for (let index = 0; index < previous.length; index++) {
       const line = previous[index]; if (!line) continue;
       let record: z.infer<typeof checkpointSchema>;
@@ -359,8 +364,8 @@ async function main(): Promise<void> {
     await save(runContext);
   }
   const startedAt = Date.now();
-  const workerRegimes: Array<{ workers: number; classificationWorkers: number; fromElapsedMs: number; toElapsedMs: number | null }> = [{ workers: concurrency, classificationWorkers: concurrency, fromElapsedMs: 0, toElapsedMs: null }];
-  let activeLimit = concurrency, classifierLimit = concurrency, classifierSlots = 0, activeSlots = 0, activeModelCalls = 0, activeMessages = 0, classifiedThisRun = 0, prefilledThisRun = 0, replayedThisRun = 0, completedThisRun = 0, failedThisRun = 0;
+  const workerRegimes: Array<{ workers: number; classificationWorkers: number; fromElapsedMs: number; toElapsedMs: number | null }> = [{ workers: concurrency, classificationWorkers: classifierConcurrency, fromElapsedMs: 0, toElapsedMs: null }];
+  let activeLimit = concurrency, classifierLimit = classifierConcurrency, classifierSlots = 0, activeSlots = 0, activeModelCalls = 0, activeMessages = 0, classifiedThisRun = 0, prefilledThisRun = 0, replayedThisRun = 0, completedThisRun = 0, failedThisRun = 0;
   let cacheHits = 0, importedCacheHits = 0, dispatchedCalls = 0, successfulDispatches = 0, extractionTimeouts = 0, admissionWaitMsTotal = 0;
   const admissions: Array<() => void> = [];
   const admit = () => { while (activeSlots < activeLimit && admissions.length) { const next = admissions.shift(); if (next) { activeSlots++; next(); } } };
@@ -409,7 +414,8 @@ async function main(): Promise<void> {
       if (allowGrowth && headroomKnown && rates.completedAdapterAttempts > 0 && (!requireExtraction || extraction.completedAdapterAttempts > 0)) return { limit: Math.min(MAX_WORKERS, current * 2), reason: 'Healthy completed adapter attempts and strict >20% headroom' };
       return { limit: current, reason: 'Hold pending five-minute boundary, headroom or completed stage evidence' };
     };
-    const classifierDecision = nextLimit(classifierLimit, classification, false), replayDecision = nextLimit(activeLimit, replay, true);
+    const classifierDecision = nextLimit(classifierLimit, classification, false), proposedReplayDecision = nextLimit(activeLimit, replay, true);
+    const replayDecision = { ...proposedReplayDecision, limit: Math.min(maximumReplayConcurrency, proposedReplayDecision.limit), reason: maximumReplayConcurrency <= 8 ? 'Owner hard hold: Luna prefill maximum8; no automatic time-based release' : proposedReplayDecision.reason };
     if (classifierDecision.limit !== classifierLimit || replayDecision.limit !== activeLimit) {
       const elapsedMs = now - startedAt, previous = workerRegimes[workerRegimes.length - 1]; if (previous) previous.toElapsedMs = elapsedMs;
       classifierLimit = classifierDecision.limit; activeLimit = replayDecision.limit;
@@ -484,16 +490,16 @@ async function main(): Promise<void> {
     }
   } });
   const adapter = trackedAdapter(rawAdapter, `prefill:${env.EXTRACTION_REASONING_EFFORT ?? 'max'}`);
-  const classificationModel = azureAdapter('gpt-6-luna', classifierEffort);
+  const classificationModel = azureAdapter(classifierModelId, classifierEffort);
   if (!classificationModel) throw new Error('APPROVED_CLASSIFIER_ADAPTER_UNAVAILABLE');
-  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierEffort}`);
+  const classifierAdapter = trackedAdapter(classificationModel, `classifier:${classifierModelId}:${classifierEffort}`);
   const assessmentModel = azureAdapter(ASSESSMENT_MODEL, assessmentEffort);
   if (!assessmentModel) throw new Error('APPROVED_ASSESSMENT_ADAPTER_UNAVAILABLE');
   const assessmentAdapter = trackedAdapter(assessmentModel, `assessment:${ASSESSMENT_MODEL}:${assessmentEffort}`);
   const invoke = async <T extends z.ZodTypeAny>(schema: T, systemPrompt: string, payload: unknown, purpose: 'classify' | 'assess' = 'assess', normalizeOutput?: (value: unknown) => unknown, images?: ModelInvokeInput['images']): Promise<z.infer<T>> => {
     if (purpose === 'classify') await acquireClassifier();
     try {
-      const result = await (purpose === 'classify' ? classifierAdapter : assessmentAdapter).invoke({ modelId: purpose === 'classify' ? 'gpt-6-luna' : ASSESSMENT_MODEL, systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : 12000, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
+      const result = await (purpose === 'classify' ? classifierAdapter : assessmentAdapter).invoke({ modelId: purpose === 'classify' ? classifierModelId : ASSESSMENT_MODEL, systemPrompt, userPrompt: JSON.stringify(payload), ...(images?.length ? { images } : {}), responseSchema: zodToJsonSchema(schema, { target: 'jsonSchema7', $refStrategy: 'none' }), maxOutputTokens: purpose === 'classify' ? classifierOutputTokens : assessmentOutputTokens, signal: AbortSignal.timeout(9 * 60_000), deadlineAt: Date.now() + 9 * 60_000 });
       return schema.parse(normalizeOutput ? normalizeOutput(result.output) : result.output);
     } finally { if (purpose === 'classify') releaseClassifier(); }
   };
@@ -810,10 +816,10 @@ async function main(): Promise<void> {
   const replayDiagnostics = { replayedMessages: selectedReplays.length, prefillMessagesWithErrors: selectedReplays.filter(replay => replay.errors?.length).length, extractionTimeoutMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_timeout')).length, extractionErrorMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_error')).length, runnerOrAssessmentFailures: replayFailures.size };
   const reportedCalls = [...cache.values()].filter(result => result.provenance?.usageSource === 'reported');
   const usage = { successfulCalls: cache.size, callsWithReportedUsage: reportedCalls.length, successfulCallsWithUnknownUsage: cache.size - reportedCalls.length, inputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.inputTokens, 0), outputTokens: reportedCalls.reduce((sum, result) => sum + result.usage.outputTokens, 0), reportedCostUsd: reportedCalls.filter(result => result.modelId === 'gpt-6-luna').reduce((sum, result) => sum + result.usage.estimatedCostUsd, 0), successfulTerraCallsWithUnknownPricing: [...cache.values()].filter(result => result.modelId === ASSESSMENT_MODEL).length, failedDispatchesWithUnknownUsage: dispatchFailures.length };
-  const regimeSummary = { changes: workerRegimes.length, initialReplayWorkers: concurrency, initialClassificationWorkers: concurrency, finalReplayWorkers: activeLimit, finalClassificationWorkers: classifierLimit,
+  const regimeSummary = { changes: workerRegimes.length, initialReplayWorkers: concurrency, initialClassificationWorkers: classifierConcurrency, finalReplayWorkers: activeLimit, finalClassificationWorkers: classifierLimit,
     recent: workerRegimes.slice(-8).map(regime => ({ replayWorkers: regime.workers, classificationWorkers: regime.classificationWorkers, durationMs: (regime.toElapsedMs ?? Date.now() - startedAt) - regime.fromElapsedMs })) };
   const report = retroReportSchema.parse({ version: 'centurion-retro-roi/1', reportId: `retro-${fingerprint.slice(0, 32)}`, propertyCode: 'HRCEN', generatedAt: new Date().toISOString(), period: { start, end, timezone: 'Africa/Johannesburg' },
-    provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna prefill/classification; gpt-6.1-terra assessment; retained prior valid Luna grades' },
+    provenance: { sourceSnapshotId, sourceSha256: hash(corpusBytes), productSha, runnerVersion: VERSION, model: 'gpt-6-luna prefill maximum8 owner hold; gpt-6.1-terra classification/assessment; retained reviewed prior valid grades' },
     coverage: { status: sourceComplete && successful.length === inbound.length && unknownTimestamps === 0 && failedClassification.size === 0 && Date.parse(sourceThrough) >= Date.parse(end) ? 'complete' : 'partial',
       sourceExportedAt, sourceThrough: sourceThrough, rawMessages: population.reduce((sum, mail) => sum + 1 + mail.duplicates.length, 0), canonicalMessages: population.length,
       inboundMessages: inbound.length, classifiedMessages: successful.length, excludedMessages: successful.filter(id => classifications.get(id)?.disposition === 'excluded').length,
@@ -826,7 +832,7 @@ async function main(): Promise<void> {
         `Model dispatch workers requested ${concurrency}, final admission ${activeLimit}, message producers bounded at ${MAX_WORKERS * batchSize}, compute admission waits outside original classification and preparation deadlines, regimes ${JSON.stringify(regimeSummary)}; exact-input cache hits ${cacheHits}, imported cache hits ${importedCacheHits}, new dispatches ${dispatchedCalls}, successful new dispatches ${successfulDispatches}. Producer ${producerSHA}; reviewed compatible producer ${reviewedCompatibleProducer ?? 'none'}. Same/reviewed compatible derived records retained with original checkpoint provenance; failed measurements excluded; changed actual model keys rerun.`,
         `Measured new adapter attempts ${JSON.stringify(networkSummary())}; local PDF/text/classifier vision work ${JSON.stringify(localWork)}. Prefill pre-model time includes native preload and vision preparation, not an isolated renderer measurement. Retry backoff stays inside original deadlines; successful and all-attempt latency distributions are separate.`,
         `Actual replay diagnostics: ${JSON.stringify(replayDiagnostics)}. Checkpoint model usage: ${JSON.stringify(usage)}; failed dispatch billing is unknown, not zero.`,
-        `Replay effort ${replayEffort}; assessment effort ${assessmentEffort}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
+        `Luna prefill hard maximum ${maximumReplayConcurrency} with explicit owner release required; classifier ${classifierModelId}/${classifierEffort}; replay effort ${replayEffort}; assessment ${ASSESSMENT_MODEL}/${assessmentEffort} output cap ${assessmentOutputTokens}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
         'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
     tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
   const serialized = `${JSON.stringify(report, null, 2)}\n`;

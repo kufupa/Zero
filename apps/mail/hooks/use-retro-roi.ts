@@ -46,6 +46,13 @@ export function useRetroRoi(): RetroRoiState {
       }),
     enabled: !demo && canAccess && scopeReady && !sessionLoading && !sessionError,
     staleTime: 60_000,
+    refetchInterval: (query) => {
+      const response = query.state.data;
+      return response?.status === 'unavailable' ||
+        (response?.status === 'ready' && response.report.coverage.status === 'partial')
+        ? 60_000
+        : false;
+    },
     retry: false,
     // Do not display persisted reports until this viewer has revalidated access.
     refetchOnMount: 'always',
