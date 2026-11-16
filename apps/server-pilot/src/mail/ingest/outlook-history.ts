@@ -6,9 +6,13 @@ import {
   newCanonicalAttachments,
 } from './canonical-identity.js';
 import {
+  LINKED_ATTACHMENT_SCOPES_KEY,
   LINKED_OPTIONAL_MISSING_KEY,
-  mergeOptionalMissingGaps,
+  UNAVAILABLE_ROLE,
+  mergeLinkedAttachmentEvidence,
   optionalMissingItems,
+  persistedOwnAttachmentSuffixes,
+  type AttachmentScopeEvidence,
 } from './attachment-evidence.js';
 import { attachment, mailboxTransport, mailThread, message } from '../../db/schema/mail.js';
 import { canonicalMessageId, buildReferenceChain } from './message-id.js';
@@ -80,6 +84,23 @@ export async function persistOutlookHistory(
       .from(message)
       .where(and(eq(message.transportId, input.transportId), eq(message.id, observationMessageId)))
       .limit(1);
+    // Attachment roles live inside this observation's own manifest scope;
+    // suffixes it verifiably persisted are the artifact set selected for it.
+    const incomingRequiredRoles = (
+      input.sourceProvenance.evidence as { requiredArtifactRoles?: unknown } | null | undefined
+    )?.requiredArtifactRoles;
+    const incomingScope: AttachmentScopeEvidence | null = input.sourceId
+      ? {
+          sourceId: input.sourceId,
+          sourceObservationId: input.sourceObservationId,
+          semanticVersion: input.semanticVersion,
+          enumerated:
+            Array.isArray(incomingRequiredRoles) &&
+            !incomingRequiredRoles.includes(UNAVAILABLE_ROLE),
+          missing: input.sourceProvenance.optionalMissing,
+          persisted: input.attachments.map((a) => a.sourceAttachmentId),
+        }
+      : null;
     const candidate = prior
       ? { kind: 'unique' as const, message: prior }
       : await findCanonicalCandidate(scoped, input.transportId, input);
@@ -122,27 +143,52 @@ export async function persistOutlookHistory(
       // A different device observes the same canonical message under another
       // sourceId/sourceObservationId, so its declared-but-missing attachment
       // roles never reach `optionalMissing`. Merge them into a canonical gap
-      // list instead of letting the link read as confirmed-empty.
-      const requiredRoles = (
-        input.sourceProvenance.evidence as { requiredArtifactRoles?: unknown } | null | undefined
+      // list instead of letting the link read as confirmed-empty. Attachment
+      // roles are scoped to the observing lineage: `attachment:1` inside one
+      // observation's manifest is unrelated to `attachment:1` inside another's,
+      // so a missing role may resolve only against artifacts that same
+      // observation verifiably persisted, and a discovery
+      // `attachment:unavailable` placeholder survives until that same
+      // observation later enumerates concrete roles.
+      const ownRequiredRoles = (
+        provenance.evidence as { requiredArtifactRoles?: unknown } | null | undefined
       )?.requiredArtifactRoles;
-      const incomingEnumerated =
-        Array.isArray(requiredRoles) && !requiredRoles.includes('attachment:unavailable');
-      const persistedSourceIds = new Set(
-        [...priorAttachments, ...additions]
-          .map((row) => row.sourceAttachmentId)
-          .filter((id): id is string => typeof id === 'string'),
-      );
-      const linkedMissing = mergeOptionalMissingGaps({
-        merged: provenance[LINKED_OPTIONAL_MISSING_KEY],
-        own: provenance.optionalMissing,
-        incoming: input.sourceProvenance.optionalMissing,
-        persistedSourceIds,
-        incomingEnumerated,
+      const ownScope: AttachmentScopeEvidence | null =
+        typeof provenance.sourceId === 'string' &&
+        typeof provenance.sourceObservationId === 'string'
+          ? {
+              sourceId: provenance.sourceId,
+              sourceObservationId: provenance.sourceObservationId,
+              semanticVersion:
+                typeof previousVersion === 'string'
+                  ? previousVersion
+                  : typeof provenance.semanticVersion === 'number' ||
+                      typeof provenance.semanticVersion === 'string'
+                    ? String(provenance.semanticVersion)
+                    : null,
+              enumerated:
+                Array.isArray(ownRequiredRoles) &&
+                !ownRequiredRoles.includes(UNAVAILABLE_ROLE),
+              missing: provenance.optionalMissing,
+              persisted: persistedOwnAttachmentSuffixes(provenance, priorAttachments),
+            }
+          : null;
+      const evidence = mergeLinkedAttachmentEvidence({
+        scopes: provenance[LINKED_ATTACHMENT_SCOPES_KEY],
+        legacyLinked: provenance[LINKED_OPTIONAL_MISSING_KEY],
+        own: ownScope,
+        incoming: incomingScope,
+        incomingMissing: incomingScope ? undefined : input.sourceProvenance.optionalMissing,
       });
-      const gapsChanged =
-        JSON.stringify(linkedMissing) !==
-        JSON.stringify(optionalMissingItems(provenance[LINKED_OPTIONAL_MISSING_KEY]));
+      // A provably older export of a linked lineage must neither add old
+      // attachments nor replace that lineage's newer missing evidence; older
+      // manifests may reuse a role for a different part.
+      if (evidence.stale) return { messageId, threadId, linked, attention };
+      const linkedMissing = evidence.gaps;
+      const evidenceChanged =
+        evidence.scopesChanged ||
+        JSON.stringify(optionalMissingItems(linkedMissing)) !==
+          JSON.stringify(optionalMissingItems(provenance[LINKED_OPTIONAL_MISSING_KEY]));
       await tx
         .update(message)
         .set({
@@ -155,7 +201,7 @@ export async function persistOutlookHistory(
             newerOwnedHistory && input.htmlBody !== null
               ? sanitizeHtmlBodyForStorage(input.htmlBody)
               : (candidate.message.htmlBody ?? sanitizeHtmlBodyForStorage(input.htmlBody)),
-          ...(newerOwnedHistory || sameObservation || gapsChanged
+          ...(newerOwnedHistory || sameObservation || evidenceChanged
             ? {
                 sourceProvenance: {
                   ...provenance,
@@ -168,7 +214,12 @@ export async function persistOutlookHistory(
                     evidence: input.sourceProvenance.evidence,
                     artifacts: input.sourceProvenance.artifacts,
                   } : {}),
-                  ...(gapsChanged ? { [LINKED_OPTIONAL_MISSING_KEY]: linkedMissing } : {}),
+                  ...(evidence.scopes.length
+                    ? {
+                        [LINKED_ATTACHMENT_SCOPES_KEY]: evidence.scopes,
+                        [LINKED_OPTIONAL_MISSING_KEY]: linkedMissing,
+                      }
+                    : {}),
                 },
               }
             : {}),
@@ -227,6 +278,7 @@ export async function persistOutlookHistory(
         sourceProvenance: {
           ...input.sourceProvenance,
           canonicalContentVersion: input.semanticVersion,
+          ...(incomingScope ? { [LINKED_ATTACHMENT_SCOPES_KEY]: [incomingScope] } : {}),
           ...(attention ? { attention: 'AMBIGUOUS_IDENTITY' } : {}),
         },
       });
