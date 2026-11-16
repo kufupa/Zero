@@ -95,6 +95,7 @@ import {
   reservationWorkflowV2DraftSchema,
   type ReservationWorkflowV2Draft,
 } from './reservation-workflow-v2-contract.js';
+import { classifyMailSource } from './mail-source.js';
 import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
@@ -2795,21 +2796,22 @@ const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
 };
 
 /**
- * The Needs-you kind of a work item's canonical V2 draft. Every request in the draft stays on the item; the row
- * labels the first supported ask. Unsupported, empty or unreadable drafts stay visible as `other_actionable` rather
- * than falsely reading as no action. Self-sent pre-stay mail is about an existing booking: a `create` request is
- * never an ask, so only a genuine second ask (any non-create request) keeps the item on the list.
+ * The Needs-you admission of a work item's canonical V2 draft. `actions` carries every distinct request kind in
+ * draft order so the row names each ask; `kind` stays the first supported action for older readers. Unsupported,
+ * empty or unreadable drafts stay visible as `other`/`other_actionable` — an unfinished, failed or ambiguous draft
+ * can still hide an unseen second ask, so it never reads as affirmed no-action. Self-sent pre-stay mail is about an
+ * existing booking: a `create` request is never an ask, so it is dropped from the actions; the item still lists
+ * because nothing yet records a typed, evidence-backed no-action for it (skipped sources are filtered upstream).
  */
-function needsYouV2Kind(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): string | null {
-  const requests = draft?.proposal.content.requests ?? [];
-  if (isPreStay) {
-    return requests.some((request) => request.kind !== 'create') ? 'other_actionable' : null;
+function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[] } {
+  const kinds = [...new Set((draft?.proposal.content.requests ?? []).map((request) => request.kind))];
+  const asks = isPreStay ? kinds.filter((kind) => kind !== 'create') : kinds;
+  const actions = asks.length > 0 ? asks : ['other'];
+  for (const action of actions) {
+    const kind = V2_REQUEST_MAIL_KIND[action];
+    if (kind) return { kind, actions };
   }
-  for (const request of requests) {
-    const kind = V2_REQUEST_MAIL_KIND[request.kind];
-    if (kind) return kind;
-  }
-  return 'other_actionable';
+  return { kind: 'other_actionable', actions };
 }
 
 /**
@@ -2943,8 +2945,12 @@ export async function listWorkItems(
         const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId) : undefined;
         if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
         if (v2) {
-          const kind = needsYouV2Kind(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
-          return kind ? { ...row, kind, chip } : null;
+          // The same deterministic source door the ensure/prefill paths keep: a known channel or system source
+          // never queues (self-sent pre-stay is handled inside the admission). Anything uncertain stays reviewable.
+          if (!preStayAsk && classifyMailSource({ fromAddress: row.sender, subject: row.subject,
+              bodyText: preStaySourceText(sourceBody, sourceHtml) }).kind !== 'direct') return null;
+          const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
+          return { ...row, kind: admission.kind, chip, actions: admission.actions };
         }
         if (!preStayAsk) {
           if (
