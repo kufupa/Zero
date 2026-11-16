@@ -563,8 +563,9 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const pendingDispatch = snapshot?.preparationViews.find(view => view.dispatch)?.dispatch ??
     snapshot?.session.workflowDispatches?.find(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review');
-  const cancelDispatch = request?.kind === 'cancel' && !sourceChanged ? snapshot?.session.workflowDispatches?.find(dispatch =>
-    dispatch.endpoint === 'execute' && dispatch.requestId === request.id && ['queued', 'claimed', 'running', 'retry_wait'].includes(dispatch.status)) : undefined;
+  const cancelDispatch = !sourceChanged ? snapshot?.session.workflowDispatches?.find(dispatch =>
+    dispatch.endpoint === 'execute' && ['queued', 'claimed', 'running', 'retry_wait'].includes(dispatch.status) &&
+    snapshot.session.draft.proposal.content.requests.some(row => row.id === dispatch.requestId && row.kind === 'cancel')) : undefined;
   // Grants arrive newest first. A later success retires failed warnings, never uncertain outcomes.
   const dispatchNotices = snapshot?.session.workflowDispatches?.filter((dispatch, index, dispatches) =>
     dispatch.requestId === request?.id && (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass) &&
