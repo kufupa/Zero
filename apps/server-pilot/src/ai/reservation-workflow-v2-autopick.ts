@@ -327,7 +327,6 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
     const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
     const companyKeys: AutopickHistoryKey[] = [];
     const allocationId = request.kind === 'create' ? request.body.allocations[0]?.id : undefined;
-    if (request.kind === 'create' && !allocationId) continue;
     const owner = (request.kind === 'create' ? request.body.shared : request.body.parties) as Record<string, unknown>;
     const ownerPath = request.kind === 'create' ? `${root}/shared` : `${root}/parties`;
     // Do not fight a per-room or per-date value: shared picks only when nothing below overrides the field.
@@ -336,7 +335,7 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
 
     const partyFields: PartyField[] = request.kind === 'create' ? ['organization', 'bookingAgency', 'arAccount'] : ['organization', 'bookingAgency'];
     for (const field of partyFields) {
-      if (overridden(field)) continue;
+      if (request.kind === 'create' && !allocationId || overridden(field)) continue;
       const current = owner[field], valuePath = `${ownerPath}/${field}`, selectionPath = `${valuePath}/nativeSelectionRef`;
       const party = rec(current);
       if (party?.kind === 'none' || (party && typeof party.suggestedRef === 'string')) continue;
