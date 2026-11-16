@@ -130,6 +130,11 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
     // Match the server's atomic identity invalidation while the edit is pending.
     const guest = edit.path.match(/^(.*\/guest)\/(?:firstName|lastName|email|mobile)$/);
     const party = edit.path.match(/^(.*\/(?:bookingAgency|organization|arAccount))(?:\/name)?$/);
+    const quoteParty = edit.path.match(/^\/proposal\/content\/requests\/([^/]+)\/body\/parties\/(?:organization|bookingAgency)(?:\/name)?$/);
+    const isQuoteParty = Boolean(quoteParty && snapshot.requests.some(request => request.kind === 'quote' && request.id === decodeURIComponent(quoteParty[1]!)));
+    if (isQuoteParty && !edit.path.endsWith('/name')) {
+      for (const path of Object.keys(fieldOverrides)) if (path.startsWith(`${edit.path}/`)) delete fieldOverrides[path];
+    }
     const amendParty = edit.path.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/(?:sharedChanges\/\d+|perTarget\/\d+\/changes\/\d+)\/value)(?:\/name)?$/);
     const amendField = amendParty && valueAt(snapshot, `${amendParty[1]!.slice(0, -'/value'.length)}/field`);
     const target = edit.path.match(/^(.*\/targets\/include\/[^/]+)\/(?:confirmation|guestName|bookedArrival|bookedDeparture)$/);
@@ -162,7 +167,7 @@ function displaySnapshot(snapshot: ReservationPaneSnapshot | null, pending: Map<
         const selected = valueAt(snapshot, path) ?? (override && override.state !== 'inherit' ? null
           : valueAt(snapshot, `${path.slice(0, -'/nativeSelectionRef'.length)}/suggestedRef`));
         if (typeof selected === 'string') fieldOverrides[path] = { state: 'set', value: selected, updatedAt: new Date().toISOString() };
-      } else fieldOverrides[path] = { state: 'unknown', updatedAt: new Date().toISOString() };
+      } else fieldOverrides[path] = { state: isQuoteParty ? 'none' : 'unknown', updatedAt: new Date().toISOString() };
     }
   }
   return { ...snapshot, session: { ...snapshot.session, draft: { ...snapshot.session.draft, fieldOverrides } } };

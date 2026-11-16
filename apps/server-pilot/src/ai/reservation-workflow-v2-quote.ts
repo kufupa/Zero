@@ -216,7 +216,7 @@ function selectedParty(
   request: QuoteRequest,
   role: 'organization' | 'bookingAgency',
   execute: boolean,
-): { party?: { kind: 'organization' | 'bookingAgency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
+): { name?: string; party?: { kind: 'organization' | 'bookingAgency'; nativeId: string; name: string }; issue?: string; reviewPaths: string[]; observationRef?: string } {
   const raw = request.body.parties[role];
   const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
   const namePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role, 'name');
@@ -234,6 +234,11 @@ function selectedParty(
   if ('issue' in named) return { reviewPaths: [basePath], issue: `${role}_${named.issue}` };
   const name = cleanText(named.value);
   if (!name) {
+    if ((('overridden' in named && named.overridden) || partyLeaf.overridden) &&
+        typeof named.value === 'string' && !named.value.trim()) {
+      const reviewPaths = execute ? [basePath, namePath].filter((path) => !reviewAccepted(draft, path)) : [];
+      return { reviewPaths };
+    }
     if (partyLeaf.value === null || partyLeaf.value === undefined || isNone(partyLeaf.value)) {
       const explicitlyUnset = raw !== undefined || partyLeaf.overridden;
       const reviewPaths = execute && explicitlyUnset && !reviewAccepted(draft, basePath) ? [basePath] : [];
@@ -241,12 +246,20 @@ function selectedParty(
     }
     return { reviewPaths: [basePath], issue: `${role}_name_unresolved` };
   }
-  const selected = resolvedLeaf(draft, selectionPath, value?.suggestedRef ?? null);
+  // Older name edits invalidate a selection as unknown. Never fall back to the old suggestion.
+  const selectionOverride = draft.fieldOverrides[selectionPath];
+  const nameEdits = [draft.fieldOverrides[basePath], draft.fieldOverrides[namePath]];
+  const invalidatedByName = selectionOverride?.state === 'unknown' && nameEdits.some(edit =>
+    edit?.state === 'set' && Date.parse(edit.updatedAt) >= Date.parse(selectionOverride.updatedAt));
+  const selected = invalidatedByName
+    ? { value: undefined, path: selectionPath }
+    : resolvedLeaf(draft, selectionPath, value?.suggestedRef ?? null);
   if ('issue' in selected) return { reviewPaths: [basePath], issue: `${role}_${selected.issue}` };
   const ref = typeof selected.value === 'string' ? selected.value : null;
   if (!ref) {
-    const optionalByStaff = selected.unset && reviewAccepted(draft, basePath);
-    return { reviewPaths: optionalByStaff ? [] : [basePath], issue: optionalByStaff ? undefined : `${role}_selection_required` };
+    if (selected.value != null) return { reviewPaths: [basePath], issue: `${role}_candidate_unverified` };
+    const reviewPaths = execute ? [basePath, namePath].filter((path) => !reviewAccepted(draft, path)) : [];
+    return { name, reviewPaths };
   }
   const observation = draft.observations.find((entry) => entry.ref === ref && entry.kind === 'party_candidate');
   const criteria = record(observation?.criteria);
@@ -263,6 +276,7 @@ function selectedParty(
     : [];
   if (execute && reviewPaths.length) return { reviewPaths, issue: `${role}_requires_staff_acceptance` };
   return {
+    name,
     party: { kind: role, nativeId: String(candidate.nativeId), name: String(candidate.name) },
     reviewPaths,
     observationRef: observation.ref,
@@ -769,8 +783,8 @@ function compileQuote(
     inputRevision: draft.revision,
     groups: nativeGroups,
     salesStrategy: strategyDefaulted ? 'BAR' : strategy === 'GOV' ? 'Government' : strategy,
-    organization: company.party?.name ?? '',
-    bookingAgency: agency.party?.name ?? '',
+    organization: company.name ?? '',
+    bookingAgency: agency.name ?? '',
     attention,
     clientEmail,
     clientTelephone,
@@ -1379,7 +1393,6 @@ function makeCoverEmail(
     body: [
       `Good day${compiled.input.attention ? ` ${compiled.input.attention}` : ''},`,
       `Please find your quotation${hotelName ? ` for ${hotelName}` : ''} below.`,
-      ...(compiled.input.organization ? [`Organization: ${compiled.input.organization}`] : []),
       ...lines,
       ...extras,
       `Total: ${money(total)}`,
@@ -1467,7 +1480,7 @@ async function quoteArtifacts(
     claims: compiled.input.groups.map((entry) => ({ groupId: entry.id, arrivalDate: entry.arrivalDate,
       departureDate: entry.departureDate, quantity: entry.quantity, mealPlan: entry.mealPlan, adultsPerRoom: entry.adults,
       childAgesPerRoom: entry.childrenAges })),
-    companyShownInCover: Boolean(compiled.input.organization) };
+    companyShownInCover: false };
 }
 
 function unavailableQuoteReply(

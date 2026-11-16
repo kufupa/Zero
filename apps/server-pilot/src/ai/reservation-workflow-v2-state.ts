@@ -1649,15 +1649,26 @@ function updateDraft(current: ReservationWorkflowV2Draft, input: {
       ? value.name ?? '' : value ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
     const unchangedPartyName = Boolean(party || amendParty) && input.override.state === 'set' &&
       Boolean(partyName(oldPartyName)) && partyName(oldPartyName) === partyName(input.override.value);
+    const quoteParty = input.fieldPath.match(/^\/proposal\/content\/requests\/([^/]+)\/body\/parties\/(?:organization|bookingAgency)(?:\/name)?$/);
+    const quotePartyKey = quoteParty ? decodeURIComponent(quoteParty[1]!) : null;
+    const quotePartyRequest = quotePartyKey
+      ? current.proposal.content.requests.find(row => row.id === quotePartyKey) ??
+        (/^\d+$/.test(quotePartyKey) ? current.proposal.content.requests[Number(quotePartyKey)] : undefined)
+      : undefined;
+    if (quoteParty && quotePartyRequest?.kind === 'quote' && !input.fieldPath.endsWith('/name')) {
+      for (const path of Object.keys(fieldOverrides)) if (path.startsWith(`${input.fieldPath}/`)) delete fieldOverrides[path];
+    }
     for (const path of selections) {
       if (unchangedPartyName) {
         const override = current.fieldOverrides[path];
         const selected = effectiveDraftPath(current, path) ?? (override && override.state !== 'inherit' ? null
           : effectiveDraftPath(current, `${path.slice(0, -'/nativeSelectionRef'.length)}/suggestedRef`));
         if (typeof selected === 'string') fieldOverrides[path] = { state: 'set', value: selected, updatedAt: input.override.updatedAt };
+        else if (override && override.state !== 'inherit') fieldOverrides[path] = quotePartyRequest?.kind === 'quote' && override.state === 'unknown'
+          ? { state: 'none', updatedAt: input.override.updatedAt } : override;
         continue;
       }
-      fieldOverrides[path] = { state: 'unknown', updatedAt: input.override.updatedAt };
+      fieldOverrides[path] = { state: quotePartyRequest?.kind === 'quote' ? 'none' : 'unknown', updatedAt: input.override.updatedAt };
       delete staffReviews[path];
     }
     const quoteRate = input.fieldPath.match(/^(\/proposal\/content\/requests\/[^/]+\/body\/groups\/[^/]+)\/ratePlan$/);
