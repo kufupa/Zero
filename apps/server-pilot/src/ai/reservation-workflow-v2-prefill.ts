@@ -30,7 +30,7 @@ import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { loadReservationAutopickHistory, loadReservationMemoryGuidance, loadReservationNativeLeads,
   loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
 import { applyAutopick, AUTOPICK_MAX_ALTERNATIVES, AUTOPICK_SYNTHESIS_RULES, autopickModelSlots, autopickReadCriteria, clearsHistoryGate,
-  planAutopickPartyReads, sourceMeaningCode, sourceMeaningNegated, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
+  planAutopickPartyReads, sourceMeaningCode, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
 import { loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
@@ -1157,6 +1157,18 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
   });
 }
 
+// The meaning-code fallback is trusted only when the attachment enumeration is provably
+// known and lists no files at all: a single enumerated attachment could carry an unseen
+// veto cue such as "rate BAR not allowed", and no read state proves an image's meaning
+// was actually read. Any attachment row — inline and prior-thread rows count too — or an
+// enumeration whose shape cannot be trusted withholds every meaning mapping; exact codes,
+// source notes and staff review continue unchanged.
+function hasNoEnumeratedAttachments(selection: SyncedQuoteSelection): boolean {
+  if (!Array.isArray(selection.attachments)) return false;
+  if (selection.threadAttachments !== undefined && !Array.isArray(selection.threadAttachments)) return false;
+  return selection.attachments.length === 0 && (selection.threadAttachments ?? []).length === 0;
+}
+
 /** Map page/text evidence refs back to one physical attachment, without serializing attachment IDs into evidence. */
 function sourceAttachmentIdentityByRef(input: {
   source: ReservationWorkflowV2Source;
@@ -1285,7 +1297,8 @@ function cancelExceptionEvidence(input: {
 
 function buildFallbackProposal(input: {
   extraction: ReservationWorkflowV2Extraction | null; source: ReservationWorkflowV2Source;
-  evidence: ReservationWorkflowV2Evidence[]; reason: string;
+  evidence: ReservationWorkflowV2Evidence[]; reason: string; evidenceComplete?: boolean;
+  currentAuthoredText?: string;
 }): ReservationWorkflowV2Proposal {
   const knownRefs = new Set(input.evidence.map((item) => item.ref));
   const currentRefs = new Set(input.evidence.filter((item) => item.relation !== 'prior_thread').map((item) => item.ref));
@@ -1334,7 +1347,8 @@ function buildFallbackProposal(input: {
           quantity: quoteDatedRoomCount(request, date, currentRefs).count,
           guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300) ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? [],
           mealPlan: null, requestedMealPlan,
-          roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room', { evidence: input.evidence }).codes, ratePlan: null,
+          roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room', { evidence: input.evidence,
+            evidenceComplete: input.evidenceComplete, currentAuthoredText: input.currentAuthoredText }).codes, ratePlan: null,
           occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
         }));
       }) : (fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
@@ -1724,23 +1738,6 @@ function normalizedFact(value: unknown): string {
   return typeof value === 'string' ? value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US') : '';
 }
 
-const SOURCE_NAME_TITLE = /^(?:mr|mrs|ms|miss|dr|prof|professor)\.?$/i;
-/** Deterministic first/last split for an editable prefill name; titles drop, "Last, First" is honoured. */
-function splitSourceGuestName(value: string): { first: string | null; last: string | null } {
-  const clean = value.trim().replace(/\s+/g, ' ');
-  if (!clean) return { first: null, last: null };
-  const comma = clean.split(/\s*,\s*/);
-  if (comma.length === 2 && comma.every(Boolean)) {
-    // "Smith, Dr Jane": titles never belong to the given name either.
-    const first = comma[1]!.split(' ').filter((token) => !SOURCE_NAME_TITLE.test(token)).join(' ');
-    return { first: first || null, last: comma[0]! };
-  }
-  const tokens = clean.split(' ').filter((token) => !SOURCE_NAME_TITLE.test(token));
-  if (!tokens.length) return { first: null, last: null };
-  if (tokens.length === 1) return { first: null, last: tokens[0]! };
-  return { first: tokens.slice(0, -1).join(' '), last: tokens[tokens.length - 1]! };
-}
-
 function mergeSourceNote(existing: string, sourceNotes: string[], evidence: ReservationWorkflowV2Evidence[]) {
   const retained = existing.split('\n').filter((line) => {
     const fragment = line.trim();
@@ -1988,17 +1985,14 @@ function exactSourceCode(claim: { raw: string; value: unknown; sourceRefs?: stri
   const token = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'gi' : 'g');
   const context = options.rawContext ?? raw;
   if (!context.includes(raw) || !new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'i' : '').test(raw)) return null;
-  // Same whole-evidence abstention as sourceMeaningCode: a negative or alternative cue anywhere in
-  // the claim's own cited non-prior rows (attachments included) vetoes the code, because mail wraps
-  // and a boundary can sever the code from its cue ("Room code KING\nor TWIN are unavailable").
+  // With evidence supplied, at least one cited non-prior row must contain the raw span
+  // verbatim. Otherwise context falls back to the model's raw wording, so a raw "Room code
+  // KING" must be anchored in a row the claim itself cited. Negation stays clause-local
+  // below: a cue in a different utterance of the same row ("BAR is unavailable, please quote
+  // PROMO") must not veto a positively mentioned sibling code.
   const cited = (options.evidence ?? []).filter((row) => row.relation !== 'prior_thread' &&
     (claim.sourceRefs?.includes(row.ref) ?? false));
-  // Same own-row anchoring as sourceMeaningCode: with evidence supplied, at least one cited
-  // non-prior row must contain the raw span verbatim. Otherwise context falls back to the
-  // model's raw wording, so an attachment describing a Twin Room could still anchor a raw
-  // "Room code KING" it never wrote.
   if (options.evidence && !cited.some((row) => row.text.includes(raw))) return null;
-  if (cited.some((row) => sourceMeaningNegated(raw, row.text))) return null;
   if (/^(?:A|AN|AND|AS|AT|BE|BOOK|FOR|FROM|IN|IS|IT|NO|NOT|OF|ON|OR|PLEASE|THE|TO|WE|WITH)$/u.test(code)) return null;
   const negativePredicate = /\b(?:no|not|never|neither|unavailable|unwanted|unable|sold\s+out|fully\s+booked|closed|(?:is|are|was|were|do|does|did|ca|could|wo|would|should)n['’]t|cannot)\b/i;
   const negative = new RegExp(`${negativePredicate.source}|\\b(?:without|avoid|avoided|except|exclude|excluded|instead\\s+of|rather\\s+than)\\b`, 'i');
@@ -2067,38 +2061,56 @@ function exactSourceCode(claim: { raw: string; value: unknown; sourceRefs?: stri
   return code;
 }
 
-// One claim resolves inside its own message scope only: cited rows outside the current
-// message keep explicit code labels but never catalogue-verified or meaning lookups.
-function resolvedSourceCode(claim: { raw: string; value: unknown; sourceRefs: string[] }, kind: 'room' | 'rate',
-  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string; messageRefs?: Set<string>;
-    evidence?: ReservationWorkflowV2Evidence[] } = {}): string | null {
-  const bound = options.messageRefs && !claim.sourceRefs.some(ref => options.messageRefs!.has(ref));
-  return exactSourceCode(claim, kind, bound ? { evidence: options.evidence } : options) ?? (bound ? null :
-    sourceMeaningCode([claim], kind, { catalog: options.nativeCatalog, propertyCode: options.propertyCode,
-      evidence: options.evidence ?? [] })?.code ?? null);
-}
-
-// unresolvedClaims collects every current claim whose wording produced no code: an abstained
-// or unmapped hint must veto the sibling codes that did resolve, or this shared pass would
-// silently drop it. Claims with no current ref never block (prior/uncited stay inert).
+// The exact-code pass runs first and stands alone: once any claim resolves to an exact code,
+// claims whose wording produced no code are ignored as they always were, and the meaning
+// fallback never mixes its picks into an exact result.
+// Only when the exact pass resolves nothing may the meaning fallback run. It requires every
+// current claim to resolve cleanly: unresolvedClaims collects each current claim whose wording
+// still produced no code, and an abstained or unmapped hint vetoes the sibling codes that did
+// resolve so this shared pass never silently drops it. Claims with no current ref never block
+// (prior/uncited stay inert).
 function currentSourceCodes(claims: Array<{ raw: string; value: unknown; sourceRefs: string[] }>,
   currentRefs: Set<string>, kind: 'room' | 'rate',
   options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string; messageRefs?: Set<string>;
-    evidence?: ReservationWorkflowV2Evidence[] } = {}): { codes: string[]; sourceRefs: string[];
+    evidence?: ReservationWorkflowV2Evidence[]; evidenceComplete?: boolean; currentAuthoredText?: string } = {}): { codes: string[]; sourceRefs: string[];
     unresolvedClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> } {
   const byCode = new Map<string, Set<string>>();
-  const unresolvedClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> = [];
+  const currentClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> = [];
+  const collect = (claim: { raw: string; value: unknown; sourceRefs: string[] }, code: string) => {
+    const refs = byCode.get(code) ?? new Set<string>();
+    claim.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
+    byCode.set(code, refs);
+  };
   for (const claim of claims) {
     const current = currentClaim(claim, currentRefs);
     if (!current) continue;
-    const code = resolvedSourceCode(current, kind, options);
-    if (!code) {
+    currentClaims.push(current);
+    // Cited rows outside the current message keep explicit code labels but never
+    // catalogue-verified lookups; message-cited claims keep the full options. Evidence is
+    // still supplied either way so the raw span must sit verbatim in one of the claim's own
+    // cited non-prior rows — an attachment-only claim cannot anchor a code its evidence never wrote.
+    const code = exactSourceCode(current, kind,
+      options.messageRefs && !current.sourceRefs.some(ref => options.messageRefs!.has(ref))
+        ? { evidence: options.evidence } : options);
+    if (code) collect(current, code);
+  }
+  if (byCode.size) {
+    return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))],
+      unresolvedClaims: [] };
+  }
+  const unresolvedClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> = [];
+  // The meaning fallback scans every admitted non-prior row for veto cues, never the
+  // extractor's cited subset, and runs only when the caller established complete current
+  // evidence: an uncited or unread attachment could carry a cue that contradicts the body.
+  for (const current of currentClaims) {
+    const match = sourceMeaningCode([current], kind, { catalog: options.nativeCatalog,
+      propertyCode: options.propertyCode, evidence: options.evidence ?? [], evidenceComplete: options.evidenceComplete,
+      currentAuthoredText: options.currentAuthoredText });
+    if (!match) {
       unresolvedClaims.push(current);
       continue;
     }
-    const refs = byCode.get(code) ?? new Set<string>();
-    current.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
-    byCode.set(code, refs);
+    collect(current, match.code);
   }
   return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))],
     unresolvedClaims };
@@ -3584,9 +3596,20 @@ function projectCurrentExtraction(input: {
   proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
+  // The meaning-code fallback is trusted only when the admitted evidence provably covers the
+  // complete current source and the attachment enumeration is a known-empty list: any
+  // enumerated file could carry an unseen veto cue against a mapped code.
+  const evidenceComplete = input.observations[0]?.coverage.complete === true &&
+    completeCurrentSourceText({ source: input.source, selection: input.selection, evidence: input.evidence });
+  const meaningEvidenceComplete = evidenceComplete && hasNoEnumeratedAttachments(input.selection);
+  // Meaning-mapped codes ground only in what the sender authored in this message;
+  // wording found only in quoted history abstains.
+  const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
+    input.selection.currentBodyText ?? input.selection.bodyText));
   const codeOptions = { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode,
     rawContext: input.selection.currentBodyText ?? input.selection.bodyText, evidence: input.evidence,
-    messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) };
+    messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)),
+    evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody };
   const pdfs = currentPdfEvidence(input);
   appendExtractionSourceClaims(proposal, input.extraction, knownRefs);
   for (const issue of input.extraction.issues) {
@@ -3767,7 +3790,8 @@ function projectCurrentExtraction(input: {
   }
 
   const fallback = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
-    evidence: input.evidence, reason: 'The source facts were retained for staff review.' });
+    evidence: input.evidence, reason: 'The source facts were retained for staff review.', evidenceComplete: meaningEvidenceComplete,
+    currentAuthoredText: currentAuthoredBody });
   let addedRequests = 0;
   for (const extracted of currentExtraction.requests) {
     if (linkedExtractionRequests.has(extracted)) continue;
@@ -3958,12 +3982,16 @@ function projectCurrentExtraction(input: {
     const authoredNoteClauses = authoredSourceNoteClauses(input);
     const messageRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
     const resolvedRateClauses: Array<{ clause: string; sourceRefs: string[] }> = [];
+    // Note removal follows the codes this request's own exact-first selection actually picked,
+    // so a hint whose resolution never reaches selection keeps its source wording.
+    const selectedRateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate', codeOptions);
     const sourceNoteCandidates = [...operationalSourceNote(input).map((clause) => ({ clause, sourceRefs: messageRefs })),
       ...extracted.rateHints.flatMap((claim) => {
         const current = currentClaim(claim, currentRefs);
         if (!current || !/\brate\b/i.test(current.raw)) return [];
-        const anchoredRefs = input.evidence.filter((row) => row.relation !== 'prior_thread' &&
-          claim.sourceRefs.includes(row.ref) && row.text.includes(current.raw)).map((row) => row.ref);
+        const anchoredRows = input.evidence.filter((row) => row.relation !== 'prior_thread' &&
+          claim.sourceRefs.includes(row.ref) && row.text.includes(current.raw));
+        const anchoredRefs = anchoredRows.map((row) => row.ref);
         if (!anchoredRefs.length) return [];
         const clauses = authoredNoteClauses.filter((clause) => clause.includes(current.raw));
         // An expanded clause is authored-body wording beyond the claim's raw span, so the
@@ -3975,15 +4003,29 @@ function projectCurrentExtraction(input: {
           sourceRefs: input.evidence.filter((row) => row.relation === 'current_message' &&
             row.text.includes(clause)).map((row) => row.ref) }))
           .filter((note) => note.sourceRefs.length > 0);
+        // The raw fallback exists for attachment-anchored wording. A raw present verbatim in the
+        // current message but absent from every authored clause is quoted history, not an ask;
+        // it stays excluded instead of leaking into the note — unless a cited current attachment
+        // row also carries the span verbatim, which anchors the wording independently of the quote.
+        // Quoted text still cannot anchor anything on its own: every admitted anchor is a row the
+        // claim itself cited, prior rows are already excluded, and the attachment test accepts only
+        // the current message's own attachments.
+        const inCurrentMessage = input.evidence.some((row) => row.relation === 'current_message' &&
+          row.text.includes(current.raw));
         const noted = (expanded.length ? expanded :
-          current.raw.length <= 300 ? [{ clause: current.raw, sourceRefs: anchoredRefs }] : [])
+          (!inCurrentMessage || anchoredRows.some((row) => row.relation === 'attachment')) &&
+            current.raw.length <= 300 ? [{ clause: current.raw, sourceRefs: anchoredRefs }] : [])
           .filter((note) => !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(note.clause));
         const codeBound = { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode, evidence: input.evidence };
-        if (exactSourceCode(current, 'rate', codeBound) ||
-            sourceMeaningCode([current], 'rate', { catalog: input.nativeCatalog, propertyCode: input.propertyCode,
-              evidence: input.evidence })) {
-          // A resolved rate hint normally lands as a native code, not a note. Keep its wording aside so
-          // it can be restored when no code is actually assigned to this request.
+        const resolvedCode = exactSourceCode(current, 'rate', codeBound) ??
+          sourceMeaningCode([current], 'rate', { catalog: input.nativeCatalog, propertyCode: input.propertyCode,
+            evidence: input.evidence, evidenceComplete: meaningEvidenceComplete,
+            currentAuthoredText: currentAuthoredBody })?.code ?? null;
+        // A resolved rate hint normally lands as a native code, not a note — but only a code the
+        // exact-first selection actually picked suppresses wording. A meaning-mapped hint under a
+        // different selected code ("Rate code BAR. Negotiated rate.") keeps its clause in notes.
+        // Keep the wording aside so it can be restored when no code is actually assigned.
+        if (resolvedCode && selectedRateCodes.codes.includes(resolvedCode)) {
           resolvedRateClauses.push(...noted);
           return [];
         }
@@ -4418,6 +4460,28 @@ function projectCurrentExtraction(input: {
           'The exact source rate-plan code has no unambiguous date/group scope. Rate choices were cleared for staff resolution; source claims remain available.',
           rateCodes.sourceRefs);
       }
+      // Same restore as the Create pass: a rate hint that resolved to a code but never got one
+      // assigned to any group keeps its source wording as a note instead of vanishing with the code.
+      if (resolvedRateClauses.length && !rateCodes.codes.some((code) =>
+            request.body.groups.some((group) => group.ratePlan === code)) &&
+          currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1) {
+        const eligibleNotes = resolvedRateClauses.filter((candidate) => {
+          const text = normalizedFact(candidate.clause);
+          return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
+            !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
+            (normalizedFact(extracted.requestText.raw).includes(text) || [...ownMarkers].some((marker) => text.includes(marker)));
+        });
+        const path = `/proposal/content/requests/${request.id}/body/notes`;
+        const clauseRefs = (clause: string) => [...new Set(eligibleNotes.filter((note) => note.clause === clause)
+          .flatMap((note) => note.sourceRefs))].slice(0, 100);
+        const { fullNote, additions } = mergeSourceNote(request.body.notes ?? '', eligibleNotes.map((note) => note.clause),
+          input.evidence);
+        if (fullNote.length <= 4000 && additions.length) {
+          request.body.notes = fullNote;
+          proposal.annotations.push({ path, basis: 'source',
+            evidenceRefs: [...new Set(additions.flatMap(clauseRefs))].slice(0, 100) });
+        }
+      }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
       projectPartyRole({ proposal, parties: extracted.parties, role: 'bookingAgency', currentRefs,
         slots: [{ target: quoteParties, field: 'bookingAgency', path: `/requests/${request.id}/body/parties/bookingAgency` }] });
@@ -4771,53 +4835,13 @@ function projectCurrentExtraction(input: {
               appendProjectedSource(proposal, `${bookingRoot}/dateSections/0/requestedTotals/${field}`, occupancyRow[field], currentRefs);
           }
         }
-        // One source-bound stay with exactly one source-cited room may take exactly one cited guest
-        // name; anything wider keeps the unassigned roster instead of guessing which room it belongs
-        // to. The guards mirror projectSourceCreateAllocations: one valid current stay, an explicit
-        // room count of one, the allocation bound to the single date section, and no unmapped dates.
-        const currentSourceStays = extracted.dates.filter((candidate) => currentClaim(candidate.arrival, currentRefs) &&
-          currentClaim(candidate.departure, currentRefs));
-        const sourceStay = currentSourceStays.length === 1 ? currentSourceStays[0] : undefined;
-        const sourceArrival = currentClaim(sourceStay?.arrival, currentRefs);
-        const sourceDeparture = currentClaim(sourceStay?.departure, currentRefs);
-        const sourceStayDays = isoDay(sourceArrival?.value) && isoDay(sourceDeparture?.value) &&
-          sourceDeparture.value > sourceArrival.value
-          ? { arrival: sourceArrival.value, departure: sourceDeparture.value } : null;
-        const singleRoomSourceStay = Boolean(sourceStay && sourceStayDays &&
-          citedInteger(currentClaim(extracted.roomCount, currentRefs)) === 1 &&
-          section.arrival === sourceStayDays.arrival && section.departure === sourceStayDays.departure &&
-          dateLinks.unlinkedDates.length === 0 && [...dateLinks.targetsByDate.values()].includes(0) &&
-          request.body.allocations.length === 1 &&
-          request.body.allocations.every((allocation) => allocation.dateSectionId === section.id));
-        const guestNameClaims = singleRoomSourceStay
-          ? [...extracted.guests.filter((item) => item.role === 'guest').map((item) => item.name),
-            ...extracted.dates.flatMap((date) => date.guestNames ?? [])].flatMap((claim) => {
-            const current = currentClaim(claim, currentRefs);
-            const raw = current?.raw.trim() ?? '';
-            return current && typeof current.value === 'string' && current.value.trim() && raw &&
-              sameGuestName(raw, current.value) &&
-              input.evidence.some((row) => currentRefs.has(row.ref) && current.sourceRefs.includes(row.ref) &&
-                row.text.includes(raw)) ? [current] : [];
-          }) : [];
-        if (guestNameClaims.length && guestNameClaims.every((claim) =>
-            sameGuestName(String(guestNameClaims[0]!.value), String(claim.value)))) {
-          const claim = guestNameClaims[0]!, name = claim.raw.trim().replace(/\s+/g, ' ');
-          const allocation = request.body.allocations[0]!;
-          const parts = splitSourceGuestName(name);
-          if (!allocation.guest.firstName && !allocation.guest.lastName && /\p{L}/u.test(name) && name.length <= 300 &&
-              (!parts.first || parts.first.length <= 200) && (!parts.last || parts.last.length <= 200)) {
-            const guestRoot = `${bookingRoot}/allocations/0/guest`;
-            if (parts.first) { allocation.guest.firstName = parts.first;
-              appendProjectedSource(proposal, `${guestRoot}/firstName`, claim, currentRefs); }
-            if (parts.last) { allocation.guest.lastName = parts.last;
-              appendProjectedSource(proposal, `${guestRoot}/lastName`, claim, currentRefs); }
-          }
-        }
-        const knownGuestNames = new Set(request.body.allocations.map((allocation) =>
-          normalizedFact([allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' '))).filter(Boolean));
+        const allocatedGuestNames = request.body.allocations.map((allocation) =>
+          [allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' ')).filter(Boolean);
+        const knownGuestNames = new Set(allocatedGuestNames.map(normalizedFact));
         for (const guest of extracted.guests) {
           const name = currentClaim(guest.name, currentRefs);
-          if (guest.role !== 'guest' || typeof name?.value !== 'string' || knownGuestNames.has(normalizedFact(name.value))) continue;
+          if (guest.role !== 'guest' || typeof name?.value !== 'string' || knownGuestNames.has(normalizedFact(name.value)) ||
+              allocatedGuestNames.some((assigned) => sameGuestName(assigned, name.value))) continue;
           if (name.value.length > 300) {
             addProjectionIssue(proposal, `/requests/${request.id}/body/dateSections/0/unassignedGuestNames`,
               'source_value_not_projected', 'A source guest name exceeds the 300-character destination limit; its raw claim remains available for staff review.', name.sourceRefs);
@@ -5059,7 +5083,8 @@ function projectCurrentExtraction(input: {
     addedIssues: Math.max(0, proposal.issues.length - existingIssueCount), extractionIdByProposalRequestId };
 
   const fallbackProposal = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
-    evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.' });
+    evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.',
+    evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody });
   appendExtractionSourceClaims(fallbackProposal, input.extraction, knownRefs);
   carryConfirmationClaimCapacityIssues({ source: proposal, target: fallbackProposal,
     sourceRequestToExtractionId: extractionIdByProposalRequestId,
@@ -5073,7 +5098,8 @@ function projectCurrentExtraction(input: {
     addedIssues: 1, extractionIdByProposalRequestId: new Map(currentExtraction.requests.map((request) => [request.id, request.id])) };
   // buildFallbackProposal already has a schema-safe unsupported envelope for this last-resort case.
   const lastResort = buildFallbackProposal({ extraction: null, source: input.source, evidence: input.evidence,
-    reason: 'Projected source facts could not be represented safely; staff review is required.' });
+    reason: 'Projected source facts could not be represented safely; staff review is required.', evidenceComplete: meaningEvidenceComplete,
+    currentAuthoredText: currentAuthoredBody });
   appendExtractionSourceClaims(lastResort, input.extraction, knownRefs);
   addProjectionIssue(lastResort, '/', 'source_projection_schema_rejected',
     'The editable fallback retained raw source claims because typed destination values failed schema validation.',
@@ -6593,13 +6619,22 @@ export async function runReservationWorkflowV2Prefill(input: {
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
+  const sourceReadComplete = observations[0]?.coverage.complete === true && textCoverageComplete;
+  // Fallback proposals feed only the meaning-code gate with this flag, so it carries the
+  // same known-empty attachment enumeration requirement as the main projection.
+  const meaningEvidenceComplete = sourceReadComplete && hasNoEnumeratedAttachments(input.selection);
+  // Meaning-mapped codes anchor only in sender-authored text, quoted history excluded — the
+  // same authored slice as the main projection.
+  const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
+    input.selection.currentBodyText ?? input.selection.bodyText));
   const base: Pick<ReservationWorkflowV2PrefillResult,
     'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements'> & { errors: NonNullable<ReservationWorkflowV2Draft['errors']> } = {
     generationId, extraction: empty, sourceBound: true, observations,
     fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as NonNullable<ReservationWorkflowV2Draft['errors']> };
   const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => ({
     ...base, status: 'partial', sourceBound: true,
-    proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason }),
+    proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason, evidenceComplete: meaningEvidenceComplete,
+      currentAuthoredText: currentAuthoredBody }),
     errors: [...base.errors, error],
   });
   if (!input.adapter) return fallback('Model adapter is unavailable; source text remains editable for staff review.');
@@ -6652,8 +6687,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     source: input.source, selection: input.selection, evidence });
   const extraction = anchorCurrentExtractionDates({ extraction: recoveredExtraction, source: input.source, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
-  const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete:
-    observations[0]?.coverage.complete === true && textCoverageComplete };
+  const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete };
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
@@ -6663,14 +6697,16 @@ export async function runReservationWorkflowV2Prefill(input: {
       groundedSeparateAsk(body, request.requestText.raw, 2000) ? [{ ...request, kind: 'other' as const }] : []);
     if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
       proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
-        reason: 'Self-sent pre-stay mail has no separate current request.' }),
+        reason: 'Self-sent pre-stay mail has no separate current request.', evidenceComplete: meaningEvidenceComplete,
+        currentAuthoredText: currentAuthoredBody }),
       errors: base.errors, skippedReason: 'self_prestay' };
     const separate = { ...extraction, requests };
     if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, separate))) {
       throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
     }
     const proposal = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction: separate, source: input.source, evidence,
-      reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.' }),
+      reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.', evidenceComplete: meaningEvidenceComplete,
+      currentAuthoredText: currentAuthoredBody }),
       extraction: separate, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode }).proposal;
     return { ...base, extraction: separate, status: 'partial',
       proposal,
@@ -6856,7 +6892,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     else if (!finalParsed.success) error = { code: 'invalid_typed_synthesis', message: `Synthesis ${summarizeSchemaIssues(finalParsed.error)}; source extraction remains editable.` };
     else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${proposalIssue ?? reviewIssue}); source extraction remains editable.` };
     const reason = error.message;
-    const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
+    const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason,
+      evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody }),
       extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode });
     const fallbackBinding = bindPartyObservations({ proposal: fallbackProjection.proposal, extraction: candidateExtraction,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, observations: finalObservations, generationId });

@@ -60,7 +60,8 @@ function completeCodeEnvelope(catalog: PreloadedNativeCatalog | null | undefined
 
 /**
  * A source-stated room/rate meaning selects a native code only when the property's complete live catalogue binds
- * exactly that one normalized meaning. Partial, ambiguous, legacy or unverifiable catalogue data never yields a code.
+ * exactly that one normalized meaning and the matched code itself verifies unique. Partial, ambiguous, legacy or
+ * unverifiable catalogue data never yields a code.
  */
 export function uniqueCatalogMeaningCode(catalog: PreloadedNativeCatalog | null | undefined, kind: 'room' | 'rate',
   text: unknown, propertyCode?: string): { code: string; meaning: string } | null {
@@ -68,7 +69,11 @@ export function uniqueCatalogMeaningCode(catalog: PreloadedNativeCatalog | null 
   const key = typeof text === 'string' ? matchKey(text) : '';
   if (!envelope || !key) return null;
   const matches = envelope.items.filter((item) => item.normalizedMeaning === key);
-  return matches.length === 1 ? { code: matches[0]!.code, meaning: matches[0]!.meaning } : null;
+  // A unique meaning can still sit on a duplicated case-insensitive code ("KING"/"king" rows with
+  // different meanings): lookupVerifiedCode refuses that code on the write path, so the pick must
+  // verify unique too, or a unique label bypasses the duplicate-code check.
+  if (matches.length !== 1 || !catalog || catalog.lookupVerifiedCode(kind, matches[0]!.code).status !== 'unique') return null;
+  return { code: matches[0]!.code, meaning: matches[0]!.meaning };
 }
 
 // Negation mirrors the exact-code resolver's predicate words, including curly apostrophes; the
@@ -78,13 +83,13 @@ const MEANING_NEGATIVE = new RegExp(`${MEANING_NEGATION.source}|\\b(?:without|av
 
 /**
  * The raw span cannot support a meaning when it negates itself, has no verbatim occurrence, or any
- * cited row carries a negative or alternative cue anywhere — including cited rows that never quote
- * the raw wording ("All rooms are unavailable", "King Room or Twin Room").
- * Clause scope is not parsed: mail wraps and mixes sentences, so a positive mention sharing a cited
+ * scanned admitted row carries a negative or alternative cue anywhere — including rows that never
+ * quote the raw wording ("All rooms are unavailable", "King Room or Twin Room").
+ * Clause scope is not parsed: mail wraps and mixes sentences, so a positive mention sharing a scanned
  * row with unrelated negative wording ("No breakfast needed; use Standard") also abstains and staff
  * resolve the code. An unverifiable or cue-bearing wording yields abstention rather than a guessed
- * code. The exact-code resolver in the prefill projector shares this same predicate so a
- * stated code and a stated meaning abstain on identical evidence.
+ * code. The exact-code resolver in the prefill projector anchors on the same cited rows but keeps
+ * negation clause-local, so a positively stated code sharing a row with an unrelated cue still resolves.
  */
 export function sourceMeaningNegated(raw: string, context: string): boolean {
   return MEANING_NEGATIVE.test(raw) || MEANING_NEGATIVE.test(context);
@@ -92,25 +97,48 @@ export function sourceMeaningNegated(raw: string, context: string): boolean {
 
 /**
  * Resolve cited code hints to at most one native code. A hint contributes only when its raw wording sits verbatim
- * in one of its own cited, non-prior evidence rows, equals exactly one catalogue meaning under matchKey in full,
- * and no cited row carries a negative or alternative cue anywhere; every contributing hint picks the same code.
- * Model-normalized values, missing evidence, decorated or partial wording, and ambiguous or cue-bearing spans
- * all yield no code at all.
+ * in one of its own cited current-message evidence rows and in the sender-authored portion of the current body —
+ * never an attachment row, an attachment span carried under an unrelated message ref, or wording found only in
+ * that body's quoted history — equals exactly one catalogue meaning under matchKey in full, and no admitted
+ * non-prior evidence row carries a negative or alternative cue anywhere; every contributing hint picks the same
+ * code. The cue scan always covers every admitted non-prior row, cited or not: an uncited current attachment
+ * contradicts a stated meaning exactly like a cited row does. The scan is trusted only when the caller
+ * established the admitted evidence as the complete current source with a known-empty attachment
+ * enumeration (`evidenceComplete`); anything less means an attachment could hold an unseen cue, so the
+ * meaning path abstains. `currentAuthoredText` carries the authored slice of the current body, quoted history
+ * removed by the shared current-authored utility; when it is absent the anchor cannot be established and every
+ * meaning mapping abstains. Model-normalized
+ * values, missing evidence, decorated or partial wording, and ambiguous or cue-bearing spans all yield no code
+ * at all.
  */
 export function sourceMeaningCode(claims: ReadonlyArray<{ raw: string; value: unknown; sourceRefs: string[] }>,
   kind: 'room' | 'rate', options: { catalog: PreloadedNativeCatalog | null | undefined; propertyCode?: string;
-    evidence: ReadonlyArray<{ ref: string; relation: string; text: string }> }):
+    evidence: ReadonlyArray<{ ref: string; relation: string; text: string }>; evidenceComplete?: boolean;
+    currentAuthoredText?: string }):
   { code: string; meaning: string; sourceRefs: string[] } | null {
+  if (options.evidenceComplete !== true) return null;
+  const authoredText = options.currentAuthoredText ?? '';
   const byCode = new Map<string, { meaning: string; sourceRefs: Set<string> }>();
   for (const claim of claims) {
+    if (typeof claim.value !== 'string' || !claim.value.trim()) continue;
     const raw = claim.raw.trim();
     if (!raw) continue;
     const cited = options.evidence.filter((row) => row.relation !== 'prior_thread' &&
       claim.sourceRefs.includes(row.ref));
-    const anchored = cited.filter((row) => row.text.includes(raw));
+    // The raw span must sit verbatim in the claim's own cited current-message row and in the
+    // sender-authored part of that body: the row's full text also carries quoted history, so a
+    // span found only inside the quote is not a current ask and cannot anchor a meaning. An
+    // attachment-only citation, or attachment wording carried under an unrelated message ref,
+    // cannot anchor a meaning either.
+    const anchored = cited.filter((row) => row.relation === 'current_message' &&
+      row.text.includes(raw) && authoredText.includes(raw));
     if (!anchored.length) continue;
     const match = uniqueCatalogMeaningCode(options.catalog, kind, raw, options.propertyCode);
-    if (!match || cited.some((row) => sourceMeaningNegated(raw, row.text))) continue;
+    if (!match) continue;
+    // Guarding only extractor-cited rows is insufficient cross-field: an admitted but uncited
+    // current row ("rate BAR not allowed in the offer" in a sibling attachment) shares the same
+    // draft, so every admitted non-prior row is scanned for a vetoing cue.
+    if (options.evidence.some((row) => row.relation !== 'prior_thread' && sourceMeaningNegated(raw, row.text))) continue;
     const entry = byCode.get(match.code) ?? { meaning: match.meaning, sourceRefs: new Set<string>() };
     entry.meaning = match.meaning;
     anchored.forEach((row) => entry.sourceRefs.add(row.ref));
