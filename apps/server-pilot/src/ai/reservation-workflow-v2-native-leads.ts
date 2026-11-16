@@ -79,10 +79,23 @@ async function firstExistingPath(paths: string[]): Promise<string | undefined> {
     } catch {}
   }
 }
-async function resolveMemoryPmsPath(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+/** A per-property folder (`<dir>/<propertyCode>/`) wins; the legacy root files are accepted only when their content names the property. */
+async function memoryDir(env: NodeJS.ProcessEnv, propertyCode: string): Promise<{ dir: string; perProperty: boolean }> {
+  const root = env.HMS_MEMORY_DATA_DIR || defaultMemoryDir;
+  return await firstExistingPath([join(root, propertyCode, 'pms.json')]) ? { dir: join(root, propertyCode), perProperty: true }
+    : { dir: root, perProperty: false };
+}
+async function resolveMemoryPmsPath(env: NodeJS.ProcessEnv, propertyCode: string): Promise<string | undefined> {
+  const { dir, perProperty } = await memoryDir(env, propertyCode);
+  if (perProperty) return join(dir, 'pms.json');
+  if (propertyCode !== 'HRCEN') return undefined;
   if (env.HMS_MEMORY_PMS_PATH) return env.HMS_MEMORY_PMS_PATH;
-  const dir = env.HMS_MEMORY_DATA_DIR || defaultMemoryDir;
   return firstExistingPath([join(dir, 'pms.json'), join(dir, 'stay360-1a-1b-1c-20261029-run01.json')]);
+}
+async function resolveMemoryObservationsPath(env: NodeJS.ProcessEnv, propertyCode: string): Promise<string | undefined> {
+  const { dir, perProperty } = await memoryDir(env, propertyCode);
+  return perProperty ? firstExistingPath([join(dir, 'observations.jsonl')])
+    : propertyCode === 'HRCEN' ? env.HMS_MEMORY_OBSERVATIONS_PATH || undefined : undefined;
 }
 
 /** Native stay evidence, scoped to the selected message's arrival; no rate-code guessing. */
@@ -91,10 +104,10 @@ export async function loadReservationRateMealMapping(input: { propertyCode: stri
   const env = input.env ?? process.env;
   try {
     const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
-    const pmsPath = await resolveMemoryPmsPath(env);
+    const pmsPath = await resolveMemoryPmsPath(env, input.propertyCode);
     const parsed = rateMealMappingSchema.safeParse(await module.loadHmsRateMealMapping({ propertyCode: input.propertyCode,
       asOf: input.arrivedAt, pmsPaths: pmsPath ? [pmsPath] : [],
-      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
+      observationsPath: await resolveMemoryObservationsPath(env, input.propertyCode) }));
     if (!parsed.success) return { status: 'unavailable', issue: 'RATE_MEAL_MEMORY_INVALID' };
     return { status: 'available', mappings: parsed.data };
   } catch {
@@ -108,10 +121,10 @@ export async function loadReservationRateTrackMapping(input: { propertyCode: str
   const env = input.env ?? process.env;
   try {
     const module = await import(new URL('../../tooling/hms-cloud/hms-booking-memory.mjs', import.meta.url).href);
-    const pmsPath = await resolveMemoryPmsPath(env);
+    const pmsPath = await resolveMemoryPmsPath(env, input.propertyCode);
     const parsed = rateTrackMappingSchema.safeParse(await module.loadHmsRateTrackMapping({ propertyCode: input.propertyCode,
       asOf: input.arrivedAt, pmsPaths: pmsPath ? [pmsPath] : [],
-      observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined }));
+      observationsPath: await resolveMemoryObservationsPath(env, input.propertyCode) }));
     if (!parsed.success) return { status: 'unavailable', issue: 'RATE_TRACK_MEMORY_INVALID' };
     return { status: 'available', mappings: parsed.data };
   } catch {
@@ -132,7 +145,7 @@ export function reservationEntityKey(value: string, role: PartyRole): string {
 const normalizedPartyName = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase('en-US');
 
 type Memory = z.infer<typeof memorySchema>;
-type NativeLeadsInput = { propertyCode: string;
+type NativeLeadsInput = { propertyCode: ReservationWorkflowV2Observation['propertyCode'];
   source: ReservationWorkflowV2Source; generationId: string; proposal: ReservationWorkflowV2Proposal;
   fromAddress: string | null | undefined; env?: NodeJS.ProcessEnv; signal?: AbortSignal;
   db?: DB; transportId?: string; sourceThreadMessageIds?: readonly string[];
@@ -194,27 +207,28 @@ function verifiedAmendBaseline(input: NativeLeadsInput & { prepareObservation: R
     confirmation: before.data.confirmation, parties };
 }
 
-let cached: { key: string; loadedAt: number; value: Promise<Memory | null> } | undefined;
-async function loadMemory(env: NodeJS.ProcessEnv): Promise<Memory | null> {
-  const key = JSON.stringify([env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH, env.HMS_MEMORY_DATA_DIR, env.HMS_MEMORY_OBSERVATIONS_PATH]);
-  if (!cached || cached.key !== key || Date.now() - cached.loadedAt > 5 * 60_000) {
-    const value = (async () => {
-      const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href);
-      const dir = env.HMS_MEMORY_DATA_DIR || defaultMemoryDir;
-      const pmsPath = await resolveMemoryPmsPath(env);
-      const outboundPdfPath = env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
-        await firstExistingPath([join(dir, 'outbound.jsonl'), join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl')]));
-      const loaded = await tool.loadOptionalBookingMemory({
-        pmsPath,
-        outboundPdfPath,
-        observationsPath: env.HMS_MEMORY_OBSERVATIONS_PATH || undefined,
-      });
-      const parsed = memorySchema.safeParse(loaded.memory);
-      return parsed.success ? parsed.data : null;
-    })();
-    cached = { key, loadedAt: Date.now(), value };
-  }
-  return cached.value;
+const memoryCache = new Map<string, { key: string; loadedAt: number; value: Promise<Memory | null> }>();
+/** Property-keyed: a property with no memory yet gets null (callers return empty), never another property's history. */
+async function loadMemory(env: NodeJS.ProcessEnv, propertyCode: string): Promise<Memory | null> {
+  const { dir, perProperty } = await memoryDir(env, propertyCode);
+  if (!perProperty && propertyCode !== 'HRCEN') return null;
+  const pmsPath = await resolveMemoryPmsPath(env, propertyCode);
+  const outboundPdfPath = perProperty ? await firstExistingPath([join(dir, 'outbound.jsonl')])
+    : env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
+      await firstExistingPath([join(dir, 'outbound.jsonl'), join(dir, 'centurion-outbound-pdf-records-2026-10-29.jsonl')]));
+  const observationsPath = await resolveMemoryObservationsPath(env, propertyCode);
+  const key = JSON.stringify([env.HMS_MEMORY_DATA_DIR, env.HMS_MEMORY_PMS_PATH, env.HMS_MEMORY_OUTBOUND_PATH,
+    env.HMS_MEMORY_OBSERVATIONS_PATH, pmsPath, outboundPdfPath, observationsPath]);
+  const cached = memoryCache.get(propertyCode);
+  if (cached && cached.key === key && Date.now() - cached.loadedAt <= 5 * 60_000) return cached.value;
+  const value = (async () => {
+    const tool = await import(new URL('../../tooling/hms-cloud/booking-lookup-session.mjs', import.meta.url).href);
+    const loaded = await tool.loadOptionalBookingMemory({ pmsPath, outboundPdfPath, observationsPath }, { propertyCode });
+    const parsed = memorySchema.safeParse(loaded.memory);
+    return parsed.success && parsed.data.propertyCode === propertyCode ? parsed.data : null;
+  })().catch(() => null);
+  memoryCache.set(propertyCode, { key, loadedAt: Date.now(), value });
+  return value;
 }
 
 type MemoryGuidanceValue = { value: string; support: number; denominator: number; confidence: number };
@@ -230,7 +244,7 @@ export async function loadReservationMemoryGuidance(input: { propertyCode: strin
   { status: 'unavailable'; issue: string }
 > {
   try {
-    const memory = await loadMemory(input.env ?? process.env), cutoff = Date.parse(input.source.arrivedAt);
+    const memory = await loadMemory(input.env ?? process.env, input.propertyCode), cutoff = Date.parse(input.source.arrivedAt);
     if (!memory || memory.propertyCode !== input.propertyCode || !Number.isFinite(cutoff)) {
       return { status: 'unavailable', issue: 'booking_memory_unavailable' };
     }
@@ -317,10 +331,10 @@ export async function loadReservationNativeLeads(input: NativeLeadsInput): Promi
 
 async function loadReservationNativeLeadsInternal(input: NativeLeadsInput & { savedAmendBaseline?: SavedAmendBaseline }):
   Promise<ReservationWorkflowV2Observation[]> {
-  if (input.propertyCode !== 'HRCEN' || input.signal?.aborted || (!input.db && !input.sourceThreadMessageIds)) return [];
+  if (input.signal?.aborted || (!input.db && !input.sourceThreadMessageIds)) return [];
   const propertyCode = input.propertyCode;
   try {
-    const loaded = await loadMemory(input.env ?? process.env);
+    const loaded = await loadMemory(input.env ?? process.env, input.propertyCode);
     input.signal?.throwIfAborted();
     if (!loaded || loaded.propertyCode !== input.propertyCode) return [];
     const cutoff = Date.parse(input.source.arrivedAt);
@@ -598,4 +612,130 @@ export async function loadReservationAmendBaselineAutoTransferLeads(input: Omit<
   const savedAmendBaseline = verifiedAmendBaseline({ ...input, fromAddress: null });
   if (!savedAmendBaseline?.parties.length) return [];
   return loadReservationNativeLeadsInternal({ ...input, fromAddress: null, savedAmendBaseline });
+}
+
+export type AutopickHistoryField = 'bookingAgency' | 'organization' | 'arAccount' | 'ratePlan' | 'roomType' | 'guaranteeType';
+export type AutopickHistoryKind = 'sender_history' | 'company_history' | 'agency_domain';
+/** `value: ''` counts a stay where the field was blank: it is part of the total but never picked. */
+export type AutopickHistoryValue = { value: string; count: number; lastSeen: string | null };
+export type AutopickHistoryKey = { kind: AutopickHistoryKind; key: string;
+  fields: Partial<Record<AutopickHistoryField, { total: number; values: AutopickHistoryValue[] }>> };
+export type AutopickHistory = { propertyCode: string; clientAddress: string | null; domain: string | null;
+  keys: AutopickHistoryKey[]; companyHistory(name: string): AutopickHistoryKey | null };
+
+// The client side of a confirmation thread: who wrote in, or who the hotel sent the confirmation to.
+const clientRoles = new Set(['inbound-sender', 'outbound-recipient']);
+const historyFields: AutopickHistoryField[] = ['bookingAgency', 'organization', 'arAccount', 'ratePlan', 'roomType', 'guaranteeType'];
+
+/**
+ * Per-field value counts from stays captured before the current mail, keyed by (in priority order) the exact
+ * sender address, a company/agency named in the email, and the sender's non-webmail domain. Property-keyed;
+ * an unknown property or missing memory yields null so callers simply pick nothing.
+ */
+export async function loadReservationAutopickHistory(input: { propertyCode: string; source: ReservationWorkflowV2Source;
+  fromAddress: string | null | undefined; partyNames?: readonly string[]; sourceThreadMessageIds?: readonly string[];
+  db?: DB; transportId?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }): Promise<AutopickHistory | null> {
+  try {
+    const memory = await loadMemory(input.env ?? process.env, input.propertyCode);
+    const cutoff = Date.parse(input.source.arrivedAt);
+    if (!memory || !Number.isFinite(cutoff) || input.signal?.aborted) return null;
+    const snapshotTimes = new Map(memory.snapshots.flatMap(snapshot => {
+      const captured = [snapshot.startedAt, snapshot.updatedAt].filter((value): value is string => Boolean(value));
+      if (!captured.length || captured.some(value => !Number.isFinite(Date.parse(value)))) return [];
+      const latest = Math.max(...captured.map(value => Date.parse(value)));
+      return latest < cutoff ? [[snapshot.snapshotId, new Date(latest).toISOString()] satisfies [string, string]] : [];
+    }));
+    const sourceMessages = new Set([input.source.messageId, ...(input.sourceThreadMessageIds ?? [])]);
+    if (input.db && input.transportId) {
+      const rows = await input.db.select({ id: message.id }).from(message).where(and(
+        eq(message.transportId, input.transportId), eq(message.threadId, input.source.threadId),
+        lt(MESSAGE_ARRIVED_AT, sql`${input.source.arrivedAt}::timestamptz at time zone 'UTC'`))).limit(2001);
+      if (rows.length > 2000) return null;
+      for (const row of rows) sourceMessages.add(row.id);
+    }
+    // The current thread's own stays are the answer, not history.
+    const excluded = new Set(memory.addressEvidence.flatMap(row => (row.messageDbId && sourceMessages.has(row.messageDbId)) ||
+      row.threadId === input.source.threadId ? [row.confirmationKey] : []));
+    const links = memory.addressEvidence.filter(row => !excluded.has(row.confirmationKey) && row.sentAt &&
+      Number.isFinite(Date.parse(row.sentAt)) && Date.parse(row.sentAt) < cutoff && row.linkMethod === 'attachment-id' &&
+      row.linkProvenance?.ambiguousAttachment === false && row.linkProvenance.labeledConfirmationMatch === true &&
+      row.linkProvenance.subjectHasOtherConfirmation !== true && row.linkedPmsSnapshotIds?.some(id => snapshotTimes.has(id)));
+    const latest = new Map<string, { capturedAt: string; rows: Memory['observations'] }>();
+    for (const row of memory.observations) {
+      const capturedAt = snapshotTimes.get(row.snapshotId);
+      if (!capturedAt || excluded.has(row.confirmationKey) || row.historicalIdentity.nativeConfirmation !== 'matched') continue;
+      const current = latest.get(row.confirmationKey);
+      if (!current || capturedAt > current.capturedAt) latest.set(row.confirmationKey, { capturedAt, rows: [row] });
+      else if (capturedAt === current.capturedAt) current.rows.push(row);
+    }
+    // One determinate value per stay and field, or the stay is not counted for that field.
+    const facts = new Map<string, { lastSeen: string; values: Partial<Record<AutopickHistoryField, string>> }>();
+    for (const [key, stay] of latest) {
+      const values: Partial<Record<AutopickHistoryField, string>> = {};
+      for (const field of historyFields) {
+        const raw = field === 'ratePlan' || field === 'roomType' || field === 'guaranteeType'
+          ? stay.rows.flatMap(row => {
+            const hint = (row.historicalHints as Record<string, unknown>)[field];
+            const parsed = historicalValuesSchema.safeParse(hint);
+            return parsed.success ? [...(parsed.data.recordView ?? []), ...(parsed.data.stay360 ?? [])] : [];
+          }).flatMap(value => typeof value === 'string' || typeof value === 'number' ? [String(value).trim()] : [])
+          : stay.rows.some(row => row.outcomes.some(outcome => outcome.conflictingFields.includes(field))) ? []
+            : stay.rows.flatMap(row => row.outcomes.map(outcome => (outcome.combination[field] ?? '').trim()));
+        const distinct = new Map(raw.map(value => [value.normalize('NFKC').toLocaleLowerCase('en-US'), value]));
+        if (distinct.size === 1) values[field] = [...distinct.values()][0]!;
+      }
+      facts.set(key, { lastSeen: stay.capturedAt, values });
+    }
+    const tally = (kind: AutopickHistoryKind, key: string, confirmations: Iterable<string>): AutopickHistoryKey => {
+      const fields: AutopickHistoryKey['fields'] = {};
+      const stays = [...new Set(confirmations)].flatMap(id => facts.has(id) ? [facts.get(id)!] : []);
+      for (const field of historyFields) {
+        const counts = new Map<string, AutopickHistoryValue>();
+        let total = 0;
+        for (const stay of stays) {
+          const value = stay.values[field];
+          if (value === undefined) continue;
+          total += 1;
+          const normalized = field === 'bookingAgency' || field === 'organization' || field === 'arAccount'
+            ? normalizedPartyName(value) : value.toLocaleUpperCase('en-US');
+          const prior = counts.get(normalized);
+          counts.set(normalized, { value: prior?.value ?? value, count: (prior?.count ?? 0) + 1,
+            lastSeen: !prior?.lastSeen || stay.lastSeen > prior.lastSeen ? stay.lastSeen : prior.lastSeen });
+        }
+        if (total) fields[field] = { total, values: [...counts.values()].sort((a, b) => b.count - a.count ||
+          (b.lastSeen ?? '').localeCompare(a.lastSeen ?? '') || a.value.localeCompare(b.value)) };
+      }
+      return { kind, key, fields };
+    };
+    const addresses = [...new Set((input.fromAddress?.match(/[^\s@,;<>]+@[^\s@,;<>]+/g) ?? [])
+      .map(value => value.replace(/^mailto:/i, '').replace(/[.!?]+$/, '').toLocaleLowerCase('en-US')))];
+    const address = addresses.length === 1 ? addresses[0]! : null;
+    const hotelDomains = new Set(memory.addressEvidence.flatMap(row => row.role === 'outbound-sender' && row.address.includes('@')
+      ? [row.address.toLocaleLowerCase('en-US').split('@')[1]!] : []));
+    const domain = address?.split('@')[1] ?? null;
+    const ownMail = Boolean(domain && hotelDomains.has(domain));
+    const clientLinks = links.filter(row => clientRoles.has(row.role));
+    const keys: AutopickHistoryKey[] = [];
+    if (address && !ownMail) keys.push(tally('sender_history', address, clientLinks.filter(row =>
+      row.address.toLocaleLowerCase('en-US') === address).map(row => row.confirmationKey)));
+    const companyHistory = (name: string): AutopickHistoryKey | null => {
+      const agencyKey = reservationEntityKey(name, 'agency'), companyKey = reservationEntityKey(name, 'organization');
+      if (!companyKey) return null;
+      const matches = [...facts].filter(([, stay]) =>
+        (stay.values.organization && reservationEntityKey(stay.values.organization, 'organization') === companyKey) ||
+        (stay.values.bookingAgency && reservationEntityKey(stay.values.bookingAgency, 'agency') === agencyKey));
+      return matches.length ? tally('company_history', name, matches.map(([key]) => key)) : null;
+    };
+    for (const name of [...new Set(input.partyNames ?? [])]) {
+      const keyed = companyHistory(name);
+      if (keyed) keys.push(keyed);
+    }
+    if (domain && !ownMail && !isFreemailHost(address!)) keys.push(tally('agency_domain', domain, clientLinks.filter(row =>
+      row.address.toLocaleLowerCase('en-US').endsWith(`@${domain}`)).map(row => row.confirmationKey)));
+    return { propertyCode: input.propertyCode, clientAddress: ownMail ? null : address, domain: ownMail ? null : domain,
+      keys: keys.filter(row => Object.keys(row.fields).length), companyHistory };
+  } catch {
+    input.signal?.throwIfAborted();
+    return null;
+  }
 }
