@@ -6516,11 +6516,21 @@ export async function runReservationWorkflowV2Prefill(input: {
     'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements'> & { errors: NonNullable<ReservationWorkflowV2Draft['errors']> } = {
     generationId, extraction: empty, sourceBound: true, observations,
     fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as NonNullable<ReservationWorkflowV2Draft['errors']> };
-  const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => ({
-    ...base, status: 'partial', sourceBound: true,
-    proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason }),
-    errors: [...base.errors, error],
-  });
+  const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => {
+    // On a confirmed self-prestay source an unfinished read must stay reviewable
+    // without inventing a request: no extraction was validated, so the intake
+    // decision is an honest host 'uncertain' bound to this generation and source.
+    return {
+      ...base, status: 'partial', sourceBound: true,
+      proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason,
+        ...(selfPreStay ? { noInventedRequest: true } : {}) }),
+      ...(selfPreStay ? { disposition: { decision: 'uncertain' as const, modelDecision: null,
+        reason: 'The email could not be read automatically; a staff decision is still needed.',
+        evidenceRefs: evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref).slice(0, 20),
+        generationId, sourceHash: input.source.sourceHash } } : {}),
+      errors: [...base.errors, error],
+    };
+  };
   if (!input.adapter) return fallback('Model adapter is unavailable; source text remains editable for staff review.');
   const env = input.env ?? process.env;
   const budget = lunaCallBudget(extractionReasoningEffort(env));

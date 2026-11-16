@@ -803,7 +803,12 @@ function retryablePrefill(draft: ReservationWorkflowV2Draft): boolean {
   const hasNoContentEntities = !draft.proposal.content.services.length && !draft.proposal.content.documents.length;
   if (draft.errors.some((error) => error.stage === 'extract' &&
       ['extract_unavailable', 'model_timeout', 'model_error', 'invalid_typed_extraction'].includes(error.code))) {
-    return draft.proposal.content.requests.length === 1 && draft.proposal.content.requests[0]?.kind === 'other' &&
+    // A bound uncertain intake decision with zero requests is the durable review
+    // state a confirmed self-prestay keeps when its extraction never completed.
+    const reviewOnlyFallback = draft.proposal.content.requests.length === 0 &&
+      draft.disposition?.decision === 'uncertain';
+    return (reviewOnlyFallback || (draft.proposal.content.requests.length === 1 &&
+        draft.proposal.content.requests[0]?.kind === 'other')) &&
       hasNoContentEntities && draft.observations.length === 1 && draft.observations[0]?.kind === 'source';
   }
   const hasCreate = draft.proposal.content.requests.some((request) => request.kind === 'create');
