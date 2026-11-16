@@ -29,7 +29,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
@@ -710,6 +710,10 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     ...scope,
     devGate,
+    process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' && process.env.RESERVATION_V2_ARRIVAL_PREFILL_HRDAV === 'on'
+      ? undefined : or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), notInArray(aiWorkflowRun.transportId,
+          PROPERTY_REGISTRY.properties.filter((property) => property.propertyCode === 'HRDAV')
+            .flatMap((property) => [...property.transportIds]))),
     // A busy arrival must not hide unrelated jobs behind it in the shared lane.
     or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), notExists(db.select({ id: busyArrival.id })
       .from(busyArrival).where(and(eq(busyArrival.runKind, 'reservation_prefill'),

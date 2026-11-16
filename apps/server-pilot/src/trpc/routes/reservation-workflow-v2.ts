@@ -395,7 +395,8 @@ export const reservationWorkflowV2Router = router({
     if (!reservationArrivalEnabled(scoped.propertyCode)) return withPreparation(prefillDraft(scoped, item, ctx.transportEmail, false), scoped.propertyCode);
     if (initialized.draft.prefill?.status !== 'idle') return withPreparation(Promise.resolve(initialized), scoped.propertyCode);
     const job = await enqueueReservationArrival(scoped.db, { transportId: scoped.transportId, messageId: canonicalSource.messageId, requestedByPane: true });
-    return withPreparation(job ? markReservationWorkflowV2Queued(scoped, { ...item, jobRunId: job.id }) : Promise.resolve(initialized), scoped.propertyCode);
+    return withPreparation(job ? markReservationWorkflowV2Queued(scoped, { ...item, jobRunId: job.id })
+      : scoped.propertyCode === 'HRDAV' ? prefillDraft(scoped, item, ctx.transportEmail, false) : Promise.resolve(initialized), scoped.propertyCode);
   }),
   prefill: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
@@ -406,7 +407,8 @@ export const reservationWorkflowV2Router = router({
       return withPreparation(Promise.resolve(current), scoped.propertyCode);
     const job = await enqueueReservationArrival(scoped.db, { transportId: scoped.transportId,
       messageId: input.source.messageId, priority: 0, requestedByPane: true });
-    if (!job) return withPreparation(Promise.resolve(current), scoped.propertyCode);
+    if (!job) return withPreparation(scoped.propertyCode === 'HRDAV'
+      ? prefillDraft(scoped, input, ctx.transportEmail, true) : Promise.resolve(current), scoped.propertyCode);
     if (['dead_letter', 'succeeded', 'retry_wait'].includes(job.state))
       return withPreparation(retryReservationWorkflowV2Arrival(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);
     return withPreparation(markReservationWorkflowV2Queued(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);

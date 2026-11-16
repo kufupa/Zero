@@ -88,6 +88,7 @@ try {
   for (const key of allowlist) {
     const value = values.get(key);
     validateReleaseControl(key, value);
+    if (key === 'RESERVATION_V2_ARRIVAL_PREFILL_HRDAV' && value !== 'on') continue;
     if (key === 'PANE_BRAIN' && value && !['agent', 'classifier'].includes(value)) {
       throw new Error('invalid');
     }
