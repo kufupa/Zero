@@ -17,6 +17,7 @@ import { RETRO_WORKFLOWS, RETRO_ROI_MAX_REPORT_BYTES, retroReportSchema, retroTa
 const VERSION = 'centurion-retro-roi-runner/2';
 const MAX_WORKERS = 96, MAX_REPLAY_WORKERS = 32, CONTROL_INTERVAL_MS = 300_000, ERROR_LIMIT = 0.02, MAX_429_RETRIES = 3;
 const ASSESSMENT_MODEL = 'gpt-6.1-terra';
+const CONFIRMED_INTRINSIC_TIMEOUT_KEY = 'aeed93d07c7cf88d8d566a5302b6b236910ac1ffb1fa9695560ff36236fd205b';
 const START = '2026-10-17T04:17:49Z', END = '2026-11-16T04:17:49Z';
 const MAILBOX = 'centurion@legacyhotels.co.za';
 const instant = z.string().datetime({ offset: true });
@@ -86,12 +87,14 @@ const modelResultSchema = z.object({ modelId: z.enum(['gpt-6-luna', ASSESSMENT_M
   usage: z.object({ inputTokens: z.number(), outputTokens: z.number(), totalTokens: z.number(), latencyMs: z.number(), estimatedCostUsd: z.number(), rateTableVersion: z.string() }),
   provenance: z.object({ routeId: z.string(), protocol: z.string(), modelId: z.string(), usageSource: z.enum(['reported', 'unknown']), purpose: z.enum(['draft', 'extraction', 'shadow', 'judge']).optional() }).optional() });
 const checkpointSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('api_attempt'), fingerprint: sha256, key: sha256, stage: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), messageIds: z.array(z.string()), attempt: z.number().int().positive(), completedAt: instant, outcome: z.enum(['success', 'rate_limited', 'timeout', 'error']), latencyMs: z.number().nonnegative(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable() }),
+  z.object({ kind: z.literal('api_attempt'), fingerprint: sha256, key: sha256, modelId: z.enum(['gpt-6-luna', ASSESSMENT_MODEL]).optional(), stage: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), messageIds: z.array(z.string()), attempt: z.number().int().positive(), completedAt: instant, outcome: z.enum(['success', 'rate_limited', 'timeout', 'error']), latencyMs: z.number().nonnegative(), inputTokens: z.number().nullable(), outputTokens: z.number().nullable() }),
   z.object({ kind: z.literal('rate_limit'), fingerprint: sha256, key: sha256, stage: z.string(), attempt: z.number().int().positive(), decision: z.enum(['retry', 'exhausted']), delayMs: z.number().nonnegative(), reason: z.string() }),
   z.object({ kind: z.literal('runtime_metrics'), fingerprint: sha256, at: instant, metrics: z.record(z.unknown()) }),
   z.object({ kind: z.literal('measurement_pending'), fingerprint: sha256, messageId: z.string(), reason: z.string() }),
   z.object({ kind: z.literal('measurement_completed'), fingerprint: sha256, messageId: z.string() }),
   z.object({ kind: z.literal('assessment_rejected'), fingerprint: sha256, messageId: z.string(), key: sha256, reason: short }),
+  z.object({ kind: z.literal('classification_rejected'), fingerprint: sha256, messageId: z.string(), key: sha256, reason: short }),
+  z.object({ kind: z.literal('measurement_terminal'), fingerprint: sha256, messageId: z.string(), stage: z.enum(['classification', 'replay']), reason: short, policy: z.literal('one_end_retry') }),
   z.object({ kind: z.literal('model'), fingerprint: sha256, key: sha256, result: modelResultSchema, importedFrom: z.object({ path: z.string(), fingerprint: sha256 }).optional() }),
   z.object({ kind: z.literal('context'), fingerprint: sha256, start: instant, end: instant, nativeIndexSha256: sha256.nullable(), classifyOnly: z.boolean(), producerSHA: codeSHA.optional(), reviewedCompatibleProducer: z.union([codeSHA, z.literal('unknown')]).optional() }),
   z.object({ kind: z.literal('dispatch_failure'), fingerprint: sha256, key: sha256, purpose: z.string(), phase: z.enum(['classification', 'assessment', 'extraction', 'synthesis', 'autopick']), errorName: z.string(), errorMessage: short, statusCode: z.number().optional(), latencyMs: z.number().nonnegative(), usage: z.literal('unknown') }),
@@ -291,6 +294,7 @@ async function main(): Promise<void> {
       catch { if (index === records.length - 1) break; throw new Error('Invalid reuse checkpoint record'); }
       if (record.kind === 'model') importedModels.set(record.key, { result: record.result, path, fingerprint: record.fingerprint });
       if (record.kind === 'assessment_rejected') importedModels.delete(record.key);
+      if (record.kind === 'classification_rejected') importedModels.delete(record.key);
     }
     info({ phase: 'checkpoint_import', eligibleModelReceipts: importedModels.size, source: path, policy: 'Exact actual model input key matches only; prior classifications, replays and grades are not imported' });
   }
@@ -329,6 +333,9 @@ async function main(): Promise<void> {
   const dispatchFailures: Extract<z.infer<typeof checkpointSchema>, { kind: 'dispatch_failure' }>[] = [];
   const cache = new Map<string, ModelInvokeResult>(), classifications = new Map<string, z.infer<typeof classificationSchema>>(), tasks = new Map<string, RetroTask>();
   const assessmentKeys = new Map<string, string>(), rejectedAssessmentKeys = new Set<string>(), legacyAssessmentKeys = new Map<string, Set<string>>();
+  const classificationKeys = new Map<string, Set<string>>(), discoveryPending = new Set<string>();
+  const terminalFailures = new Map<string, Extract<z.infer<typeof checkpointSchema>, { kind: 'measurement_terminal' }>>();
+  let retryPass = false;
   let checkpointQueue = Promise.resolve();
   const save = (record: z.infer<typeof checkpointSchema>) => { checkpointQueue = checkpointQueue.then(() => appendFile(checkpointPath, `${JSON.stringify(record)}\n`, { mode: 0o600 })); return checkpointQueue; };
   let contextSeen = false, derivedCompatible = false, lastProducerSHA: string | undefined, skippedDerived = 0;
@@ -348,19 +355,22 @@ async function main(): Promise<void> {
       if (record.kind === 'context') {
         if (record.start !== start || record.end !== end || record.nativeIndexSha256 !== runContext.nativeIndexSha256 || record.classifyOnly !== runContext.classifyOnly) throw new Error('Checkpoint window/native-index/mode changed: restart with a new checkpoint');
         lastProducerSHA = record.producerSHA; derivedCompatible = record.producerSHA === producerSHA || reviewedProducers.has(record.producerSHA ?? 'unknown');
-        if (!derivedCompatible) { classifications.clear(); replays.clear(); tasks.clear(); }
+        if (!derivedCompatible) { classifications.clear(); replays.clear(); tasks.clear(); measurementPending.clear(); discoveryPending.clear(); terminalFailures.clear(); }
         contextSeen = true; continue;
       }
       if (!contextSeen) throw new Error('Checkpoint has no validated run context: use a separate --reuse-checkpoint snapshot');
       if (record.kind === 'model') { cache.set(record.key, record.result); rejectedAssessmentKeys.delete(record.key); }
       if (record.kind === 'assessment_rejected') { cache.delete(record.key); importedModels.delete(record.key); rejectedAssessmentKeys.add(record.key); }
+      if (record.kind === 'classification_rejected') { cache.delete(record.key); importedModels.delete(record.key); }
       if (record.kind === 'api_attempt' && record.stage === 'assessment') for (const id of record.messageIds) { const keys = legacyAssessmentKeys.get(id) ?? new Set<string>(); keys.add(record.key); legacyAssessmentKeys.set(id, keys); }
       if (record.kind === 'dispatch_failure') dispatchFailures.push(record);
-      if (!derivedCompatible && (record.kind === 'classification' || record.kind === 'replay' || record.kind === 'task')) { skippedDerived++; continue; }
-      if (record.kind === 'classification') classifications.set(record.messageId, record.result);
+      if (!derivedCompatible && (record.kind === 'classification' || record.kind === 'replay' || record.kind === 'task' || record.kind === 'failure' || record.kind === 'measurement_pending' || record.kind === 'measurement_completed' || record.kind === 'measurement_terminal' || record.kind === 'runtime_metrics')) { skippedDerived++; continue; }
+      if (record.kind === 'classification') { classifications.set(record.messageId, record.result); if (record.result.disposition === 'unknown') discoveryPending.add(record.messageId); else discoveryPending.delete(record.messageId); }
       if (record.kind === 'replay') { if (failedMeasurement(record.result)) { measurementPending.add(record.messageId); replays.delete(record.messageId); } else replays.set(record.messageId, { result: record.result, nativeReads: record.nativeReads }); }
       if (record.kind === 'measurement_pending') measurementPending.add(record.messageId);
       if (record.kind === 'measurement_completed') measurementPending.delete(record.messageId);
+      if (record.kind === 'failure' && record.stage === 'classification') discoveryPending.add(record.messageId);
+      if (record.kind === 'measurement_terminal') { terminalFailures.set(record.messageId, record); (record.stage === 'classification' ? discoveryPending : measurementPending).add(record.messageId); }
       if (record.kind === 'runtime_metrics') { const completed = z.object({ phase: z.literal('completed_preparation_message'), messageId: z.string() }).safeParse(record.metrics); if (completed.success) measurementPending.delete(completed.data.messageId); }
       if (record.kind === 'task') tasks.set(record.task.id, record.fingerprint === fingerprint ? record.task : retroTaskSchema.parse({ ...record.task, reason: `${record.task.reason.slice(0, 7600)} Prior valid Luna assessment retained from owner-reviewed compatible producer.` }));
     }
@@ -375,6 +385,15 @@ async function main(): Promise<void> {
     cache.delete(key); importedModels.delete(key);
     if (!rejectedAssessmentKeys.has(key)) { rejectedAssessmentKeys.add(key); await save({ kind: 'assessment_rejected', fingerprint, messageId, key, reason: 'Legacy pending assessment requires fresh schema and host validation; valid prefill retained' }); }
   }
+  const markTerminal = async (messageId: string, stage: 'classification' | 'replay', reason: string) => {
+    if (terminalFailures.has(messageId)) return;
+    const record = { kind: 'measurement_terminal', fingerprint, messageId, stage, reason, policy: 'one_end_retry' } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'measurement_terminal' }>;
+    await save(record); terminalFailures.set(messageId, record);
+  };
+  const rejectClassifierReceipts = async (messageId: string, reason: string) => {
+    for (const key of classificationKeys.get(messageId) ?? []) { cache.delete(key); importedModels.delete(key); await save({ kind: 'classification_rejected', fingerprint, messageId, key, reason }); }
+    classificationKeys.delete(messageId);
+  };
   const startedAt = Date.now();
   const workerRegimes: Array<{ workers: number; classificationWorkers: number; fromElapsedMs: number; toElapsedMs: number | null }> = [{ workers: concurrency, classificationWorkers: classifierConcurrency, fromElapsedMs: 0, toElapsedMs: null }];
   let activeLimit = concurrency, classifierLimit = classifierConcurrency, classifierSlots = 0, activeSlots = 0, activeModelCalls = 0, activeMessages = 0, classifiedThisRun = 0, prefilledThisRun = 0, replayedThisRun = 0, completedThisRun = 0, failedThisRun = 0;
@@ -415,26 +434,29 @@ async function main(): Promise<void> {
     throttleTimeoutRate: rows.length ? rows.filter(row => row.outcome === 'rate_limited' || row.outcome === 'timeout').length / rows.length : null,
     nonSuccessRate: rows.length ? rows.filter(row => row.outcome !== 'success').length / rows.length : null });
   const controlConcurrency = async (host: Awaited<ReturnType<typeof sampleResources>>, allowGrowth: boolean) => {
-    const now = Date.now(), rows = apiAttempts.filter(row => Date.parse(row.completedAt) >= lastControlAt), all = attemptRates(rows), extraction = attemptRates(rows.filter(row => row.stage === 'extraction'));
-    const classification = attemptRates(rows.filter(row => row.stage === 'classification')), replay = attemptRates(rows.filter(row => row.stage !== 'classification'));
+    const now = Date.now(), rows = apiAttempts.filter(row => Date.parse(row.completedAt) >= lastControlAt), all = attemptRates(rows);
+    const lunaRows = rows.filter(row => row.modelId === 'gpt-6-luna'), extractionRows = lunaRows.filter(row => row.stage === 'extraction');
+    const guardRates = (calls: typeof rows) => attemptRates(calls.filter(row => !(row.outcome === 'timeout' && row.key === CONFIRMED_INTRINSIC_TIMEOUT_KEY)));
+    const extraction = attemptRates(extractionRows), extractionGuard = guardRates(extractionRows);
+    const classification = attemptRates(rows.filter(row => row.stage === 'classification')), replay = attemptRates(lunaRows), replayGuard = guardRates(lunaRows);
     const headroomKnown = host.hostCpuFreePct !== null && host.hostMemoryAvailablePct !== null;
     const headroomBreach = host.hostCpuFreePct !== null && host.hostCpuFreePct <= 20 || host.hostMemoryAvailablePct !== null && host.hostMemoryAvailablePct <= 20;
     const nextLimit = (current: number, rates: ReturnType<typeof attemptRates>, requireExtraction: boolean) => {
       const observedThrottle = rates.completedAdapterAttempts > 0 && rates.rateLimited / rates.completedAdapterAttempts >= ERROR_LIMIT;
-      const unexplainedFailures = (rates.nonSuccessRate ?? 0) >= ERROR_LIMIT || requireExtraction && (extraction.nonSuccessRate ?? 0) >= ERROR_LIMIT;
+      const unexplainedFailures = (rates.nonSuccessRate ?? 0) >= ERROR_LIMIT || requireExtraction && (extractionGuard.nonSuccessRate ?? 0) >= ERROR_LIMIT;
       if (headroomBreach || observedThrottle) return { limit: Math.max(1, Math.floor(current / 2)), reason: headroomBreach ? 'Measured host headroom breach' : 'Observed 429 rate breach' };
       if (unexplainedFailures) return { limit: current, reason: 'Diagnostic hold: timeout/errors remain counted; no paired evidence distinguishes intrinsic complexity from concurrency pressure' };
       if (allowGrowth && headroomKnown && rates.completedAdapterAttempts > 0 && (!requireExtraction || extraction.completedAdapterAttempts > 0)) return { limit: Math.min(MAX_WORKERS, current * 2), reason: 'Healthy completed adapter attempts and strict >20% headroom' };
       return { limit: current, reason: 'Hold pending five-minute boundary, headroom or completed stage evidence' };
     };
-    const classifierDecision = nextLimit(classifierLimit, classification, false), proposedReplayDecision = nextLimit(activeLimit, replay, true);
+    const classifierDecision = nextLimit(classifierLimit, classification, false), proposedReplayDecision = nextLimit(activeLimit, replayGuard, true);
     const replayDecision = { ...proposedReplayDecision, limit: Math.min(maximumReplayConcurrency, proposedReplayDecision.limit), reason: proposedReplayDecision.limit > maximumReplayConcurrency ? 'Owner Luna prefill ceiling:32 maximum' : proposedReplayDecision.reason };
     if (classifierDecision.limit !== classifierLimit || replayDecision.limit !== activeLimit) {
       const elapsedMs = now - startedAt, previous = workerRegimes[workerRegimes.length - 1]; if (previous) previous.toElapsedMs = elapsedMs;
       classifierLimit = classifierDecision.limit; activeLimit = replayDecision.limit;
       workerRegimes.push({ workers: activeLimit, classificationWorkers: classifierLimit, fromElapsedMs: elapsedMs, toElapsedMs: null }); admit(); admitClassifier();
     }
-    const decision = { phase: 'concurrency_control', intervalMs: now - lastControlAt, replayWorkers: activeLimit, classificationWorkers: classifierLimit, maximumWorkersPerPool: MAX_WORKERS, allAdapterAttempts: all, classificationAdapterAttempts: classification, replayAdapterAttempts: replay, extractionAdapterAttempts: extraction, host, classifierDecision, replayDecision };
+    const decision = { phase: 'concurrency_control', intervalMs: now - lastControlAt, replayWorkers: activeLimit, classificationWorkers: classifierLimit, maximumWorkersPerPool: MAX_WORKERS, allAdapterAttempts: all, classificationAdapterAttempts: classification, replayAdapterAttempts: replay, extractionAdapterAttempts: extraction, replayGuard, confirmedIntrinsicTimeoutKey: CONFIRMED_INTRINSIC_TIMEOUT_KEY, host, classifierDecision, replayDecision };
     lastControlAt = now; info(decision); await save({ kind: 'runtime_metrics', fingerprint, at: new Date(now).toISOString(), metrics: decision });
   };
   const callMessageIds = (input: ModelInvokeInput) => {
@@ -446,7 +468,12 @@ async function main(): Promise<void> {
   };
   const trackedAdapter = (model: ModelAdapter, purpose: string, modelId: keyof typeof activeModelCallsByModel): ModelAdapter => ({ ...(model.reserveCalls ? { reserveCalls: model.reserveCalls.bind(model) } : {}), async invoke(input) {
     const { signal: _signal, deadlineAt: _deadline, ...stableInput } = input;
-    const key = hash(JSON.stringify({ purpose, input: stableInput })), cached = cache.get(key);
+    const key = hash(JSON.stringify({ purpose, input: stableInput }));
+    if (purpose.startsWith('classifier:')) for (const id of callMessageIds(input)) {
+      const keys = classificationKeys.get(id) ?? new Set<string>(); keys.add(key); classificationKeys.set(id, keys);
+      if (retryPass && discoveryPending.has(id)) { cache.delete(key); importedModels.delete(key); await save({ kind: 'classification_rejected', fingerprint, messageId: id, key, reason: 'Single discovery end retry must dispatch afresh, preserving prior raw receipt' }); }
+    }
+    const cached = cache.get(key);
     if (purpose.startsWith('assessment:')) for (const id of callMessageIds(input)) assessmentKeys.set(id, key);
     if (cached) { cacheHits++; return cached; }
     const imported = importedModels.get(key);
@@ -476,7 +503,7 @@ async function main(): Promise<void> {
       const errorName = !dispatched.ok && dispatched.error instanceof Error ? dispatched.error.name : 'UnknownError';
       const timeout = !dispatched.ok && (errorName === 'TimeoutError' || statusCode === 408 || statusCode === 504 || input.signal?.aborted && input.signal.reason instanceof Error && input.signal.reason.name === 'TimeoutError');
       const reported = dispatched.ok && dispatched.result.provenance?.usageSource === 'reported';
-      const receipt = { kind: 'api_attempt', fingerprint, key, stage, messageIds, attempt, completedAt: new Date().toISOString(), outcome: dispatched.ok ? 'success' : statusCode === 429 ? 'rate_limited' : timeout ? 'timeout' : 'error', latencyMs,
+      const receipt = { kind: 'api_attempt', fingerprint, key, modelId, stage, messageIds, attempt, completedAt: new Date().toISOString(), outcome: dispatched.ok ? 'success' : statusCode === 429 ? 'rate_limited' : timeout ? 'timeout' : 'error', latencyMs,
         inputTokens: reported && dispatched.ok ? dispatched.result.usage.inputTokens : null, outputTokens: reported && dispatched.ok ? dispatched.result.usage.outputTokens : null } satisfies Extract<z.infer<typeof checkpointSchema>, { kind: 'api_attempt' }>;
       apiAttempts.push(receipt); await save(receipt);
       if (dispatched.ok) {
@@ -590,6 +617,7 @@ async function main(): Promise<void> {
       for (const entry of batch) { const selected = result.messages.find(item => item.selectedMessageId === entry.mail.sourceRowId); if (selected) entry.resolve(selected.result); }
       info({ phase: 'classification_batch', messages: batch.length, mode: 'streaming', classifiedMessages: classifiedThisRun, totalMessages: selectedInbound.length });
     } catch {
+      await Promise.all(batch.map(entry => rejectClassifierReceipts(entry.mail.sourceRowId, 'Batch classifier schema/identity rejected before individual fallback')));
       info({ phase: 'classification_batch', messages: batch.length, status: 'retry_individually' });
       await Promise.all(batch.map(individually));
     }
@@ -602,17 +630,20 @@ async function main(): Promise<void> {
       if (!classificationFlush) classificationFlush = setTimeout(() => { void flushClassifications(); }, 10);
     });
   };
-  const failedClassification = new Set<string>(), replayFailures = new Set<string>();
+  const failedClassification = new Set([...discoveryPending].filter(id => allowedIds.has(id))), replayFailures = new Set<string>();
   const byThread = new Map<string, Mail[]>();
   for (const mail of selectedInbound) { const key = mail.threadId ?? `unresolved:${mail.sourceRowId}`; byThread.set(key, [...(byThread.get(key) ?? []), mail]); }
-  let groups = [...byThread.values()], nextGroup = 0, retryPass = false;
+  const chronologicalGroups = (values: Mail[][]) => values.map(group => group.sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt) || a.sourceRowId.localeCompare(b.sourceRowId))).sort((a, b) => (a[0] ? Date.parse(a[0].receivedAt) : Infinity) - (b[0] ? Date.parse(b[0].receivedAt) : Infinity));
+  let groups = chronologicalGroups([...byThread.values()]), nextGroup = 0;
   const loadedPendingMeasurements = new Set(measurementPending);
+  const loadedDiscoveryPending = new Set(discoveryPending);
   const classifiedVisited = new Set<string>(), completedVisited = new Set<string>();
   async function worker(): Promise<void> {
     for (;;) {
       const group = groups[nextGroup++]; if (!group) return;
       for (const mail of group) {
-        if (!retryPass && loadedPendingMeasurements.has(mail.sourceRowId)) continue;
+        if (terminalFailures.has(mail.sourceRowId) || !retryPass && (loadedPendingMeasurements.has(mail.sourceRowId) || loadedDiscoveryPending.has(mail.sourceRowId))) continue;
+        if (retryPass && discoveryPending.has(mail.sourceRowId)) classifications.delete(mail.sourceRowId);
         activeMessages++;
         const earlier = mail.threadId ? mails.filter(row => row.threadId === mail.threadId && Date.parse(row.receivedAt) < Date.parse(mail.receivedAt)) : [];
         let stage: 'classification' | 'replay' = 'classification', prepSlot = false, frozenSlot = false, prepStartedAt = 0, gradeValidated = false;
@@ -662,6 +693,8 @@ async function main(): Promise<void> {
           }
           if (!classifications.has(mail.sourceRowId)) { await save({ kind: 'classification', fingerprint, messageId: mail.sourceRowId, result: classified }); classifications.set(mail.sourceRowId, classified); }
           if (!classifiedVisited.has(mail.sourceRowId)) { classifiedVisited.add(mail.sourceRowId); classifiedThisRun++; }
+          if (classified.disposition === 'unknown') throw new Error('Discovery classification remained unknown; no primary task inference');
+          discoveryPending.delete(mail.sourceRowId); failedClassification.delete(mail.sourceRowId); classificationKeys.delete(mail.sourceRowId);
           const actions = classified.disposition === 'actionable' ? classified.tasks.filter(action => !action.repeatTaskId && action.originMessageId === mail.sourceRowId) : [];
           stage = 'replay';
           const pending = actions.filter(action => !tasks.has(`task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`));
@@ -694,7 +727,7 @@ async function main(): Promise<void> {
             } });
           if (replay && !replays.has(mail.sourceRowId)) { const validated = replayResultSchema.parse(replay); await save({ kind: 'replay', fingerprint, messageId: mail.sourceRowId, result: validated, nativeReads }); replays.set(mail.sourceRowId, { result: validated, nativeReads }); prefilledThisRun++; }
           release(); prepSlot = false;
-          if (replay && failedMeasurement(replay)) { measurementPending.add(mail.sourceRowId); replays.delete(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Core model timeout/error is a failed measurement; no grading or task credit until retry completes' }); info({ messageId: mail.sourceRowId, status: 'measurement_pending' }); continue; }
+          if (replay && failedMeasurement(replay)) { measurementPending.add(mail.sourceRowId); replays.delete(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Core model timeout/error is a failed measurement; no grading or task credit until retry completes' }); if (retryPass) await markTerminal(mail.sourceRowId, 'replay', 'Core model failed after exactly one end retry'); info({ messageId: mail.sourceRowId, status: retryPass ? 'measurement_terminal' : 'measurement_pending' }); continue; }
           const assessmentMessages = context.filter(message => message.messageId === mail.sourceRowId || pending.some(action => action.requirements.some(requirement => requirement.messageId === message.messageId))).map(message => message.messageId === mail.sourceRowId ? message : { ...message, bodyText: pending.flatMap(action => action.requirements.filter(requirement => requirement.messageId === message.messageId).map(requirement => requirement.quote)).join('\n'), attachments: [] });
           const assessed = replay ? await invoke(assessmentSchema, ASSESS, { tasks: pending.map(action => ({ ...action, requiredNativeChecks: NATIVE_REQUIREMENTS[action.workflow] })), messages: assessmentMessages, replay: { generationId: replay.generationId, status: replay.status, proposal: replay.proposal, observations: replay.observations.filter(observation => observation.kind !== 'source' && observation.kind !== 'mail_candidate'), errors: replay.errors }, nativeReads }) : null;
           const stagedTasks: RetroTask[] = [];
@@ -772,6 +805,7 @@ async function main(): Promise<void> {
           }
           info({ messageId: mail.sourceRowId, classification: classified.disposition, newTasks: pending.length, replayStatus: replay?.status ?? 'not_run' });
         } catch (error) {
+          if (stage === 'classification') { discoveryPending.add(mail.sourceRowId); classifications.delete(mail.sourceRowId); await rejectClassifierReceipts(mail.sourceRowId, 'Classifier schema/source host validation or unknown discovery failed'); }
           const rejectedKey = assessmentKeys.get(mail.sourceRowId); assessmentKeys.delete(mail.sourceRowId);
           if (stage === 'replay' && rejectedKey && !gradeValidated) { cache.delete(rejectedKey); importedModels.delete(rejectedKey); rejectedAssessmentKeys.add(rejectedKey); await save({ kind: 'assessment_rejected', fingerprint, messageId: mail.sourceRowId, key: rejectedKey, reason: 'Assessment schema or sibling host validation failed; raw assessment evicted for fresh retry' }); }
           if (stage === 'replay') { measurementPending.add(mail.sourceRowId); await save({ kind: 'measurement_pending', fingerprint, messageId: mail.sourceRowId, reason: 'Preparation/assessment measurement did not validate; retry pending' }); }
@@ -779,6 +813,7 @@ async function main(): Promise<void> {
           const validationIssues = error instanceof z.ZodError ? error.issues.slice(0, 40).map(issue => ({ path: issue.path.map(String), code: issue.code, message: issue.message.slice(0, 8000) })) : undefined;
           const reason = error instanceof z.ZodError ? `Schema rejected ${error.issues.length} field(s): ${validationIssues?.map(issue => `${issue.code}@${issue.path.join('.')}`).join(', ')}` : error instanceof Error ? error.message.slice(0, 8000) : 'Unknown runner failure';
           await save({ kind: 'failure', fingerprint, messageId: mail.sourceRowId, stage, reason, validationIssues });
+          if (retryPass) await markTerminal(mail.sourceRowId, stage, reason);
           info({ messageId: mail.sourceRowId, status: 'failed', stage, reason });
         } finally { prefillStarts.delete(mail.sourceRowId); if (prepSlot) release(); if (frozenSlot) frozenProducers.release(); if (!completedVisited.has(mail.sourceRowId)) { completedVisited.add(mail.sourceRowId); completedThisRun++; } activeMessages--; }
       }
@@ -827,17 +862,25 @@ async function main(): Promise<void> {
     progressInFlight = logProgress().catch(error => { info({ phase: 'telemetry_failure', reason: error instanceof Error ? error.message : 'Unknown telemetry failure' }); }).finally(() => { progressInFlight = undefined; });
   }, 60000); progressTimer.unref();
   try { await Promise.all(Array.from({ length: Math.min(MAX_WORKERS * batchSize, groups.length) }, worker)); await checkpointQueue;
-    if (measurementPending.size) {
+    const retryMails = selectedInbound.filter(mail => !terminalFailures.has(mail.sourceRowId) && (measurementPending.has(mail.sourceRowId) || discoveryPending.has(mail.sourceRowId)));
+    if (retryMails.length) {
       activeLimit = Math.min(8, activeLimit); nextGroup = 0; retryPass = true;
       const retryGroups = new Map<string, Mail[]>();
-      for (const mail of selectedInbound.filter(mail => measurementPending.has(mail.sourceRowId))) { const key = mail.threadId ?? mail.sourceRowId; retryGroups.set(key, [...(retryGroups.get(key) ?? []), mail]); }
-      groups = [...retryGroups.values()]; info({ phase: 'measurement_retry_once', replayWorkers: activeLimit, messages: measurementPending.size });
+      for (const mail of retryMails) { const key = mail.threadId ?? mail.sourceRowId; retryGroups.set(key, [...(retryGroups.get(key) ?? []), mail]); }
+      groups = chronologicalGroups([...retryGroups.values()]); info({ phase: 'measurement_retry_once', replayWorkers: activeLimit, messages: retryMails.length });
       await Promise.all(Array.from({ length: Math.min(8, groups.length) }, worker)); await checkpointQueue;
+      for (const mail of retryMails) if (discoveryPending.has(mail.sourceRowId) || measurementPending.has(mail.sourceRowId)) await markTerminal(mail.sourceRowId, discoveryPending.has(mail.sourceRowId) ? 'classification' : 'replay', 'Measurement remained invalid after exactly one end retry');
     }
   }
   finally { clearInterval(progressTimer); await progressInFlight; await logProgress(); }
   const successful = [...classifications.keys()].filter(id => allowedIds.has(id));
-  const pendingTasks = selectedInbound.reduce((sum, mail) => sum + (classifications.get(mail.sourceRowId)?.tasks.filter(action => !action.repeatTaskId && action.originMessageId === mail.sourceRowId && !tasks.has(`task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}`)).length ?? 0), 0);
+  const publishableTasks = [...tasks.values()].filter(task => task.sources.every(source => !measurementPending.has(source.messageId) && !discoveryPending.has(source.messageId) && !terminalFailures.has(source.messageId)) && task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id));
+  const publishedTaskIds = new Set(publishableTasks.map(task => task.id));
+  const unmeasuredActions = selectedInbound.flatMap(mail => { const classified = classifications.get(mail.sourceRowId); return classified?.disposition === 'actionable' ? classified.tasks.filter(action => !action.repeatTaskId && action.originMessageId === mail.sourceRowId).map(action => ({ messageId: mail.sourceRowId, id: `task-${hash(`${mail.canonicalId}\0${action.key}`).slice(0, 32)}` })) : []; }).filter(action => !publishedTaskIds.has(action.id));
+  const terminalTasks = unmeasuredActions.filter(action => terminalFailures.has(action.messageId) || tasks.get(action.id)?.sources.some(source => terminalFailures.has(source.messageId))).length;
+  const pendingTasks = unmeasuredActions.length - terminalTasks;
+  const selectedTerminals = [...terminalFailures.values()].filter(record => allowedIds.has(record.messageId));
+  const pendingMessages = new Set([...measurementPending, ...discoveryPending].filter(id => allowedIds.has(id) && !terminalFailures.has(id))).size;
   const selectedReplays = selectedInbound.flatMap(mail => { const replay = replays.get(mail.sourceRowId); return replay ? [replay.result] : []; });
   const replayDiagnostics = { replayedMessages: selectedReplays.length, prefillMessagesWithErrors: selectedReplays.filter(replay => replay.errors?.length).length, extractionTimeoutMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_timeout')).length, extractionErrorMessages: selectedReplays.filter(replay => replay.errors?.some(error => error.stage === 'extract' && error.code === 'model_error')).length, runnerOrAssessmentFailures: replayFailures.size };
   const reportedCalls = [...cache.values()].filter(result => result.provenance?.usageSource === 'reported');
@@ -851,7 +894,8 @@ async function main(): Promise<void> {
       inboundMessages: inbound.length, classifiedMessages: successful.length, excludedMessages: successful.filter(id => classifications.get(id)?.disposition === 'excluded').length,
       duplicateMessages: population.reduce((sum, mail) => sum + mail.duplicates.length, 0), unknownTimestampMessages: unknownTimestamps, failedMessages: failedClassification.size,
       notes: [`Authoritative export manifest hash and source counts verified; scope ${sourceScope}; source cutoff is export snapshot cutoff, not latest mail.`,
-        `Pending measurements: ${measurementPending.size} messages/${pendingTasks} tasks remain outside credited and uncredited task totals; one lower-cap end retry attempted. Terra pricing unknown; Luna estimates exclude Terra placeholder costs.`,
+        `Pending measurements: ${pendingMessages} messages/${pendingTasks} tasks; terminal failed measurements: ${selectedTerminals.length} messages/${terminalTasks} inferred tasks. Both remain outside credited and uncredited totals. Terminal receipts preserve exactly one end retry and are excluded on resume. Terra pricing unknown; Luna estimates exclude Terra placeholder costs.`,
+        `Terminal discovery ${selectedTerminals.filter(record => record.stage === 'classification').length}, terminal preparation/assessment ${selectedTerminals.filter(record => record.stage === 'replay').length}; source IDs ${JSON.stringify(selectedTerminals.slice(0, 80).map(record => record.messageId))}. Full source-specific reasons remain in private terminal checkpoint receipts.`,
         'Source completeness and classification completeness are independent of preparation success. Live HMS, current catalog and booking memory excluded; only exact indexed observations strictly before request may verify native requirements. Sparse/missing historical facts remain partial with zero credit.',
         `Selected ${selectedInbound.length}/${inbound.length} inbound messages; ${replayFailures.size} runner/assessment failures; ${successful.filter(id => classifications.get(id)?.disposition === 'unknown').length} unknown classifications.`,
         `Private resumable checkpoint ${checkpointPath}; fingerprint ${fingerprint}; ${process.argv.includes('--classify-only') ? 'classification only' : 'real product prefill'}; no DB/native writes or live HMS calls.`,
@@ -860,7 +904,7 @@ async function main(): Promise<void> {
         `Actual replay diagnostics: ${JSON.stringify(replayDiagnostics)}. Checkpoint model usage: ${JSON.stringify(usage)}; failed dispatch billing is unknown, not zero.`,
         `Luna prefill maximum ${maximumReplayConcurrency}; Terra grading independent fixed32; classifier ${classifierModelId}/${classifierEffort}; replay effort ${replayEffort}; assessment ${ASSESSMENT_MODEL}/${assessmentEffort} output cap ${assessmentOutputTokens}; vision ${replayVision ? 'on' : 'off'}; product model deadline ${replayBudget.deadlineMs}ms/output budget ${replayBudget.maxOutputTokens} tokens per stage; outer replay cap 540000ms. Worker-only deadline knobs are not used by this core.`,
         'Inbound fallback clocks cannot receive completion credit. Source timestampBasis preserves exporter clock quality; eventAt orders retained context and the selected window. Missing attachment text remains explicitly unread; source evidence and native completeness are not inferred from filenames.'] },
-    tasks: [...tasks.values()].filter(task => task.sources.some(source => allowedIds.has(source.messageId) && Date.parse(source.receivedAt) === Date.parse(task.requestedAt))).sort((a, b) => a.requestedAt.localeCompare(b.requestedAt) || a.id.localeCompare(b.id)) });
+    tasks: publishableTasks });
   const serialized = `${JSON.stringify(report, null, 2)}\n`;
   if (Buffer.byteLength(serialized, 'utf8') > RETRO_ROI_MAX_REPORT_BYTES) throw new Error('REPORT_TOO_LARGE: previous report preserved; use private checkpoints to narrow output');
   const temporary = `${out}.${process.pid}.tmp`; await writeFile(temporary, serialized, { mode: 0o600 }); await rename(temporary, out);
