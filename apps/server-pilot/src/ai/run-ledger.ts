@@ -69,6 +69,15 @@ const ACTIVE_HMS_TRANSPORT_GROUPS = [
     .filter((property) => property.active && property.browserSlot === browserSlot)
     .flatMap((property) => [...property.transportIds]),
 );
+// Registry order is the background prefill property priority; shared transports use their first property.
+const PREFILL_PROPERTY_PRIORITY = PROPERTY_REGISTRY.properties
+  .filter((property) => property.active)
+  .map((property, index) => sql`WHEN ${inArray(aiWorkflowRun.transportId, [...property.transportIds])} THEN ${index}::integer`);
+const BACKGROUND_PREFILL_PROPERTY_ORDER = PREFILL_PROPERTY_PRIORITY.length
+  ? sql`CASE WHEN ${aiWorkflowRun.runKind} = 'reservation_prefill' AND ${aiWorkflowRun.priority} = 1
+      THEN CASE ${sql.join(PREFILL_PROPERTY_PRIORITY, sql` `)} ELSE ${PREFILL_PROPERTY_PRIORITY.length}::integer END
+      ELSE 0 END`
+  : sql`0`;
 /** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
 const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
 const RESERVATION_ARRIVAL_RUN_DEADLINE_MS = 16 * 60_000;
@@ -735,6 +744,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         .orderBy(
           desc(aiWorkflowRun.priority),
           desc(sql`CASE WHEN ${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote' THEN 1 ELSE 0 END`),
+          BACKGROUND_PREFILL_PROPERTY_ORDER,
           aiWorkflowRun.createdAt,
         )
         .limit(1)
