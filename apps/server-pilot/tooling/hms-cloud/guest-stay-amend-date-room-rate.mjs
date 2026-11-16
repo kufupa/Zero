@@ -731,3 +731,8 @@ export async function stageLabtestStayAmendment(page, expected = {}, options = {
     saveEligible: false, saveDispatched: false,
     pricing: result.pricing || { repricing: 'not_verified', tax: 'not_verified', inventory: 'not_verified', quote: 'not_produced' } };
 }
+
+// Read-only helpers for another guarded one-page lifecycle.
+export { dateParts as savedAmendDateParts, matchesStayPreimage as matchesLabtestStayPreimage,
+  stableIdentity as stableLabtestAmendIdentity, checkedControl as checkedSavedAmendControl,
+  nativeDateObservation as observeSavedAmendDate };
