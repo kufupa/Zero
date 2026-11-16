@@ -2781,6 +2781,7 @@ function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationW
   if (decision !== 'no_action' || generationId !== draft.generationId ||
       sourceHash !== draft.source.sourceHash) return null;
   if (draft.status !== 'ready' || !draft.extraction || draft.extraction.issues?.length ||
+      draft.proposal.issues?.length ||
       draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0 ||
       draft.errors.length > 0) return null;
   return intake.data;
@@ -2801,10 +2802,10 @@ const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
  * empty or unreadable drafts stay visible as `other_actionable` with `reviewOnly: true` and no actions — an
  * unfinished, failed or ambiguous draft can still hide an unseen ask, so it never reads as affirmed no-action and
  * never invents an `other` task. Self-sent pre-stay mail is about an existing booking: a `create` request is never
- * an ask, so it is dropped from the actions; the item still lists because nothing yet records a typed,
- * evidence-backed no-action for it (skipped sources are filtered upstream). When no ask survives — an empty,
- * create-only, pending or failed draft — the row carries `reviewOnly` and no actions: it is for staff review, and
- * `other` must not claim a task no request supports.
+ * an ask, so it is dropped from the actions; unless a still-bound host-adjudicated no-action already hid the row
+ * upstream, it still lists rather than read as resolved. When no ask survives — an empty, create-only, pending or
+ * failed draft — the row carries `reviewOnly` and no actions: it is for staff review, and `other` must not claim a
+ * task no request supports.
  */
 function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[]; reviewOnly: boolean } {
   const kinds = [...new Set((draft?.proposal.content.requests ?? []).map((request) => request.kind))];
