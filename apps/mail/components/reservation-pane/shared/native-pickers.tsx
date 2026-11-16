@@ -213,12 +213,14 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const chooseSuggested = async (option: { ref: string; label: string }) => {
     if (!entity) { await choose(option.ref, option.ref, option.label); return; }
     if (party && editor.request.kind !== 'quote') {
-      // Create/Amend bind a party only when its name matches the Infor row; set the row's name first.
-      const row = record(editor.snapshot.session.draft.observations.find(observation => observation.ref === option.ref)?.result);
-      const candidate = record(Array.isArray(row.candidates) && row.candidates.length === 1 ? row.candidates[0] : row);
-      const name = typeof candidate.name === 'string' && candidate.name.trim() ? candidate.name : option.label;
-      if (normalized(text(valueAt(editor.snapshot, `${path}/name`))) !== normalized(name))
-        await editor.commands.edit(path, { name, candidateRefs: [], suggestedRef: null });
+      // Create/Amend bind a party only when its typed name matches the Infor search that returned the row.
+      const observation = editor.snapshot.session.draft.observations.find(row => row.ref === option.ref);
+      const result = record(observation?.result), criteria = record(observation?.criteria);
+      const candidate = record(Array.isArray(result.candidates) && result.candidates.length === 1 ? result.candidates[0] : result);
+      const query = [criteria.query, criteria.searchName, criteria.name, candidate.name, option.label]
+        .find((value): value is string => typeof value === 'string' && Boolean(value.trim()))!;
+      if (normalized(text(valueAt(editor.snapshot, `${path}/name`))) !== normalized(query))
+        await editor.commands.edit(path, { name: query, candidateRefs: [], suggestedRef: null });
     }
     await choose(option.ref, option.ref, option.label);
   };
