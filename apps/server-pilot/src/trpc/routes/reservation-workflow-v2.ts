@@ -44,7 +44,7 @@ import { addReservationWorkflowV2Action, changeReservationWorkflowV2Rows,
 import { reservationWorkflowV2VerifyLead } from '../../ai/reservation-workflow-v2-verify-lead.js';
 import { preStaySourceText } from '../../ai/existing-stay-information.js';
 import { prefillDraft } from '../../ai/reservation-workflow-v2-prefill-service.js';
-import { enqueueReservationArrival, reservationArrivalEnabled } from '../../ai/reservation-workflow-v2-arrival.js';
+import { enqueueReservationArrival, promoteReservationArrival, reservationArrivalEnabled } from '../../ai/reservation-workflow-v2-arrival.js';
 import {
   reservationWorkflowV2PreparationViews,
   reservationWorkflowV2CreatePreparation,
@@ -388,6 +388,10 @@ export const reservationWorkflowV2Router = router({
       bodyText: preStaySourceText(source.textBody, source.htmlBody), mailboxAddress: ctx.transportEmail });
     if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.` };
     const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource, { allowSourceChanged: true });
+    // Staff opened an email whose arrival job is still waiting: move that job ahead of newly admitted mail.
+    const waitingJobId = initialized.status === 'ok' && !initialized.sourceChanged &&
+      ['queued', 'running'].includes(initialized.draft.prefill?.status ?? '') ? initialized.draft.prefill?.jobRunId : undefined;
+    if (waitingJobId) await promoteReservationArrival(scoped.db, { transportId: scoped.transportId, jobRunId: waitingJobId });
     if (initialized.status !== 'ok' || initialized.sourceChanged || input.mode === 'initialize')
       return withPreparation(Promise.resolve(initialized), scoped.propertyCode);
     const item = { workItemId: initialized.draft.workItemId, source: canonicalSource,
@@ -405,7 +409,7 @@ export const reservationWorkflowV2Router = router({
         current.draft.prefill?.status === 'complete' || current.draft.prefill?.status === 'superseded')
       return withPreparation(Promise.resolve(current), scoped.propertyCode);
     const job = await enqueueReservationArrival(scoped.db, { transportId: scoped.transportId,
-      messageId: input.source.messageId, priority: 0, requestedByPane: true });
+      messageId: input.source.messageId, requestedByPane: true });
     if (!job) return withPreparation(Promise.resolve(current), scoped.propertyCode);
     if (['dead_letter', 'succeeded', 'retry_wait'].includes(job.state))
       return withPreparation(retryReservationWorkflowV2Arrival(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);

@@ -525,7 +525,8 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
       ...(nativeResume && run.heartbeatAt ? { interruptedHeartbeatAt: run.heartbeatAt.toISOString() } : {}) };
     await tx.update(aiWorkflowRun).set({ state: 'queued', nextRunAt: new Date(), deadlineAt: null,
       claimOwner: null, claimToken: null, finishedAt: null, lastError: null, failureClass: null,
-      metrics, updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
+      // Staff asked for this retry: claim it ahead of admission work (priority 1).
+      priority: Math.max(run.priority, 2), metrics, updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { ...meta,
       status: meta.status === 'running' ? 'running' : 'queued', jobRunId: run.id } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
