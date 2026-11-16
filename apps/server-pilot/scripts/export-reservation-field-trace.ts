@@ -211,6 +211,15 @@ function eventValueAt(event: TraceEvent, stateKey: 'previousPaneState' | 'paneSt
     fieldOverrides: (object(pane.fieldOverrides) ?? {}) as Overrides }, path) : undefined;
 }
 
+function eventFieldPath(event: TraceEvent): string | null {
+  if (!event.fieldPath?.startsWith(PREFIX)) return null;
+  const path = event.fieldPath.slice(PREFIX.length), evidence = object(event.evidence);
+  const proposal = object(object(evidence?.previousPaneState)?.[KEY])?.proposal ??
+    object(object(evidence?.paneState)?.[KEY])?.proposal;
+  if (proposal !== undefined) return canonicalPath(proposal, path);
+  return /\/\d+(?:\/|$)/u.test(path) ? null : path;
+}
+
 export function fieldTraceRows(input: {
   item: { id: string; threadId: string | null; sourceMessageId: string | null; transportId: string; createdAt: Date };
   draft: Draft; events: TraceEvent[]; users: Map<string, string>;
@@ -239,7 +248,7 @@ export function fieldTraceRows(input: {
     }
   }
   const activity = [...Object.keys(draft.fieldOverrides), ...Object.keys(draft.staffReviews),
-    ...fieldEvents.map((event) => event.fieldPath!.slice(PREFIX.length)),
+    ...fieldEvents.map(eventFieldPath).filter((path): path is string => path !== null),
     ...suggestions.map((row) => String(row.criteria.selectionPath))];
   for (const path of activity) if (path.startsWith('/proposal/content/') && path.split('/').length > 5) paths.add(rowPath(path));
 
@@ -252,7 +261,9 @@ export function fieldTraceRows(input: {
   for (const path of [...paths].sort()) {
     const scope = scopeOf(draft, path);
     const own = fieldEvents.filter((event) => {
-      const eventPath = rowPath(event.fieldPath!.slice(PREFIX.length));
+      const field = eventFieldPath(event);
+      if (field === null) return false;
+      const eventPath = rowPathOf(field);
       return eventPath === path || event.type !== 'field.accept' && path.startsWith(`${eventPath}/`) &&
         !isDeepStrictEqual(comparable(eventValueAt(event, 'previousPaneState', path)),
           comparable(eventValueAt(event, 'paneState', path)));
@@ -262,7 +273,7 @@ export function fieldTraceRows(input: {
     const firstTraced = own.find((event) => object(object(event.evidence)?.trace));
     const firstEvent = own[0];
     const priorPane = firstEvent ? object(object(object(firstEvent.evidence)?.previousPaneState)?.[KEY]) : null;
-    const prefill = firstTraced && fieldPath(firstTraced.fieldPath!.slice(PREFIX.length)) === path ? firstTraced.aiValue
+    const prefill = firstTraced && eventFieldPath(firstTraced) === path ? firstTraced.aiValue
       : prefillValueAt(priorPane?.proposal ? { proposal: priorPane.proposal as Draft['proposal'] } : draft, path);
     const final = effectiveValueAt(draft, path);
     // Own overrides (incl. a party's name / native selection) and whole-object overrides above this field.
