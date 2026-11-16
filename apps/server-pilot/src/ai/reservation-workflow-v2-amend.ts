@@ -717,6 +717,10 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     reviewPaths: [...reviewPaths], baseDigest, target, requestPath };
 }
 
+/** Bounded native refusal codes reach the operator verbatim; anything else stays generic. */
+const nativeIssueCode = (value: unknown): string | undefined =>
+  typeof value === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(value) ? value : undefined;
+
 function nativePrice(value: unknown): Record<string, unknown> | null {
   const row = record(value);
   if (!row || row.version !== 2 || typeof row.currency !== 'string' || !/^[A-Z]{3}$/.test(row.currency) ||
@@ -1218,7 +1222,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       if (discovery.outcome !== 'prepared' || !baseline || !preserved || typeof baseline.beforeNote !== 'string' ||
           typeof baseline.beforeGuaranteeCode !== 'string' || typeof baseline.beforeGuaranteeDisplay !== 'string' ||
           (typeof compiled.baseChanges.guaranteeType === 'string' && typeof baseline.requestedGuaranteeDisplay !== 'string')) {
-        return { issue: 'native_amend_baseline_unavailable' };
+        return { issue: 'native_amend_baseline_unavailable', nativeIssue: nativeIssueCode(discovery.issue) };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const observation = draft.observations.find(item => item.ref === compiled.selectedRef);
@@ -1248,7 +1252,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
           stagedBaseline.beforeNote !== baseline.beforeNote || stagedBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
-        return { issue: 'native_amend_prepare_unverified' };
+        return { issue: 'native_amend_prepare_unverified', nativeIssue: nativeIssueCode(staged.issue) };
       }
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
@@ -1329,7 +1333,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             (Object.hasOwn(ordinaryChanges, 'taCommission') && (typeof ordinaryBaseline.beforeCommission !== 'number' ||
               !Number.isFinite(ordinaryBaseline.beforeCommission) || !record(ordinaryPreserved.bookingAgency)?.nativeId)) ||
             (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
-          return { issue: 'native_amend_prepare_unverified' };
+          return { issue: 'native_amend_prepare_unverified', nativeIssue: nativeIssueCode(ordinary.issue) };
         }
         if (!mealPlanVerified(draft, compiled, ordinary)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, ordinary) };
         const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
@@ -1368,7 +1372,8 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         if (recorded.status !== 'ok') return recorded;
         return { status: 'unsupported', issue: prepared.issue, fields: ['rateHandling'] };
       }
-      return { status: 'failed', issue: prepared.issue };
+      return { status: 'failed', issue: prepared.issue,
+        nativeIssue: 'nativeIssue' in prepared ? prepared.nativeIssue : undefined };
     }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       prepared.noop ? 'HMS amendment staged unsaved; native price and baseline observed' :
@@ -1501,7 +1506,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
         return { issue: discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
-          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable' };
+          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable',
+          nativeIssue: nativeIssueCode(discovery.issue) };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const selectedObservation = loaded.draft!.observations.find(item => item.ref === compiled.selectedRef);
@@ -1553,7 +1559,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
           canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
             key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
-          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified',
+            nativeIssue: nativeIssueCode(native.issue) };
       if (!mealPlanVerified(loaded.draft!, compiled, native)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(loaded.draft!, compiled, native) };
       const preserved = afterPreserved;
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
@@ -1564,7 +1571,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) {
       if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
-      return { status: 'failed', issue: prepared.issue };
+      return { status: 'failed', issue: prepared.issue,
+        nativeIssue: 'nativeIssue' in prepared ? prepared.nativeIssue : undefined };
     }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
       'HMS amendment staged unsaved; native price and baseline observed', randomUUID(), compiled.hintId);
@@ -2410,7 +2418,7 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     if (!dispatchState.afterShot) reasonCodes.push('after_screenshot_receipt_missing');
     return { status: 'needs_reconcile', operationId: input.idempotencyKey, dispatchHoldId: dispatchState.handle.holdId,
       issue: 'amend_readback_or_durable_receipt_unverified', reasonCodes,
-      nativeIssue: typeof result.issue === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(result.issue) ? result.issue : undefined };
+      nativeIssue: nativeIssueCode(result.issue) };
   }
   const handle = dispatchState.handle as HmsLabtestWriteHandle;
   const beforeShot = dispatchState.beforeShot as { runId: string; sha256: string };
