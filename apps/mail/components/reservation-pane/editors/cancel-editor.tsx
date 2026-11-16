@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { WorkbenchEditorProps } from '@/lib/reservation-workflow/views';
-import { effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
+import { cancelChargeForSelection, effectiveAt, record, requestPath, savedTargetOperationLocks, text, valueAt } from '@/lib/reservation-workflow/views';
 import { Field, Section } from '../shared/stay-fields';
 import { isExactConfirmation, TargetSearch } from './amend-editor';
 import styles from './other-editors.module.css';
@@ -93,6 +93,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
     && item.status === 'complete' && item.criteria.workflow === 'cancel' && item.criteria.stage === 'prepare'
     && item.criteria.requestId === editor.request.id && item.criteria.hintId === hintId && item.criteria.selectionRef === selected);
   const result = record(preview?.result);
+  const charge = cancelChargeForSelection(editor.snapshot, editor.request.id);
   const selectedLookup = editor.snapshot.session.draft.observations.find(item => item.ref === selected && item.kind === 'stay_candidate'
     && item.status === 'complete' && item.generationId === editor.snapshot.session.draft.generationId
     && item.propertyCode === editor.snapshot.session.draft.propertyCode && item.sourceMessageId === editor.snapshot.session.draft.source.messageId
@@ -141,7 +142,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
   } : {};
   const replyBinding = record(reply.financialReview);
   const binding = replyBinding.observationRef === preview?.ref ? replyBinding : storedBinding;
-  const canReview = binding.required === true && binding.observationRef === preview?.ref && typeof binding.reviewFieldPath === 'string'
+  const canReview = !charge && result.ready === true && binding.required === true && binding.observationRef === preview?.ref && typeof binding.reviewFieldPath === 'string'
     && typeof binding.reviewNote === 'string' && typeof binding.observationRef === 'string';
   const accepted = canReview && editor.snapshot.session.draft.staffReviews[String(binding.reviewFieldPath)]?.status === 'accepted'
     && editor.snapshot.session.draft.staffReviews[String(binding.reviewFieldPath)]?.note === binding.reviewNote;
@@ -191,11 +192,12 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
     </Section>
     <Section title="Cancellation details">
-      <p className={styles.warning}>If Infor shows a fee before cancelling, Nava stops so you can review it and press Cancel in Infor again. A fee shown after cancelling must be checked in Infor, not by cancelling again.</p>
+      <p className={styles.warning}>If Infor shows a cancellation charge, finish this one in HMS.</p>
+      {charge && <div className={styles.warning} role="alert"><strong>This booking has a cancellation charge - finish this one in HMS</strong><p>{charge}</p></div>}
       {text(pendingFee.penaltyText) && <div className={styles.warning} role="alert">
-        <strong>Cancellation penalty {text(pendingFee.penaltyAmount) || penaltyAmount(pendingFee.penaltyText) || '(amount unknown)'}</strong>
+        <strong>This booking has a cancellation charge - finish this one in HMS</strong>
         <p>{text(pendingFee.penaltyText)}</p>
-        <p>{text(record(pendingFee.nativeReadback).status) || 'Cancellation status needs verification'}.
+        <p>{/^cancel+ed$/i.test(text(record(pendingFee.nativeReadback).status)) ? 'Infor reports the stay cancelled' : 'Cancellation status needs verification'}.
           {pendingFee.penaltyTiming === 'after_save' ? ' Infor showed this after cancelling.' : ''}
           {' '}Check this fee in Infor before doing anything else. Do not cancel again.</p>
       </div>}
@@ -236,7 +238,7 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
       {canReview && <div className={styles.row}>{accepted ? <span>Current cancellation policy and fee reviewed.</span> : <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I checked the stay, policy and fee</button>}</div>}
-      <small className={styles.hint}>If Infor shows a different fee before cancelling, Nava stops and asks you again.</small>
+      <small className={styles.hint}>If Infor shows a charge, finish this one in HMS.</small>
     </Section>}
     <div className={styles.hint}>Cancelling does not remove Add-Ons or issue a refund.</div>
   </div>;

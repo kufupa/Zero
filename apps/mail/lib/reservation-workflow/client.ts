@@ -585,6 +585,7 @@ function operationNotice(result: unknown, success: string[]): string | undefined
 }
 
 function nativeIssueText(issue: unknown): string | null {
+  if (issue === 'cancel_charge_finish_in_hms') return 'This booking has a cancellation charge - finish this one in HMS';
   const failure = knownFailureCopy(issue);
   if (failure) return failure;
   if (!isString(issue)) return null;
