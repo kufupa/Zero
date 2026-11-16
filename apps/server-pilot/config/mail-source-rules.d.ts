@@ -45,6 +45,12 @@ export type RoutineNoticeExclusionData = {
   readonly senderPattern: { readonly source: string; readonly flags: string };
   /** Anchored subject pattern for the routine notice. */
   readonly subjectPattern: { readonly source: string; readonly flags: string };
+  /**
+   * Set for notices a person can reply to or forward: the exclusion then
+   * applies only to an unannotated re-send (no authored content, unchanged
+   * forwarded subject), keeping current staff asks reviewable.
+   */
+  readonly humanOrigin?: boolean;
 };
 
 export declare const ROUTINE_NOTICE_EXCLUSION_DATA: readonly RoutineNoticeExclusionData[];

@@ -22,7 +22,11 @@ import {
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
 import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled, isLegacyInboundTriagePipelineEnabled } from '../../env.js';
-import { classifyMailSource, type MailSourceClassification } from '../../ai/mail-source.js';
+import {
+  canonicalSourceBodyText,
+  classifyMailSource,
+  type MailSourceClassification,
+} from '../../ai/mail-source.js';
 import { isSelfSentPreStaySubject } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
 import { fileAttachmentPresence } from './attachment-evidence.js';
@@ -345,7 +349,7 @@ export async function admitLiveMessage(
       ? classifyMailSource({
           fromAddress: trigger.fromAddress,
           subject: trigger.subject,
-          bodyText: trigger.textBody ?? trigger.htmlBody,
+          bodyText: canonicalSourceBodyText({ textBody: trigger.textBody, htmlBody: trigger.htmlBody }),
           hasAttachments: fileAttachmentPresence(fileAttachment != null, trigger.sourceProvenance),
         })
       : null;

@@ -77,9 +77,10 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
 /** Compile configured regex data once for the browser-safe server/pane registry. */
 export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = MAIL_SOURCE_RULE_DATA.map(compileRule);
 
-type RoutineNoticeExclusion = Omit<RoutineNoticeExclusionData, 'senderPattern' | 'subjectPattern'> & {
+type RoutineNoticeExclusion = Omit<RoutineNoticeExclusionData, 'senderPattern' | 'subjectPattern' | 'humanOrigin'> & {
   senderPattern: RegExp;
   subjectPattern: RegExp;
+  humanOrigin?: boolean;
 };
 
 const ROUTINE_NOTICE_EXCLUSIONS: readonly RoutineNoticeExclusion[] = ROUTINE_NOTICE_EXCLUSION_DATA.map((entry) => ({
@@ -88,14 +89,21 @@ const ROUTINE_NOTICE_EXCLUSIONS: readonly RoutineNoticeExclusion[] = ROUTINE_NOT
   source: entry.source,
   senderPattern: new RegExp(entry.senderPattern.source, entry.senderPattern.flags),
   subjectPattern: new RegExp(entry.subjectPattern.source, entry.subjectPattern.flags),
+  ...(entry.humanOrigin === undefined ? {} : { humanOrigin: entry.humanOrigin }),
 }));
 
 const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
 const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
+const ENVELOPE_SUBJECT_PREFIX = /^(?:(?:re|fw|fwd|forwarded)\s*:\s*)+/i;
 const FORWARDED_HEADER_LINE = /^\s*(?:>\s*)*(?:from|sender)\s*:\s*(.*?)\s*$/i;
 const FORWARDED_SUBJECT_LINE = /^\s*(?:>\s*)*subject\s*:\s*(.*?)\s*$/i;
 /** Header lines after the forwarded From line that may hold its Subject (Sent, To, Cc, Subject). */
 const FORWARD_SUBJECT_LOOKAHEAD_LINES = 6;
+const QUOTED_TEXT_LINE = /^\s*>/;
+const FORWARD_SEPARATOR_LINE =
+  /^\s*(?:-{2,}\s*(?:forwarded|original)\s+message\s*-{2,}\s*|begin\s+forwarded\s+message\s*:?\s*|forwarded\s+message\s*:?\s*)$/i;
+const REPLY_INTRO_LINE = /^\s*on\s.+?\bwrote\s*:\s*$/i;
+const ENVELOPE_FIELD_LINE = /^\s*(?:from|sender|sent|to|cc|bcc|date|subject)\s*:/i;
 const EMAIL_ADDRESS = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9-]{2,63}/i;
 const HTML_TAG = /<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/i;
 const HTML_BLOCK_TAG = /<\/?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^<>]*)?\s*\/?>/gi;
@@ -165,6 +173,8 @@ function directExemption(
 function plainTextBody(bodyText: string): string {
   if (!HTML_TAG.test(bodyText)) return bodyText;
   return bodyText
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(HTML_BLOCK_TAG, '\n')
     .replace(/<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/gi, '')
     .replace(HTML_ENTITY, (entity) => {
@@ -187,16 +197,41 @@ function plainTextBody(bodyText: string): string {
     });
 }
 
-function originalForwardSender(
-  bodyText: string,
-): { rule: MailSourceRule; domain: string; subject: string | null } | null {
-  const lines = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
+/** Lines the forwarding staff member could have authored: no quotes, forward markers, reply intros or embedded envelope fields. */
+function authoredForwardLines(lines: readonly string[]): string {
+  return lines
+    .filter(
+      (line) =>
+        line.trim() !== '' &&
+        !QUOTED_TEXT_LINE.test(line) &&
+        !FORWARD_SEPARATOR_LINE.test(line) &&
+        !REPLY_INTRO_LINE.test(line) &&
+        !ENVELOPE_FIELD_LINE.test(line),
+    )
+    .join('\n')
+    .trim();
+}
+
+/**
+ * Text authored ahead of the forwarded content. Without an anchor From line,
+ * forwarded prose would be indistinguishable from authored text, so only the
+ * region before the first forward marker or embedded header counts.
+ */
+function forwardedSubjectAuthoredText(bodyLines: readonly string[]): string {
+  const contentStart = bodyLines.findIndex(
+    (line) =>
+      FORWARD_SEPARATOR_LINE.test(line) || FORWARDED_HEADER_LINE.test(line) || REPLY_INTRO_LINE.test(line),
+  );
+  return authoredForwardLines(contentStart < 0 ? bodyLines : bodyLines.slice(0, contentStart));
+}
+
+/** The first embedded forwarded header block (From/Sender line plus its lookahead Subject). */
+function forwardedHeaderBlock(
+  lines: readonly string[],
+): { index: number; domain: string; subject: string | null } | null {
   for (const [index, line] of lines.entries()) {
     const header = FORWARDED_HEADER_LINE.exec(line);
     if (!header) continue;
-    const domain = extractDomain(header[1]);
-    const match = ruleForDomain(domain);
-    if (!match) return null;
     // HTML forwards put blank lines between header fields, so only non-blank lines count toward the lookahead.
     const subjectLine = lines
       .slice(index + 1)
@@ -204,9 +239,45 @@ function originalForwardSender(
       .slice(0, FORWARD_SUBJECT_LOOKAHEAD_LINES)
       .map((candidate) => FORWARDED_SUBJECT_LINE.exec(candidate)?.[1])
       .find((subject) => subject !== undefined);
-    return { rule: match.rule, domain: match.registeredDomain, subject: subjectLine ?? null };
+    return { index, domain: extractDomain(header[1]), subject: subjectLine ?? null };
   }
   return null;
+}
+
+function originalForwardSender(
+  bodyText: string,
+): { rule: MailSourceRule; domain: string; subject: string | null; authoredText: string } | null {
+  const lines = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
+  const block = forwardedHeaderBlock(lines);
+  if (!block) return null;
+  const match = ruleForDomain(block.domain);
+  if (!match) return null;
+  return {
+    rule: match.rule,
+    domain: match.registeredDomain,
+    subject: block.subject,
+    authoredText: authoredForwardLines(lines.slice(0, block.index)),
+  };
+}
+
+/**
+ * A human-origin routine notice is suppressed only by an unannotated re-send:
+ * a bare template subject is a system send, but a Re:/Fwd: envelope may carry
+ * a current staff ask. It stays a notice only while nothing was authored ahead
+ * of the forwarded content and the staff subject restates the embedded one.
+ */
+function humanOriginNoticeSuppressed(input: {
+  subject?: string | null;
+  /** Body already reduced to plain text by the caller. */
+  plainBody: string;
+}): boolean {
+  const subject = input.subject?.trim() ?? '';
+  const prefix = ENVELOPE_SUBJECT_PREFIX.exec(subject);
+  if (!prefix) return true;
+  const lines = input.plainBody.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
+  if (forwardedSubjectAuthoredText(lines)) return false;
+  const inner = forwardedHeaderBlock(lines)?.subject?.trim();
+  return inner !== undefined && inner !== null && subject.slice(prefix[0].length).trim() === inner;
 }
 
 function forwardedSubject(subject: string): string | null {
@@ -226,10 +297,12 @@ export function classifyMailSource(input: {
   /** Whether the message carries at least one non-inline attachment; undefined means unknown. */
   hasAttachments?: boolean;
 }): MailSourceClassification {
+  const plainBody = plainTextBody(input.bodyText ?? '');
   const routineNotice = ROUTINE_NOTICE_EXCLUSIONS.find(
     (exclusion) =>
       exclusion.senderPattern.test(input.fromAddress?.trim() ?? '') &&
-      exclusion.subjectPattern.test(input.subject?.trim() ?? ''),
+      exclusion.subjectPattern.test(input.subject?.trim() ?? '') &&
+      (exclusion.humanOrigin !== true || humanOriginNoticeSuppressed({ subject: input.subject, plainBody })),
   );
   if (routineNotice) {
     return { kind: 'system', source: routineNotice.source, reason: `routine_notice:${routineNotice.id}` };
@@ -247,8 +320,13 @@ export function classifyMailSource(input: {
   }
 
   if (isInternalForwardSender(senderDomain)) {
-    const forwardedSender = originalForwardSender(plainTextBody(input.bodyText ?? ''));
+    const forwardedSender = originalForwardSender(plainBody);
     if (forwardedSender) {
+      // Fresh authored content above the forward keeps the message reviewable;
+      // only an empty preamble is a clearly notice-only envelope.
+      if (forwardedSender.authoredText) {
+        return { kind: 'direct', source: null, reason: `forwarded_authored_content:${forwardedSender.rule.id}` };
+      }
       if (forwardedSender.rule.directWhenForwarded) {
         return { kind: 'direct', source: null, reason: `forwarded_skip_exempt:${forwardedSender.rule.id}` };
       }
@@ -265,6 +343,10 @@ export function classifyMailSource(input: {
     if (originalSubject) {
       for (const rule of MAIL_SOURCE_RULES) {
         if (rule.forwardedSubjectPatterns?.some((pattern) => pattern.test(originalSubject))) {
+          const authoredText = forwardedSubjectAuthoredText(plainBody.split(/\r?\n/));
+          if (authoredText) {
+            return { kind: 'direct', source: null, reason: `forwarded_authored_content:${rule.id}` };
+          }
           return matchedSource(rule, `forwarded_subject:${rule.id}`);
         }
       }
@@ -276,6 +358,19 @@ export function classifyMailSource(input: {
     source: null,
     reason: 'no_matching_sender_or_forward_header',
   };
+}
+
+/**
+ * Canonical body for source admission at every gate (ingest, live admission,
+ * arrival, pane): the plain-text body when present, else the HTML body reduced
+ * to text. An empty or whitespace-only text body never hides a real HTML body.
+ */
+export function canonicalSourceBodyText(input: {
+  textBody?: string | null;
+  htmlBody?: string | null;
+}): string {
+  if (input.textBody?.trim()) return input.textBody;
+  return input.htmlBody ? plainTextBody(input.htmlBody) : '';
 }
 
 function channelPhrase(phrase: string): RegExp {

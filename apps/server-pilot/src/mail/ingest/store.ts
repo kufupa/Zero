@@ -73,7 +73,7 @@ import {
 } from '../../ai/run-ledger.js';
 import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueInboundExtraction } from '../../ai/extraction/inbound-run.js';
-import { classifyMailSource } from '../../ai/mail-source.js';
+import { canonicalSourceBodyText, classifyMailSource } from '../../ai/mail-source.js';
 import { type ParsedInboundMessage, parseRawMessage, generateMessageId } from './parse-message.js';
 import { enqueueShadowPrediction, rematchShadowPredictions } from '../../ai/shadow-evaluation.js';
 import { ingestRequireOwnerHeader, isInboundTriageClassifierEnabled, isLegacyInboundTriagePipelineEnabled } from '../../env.js';
@@ -864,7 +864,7 @@ export async function persistInboundMessage(
       ? classifyMailSource({
           fromAddress: parsed.fromAddress,
           subject: parsed.subject,
-          bodyText: parsed.textBody ?? parsed.htmlBody,
+          bodyText: canonicalSourceBodyText({ textBody: parsed.textBody, htmlBody: parsed.htmlBody }),
           hasAttachments: parsed.attachments.some((a) => !a.isInline),
         })
       : null;

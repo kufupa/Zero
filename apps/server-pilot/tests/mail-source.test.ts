@@ -134,22 +134,6 @@ const systemExamples = [
 
 const forwardedExamples = [
   {
-    name: 'internal FW with original From header',
-    input: {
-      fromAddress: 'bongi@legacyhotels.co.za',
-      subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
-      bodyText: [
-        'Please note.',
-        '---------- Forwarded message ----------',
-        'From: SynXis Reservations <noreply@synxis.com>',
-        'Subject: SynXis Res Confirmed',
-      ].join('\n'),
-    },
-    kind: 'channel',
-    source: 'SynXis',
-    reason: 'forwarded_sender:synxis.com',
-  },
-  {
     name: 'internal forward with original Sender header',
     input: {
       fromAddress: 'reservations@legacyhotels.co.za',
@@ -170,17 +154,6 @@ const forwardedExamples = [
     kind: 'system',
     source: 'TrustYou',
     reason: 'forwarded_sender:trustyou.com',
-  },
-  {
-    name: 'internal FW with known channel subject template',
-    input: {
-      fromAddress: 'ops@legacyhotels.co.za',
-      subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
-      bodyText: 'Please file this.',
-    },
-    kind: 'channel',
-    source: 'SynXis',
-    reason: 'forwarded_subject:synxis',
   },
 ] as const;
 
@@ -236,6 +209,29 @@ const directExamples = [
   {
     name: 'look-alike host is not Tiket.com',
     input: { fromAddress: 'sales@mytiket.com', subject: 'Rates', bodyText: '' },
+  },
+  {
+    name: 'internal FW with authored ask above a forwarded channel notice',
+    input: {
+      fromAddress: 'bongi@legacyhotels.co.za',
+      subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
+      bodyText: [
+        'Please note.',
+        '---------- Forwarded message ----------',
+        'From: SynXis Reservations <noreply@synxis.com>',
+        'Subject: SynXis Res Confirmed',
+      ].join('\n'),
+    },
+    reason: 'forwarded_authored_content:synxis',
+  },
+  {
+    name: 'internal FW with authored ask matching a channel subject template',
+    input: {
+      fromAddress: 'ops@legacyhotels.co.za',
+      subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
+      bodyText: 'Please file this.',
+    },
+    reason: 'forwarded_authored_content:synxis',
   },
 ] as const;
 
@@ -305,11 +301,11 @@ describe('classifyMailSource', () => {
     expect(classifyMailSource(input)).toEqual({ kind, source, reason });
   });
 
-  it.each(directExamples)('keeps direct mail: $name', ({ input }) => {
-    expect(classifyMailSource(input)).toEqual({
+  it.each(directExamples)('keeps direct mail: $name', (entry) => {
+    expect(classifyMailSource(entry.input)).toEqual({
       kind: 'direct',
       source: null,
-      reason: 'no_matching_sender_or_forward_header',
+      reason: 'reason' in entry ? entry.reason : 'no_matching_sender_or_forward_header',
     });
   });
 

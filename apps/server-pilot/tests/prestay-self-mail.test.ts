@@ -58,12 +58,19 @@ describe('self-sent pre-stay information', () => {
       subject,
       bodyText: 'Please book another room.\nFrom: Booking.com <noreply@messages.booking.com>\nSubject: Booking confirmation',
     });
-    expect(source.kind).toBe('channel');
-    expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({
-      kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate',
-    });
+    expect(source).toEqual({ kind: 'direct', source: null, reason: 'forwarded_authored_content:booking-com' });
+    expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual(source);
     expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: 'other@example.invalid' })).toEqual(source);
     expect(admissionMailSource(source, { fromAddress, subject: 'Booking confirmation', mailboxAddress: fromAddress })).toEqual(source);
+    const noticeOnly = classifyMailSource({
+      fromAddress,
+      subject,
+      bodyText: 'From: Booking.com <noreply@messages.booking.com>\nSubject: Booking confirmation',
+    });
+    expect(noticeOnly.kind).toBe('channel');
+    expect(admissionMailSource(noticeOnly, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({
+      kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate',
+    });
   });
 
   it('admits a self-sent pre-arrival candidate whose confirmation is only in the body', () => {
@@ -71,10 +78,8 @@ describe('self-sent pre-stay information', () => {
     const subject = 'Pre-arrival guest details';
     const source = classifyMailSource({ fromAddress, subject,
       bodyText: 'Confirmation No 57291630-1. Please send the menu.\nFrom: Booking.com <noreply@messages.booking.com>' });
-    expect(source.kind).toBe('channel');
-    expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual({
-      kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate',
-    });
+    expect(source).toEqual({ kind: 'direct', source: null, reason: 'forwarded_authored_content:booking-com' });
+    expect(admissionMailSource(source, { fromAddress, subject, mailboxAddress: fromAddress })).toEqual(source);
   });
 
   it('keeps current HTML after a quoted block while excluding nested Gmail history', () => {

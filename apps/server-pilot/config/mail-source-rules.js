@@ -199,7 +199,9 @@ export const MAIL_SOURCE_RULE_DATA = [
  * Exact routine-notice exclusions shared by every intake path: an internal
  * handover or automated digest whose sender and subject both match exactly.
  * Anchored senders keep human forwards (Fwd:/Re: prefixed subjects do not
- * match) staff-visible.
+ * match) staff-visible. Entries marked `humanOrigin` allow Re:/Fwd: subjects
+ * but only suppress an unannotated re-send: any authored content ahead of the
+ * forwarded material, or a subject the staff member rewrote, stays reviewable.
  */
 export const ROUTINE_NOTICE_EXCLUSION_DATA = [
   {
@@ -215,6 +217,9 @@ export const ROUTINE_NOTICE_EXCLUSION_DATA = [
     source: 'Function Sheet',
     senderPattern: { source: '@legacyhotels\\.(?:co\\.za|com)\\s*>?$', flags: 'i' },
     subjectPattern: { source: '^(?:re:\\s*|fw(?:d)?:\\s*)*(?:new\\s+|updated\\s+)?function\\s+sheet\\b', flags: 'i' },
+    // Internal mail can be answered or forwarded by staff; only an
+    // unannotated re-send counts as the routine notice.
+    humanOrigin: true,
   },
   {
     id: 'guestrevu',
