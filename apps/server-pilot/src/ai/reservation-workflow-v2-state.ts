@@ -515,11 +515,12 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
         run.metrics?.evidenceHash !== (await reservationArrivalEvidence(tx, input.source.messageId)).hash ||
         !['dead_letter', 'succeeded', 'retry_wait'].includes(run.state)) return current;
     const nativeResume = meta.status === 'running' && meta.phase === 'native_checks';
-    if ((!nativeResume && meta.attemptCount >= 2) || (nativeResume && meta.nativeActive && !run.heartbeatAt) ||
+    const terminal = run.state !== 'retry_wait';
+    const exhaustedGenerationRetry = terminal && meta.status === 'failed' && meta.phase !== 'native_checks' && meta.attemptCount >= 2;
+    if ((!nativeResume && meta.attemptCount >= 2 && !exhaustedGenerationRetry) || (nativeResume && meta.nativeActive && !run.heartbeatAt) ||
         Object.keys(current.draft.fieldOverrides).length || Object.keys(current.draft.staffReviews).length ||
         (nativeResume ? await hasUnsafeNativeResumeActivity(tx, item.id, current.draft, item.revisionSeq)
           : current.draft.operationResults.length || await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq))) return current;
-    const terminal = run.state !== 'retry_wait';
     if (terminal && Number(run.metrics?.staffRetryCount ?? 0) >= 1) return current;
     const metrics = { ...run.metrics, ...(terminal ? { staffRetryCount: 1 } : {}),
       ...(nativeResume && run.heartbeatAt ? { interruptedHeartbeatAt: run.heartbeatAt.toISOString() } : {}) };
@@ -528,6 +529,8 @@ export async function retryReservationWorkflowV2Arrival(ctx: Context, input: Mut
       // Staff asked for this retry: claim it ahead of admission work (priority 1).
       priority: Math.max(run.priority, 2), metrics, updatedAt: new Date() }).where(eq(aiWorkflowRun.id, run.id));
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, prefill: { ...meta,
+      // Leave one generation claim for the single terminal staff retry; automatic retries keep their cap.
+      attemptCount: exhaustedGenerationRetry ? 1 : meta.attemptCount,
       status: meta.status === 'running' ? 'running' : 'queued', jobRunId: run.id } });
     await tx.update(workItem).set({ state: { ...item.state, [RESERVATION_WORKFLOW_V2_STATE_KEY]: draft },
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
