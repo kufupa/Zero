@@ -739,10 +739,6 @@ export type PaneAttachSpawnResult = {
   cleanupRoot?: string;
   documentCode?: string;
   nativeReadback?: Record<string, unknown>;
-  /** Fresh independently read stored-bytes SHA-256; null when the byte reader is unavailable. */
-  actualStoredSha256?: string | null;
-  /** True only when the stored bytes' independent hash equals the approved source. */
-  storedBytesHashVerified?: boolean;
   dispatchCallbacksDrained?: boolean;
   writerSessionClosed?: boolean;
 };
@@ -924,8 +920,6 @@ type SaveOutcome = {
   cleanupRoot?: string;
   documentCode?: string;
   nativeReadback?: Record<string, unknown>;
-  actualStoredSha256?: string | null;
-  storedBytesHashVerified?: boolean;
   dispatchCallbacksDrained?: boolean;
   writerSessionClosed?: boolean;
 };
@@ -968,8 +962,6 @@ export async function saveAttach(
     cleanupRoot: result.cleanupRoot,
     documentCode: result.documentCode,
     nativeReadback: result.nativeReadback,
-    actualStoredSha256: result.actualStoredSha256 ?? null,
-    storedBytesHashVerified: result.storedBytesHashVerified === true,
     dispatchCallbacksDrained: result.dispatchCallbacksDrained,
     writerSessionClosed: result.writerSessionClosed,
   };
@@ -982,12 +974,9 @@ export async function saveAttach(
 function classifySave(
   action: HmsWriteForm['action'],
   saved: SaveOutcome,
-  sourceSha256?: string,
 ): { ok: true; outcome: string } | { ok: false; failureClass: AiFailureClass; reason: string } {
-  const done = action === 'attach_document'
-    ? typeof sourceSha256 === 'string' && saved.storedBytesHashVerified === true &&
-      saved.actualStoredSha256 === sourceSha256 &&
-      (saved.outcome === 'attached' || (saved.outcome === 'confirmed' && saved.listed === true))
+  const done = action === 'attach_document' ? saved.outcome === 'attached' ||
+    (saved.outcome === 'confirmed' && saved.listed === true)
     : saved.outcome === (action === 'cancel' ? 'cancelled' : 'amended');
   if (done) return { ok: true, outcome: saved.outcome };
   const mayHaveWritten = action === 'cancel' ? saved.clickedOk : action === 'amend' ? saved.saveAttempted === true : saved.uploadSent;
@@ -1040,16 +1029,13 @@ async function recordEvidence(
 
 export type PaneHmsWriteResult =
   | { status: 'succeeded'; action: HmsWriteForm['action']; outcome: string; evidence: string[];
-      observationRef?: string; nativeReadbackDigest?: string;
-      actualStoredSha256?: string; storedBytesHashVerified?: boolean }
-  | { status: 'ended'; failureClass: AiFailureClass; reason: string; outcome?: 'unconfirmed'; listed?: true }
+      observationRef?: string; nativeReadbackDigest?: string }
+  | { status: 'ended'; failureClass: AiFailureClass; reason: string; outcome?: 'confirmed'; listed?: true }
   | { status: 'lease_lost' };
 
-async function endConfirmedWithHold(db: DB, fence: AiRunFence, saved: SaveOutcome): Promise<PaneHmsWriteResult> {
+async function endConfirmedWithHold(db: DB, fence: AiRunFence): Promise<PaneHmsWriteResult> {
   const ended = await endRun(db, fence, 'UNKNOWN', 'confirmed_hold_unsettled');
-  return ended.status === 'ended'
-    ? { ...ended, outcome: 'unconfirmed', ...(saved.listed === true ? { listed: true as const } : {}) }
-    : ended;
+  return ended.status === 'ended' ? { ...ended, outcome: 'confirmed', listed: true } : ended;
 }
 
 type ExecuteInput = {
@@ -1324,8 +1310,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     }
     if (!safeCloudEvidence) saved.screenshots = [];
   } else if (saved.runDir) input.runDirs.push(saved.runDir);
-  const confirmedListing = saved.outcome === 'confirmed' && saved.listed === true &&
-    saved.storedBytesHashVerified === true;
+  const confirmedListing = saved.outcome === 'confirmed' && saved.listed === true;
   if (isCloudAttach && !confirmedListing && dispatch.provedNoDispatch) {
     return { status: 'ended', failureClass: 'NEEDS_CHECK', reason: 'filing_not_dispatched' };
   }
@@ -1348,28 +1333,23 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   });
   if (saved.cleanupRoot && receipts['before.png'] && receipts['after.png'] &&
       input.pendingCloudEvidence.has(saved.cleanupRoot)) input.pendingCloudEvidence.set(saved.cleanupRoot, true);
-  const verdict = classifySave(approved.action, saved, filing?.pdfSha256);
+  const verdict = classifySave(approved.action, saved);
   if (!verdict.ok) return endRun(db, fence, verdict.failureClass, verdict.reason);
   if (isCloudAttach && filing) {
     const before = receipts['before.png'], after = receipts['after.png'];
     const nativeReadback = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
       nativeGuestId: z.string().regex(/^\d{1,30}$/), documentCode: z.string(), documentName: z.string(),
-      actualStoredSha256: z.string().regex(PDF_SHA256).optional(),
-      storedBytesHashVerified: z.literal(true).optional(),
       uniqueFreshListing: z.literal(true) }).strict().safeParse(saved.nativeReadback);
     if (!dispatch.handle || !dispatch.code || !dispatch.requestDigest || saved.documentCode !== dispatch.code ||
         saved.listed !== true || !before || !after || saved.dispatchCallbacksDrained !== true || saved.writerSessionClosed !== true ||
-        saved.storedBytesHashVerified !== true || saved.actualStoredSha256 !== filing.pdfSha256 ||
-        !nativeReadback.success || nativeReadback.data.storedBytesHashVerified !== true ||
-        nativeReadback.data.actualStoredSha256 !== filing.pdfSha256 ||
-        nativeReadback.data.confirmation !== filing.confirmation ||
+        !nativeReadback.success || nativeReadback.data.confirmation !== filing.confirmation ||
         nativeReadback.data.nativeStayId !== dispatch.nativeStayId || nativeReadback.data.nativeGuestId !== dispatch.guestId ||
         nativeReadback.data.documentCode !== dispatch.code || nativeReadback.data.documentName !== filing.documentName) {
       // The metadata listing can be confirmed while the separate write hold remains open.
-      return endConfirmedWithHold(db, fence, saved);
+      return endConfirmedWithHold(db, fence);
     }
     const recovery = dispatch.recovery;
-    if (!recovery) return endConfirmedWithHold(db, fence, saved);
+    if (!recovery) return endConfirmedWithHold(db, fence);
     const readbackDigest = pdfBytesHash(Buffer.from(canonicalJson(nativeReadback.data)));
     let observationRef: string | undefined;
     try {
@@ -1421,7 +1401,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         throw new Error('filing_resolution_receipt_unverified');
       }
       observationRef = resolved[0]!.id;
-    } catch { return endConfirmedWithHold(db, fence, saved); }
+    } catch { return endConfirmedWithHold(db, fence); }
     // The native result is already durable. A review-marker failure must not turn
     // a confirmed upload into an uncertain write or trigger another upload.
     try {
@@ -1431,8 +1411,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
         snapshotDigest: filing.sourceSnapshotDigest, runId: fence.runId }));
     } catch { console.warn('voucher_review_confirmation_not_recorded'); }
     return { status: 'succeeded', action: 'attach_document', outcome: 'confirmed', evidence,
-      observationRef, nativeReadbackDigest: readbackDigest,
-      actualStoredSha256: filing.pdfSha256, storedBytesHashVerified: true };
+      observationRef, nativeReadbackDigest: readbackDigest };
   }
   const marked = await markAiRunSucceeded(
     {

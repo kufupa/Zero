@@ -110,27 +110,22 @@ test('fresh listing requires a unique exact code and filename', () => {
 
 test('restart recovery requires a stopped writer and fresh exact unique document metadata on the same fake stay', async () => {
   const code = documentCodeForUuid(randomUUID());
-  const stored = Buffer.from('%PDF-stored');
-  const storedSha = createHash('sha256').update(stored).digest('hex');
   const intent = { operation: 'attach_document', propertyCode: 'HRCEN', transportId: 'transport-centurion', firstName: 'Proof', lastName: 'Labtest',
     nativeGuestId: native.guestId, recovery: { confirmation: native.confirmation, arrival: native.arrival,
-      departure: native.departure, documentCode: code, documentName: 'voucher.pdf', pdfSha256: storedSha, writer: {} } };
+      departure: native.departure, documentCode: code, documentName: 'voucher.pdf', pdfSha256: 'a'.repeat(64), writer: {} } };
   const row = { documentCode: code, name: 'voucher.pdf' };
   let shots = 0;
   const credentialLease = { signal: new AbortController().signal };
   const deps = { credentialLease, writerQuiesced: () => true, shallow: async () => {}, read: async () => record,
-    documents: async () => ({ documents: [row] }), readStoredDocumentBytes: async () => stored, openSession: async (fn, options) => {
+    documents: async () => ({ documents: [row] }), openSession: async (fn, options) => {
       assert.equal(options.propertyCode, 'HRCEN'); assert.equal(options.startScreen, 'OSRESS'); assert.equal(typeof options.prepareContext, 'function');
       assert.equal(options.credentialLease, credentialLease);
       return fn({ screenshot: async () => { shots++; return png; } });
     } };
   const positive = await provePositiveAttachRecovery(intent, deps);
   assert.equal(positive.outcome, 'verified');
-  assert.equal(positive.actualStoredSha256, storedSha);
-  assert.equal(positive.storedBytesHashVerified, true);
   assert.deepEqual(positive.readback, { confirmation: native.confirmation, nativeGuestId: native.guestId,
-    nativeStayId: native.reservationStayId, documentCode: code, documentName: 'voucher.pdf', uniqueFreshListing: true,
-    actualStoredSha256: storedSha, storedBytesHashVerified: true });
+    nativeStayId: native.reservationStayId, documentCode: code, documentName: 'voucher.pdf', uniqueFreshListing: true });
   assert.deepEqual(positive.screenshot, png);
   for (const altered of [[], [row, row], [{ ...row, name: 'wrong.pdf' }], [{ ...row, documentCode: 'OTHER' }]]) {
     assert.equal((await provePositiveAttachRecovery(intent, { ...deps, documents: async () => ({ documents: altered }) })).outcome, 'unconfirmed');
@@ -204,7 +199,7 @@ test('a clean upload plus a fresh matching listing confirms metadata; uncertaint
         assert.equal(options.propertyCode, 'HRCEN'); assert.equal(options.startScreen, 'OSRESS'); assert.equal(typeof options.prepareContext, 'function');
         assert.equal(options.credentialLease, credentialLease);
         return fn({ session: sessions }); },
-      shallow: async () => {}, read: async () => record, readStoredDocumentBytes: async () => bytes,
+      shallow: async () => {}, read: async () => record,
       attach: async (_page, expected, file, options) => { assert.equal(expected.guestId, native.guestId);
         assert.equal(options.strictNetwork, true);
         assert.deepEqual(options.expectedDocumentContext, { cmsSend: false });

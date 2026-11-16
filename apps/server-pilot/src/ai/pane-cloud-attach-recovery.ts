@@ -20,8 +20,7 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const receipt = z.object({ eventId: z.string().uuid(), sha256: digest }).strict();
 const readbackSchema = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
   nativeGuestId: z.string(), documentCode: z.string(),
-  documentName: z.string(), documentDescription: z.string().optional(), uniqueFreshListing: z.literal(true),
-  actualStoredSha256: digest.optional(), storedBytesHashVerified: z.literal(true).optional() }).strict();
+  documentName: z.string(), documentDescription: z.string().optional(), uniqueFreshListing: z.literal(true) }).strict();
 const recoverySchema = z.object({
   confirmation: z.string().regex(/^\d+-\d+$/), arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   departure: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), documentCode: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/),
@@ -37,8 +36,7 @@ const recoveryTarget = new AsyncLocalStorage<{ holdId: string; nativeStayId: str
 
 type AttachRecoveryProof = { confirmation: string; nativeStayId: string; nativeReadback: z.infer<typeof readbackSchema>;
   readbackDigest: string; savedShot: { runId: string; sha256: string };
-  screenshot: { eventId: string; sha256: string; name: string };
-  actualStoredSha256: string; storedBytesHashVerified: true };
+  screenshot: { eventId: string; sha256: string; name: string } };
 
 /** Reset only the original run after its native upload gate proves no dispatch. */
 export async function recordNeverDispatchedAttach(tx: CreateFenceTransaction, intent: HmsLabtestIntent, fence: AiRunFence) {
@@ -88,8 +86,7 @@ export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action
     const observed = await initialLock.withLock((signal) => reader.provePositiveAttachRecovery(intent, { signal }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     const readback = readbackSchema.safeParse(observed.readback);
-    if ((observed.outcome !== 'verified' && observed.outcome !== 'listed') || !readback.success ||
-        readback.data.confirmation !== dispatchTarget.confirmation) {
+    if (observed.outcome !== 'verified' || !readback.success || readback.data.confirmation !== dispatchTarget.confirmation) {
       throw new Error('filing_recovery_target_unavailable');
     }
     dispatchTarget = { ...dispatchTarget, nativeStayId: readback.data.nativeStayId };
@@ -106,7 +103,7 @@ export async function withAttachRecoveryLock<T>(intent: HmsLabtestIntent, action
     acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
 }
 
-/** Verify the sealed before-image and a fresh stored-byte hash on a unique listing. */
+/** Verify the sealed before-image and obtain a fresh, independent positive listing. */
 export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent, signal?: AbortSignal): Promise<AttachRecoveryProof> {
   const parsed = recoverySchema.safeParse(intent.recovery);
   if (!parsed.success || intent.operation !== 'attach_document') throw new Error('filing_recovery_unavailable');
@@ -126,7 +123,7 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent, sign
       sha256(beforeObject.body) !== recovery.before.sha256) throw new Error('filing_recovery_evidence_unavailable');
   const reader = await import('../../tooling/hms-cloud/pane-attach-session.mjs' as string) as {
     provePositiveAttachRecovery(intent: HmsLabtestIntent, options?: { signal?: AbortSignal }): Promise<{ outcome: string; confirmation?: unknown;
-      readback?: unknown; screenshot?: unknown; actualStoredSha256?: string | null; storedBytesHashVerified?: boolean }>;
+      readback?: unknown; screenshot?: unknown }>;
   };
   const observed = await reader.provePositiveAttachRecovery(intent, { signal });
   const readback = readbackSchema.safeParse(observed.readback);
@@ -137,8 +134,6 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent, sign
       (recovery.nativeStayId !== undefined && readback.data.nativeStayId !== recovery.nativeStayId) ||
       readback.data.documentCode !== recovery.documentCode || readback.data.documentName !== recovery.documentName ||
       (recovery.documentDescription && readback.data.documentDescription !== recovery.documentDescription) ||
-      readback.data.storedBytesHashVerified !== true || readback.data.actualStoredSha256 !== recovery.pdfSha256 ||
-      observed.storedBytesHashVerified !== true || observed.actualStoredSha256 !== recovery.pdfSha256 ||
       !Buffer.isBuffer(observed.screenshot)) throw new Error('filing_recovery_readback_unavailable');
   const name = `recovery-${randomBytes(8).toString('hex')}.png`;
   const sealed = await recordHmsWriteEvidence({ db, transportId: intent.transportId, workItemId: intent.workItemId,
@@ -150,8 +145,7 @@ export async function proveAttachRecovery(db: DB, intent: HmsLabtestIntent, sign
   return { confirmation: readback.data.confirmation, nativeStayId: readback.data.nativeStayId,
     nativeReadback: readback.data, readbackDigest: sha256(canonicalJson(readback.data)),
     savedShot: { runId: recovery.runId, sha256: sealed.sha256 },
-    screenshot: { eventId: sealed.eventId, sha256: sealed.sha256, name },
-    actualStoredSha256: readback.data.actualStoredSha256, storedBytesHashVerified: true };
+    screenshot: { eventId: sealed.eventId, sha256: sealed.sha256, name } };
 }
 
 /** Mark only the original run, and resolve its hold in the caller's transaction. */
@@ -159,7 +153,6 @@ export async function recordRecoveredAttach(tx: CreateFenceTransaction, intent: 
   const parsed = recoverySchema.safeParse(intent.recovery);
   if (!parsed.success || intent.operation !== 'attach_document' || proof.confirmation !== parsed.data.confirmation ||
       (parsed.data.documentDescription && proof.nativeReadback.documentDescription !== parsed.data.documentDescription) ||
-      proof.storedBytesHashVerified !== true || proof.actualStoredSha256 !== parsed.data.pdfSha256 ||
       proof.savedShot.runId !== parsed.data.runId || proof.savedShot.sha256 !== proof.screenshot.sha256) {
     throw new Error('filing_recovery_scope_changed');
   }
@@ -205,6 +198,5 @@ export async function recordRecoveredAttach(tx: CreateFenceTransaction, intent: 
   await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
     value: { kind: 'hms_attach_verified', holdId: intent.holdId, grantId: intent.grantId,
       runId: recovery.runId, documentCode: recovery.documentCode, documentName: recovery.documentName,
-      pdfSha256: recovery.pdfSha256, actualStoredSha256: proof.actualStoredSha256,
-      storedBytesHashVerified: true, readbackDigest: proof.readbackDigest, recovered: true } });
+      pdfSha256: recovery.pdfSha256, readbackDigest: proof.readbackDigest, recovered: true } });
 }

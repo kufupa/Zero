@@ -74,8 +74,6 @@ type FilingSelection = {
 type TargetReadback = {
   confirmation: string; nativeStayId: string; nativeGuestId: string; documentCode: string;
   documentName: string; documentDescription?: string; uniqueFreshListing: true;
-  /** Fresh independently re-read stored bytes hash, present only when the native reader supplied bytes. */
-  actualStoredSha256?: string; storedBytesHashVerified?: true;
 };
 type V2FilingRecovery = {
   version: 1; workItemId: string; operationId: string; requestId: string; documentId: string;
@@ -88,8 +86,7 @@ type V2FilingRecovery = {
   beforeShot: { runId: string; sha256: string }; writer: unknown;
 };
 type PositiveFilingProof = { confirmation: string; nativeStayId: string; nativeReadback: TargetReadback;
-  readbackDigest: string; savedShot: { runId: string; sha256: string };
-  actualStoredSha256: string; storedBytesHashVerified: true };
+  readbackDigest: string; savedShot: { runId: string; sha256: string } };
 type ClosedWriterBinding = { handle: HmsLabtestWriteHandle; writer: unknown; requestDigest: string };
 
 const FILING_WRITER_CLOSED_FIELD = 'nava.reservation.workflow.v2.filing.writer_closed.v1';
@@ -532,15 +529,9 @@ function targetReadback(value: unknown): TargetReadback | null {
   const parsed = z.object({ confirmation: z.string(), nativeStayId: z.string().regex(/^\d{1,100}$/),
     nativeGuestId: z.string().regex(/^\d{1,30}$/), documentCode: z.string(), documentName: z.string(),
     documentDescription: z.string().optional(),
-    actualStoredSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-    storedBytesHashVerified: z.literal(true).optional(),
     uniqueFreshListing: z.literal(true) }).strict().safeParse(value);
   return parsed.success ? parsed.data : null;
 }
-
-/** A stored-hash claim propagates only as a full digest; anything else is unverified. */
-const observedStoredSha = (value: unknown): string | null =>
-  typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null;
 
 function filingStateDigest(cloud: CloudFilingRecord): string {
   const { confirmation, firstName, lastName, status, arrival, departure } = cloud.stay;
@@ -1264,10 +1255,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     const nativeTarget = targetReadback(native.nativeReadback);
     const activeDispatch = dispatch as HmsLabtestWriteHandle | null;
     const success = Boolean(activeDispatch && native.outcome === 'confirmed' && native.uploadSent === true && native.listed === true &&
-      native.storedBytesHashVerified === true && native.actualStoredSha256 === pdfSha256 &&
       native.dispatchCallbacksDrained === true && native.writerSessionClosed === true && native.documentCode === form.documentCode &&
-      nativeTarget && nativeTarget.storedBytesHashVerified === true && nativeTarget.actualStoredSha256 === pdfSha256 &&
-      nativeTarget.confirmation === selection.confirmation && nativeTarget.nativeStayId === cloud.nativeStayId &&
+      nativeTarget && nativeTarget.confirmation === selection.confirmation && nativeTarget.nativeStayId === cloud.nativeStayId &&
       nativeTarget.nativeGuestId === cloud.nativeGuestId && nativeTarget.documentCode === form.documentCode &&
       nativeTarget.documentName === name &&
       (!form.documentDescription || nativeTarget.documentDescription === form.documentDescription) && beforePath && afterPath);
@@ -1285,9 +1274,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: native.outcome ?? 'unknown', dispatchHoldId: activeDispatch.holdId,
           uploadSent: native.uploadSent === true, listed: native.listed === true, nativeReadback: native.nativeReadback ?? null,
-          sourcePdfSha256: pdfSha256, actualStoredSha256: observedStoredSha(native.actualStoredSha256),
-          storedBytesHashVerified: native.storedBytesHashVerified === true && native.actualStoredSha256 === pdfSha256,
-          beforeShot: shots?.beforeShot ?? null,
+          sourcePdfSha256: pdfSha256, actualStoredSha256: null, beforeShot: shots?.beforeShot ?? null,
           prepareObservationRef: prepared.observation.ref }, ['Upload may have reached HMS; fresh reconciliation is required.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF upload outcome needs fresh reconciliation', operationId);
       keepCloudEvidence = native.uploadSent === true && !shots;
@@ -1298,8 +1285,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     if (!shots?.savedShot) {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: 'confirmed_but_evidence_unsealed', dispatchHoldId: activeDispatch.holdId,
-          nativeReadback: nativeTarget, sourcePdfSha256: pdfSha256, actualStoredSha256: pdfSha256,
-          storedBytesHashVerified: true,
+          nativeReadback: nativeTarget, sourcePdfSha256: pdfSha256, actualStoredSha256: null,
           prepareObservationRef: prepared.observation.ref }, ['HMS listing is positive but durable screenshot evidence is unavailable.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'HMS lists the PDF; durable write proof needs reconciliation', operationId);
       keepCloudEvidence = true;
@@ -1309,8 +1295,8 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       'complete', { outcome: 'confirmed', dispatchHoldId: activeDispatch.holdId, nativeReadback: nativeTarget,
         sourceDocumentName, nativeDocumentName: nativeTarget.documentName,
         readbackDigest: digestJson(nativeTarget), sourcePdfSha256: pdfSha256,
-        actualStoredSha256: pdfSha256, storedBytesHashVerified: true,
-        storedHashNote: 'A fresh session independently re-read the stored PDF bytes; their SHA-256 equals the approved source hash.',
+        actualStoredSha256: null, storedBytesHashVerified: false,
+        storedHashNote: 'HMS Documents currently exposes unique document code/name listing only; stored bytes are not downloadable by this reader.',
         beforeShot: shots.beforeShot, savedShot: shots.savedShot, prepareObservationRef: prepared.observation.ref });
     try {
       await resolveHmsLabtestDispatch(ctx.db, activeDispatch, { operation: 'attach_document',
@@ -1330,8 +1316,7 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
     } catch {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: 'durable_resolution_unconfirmed', dispatchHoldId: activeDispatch.holdId,
-          nativeReadback: nativeTarget, sourcePdfSha256: pdfSha256, actualStoredSha256: pdfSha256,
-          storedBytesHashVerified: true,
+          nativeReadback: nativeTarget, sourcePdfSha256: pdfSha256, actualStoredSha256: null,
           savedShot: shots.savedShot, prepareObservationRef: prepared.observation.ref }, ['Native result is positive; durable dispatch release is pending reconciliation.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF appears in HMS; durable receipt needs reconciliation', operationId);
       return { status: 'needs_reconcile', operationId, dispatchHoldId: activeDispatch.holdId,
@@ -1342,14 +1327,14 @@ export async function reservationWorkflowV2FilingExecute(ctx: ReservationWorkflo
       target: { confirmation: nativeTarget.confirmation, nativeStayId: nativeTarget.nativeStayId },
       documentCode: nativeTarget.documentCode, documentName: sourceDocumentName,
       sourceDocumentName, nativeDocumentName: nativeTarget.documentName,
-      sourcePdfSha256: pdfSha256, actualStoredSha256: pdfSha256, storedBytesHashVerified: true,
+      sourcePdfSha256: pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
       observationRef: successObservation.ref };
   } catch (error) {
     const activeDispatch = dispatch as HmsLabtestWriteHandle | null;
     if (activeDispatch) {
       const uncertain = filingObservation(loaded.draft, { requestId: input.requestId, operationId }, selection,
         'partial', { outcome: 'uncertain', dispatchHoldId: activeDispatch.holdId, issue: 'native_dispatch_interrupted',
-          sourcePdfSha256: pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
+          sourcePdfSha256: pdfSha256, actualStoredSha256: null,
           prepareObservationRef: prepared.observation.ref }, ['Upload may have reached HMS; fresh reconciliation is required.']);
       await recordFilingOperation(ctx, input, uncertain, 'unknown', 'PDF upload was interrupted; reconcile before retry', operationId);
       keepCloudEvidence = true;
@@ -1419,7 +1404,7 @@ export async function reservationWorkflowV2FilingReconcile(ctx: ReservationWorkf
       sourceMessageId: initial.draft!.source.messageId, sourceRefs: [],
       criteria: { workflow: 'filing', operationId: input.operationId, sourceHash: input.source.sourceHash },
       coverage: { complete: false, notes: [note] }, result: { outcome: 'not_dispatched', sourcePdfSha256: null,
-        actualStoredSha256: null, storedBytesHashVerified: false } };
+        actualStoredSha256: null } };
     const current = await currentDraft(ctx, input);
     if (!current.draft) return current.result;
     const base = { workItemId: input.workItemId, source: input.source,
@@ -1530,8 +1515,6 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
   if (proof.outcome !== 'verified' || !nativeReadback || nativeReadback.confirmation !== recovery.data.confirmation ||
       nativeReadback.nativeStayId !== recovery.data.nativeStayId || nativeReadback.nativeGuestId !== recovery.data.nativeGuestId ||
       nativeReadback.documentCode !== recovery.data.documentCode || nativeReadback.documentName !== recovery.data.documentName ||
-      proof.storedBytesHashVerified !== true || proof.actualStoredSha256 !== recovery.data.pdfSha256 ||
-      nativeReadback.storedBytesHashVerified !== true || nativeReadback.actualStoredSha256 !== recovery.data.pdfSha256 ||
       !Buffer.isBuffer(proof.screenshot)) throw new Error('filing_recovery_readback_unavailable');
   const owner = `${intent.actorUserId}:${intent.transportId}`;
   const before = await readStoredHmsShot({ runId: recovery.data.beforeShot.runId, name: 'before.png', owner });
@@ -1547,7 +1530,6 @@ export async function proveReservationWorkflowV2AttachRecovery(db: DB, intent: H
       owner, propertyCode: intent.propertyCode, workItemId: intent.workItemId }, 'saved.png')) throw new Error('filing_recovery_saved_shot_unavailable');
     return { confirmation: nativeReadback.confirmation, nativeStayId: nativeReadback.nativeStayId,
       nativeReadback, readbackDigest: digestJson(nativeReadback),
-      actualStoredSha256: recovery.data.pdfSha256, storedBytesHashVerified: true,
       savedShot: { runId: recovery.data.operationId, sha256: saved.sha256 } };
   } finally { await rm(stage, { recursive: true, force: true }).catch(() => {}); }
 }
@@ -1560,7 +1542,6 @@ export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransact
       proof.nativeStayId !== recovery.nativeStayId || proof.nativeReadback.documentCode !== recovery.documentCode ||
       proof.nativeReadback.documentName !== recovery.documentName ||
       (recovery.documentDescription && proof.nativeReadback.documentDescription !== recovery.documentDescription) ||
-      proof.storedBytesHashVerified !== true || proof.actualStoredSha256 !== recovery.pdfSha256 ||
       proof.savedShot.runId !== recovery.operationId) {
     throw new Error('filing_recovery_scope_changed');
   }
@@ -1595,15 +1576,14 @@ export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransact
     coverage: { complete: true, notes: [] }, result: { outcome: 'confirmed', recovered: true,
       target: { confirmation: proof.confirmation, nativeStayId: proof.nativeStayId, nativeGuestId: recovery.nativeGuestId },
       documentCode: recovery.documentCode, documentName: recovery.documentName,
-      sourcePdfSha256: recovery.pdfSha256, actualStoredSha256: proof.actualStoredSha256,
-      storedBytesHashVerified: true,
+      sourcePdfSha256: recovery.pdfSha256, actualStoredSha256: null, storedBytesHashVerified: false,
       nativeReadback: proof.nativeReadback, readbackDigest: proof.readbackDigest, savedShot: proof.savedShot,
       sourceDocumentName: recovery.sourceDocumentName ?? recovery.documentName,
       prepareObservationRef: recovery.prepareObservationRef } };
   const result = { id: recovery.operationId, generationId: draft.generationId, requestId: recovery.requestId,
     allocationId: null, workflow: 'filing' as const, status: 'succeeded' as const, draftRevision: prior.draftRevision,
     observationRefs: [observation.ref], updatedAt: new Date().toISOString(),
-    summary: `Filed ${recovery.sourceDocumentName ?? recovery.documentName}; independent fresh stored-bytes hash verified` };
+    summary: `Filed ${recovery.sourceDocumentName ?? recovery.documentName}; independent fresh Documents listing verified` };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== result.id), result] });
   await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
