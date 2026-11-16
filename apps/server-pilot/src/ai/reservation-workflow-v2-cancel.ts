@@ -70,6 +70,7 @@ type CancelOutcome = { status: string; issue?: string; [key: string]: unknown };
 type Tx = Parameters<Parameters<DB['transaction']>[0]>[0];
 type NativeCancelResult = {
   outcome?: string; issue?: string; expected?: unknown; reasons?: unknown; policyFacts?: unknown; penaltyText?: unknown;
+  feeDialogPending?: unknown;
   requestDispatched?: boolean; writerSessionClosed?: boolean; dispatchCallbacksDrained?: boolean;
   nativeReadback?: unknown; runDir?: unknown; screenshots?: unknown; chargeApproved?: unknown; chargeDispatched?: unknown;
   staged?: unknown;
@@ -118,6 +119,9 @@ const cancelPreimageSchema = z.object({
 type CancelPreimage = z.infer<typeof cancelPreimageSchema>;
 const reasonOptionSchema = z.object({ value: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/),
   display: z.string().trim().min(1).max(120).refine((value) => !/[\p{Cc}]/u.test(value)) }).strict();
+const feeReasonOptionsSchema = z.array(reasonOptionSchema).max(100)
+  .refine((rows) => new Set(rows.map((row) => row.value)).size === rows.length &&
+    new Set(rows.map((row) => row.display)).size === rows.length);
 const reasonOptionsSchema = z.array(reasonOptionSchema).min(1).max(100)
   .refine((rows) => new Set(rows.map((row) => row.value)).size === rows.length &&
     new Set(rows.map((row) => row.display)).size === rows.length);
@@ -471,7 +475,10 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
     native = await runCloudCancellation({ mode: 'preview', target, transportId, confirmation, arrival, allowRealGuest: true,
       ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(signal ? { signal } : {}),
       ...(stage ? { previewStage: stage } : {}) }) as NativeCancelResult;
-    const expected = cancelPreimageSchema.safeParse(native.expected), reasons = reasonOptionsSchema.safeParse(native.reasons),
+    const feeDialogPending = native.feeDialogPending === true;
+    const expected = cancelPreimageSchema.safeParse(native.expected),
+      reasons = (feeDialogPending ? feeReasonOptionsSchema : reasonOptionsSchema)
+        .safeParse(feeDialogPending && native.reasons == null ? [] : native.reasons),
       policyFacts = z.array(z.string().trim().min(1).max(260)).max(12).safeParse(native.policyFacts ?? []),
       penaltyText = z.string().trim().min(1).max(2000).nullable().safeParse(penaltyLine(native.penaltyText ?? null)),
       staged = stagedCancelSchema.safeParse(native.staged);
@@ -501,6 +508,7 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
     }
     if (native.outcome !== 'preview_ok' || native.requestDispatched !== false || native.writerSessionClosed !== true ||
         !expected.success || !reasons.success || !policyFacts.success || !penaltyText.success ||
+        (feeDialogPending && (penaltyText.data === null || native.staged !== undefined)) ||
         expected.data.propertyCode !== target.propertyCode || expected.data.confirmation !== confirmation || expected.data.arrival !== arrival || expected.data.departure !== departure ||
         (!expected.data.allowRealGuest && (expected.data.firstName !== 'Proof' || expected.data.lastName !== 'Labtest' ||
           expected.data.arrival < '2027-01-01' || expected.data.cmsSend !== false))) {
@@ -510,8 +518,8 @@ async function freshPreview(target: HmsReadTarget, confirmation: string, hint: C
     if (!matchesHint(expected.data, hint) && !(allowReviewedSourceMismatch && expected.data.confirmation === hint.confirmation)) {
       return { outcome: 'failed', issue: 'CANCELLATION_TARGET_HINT_MISMATCH', runDir: safeRunDir(native.runDir) ? native.runDir : null };
     }
-    // A staged request must come back bound to that exact reason and note. An absent staged result is
-    // only a pre-reason fee dialog that pre-empted staging; a silent or mismatched stage never counts.
+    // A staged request must come back bound to that exact reason and note. A validated fee prompt may
+    // pre-empt staging either before the reason list or while choosing the reason; neither is ready.
     const stagedResult = !stage ? null : staged.success && staged.data.reasonLabel === stage.reasonLabel &&
         staged.data.cancellationNote === stage.cancellationNote &&
         reasons.data.some((reason) => reason.value === staged.data.reasonCode && reason.display === staged.data.reasonLabel)
@@ -990,6 +998,7 @@ export async function reservationWorkflowV2CancelPrepare(ctx: ReservationWorkflo
     observationRef: item.ref, target: expectedTargetIdentity(fresh.preimage), reasons: fresh.reasons,
     selectedReason: matchingReason[0] ?? null, cancellationNote: compiled.cancellationNote, staged: fresh.staged,
     preflight: fresh.preflight, policyFacts: fresh.policyFacts, penaltyText: fresh.penaltyText,
+    ...(charge ? { manualHmsRequired: true } : {}),
     financialHandling: fresh.preflight.financialHandling,
     feeState: record(fresh.preflight.fee)?.state ?? 'unknown_precommit', scope: fresh.preflight.roomScope,
     sourceRefs: compiled.sourceRefs, approvalDigest: approval,
