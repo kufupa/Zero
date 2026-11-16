@@ -149,14 +149,18 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [policyPath, source, dest, ...args] = process.argv.slice(2);
 const { SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } = await import(pathToFileURL(policyPath).href);
-const flags = new Set(SCOPED_RUNTIME_CONTROL_KEYS);
+const flags = new Set([...SCOPED_RUNTIME_CONTROL_KEYS, 'PREFILL_SIMPLE_SYNTHESIS']);
+function validateControl(key, value) {
+  validateRuntimeControl(key, value);
+  if (key === 'PREFILL_SIMPLE_SYNTHESIS' && value !== '' && !['off', 'on'].includes(value)) throw Error();
+}
 try {
   const changes = new Map();
   for (const arg of args) {
     const index = arg.indexOf('=');
     const key = arg.slice(0, index), value = arg.slice(index + 1);
     if (index < 1 || !flags.has(key) || changes.has(key) || (value === '' && key !== 'HMS_DAVINCI_ENABLED_PROPERTIES')) throw Error();
-    validateRuntimeControl(key, value);
+    validateControl(key, value);
     changes.set(key, `${key}='${value}'`);
   }
   const text = fs.readFileSync(source, 'utf8');
@@ -169,7 +173,7 @@ try {
     seen.add(match[1]);
     const raw = line.slice(match[1].length + 1);
     const value = raw.startsWith("'") ? raw.slice(1, -1).replace(/'\\''/g, "'") : raw;
-    validateRuntimeControl(match[1], value);
+    validateControl(match[1], value);
     if (!changes.has(match[1])) return line;
     const replacement = changes.get(match[1]); changes.delete(match[1]); return replacement;
   });
