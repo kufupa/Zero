@@ -87,7 +87,7 @@ function reasonFor(evidence: Evidence[], confidence: 'usual' | 'check'): string 
 function orderedKeys(history: AutopickHistory, companyKeys: AutopickHistoryKey[], field: AutopickHistoryField,
   exclude?: string): AutopickHistoryKey[] {
   const sender = history.keys.filter((row) => row.kind === 'sender_history');
-  const company = [...history.keys.filter((row) => row.kind === 'company_history'), ...companyKeys]
+  const company = companyKeys
     .filter((row, index, all) => all.findIndex((other) => norm(other.key) === norm(row.key)) === index && norm(row.key) !== norm(exclude));
   const domain = history.keys.filter((row) => row.kind === 'agency_domain');
   return [...sender, ...company, ...domain].filter((row) => (row.fields[field]?.total ?? 0) > 0);
@@ -107,15 +107,18 @@ export function planAutopickPartyReads(input: { extraction: ReservationWorkflowV
   };
   for (const request of input.extraction.requests) {
     if (request.kind !== 'create' && request.kind !== 'quote') continue;
+    const companyKeys = request.parties.flatMap((party) => typeof party.name.value === 'string' &&
+      (party.role === 'organization' || party.role === 'bookingAgency') ? [input.history!.companyHistory(party.name.value)] : [])
+      .filter((key): key is AutopickHistoryKey => key !== null);
     const fields: PartyField[] = request.kind === 'create' ? ['organization', 'bookingAgency', 'arAccount'] : ['organization', 'bookingAgency'];
     for (const field of fields) {
       if (request.parties.some((party) => party.role === partyRole[field])) continue;
-      const key = orderedKeys(input.history, [], field)[0];
+      const key = orderedKeys(input.history, companyKeys, field)[0];
       const stats = key?.fields[field];
       if (!key || !stats) continue;
       const named = stats.values.filter((row) => row.value && (field !== 'arAccount' || !isExcludedRefundArAccount(row.value)));
       const quoted = named.filter((row) => emailQuoteAny(text, row.value, entityRole[field]));
-      const searchNames = [...(quoted.length === 1 ? quoted : []), ...orderedKeys(input.history, [], field)
+      const searchNames = [...(quoted.length === 1 ? quoted : []), ...orderedKeys(input.history, companyKeys, field)
         .flatMap((row) => row.fields[field]?.values ?? [])].filter((row) => row.value && (field !== 'arAccount' || !isExcludedRefundArAccount(row.value)))
         .filter((row, index, all) => all.findIndex((other) => norm(other.value) === norm(row.value)) === index)
         .slice(0, AUTOPICK_MAX_ALTERNATIVES + 1);
@@ -296,8 +299,8 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
             return row && /^\d{1,30}$/.test(String(row.nativeId ?? '')) && typeof row.name === 'string' && row.name.trim() &&
               (field !== 'arAccount' || !isExcludedRefundArAccount(row.name)) ? [{ read, row, nativeId: String(row.nativeId), name: row.name }] : [];
           })).filter((row, index, all) => all.findIndex((other) => other.nativeId === row.nativeId) === index)
-          .sort((a, b) => (statFor(b.name)?.count ?? 0) - (statFor(a.name)?.count ?? 0) ||
-            Number(norm(b.name) === norm(name)) - Number(norm(a.name) === norm(name)) || a.name.localeCompare(b.name));
+          .sort((a, b) => Number(same(b.name, name)) - Number(same(a.name, name)) ||
+            (statFor(b.name)?.count ?? 0) - (statFor(a.name)?.count ?? 0) || a.name.localeCompare(b.name));
         if (!candidates.length) continue;
         const bound = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((native) => {
           const ref = `obs_autopick_${hash(input.generationId, request.id, selectionPath, native.nativeId)}`;
@@ -325,10 +328,13 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
     }
     if (request.kind !== 'create' && request.kind !== 'quote') continue;
     const root = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
-    const companyKeys: AutopickHistoryKey[] = [];
     const allocationId = request.kind === 'create' ? request.body.allocations[0]?.id : undefined;
     const owner = (request.kind === 'create' ? request.body.shared : request.body.parties) as Record<string, unknown>;
     const ownerPath = request.kind === 'create' ? `${root}/shared` : `${root}/parties`;
+    const companyKeys = ['organization', 'bookingAgency'].flatMap((field) => {
+      const name = rec(owner[field])?.name;
+      return history && typeof name === 'string' ? [history.companyHistory(name)] : [];
+    }).filter((key): key is AutopickHistoryKey => key !== null);
     // Do not fight a per-room or per-date value: shared picks only when nothing below overrides the field.
     const overridden = (field: Field) => request.kind === 'create' && [...request.body.dateSections.map((row) => row.defaults),
       ...request.body.allocations.map((row) => row.overrides)].some((fields) => (fields as Record<string, unknown>)[field] != null);
@@ -364,8 +370,9 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
             ? [{ ref: row.ref, nativeId: String(native.nativeId), name: native.name }] : [];
         }).filter((row, index, all) => all.findIndex((other) => other.nativeId === row.nativeId) === index);
         if (!candidates.length) continue;
-        const score = (row: { name: string }) => (statFor(row.name)?.count ?? 0) * 2 + Number(norm(row.name) === norm(party.name));
-        candidates = candidates.map((row, index) => ({ row, index })).sort((a, b) => score(b.row) - score(a.row) || a.index - b.index).map(({ row }) => row);
+        candidates = candidates.map((row, index) => ({ row, index })).sort((a, b) =>
+          Number(same(b.row.name, String(party.name))) - Number(same(a.row.name, String(party.name))) ||
+          (statFor(b.row.name)?.count ?? 0) - (statFor(a.row.name)?.count ?? 0) || a.index - b.index).map(({ row }) => row);
         pickIndex = 0;
         const quote = emailQuoteAny(text, party.name, role) ?? undefined;
         if (quote) evidence.push({ kind: 'email_text', count: null, total: null, lastSeen: null, quote });
@@ -473,7 +480,8 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
       // Guarantee follows the sender's or company's own history only; a shared domain is too loose for a payment term.
       const gated = keys.filter((key) => key.kind !== 'agency_domain').map((key) => ({ key, stats: key.fields.guaranteeType! })).find(({ stats }) =>
         stats.values[0]?.value && choice(stats.values[0].value) && gateFor(stats, stats.values[0].value, (a, b) => norm(a) === norm(b)));
-      const documentKinds = new Set(proposal.content.documents.map((row) => row.kind));
+      const documentKinds = new Set(proposal.content.documents.filter((row) => row.ownerRequestId === request.id ||
+        request.documentRefs.includes(row.id) || row.targetRefs.some((target) => target.requestId === request.id)).map((row) => row.kind));
       const attached = documentKinds.has('payment_proof') ? { meaning: 'Guaranteed By Deposit', key: 'Proof of payment' }
         : documentKinds.has('voucher') ? { meaning: 'Guaranteed By Agent', key: 'Voucher' } : null;
       const first = keys[0]?.fields.guaranteeType;

@@ -5394,7 +5394,11 @@ async function autopickGuaranteeChoices(propertyCode: PropertyCode, env: NodeJS.
   const catalog = await loadNativeBookingCodes({ propertyCode, kind: 'guaranteeTypes', env }).catch(() => null);
   if (catalog?.status === 'available') return catalog.records.flatMap((row) => row.code ? [{ code: row.code, meaning: row.meaning ?? row.code }] : []);
   try {
-    return (profileFor(propertyCode)?.createForm?.options?.guaranteetype?.choices ?? []).map((row) => ({ code: row.value, meaning: row.display }));
+    const policy = await import(new URL('../../tooling/hms-cloud/cloud-create-policy.mjs', import.meta.url).href);
+    return (profileFor(propertyCode)?.createForm?.options?.guaranteetype?.choices ?? []).flatMap((row) => {
+      const code = policy.createGuaranteeCode(row.value);
+      return typeof code === 'string' ? [{ code, meaning: row.display }] : [];
+    });
   } catch { return []; }
 }
 
@@ -6503,7 +6507,12 @@ export async function runReservationWorkflowV2Prefill(input: {
     { source: input.source, selection: input.selection, evidence }) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
-    const trackResult = await applyRateTrackMemory({ proposal: finalProposal, source: input.source,
+    const autopick = applyAutopick({ proposal: finalProposal, observations: finalObservations, history: autopickHistory,
+      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
+      modelResults: autopickModelResults, extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map(),
+      generationId, propertyCode, source: input.source });
+    finalObservations.push(...autopick.observations);
+    const trackResult = await applyRateTrackMemory({ proposal: autopick.proposal, source: input.source,
       propertyCode, generationId, env });
     const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
@@ -6514,12 +6523,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     finalObservations.push(...amendNotes.observations);
     finalObservations.push(...noteCompositionObservations({ before: trackResult.proposal, proposal: amendNotes.proposal,
       observations: finalObservations, source: input.source, generationId, propertyCode, evidence }));
-    const autopick = applyAutopick({ proposal: amendNotes.proposal, observations: finalObservations, history: autopickHistory,
-      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
-      modelResults: autopickModelResults, extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map(),
-      generationId, propertyCode, source: input.source });
-    finalObservations.push(...autopick.observations);
-    finalProposal = autopick.proposal;
+    finalProposal = amendNotes.proposal;
     amendNoteRequirements = { ...autopick.requirements, ...amendNotes.requirements };
   }
   const admittedReviewRefs = new Set([...evidence.map((row) => row.ref), ...finalObservations.map((row) => row.ref)]);
@@ -6634,9 +6638,14 @@ export async function runReservationWorkflowV2Prefill(input: {
     const fallbackSafety = addRequestConfirmationSafety({ proposal: fallbackProjection.proposal, extraction: currentActions,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
       currentRefs, admittedRefs: new Set(evidence.map((row) => row.ref)), evidence });
-    const trackResult = await applyRateTrackMemory({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, propertyCode,
+    // A failed synthesis records no model choice: that is a synthesis failure, not an autopick parse failure.
+    const autopick = applyAutopick({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId,
-      { source: input.source, selection: input.selection, evidence }), source: input.source,
+      { source: input.source, selection: input.selection, evidence }), observations: finalObservations, history: autopickHistory,
+      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env), modelResults: [],
+      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, generationId, propertyCode, source: input.source });
+    finalObservations.push(...autopick.observations);
+    const trackResult = await applyRateTrackMemory({ proposal: autopick.proposal, source: input.source,
       propertyCode, generationId, env });
     const noteResult = await applyNoteMemory({ proposal: trackResult.proposal, source: input.source, propertyCode,
       generationId, selection: input.selection, evidence, db: input.db, transportId: input.transportId, env });
@@ -6647,12 +6656,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     finalObservations.push(...amendNotes.observations);
     finalObservations.push(...noteCompositionObservations({ before: trackResult.proposal, proposal: amendNotes.proposal,
       observations: finalObservations, source: input.source, generationId, propertyCode, evidence }));
-    // A failed synthesis records no model choice: that is a synthesis failure, not an autopick parse failure.
-    const autopick = applyAutopick({ proposal: amendNotes.proposal, observations: finalObservations, history: autopickHistory,
-      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env), modelResults: [],
-      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, generationId, propertyCode, source: input.source });
-    finalObservations.push(...autopick.observations);
-    const proposal = autopick.proposal;
+    const proposal = amendNotes.proposal;
     const nativeLeads = await loadReservationNativeLeads({ propertyCode, source: input.source,
       generationId, proposal, fromAddress: input.selection.fromAddress ?? null, env, signal: input.signal,
       db: input.db, transportId: input.transportId,

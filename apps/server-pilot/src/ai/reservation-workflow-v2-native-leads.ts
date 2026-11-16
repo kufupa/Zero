@@ -88,12 +88,14 @@ async function memoryDir(env: NodeJS.ProcessEnv, propertyCode: string): Promise<
 async function resolveMemoryPmsPath(env: NodeJS.ProcessEnv, propertyCode: string): Promise<string | undefined> {
   const { dir, perProperty } = await memoryDir(env, propertyCode);
   if (perProperty) return join(dir, 'pms.json');
+  if (propertyCode !== 'HRCEN') return undefined;
   if (env.HMS_MEMORY_PMS_PATH) return env.HMS_MEMORY_PMS_PATH;
   return firstExistingPath([join(dir, 'pms.json'), join(dir, 'stay360-1a-1b-1c-20261029-run01.json')]);
 }
 async function resolveMemoryObservationsPath(env: NodeJS.ProcessEnv, propertyCode: string): Promise<string | undefined> {
   const { dir, perProperty } = await memoryDir(env, propertyCode);
-  return perProperty ? firstExistingPath([join(dir, 'observations.jsonl')]) : env.HMS_MEMORY_OBSERVATIONS_PATH || undefined;
+  return perProperty ? firstExistingPath([join(dir, 'observations.jsonl')])
+    : propertyCode === 'HRCEN' ? env.HMS_MEMORY_OBSERVATIONS_PATH || undefined : undefined;
 }
 
 /** Native stay evidence, scoped to the selected message's arrival; no rate-code guessing. */
@@ -209,6 +211,7 @@ const memoryCache = new Map<string, { key: string; loadedAt: number; value: Prom
 /** Property-keyed: a property with no memory yet gets null (callers return empty), never another property's history. */
 async function loadMemory(env: NodeJS.ProcessEnv, propertyCode: string): Promise<Memory | null> {
   const { dir, perProperty } = await memoryDir(env, propertyCode);
+  if (!perProperty && propertyCode !== 'HRCEN') return null;
   const pmsPath = await resolveMemoryPmsPath(env, propertyCode);
   const outboundPdfPath = perProperty ? await firstExistingPath([join(dir, 'outbound.jsonl')])
     : env.HMS_MEMORY_OUTBOUND_PATH || (env.HMS_MEMORY_PMS_PATH ? undefined :
@@ -675,7 +678,7 @@ export async function loadReservationAutopickHistory(input: { propertyCode: stri
             const hint = (row.historicalHints as Record<string, unknown>)[field];
             const parsed = historicalValuesSchema.safeParse(hint);
             return parsed.success ? [...(parsed.data.recordView ?? []), ...(parsed.data.stay360 ?? [])] : [];
-          }).flatMap(value => typeof value === 'string' || typeof value === 'number' ? [String(value).trim()] : []).filter(Boolean)
+          }).flatMap(value => typeof value === 'string' || typeof value === 'number' ? [String(value).trim()] : [])
           : stay.rows.some(row => row.outcomes.some(outcome => outcome.conflictingFields.includes(field))) ? []
             : stay.rows.flatMap(row => row.outcomes.map(outcome => (outcome.combination[field] ?? '').trim()));
         const distinct = new Map(raw.map(value => [value.normalize('NFKC').toLocaleLowerCase('en-US'), value]));
