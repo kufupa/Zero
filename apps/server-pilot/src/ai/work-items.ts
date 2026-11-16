@@ -1678,7 +1678,7 @@ export async function planThreadWork(
       replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
     // A prior pure-information read may have been automatically closed as staff-sent. A pre-stay the read could not
     // clear also reopens: it may still carry a current ask, so it is never auto-done on a missing verdict.
-    if (preStayAsk && preStayAsk.status !== 'none' && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
+    if (preStayAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
       if (closeOnReply && lastHotel) {
         if (lastHotel.m.id !== item.sentMessageId) {
           changes.push({ workItemId: item.id, kind, repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id } });
@@ -1722,7 +1722,7 @@ export async function planThreadWork(
       }
       continue;
     }
-    const staffOther = kind === 'other' && ownSent(source) && (!preStayAsk || preStayAsk.status === 'none');
+    const staffOther = kind === 'other' && ownSent(source) && !preStayAsk;
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
