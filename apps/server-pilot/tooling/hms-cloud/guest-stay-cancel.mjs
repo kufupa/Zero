@@ -104,19 +104,22 @@ async function cancellationFeeStageEvidence(frame) {
       const notes = [...document.querySelectorAll('textarea[name="cancellationnote"]')].filter(visible);
       const reasonDialogHasFeeText = ranked.some((item) => item.kind === 'reason' &&
         /penalt|fee|charge|deposit/i.test(item.element.innerText || ''));
+      const reasonDialogFeeText = reasonDialogHasFeeText && reasonWindowCount === 1
+        ? ranked.find((item) => item.kind === 'reason')?.element.innerText?.trim() ?? null : null;
       const feeWindow = feeWindowCount === 1 ? ranked.find((item) => item.kind === 'fee')?.element : null;
-      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() ?? feeWindow?.innerText?.trim() ?? null;
+      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() || feeWindow?.innerText?.trim() || null;
       const feeButtons = feeWindow ? [...feeWindow.querySelectorAll('.x-btn')].filter(visible) : [];
       return { visibleWindowCount: windows.length, feeWindowCount, reasonWindowCount, topWindowKind,
         reasonDialogHasFeeText, reasonControlCount: reasons.length,
         reasonControlEnabled: reasons.length === 1 && !reasons[0].disabled && !reasons[0].readOnly,
         noteControlCount: notes.length,
         noteControlEnabled: notes.length === 1 && !notes[0].disabled && !notes[0].readOnly,
-        feePromptMayObstructReason: feeWindowCount > 0, feeDialogText,
+        feePromptMayObstructReason: feeWindowCount > 0, feeDialogText, reasonDialogFeeText,
         feeButtonCount: feeButtons.length, feeButtonLabels: feeButtons.map((button) => button.innerText.trim()) };
     });
-    const { feeDialogText, feeButtonLabels, feeButtonCount, ...evidence } = captured ?? {};
-    return { ...evidence, ...feeDialogEvidence({ text: feeDialogText, buttonLabels: feeButtonLabels,
+    const { feeDialogText, reasonDialogFeeText, feeButtonLabels, feeButtonCount, ...evidence } = captured ?? {};
+    return { ...evidence, ...feeDialogEvidence({ text: feeDialogText || reasonDialogFeeText,
+      buttonLabels: feeButtonLabels,
       buttonCount: feeButtonCount, buttonSource: 'dom' }) };
   } catch { return null; }
 }
@@ -164,14 +167,17 @@ async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValu
       const topWindowKind = top.length === 1 ? top[0].kind : windows.length ? 'ambiguous' : 'none';
       const feeWindowCount = ranked.filter(item => item.kind === 'fee').length;
       const reasonWindowCount = ranked.filter(item => item.kind === 'reason').length;
+      const reasonDialogHasFeeText = ranked.some(item => item.kind === 'reason' &&
+        /penalt|fee|charge|deposit/i.test(item.element.innerText || ''));
+      const reasonDialogFeeText = reasonDialogHasFeeText && reasonWindowCount === 1
+        ? ranked.find(item => item.kind === 'reason')?.element.innerText?.trim() ?? null : null;
       const feeWindow = feeWindowCount === 1 ? ranked.find(item => item.kind === 'fee')?.element : null;
-      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() ?? feeWindow?.innerText?.trim() ?? null;
+      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() || feeWindow?.innerText?.trim() || null;
       const feeButtons = feeWindow ? [...feeWindow.querySelectorAll('.x-btn')].filter(visible) : [];
       const reasons = [...document.querySelectorAll('input[name="cancelreason"]')].filter(visible);
       const notes = [...document.querySelectorAll('textarea[name="cancellationnote"]')].filter(visible);
       const evidence = { visibleWindowCount: windows.length, feeWindowCount, reasonWindowCount, topWindowKind,
-        reasonDialogHasFeeText: ranked.some(item => item.kind === 'reason' &&
-          /penalt|fee|charge|deposit/i.test(item.element.innerText || '')),
+        reasonDialogHasFeeText, reasonDialogFeeText,
         reasonControlCount: reasons.length,
         reasonControlEnabled: reasons.length === 1 && !reasons[0].disabled && !reasons[0].readOnly,
         noteControlCount: notes.length,
@@ -190,8 +196,8 @@ async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValu
       noteComponent.fireEvent?.('blur', noteComponent);
       return { evidence, noteStaged: notes[0].value === noteValue && noteComponent.getValue?.() === noteValue };
     }, { expectedReason, noteValue });
-    const { feeDialogText, feeButtonLabels, feeButtonCount, ...evidence } = captured?.evidence ?? {};
-    return { evidence: { ...evidence, ...feeDialogEvidence({ text: feeDialogText,
+    const { feeDialogText, reasonDialogFeeText, feeButtonLabels, feeButtonCount, ...evidence } = captured?.evidence ?? {};
+    return { evidence: { ...evidence, ...feeDialogEvidence({ text: feeDialogText || reasonDialogFeeText,
       buttonLabels: feeButtonLabels, buttonCount: feeButtonCount, buttonSource: 'dom' }) },
       noteStaged: captured?.noteStaged === true };
   } catch { return { evidence: null, noteStaged: false }; }
