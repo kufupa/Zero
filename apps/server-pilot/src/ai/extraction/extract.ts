@@ -4,7 +4,7 @@ import type { ModelAdapter, ModelInvokeInput, ModelInvokeResult } from '../bedro
 import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../bedrock/luna.js';
 import { maskCardNumbers } from '../card-mask.js';
 import { hotelRulesForProperty } from '../reservationist-decision.js';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
+import { groundedSeparateAsk, selfSentPreStayCandidate } from '../existing-stay-information.js';
 import { renderPdfPagesForVision, type VisionPage } from '../../mail/artifacts/read-artifact.js';
 import type {
   QuoteAttachmentReviewReason,
@@ -716,11 +716,12 @@ export async function extractInboundMail(input: {
       yearEvidenceText: stayDateYearEvidenceText(input.selection),
     },
   });
-  const existingStayInformation = isSelfSentPreStayInformationMail({
+  const existingStayInformation = selfSentPreStayCandidate({
     fromAddress: input.from,
     mailboxAddress: input.mailbox,
     subject: input.selection.subject,
     confirmationNumbers: sanitized.payload.confirmationNumbers,
+    bodyText: input.selection.currentBodyText ?? input.selection.bodyText,
   });
   const separateAsk = existingStayInformation
     ? groundedSeparateAsk(maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText), parsed.data.separateAsk)
