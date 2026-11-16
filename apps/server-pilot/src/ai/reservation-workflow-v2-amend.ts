@@ -1173,6 +1173,25 @@ function callbackRequested(compiled: CompiledAmend) {
       !sameChildAges(compiled.target.childAges, compiled.selected.childAges)));
 }
 
+/**
+ * Guarantee, Organization, Primary Booking Agency, A/R Account and child-age changes fire saved-stay
+ * callbacks that HMS may keep before Save, and HMS only shows the repriced total after them. Until a
+ * no-persistence preview exists, Nava must not fire them before staff have seen HMS's price and pressed Go.
+ */
+function callbackPriceBeforeWriteAvailable(): boolean { return false; }
+const CALLBACK_FINISH_IN_HMS = 'amend_callback_change_finish_in_hms';
+function callbackFields(plan: { guarantee: unknown; parties: Array<Record<string, unknown>>; children: unknown }) {
+  return [...(plan.guarantee ? ['guaranteeType'] : []), ...plan.parties.map(party => String(party.kind)),
+    ...(plan.children ? ['childAges'] : [])];
+}
+function compiledCallbackFields(compiled: CompiledAmend) {
+  return [...(typeof compiled.baseChanges.guaranteeType === 'string' &&
+      compiled.baseChanges.guaranteeType !== compiled.selected.guaranteeCode ? ['guaranteeType'] : []),
+    ...partyOrder.filter(field => Object.hasOwn(compiled.baseChanges, field)),
+    ...(Object.hasOwn(compiled.baseChanges, 'children') && (compiled.target.children !== compiled.selected.children ||
+      !sameChildAges(compiled.target.childAges, compiled.selected.childAges)) ? ['childAges'] : [])];
+}
+
 function portablePartyImage(value: unknown): Record<string, unknown> | null {
   const image = record(value), data = record(image?.data), values = record(image?.values);
   if (!data || !values) return null;
@@ -1341,6 +1360,8 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         observation.result = { ...observation.result, callbackNoop: true };
         return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
       }
+      // Fail closed before any persistent callback can be authorized: the staged price above excludes them.
+      if (!callbackPriceBeforeWriteAvailable()) return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: callbackFields(plan) };
       if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
       if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
       const planDigest = sha256(plan);
@@ -1357,6 +1378,9 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) {
       if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      if ('finishInHmsFields' in prepared && Array.isArray(prepared.finishInHmsFields)) {
+        return { status: 'unsupported', issue: prepared.issue, fields: prepared.finishInHmsFields };
+      }
       if ('retainCallback' in prepared && prepared.retainCallback === true) {
         const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
           kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
@@ -2253,6 +2277,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     }
   }
   if (callbackRequested(compiled) && record(candidate?.result)?.callbackNoop !== true) {
+    // Also covers callback previews recorded before this guard shipped.
+    if (!callbackPriceBeforeWriteAvailable()) {
+      return { status: 'unsupported', issue: CALLBACK_FINISH_IN_HMS, fields: compiledCallbackFields(compiled) };
+    }
     return executeCallbackFirst(ctx, input, loaded.draft, compiled);
   }
   if (!ctx.user.sessionId || !ctx.user.sessionProfile) {
