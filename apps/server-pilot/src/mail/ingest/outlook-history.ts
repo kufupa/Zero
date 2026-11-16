@@ -5,6 +5,11 @@ import {
   corroboratedMessageId,
   newCanonicalAttachments,
 } from './canonical-identity.js';
+import {
+  LINKED_OPTIONAL_MISSING_KEY,
+  mergeOptionalMissingGaps,
+  optionalMissingItems,
+} from './attachment-evidence.js';
 import { attachment, mailboxTransport, mailThread, message } from '../../db/schema/mail.js';
 import { canonicalMessageId, buildReferenceChain } from './message-id.js';
 import { refreshThreadSearchVector } from '../search/search-vector.js';
@@ -84,9 +89,15 @@ export async function persistOutlookHistory(
       (candidate.kind === 'unique' &&
         candidate.message.sourceProvenance?.attention === 'AMBIGUOUS_IDENTITY');
     const linked = candidate.kind === 'unique';
+    const priorAttachments =
+      candidate.kind === 'unique'
+        ? await tx.select().from(attachment).where(eq(attachment.messageId, candidate.message.id))
+        : [];
+    const additions = newCanonicalAttachments(priorAttachments, input.attachments);
     if (candidate.kind === 'unique') {
       messageId = candidate.message.id;
       threadId = candidate.message.threadId;
+      const provenance = candidate.message.sourceProvenance ?? {};
       const previousVersion = candidate.message.sourceProvenance?.canonicalContentVersion;
       const incomingVersion = /^\d+$/.test(input.semanticVersion)
         ? BigInt(input.semanticVersion)
@@ -108,6 +119,30 @@ export async function persistOutlookHistory(
           /^\d+$/.test(previousVersion) && incomingVersion < BigInt(previousVersion)) {
         return { messageId, threadId, linked, attention };
       }
+      // A different device observes the same canonical message under another
+      // sourceId/sourceObservationId, so its declared-but-missing attachment
+      // roles never reach `optionalMissing`. Merge them into a canonical gap
+      // list instead of letting the link read as confirmed-empty.
+      const requiredRoles = (
+        input.sourceProvenance.evidence as { requiredArtifactRoles?: unknown } | null | undefined
+      )?.requiredArtifactRoles;
+      const incomingEnumerated =
+        Array.isArray(requiredRoles) && !requiredRoles.includes('attachment:unavailable');
+      const persistedSourceIds = new Set(
+        [...priorAttachments, ...additions]
+          .map((row) => row.sourceAttachmentId)
+          .filter((id): id is string => typeof id === 'string'),
+      );
+      const linkedMissing = mergeOptionalMissingGaps({
+        merged: provenance[LINKED_OPTIONAL_MISSING_KEY],
+        own: provenance.optionalMissing,
+        incoming: input.sourceProvenance.optionalMissing,
+        persistedSourceIds,
+        incomingEnumerated,
+      });
+      const gapsChanged =
+        JSON.stringify(linkedMissing) !==
+        JSON.stringify(optionalMissingItems(provenance[LINKED_OPTIONAL_MISSING_KEY]));
       await tx
         .update(message)
         .set({
@@ -120,10 +155,10 @@ export async function persistOutlookHistory(
             newerOwnedHistory && input.htmlBody !== null
               ? sanitizeHtmlBodyForStorage(input.htmlBody)
               : (candidate.message.htmlBody ?? sanitizeHtmlBodyForStorage(input.htmlBody)),
-          ...(newerOwnedHistory || sameObservation
+          ...(newerOwnedHistory || sameObservation || gapsChanged
             ? {
                 sourceProvenance: {
-                  ...candidate.message.sourceProvenance,
+                  ...provenance,
                   ...(newerOwnedHistory || sameObservation ? { canonicalContentVersion: input.semanticVersion } : {}),
                   ...(sameObservation ? {
                     observationId: input.sourceProvenance.observationId,
@@ -133,6 +168,7 @@ export async function persistOutlookHistory(
                     evidence: input.sourceProvenance.evidence,
                     artifacts: input.sourceProvenance.artifacts,
                   } : {}),
+                  ...(gapsChanged ? { [LINKED_OPTIONAL_MISSING_KEY]: linkedMissing } : {}),
                 },
               }
             : {}),
@@ -195,8 +231,6 @@ export async function persistOutlookHistory(
         },
       });
     }
-    const existing = await tx.select().from(attachment).where(eq(attachment.messageId, messageId));
-    const additions = newCanonicalAttachments(existing, input.attachments);
     for (let start = 0; start < additions.length; start += 100) {
       await tx
         .insert(attachment)
