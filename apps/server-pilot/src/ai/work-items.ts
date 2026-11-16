@@ -1658,7 +1658,6 @@ export async function planThreadWork(
       confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
       payload,
     }) : null;
-    const _separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
@@ -2886,7 +2885,7 @@ export async function listWorkItems(
             return null;
           }
         }
-        const _separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
+        const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
         const reviewOnly = preStayAsk?.status === 'review';
         return {
           ...row,

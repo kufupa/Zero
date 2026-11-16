@@ -164,7 +164,6 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
               origin: 'person', needsAction: candidate.needsAction ?? true,
               action: candidate.action ?? 'group_event', separateAsk: candidate.excerpt ?? ask,
               confirmationNumbers: candidate.confirmations ?? ['57291630-1'],
-              ...(candidate.verdict ? { separateAskVerdict: candidate.verdict } : {}),
             },
           }).returning({ id: mailExtraction.id });
           await db.insert(workItem).values({
@@ -213,13 +212,13 @@ describe.skipIf(!TEST_DB_AVAILABLE)(
         await seedExistingStayMail(db);
         await db.update(message).set({ direction: 'outbound' }).where(eq(message.id, MESSAGE_ID));
         await db.update(mailExtraction).set({ kind: 'other', payload: {
-          origin: 'person', needsAction: false, action: 'no_action', separateAskVerdict: 'none',
+          origin: 'person', needsAction: false, action: 'no_action',
           contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
           confirmationNumbers: ['57291630-1'], stays: [], missing: [],
         } }).where(eq(mailExtraction.messageId, MESSAGE_ID));
         const input = { transportId: TRANSPORT_ID, messageId: MESSAGE_ID };
         const pure = await ensureWorkItemForMessage(db, input);
-        expect(pure?.status).toBe('done');
+        expect(pure?.status).toBe('needs_you');
         const ask = 'Please send the conference catering menu.';
         await db.update(message).set({ textBody: `Arrival details. ${ask}` }).where(eq(message.id, MESSAGE_ID));
         await db.update(mailExtraction).set({ payload: {
