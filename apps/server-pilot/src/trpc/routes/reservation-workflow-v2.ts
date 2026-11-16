@@ -78,6 +78,7 @@ import { bindHmsMailboxProperty, guardCenturionHmsMailboxOrigin, loadThreadMailb
   from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceMatchesContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 import { canonicalMessageId } from '../../mail/ingest/message-id.js';
+import { fileAttachmentPresence } from '../../mail/ingest/attachment-evidence.js';
 import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { logReservationWorkflowFailure } from '../reservation-workflow-v2-diagnostics.js';
@@ -207,7 +208,8 @@ async function requireCreateSource(scoped: ReturnType<typeof context>, source: R
   const [fileAttachment] = await scoped.db.select({ id: attachment.id }).from(attachment)
     .where(and(eq(attachment.messageId, row.id), eq(attachment.isInline, false))).limit(1);
   const classification = classifyReservationWorkflowV2Source({ fromAddress: row.fromAddress, subject: row.subject,
-    bodyText: preStaySourceText(row.textBody, row.htmlBody), mailboxAddress, hasAttachments: fileAttachment != null });
+    bodyText: preStaySourceText(row.textBody, row.htmlBody), mailboxAddress,
+    hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) });
   if (classification.skippedReason) throw new TRPCError({ code: 'FORBIDDEN',
     message: 'This email comes from an automated source; it cannot create a booking.' });
   if (classification.selfPreStay) throw new TRPCError({ code: 'FORBIDDEN',
@@ -383,7 +385,8 @@ export const reservationWorkflowV2Router = router({
       matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
     const admission = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
       bodyText: preStaySourceText(selected.textBody, selected.htmlBody), mailboxAddress: ctx.transportEmail,
-      hasAttachments: attachments.some((row) => !row.isInline) });
+      hasAttachments: fileAttachmentPresence(attachments.some((row) => !row.isInline),
+        selected.sourceProvenance) });
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
@@ -416,7 +419,7 @@ export const reservationWorkflowV2Router = router({
       .where(and(eq(attachment.messageId, source.id), eq(attachment.isInline, false))).limit(1);
     const admission = classifyReservationWorkflowV2Source({ fromAddress: source.fromAddress, subject: source.subject,
       bodyText: preStaySourceText(source.textBody, source.htmlBody), mailboxAddress: ctx.transportEmail,
-      hasAttachments: fileAttachment != null });
+      hasAttachments: fileAttachmentPresence(fileAttachment != null, source.sourceProvenance) });
     if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.`,
       skippedSource: { kind: admission.skippedReason, source: admission.classification.source } };
     const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource, { allowSourceChanged: true });
