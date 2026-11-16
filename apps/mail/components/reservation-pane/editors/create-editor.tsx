@@ -11,18 +11,18 @@ import styles from './create-quote-editor.module.css';
 type Editor = WorkbenchEditorProps;
 type BookingField = { key: string; label: string; picker?: string; party?: boolean; type?: string; hint?: string; maxLength?: number };
 const roomFields: BookingField[] = [
-  { key: 'requestedMealPlan', label: 'Meal Plan request', maxLength: 120, hint: 'Customer meal plan request. Confirm it against the Infor rate.' },
-  { key: 'requestedRoomDescription', label: 'Room Request', maxLength: 1000, hint: 'Customer room wording. Select the matching Infor Room Type below.' },
+  { key: 'requestedMealPlan', label: 'Meal Plan request', maxLength: 120, hint: 'From the email. Infor sets the Meal Plan from the Rate Plan.' },
+  { key: 'requestedRoomDescription', label: 'Room Request', maxLength: 1000, hint: 'From the email. Pick the matching Room Type below.' },
   { key: 'roomType', label: 'Room Type', picker: 'room_type' },
-  { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Blank uses the Infor default. Infor checks the price for the selected category.' },
+  { key: 'roomTypeForCharge', label: 'Room Type for Charge', picker: 'room_type_for_charge', hint: 'Leave blank to charge the Room Type.' },
   { key: 'ratePlan', label: 'Rate Plan', picker: 'rate_plan' },
-  { key: 'mealPlan', label: 'Meal Plan', maxLength: 120, hint: 'Confirm against the selected Infor rate.' },
+  { key: 'mealPlan', label: 'Meal Plan', maxLength: 120, hint: 'Must match the Rate Plan in Infor.' },
 ];
 const partyFields: BookingField[] = [
   { key: 'bookingAgency', label: 'Primary Booking Agency', party: true },
   { key: 'organization', label: 'Organization', party: true },
   { key: 'arAccount', label: 'A/R Account', party: true },
-  { key: 'billingReference', label: 'Billing Reference', maxLength: 50, hint: 'Select an A/R Account. Infor accepts at most 50 characters.' },
+  { key: 'billingReference', label: 'Billing Reference', maxLength: 50, hint: 'Needs an A/R Account. Up to 50 characters.' },
   { key: 'taCommission', label: 'Travel agency commission (%)', type: 'percentage', maxLength: 40, hint: 'Enter a percentage from 0 to 100.' },
 ];
 const stayFields: BookingField[] = [
@@ -33,7 +33,7 @@ const stayFields: BookingField[] = [
 ];
 const trackField: BookingField = { key: 'track', label: 'Track / Sub Segment', picker: 'track' };
 const otherFields: BookingField[] = [
-  { key: 'bookerName', label: 'Booker name', maxLength: 300, hint: 'Preserves long names for review; Infor Create accepts at most 50 characters.' },
+  { key: 'bookerName', label: 'Booker name', maxLength: 300, hint: 'Infor allows up to 50 characters.' },
   { key: 'bookerEmail', label: 'Booker email', maxLength: 320, type: 'email' },
   { key: 'bookerMobile', label: 'Booker mobile', maxLength: 120 },
   { key: 'reservationNote', label: 'Reservation Note', maxLength: 2000, type: 'textarea' },
@@ -86,7 +86,7 @@ function SourceConfirmationNotice({ editor }: { editor: Editor }) {
     || Boolean(editor.snapshot.fields[path]?.issue);
   if (!hit) return null;
   return <div className={styles.notice} data-field-path={path} role="note">
-    Source confirmation: Create has no confirmation-number field. Review the email and PDF evidence, then use Amend or Filing for an existing stay — do not invent a Create confirmation input.
+    This email mentions an existing confirmation number. If the stay is already booked, use Amend or Filing instead of Create.
   </div>;
 }
 
@@ -114,8 +114,8 @@ function ownSummary(editor: Editor, base: string) {
   }).join(', ');
 }
 
-function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
-  field: BookingField; path: string; parentPaths: string[]; parentLabel: string; editor: Editor;
+function ScopedField({ field, path, parentPaths, parentLabel, ownLabel, editor }: {
+  field: BookingField; path: string; parentPaths: string[]; parentLabel: string; ownLabel: string; editor: Editor;
 }) {
   const own = hasOwn(editor, path);
   const inheritedValueAtParent = inheritedValue(editor, parentPaths);
@@ -127,12 +127,12 @@ function ScopedField({ field, path, parentPaths, parentLabel, editor }: {
   return <div className={styles.scopeField} data-field-path={own ? undefined : path}>
     {own ? <>
       <BookingControl field={field} path={path} editor={editor} emptyState={field.key === 'cmsRecipient' ? 'inherit' : undefined} />
-      <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path, undefined, 'inherit')}>Use {parentLabel} ({label})</button>
+      <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path, undefined, 'inherit')}>Same as {parentLabel} ({label})</button>
     </> : <div className={styles.inherited}>
       <span><b>{field.label}</b><small>{parentLabel}: {label}</small></span>
       <button type="button" className={styles.linkButton} onClick={() => void editor.commands.edit(path,
         inherited === undefined || inherited === null ? (field.party ? { name: null, candidateRefs: [], suggestedRef: null }
-          : field.type === 'checkbox' ? false : field.key === 'taCommission' ? null : '') : inherited)}>Set own</button>
+          : field.type === 'checkbox' ? false : field.key === 'taCommission' ? null : '') : inherited)}>{ownLabel}</button>
     </div>}
   </div>;
 }
@@ -442,7 +442,8 @@ export function CreateEditor(editor: Editor) {
     snapshot.preparationViews.some(item => item.requestId === request.id && item.fields?.some(field => field.includes('taCommission')));
   const [commissionOpen, setCommissionOpen] = useState(commissionNeedsAttention);
   useEffect(() => { if (commissionNeedsAttention) setCommissionOpen(true); }, [commissionNeedsAttention]);
-  const sharedBooking = [stayFields.find(field => field.key === 'guaranteeType')!, ...roomFields];
+  const guarantee = stayFields.find(field => field.key === 'guaranteeType')!;
+  const sharedBooking = roomFields;
   const lunchRequested = [valueAt(snapshot, `${shared}/requestedMealPlan`), ...sections.map(section => record(section.defaults).requestedMealPlan),
     ...allocations.map(allocation => record(allocation.overrides).requestedMealPlan)].some(value => /\blunch\b/i.test(text(value)));
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
@@ -450,16 +451,6 @@ export function CreateEditor(editor: Editor) {
     <SourceConfirmationNotice editor={editor} />
     {lunchRequested && <p className={styles.notice} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
     {hasCompleted && <p className={styles.notice}>Saved rooms keep their confirmed details. Changes to shared values and dates apply to remaining rooms only.</p>}
-    <Section title="Commercial">
-      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {partyFields.filter(field => field.key !== 'taCommission').map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
-        <details className={styles.details} open={commissionOpen} onToggle={event => setCommissionOpen(event.currentTarget.open)}>
-          <summary>Travel agency commission{typeof commissionValue === 'number' && !commissionInvalid ? ` · ${commissionValue}%` : ''}</summary>
-          <BookingControl field={commission} path={commissionPath} editor={editor} />
-        </details>
-        <UnsupportedTerms editor={editor} path={`${shared}/guestOptIn`} />
-      </fieldset>
-    </Section>
     {sections.map((section, sectionIndex) => {
       const sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
       const sectionId = text(section.id);
@@ -491,15 +482,15 @@ export function CreateEditor(editor: Editor) {
           <Field label="Departure Date" path={`${sectionPath}/departure`} editor={editor} type="date" disabled={sectionAllCompleted} review />
         </div>
         <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} · {adults ?? 'unknown'} adults · {children ?? 'unknown'} children on these dates</p>
-        {discrepancies.length > 0 && <p className={styles.notice} role="alert">Requested totals differ from the rooms: {discrepancies.join('; ')}. Review the rooms or adjust the requested totals.</p>}
+        {discrepancies.length > 0 && <p className={styles.notice} role="alert">The rooms do not match the email ({discrepancies.join('; ')}). Fix the rooms, or correct what the email asked for.</p>}
         {unresolved && <p className={styles.note}>Enter occupancy for every room to compare with the requested totals.</p>}
-        <details className={styles.details}><summary>Review source request totals</summary>
+        <details className={styles.details}><summary>What the email asked for</summary>
           <p className={styles.note}>Requested: {requested == null ? 'unknown' : text(requested)} rooms · {requestedTotals.adults == null ? 'unknown' : text(requestedTotals.adults)} adults · {requestedTotals.childCount == null ? 'unknown' : text(requestedTotals.childCount)} children.</p>
-          <details className={styles.details}><summary>Correct source totals</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
+          <details className={styles.details}><summary>Correct these numbers</summary><fieldset disabled={sectionHasCompleted} className={styles.plainFieldset}>
             <Field label="Requested rooms" type="number" path={`${sectionPath}/requestedRooms`} editor={editor} review />
             <Field label="Requested adults" type="number" path={`${sectionPath}/requestedTotals/adults`} editor={editor} review />
             <Field label="Requested children" type="number" path={`${sectionPath}/requestedTotals/childCount`} editor={editor} review />
-            <small>These email totals check the room allocation. They are not separate Infor fields. Blank means unknown. Known totals must match the rooms before saving.</small>
+            <small>Nava compares these with the rooms above. Leave blank if the email does not say.</small>
           </fieldset></details>
         </details>
         {rooms.map(({ allocation, index }) => completedRoom(editor, text(allocation.id)) ? null : <div className={styles.occupancyRow} key={text(allocation.id) || index}>
@@ -516,16 +507,11 @@ export function CreateEditor(editor: Editor) {
     })}
     {!sections.length && <p className={styles.notice}>Add dates to start a manual reservation.</p>}
     <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.changeRows({ kind: 'add_date_section', requestId: request.id, entityId: `dates_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Another date range</button>
-    <Section title="Stay details">
-      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
-        {extraStay.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
-      </fieldset>
-    </Section>
-    <Section title="Shared booking settings">
+    <Section title={sections.length > 1 || allocations.length > 1 ? 'Room and rate · all rooms' : 'Room and rate'}>
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
         {sharedBooking.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
       </fieldset>
-      <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.lookup()}>Search / refresh Infor</button>
+      <button type="button" className={styles.linkButton} disabled={view.busy} onClick={() => void commands.lookup()}>Refresh Infor choices</button>
     </Section>
     {sections.map((section, sectionIndex) => {
       const sectionPath = `${bodyPath}/dateSections/${sectionIndex}`;
@@ -538,9 +524,9 @@ export function CreateEditor(editor: Editor) {
         <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Guests · date range ${sectionIndex + 1}` : 'Guests'}</strong></div>
         {unassigned.length > 0 && <p className={styles.notice}>Guests to assign: {unassigned.join(', ')}</p>}
         <details open={allFields.some(field => hasOwn(editor, `${sectionPath}/defaults/${field.key}`)) || effectiveAt(snapshot, `${sectionPath}/defaults/guestOptIn`) === true || undefined} className={styles.details}>
-          <summary>Settings for these rooms{sectionHasCompleted ? ' · remaining rooms' : ''}</summary>
+          <summary>Different settings for these dates{sectionHasCompleted ? ' · remaining rooms' : ''}</summary>
           <fieldset disabled={sectionAllCompleted} className={styles.plainFieldset}>{allFields.map(field => <ScopedField key={field.key} field={field} path={`${sectionPath}/defaults/${field.key}`}
-            parentPaths={[`${shared}/${field.key}`]} parentLabel="shared" editor={editor} />)}
+            parentPaths={[`${shared}/${field.key}`]} parentLabel="all rooms" ownLabel="Change for these dates" editor={editor} />)}
             <UnsupportedTerms editor={editor} path={`${sectionPath}/defaults/guestOptIn`} /></fieldset>
         </details>
         {rooms.map(({ allocation, index }) => {
@@ -572,7 +558,7 @@ export function CreateEditor(editor: Editor) {
             <GuestProfile editor={editor} allocationPath={allocationPath} allocationId={allocationId} />
             <Price editor={editor} allocationId={allocationId} />
             <details open={Boolean(exceptions) || effectiveAt(snapshot, `${overrides}/guestOptIn`) === true || undefined} className={styles.details}>
-              <summary>Room exceptions{exceptions ? ` · ${exceptions}` : ''}</summary>
+              <summary>Different settings for this room{exceptions ? ` · ${exceptions}` : ''}</summary>
               <div className={styles.stack}>
                 <label className={styles.localField}>Stay dates
                   <select value={sectionId} disabled={view.busy || sections.length < 2} onChange={(event) => {
@@ -584,7 +570,7 @@ export function CreateEditor(editor: Editor) {
                   </option>)}</select>
                 </label>
                 {allFields.map(field => <ScopedField key={field.key} field={field} path={`${overrides}/${field.key}`}
-                  parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="date/shared" editor={editor} />)}
+                  parentPaths={[`${dateDefaults}/${field.key}`, `${shared}/${field.key}`]} parentLabel="these dates" ownLabel="Change for this room" editor={editor} />)}
                 <UnsupportedTerms editor={editor} path={`${overrides}/guestOptIn`} />
               </div>
             </details>
@@ -592,6 +578,22 @@ export function CreateEditor(editor: Editor) {
         })}
       </section>;
     })}
+    <Section title="Organization and billing">
+      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
+        {partyFields.filter(field => field.key !== 'taCommission').map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+        <BookingControl field={guarantee} path={`${shared}/guaranteeType`} editor={editor} />
+        <details className={styles.details} open={commissionOpen} onToggle={event => setCommissionOpen(event.currentTarget.open)}>
+          <summary>Travel agency commission{typeof commissionValue === 'number' && !commissionInvalid ? ` · ${commissionValue}%` : ''}</summary>
+          <BookingControl field={commission} path={commissionPath} editor={editor} />
+        </details>
+        <UnsupportedTerms editor={editor} path={`${shared}/guestOptIn`} />
+      </fieldset>
+    </Section>
+    <Section title="Stay details">
+      <fieldset disabled={allCompleted} className={styles.plainFieldset}>
+        {extraStay.map(field => <BookingControl key={field.key} field={field} path={`${shared}/${field.key}`} editor={editor} />)}
+      </fieldset>
+    </Section>
     <Section title="Booker and confirmation">
       <fieldset disabled={allCompleted} className={styles.plainFieldset}>
         {otherFields.map(field => <BookingControl key={field.key} field={field.key === 'cmsRecipient' ? { ...field,
