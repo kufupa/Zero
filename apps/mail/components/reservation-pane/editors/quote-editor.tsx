@@ -16,33 +16,6 @@ function pricingOverrides(value: unknown): Record<string, unknown> {
   return Object.fromEntries(Object.entries(record(value)).filter(([path]) => !reviewContextPath(path)));
 }
 
-function GuestRoster({ editor, path }: { editor: Editor; path: string }) {
-  const saved = valueAt(editor.snapshot, path);
-  const savedNames = Array.isArray(saved) ? saved.filter((name): name is string => typeof name === 'string') : [];
-  const [names, setNames] = useState(savedNames);
-  const [dirty, setDirty] = useState(false);
-  const version = useRef(0);
-  const savedKey = JSON.stringify(savedNames);
-  useEffect(() => { if (!dirty) setNames(savedNames); }, [savedKey, dirty]);
-  const stage = (next: string[]) => {
-    version.current += 1; setNames(next); setDirty(true); editor.commands.stageEdit(path, next);
-  };
-  const save = (next: string[]) => {
-    const savedVersion = version.current;
-    void editor.commands.edit(path, next).then(() => { if (version.current === savedVersion) setDirty(false); }).catch(() => {});
-  };
-  return <div className={styles.stack} data-field-path={path}>
-    <strong>Guest roster (review context only)</strong>
-    {names.map((name, index) => <div className={styles.inlineButtons} key={index}>
-      <input aria-label={`Guest ${index + 1}`} value={name} maxLength={300} disabled={editor.view.busy}
-        onChange={event => stage(names.map((item, i) => i === index ? event.target.value : item))}
-        onBlur={() => { if (dirty) save(names); }} />
-      <button type="button" disabled={editor.view.busy} onClick={() => { const next = names.filter((_, i) => i !== index); stage(next); save(next); }}>Remove</button>
-    </div>)}
-    <button type="button" className={styles.linkButton} disabled={editor.view.busy || names.length >= 200}
-      onClick={() => { const next = [...names, '']; stage(next); save(next); }}>+ Add guest</button>
-  </div>;
-}
 const strategies = [
   { value: 'BAR', label: 'BAR · best available rate' }, { value: 'PROMO', label: 'PROMO · promotion' },
   { value: 'PRESET', label: 'PRESET' }, { value: 'WS', label: 'WS' }, { value: 'NC', label: 'NC' },
@@ -311,7 +284,7 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
     ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || rows.length >= 100}
       data-field-path={extra.kind === 'lunch' ? `${bodyPath}/requestedMoney` : undefined}
       onClick={() => void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })}>+ {extra.label}</button>)}</div>
-    <p className={styles.note}>Customer amounts are separate from Infor room rates. They never replace a native rate.</p>
+    {rows.length > 0 && <p className={styles.note}>Extras are added on top of the Infor room rate. They never change it.</p>}
     {rows.map((row, index) => {
       const path = `${bodyPath}/requestedMoney/${index}`;
       const kindPath = `${path}/staffAllowanceType`;
@@ -321,8 +294,19 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
       const scope = text(valueAt(editor.snapshot, `${path}/scope`));
       const targets = valueAt(editor.snapshot, `${path}/targetRefs`);
       const selected = Array.isArray(targets) ? targets.map(text) : [];
+      const allIds = groups.map((group) => text(group.id));
+      const applied = scope === 'overall' ? allIds : scope === 'per_target' ? selected : [];
+      // One control replaces the old scope select: every group ticked means all room groups.
+      const setApplied = (next: string[]) => {
+        const all = allIds.length > 0 && allIds.every((id) => next.includes(id));
+        editor.commands.setUncommitted(`${path}/scope`, true);
+        void (async () => {
+          await editor.commands.edit(`${path}/targetRefs`, all ? [] : next);
+          await editor.commands.edit(`${path}/scope`, all ? 'overall' : 'per_target');
+        })().finally(() => editor.commands.setUncommitted(`${path}/scope`, false)).catch(() => {});
+      };
       return <div className={styles.roomCard} key={text(row.id) || index}>
-        <div className={styles.twoCol}><Field label="Requested amount" path={`${path}/amount`} editor={editor} review requireReview />
+        <div className={styles.twoCol}><Field label="Amount" path={`${path}/amount`} editor={editor} review requireReview />
           <Field label="Currency" path={`${path}/currency`} editor={editor} review requireReview /></div>
         <Field label="Unit" path={`${path}/unit`} editor={editor} review requireReview options={[
           { value: 'per_person_per_night', label: 'Per person per night' },
@@ -338,7 +322,11 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
             if (next === 'unsupported') {
               if (kind === 'unsupported' && separateOtherSaved) return;
               void editor.commands.changeRows({ kind: 'separate_quote_money', requestId: editor.request.id, entityId: String(index) } as never);
-            } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) void editor.commands.edit(kindPath, next);
+            } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) {
+              void editor.commands.edit(kindPath, next).then(() => {
+                if (scope !== 'overall' && scope !== 'per_target') setApplied(allIds);
+              }).catch(() => {});
+            }
           }}>
             <option value="unresolved">Choose how to handle</option>
             <option value="dinner">Dinner allowance</option>
@@ -348,25 +336,16 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
             <option value="unsupported">Other request · handle separately</option>
           </select>
         </label>
-        <label data-field-path={`${path}/scope`} className={styles.localField}>Apply this amount to
-          <FieldReview editor={editor} path={`${path}/scope`} label="groups for this amount" requireReview />
-          <select value={scope || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
-            const nextScope = event.target.value;
-            editor.commands.setUncommitted(`${path}/scope`, true);
-            void (async () => {
-              if (nextScope === 'overall' && selected.length) await editor.commands.edit(`${path}/targetRefs`, []);
-              await editor.commands.edit(`${path}/scope`, nextScope);
-            })().finally(() => editor.commands.setUncommitted(`${path}/scope`, false)).catch(() => {});
-          }}><option value="unresolved">Choose groups</option><option value="overall">All room groups</option>
-            <option value="per_target">Selected room groups</option></select>
-        </label>
-        <div data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="extra groups" requireReview /></div>
-        {scope === 'per_target' && <fieldset className={styles.targetFields}><legend>Select room groups</legend>
-          {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id}>
-            <input type="checkbox" checked={selected.includes(id)} onChange={(event) => void editor.commands.edit(`${path}/targetRefs`,
-              event.target.checked ? [...selected, id] : selected.filter((value) => value !== id))} /> Group {groupIndex + 1}
+        <fieldset className={styles.targetFields} data-field-path={`${path}/scope`}>
+          <legend>Applies to <FieldReview editor={editor} path={`${path}/scope`} label="rooms for this extra" requireReview />
+            <span data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="rooms for this extra" requireReview /></span></legend>
+          {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id || groupIndex}>
+            <input type="checkbox" disabled={editor.view.busy} checked={applied.includes(id)}
+              onChange={(event) => setApplied(event.target.checked ? [...applied, id] : applied.filter((value) => value !== id))} />
+            {groups.length === 1 ? ' All rooms' : ` Room group ${groupIndex + 1}`}
           </label>; })}
-        </fieldset>}
+          {kind !== 'unsupported' && applied.length === 0 && <p className={styles.notice}>Tick the rooms this extra is for.</p>}
+        </fieldset>
         {kind === 'unsupported' && separateOtherSaved
           ? <p className={styles.note}>Saved as a separate Other request. This supported room quote can continue independently.</p>
           : kind === 'unsupported'
@@ -473,9 +452,20 @@ export function QuoteEditor(editor: Editor) {
   const availabilityNotice = availabilityMessage(result);
   const provisional = valueAt(snapshot, `${bodyPath}/provisionalBookingRequested`);
   return <div className={`${styles.editor} ${styles.compactQuote}`}>
+    <Section title="Client">
+      <p className={styles.note}>Type the name as the client wrote it. Pick an Infor match only when its contract rate applies.</p>
+      <NativePicker label="Organization" path={`${bodyPath}/parties/organization`} editor={editor} kind="party_candidate" allowNone compact quoteName />
+      <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact quoteName />
+      <Field label="Attention" path={`${bodyPath}/client/attention`} editor={editor} compact />
+      <div className={styles.twoCol}><Field label="Email" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
+        <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact /></div>
+    </Section>
     <Section title="Stay and rooms">
-      <GuestRoster editor={editor} path={`${bodyPath}/guestNames`} />
-      {!groups.length && <p className={styles.notice}>Add a room group to start a manual quote.</p>}
+      <Field label="Sales Strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
+      {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
+        This price used BAR. Choose the Sales Strategy you want, then generate again.
+      </p>}
+      {!groups.length && <p className={styles.notice}>Add a room group to start the quote.</p>}
       {composition === 'additive' && groups.length > 1 && <button type="button" className={styles.linkButton} disabled={view.busy}
         onClick={() => void commands.edit(`${bodyPath}/quoteComposition`, { kind: 'unresolved', evidenceRefs: [] })}>Change how these groups are quoted</button>}
       {(composition === 'unresolved' || composition === 'invalid') && <div className={styles.notice} data-field-path={`${bodyPath}/quoteComposition`}>
@@ -504,12 +494,6 @@ export function QuoteEditor(editor: Editor) {
         </label>)}
       </div>}
       {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Generate the quote again before relying on it.`}</p>}
-      <div className={styles.groupHeading}><strong>Room groups</strong>
-        <button type="button" className={styles.linkButton} aria-label="Add room group"
-          data-field-path={`${bodyPath}/groups`}
-          disabled={view.busy || groups.length >= 8}
-          onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
-            entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Group</button></div>
       {groups.map((group, index) => {
         const groupPath = `${bodyPath}/groups/${index}`;
         const roomSource = snapshot.session.draft.proposal.sourceClaims.find((claim) => claim.path === `${groupPath}/quantity`);
@@ -524,78 +508,69 @@ export function QuoteEditor(editor: Editor) {
         });
         const quantityPath = `${groupPath}/quantity`;
         const inferredQuantity = quoteRoomCountNeedsConfirmation(snapshot.session.draft, quantityPath) ? valueAt(snapshot, quantityPath) : null;
+        const askedFor = text(valueAt(snapshot, `${groupPath}/requestedRoomDescription`)).trim() || text(roomSource?.raw).trim();
         return <div className={styles.roomCard} key={text(group.id) || index}>
-          <div className={styles.groupHeading}><strong>Room group {index + 1}</strong>
+          {groups.length > 1 && <div className={styles.groupHeading}><strong>Room group {index + 1}</strong>
             <button type="button" className={styles.linkButton} data-field-path={groupPath}
-              disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
-              requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
+              disabled={view.busy} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
+              requestId: request.id, entityId: text(group.id) })}>Remove</button></div>}
           {sourceQuote?.kind === 'quote' && sourceQuote.body.groups[index]?.sourceAssociationUnresolved === true && valueAt(snapshot, `${groupPath}/sourceAssociationUnresolved`) !== false && <div className={styles.notice} data-field-path={`${groupPath}/sourceAssociationUnresolved`}>
-            This may duplicate another room group. Remove it or confirm it is separate.{' '}
-            <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/sourceAssociationUnresolved`, false)}>Keep as a separate group</button>
+            This may repeat another room group. Remove it, or keep it if it is a separate booking.{' '}
+            <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/sourceAssociationUnresolved`, false)}>Keep it</button>
           </div>}
           {quoteRateNeedsConfirmation(snapshot.session.draft, request.id, index) && <div className={styles.notice} data-field-path={`${groupPath}/ratePlan`}>
             The customer asked for a rate by name. Choose it from Infor, or confirm another available rate.{' '}
             <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/ratePlan`, null, 'none')}>Use another available rate</button>
           </div>}
+          {askedFor && <p className={styles.note} data-field-path={`${groupPath}/requestedRoomDescription`}>Client asked for: {askedFor}</p>}
           <div className={styles.twoCol}><Field label="Arrival" path={`${groupPath}/arrival`} editor={editor} type="date" review />
             <Field label="Departure" path={`${groupPath}/departure`} editor={editor} type="date" review /></div>
-          <GuestRoster editor={editor} path={`${groupPath}/guestNames`} />
-          <Field label="Room Request (review context)" path={`${groupPath}/requestedRoomDescription`} editor={editor} maxLength={1000} compact />
-          {roomSource && <p className={styles.note}>Requested: {roomSource.raw}</p>}
+          {scope !== 'per_room' && <div className={styles.notice} data-field-path={`${groupPath}/occupancy/scope`}>
+            {scope === 'whole_group' ? 'The email gives guest numbers for the whole group.' : 'Check how many guests stay in each room.'}{' '}
+            Enter adults and children for one room, then confirm.{' '}
+            <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/occupancy/scope`, 'per_room')}>Numbers are per room</button>
+          </div>}
           <div className={styles.twoCol}><Count label="Rooms" path={`${groupPath}/quantity`} editor={editor} min={1} max={100} review />
-            <Field label="Meal Plan request" path={`${groupPath}/requestedMealPlan`} editor={editor} maxLength={120} review
-              hint="Customer request; Infor confirms the Meal Plan for the selected rate." /></div>
+            <Count label={scope === 'whole_group' ? 'Adults (whole group)' : 'Adults per room'} path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={scope === 'per_room' ? 6 : 100} review /></div>
           {typeof inferredQuantity === 'number' && <div className={styles.notice}>The room count was inferred from guest names. Check it.{' '}
             <button type="button" disabled={view.busy} onClick={() => void commands.edit(quantityPath, inferredQuantity)}>Confirm room count</button>
           </div>}
-          <Field label="Occupancy scope" path={`${groupPath}/occupancy/scope`} editor={editor} compact options={[
-            { value: 'unresolved', label: 'Needs allocation' }, { value: 'whole_group', label: 'Whole group · needs allocation' },
-            { value: 'per_room', label: 'Per room' },
-          ]} />
-          {scope !== 'per_room' && <p className={styles.notice}>Allocate adults and children per room before pricing. Totals are not divided automatically.</p>}
           {guessedCounts.length > 0 && <div className={styles.notice}>The email did not specify all guest counts. Check the counts shown.{' '}
             <button type="button" disabled={view.busy} onClick={() => { void (async () => {
               for (const count of guessedCounts) await commands.edit(count.path, count.value);
             })().catch(() => {}); }}>Confirm guest counts</button>
           </div>}
-          <div className={styles.twoCol}><Count label={scope === 'whole_group' ? 'Adults (whole group)' : scope === 'per_room' ? 'Adults per room' : 'Adults'} path={`${groupPath}/occupancy/adults`} editor={editor} min={1} max={scope === 'per_room' ? 6 : 100} review />
-            <ChildAges editor={editor} path={`${groupPath}/occupancy`} max={6} /></div>
-          <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} requested={text(valueAt(editor.snapshot, `${groupPath}/requestedRoomDescription`))} />
+          <ChildAges editor={editor} path={`${groupPath}/occupancy`} max={6} />
+          <RoomCode editor={editor} path={`${groupPath}/roomCodes`} options={options} requested={askedFor} />
           <NativePicker label="Rate Plan" path={`${groupPath}/ratePlan`} editor={editor} kind="rate_plan" compact />
-          <div data-field-path={`${groupPath}/mealPlan`} className={styles.localField}>
-            <div className={styles.countHeading}><span>Meal Plan</span>
-              {group.mealPlan != null && <FieldReview editor={editor} path={`${groupPath}/mealPlan`} label="Meal Plan" requireReview />}</div>
-            <span>{text(group.mealPlan) || 'Not confirmed. Check Infor offers.'}</span>
+          <div className={styles.twoCol}>
+            <Field label="Meal Plan asked for" path={`${groupPath}/requestedMealPlan`} editor={editor} maxLength={120} review />
+            <div data-field-path={`${groupPath}/mealPlan`} className={styles.localField}>
+              <div className={styles.countHeading}><span>Meal Plan</span>
+                {group.mealPlan != null && <FieldReview editor={editor} path={`${groupPath}/mealPlan`} label="Meal Plan" requireReview />}</div>
+              <span>{text(group.mealPlan) || 'Set by the Rate Plan'}</span>
+            </div>
           </div>
           <OfferList editor={editor} groupId={text(group.id)} groupPath={groupPath} observation={observation} />
         </div>;
       })}
+      <button type="button" className={styles.linkButton} aria-label="Add room group"
+        data-field-path={`${bodyPath}/groups`}
+        disabled={view.busy || groups.length >= 8}
+        onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
+          entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Add another room type or dates</button>
       {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : offersCurrent ? 'Current Infor availability' : 'Earlier Infor observation'}</strong>
         {money(result.totalMinor, result.currency) && <span>{money(result.totalMinor, result.currency)} total</span>}
         <small>{text(result.arrivalDate)} – {text(result.departureDate)}{observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>
         {rows.some((_, i) => !['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/staffAllowanceType`))) || !text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/amount`)).trim()) &&
-          <small>Unresolved requests above are not included in this total.</small>}</div>}
-    </Section>
-    <Section title="Organization and booking agency">
-      <p className={styles.note}>Enter names for the quote. Find and select an Infor profile when a contract rate is needed; typing a name does not create a profile.</p>
-      <NativePicker label="Organization" path={`${bodyPath}/parties/organization`} editor={editor} kind="party_candidate" allowNone compact quoteName />
-      <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact quoteName />
-      <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
-      {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
-        This price search used BAR as a default. Choose the intended sales strategy above before generating the quote.
-      </p>}
+          <small>Extras still to sort out are not in this total.</small>}</div>}
     </Section>
     <MoneyRequests editor={editor} bodyPath={bodyPath} groups={groups} rows={rows} />
     <PreparedReview editor={editor} />
-    <Section title="Contact and outputs">
-      <Field label="Attention" path={`${bodyPath}/client/attention`} editor={editor} compact />
-      <Field label="Email recipient" path={`${bodyPath}/client/email`} editor={editor} type="email" compact />
-      <Field label="Telephone" path={`${bodyPath}/client/telephone`} editor={editor} type="tel" compact />
+    <Section title="Note">
       <Field label="Quote note" path={`${bodyPath}/notes`} editor={editor} type="textarea" compact />
-      <p className={styles.note}>Generate quote creates an unsent draft with the cover email, PDF and Excel in Drafts.</p>
-      <p className={styles.note}>A provisional booking needs a separate Create action.</p>
-      {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`} className={styles.notice}>This request has not been confirmed as quote-only.
-        <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
+      {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`} className={styles.notice}>The client may also want a provisional booking. Book it later with Create.{' '}
+        <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Quote only for now</button>
       </div>}
     </Section>
   </div>;
