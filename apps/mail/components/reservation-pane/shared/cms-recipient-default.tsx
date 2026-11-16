@@ -13,6 +13,7 @@ const EMAIL = /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/;
 /** Server-backed (user_settings) remembered recipient per property, shared by every field in this page. */
 const remembered = new Map<string, string>();
 const loading = new Set<string>();
+const saving = new Set<string>();
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach(listener => listener());
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
@@ -33,15 +34,15 @@ export function useCmsRecipientDefault(propertyCode: string | null | undefined) 
   const key = userId && code ? JSON.stringify([userId, code]) : '';
   useEffect(() => load(code, key), [code, key]);
   const address = useSyncExternalStore(subscribe, () => remembered.get(key) ?? '', () => '');
-  const [busy, setBusy] = useState(false);
+  const busy = useSyncExternalStore(subscribe, () => saving.has(key), () => false);
   const [failed, setFailed] = useState(false);
   const save = async (next: string | null) => {
-    if (!key || userId !== getMailCacheScope().userId) return;
-    setBusy(true); setFailed(false);
+    if (!key || saving.has(key) || userId !== getMailCacheScope().userId) return;
+    saving.add(key); emit(); setFailed(false);
     try {
       const result = await trpcClient.settings.setCmsRecipientDefault.mutate({ propertyCode: code, address: next });
       remembered.set(key, result.address ?? ''); emit();
-    } catch { setFailed(true); } finally { setBusy(false); }
+    } catch { setFailed(true); } finally { saving.delete(key); emit(); }
   };
   return { address: code ? address : '', busy, failed, remember: (next: string) => save(next), forget: () => save(null) };
 }
