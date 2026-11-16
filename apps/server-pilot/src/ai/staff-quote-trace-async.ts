@@ -88,9 +88,9 @@ export async function runProvisionalQuoteChild(input: {
   child.stderr?.resume();
   const state: { exit: Exit | null } = { exit: null };
   const closed = new Promise<void>((resolve) => {
+    // An abort can emit an error before the child and its pipes have closed.
     child.once('error', (error) => {
       state.exit ??= { error };
-      resolve();
     });
     child.once('close', (code) => {
       state.exit ??= { code };
