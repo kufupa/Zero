@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { quoteInput as nativeGroupedQuote } from '../tools/quote/schema.js';
 
 const id = z.string();
 const json: z.ZodType<null | boolean | number | string | unknown[] | Record<string, unknown>> = z.lazy(() => z.union([z.null(), z.boolean(), z.number(), z.string(), z.array(json), z.record(json)]));
@@ -27,9 +28,11 @@ export type ProposalDraft = z.infer<typeof proposalDraft>;
 export const revisionInput = z.object({expected_revision:z.number().int().min(1)}).strict();
 export const goInput = revisionInput.extend({idempotency_key:z.string().trim().min(1).max(256)}).strict();
 export const requoteInput = goInput.extend({quote_id:z.string().min(1)}).strict();
-const quoteRoom = z.object({id:z.string().min(1),quantity:z.number().int().min(1),adults:z.number().int().min(1),children:z.number().int().min(0),child_ages:z.array(z.number().int().min(0))}).strict();
-const quoteGroup = z.object({group_id:z.string().min(1),arrival_date:z.string().date(),departure_date:z.string().date(),rooms:z.array(quoteRoom).min(1)}).strict().refine(group=>group.departure_date>group.arrival_date,{message:'departure must follow arrival'});
-export const groupedQuoteRequest = z.object({quote_id:z.string().min(1),property_code:z.string().min(1),groups:z.array(quoteGroup).min(1),search:z.object({sales_strategy:z.string().optional(),include_restricted:z.boolean().optional(),include_alternatives:z.boolean().optional()}).strict().optional(),details:z.enum(['summary','full']).optional(),max_options_per_group:z.number().int().min(1).optional()}).strict().refine(quote=>new Set(quote.groups.map(group=>group.group_id)).size===quote.groups.length,{message:'group ids must be unique'});
+const calendarDate = z.string().date();
+export const groupedQuoteRequest = nativeGroupedQuote
+  .refine(quote=>new Set(quote.groups.map(group=>group.group_id)).size===quote.groups.length,{message:'group ids must be unique'})
+  .refine(({groups})=>groups.every(group=>calendarDate.safeParse(group.arrival_date).success
+    && calendarDate.safeParse(group.departure_date).success && group.departure_date>group.arrival_date),{message:'departure must follow arrival'});
 export type Workflow = ProposalDraft['workflow'];
 const S={type:'string'};
 const J={};

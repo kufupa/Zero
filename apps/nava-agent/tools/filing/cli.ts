@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { inspect, prepare, type ToolContext, type ToolResult, type TrustedAttachment } from './index.js';
+import { staffPrepareOnly } from '../../src/hms-mode.js';
 
 // The only bytes this CLI can supply are generated in memory for Labtest.
 function fixturePdf(): Buffer {
@@ -25,6 +26,11 @@ function fixturePdf(): Buffer {
 }
 
 async function main(): Promise<void> {
+  if (staffPrepareOnly()) {
+    process.stderr.write('STAFF_PREPARE_REQUIRED\n');
+    process.exitCode = 1;
+    return;
+  }
   const flags = new Set(process.argv.slice(2));
   if ([...flags].some(flag => !['--labtest', '--fixture', '--shared-admission', '--inspect'].includes(flag)) ||
       (flags.has('--fixture') && (!flags.has('--labtest') || flags.has('--inspect')))) throw new Error('INVALID_CLI_OPTIONS');

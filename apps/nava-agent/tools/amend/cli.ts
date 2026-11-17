@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { prepare } from './index.js';
+import { staffPrepareOnly } from '../../src/hms-mode.js';
 
 const summary = z.object({
   outcome: z.literal('prepared'),
@@ -10,6 +11,11 @@ const summary = z.object({
 });
 
 async function main() {
+  if (staffPrepareOnly()) {
+    process.stderr.write('STAFF_PREPARE_REQUIRED\n');
+    process.exitCode = 1;
+    return;
+  }
   const [, , command, mode = 'live', ...extra] = process.argv;
   if (command !== 'prepare' || !['live', 'labtest', 'historical'].includes(mode) || extra.length) {
     process.stderr.write('Usage: tsx tools/amend/cli.ts prepare [live|labtest|historical] < private-input.json\n');
