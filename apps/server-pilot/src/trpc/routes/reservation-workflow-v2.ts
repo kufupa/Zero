@@ -9,7 +9,7 @@ import { workEvent, workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import { hasRecoverableHmsOperation } from '../../ai/reservation-workflow-v2-source-recovery.js';
-import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf } from '../../ai/reservation-workflow-v2-state.js';
+import { hasReservationWorkflowV2Draft } from '../../ai/reservation-workflow-v2-state.js';
 
 async function findRecoverableExcludedSourceWorkItem(
   scoped: ReturnType<typeof context>,
