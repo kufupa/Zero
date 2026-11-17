@@ -1,0 +1,25 @@
+# Quote rules + fields
+
+- Q01 Availability/quote = read-only offer. Price check never creates Guest Stay or holds inventory. Acceptance/proceed separate create task; signed document must be inspected, not inferred from subject.
+- Q02 Required native criteria: property, exact stay dates, room quantity, per-room adults/children/each age. Guest names, headcount, attendees, room-nights never substitute room assignments. No children indicated after reading relevant request/docs → editable zero quote default, `child_ages:[]`, not an extracted fact. Children indicated but count/ages unclear → clarify; unknown adult count/room quantity still input gaps.
+- Q03 Show native room/rate code + meaning, dated price/currency/basis, availability and eligibility/restrictions separately. Price ≠ inventory ≠ official stay total. Missing result combination stays unknown; `criteria_unavailable` ≠ hotel sold out.
+- Q04 Negotiated party rate: native Organization/Agency/Group selection + eligible rate. Domain/employer/government/corporate wording insufficient. Free-text quote recipient/name need not match an HMS Organization for public rates. Public BAR after absent contracted rate = explicit alternative, not contracted offer.
+- Q05 / R5: read board from current inbound and relevant supplied docs first. Silent → BB default on native-supported plan (owner 2026-11-17; 22/33 priced replies BB, 18 BB cases silent on meals). For eligible government/municipal rate, use native included board (11/11 government-rate replies DBB). Show code + meaning. DBB can be included in rate; do not treat dinner as automatic add-on. Unclear/conflicting board → ask “Dinner, bed and breakfast, or bed and breakfast only?” Never copy old price or infer eligibility from label.
+- Q06 One client quote can contain many room/date/occupancy groups; separate quotes only explicit request or staff split. Pass stable `quote_id` and per-group dates/rooms in `hms_quote`. Group duplicate gets new ID, copies editable fields only, no stale results/review. Staff price override labelled override, not HMS price; preserve supplied approval note, no inferred universal gate.
+- Q07 / R8: ≥10 rooms to book → rooming-list/group review (confirmed-create sample N=222, tail to 10). Keep supported read-only quote and independent tasks. Attendees ≠ rooms; quote does not authorize group booking.
+- Q08 Special requests/rooming lists/docs bound to correct stay. “Attached” ≠ file captured; read supplied file before using contents. Connecting/cot/dinner/transport requests not guaranteed by note.
+- Q09 / R2: clarify missing dates/occupancy/party or board that remains unclear after Q05. Decline only demonstrated native unavailability; tool errors or missing rows never become “fully booked.” Decline 1–3 sentences; give exact available nights/rooms and offer to quote, no automatic substitution (6/12 declines offered alternative; only 2/12 one-liners). Sister hotel only if staff adds it (1/12). Current existing-stay check → don't quote anew.
+- Q10 / R1: greet requester by known first name; omit Organization name in body by default (0/33 inline priced replies named sender company; 1/96 corporate threads exception). Soft style, not a hard ban; keep native party selection for pricing.
+- Q11 / R4: cover draft + ready-to-send signable PDF + editable Excel (owner 2026-11-17; 44/338 outbounds used attachment template, 23/338 inline prices, 0/338 named PDF/Excel; attachment contents unobserved). Simple single-room/night price may appear inline in cover. After publish call `quote_artifacts` with quote ID when registered. Current output may be PDF only; surface missing Excel/PDF, keep cover draft, claim only returned files. No workbook from guessed values.
+
+## Field order
+
+Staff-facing task groups: property → arrival/departure → room type/quantity → adults/children/ages → bed/board → native party/rate request → native choices/code/meaning/availability/price → special requests/guest labels → offer/reply. Proposed business grouping, not universal visual order proof.
+
+Native order: reset prior party/room/rate/currency → arrival → Group → Organization → Agency → sales strategy → restore arrival → adults → children → each child age → currency/conversion → restricted-rate visibility → room codes → rate codes → verify criteria → Search/grid/date windows. Deterministic adapter owns technical reset steps; skill owns correct criteria.
+
+Use typed rate code + current dropdown meaning + native price/availability; staff edit persisted. Existing manual-override UI's code list is not native catalogue authority. Full staff field-entry order not independently observed.
+
+Native capture: nightly dated price/inventory/restrictions. Official totals null when absent; calculated displayed-nightly sums `official:false`, label “Displayed nightly sum (not HMS payable total)”. No made-up combined payable total.
+
+Retain all requested groups in proposal; mark any without publishable native result. Do not splice raw captures into `native_result` or claim complete multi-group pricing when capture partial.
