@@ -4,11 +4,10 @@ export function normalizeRequestedMealPlan(value: unknown): {
 } {
   const phrase = typeof value === 'string' ? value.trim().toLowerCase().replace(
     /\b(?:don|doesn|didn|won|wouldn|shouldn|isn|aren|wasn|weren|hasn|haven|hadn|can|couldn|mustn)['’]t\b/gu, 'not')
-    .replace(/\bsupper\b/gu, 'dinner')
-    .replace(/\b(?:not|never)\s+skip(?:ped|ping)?\s+(?:(?:any|the)\s+)?(breakfast|lunch|dinner|meals?)\b/gu, 'including $1') : '';
+    .replace(/\bsupper\b/gu, 'dinner') : '';
   const exclusions = new Set<string>();
   const positive = phrase.replace(/[,+\s&/_-]+/gu, ' ').replace(
-    /\b(?:no(?:\s+(?:need|requirement|request)(?:\s+for)?)?|without|excluding|exclude|skip(?:ped|ping)?|(?:not|never)(?:\s+(?:including|need|require|want|request|include|provide|have))?)\s+(?:(?:any|the)\s+)?(?:breakfast|lunch|dinner|meals?)(?:\s+(?:(?:and|or)\s+)?(?:breakfast|lunch|dinner|meals?))*/gu,
+    /\b(?:no(?:\s+(?:need|requirement|request)(?:\s+for)?)?|without|excluding|exclude|(?:not|never)(?:\s+(?:including|need|require|want|request|include|provide|have))?)\s+(?:(?:any|the)\s+)?(?:breakfast|lunch|dinner|meals?)(?:\s+(?:(?:and|or)\s+)?(?:breakfast|lunch|dinner|meals?))*/gu,
     clause => {
       for (const meal of clause.match(/\b(?:breakfast|lunch|dinner|meals?)\b/gu) ?? []) exclusions.add(meal);
       return ' ';
@@ -18,6 +17,8 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const lunchDeclined = /\blunch\s+(?:(?:is|was|will|would|should|must|may|can|could)\s+(?:be\s+)?)?(?:not|never)\s+(?:be\s+)?(?:required|needed|necessary|wanted|requested|included|provided)\b|\b(?:not|never)\s+(?:require|need|want|request|include|provide|have)\s+lunch\b/u.test(normalized);
   const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded && !lunchDeclined;
   if (/\b(?:no|not|never|without|excluding|exclude|except|skip(?:ped|ping)?)\b/u.test(positive)) return { mealPlan: null, lunchRequested };
+  if (/\b(?:breakfast|dinner|bb|b b|dbb)\s+or\s+(?:breakfast|dinner|bb|b b|dbb)\b/u.test(normalized))
+    return { mealPlan: null, lunchRequested };
   const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
   const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|dbb)\b/u.test(board);
   if ((allMealsExcluded || exclusions.has('breakfast')) && breakfast || (allMealsExcluded || exclusions.has('dinner')) && dinner)
