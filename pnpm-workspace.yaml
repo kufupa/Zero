@@ -1,6 +1,7 @@
 packages:
   - apps/*
   - apps/server-pilot
+  - "!apps/nava-agent"
   - packages/*
   - scripts/*
 
