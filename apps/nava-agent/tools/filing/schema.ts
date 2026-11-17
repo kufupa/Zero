@@ -1,54 +1,27 @@
-/** Input for the generic hms_prepare dispatcher and the filing preflight tool. */
-export const filingPrepareSchema: {
-  type: 'object'; properties: Record<string, unknown>; required?: string[]; additionalProperties?: boolean;
-} = {
-  type: 'object',
-  properties: {
-    workflow: { type: 'string', enum: ['filing'] },
-    booking: {
-      type: 'object',
-      properties: {
-        id: { type: 'string' },
-        property_code: { type: 'string' },
-        reservation_id: { type: ['string', 'null'] },
-        current_state: { type: ['object', 'null'] },
-        fields: { type: 'object' },
-      },
-      required: ['id', 'property_code', 'reservation_id', 'current_state', 'fields'],
-      additionalProperties: false,
-    },
-    action: {
-      type: 'object',
-      properties: {
-        id: { type: 'string' },
-        type: { type: 'string', enum: ['filing', 'attach_document', 'voucher_submission', 'payment_proof_submission'] },
-        booking_ids: { type: 'array', items: { type: 'string' } },
-        details: {
-          type: 'object',
-          properties: {
-            message_id: { type: 'string' },
-            attachment_id: { type: 'string' },
-            attachment_handle: { type: 'string' },
-            description: { type: 'string' },
-          },
-          required: ['message_id', 'attachment_id', 'attachment_handle'],
-          additionalProperties: false,
-        },
-      },
-      required: ['id', 'type', 'booking_ids', 'details'],
-      additionalProperties: false,
-    },
-  },
-  required: ['workflow', 'booking', 'action'],
-  additionalProperties: false,
-};
+import { z } from 'zod';
 
-/** The listing has its own schema so staff can inspect a stay without PDF bytes. */
-export const filingDocumentsSchema: {
-  type: 'object'; properties: Record<string, unknown>; required?: string[]; additionalProperties?: boolean;
-} = {
-  type: 'object',
-  properties: { booking: filingPrepareSchema.properties.booking },
-  required: ['booking'],
-  additionalProperties: false,
-};
+const text = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/\p{Cc}/u.test(value));
+const id = text(256);
+
+export const filingBooking = z.object({
+  id,
+  property_code: z.string().regex(/^[A-Z0-9]{1,20}$/),
+  reservation_id: text(128).nullable(),
+  current_state: z.record(z.unknown()).nullable(),
+  fields: z.record(z.unknown()),
+}).strict();
+
+export const filingPrepare = z.object({
+  workflow: z.literal('filing'),
+  booking: filingBooking,
+  action: z.object({
+    id,
+    type: z.enum(['filing', 'attach_document', 'voucher_submission', 'payment_proof_submission']),
+    booking_ids: z.tuple([id]),
+    details: z.object({
+      message_id: id,
+      attachment_id: id,
+      description: text(200).optional(),
+    }).strict(),
+  }).strict(),
+}).strict();

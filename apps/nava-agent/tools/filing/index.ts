@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto';
-import { filingDocumentsSchema, filingPrepareSchema } from './schema.js';
+import { filingBooking, filingPrepare } from './schema.js';
+
+export const maxFilingPdfBytes = 10 * 1024 * 1024;
 
 /** Both capabilities are installed by the server, never by model input. */
 export type ToolContext = {
   sessionId: string;
   mode: 'live' | 'labtest' | 'historical';
   signal?: AbortSignal;
-  hmsCredentialLease?: unknown;
+  credentialLease?: unknown;
   authorizeTarget?: (request: TargetAuthorization, options: { signal: AbortSignal }) => Promise<boolean>;
   resolveAttachment?: (request: AttachmentReference, options: { signal: AbortSignal }) => Promise<TrustedAttachment | null>;
 };
@@ -14,11 +16,10 @@ export type ToolContext = {
 export type TargetAuthorization = {
   sessionId: string; bookingId: string; propertyCode: string; reservationId: string | null; confirmation: string;
 };
-type AttachmentReference = {
+export type AttachmentReference = {
   sessionId: string;
   messageId: string;
   attachmentId: string;
-  handle: string;
 };
 export type TrustedAttachment = AttachmentReference & {
   name: string;
@@ -41,7 +42,9 @@ type NativeModules = {
   readConfirmationFromStay360: (page: unknown, confirmation: string, options?: Record<string, string>) => Promise<unknown>;
   readRecordViewFromStay360: (page: unknown, confirmation: string, options: Record<string, unknown>) => Promise<NativeRecord>;
   readDocumentsFromStay360: (page: unknown, confirmation: string) => Promise<{
-    documents: unknown[]; coverage: unknown; captureScope: string;
+    documents: unknown[];
+    coverage: { loadedDocuments: number; refreshVerified: boolean; complete: boolean | null };
+    captureScope: string;
   }>;
   installPaneAttachReadGuard: (context: unknown, options: Record<string, unknown>) => Promise<void>;
   filingSnapshot: (record: NativeRecord) => { cmsSend: boolean } | null;
@@ -66,12 +69,11 @@ type TargetRequest = {
 };
 type Request = TargetRequest & { ref: Omit<AttachmentReference, 'sessionId'>; description?: string };
 
-function parseBooking(booking: unknown): TargetRequest | null {
-  if (!object(booking)) return null;
-  if (!text(booking.id) || !text(booking.property_code, 20) || !/^[A-Z0-9]+$/.test(booking.property_code) ||
-      !(booking.reservation_id === null || text(booking.reservation_id, 128)) || !object(booking.fields) ||
-      !(booking.current_state === null || object(booking.current_state))) return null;
-  const state = object(booking.current_state) ? booking.current_state : {};
+function parseBooking(input: unknown): TargetRequest | null {
+  const parsed = filingBooking.safeParse(input);
+  if (!parsed.success) return null;
+  const booking = parsed.data;
+  const state = booking.current_state ?? {};
   const candidates = [booking.fields.confirmation_number, state.confirmation_number, state.confirmation,
     typeof booking.reservation_id === 'string' && /^\d+-\d+$/.test(booking.reservation_id) ? booking.reservation_id : undefined]
     .filter(value => value !== undefined && value !== null);
@@ -81,36 +83,32 @@ function parseBooking(booking: unknown): TargetRequest | null {
     confirmation: candidates[0], fields: booking.fields };
 }
 
-function parse(input: unknown): Request | null {
-  if (!object(input) || input.workflow !== 'filing' || !object(input.action)) return null;
-  const booking = parseBooking(input.booking), action = input.action;
-  if (!booking || !text(action.id) ||
-      !['filing', 'attach_document', 'voucher_submission', 'payment_proof_submission'].includes(String(action.type)) ||
-      !Array.isArray(action.booking_ids) || action.booking_ids.length !== 1 || action.booking_ids[0] !== booking.bookingId ||
-      !object(action.details)) return null;
+export function parseFilingRequest(input: unknown): Request | null {
+  const parsed = filingPrepare.safeParse(input);
+  if (!parsed.success) return null;
+  const { booking: inputBooking, action } = parsed.data;
+  const booking = parseBooking(inputBooking);
+  if (!booking || action.booking_ids[0] !== booking.bookingId) return null;
   const details = action.details;
-  if (Object.keys(details).some(key => !['message_id', 'attachment_id', 'attachment_handle', 'description'].includes(key)) ||
-      !text(details.message_id) || !text(details.attachment_id) || !text(details.attachment_handle, 2048) ||
-      (details.description !== undefined && !text(details.description, 200))) return null;
   return {
     ...booking,
-    ref: { messageId: details.message_id, attachmentId: details.attachment_id, handle: details.attachment_handle },
+    ref: { messageId: details.message_id, attachmentId: details.attachment_id },
     ...(typeof details.description === 'string' ? { description: details.description } : {}),
   };
 }
 
 function matchesAttachment(reference: AttachmentReference, attachment: TrustedAttachment | null): attachment is TrustedAttachment {
   return Boolean(attachment && attachment.sessionId === reference.sessionId && attachment.messageId === reference.messageId &&
-    attachment.attachmentId === reference.attachmentId && attachment.handle === reference.handle &&
+    attachment.attachmentId === reference.attachmentId &&
     text(attachment.name, 150) && attachment.name === attachment.name.replace(/\s+/g, ' ').trim() &&
     !/["\\/\p{Cc}]/u.test(attachment.name) && /\.pdf$/i.test(attachment.name) &&
     typeof attachment.mimeType === 'string' && attachment.mimeType.toLowerCase() === 'application/pdf' && Buffer.isBuffer(attachment.bytes) &&
-    attachment.bytes.length > 5 && attachment.bytes.length <= 10 * 1024 * 1024 &&
+    attachment.bytes.length > 5 && attachment.bytes.length <= maxFilingPdfBytes &&
     attachment.bytes.subarray(0, 5).equals(Buffer.from('%PDF-')));
 }
 
 function effectiveSignal(context: ToolContext): AbortSignal | undefined {
-  const lease = context.hmsCredentialLease;
+  const lease = context.credentialLease;
   const leaseSignal = object(lease) && lease.signal instanceof AbortSignal ? lease.signal : undefined;
   return context.signal && leaseSignal ? AbortSignal.any([context.signal, leaseSignal]) : context.signal ?? leaseSignal;
 }
@@ -119,14 +117,9 @@ async function bounded<T>(context: ToolContext, operation: (signal: AbortSignal)
   const timeout = AbortSignal.timeout(60_000);
   const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
   signal.throwIfAborted();
-  return new Promise((resolve, reject) => {
-    const onAbort = () => { signal.removeEventListener('abort', onAbort); reject(signal.reason); };
-    signal.addEventListener('abort', onAbort, { once: true });
-    Promise.resolve().then(() => operation(signal)).then(
-      value => { signal.removeEventListener('abort', onAbort); resolve(value); },
-      error => { signal.removeEventListener('abort', onAbort); reject(error); },
-    );
-  });
+  const result = await operation(signal);
+  signal.throwIfAborted();
+  return result;
 }
 
 async function authorize(context: ToolContext, request: TargetRequest): Promise<boolean> {
@@ -153,15 +146,18 @@ function matchesRequestedStay(request: TargetRequest, native: NativeIdentity, mo
       native.confirmation !== request.confirmation ||
       (request.reservationId && request.reservationId !== native.confirmation &&
         request.reservationId !== native.reservationId && request.reservationId !== native.reservationStayId)) return false;
-  const hints = { first_name: native.firstName, last_name: native.lastName,
-    arrival_date: native.arrival, departure_date: native.departure };
-  if (Object.entries(hints).some(([key, value]) => request.fields[key] != null && request.fields[key] !== value)) return false;
+  const name = (value: string) => value.normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
+  for (const [hint, actual] of [[request.fields.first_name, native.firstName], [request.fields.last_name, native.lastName]]) {
+    if (hint != null && (typeof hint !== 'string' || typeof actual !== 'string' || name(hint) !== name(actual))) return false;
+  }
+  if ((request.fields.arrival_date != null && request.fields.arrival_date !== native.arrival) ||
+      (request.fields.departure_date != null && request.fields.departure_date !== native.departure)) return false;
   return mode !== 'labtest' || (native.firstName === 'Proof' && native.lastName === 'Labtest' &&
     native.arrival >= '2027-01-01' && native.status === 'Reserved');
 }
 
 async function observeTarget(native: NativeModules, request: TargetRequest, context: ToolContext,
-  transportId: string, includeDocuments: boolean) {
+  transportId: string) {
   const approved = { current: null as NativeIdentity | null };
   return native.withCloudReadSession(async page => {
     await native.readConfirmationFromStay360(page, request.confirmation);
@@ -176,11 +172,11 @@ async function observeTarget(native: NativeModules, request: TargetRequest, cont
       nativeGuestId: identity.guestId, nativeStayId: identity.reservationStayId, allowRealGuest: context.mode === 'live' };
     if (!native.approvedDocumentDispatch(record, stay, snapshot)) return null;
     approved.current = identity;
-    const documents = includeDocuments ? await native.readDocumentsFromStay360(page, request.confirmation) : null;
+    const documents = await native.readDocumentsFromStay360(page, request.confirmation);
     context.signal?.throwIfAborted();
     return { identity, snapshot, stay, documents };
   }, { propertyCode: request.propertyCode, transportId, startScreen: 'OSRESS',
-    credentialLease: context.hmsCredentialLease, signal: context.signal,
+    credentialLease: context.credentialLease, signal: context.signal,
     prepareContext: (browserContext: unknown) => native.installPaneAttachReadGuard(browserContext, {
       propertyCode: request.propertyCode, confirmation: request.confirmation, allowRealGuest: context.mode === 'live',
       getNative: () => approved.current, getApprovedNativeIdentity: () => approved.current,
@@ -196,14 +192,14 @@ export async function inspect(input: unknown, context: ToolContext): Promise<Too
   const request = object(input) ? parseBooking(input.booking) : null;
   if (!request) return failure('INVALID_FILING_INPUT', 'One booking with its exact confirmation is required.');
   if (typeof context.authorizeTarget !== 'function') return failure('TARGET_AUTHORIZATION_UNAVAILABLE', 'Session-authorized booking selection is unavailable.');
-  if (!context.hmsCredentialLease) return failure('HMS_ADMISSION_UNAVAILABLE', 'A lease from the existing shared HMS admission service is required.');
+  if (!context.credentialLease) return failure('HMS_ADMISSION_UNAVAILABLE', 'A lease from the existing shared HMS admission service is required.');
   try {
     if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
     context.signal?.throwIfAborted();
     const native = await nativeModules();
     const property = native.getPropertyRegistration(request.propertyCode);
     if (!property?.active) return failure('PROPERTY_UNAVAILABLE', 'The selected HMS property is unavailable.');
-    const target = await observeTarget(native, request, context, property.mailboxTransportId, true);
+    const target = await observeTarget(native, request, context, property.mailboxTransportId);
     if (!target?.documents) return failure('STAY_MISMATCH', 'The fresh native stay does not match the selected booking or Labtest policy.');
     return { ok: true, data: { outcome: 'documents_read', booking_id: request.bookingId,
       target: { property_code: request.propertyCode, confirmation: target.identity.confirmation,
@@ -222,11 +218,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (!context || !text(context.sessionId) || !['live', 'labtest'].includes(context.mode)) return failure('INVALID_CONTEXT', 'Server session context is invalid.');
   context = { ...context, signal: effectiveSignal(context) };
   if (context.signal?.aborted) return failure('ABORTED', 'Filing preflight was aborted.');
-  const request = parse(input);
+  const request = parseFilingRequest(input);
   if (!request) return failure('INVALID_FILING_INPUT', 'One booking, its exact confirmation, and one selected attachment are required.');
   if (typeof context.authorizeTarget !== 'function') return failure('TARGET_AUTHORIZATION_UNAVAILABLE', 'Session-authorized booking selection is unavailable.');
   if (typeof context.resolveAttachment !== 'function') return failure('ATTACHMENT_SOURCE_UNAVAILABLE', 'Session-authorized attachment resolver is unavailable.');
-  if (!context.hmsCredentialLease) return failure('HMS_ADMISSION_UNAVAILABLE', 'A lease from the existing shared HMS admission service is required.');
+  if (!context.credentialLease) return failure('HMS_ADMISSION_UNAVAILABLE', 'A lease from the existing shared HMS admission service is required.');
   const reference = { sessionId: context.sessionId, ...request.ref };
   try {
     if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
@@ -234,16 +230,23 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const attachment = await bounded(context, signal => resolver(reference, { signal }));
     context.signal?.throwIfAborted();
     if (!matchesAttachment(reference, attachment)) return failure('ATTACHMENT_UNAVAILABLE', 'The selected session attachment is not an available PDF.');
-    const bytes = Buffer.from(attachment.bytes);
+    const bytes = attachment.bytes;
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     const native = await nativeModules();
     const property = native.getPropertyRegistration(request.propertyCode);
     if (!property?.active) return failure('PROPERTY_UNAVAILABLE', 'The selected HMS property is unavailable.');
-    const target = await observeTarget(native, request, context, property.mailboxTransportId, false);
+    const target = await observeTarget(native, request, context, property.mailboxTransportId);
     context.signal?.throwIfAborted();
     if (!target) return failure('STAY_MISMATCH', 'The fresh native stay does not match the selected booking or Labtest policy.');
+    const loaded = target.documents.documents.slice(0, 20).filter(object).map(({ name, documentCode }) => ({
+      name: typeof name === 'string' ? name.slice(0, 150) : null,
+      document_code: typeof documentCode === 'string' ? documentCode.slice(0, 40) : null,
+    }));
+    const documents = { coverage: target.documents.coverage, capture_scope: target.documents.captureScope,
+      documents: loaded, listed_documents: loaded.length };
+    if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
     const staged = await native.prepareCloudPaneAttach({ target: { propertyCode: request.propertyCode },
-      transportId: property.mailboxTransportId, credentialLease: context.hmsCredentialLease, signal: context.signal,
+      transportId: property.mailboxTransportId, credentialLease: context.credentialLease, signal: context.signal,
       confirmation: target.identity.confirmation, arrival: target.identity.arrival,
       guestName: `${target.identity.firstName} ${target.identity.lastName}`, approvedStay: target.stay,
       approvedSnapshot: target.snapshot, allowRealGuest: context.mode === 'live', documentName: attachment.name,
@@ -251,23 +254,26 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     context.signal?.throwIfAborted();
     if (staged.outcome !== 'prepared' || !text(staged.documentCode, 40)) {
       const code = text(staged.issue, 80) && /^[A-Z][A-Z0-9_]+$/.test(staged.issue) ? staged.issue : 'NATIVE_PREPARE_UNAVAILABLE';
-      return failure(code, 'The native document form could not be verified without submitting.', true);
+      return { ...failure(code, 'The native document form could not be verified without submitting.', true),
+        data: { outcome: 'documents_read', ...documents } };
     }
-    return { ok: true, data: { outcome: 'prepared', booking_id: request.bookingId,
+    const description = request.description ?? attachment.name;
+    const row = (id: string, label: string, value: string, native_path: string) =>
+      ({ id, booking_id: request.bookingId, kind: 'text', label, value, native_path });
+    return { ok: true, data: { outcome: 'prepared', unsaved: true, booking_id: request.bookingId,
       target: { property_code: request.propertyCode, confirmation: target.identity.confirmation,
         reservation_id: target.identity.reservationId, reservation_stay_id: target.identity.reservationStayId },
-      document: { name: attachment.name, mime_type: 'application/pdf', sha256, document_code: staged.documentCode,
-        description: request.description ?? attachment.name },
-      warnings: ['Native document classification is not established; upload is unavailable.'] }, error: null };
+      source: { message_id: reference.messageId, attachment_id: reference.attachmentId },
+      document: { name: attachment.name, mime_type: 'application/pdf', sha256, document_code: staged.documentCode, description },
+      ...documents, observed_fields: ['document_code', 'description', 'file'],
+      display_rows: [row('filing-target', 'HMS confirmation', target.identity.confirmation, '/target/confirmation'),
+        row('filing-file', 'Selected PDF', attachment.name, '/document/name'),
+        row('filing-description', 'Description', description, '/document/description'),
+        row('filing-code', 'Document code', staged.documentCode, '/document/document_code'),
+        row('filing-coverage', 'Existing documents', `${target.documents.coverage.loadedDocuments} loaded; full list unverified.`, '/coverage/loadedDocuments')],
+      warnings: ['Document form prepared. Nothing uploaded.', 'The document code identifies the draft, not a verified document category.'] }, error: null };
   } catch (error) {
     return context.signal?.aborted ? failure('ABORTED', 'Filing preflight was aborted.')
       : failure(safeErrorCode(error, 'NATIVE_PREPARE_UNAVAILABLE'), 'Attachment resolution or native preflight failed.', true);
   }
 }
-
-export const tools = [{ name: 'hms_filing_preflight',
-  description: 'Stage a selected session PDF on the exact HMS stay without uploading.',
-  input_schema: filingPrepareSchema, run: prepare }, {
-  name: 'hms_filing_documents', description: 'Read loaded document metadata on the exact HMS stay; coverage can be incomplete.',
-  input_schema: filingDocumentsSchema, run: inspect,
-}];
