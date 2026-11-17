@@ -1,9 +1,10 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 import { schemas } from './schema.js';
 
-export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
 const fail = (code: string, message: string, retryable = false): ToolResult => ({ ok: false, data: null, error: { code, message, retryable, outcome: 'known' } });
 const ok = (data: unknown): ToolResult => ({ ok: true, data, error: null });
@@ -35,7 +36,7 @@ async function savedRead(property: string, confirmation: string, context: ToolCo
   return withSavedStayAgentSession(
     ({ runTool }: { runTool: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
       runTool({ tool: 'read', confirmation, view, ...hints }),
-    { propertyCode: property, readOnly: true, readOnlyConfirmation: confirmation, signal: context.signal },
+    { propertyCode: property, readOnly: true, readOnlyConfirmation: confirmation, signal: context.signal, credentialLease: context.credentialLease },
   );
 }
 
@@ -62,11 +63,75 @@ export async function searchReservations(input: unknown, context: ToolContext): 
     const dir = await mkdtemp(join(tmpdir(), 'nava-hms-read-'));
     try {
       const { searchGuestInCloud } = await native('pane-guest-search.mjs');
-      const result: Record<string, unknown> = await searchGuestInCloud({ propertyCode: property, lastName: name, arrival, departure, dir }, { signal: context.signal });
+      const { withCloudReadSession } = await native('cloud-session.mjs');
+      const openSession = context.credentialLease ?
+        (operation: unknown, options: Record<string, unknown>) => withCloudReadSession((page: unknown, identity: unknown) => {
+          if (!identity || typeof operation !== 'function') throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
+          return operation(page, identity);
+        }, { ...options, credentialLease: context.credentialLease }) : undefined;
+      const result: Record<string, unknown> = await searchGuestInCloud({ propertyCode: property, lastName: name, arrival, departure, dir }, { signal: context.signal, ...(openSession ? { openSession } : {}) });
       const { screenshots: _screenshots, unreadableRows: _unreadableRows, ...publicResult } = result;
       if (!['ok', 'ambiguous_capped'].includes(String(result.outcome))) return fail('HMS_SEARCH_INCOMPLETE', 'Native surname search failed or returned unreadable rows.', true);
       return ok({ outcome: result.outcome === 'ambiguous_capped' ? 'incomplete' : 'candidates', native: publicResult });
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+}
+
+const lookupText = z.string().trim().min(1).max(256).regex(/^[^\r\n]+$/);
+const optionalText = lookupText.nullable().optional().transform(value => value ?? undefined);
+const optionalDate = z.string().date().nullable().optional().transform(value => value ?? undefined);
+const stageLookup = z.object({
+  reservation_id: optionalText, guest_name: optionalText,
+  arrival_date: optionalDate, departure_date: optionalDate,
+}).strict().refine(value => !!value.reservation_id || !!value.guest_name);
+const stageInput = z.object({
+  workflow: z.literal('triage'), booking: z.object({ id: z.string().min(1) }).passthrough().nullable(),
+  action: z.object({ type: z.literal('triage'), details: z.object({ lookup: stageLookup }).passthrough() }).passthrough(),
+}).strict();
+
+/** Staff job: use only the revision-pinned lookup and the launcher's admitted read lease. */
+export async function stageRead(input: unknown, context: ToolContext): Promise<ToolResult> {
+  const parsed = stageInput.safeParse(input);
+  if (!parsed.success) return fail('INPUT_GAP', 'Provide a reservation number or surname in the lookup.');
+  if (context.mode === 'historical') return fail('HISTORICAL_HMS_DISABLED', 'Live HMS is unavailable in historical mode.');
+  if (!context.propertyCode || !context.credentialLease || !context.staffStage?.jobId || context.staffStage.workflow !== 'triage') {
+    return fail('STAFF_READ_CONTEXT_REQUIRED', 'A staff read job with an admitted HMS lease is required.');
+  }
+  const lookup = parsed.data.action.details.lookup;
+  const property = context.propertyCode;
+  if (!lookup.reservation_id) {
+    const result = await searchReservations({ property_code: property, criteria: lookup }, context);
+    if (!result.ok || !obj(result.data) || !obj(result.data.native)) return result;
+    const native = result.data.native;
+    const rows: unknown[] = Array.isArray(native.rows) ? native.rows : [];
+    const matches = rows.filter(row => obj(row) && str(row.lastName) &&
+      row.lastName.toLocaleLowerCase() === lookup.guest_name?.toLocaleLowerCase() &&
+      (!lookup.arrival_date || row.arrival === lookup.arrival_date) &&
+      (!lookup.departure_date || row.departure === lookup.departure_date));
+    return ok({ outcome: result.data.outcome, candidates: matches.slice(0, 25),
+      coverage: { completeness: native.completeness ?? null, records: native.records ?? null, candidates_truncated: matches.length > 25 },
+      observed_fields: {}, display_rows: [] });
+  }
+  if (lookup.departure_date) return fail('UNSUPPORTED_CRITERIA', 'Confirmation search cannot verify departure date.');
+  const reservationId = lookup.reservation_id;
+  if (!/^(?:\d+-\d+|\d{6,10})$/.test(reservationId)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
+  return execute(context, async () => {
+    const result: Record<string, unknown> = await savedRead(property, reservationId, context, 'record',
+      { guestName: lookup.guest_name, arrivalDate: lookup.arrival_date });
+    if (result.outcome !== 'ok') {
+      return { ok: false, data: { outcome: 'not_uniquely_read', coverage: result.completeness ?? null },
+        error: { code: str(result.issue) && /^[A-Z][A-Z0-9_]{2,100}$/.test(result.issue) ? result.issue : 'HMS_READ_INCOMPLETE', message: 'Infor did not uniquely read the requested stay.', retryable: false, outcome: 'known' } };
+    }
+    const record = obj(result.record) ? result.record : {};
+    const details = obj(record.details) ? record.details : {};
+    const fields = Array.isArray(details.fields) ? details.fields : [];
+    const statuses = fields.filter((field: unknown) => obj(field) && field.name === 'status' && str(field.value));
+    const status = statuses.length === 1 && obj(statuses[0]) && str(statuses[0].value) ? statuses[0].value : null;
+    const data = { outcome: 'uniquely_read', observed_fields: { stay: result.shallow ?? null, status },
+      coverage: { completeness: result.completeness ?? null, searched_ranges: result.searchedRanges ?? null },
+      display_rows: status ? [{ id: 'status', booking_id: parsed.data.booking?.id ?? null, kind: 'text', label: 'Reservation status', value: status, native_path: '/observed_fields/status' }] : [] };
+    if (!status) return { ok: false, data, error: { code: 'STATUS_UNAVAILABLE', message: 'Infor did not return one readable reservation status.', retryable: false, outcome: 'known' } };
+    return ok(data);
   });
 }
 
