@@ -22,6 +22,13 @@ const fileId = z.string().uuid();
 const artifact = z.object({id:fileId,name:z.enum(['Quotation.pdf','Quotation.xlsx']),
   mime_type:z.enum(['application/pdf','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),url:z.string()});
 const limit = 20 * 1024 * 1024;
+const quoteCalendar = new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Johannesburg',year:'numeric',month:'2-digit',day:'2-digit'});
+
+function authoredDate() {
+  const parts = quoteCalendar.formatToParts();
+  const date = (part:string) => parts.find(value=>value.type===part)?.value;
+  return `${date('year')}-${date('month')}-${date('day')}`;
+}
 
 function converterUrl() {
   const value = process.env.NAVA_QUOTE_GOTENBERG_URL ?? process.env.GOTENBERG_URL;
@@ -83,7 +90,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     const job = ready.data.job_id;
     const result = await createQuoteArtifacts({
       resolveQuote:async()=>({quote_id:quote.quote_id,proposal_id:proposalId,revision:row.revision,property_code:quote.property_code,
-        authored_date:new Date().toISOString().slice(0,10),groups:quote.groups,capture:native,selections:input.selections,
+        authored_date:authoredDate(),groups:quote.groups,capture:native,selections:input.selections,
         header:{attention:selected.data.from.name??'',organization:'',clientEmail:selected.data.from.email,clientTelephone:'',signerName:'',signerEmail:''}}),
       convertWorkbook:gotenbergConverter(converter),
       writePair:async({pdf,workbook,signal})=>{
