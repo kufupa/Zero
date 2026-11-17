@@ -472,9 +472,12 @@ async function applyHistoryMove(
       for (const request of restoredV2.proposal.content.requests) {
         if (request.kind !== 'amend') continue;
         const current = previousV2.proposal.content.requests.find((row) => row.id === request.id && row.kind === 'amend');
-        if (current?.kind === 'amend') request.body.sourceCues = current.body.sourceCues ?? [];
+        if (current?.kind === 'amend') {
+          if (current.body.sourceCues === undefined) delete request.body.sourceCues;
+          else request.body.sourceCues = current.body.sourceCues;
+        }
         else if (sameSource) restoredRequestIds.add(request.id);
-        else request.body.sourceCues = [];
+        else delete request.body.sourceCues;
       }
       const otherIssues = restoredV2.proposal.issues.filter((issue) => issue.kind !== 'source_note_for_review');
       const presentRequestIds = restoredV2.proposal.content.requests.filter((request) => request.kind === 'amend')
