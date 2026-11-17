@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { sql, uid, json, event } from './db.js';
 import { tools, type ThreadInput } from './schema.js';
 import { quoteDisplayRows } from './display.js';
+import { mailPrefilterRule } from './mail-ingest.js';
 
 export type RuntimeProvider = 'bedrock' | 'cma';
 export function runtimeProvider(): RuntimeProvider {
@@ -63,16 +64,21 @@ const content = (text:string) => [{type:'text' as const,text}];
 export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown) {
   const keyHash=createHash('sha256').update(key).digest('hex');
   const requestHash=createHash('sha256').update(JSON.stringify({input,sourceInput:sourceInput ?? null})).digest('hex');
+  const selected = input.messages.find(message => message.id === input.selected_message_id);
+  const ruleId = selected ? mailPrefilterRule(selected) : null;
   return sql.begin(async tx => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${keyHash},0))`;
-    const [prior]=await tx`SELECT s.thread_id,e.payload FROM nava_agent.agent_event e JOIN nava_agent.agent_session s ON s.id=e.session_id WHERE e.kind='import' AND e.payload->>'key_hash'=${keyHash}`;
-    if (prior) { if(prior.payload.request_hash!==requestHash) throw new Error('IDEMPOTENCY_CONFLICT'); return {id:prior.thread_id as string,created:false}; }
+    const [prior]=await tx`SELECT COALESCE(e.thread_id,s.thread_id) AS thread_id,e.kind,e.payload FROM nava_agent.agent_event e LEFT JOIN nava_agent.agent_session s ON s.id=e.session_id WHERE e.kind IN ('import','mail_skipped') AND e.payload->>'key_hash'=${keyHash}`;
+    if (prior) { if(prior.payload.request_hash!==requestHash) throw new Error('IDEMPOTENCY_CONFLICT'); return {id:prior.thread_id as string,created:false,skipped:prior.kind==='mail_skipped'}; }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${input.source}:${input.mailbox_id}:${input.source_thread_id}`},0))`;
     const [before]=await tx`SELECT selected_message_id FROM nava_agent.mail_thread WHERE source=${input.source} AND mailbox_id=${input.mailbox_id} AND source_thread_id=${input.source_thread_id}`;
     const threadId=uid('thread');
     const [thread]=await tx`INSERT INTO nava_agent.mail_thread (id,source,mailbox_id,source_thread_id,selected_message_id,property_code,mode)
       VALUES (${threadId},${input.source},${input.mailbox_id},${input.source_thread_id},${input.selected_message_id},${input.property_code},${input.mode})
-      ON CONFLICT (source,mailbox_id,source_thread_id) DO UPDATE SET selected_message_id=EXCLUDED.selected_message_id,property_code=EXCLUDED.property_code,updated_at=now()
+      ON CONFLICT (source,mailbox_id,source_thread_id) DO UPDATE SET
+        selected_message_id=CASE WHEN ${ruleId !== null} THEN mail_thread.selected_message_id ELSE EXCLUDED.selected_message_id END,
+        property_code=CASE WHEN ${ruleId !== null} THEN mail_thread.property_code ELSE EXCLUDED.property_code END,
+        updated_at=now()
       RETURNING *`;
     if (thread.mode !== input.mode) throw new Error('THREAD_MODE_CONFLICT');
     let messagesNew=false;
@@ -81,14 +87,19 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
       if (!rows.length) { const [existing]=await tx`SELECT payload=${json(message)}::jsonb AS equal FROM nava_agent.mail_message WHERE thread_id=${thread.id} AND source_message_id=${message.id}`; if (!existing.equal) throw new Error('MESSAGE_CONFLICT'); }
       if (rows.length) messagesNew=true;
     }
+    if (ruleId) {
+      await tx`INSERT INTO nava_agent.agent_event(id,thread_id,kind,payload) VALUES (${uid('evt')},${thread.id},'mail_skipped',${json({rule_id:ruleId,message_id:input.selected_message_id,key_hash:keyHash,request_hash:requestHash})})`;
+      return {id:thread.id as string,created:!before,skipped:true};
+    }
     let [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE thread_id=${thread.id}`;
+    const createSession = !session;
     if (session && input.mode==='historical' && (session.config?.input_cutoff !== (input.input_cutoff ?? null) || session.config?.decision_id !== (input.decision_id ?? null))) throw new Error('HISTORICAL_CONTEXT_CONFLICT');
     if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null})}) RETURNING *`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
     await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash})})`;
     if(sourceInput !== undefined) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'train_source',${json(sourceInput)})`;
-    if(messagesNew || (before && before.selected_message_id!==input.selected_message_id)) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'mail_pending',${json({message_id:input.selected_message_id,delivered:false})})`;
-    return {id:thread.id as string,created:!before};
+    if(createSession || messagesNew || (before && before.selected_message_id!==input.selected_message_id)) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'mail_pending',${json({message_id:input.selected_message_id,delivered:false})})`;
+    return {id:thread.id as string,created:!before,skipped:false};
   });
 }
 export async function startPending(sessionId:string) {

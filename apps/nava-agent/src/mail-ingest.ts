@@ -15,6 +15,46 @@ const hostThread = z.object({ id, transportId: id, messages: z.array(hostMessage
 
 type Email = ThreadInput['messages'][number];
 
+const preStayFields = new Set([
+  'address', 'postal code', 'city', 'country', 'nationality', 'passport', 'date of birth',
+  'mobile', 'email', 'arrival time', 'transfer', 'lifestyle member', 'email marketing opt-in',
+]);
+
+function isRoutinePreStay(body: string): boolean {
+  const [guest, arrival, departure, room, confirmation, ...fields] = body.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (!guest || !/^Arrival\s*:\s*\d/i.test(arrival ?? '') || !/^Departure\s*:\s*\d/i.test(departure ?? '')
+    || !/^Room Type\s*:\s*\w/i.test(room ?? '') || !/^Confirmation No\s*:\s*\w/i.test(confirmation ?? '')
+    || !fields.length) return false;
+  return fields.every(line => {
+    const field = /^([^>]+?)\s*-->\s*(.*)$/.exec(line);
+    if (!field) return false;
+    const label = field[1].trim().toLowerCase();
+    return preStayFields.has(label) || field[2].trim() === '';
+  });
+}
+
+export function mailPrefilterRule(message: Email): string | null {
+  if (message.direction !== 'inbound') return null;
+  const email = message.from.email.trim().toLowerCase();
+  const host = /^[^@\s]+@([a-z0-9.-]+)$/.exec(email)?.[1];
+  if (!host) return null;
+  const from = (domain: string) => host === domain || host.endsWith('.' + domain);
+  const subject = message.subject.trim();
+  if (from('tiket.com')) return 'owner_tiket';
+  if (['ratetiger.com', 'erevmax.com', 'erevmax.co.uk', 'erevmax.net'].some(from)) {
+    return /\btbo\b/i.test(subject) ? null : 'owner_ratetiger';
+  }
+  if (from('hospitality.cloud')) return 'owner_hospitality_cloud';
+  if (from('profitroom.com')) return /\bdefault contact form\b/i.test(subject) ? null : 'owner_profitroom';
+  if (from('booking.com') && /^(?:action needed:\s*your email\b|booking\.com\s*-\s*modified booking\b|(?:your )?guest needs something\b)/i.test(subject)) {
+    return 'owner_booking_notice';
+  }
+  if (from('legacyhotels.co.za') && /^pre[ -]stay\s*:\s*property\b/i.test(subject)
+    && message.attachments.length === 0 && isRoutinePreStay(message.body_text)) return 'owner_prestay_form_only';
+  if (from('grfeedback-b.com') && /\b(?:daily|weekly|monthly) summary for\b/i.test(subject)) return 'corpus_guest_feedback_digest';
+  return null;
+}
+
 /** Dedupe identical deliveries; never choose between conflicting versions of the same source message. */
 export function uniqueMessages(messages: Email[]): Email[] {
   const byId = new Map<string, Email>();
