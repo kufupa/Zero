@@ -167,9 +167,11 @@ export async function snapshot(threadId:string) {
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
   const draft=p.phase==='ready' && p.workflow==='create' ? proposalDraft.safeParse(p.current) : null;
   const current=draft?.success ? withCreateNativeFields(draft.data) : p.current;
-  const stage=p.stage && p.stage.state!=='queued' ? {
+  const stage=p.stage && p.stage.state!=='queued' && p.stage.revision===p.revision ? {
     revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
-    display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],...(p.stage.cancellation_fee!==undefined ? {cancellation_fee:p.stage.cancellation_fee} : {}),
+    display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],
+    ...Object.fromEntries(['job_id','quote_id','observed_fields','coverage','cancellation_fee']
+      .filter(key=>p.stage[key]!==undefined).map(key=>[key,p.stage[key]])),
   } : null;
   const result=p.phase==='done' && p.result ? {
     confirmation:typeof p.result.confirmation==='string'?p.result.confirmation:null,
@@ -180,12 +182,15 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
   const rawError=p.execution?.error ?? p.execution?.go?.completion?.toolResult?.error;
   const uncertain=p.phase==='uncertain' || rawError?.outcome==='uncertain';
   const attachmentsBlocked=!uncertain && rawError?.code===attachmentsUnconfirmed.code;
+  const staffStageError=!uncertain && rawError?.operation==='staff_stage';
   const prepare=p.workflow==='create' && !uncertain && p.phase!=='error' ? prepareRejection.safeParse(p.execution?.error?.prepare) : null;
   const error=rawError || uncertain ? {
     code:typeof rawError?.code==='string' && /^[A-Z_0-9]+$/.test(rawError.code)?rawError.code:'HMS_OPERATION_FAILED',
     outcome:uncertain?'uncertain':'known',
-    message:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'HMS Save outcome is unconfirmed.':p.phase==='error'?'HMS Save did not complete.':prepare?.success?describePrepareRejection(prepare.data):'HMS Prepare did not complete.',
-    recovery:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
+    message:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'HMS Save outcome is unconfirmed.':staffStageError && typeof rawError.message==='string'?rawError.message:
+      p.phase==='error'?'HMS Save did not complete.':prepare?.success?describePrepareRejection(prepare.data):'HMS Prepare did not complete.',
+    recovery:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'Check HMS before attempting another Save.':staffStageError && typeof rawError.recovery==='string'?rawError.recovery:
+      p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
   return {...current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};

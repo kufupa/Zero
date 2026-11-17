@@ -11,7 +11,7 @@ import { event, sql } from './db.js';
 import { authReady, verifiedAuth, importThread, model, snapshot, startPending, deliverPending } from './runtime.js';
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
-import { hmsSaveEnabled } from './hms-mode.js';
+import { hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed } from './attachment-gate.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
@@ -25,8 +25,9 @@ type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;
 // Labtest checks and durable dispatch marker before any later Save.
 export interface ProposalOperations {
   capabilities: Partial<Record<Workflow, {stage:boolean;go_labtest:boolean;reconcile:boolean;quote?:boolean}>>;
+  installed?():Promise<{capabilities:ProposalOperations['capabilities'];modelTools:string[]}>;
   submit(tx:postgres.TransactionSql, request:OperationRequest):Promise<
-    {ok:true;phase:'staging'|'saving'|'uncertain';jobId?:string} |
+    {ok:true;phase:'staging'|'saving'|'uncertain';jobId?:string;replayed?:boolean} |
     {ok:false;code:OperationFailure}
   >;
 }
@@ -51,13 +52,19 @@ async function threadDenial(id:string,principal:Principal):Promise<403|404|null>
 const threadError=(status:403|404)=>({error:{code:status===403?'FORBIDDEN':'NOT_FOUND',message:status===403?'Mailbox unavailable':'Thread not found',details:null}});
 app.get('/capabilities',async c=>{
   const staff=!!process.env.NAVA_STAFF_JWT_SECRET;
+  const installed=await operations?.installed?.();
+  const capabilities=installed?.capabilities ?? operations?.capabilities;
   const workflow_capabilities=Object.fromEntries(workflows.map(workflow=>{
-    const supported=operations?.capabilities[workflow];
+    const supported=capabilities?.[workflow];
     const labtestSave=staff && hmsSaveEnabled() && !!supported?.go_labtest;
     return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:false,save:false,go_labtest:labtestSave,save_labtest:labtestSave,reconcile:staff && !!supported?.reconcile,quote:staff && workflow==='quote' && !!supported?.quote,undo:false,redo:false}];
   }));
-  const create=!!operations?.capabilities.create?.stage;
-  return c.json({workflows:create?['triage','create']:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && operations?.capabilities.create?.go_labtest?['hms_save']:[])],model,environment_type:'self_hosted',auth_ready:create?c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
+  const create=!!capabilities?.create?.stage;
+  const enabled=installed ? Object.keys(installed.capabilities) : staffPrepareOnly() ? [] : create?['triage','create']:['quote'];
+  const modelTools=installed?.modelTools ?? (staffPrepareOnly()?['mail_read_thread','proposal_publish','reply_draft']:
+    ['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && capabilities?.create?.go_labtest?['hms_save']:[])]);
+  const authConfigured=await authReady();
+  return c.json({workflows:enabled,tools:modelTools,model,environment_type:'self_hosted',auth_ready:installed || create?authConfigured && c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:authConfigured,configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
 });
 async function findManualLabtest(source:z.infer<typeof labtestSource>) {
   if(!hmsSaveEnabled() || !operations?.capabilities.create?.go_labtest) return null;
@@ -97,6 +104,10 @@ app.post('/threads',async c=>{
   if (!parsed.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid thread',details:parsed.error.flatten()}},400);
   const principal=c.get('principal');
   if(!hasMailbox(principal,parsed.data.mailbox_id) || (principal.kind==='staff' && parsed.data.mode!=='live')) return c.json({error:{code:'FORBIDDEN',message:'Mailbox or mode unavailable',details:null}},403);
+  if(staffPrepareOnly() && (parsed.data.mode==='labtest' || (parsed.data.mode==='live' && (
+    parsed.data.source!=='outlook' || parsed.data.property_code!=='HRCEN'
+    || parsed.data.messages.find(message=>message.id===parsed.data.selected_message_id)?.direction!=='inbound'
+  )))) return c.json({error:{code:'FORBIDDEN',message:'Select an inbound Centurion source.',details:null}},403);
   try { if(principal.kind==='staff') {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(process.env.NAVA_CREATE_PREPARE_ONLY==='1' && parsed.data.mode==='live' && current?.selected_message_id!==parsed.data.selected_message_id) throw new Error('IMPORT_SELECTION_MISMATCH'); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
   catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; return c.json({error:{code:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'IMPORT_UNAVAILABLE',message:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'Unable to import thread',details:null}},['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?409:503); }
 });
@@ -140,11 +151,13 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       if(operation==='undo' || operation==='redo') throw new OperationError('UNAVAILABLE');
       if(p.mode==='historical') throw new OperationError('HISTORICAL_UNAVAILABLE');
       if(p.mode!=='live' && p.mode!=='labtest') throw new OperationError('UNAVAILABLE');
-      if(operation==='stage' && process.env.NAVA_CREATE_PREPARE_ONLY==='1' && p.mode==='live' && !p.selection_key.startsWith('prepare:')) throw new OperationError('UNAVAILABLE');
+      if((operation==='stage' || operation==='quote') && staffPrepareOnly()
+          && (p.mode!=='live' || !p.selection_key.startsWith('prepare:'))) throw new OperationError('UNAVAILABLE');
       if(operation==='go' && p.mode==='live') throw new OperationError('REAL_GUEST_GO_UNAVAILABLE');
       const workflow=proposalDraft.shape.workflow.safeParse(p.workflow);
       if(!workflow.success) throw new OperationError('UNAVAILABLE');
-      const capability=operations?.capabilities[workflow.data];
+      const installed=await operations?.installed?.();
+      const capability=(installed?.capabilities ?? operations?.capabilities)?.[workflow.data];
       if(!operations || !(operation==='go'?capability?.go_labtest:capability?.[operation])) throw new OperationError('UNAVAILABLE');
       if((operation==='stage' && p.phase!=='ready' && p.phase!=='waiting_go') ||
          (operation==='go' && p.phase!=='waiting_go' && p.phase!=='saving') ||
@@ -164,9 +177,11 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       const expectedPhase=operation==='stage'||operation==='quote'?'staging':operation==='go'?'saving':'uncertain';
       if(accepted.phase!==expectedPhase) throw new OperationError('UNAVAILABLE');
       if(operation==='quote' && (!accepted.jobId || !quoteId)) throw new OperationError('UNAVAILABLE');
+      if(operation==='quote' && accepted.replayed) return {job_id:accepted.jobId,proposal_id:p.id,revision:p.revision,quote_id:quoteId,phase:accepted.phase};
       const [updated]=await tx`SELECT phase,revision FROM nava_agent.proposal WHERE id=${p.id}`;
       if(!updated || updated.phase!==expectedPhase || updated.revision!==input.data.expected_revision) throw new OperationError('UNAVAILABLE');
-      return operation==='quote'?{job_id:accepted.jobId,proposal_id:p.id,revision:p.revision,quote_id:quoteId,phase:accepted.phase}:{proposal_id:p.id,revision:p.revision,phase:accepted.phase};
+      return {proposal_id:p.id,revision:p.revision,phase:accepted.phase,
+        ...(accepted.jobId ? {job_id:accepted.jobId} : {}),...(operation==='quote'?{quote_id:quoteId}:{})};
     });
     return c.json(result,202);
   } catch(error) {
@@ -174,7 +189,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
     if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is disabled in this pilot.',details:null}},403);
-    if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid quote fields',details:null}},400);
+    if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid proposal fields',details:null}},400);
     if(code===attachmentsUnconfirmed.code) return c.json({error:{...attachmentsUnconfirmed,details:null}},409);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE'||code==='INVALID_PHASE'||code==='IDEMPOTENCY_CONFLICT') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     return c.json({error:{code,message:'This operation is not supported.',details:null}},501);

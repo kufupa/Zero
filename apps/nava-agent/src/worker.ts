@@ -9,9 +9,9 @@ import { z } from 'zod';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
-import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
-import { createPilotEnabled, manualLabtestTarget, runCreateStage } from './create-operations.js';
-import { createPilotRequested, hmsSaveEnabled } from './hms-mode.js';
+import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
+import { createPilotEnabled, manualLabtestTarget, runStaffStage } from './create-operations.js';
+import { createPilotRequested, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -62,8 +62,9 @@ function cap(value:string|undefined,fallback:number,maximum:number,name:string):
   return parsed;
 }
 export function configuredSlots() {
-  const requested=cap(process.env.NAVA_HMS_SLOTS,10,12,'NAVA_HMS_SLOTS');
-  const native=cap(process.env.HMS_CREDENTIAL_SESSION_CAP,8,8,'HMS_CREDENTIAL_SESSION_CAP');
+  const prepareOnly=staffPrepareOnly();
+  const requested=cap(process.env.NAVA_HMS_SLOTS,prepareOnly?4:10,prepareOnly?4:12,'NAVA_HMS_SLOTS');
+  const native=cap(process.env.HMS_CREDENTIAL_SESSION_CAP,prepareOnly?4:8,prepareOnly?4:8,'HMS_CREDENTIAL_SESSION_CAP');
   return {requested,native,local:Math.min(requested,native)};
 }
 
@@ -89,7 +90,7 @@ class Semaphore {
 
 export function createNativeAdmission():NativeAdmission {
   const semaphore=new Semaphore(configuredSlots().local);
-  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:()=>Promise<T>,scope?:'quote'):Promise<T> {
+  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote'):Promise<T> {
     if(!process.env.HMS_CREDENTIAL_SESSION_CAP) throw new Error('HMS_CREDENTIAL_SESSION_CAP_REQUIRED');
     const databaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     if(!databaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
@@ -99,9 +100,9 @@ export function createNativeAdmission():NativeAdmission {
       if(scope==='quote') { try { await access(bundledQuote);nativePath=bundledQuote; } catch { /* quote uses the shared native module */ } }
       const cloud=await import(pathToFileURL(nativePath).href);
       if(typeof cloud.withCloudCredentialLease!=='function') throw new Error('NATIVE_ADMISSION_UNAVAILABLE');
-      return cloud.withCloudCredentialLease(propertyCode,async(lease:{signal:AbortSignal})=>{
+      return cloud.withCloudCredentialLease(propertyCode,async(lease:NativeLease)=>{
         lease.signal.throwIfAborted();
-        const result=await work();
+        const result=await work(lease);
         lease.signal.throwIfAborted();
         return result;
       },{databaseUrl,readOnly,priority:'staff',signal});
@@ -148,7 +149,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     const mode:Mode=session.mode;
     const pending=await pendingInput(sessionId,state.status==='running' && typeof session.config?.worker_delivery_id==='string' ? session.config.worker_delivery_id : undefined);
     const registry=new ToolRegistry({native:deps.native,emit:async(_id,kind,payload)=>{abort.signal.throwIfAborted();await deps.store.event(lease,kind,payload);}});
-    await discoverToolPacks(registry,undefined,process.env.NAVA_QUOTE_SKELETON==='1'?['quote','skills']:createPilotRequested()?['create','skills']:undefined);
+    await discoverToolPacks(registry);
     let skillConfig:SkillConfig|undefined;
     if(registry.hasSkillPack()) {
       const existing=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().safeParse(session.config?.skill_config);
@@ -161,7 +162,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
         skillConfig=pin;
       }
     }
-    if(createPilotEnabled() && await runCreateStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
+    if(createPilotEnabled() && await runStaffStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
     let version=state.version;
     const checkSession=(id:string)=>{if(id!==sessionId)throw new Error('SESSION_MISMATCH');abort.signal.throwIfAborted();};
     const runtime=deps.runtime({
@@ -383,6 +384,7 @@ async function main():Promise<void> {
   const pilot=createPilotRequested();
   const saveEnabled=hmsSaveEnabled() && !quoteOnly && (!pilot || createPilotEnabled());
   const system=quoteOnly?'Read the selected email using mail_read_thread and load quote/SKILL.md and its references with skill_read. If dates, property and occupancy support a native search, call hms_quote before publishing, including when group review is still needed. Never fabricate missing input or prices. Publish a quote proposal with native_result null; the server attaches native capture. Read only: no Save or email send.'
+    :staffPrepareOnly()?'Read the selected inbound with mail_read_thread. Use skill_read to load triage/SKILL.md, then the relevant workflow skill and linked references. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask.'
     :pilot?'Read the selected email using mail_read_thread and read triage/SKILL.md and create/SKILL.md for new bookings. Load shared tool rules with skill_read({"skill_name":"create","path":"../references/tools-and-proposal.md"}). Create is the only supported native workflow in this pilot. Publish one grounded Create action and booking for one complete supported request, or needs_info/staff_review when unclear. Use first_name and last_name, empty Create action details, and editable pointers under /bookings/0/fields. Publish with native_result null. Only staff runs Prepare. Never send mail or invent missing input.'
     :'Read the selected mail thread with mail_read_thread, then read triage/SKILL.md and the relevant workflow skill and references with skill_read. Use registered tools and native facts only; never invent prices or send email. Publish a proposal for staff, including missing information.';
   const saveInstruction=saveEnabled ? ' When ready, request hms_save to pause for approval.' : ' End after publishing the proposal. Save is disabled.';

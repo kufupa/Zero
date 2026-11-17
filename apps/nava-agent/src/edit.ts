@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields } from './proposal-fields.js';
-import { attachmentCheckPath, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentCheckPath, requiresStaffAttachmentCheck, staffAttachmentsChecked } from './attachment-gate.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
   if(x.op!=='remove' && !Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'value required'});
@@ -53,30 +54,34 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     const stored=proposalDraft.parse(structuredClone(p.current));
     const draft=p.phase==='ready' ? withCreateNativeFields(stored) : stored;
     const identities=JSON.stringify(quoteIdentities(draft));
+    const quoteActions=p.workflow==='quote'?structuredClone(draft.actions):null;
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {
       const spec=draft.field_specs.find(f=>f.path===item.path);
-      if(!spec?.editable) throw new Error('INVALID_PATH');
+      if(!spec?.editable || (p.workflow==='filing' && /^\/actions\/\d+\/details\/message_id(?:\/|$)/.test(item.path))) throw new Error('INVALID_PATH');
       const modified=apply(draft,item);
       spec.provenance='staff';
       changes.push({change:item,...modified});
     }
     const valid=proposalDraft.parse(draft), revision=p.revision+1;
     if(JSON.stringify(quoteIdentities(valid))!==identities) throw new Error('INVALID_PATH');
+    if(quoteActions && !isDeepStrictEqual(quoteActions,valid.actions)) valid.native_result=null;
     if(p.workflow==='create') for(const change of input.changes) {
       const match=/^\/bookings\/(\d+)\/fields\/child_(?:count|ages)(?:\/|$)/.exec(change.path);
       const fields=match && valid.bookings[Number(match[1])]?.fields;
       if(fields && !validChildAges(fields.child_count,fields.child_ages)) throw new Error('INVALID_CHILD_AGES');
     }
     if(input.staff_attachments_checked!==undefined) {
-      if(p.workflow!=='create') throw new Error('INVALID_PATH');
+      if(!requiresStaffAttachmentCheck(p.workflow)) throw new Error('INVALID_PATH');
       const before=await staffAttachmentsChecked(tx,p.id,p.revision);
       const after=input.staff_attachments_checked;
       changes.push({change:{op:'replace',path:attachmentCheckPath,value:after},before,before_present:true,after,after_present:true});
     }
     const [last]=await tx`SELECT COALESCE(max(sequence),0)::int AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
     let sequence=last.n;
-    await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,updated_at=now() WHERE id=${id}`;
+    await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,
+      execution=CASE WHEN execution->'error'->>'operation'='staff_stage' THEN execution-'error' ELSE execution END,
+      updated_at=now() WHERE id=${id}`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+p.session_id},0))`;
     for(const item of changes) {
       const editId=uid('edit'); sequence++;

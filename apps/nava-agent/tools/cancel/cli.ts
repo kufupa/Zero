@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readFile } from 'node:fs/promises';
 import { prepare, save, type ToolContext, type ToolResult } from './index.js';
-import { hmsSaveEnabled } from '../../src/hms-mode.js';
+import { hmsSaveEnabled, staffPrepareOnly } from '../../src/hms-mode.js';
 
 async function validateJournal(directory: string): Promise<void> {
   const stat = await lstat(directory);
@@ -29,6 +29,11 @@ async function main() {
   const [command, inputPath, journalDir] = process.argv.slice(2);
   if (command === 'save-labtest' && !hmsSaveEnabled()) {
     process.stderr.write('SAVE_DISABLED\n');
+    process.exitCode = 1;
+    return;
+  }
+  if (staffPrepareOnly()) {
+    process.stderr.write('STAFF_PREPARE_REQUIRED\n');
     process.exitCode = 1;
     return;
   }
