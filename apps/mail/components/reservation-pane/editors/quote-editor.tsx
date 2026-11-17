@@ -586,8 +586,8 @@ export function QuoteEditor(editor: Editor) {
               disabled={view.busy || groups.length <= 1} onClick={() => void commands.changeRows({ kind: 'remove_quote_group',
               requestId: request.id, entityId: text(group.id) })}>Remove</button></div>
           {sourceQuote?.kind === 'quote' && sourceQuote.body.groups[index]?.sourceAssociationUnresolved === true && valueAt(snapshot, `${groupPath}/sourceAssociationUnresolved`) !== false && <div className={styles.notice} data-field-path={`${groupPath}/sourceAssociationUnresolved`}>
-            This may duplicate another room group. Remove it or confirm it is separate.{' '}
-            <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/sourceAssociationUnresolved`, false)}>Keep as a separate group</button>
+            Check this group's dates and room request against the email. Remove any duplicate, or confirm the details.{' '}
+            <button type="button" disabled={view.busy} onClick={() => void commands.edit(`${groupPath}/sourceAssociationUnresolved`, false)}>Details are correct</button>
           </div>}
           {quoteRateNeedsConfirmation(snapshot.session.draft, request.id, index) && <div className={styles.notice} data-field-path={`${groupPath}/ratePlan`}>
             The customer asked for a rate by name. Choose it from Infor, or confirm another available rate.{' '}
