@@ -3584,9 +3584,9 @@ function projectCurrentExtraction(input: {
 }): { proposal: ReservationWorkflowV2Proposal; addedRequests: number; addedIssues: number;
   extractionIdByProposalRequestId: Map<string, string> } {
   const proposal = structuredClone(input.proposal);
-  // Synthesis issues are untrusted; only this host compactor may assert that its
-  // per-request confirmation claim exceeded the durable source-claim budget.
-  proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
+  // These issues are authored only by the host, never by synthesis.
+  proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE &&
+    issue.kind !== 'source_note_for_review');
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   // Filtered attachment lists cannot prove the source inventory is complete. Until an
@@ -3940,7 +3940,7 @@ function projectCurrentExtraction(input: {
     projectBookerContacts({ proposal, request, extracted, currentRefs,
       currentMessage: input.selection.currentBodyText ?? input.selection.bodyText,
       messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) });
-    if (request.kind === 'amend') {
+    if (request.kind === 'amend' && currentExtraction.requests.length === 1 && proposal.content.requests.length === 1) {
       const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
         input.selection.currentBodyText ?? input.selection.bodyText));
       const clauses = authoredSourceNoteClauses(input);
@@ -3953,8 +3953,6 @@ function projectCurrentExtraction(input: {
         const raw = claim.raw.trim();
         if (!raw || !currentClaim(claim, currentRefs) || !currentAuthoredBody.includes(raw) ||
             currentAuthoredBody.indexOf(raw) !== currentAuthoredBody.lastIndexOf(raw)) continue;
-        if (currentExtraction.requests.length > 1 && (!extracted.requestText.raw.includes(raw) ||
-            currentExtraction.requests.some((other) => other !== extracted && other.requestText.raw.includes(raw)))) continue;
         const matches = clauses.filter((clause) => clause.includes(raw) && clause.length <= 2000);
         if (matches.length !== 1) continue;
         const text = matches[0]!;
@@ -3966,6 +3964,8 @@ function projectCurrentExtraction(input: {
         if (sourceCues.length === 20) break;
       }
       if (sourceCues.length) request.body.sourceCues = sourceCues;
+    }
+    if (request.kind === 'amend') {
       const mealClaims = extracted.mealPlanHints.filter((claim) => currentClaim(claim, currentRefs) && Boolean(claim.raw.trim()) &&
         typeof claim.value === 'string' && claim.value.trim() && claim.value.length <= 120 &&
         !/[\p{Cc}]/u.test(claim.value) && input.evidence.some((row) => currentRefs.has(row.ref) &&
@@ -5715,7 +5715,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
         row.result.reservationObservations.reservationNote.state === 'observed' &&
         typeof row.result.reservationObservations.reservationNote.value === 'string')) : [];
     if (!sourceNotes.length || matches.length !== 1 || !target) {
-      if (singleRequest) for (const clause of sourceNotes.filter((text) => corroboratedByAuthoredHtml(input.selection, text))) addProjectionIssue(proposal, `${path}/reservationNote`,
+      if (singleRequest && proposal.content.requests.length === 1) for (const clause of sourceNotes.filter((text) => corroboratedByAuthoredHtml(input.selection, text))) addProjectionIssue(proposal, `${path}/reservationNote`,
         'source_note_for_review', `Source text to review: ${clause.slice(0, 1800)}${clause.length > 1800 ? '…' : ''}`,
         input.evidence.filter((row) => row.relation === 'current_message' && row.text.includes(clause)).map((row) => row.ref));
       addProjectionIssue(proposal, `${path}/reservationNote`, 'saved_note_requires_review',
