@@ -251,6 +251,9 @@ function recoverExtractionFacts(value: unknown, input: {
     return [];
   });
   const issueSchema = reservationWorkflowV2ExtractionSchema.shape.issues.removeDefault().element;
+  if (value.issues !== undefined && !Array.isArray(value.issues)) {
+    issues.push({ explanation: 'The extraction issues list could not be read and was withheld for staff review.', sourceRefs: [] });
+  }
   const suppliedIssues = Array.isArray(value.issues) ? value.issues.flatMap((row) => {
     const parsed = issueSchema.safeParse(row);
     if (parsed.success) return [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }];
