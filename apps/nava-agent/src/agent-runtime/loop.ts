@@ -106,10 +106,17 @@ export class RuntimeLoop implements AgentRuntime {
       return;
     }
     if (state.pendingToolUseId === null) {
-      const index = state.messages.findLastIndex(message => message.role === 'user' && message.content.some(block => {
-        if (block.type !== 'tool_result' || block.tool_use_id !== toolUseId || typeof block.content !== 'string') return false;
-        try { return sameResult(JSON.parse(block.content), result); } catch { return false; }
-      }));
+      let index = -1;
+      for (let i = state.messages.length - 1; i >= 0; i--) {
+        const message = state.messages[i];
+        if (message.role === 'user' && message.content.some(block => {
+          if (block.type !== 'tool_result' || block.tool_use_id !== toolUseId || typeof block.content !== 'string') return false;
+          try { return sameResult(JSON.parse(block.content), result); } catch { return false; }
+        })) {
+          index = i;
+          break;
+        }
+      }
       if (index >= 0 && state.messages.slice(index + 1).every(message => message.role === 'assistant')) {
         await this.run(sessionId);
         return;
