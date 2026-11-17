@@ -30,4 +30,6 @@ No universal automatic decline policy found. Active unsupported task → staff r
 
 Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `proposal_publish`, `reply_draft`. Exact [inputs/proposal](../references/tools-and-proposal.md); runtime capability may be unavailable. Never invent tool or silent success.
 
+For an existing-stay status check, publish a `triage` action with `details.lookup` containing `reservation_id`, `guest_name`, `arrival_date`, and `departure_date`; use `null` for unknown values. `guest_name` is surname only for a surname search. Add editable field specs for these exact `/actions/0/details/lookup/...` paths and cite the selected message. Preserve independent asks in their own actions. Staff may correct a hint and run the read from that revision. A surname search returns candidates, not a selected stay; staff must choose an exact confirmation before a unique status read. Do not infer a match from an incomplete search or an old quote. Publish `native_result: null`; the server supplies fresh native results.
+
 Example: quoted “book two rooms”; current “cancel one, voucher attached for other” → cancel target + filing target, not two creates.
