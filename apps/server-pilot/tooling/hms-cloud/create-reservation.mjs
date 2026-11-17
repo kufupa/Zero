@@ -435,8 +435,9 @@ export async function createReservation(input, options = {}) {
     try { return await withCloudCredentialLease(input.propertyCode, lease => {
       began = true;
       return createReservation(input, { ...options, credentialLease: lease });
-    }, { signal }); }
-    catch { return { outcome: commit && began ? 'uncertain' : 'refused', issue: 'CREDENTIAL_LEASE_UNAVAILABLE', approvalReady: false }; }
+    }, { signal, readOnly: !commit }); }
+    catch (error) { return { outcome: commit && began ? 'uncertain' : 'refused',
+      issue: error?.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' ? error.message : 'CREDENTIAL_LEASE_UNAVAILABLE', approvalReady: false }; }
   }
   const output = { outcome: 'needs_input', approvalReady: false, applied: {}, appliedVerification: { visibleFields: false },
     warnings: [], suggestedCmsMessageId: '03', missing,
@@ -867,7 +868,7 @@ export async function createReservation(input, options = {}) {
       } catch { state.save = { outcome: 'uncertain', issue: 'SAVE_TOOL_FAILED' }; }
       if (state.save.billingReferenceStaged === true) output.applied.billingReference = input.billingReference;
       try { await screenshot('after'); } catch { state.afterScreenshotFailed = true; }
-    }, { memory: null, blockServiceWorkers: true, propertyCode: input.propertyCode, transportId, signal, credentialLease,
+    }, { memory: null, blockServiceWorkers: true, staging: !commit, propertyCode: input.propertyCode, transportId, signal, credentialLease,
       ...(allowRealGuest ? { allowRealGuest: true, expectedGuest } : {}),
       ...(cloudTargetKey ? { cloudTargetKey } : {}),
       ...(commit ? { labtestDates: { arrival: stay.arrival, departure: stay.departure,

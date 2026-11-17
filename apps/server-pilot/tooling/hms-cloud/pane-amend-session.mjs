@@ -375,7 +375,7 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
   try {
     if (!input.credentialLease && openSession === withCloudWriterSession) {
       return await withCloudCredentialLease(selected.propertyCode, credentialLease =>
-        prepareCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal });
+        prepareCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal, readOnly: true });
     }
     let stageQuote = quote;
     if (input.changes.retainRates !== 'yes' && openSession === withCloudWriterSession && quote === readAmendNightlyQuote) {
@@ -391,7 +391,7 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
         const state = await current(page, expected, nativeOptions(input, record));
         if (!state?.partyPreimage) throw new Error('AMEND_PARTY_PREIMAGE_UNVERIFIED');
         return structuredClone(state.partyPreimage);
-      }, preliminary.options);
+      }, { ...preliminary.options, staging: true });
       const quoteInput = Array.isArray(input.childAgePreimage)
         ? { ...input, selected: { ...selected, childAges: input.childAgePreimage } } : input;
       phase = 'nightly_quote';
@@ -421,7 +421,7 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
           ...(input.captureBusinessImage ? { sourceBusinessImage: result.sourceBusinessImage } : {}) };
       }
       return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
-    }, protectedSession.options);
+    }, { ...protectedSession.options, staging: true });
   } catch (error) {
     return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE', diagnostic: safeReadError(error, phase) };
   }
@@ -471,7 +471,7 @@ export async function readCloudSavedChildAges(input, { openSession = withCloudWr
         ? { outcome: 'ok', ages: result.ages, bands: result.bands }
         : { outcome: 'refused', issue: result.issue === 'PREPARE_ONLY' ? 'SAVED_AGES_UNVERIFIED' :
           result.issue || 'SAVED_AGES_UNVERIFIED' };
-    }, protectedSession.options);
+    }, { ...protectedSession.options, staging: true });
   } catch { return { outcome: 'refused', issue: 'SAVED_AGES_UNVERIFIED' }; }
 }
 
@@ -520,7 +520,7 @@ export async function previewCloudPaneAmendChildren(input, { openSession = withC
       return result.issue === 'PREPARE_ONLY' && result.blockedRequests === 0 && result.preview
         ? { outcome: 'ok', ...result.preview }
         : { outcome: 'refused', issue: result.issue || 'CHILD_PREVIEW_UNVERIFIED' };
-    }, protectedSession.options);
+    }, { ...protectedSession.options, staging: true });
   } catch { return { outcome: 'refused', issue: 'CHILD_PREVIEW_UNVERIFIED' }; }
 }
 
@@ -571,7 +571,7 @@ export async function inspectCloudPaneAmendParties(input, { openSession = withCl
       return result.issue === 'PREPARE_ONLY' && result.blockedRequests === 0 && Array.isArray(result.observations)
         ? { outcome: 'ok', observations: result.observations }
         : { outcome: 'refused', issue: result.issue || 'PARTY_READ_UNVERIFIED' };
-    }, protectedSession.options);
+    }, { ...protectedSession.options, staging: true });
   } catch { return { outcome: 'refused', issue: 'PARTY_READ_UNVERIFIED' }; }
 }
 
@@ -616,7 +616,7 @@ export async function listCloudPaneAmendTrackChoices(input, { openSession = with
       return result.issue === 'PREPARE_ONLY' && result.coverage?.complete === true && result.blockedRequests === 0
         ? { outcome: 'ok', candidates: result.candidates, coverage: result.coverage }
         : { outcome: 'refused', issue: result.issue || 'TRACK_CHOICES_UNVERIFIED' };
-    }, protectedSession.options);
+    }, { ...protectedSession.options, staging: true });
   } catch { return { outcome: 'refused', issue: 'TRACK_CHOICES_UNVERIFIED' }; }
 }
 
@@ -1592,7 +1592,7 @@ export async function readCloudPaneAmend(input, dependencies = {}) {
   try {
     if (!input.credentialLease && openSession === withCloudWriterSession) {
       return await withCloudCredentialLease(selected.propertyCode, credentialLease =>
-        readCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal });
+        readCloudPaneAmend({ ...input, credentialLease }, dependencies), { signal: input.signal, readOnly: true });
     }
     const protectedSession = guardedSession(input, guard);
     const result = await openSession(async (page) => {
@@ -1699,7 +1699,7 @@ export async function readCloudPaneAmend(input, dependencies = {}) {
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
         price: observedAmendPrice(saved, target, null, { includeComponents: input.capturePriceComponents === true }) } };
-    }, protectedSession.options);
+    }, { ...protectedSession.options, staging: true });
     if (result.outcome === 'matched' && (Array.isArray(input.beforeChildAges) || result.readback.childAges === 'unknown')) {
       const expectedAges = Array.isArray(changes.childAges) ? changes.childAges :
         Array.isArray(input.beforeChildAges) ? input.beforeChildAges : target.childAges;

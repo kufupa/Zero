@@ -678,15 +678,16 @@ export function createBookingToolQueue(context) {
 }
 
 /** Own one guarded page for the callback; the page is closed when it returns. */
-export function bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless = true, blockServiceWorkers = false, cloudTargetKey, cloudTargetKeys, labtestDates } = {}) {
-  if (typeof blockServiceWorkers !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
+export function bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless = true, blockServiceWorkers = false, staging = false, cloudTargetKey, cloudTargetKeys, labtestDates } = {}) {
+  if (typeof blockServiceWorkers !== 'boolean' || typeof staging !== 'boolean') throw new Error('SERVICE_WORKER_OPTION_INVALID');
   return { propertyCode, transportId, signal, credentialLease, headless,
+    ...(staging ? { staging } : {}),
     ...(labtestDates !== undefined ? { startScreen: 'OSRESS' } : {}),
     ...(cloudTargetKey ? { cloudTargetKey } : {}), ...(cloudTargetKeys ? { cloudTargetKeys } : {}) };
 }
 
 export async function withBookingLookupSession(operation, { memory, memorySources, headless = true, labtestDates,
-  blockServiceWorkers = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate, verifyLabtestMatches,
+  blockServiceWorkers = false, staging = false, beforeSaveScreenshot, authorizeCandidate, dispatchCandidate, verifyLabtestMatches,
   allowRealGuest = false, expectedGuest, propertyCode, transportId, credentialLease, cloudTargetKey, cloudTargetKeys, signal } = {}) {
   if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROPERTY_CODE_REQUIRED');
   if (beforeSaveScreenshot !== undefined && typeof beforeSaveScreenshot !== 'function') throw new Error('SCREENSHOT_CALLBACK_INVALID');
@@ -727,7 +728,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       if (!currentCreateRateAvailability.has(createAuthority)) usedCreateRateAvailability.delete(createAuthority);
     } },
   });
-  const pageOptions = bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless, blockServiceWorkers, cloudTargetKey, cloudTargetKeys, labtestDates });
+  const pageOptions = bookingSessionPageOptions({ propertyCode, transportId, signal, credentialLease, headless, blockServiceWorkers, staging, cloudTargetKey, cloudTargetKeys, labtestDates });
   const loaded = memory === undefined
     ? await loadOptionalBookingMemory(memorySources, { propertyCode })
     : { memory, status: memory ? 'available' : 'unavailable', issue: memory ? undefined : 'memory_unavailable' };

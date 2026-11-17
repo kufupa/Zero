@@ -139,19 +139,19 @@ function targetKeys(scope, confirmation, nativeStayId) {
   return result;
 }
 
-function scopedPage(scope, credentialLease, aliases = () => []) {
+function scopedPage(scope, credentialLease, aliases = () => [], staging = false) {
   return async operation => withCloudWriterSession(async page => {
     bindStay360AddOnProperty(page, scope.propertyCode);
     return operation(page);
-  }, { ...scope, credentialLease, ...(aliases().length ? { cloudTargetKeys: aliases() } : {}), startScreen: 'OSRESS' });
+  }, { ...scope, credentialLease, staging, ...(aliases().length ? { cloudTargetKeys: aliases() } : {}), startScreen: 'OSRESS' });
 }
 
 /** A separate authenticated session reconciles possible dispatches after the writer has closed. */
 export async function reconcileStay360AddOns(save, options = {}) {
   const scope = sessionScope(options);
   const run = lease => reconcileWithPage(save, { withPage: scopedPage(scope, lease,
-    () => targetKeys(scope, save?.confirmation, save?.nativeStayId ?? options.target?.nativeStayId)), target: options.target });
-  return options.credentialLease ? run(options.credentialLease) : withCloudCredentialLease(scope.propertyCode, run, { signal: scope.signal });
+    () => targetKeys(scope, save?.confirmation, save?.nativeStayId ?? options.target?.nativeStayId), true), target: options.target });
+  return options.credentialLease ? run(options.credentialLease) : withCloudCredentialLease(scope.propertyCode, run, { signal: scope.signal, readOnly: true });
 }
 
 /** Prepare and save in sequential sessions, held under the same credential lease. */
@@ -165,11 +165,12 @@ export async function withStay360AddOnSession(operation, options = {}) {
       [options.withWriteLock, ...(options.authorize ? [options.beforeDispatch, options.afterDispatch] : []),
         ...(options.authorizeChanges ? [options.beforeChangeDispatch, options.afterChangeDispatch] : [])]
         .some(value => typeof value !== 'function')) throw new Error('ADDONS_TRUSTED_WRITE_CALLBACKS_REQUIRED');
+  const staging = !options.authorize && !options.authorizeChanges;
   const work = async credentialLease => {
     const signals = [baseScope.signal, credentialLease?.signal].filter(Boolean);
     const scope = { ...baseScope, signal: signals.length ? AbortSignal.any(signals) : undefined };
     let confirmation = null, currentTarget = null, nativeStayId = null, closed = false, lastSave = null, prepared = null;
-    const withPage = scopedPage(scope, credentialLease, () => targetKeys(scope, confirmation, nativeStayId));
+    const withPage = scopedPage(scope, credentialLease, () => targetKeys(scope, confirmation, nativeStayId), staging);
     let tail = Promise.resolve();
     const open = async (request, action) => withPage(async page => {
       scope.signal?.throwIfAborted();
@@ -303,7 +304,7 @@ export async function withStay360AddOnSession(operation, options = {}) {
     try { return await operation({ runTool }); }
     finally { await tail; }
   };
-  return options.credentialLease ? work(options.credentialLease) : withCloudCredentialLease(baseScope.propertyCode, work, { signal: baseScope.signal });
+  return options.credentialLease ? work(options.credentialLease) : withCloudCredentialLease(baseScope.propertyCode, work, { signal: baseScope.signal, readOnly: staging });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -33,7 +33,6 @@ import {
   quoteRunIdFromEvidenceDirectory,
 } from './staff-quote-evidence.js';
 import {
-  createPostgresPropertyReadLock,
   isPropertyReadLockDeadline,
   PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
   propertyReadLockKey,
@@ -77,19 +76,6 @@ export type StaffQuoteDiagnostic = StaffQuoteSummaryDiagnostic & {
   availabilityBoard: AvailabilityBoardRow[];
   availabilityTruncated: boolean;
 };
-
-/** Spawn env for a quote/party child while this process holds the property lock. */
-export function staffQuoteChildEnv(
-  tenantId: string,
-  propertyCode: string,
-  env: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  return {
-    ...env,
-    HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(tenantId, propertyCode),
-    PANE_STAY_TENANT_ID: tenantId,
-  };
-}
 
 const HMS_NOT_RESPONDED_MESSAGE =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
@@ -572,8 +558,8 @@ function deferredQuoteRevision(): DeferredQuoteRevision {
 }
 
 /**
- * Provisional mode only. Resolves `captured` once the quote is captured, then keeps the caller's
- * property lock held until every capture child has exited, so its trace has finished first.
+ * Provisional mode only. Resolves `captured` once the quote is captured, then waits for every
+ * capture child's trace to finish. Each child retains its own credential lease until it exits.
  */
 async function awaitProvisionalCapture(
   quote: Promise<QuoteRevision>,
@@ -698,8 +684,7 @@ export async function runStaffQuote(
   };
   // Saved rates are read before any HMS call or generation row, so an archived rate fails cleanly here.
   const rowPrices = systemPrepared ? [] : await snapshotRowPrices(db, identity.transportId, input);
-  // A picked company or agency is re-checked in HMS before any rate is bound. The lookup runs before the quote lock,
-  // which the same property lock would otherwise block. With the switch off no lookup runs and no party rate is sent.
+  // A picked company or agency is re-checked in HMS before any rate is bound.
   const notes: string[] = [];
   // The rate cards of the attempt that priced. Empty when the quote failed before they were built.
   let rateOptions: RateOption[] = [];
@@ -813,27 +798,20 @@ export async function runStaffQuote(
         userId: identity.user!.id,
         lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
       });
-  // Provisional mode (QUOTE_TRACE_ASYNC=on): the quote is returned once captured, while the lock
-  // and the run's record wait for the trace. Flag off, none of this changes the sequential flow.
+  // Provisional mode returns the quote once captured, while the run waits for its trace.
   const traceAsync = quoteTraceAsyncEnabled();
   const waitForTracePersistence = options.deadlineAt !== undefined;
   const traceFinishes: Promise<void>[] = [];
   let lockRun: Promise<QuoteRevision> | undefined;
   let queueEndedLater = false;
   try {
-    const lock = createPostgresPropertyReadLock({
-      tenantId: config.tenantId,
-      propertyCode: scope.propertyCode,
-      databaseUrl,
-    });
     let revision: QuoteRevision;
     const captured = deferredQuoteRevision();
     try {
-      lockRun = lock.withLock(
-        async () => {
+      lockRun = (async () => {
           await assertPreparedQuoteCanContinue(db, systemPrepared);
           queued.setPhase(1);
-          const childEnv = staffQuoteChildEnv(config.tenantId, scope.propertyCode);
+          const childEnv = process.env;
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
           // quoted once more at public rates, and the review says so.
           const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
@@ -967,13 +945,7 @@ export async function runStaffQuote(
             return result;
           })();
           return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
-        },
-        {
-          signal,
-          deadlineAt: prepared.context.input.clock.deadlineAt,
-          ...(systemPrepared ? { tryOnce: true } : {}),
-        },
-      );
+        })();
       if (traceAsync) {
         lockRun.then(
           (value) => captured.resolve(value),

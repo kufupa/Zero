@@ -900,25 +900,18 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
-  it('tries the property lock once for a prepared quote and requeues a busy lock uncharged', async () => {
+  it('prices a prepared quote without taking the property-wide lock', async () => {
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {}, true);
     const withLock = vi.fn(async (_callback: () => Promise<unknown>, _options: unknown) => {
       throw new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE);
     });
     quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock });
 
-    await expect(executeHmsJob({ run: { ...run, createdAt: new Date() }, fence, db: quoteDb })).resolves.toBe('retry_wait');
+    await expect(executeHmsJob({ run: { ...run, createdAt: new Date() }, fence, db: quoteDb })).resolves.toBe('succeeded');
 
-    expect(withLock).toHaveBeenCalledOnce();
-    expect(withLock).toHaveBeenCalledWith(
-      expect.any(Function),
-      expect.objectContaining({ tryOnce: true, deadlineAt: fence.deadlineAt.getTime() }),
-    );
-    expect(jobMocks.markRetry).toHaveBeenCalledWith(
-      expect.objectContaining({ attempts: 0, failureClass: 'HMS_LOCK_BUSY', resetDeadline: true }),
-      quoteDb,
-    );
-    expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
+    expect(withLock).not.toHaveBeenCalled();
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(jobMocks.markSucceeded).toHaveBeenCalledOnce();
   });
 
   it.each([

@@ -245,7 +245,7 @@ export async function prepareCloudPaneAttach(input, { openSession = withCloudWri
       { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
         strictNetwork: true, cloudGuarded: true, prepareOnly: true, timeoutMs: 5 * 60_000 });
     }, { propertyCode: input.target.propertyCode, transportId: input.transportId, credentialLease: input.credentialLease,
-      startScreen: 'OSRESS', signal: phaseSignal(input.signal, 6 * 60_000),
+      startScreen: 'OSRESS', staging: true, signal: phaseSignal(input.signal, 6 * 60_000),
       cloudTargetKeys: savedTargetKeys(input.target.propertyCode, input.confirmation, input.approvedStay?.nativeStayId),
       ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}),
       prepareContext: (context) => installPaneAttachReadGuard(context, {

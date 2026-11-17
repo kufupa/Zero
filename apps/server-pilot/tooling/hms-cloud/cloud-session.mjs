@@ -4,7 +4,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import postgres from 'postgres';
-import { readFileSync, readlinkSync, lstatSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, readlinkSync, readdirSync, lstatSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import { hostname, homedir } from 'node:os';
 import { join } from 'node:path';
 import { consumePageRequestAuthorization, hasPageRequestAuthorization } from './page-request-fence.mjs';
@@ -88,8 +88,11 @@ function credentialWriterHoldPath(propertyCode) {
   return join(cloudPrivateDirectory(), `credential-browser-hold-${cloudCredentialLeaseKey(propertyCode)}`);
 }
 
-function readCredentialWriterHold(propertyCode) {
-  const path = credentialWriterHoldPath(propertyCode);
+function credentialStageHoldPath(propertyCode, identity) {
+  return `${credentialWriterHoldPath(propertyCode)}-stage-${createHash('sha256').update(writerKey(identity)).digest('hex')}`;
+}
+
+function readCredentialWriterHold(propertyCode, path = credentialWriterHoldPath(propertyCode)) {
   let stat;
   try { stat = lstatSync(path); }
   catch (error) { if (error?.code === 'ENOENT') return null; throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE'); }
@@ -106,8 +109,8 @@ function readCredentialWriterHold(propertyCode) {
   return hold;
 }
 
-async function assertCredentialWriterQuiesced(propertyCode) {
-  const hold = readCredentialWriterHold(propertyCode);
+async function reconcileCredentialWriterHold(propertyCode, path) {
+  const hold = readCredentialWriterHold(propertyCode, path);
   if (!hold) return;
   if (!cloudWriterQuiesced(hold.identity)) {
     const identity = hold.identity;
@@ -125,20 +128,32 @@ async function assertCredentialWriterQuiesced(propertyCode) {
     } catch { /* A live or unidentifiable owner remains held. */ }
   }
   if (!cloudWriterQuiesced(hold.identity)) throw new Error('HMS_CREDENTIAL_BROWSER_HELD');
-  unlinkSync(credentialWriterHoldPath(propertyCode));
+  try { unlinkSync(path); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
 }
 
-function holdCredentialWriter(propertyCode, identity) {
-  writeFileSync(credentialWriterHoldPath(propertyCode), JSON.stringify({ version: 2, propertyCode,
+async function assertCredentialWriterQuiesced(propertyCode, includeStages = false) {
+  const path = credentialWriterHoldPath(propertyCode);
+  await reconcileCredentialWriterHold(propertyCode, path);
+  if (!includeStages) return;
+  const prefix = `${path.slice(path.lastIndexOf('/') + 1)}-stage-`;
+  for (const name of readdirSync(cloudPrivateDirectory())) {
+    if (name.startsWith(prefix)) await reconcileCredentialWriterHold(propertyCode, join(cloudPrivateDirectory(), name));
+  }
+}
+
+function holdCredentialWriter(propertyCode, identity, shared) {
+  const path = shared ? credentialStageHoldPath(propertyCode, identity) : credentialWriterHoldPath(propertyCode);
+  writeFileSync(path, JSON.stringify({ version: 2, propertyCode,
     credentialKey: cloudCredentialLeaseKey(propertyCode), identity }) + '\n', { flag: 'wx', mode: 0o600 });
 }
 
-function releaseCredentialWriter(propertyCode, identity) {
-  const hold = readCredentialWriterHold(propertyCode);
+function releaseCredentialWriter(propertyCode, identity, shared) {
+  const path = shared ? credentialStageHoldPath(propertyCode, identity) : credentialWriterHoldPath(propertyCode);
+  const hold = readCredentialWriterHold(propertyCode, path);
   if (!hold || writerKey(hold.identity) !== writerKey(identity) || !cloudWriterQuiesced(identity)) {
     throw new Error('HMS_CREDENTIAL_BROWSER_HOLD_UNAVAILABLE');
   }
-  unlinkSync(credentialWriterHoldPath(propertyCode));
+  unlinkSync(path);
 }
 
 export function assertNoCloudHold(propertyCode, alias) {
@@ -431,6 +446,30 @@ function safeHeaderRead(url, body, propertyCode) {
   return blank || Boolean(fields.get('confirmationnumber') && fields.get('propertycode'));
 }
 
+function isSharedNewStayCallback(request, path, propertyCode) {
+  try {
+    const url = new URL(request.url());
+    if (request.method() !== 'POST' || url.search || url.hash ||
+        !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
+    const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+    const exact = (key, value) => keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1 && body.get(key) === value;
+    if (!exact('ONLY_DATA_REQUIRED', 'true')) return false;
+    if (/\.validatechildagedetails$/i.test(path)) {
+      if (keys.filter(name => name.toLowerCase() === 'params').length !== 1 || !body.has('params')) return false;
+      const raw = body.get('params');
+      rejectDuplicateAvailabilityJsonKeys(raw);
+      const params = JSON.parse(raw), names = Object.keys(params);
+      if (names.some((name, index) => names.findIndex(other => other.toLowerCase() === name.toLowerCase()) !== index)) return false;
+      return params.propertyCode === propertyCode && params.reservationStayId === '' &&
+        names.filter(name => /^(?:confirmationnumber|reservationid|recordid)$/i.test(name)).every(name => params[name] === '');
+    }
+    if (!exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) || !exact('propertycode', propertyCode) ||
+        !['confirmationnumber', 'recordid', 'reservationid'].every(key => exact(key, ''))) return false;
+    if (keys.some(name => name.toLowerCase() === 'reservationstayid') && !exact('reservationstayid', '')) return false;
+    return !/\.changeguaranteemethod$/i.test(path) || (exact('status', 'New') && exact('reservationstayid', ''));
+  } catch { return false; }
+}
+
 export async function installCloudReadGuard(context, property, state) {
   if (typeof context.routeWebSocket !== 'function') throw new Error('HMS_SOCKET_GUARD_UNAVAILABLE');
   await context.routeWebSocket('**/*', (socket) => socket.close());
@@ -446,6 +485,11 @@ export async function installCloudReadGuard(context, property, state) {
         consumePageRequestAuthorization(request, state.ownedPage)) {
       try { if (request.frame().page() !== state.ownedPage) return route.abort(); }
       catch { return route.abort(); }
+      // A shared lease may stage forms, but can never dispatch a persistent action.
+      if (state.shared && (/(?:save|delete|upload|checkin|checkout|postcharge|sendemail|payments)/i.test(path) ||
+          (/(?:validatechildagedetails|changeguaranteemethod|changeorganization|changetravelagency|araccountchange)/i.test(path) &&
+            !isSharedNewStayCallback(request, path, property.propertyCode)) ||
+          hasWriteIntent(request.url()) || hasWriteIntent(body))) return route.abort();
       return route.fallback();
     }
     let savedScope = null;
@@ -669,20 +713,36 @@ export function cloudCredentialLeaseKey(propertyCode) {
     .update(property.credentialSecretRef).digest().readBigInt64BE(0).toString();
 }
 
-/** A dedicated connection holds one credential lock across all participating processes. */
+function credentialSessionCap() {
+  const value = process.env.HMS_CREDENTIAL_SESSION_CAP ?? '8';
+  if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 64) {
+    throw new Error('HMS_CREDENTIAL_SESSION_CAP_INVALID');
+  }
+  return Number(value);
+}
+
+function credentialSlotKey(propertyCode, slot) {
+  const property = registeredProperty(propertyCode);
+  return createHash('sha256').update('zero/hms-credential-slot/v1\0')
+    .update(property.credentialSecretRef).update('\0').update(String(slot)).digest().readBigInt64BE(0).toString();
+}
+
+/** Dedicated connections hold a capped shared admission or the exclusive write lease. */
 export async function acquireCloudCredentialLease(propertyCode, { signal, readOnly = false } = {}) {
   const property = registeredProperty(propertyCode);
   if (typeof readOnly !== 'boolean') throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
+  const cap = readOnly ? credentialSessionCap() : 0;
   signal?.throwIfAborted();
   const loss = new AbortController();
-  const acquisitionTimeout = AbortSignal.timeout(readOnly ? 75000 : 20000);
+  const acquisitionTimeout = AbortSignal.timeout(300000);
   const acquisitionSignal = AbortSignal.any([loss.signal, acquisitionTimeout, ...(signal ? [signal] : [])]);
-  const state = { ref: property.credentialSecretRef, released: false, borrowers: 0 };
+  const state = { ref: property.credentialSecretRef, released: false, borrowers: 0, readOnly };
   let client;
   let connection;
   let timer;
   let heartbeat;
   let acquired = false;
+  let slotKey;
   let closing = false;
   let phase = 'connection';
   const fail = () => { if (!closing && !loss.signal.aborted) loss.abort(new Error('HMS_CREDENTIAL_LEASE_LOST')); };
@@ -693,30 +753,29 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
       client = postgres(process.env.DATABASE_URL, { max: 1, idle_timeout: 0, connect_timeout: 10,
         onclose: fail });
       connection = await runUntilAborted(() => client.reserve(), acquisitionSignal);
-      // Queue reads in PostgreSQL instead of racing every 250 ms. Ownership remains exclusive.
+      // Reserve capacity before joining the main lock queue; queued writers block later readers.
       if (readOnly) {
-        await runUntilAborted(() => connection.unsafe("SELECT set_config('lock_timeout', '70s', false)"), acquisitionSignal);
-        phase = 'contention';
-        await runUntilAborted(() => connection.unsafe('SELECT pg_advisory_lock($1::bigint)', [key]), acquisitionSignal);
-        acquired = true;
-      }
-      while (!acquired) {
-        phase = 'connection';
-        const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_try_advisory_lock($1::bigint) AS acquired', [key]), acquisitionSignal);
-        if (loss.signal.aborted) throw loss.signal.reason;
-        acquired = rows[0]?.acquired === true;
-        if (!acquired) {
+        while (!slotKey) {
           phase = 'contention';
-          await delay(250, undefined, { signal: acquisitionSignal });
+          for (let slot = 0; slot < cap; slot += 1) {
+            const candidate = credentialSlotKey(propertyCode, slot);
+            const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_try_advisory_lock($1::bigint) AS acquired', [candidate]), acquisitionSignal);
+            if (rows[0]?.acquired === true) { slotKey = candidate; break; }
+          }
+          if (!slotKey) await delay(250, undefined, { signal: acquisitionSignal });
         }
       }
+      phase = 'contention';
+      await runUntilAborted(() => connection.unsafe(readOnly
+        ? 'SELECT pg_advisory_lock_shared($1::bigint)' : 'SELECT pg_advisory_lock($1::bigint)', [key]), acquisitionSignal);
+      acquired = true;
       signal?.throwIfAborted();
       phase = 'connection';
       const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_backend_pid() AS pid'), acquisitionSignal);
       const pid = rows[0]?.pid;
       if (!Number.isInteger(pid) || loss.signal.aborted) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
       phase = 'quiescence';
-      await assertCredentialWriterQuiesced(propertyCode);
+      await assertCredentialWriterQuiesced(propertyCode, !readOnly);
       timer = setInterval(() => {
         if (heartbeat || closing) return;
         heartbeat = Promise.race([
@@ -743,7 +802,13 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
         try {
           if (heartbeat) await bounded(heartbeat);
           if (acquired && !failed) {
-            const rows = await bounded(connection.unsafe('SELECT pg_advisory_unlock($1::bigint) AS released', [key]));
+            const rows = await bounded(connection.unsafe(readOnly
+              ? 'SELECT pg_advisory_unlock_shared($1::bigint) AS released'
+              : 'SELECT pg_advisory_unlock($1::bigint) AS released', [key]));
+            if (rows[0]?.released !== true) failed = true;
+          }
+          if (slotKey && !failed) {
+            const rows = await bounded(connection.unsafe('SELECT pg_advisory_unlock($1::bigint) AS released', [slotKey]));
             if (rows[0]?.released !== true) failed = true;
           }
         } catch { failed = true; }
@@ -783,14 +848,14 @@ export function withCloudWriterSession(operation, options = {}) {
 
 async function withCloudSession(operation, { propertyCode, transportId, signal, headless = true,
   prepareContext, readRequestPolicy, startScreen = 'BSSTRT', loadSecret = loadCloudSecret, credentialLease, cloudTargetKey, cloudTargetKeys,
-  requireBoundCredentialVersion = false, allowUnboundCredentialVersion = false } = {}, writer) {
+  requireBoundCredentialVersion = false, allowUnboundCredentialVersion = false, staging = false } = {}, writer) {
   const property = registeredProperty(propertyCode);
   if (typeof operation !== 'function' || typeof headless !== 'boolean' ||
       (transportId !== undefined && (typeof transportId !== 'string' || !property.transportIds.includes(transportId))) ||
       !['BSSTRT', 'OSRESV', 'OSRESS'].includes(startScreen) || typeof loadSecret !== 'function' ||
       (prepareContext !== undefined && typeof prepareContext !== 'function') ||
       (readRequestPolicy !== undefined && typeof readRequestPolicy !== 'function') ||
-      typeof requireBoundCredentialVersion !== 'boolean' || typeof allowUnboundCredentialVersion !== 'boolean' ||
+      typeof requireBoundCredentialVersion !== 'boolean' || typeof allowUnboundCredentialVersion !== 'boolean' || typeof staging !== 'boolean' ||
       (cloudTargetKeys !== undefined && (!Array.isArray(cloudTargetKeys) || !cloudTargetKeys.length ||
         cloudTargetKeys.length > 16 || cloudTargetKeys.some(key => typeof key !== 'string')))) throw new Error('HMS_SESSION_OPTIONS_INVALID');
   const aliases = [...new Set([...(cloudTargetKeys ?? []), ...(cloudTargetKey === undefined ? [] : [cloudTargetKey])])];
@@ -842,7 +907,7 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
     signal?.throwIfAborted();
     if (property.group === 'centurion') assertNoCenturionBrowserHold();
     if (!lease) {
-      lease = await acquireCloudCredentialLease(propertyCode, { signal, readOnly: !writer });
+      lease = await acquireCloudCredentialLease(propertyCode, { signal, readOnly: !writer || staging });
       ownedLease = true;
     }
     if (lease) {
@@ -850,6 +915,7 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       if (!leaseState || leaseState.released || leaseState.ref !== property.credentialSecretRef || lease.signal.aborted) {
         throw new Error('HMS_CREDENTIAL_LEASE_INVALID');
       }
+      if (writer && leaseState.readOnly && !staging) throw new Error('HMS_CREDENTIAL_EXCLUSIVE_LEASE_REQUIRED');
       if (leaseState.borrowers) throw new Error('HMS_CREDENTIAL_LEASE_IN_USE');
       leaseState.borrowers += 1;
       borrowed = true;
@@ -877,14 +943,14 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
     if (writer) {
       browserServer = await chromium.launchServer(launch);
       writerIdentity = { ...hostIdentity(), node: processIdentity(process.pid), browser: processIdentity(browserServer.process().pid, true) };
-      holdCredentialWriter(propertyCode, writerIdentity);
+      holdCredentialWriter(propertyCode, writerIdentity, leaseState.readOnly);
       credentialWriterHeld = true;
       browser = await chromium.connect(browserServer.wsEndpoint());
     } else browser = await chromium.launch(launch);
     sessionSignal?.throwIfAborted();
     context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', acceptDownloads: false });
     sessionSignal?.throwIfAborted();
-    state = { authenticated: false, switching: null, verified: false, writer, ownedPage: null, identity: null,
+    state = { authenticated: false, switching: null, verified: false, writer, shared: leaseState.readOnly, ownedPage: null, identity: null,
       readRequestPolicy };
     sessionState.set(context, state);
     await installPostRedirectGuard(context);
@@ -954,7 +1020,7 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       if (closedWriters.size > 4096) closedWriters.delete(closedWriters.values().next().value);
     }
     if (credentialWriterHeld && writerGroupGone && callbacksDrained) {
-      try { releaseCredentialWriter(propertyCode, writerIdentity); }
+      try { releaseCredentialWriter(propertyCode, writerIdentity, leaseState.readOnly); }
       catch (error) { cleanupError ??= error; }
     }
     if (writerIdentity && cleanupError) for (const alias of aliases) holdCloudWriter(propertyCode, alias, writerIdentity);
