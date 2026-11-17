@@ -815,12 +815,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           ? sql`(${sql.raw(hmsJobConsumerAvailableSql)} OR (${sql.join(scopedParts, sql` AND `)}))`
           : sql.raw(hmsJobConsumerAvailableSql);
         const eligible = sql.join(cloudCredentialAdmissionEligibilitySql
-          .replace(hmsJobConsumerAvailableSql, '$5::boolean')
-          .split(/(\$2::text\[\]|\$3::boolean|\$4::timestamptz|\$5::boolean)/)
+          .replace(hmsJobConsumerAvailableSql, '$6::boolean')
+          .split(/(\$2::text\[\]|\$3::boolean|\$4::timestamptz|\$5::boolean|\$6::boolean)/)
           .map((part) => part === '$2::text[]' ? transportArray
             : part === '$3::boolean' ? sql`${process.env.HMS_DEV_GATE === 'off' || !inStaffHours}::boolean`
               : part === '$4::timestamptz' ? sql`${now.toISOString()}::timestamptz`
-                : part === '$5::boolean' ? consumer : sql.raw(part)), sql``);
+                : part === '$5::boolean' ? sql`${process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on'}::boolean`
+                  : part === '$6::boolean' ? consumer : sql.raw(part)), sql``);
         // Ignore ticket holders the worker cannot claim yet (for example, a full mailbox or an earlier thread run).
         // Once a runnable prefill owns a live admission, the credential queue already suspends these idle tickets.
         const defaultPrefill = input.lane === 'default' ? sql`AND run.executor_lane = 'default'

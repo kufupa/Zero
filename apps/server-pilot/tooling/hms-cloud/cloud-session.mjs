@@ -827,6 +827,10 @@ export const cloudCredentialAdmissionEligibilitySql = `((admission.run_id IS NUL
             (run.deadline_at > clock_timestamp() OR EXISTS (SELECT 1 FROM pg_stat_activity backend
               WHERE backend.pid = admission.owner_pid AND backend.backend_start = admission.owner_started_at)))
             OR run.run_kind <> 'read_tool' OR run.prompt_version <> 'hms-job/1')
+          AND (run.run_kind <> 'reservation_prefill' OR $5::boolean OR
+            (run.state IN ('claimed', 'running') AND (run.deadline_at > clock_timestamp() OR
+              EXISTS (SELECT 1 FROM pg_stat_activity owner WHERE owner.pid = admission.owner_pid
+                AND owner.backend_start = admission.owner_started_at))))
           AND (run.state IN ('claimed', 'running') OR run.next_run_at IS NULL OR run.next_run_at <= $4::timestamptz)
           AND (run.run_kind <> 'reservation_prefill' OR run.metrics->>'phase' = 'native_checks' OR run.metrics->>'credentialPending' = 'true'
             OR EXISTS (SELECT 1 FROM work_item item WHERE item.id = run.work_item_id AND item.transport_id = run.transport_id
@@ -858,7 +862,8 @@ async function credentialAdmissionHead(connection, key, transportIds) {
     FROM hms_credential_admission admission LEFT JOIN ai_workflow_run run ON run.id = admission.run_id
     WHERE (admission.credential_key = $1::bigint OR run.transport_id = ANY($2::text[]))
       AND ${cloudCredentialAdmissionEligibilitySql}
-    ORDER BY admission.position LIMIT 1`, [key, transportIds, cloudDevBackgroundEligible(), new Date().toISOString()]);
+    ORDER BY admission.position LIMIT 1`, [key, transportIds, cloudDevBackgroundEligible(), new Date().toISOString(),
+    process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on']);
   return rows[0]?.operation_key;
 }
 
