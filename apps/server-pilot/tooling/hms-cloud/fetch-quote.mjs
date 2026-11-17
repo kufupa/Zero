@@ -15,7 +15,7 @@ import { tsImport } from 'tsx/esm/api';
 
 const [requestPolicy, tracePrivacy, traceDisk] = await Promise.all([
   tsImport('../../src/hms/request-policy.ts', import.meta.url),
-  tsImport('../../src/hms/trace-privacy.ts', import.meta.url),
+  import('../../src/hms/trace-privacy.ts'),
   tsImport('../../src/ops/playwright-quote-purge.ts', import.meta.url),
 ]);
 const { rejectDuplicateJsonBodyKeys } = requestPolicy;
