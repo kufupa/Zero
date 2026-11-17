@@ -298,9 +298,25 @@ async function runCma(native:NativeAdmission):Promise<void> {
     await mkdir(workdir,{recursive:true,mode:0o700});
     const worker=client.beta.environments.work.worker({environmentId,environmentKey:process.env.ANTHROPIC_ENVIRONMENT_KEY,workdir,memorySyncIntervalMs:null,workerId:`${owner}:${index}`,tools:context=>registry.definitions().filter(def=>def.name!=='hms_save').map(def=>({type:'custom',name:def.name,description:def.description,input_schema:def.input_schema,parse:(input:unknown)=>input,run:async(input:unknown,ctx?:{toolUse:{id:string};signal?:AbortSignal|null})=>{
       const managedId=context.session?.id ?? context.sessionId ?? '';
-      const [session]=await sql`SELECT s.id,s.mode,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.managed_session_id=${managedId}`;
+      const [session]=await sql`SELECT s.id,s.mode,s.config,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.managed_session_id=${managedId}`;
       if(!session || !['live','labtest','historical'].includes(session.mode)) return JSON.stringify({ok:false,data:null,error:{code:'SESSION_NOT_FOUND',message:'Session is unavailable.',retryable:false,outcome:'known'}});
-      const answer=await registry.run(def.name,input,{sessionId:session.id,mode:session.mode,propertyCode:session.property_code,toolUseId:ctx?.toolUse.id ?? '',signal:ctx?.signal ?? undefined});
+      let skillConfig:SkillConfig|undefined;
+      if(def.name==='skill_read' && registry.hasSkillPack()) {
+        const root=resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url)));
+        const saved=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().safeParse(session.config?.skill_config);
+        if(saved.success) skillConfig={root,pin:saved.data.pin};
+        else {
+          const pin=await registry.pinSkillTree(root);
+          if(!pin) throw new Error('SKILL_PIN_UNAVAILABLE');
+          const legacy=z.record(z.string()).safeParse(session.config?.skill_files);
+          if(legacy.success && Object.entries(legacy.data).some(([name,text])=>pin.pin.files[name]!==createHash('sha256').update(text).digest('hex'))) throw new Error('SKILL_PIN_CHANGED');
+          await sql`UPDATE nava_agent.agent_session SET config=config || ${json({skill_config:pin})}::jsonb WHERE id=${session.id} AND NOT (config ? 'skill_config')`;
+          const [current]=await sql`SELECT config->'skill_config' AS skill_config FROM nava_agent.agent_session WHERE id=${session.id}`;
+          const actual=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().parse(current.skill_config);
+          skillConfig={root,pin:actual.pin};
+        }
+      }
+      const answer=await registry.run(def.name,input,{sessionId:session.id,mode:session.mode,propertyCode:session.property_code,toolUseId:ctx?.toolUse.id ?? '',signal:ctx?.signal ?? undefined,skillConfig});
       if(answer.kind==='pause') throw new Error('CMA_SAVE_PAUSE_UNAVAILABLE');
       return JSON.stringify(answer.result);
     }}) as BetaRunnableTool)});
