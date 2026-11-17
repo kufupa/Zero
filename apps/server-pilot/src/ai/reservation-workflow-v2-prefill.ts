@@ -1490,6 +1490,11 @@ function buildFallbackProposal(input: {
     if (request.kind === 'filing') return { ...base, kind: 'filing' as const, body: { targets: null } };
     return { ...base, kind: 'other' as const, body: { requestedText: request.requestText.raw.slice(0, 2_000), supported: false as const } };
   });
+  for (const request of projected) {
+    if (request.kind !== 'quote') continue;
+    const extracted = requests.find((candidate) => candidate.id === request.id && candidate.kind === 'quote');
+    if (extracted) retainQuoteRoomHints(request, extracted, currentRefs);
+  }
   const valid = reservationWorkflowV2ProposalSchema.safeParse({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
     content: { requests: projected, services: [], documents: [] }, annotations: [],
     issues: [issue('/', 'prefill_partial', input.reason, currentRef ? [currentRef] : [])], sourceClaims,
@@ -2250,6 +2255,77 @@ function roomDescription(claim: { raw: string; value: unknown; sourceRefs: strin
     return claim.raw.length <= 1000 ? claim.raw : null;
   }
   return value;
+}
+
+/** Preserve each source room preference even when no native code or date association is known. */
+function retainQuoteRoomHints(
+  request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'quote' }>,
+  extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>,
+) {
+  const hints = extracted.roomTypeHints.flatMap((hint) => {
+    if (!currentClaim(hint, currentRefs)) return [];
+    const description = (roomDescription(hint, currentRefs, false) ?? hint.raw.slice(0, 1000)).trim();
+    return description ? [{ hint, description }] : [];
+  });
+  if (!hints.length) return;
+  const original = request.body.groups;
+  const used = new Set<string>();
+  const roomKey = (value: unknown) => normalizedFact(value).replace(/\brooms\b/gu, 'room');
+  const groups = hints.map(({ hint, description }, index) => {
+    const counted = /^\s*(\d{1,3})\s*(?:[x×]\s*)?(.+?\brooms?)\s*$/iu.exec(hint.raw);
+    const countedDescription = counted?.[2]?.trim();
+    const matchingDates = extracted.dates.filter((date) => {
+      const count = currentClaim(date.roomCount, currentRefs);
+      return count && count.sourceRefs.some((ref) => hint.sourceRefs.includes(ref)) &&
+        roomKey(count.raw).includes(roomKey(description));
+    });
+    const dates = hints.length === 1 && extracted.dates.length === 1 ? extracted.dates[0] :
+      matchingDates.length === 1 ? matchingDates[0] : undefined;
+    const singleDate = dates && currentClaim(dates.arrival, currentRefs) && currentClaim(dates.departure, currentRefs);
+    const arrival = singleDate ? safeCurrentText(dates.arrival, currentRefs, 40) ?? null : null;
+    const departure = singleDate ? safeCurrentText(dates.departure, currentRefs, 40) ?? null : null;
+    const mentionsOtherHint = (raw: string) => hints.some(other => other.hint !== hint &&
+      roomKey(raw).includes(roomKey(other.description)));
+    const directCount = counted && !mentionsOtherHint(hint.raw) ? Number(counted[1]) : null;
+    const dateCount = dates && currentClaim(dates.roomCount, currentRefs);
+    const sharedCount = Boolean(dateCount && mentionsOtherHint(dateCount.raw));
+    const count = directCount ?? (hints.length === 1
+      ? dates ? quoteDatedRoomCount(extracted, dates, currentRefs).count
+        : extracted.dates.length === 0 ? citedInteger(currentClaim(extracted.roomCount, currentRefs)) ?? null : null
+      : dateCount && !sharedCount ? citedInteger(dateCount) ?? null : null);
+    const quantity = count !== null && count >= 1 && count <= 100 ? count : null;
+    const sourceId = stableId(request.id, 'source_room_hint', String(index));
+    const hintKeys = new Set([description, ...(countedDescription ? [countedDescription] : [])].map(roomKey));
+    const matches = original.filter((group) => !used.has(group.id) &&
+      hintKeys.has(roomKey(group.requestedRoomDescription)));
+    const existing = original.find(group => group.id === sourceId && !used.has(group.id)) ??
+      (matches.length === 1 ? matches[0] : hints.length === 1 && original.length === 1 ? original[0] : undefined);
+    if (existing) used.add(existing.id);
+    return { ...(existing ?? { id: sourceId, arrival, departure,
+      quantity: null, mealPlan: null, requestedMealPlan: null, roomCodes: [], ratePlan: null,
+      occupancy: { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }, priceObservationRefs: [] }),
+      arrival: singleDate ? arrival : existing?.arrival ?? null,
+      departure: singleDate ? departure : existing?.departure ?? null,
+      requestedRoomDescription: countedDescription && roomKey(description) === roomKey(hint.raw)
+        ? countedDescription : description,
+      quantity: quantity ?? (hints.length > 1 ? null : existing?.quantity ?? null) };
+  });
+  if (hints.length === 1 && original.length > 1) {
+    // A request-wide preference does not establish which of several date rows
+    // it belongs to. Retain it separately without copying a count or dates.
+    const sourceGroup = groups[0];
+    if (used.size && sourceGroup) request.body.groups = original.map(group => group.id === sourceGroup.id ? sourceGroup : group);
+    else request.body.groups = [...original, ...groups];
+    return;
+  }
+  const retained = original.map((group) => {
+    const matched = groups.find(candidate => candidate.id === group.id);
+    if (matched) return matched;
+    const overlaps = !group.requestedRoomDescription && group.arrival && group.departure &&
+      groups.some((source) => source.arrival === group.arrival && source.departure === group.departure);
+    return overlaps ? { ...group, sourceAssociationUnresolved: true } : group;
+  });
+  request.body.groups = [...retained, ...groups.filter(group => !used.has(group.id))];
 }
 
 function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): boolean {
@@ -4566,6 +4642,11 @@ function projectCurrentExtraction(input: {
             'The source occupancy could not be mapped safely to every room group. Group occupancy remains unresolved; in particular, missing child count or ages were not treated as zero.',
             occupancySourceRefs);
         }
+      } else {
+        // Synthesis may propose a plausible guest count even when the email has none.
+        // A plausible count is not a source fact and changes the price of the quote.
+        for (const group of request.body.groups)
+          group.occupancy = { scope: 'unresolved', adults: null, childCount: null, childAges: null };
       }
 
       const unresolvedRoomHintRefs = [...new Set(roomCodes.unresolvedClaims.flatMap((claim) =>
@@ -4888,6 +4969,21 @@ function projectCurrentExtraction(input: {
           appendProjectedSource(proposal,
             `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${groupIndex}/requestedMealPlan`, claim, currentRefs);
         }
+      }
+      retainQuoteRoomHints(request, extracted, currentRefs);
+      const groupsByDate = new Map<string, number>();
+      for (const group of request.body.groups) {
+        if (!group.arrival || !group.departure) continue;
+        const key = `${group.arrival}/${group.departure}`;
+        groupsByDate.set(key, (groupsByDate.get(key) ?? 0) + 1);
+      }
+      if ([...groupsByDate.values()].some(count => count > 1)) {
+        const refs = request.sourceRefs.filter(ref => currentRefs.has(ref));
+        const currentText = input.evidence.filter(row => refs.includes(row.ref)).map(row => row.text).join('\n');
+        const couldBeAlternatives = /\b(?:or|alternatives?|options?|separate(?:ly)?|different\s+quot(?:es?|ations?)|another\s+quot(?:e|ation)|(?:two|three|four|\d+)\s+quot(?:es?|ations?))\b/iu.test(currentText);
+        const countedRoomsBound = !couldBeAlternatives && sourceRoomByGroupId.size > 0 &&
+          request.body.groups.every(group => sourceRoomByGroupId.has(group.id));
+        request.body.quoteComposition = countedRoomsBound ? { kind: 'additive' } : { kind: 'unresolved', evidenceRefs: refs };
       }
       if (!request.body.outputIntent.artifacts.length) request.body.outputIntent.artifacts = ['email_quote', 'pdf_quote', 'xlsx_quote'];
     }
@@ -5375,7 +5471,7 @@ function applyDefaultCmsSendPolicy(
   input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection; evidence: ReservationWorkflowV2Evidence[] },
 ): ReservationWorkflowV2Proposal {
   const proposal = structuredClone(proposalInput);
-  // CMS 03 + Send on is the default for Centurion and Da Vinci; the quote/meal/occupancy defaults below stay Centurion-only.
+  // CMS 03 + Send on is the default for Centurion and Da Vinci; quote defaults below stay Centurion-only.
   const centurion = propertyCode === 'HRCEN';
   if (!centurion && propertyCode !== 'HRDAV') return proposal;
   const message = input.evidence.find((row) => row.relation === 'current_message' &&
@@ -5405,29 +5501,6 @@ function applyDefaultCmsSendPolicy(
     if (request.kind === 'quote') {
       if (!centurion) continue;
       const source = extractionRequestForProposal(request, proposal.content.requests, extraction, extractionIds);
-      const conflict = proposal.issues.some(issue => issue.kind.includes('occupancy') &&
-        (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
-      if (extraction.sourceReadComplete && source) {
-        const hasAdults = source.occupancy.some(row => Boolean(row.adults));
-        const hasChildren = source.occupancy.some(row => Boolean(row.childCount || row.childAges?.length));
-        for (const [index, group] of request.body.groups.entries()) {
-          const occupancy = group.occupancy;
-          const changed: string[] = [];
-          if (!conflict && !hasAdults && occupancy.scope === 'unresolved' && occupancy.adults === null) {
-            occupancy.scope = 'per_room'; occupancy.adults = 1; changed.push('scope', 'adults');
-          }
-          if (!hasChildren && occupancy.childCount === null && !occupancy.childAges?.length) {
-            occupancy.childCount = 0; occupancy.childAges = []; changed.push('childCount', 'childAges');
-          } else if (!hasChildren && occupancy.childCount === 0 && occupancy.childAges === null) {
-            occupancy.childAges = []; changed.push('childAges');
-          }
-          for (const field of changed) {
-            const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}/occupancy/${field}`;
-            proposal.annotations = proposal.annotations.filter(annotation => annotation.path !== path);
-            if (proposal.annotations.length < 2000) proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
-          }
-        }
-      }
       if (source) {
         const currentRefs = new Set(input.evidence.filter(row => row.relation !== 'prior_thread').map(row => row.ref));
         const addExtra = (type: 'lunch' | 'airport_transfer' | 'office_transfer', claim: { raw: string; sourceRefs: string[] }, targetRefs: string[] = [], scope: 'known' | 'unresolved' = 'known') => {
@@ -6738,6 +6811,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   workflowGuidanceExcludedFamilies?: readonly string[];
   onWorkflowGuidance?: (receipt: WorkflowGuidanceReceipt) => void;
   onValidatedExtraction?: (generationId: string, extraction: ReservationWorkflowV2Extraction) => Promise<boolean>;
+  onCandidateReadsSettled?: () => Promise<void>;
   /** Provider-reported missing attachment parts on the current message; any gap makes the read incomplete. */
   currentAttachmentGaps?: number;
   /** Provider-reported missing attachment parts across all admitted causal thread messages. */
@@ -7029,6 +7103,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       readErrors.push({ stage: 'lookup', code: 'reader_failed', message: `Candidate read ${candidate.id} failed.` });
     }
   }
+  await input.onCandidateReadsSettled?.();
   let cmsCapabilityContext = '';
   if (propertyCode === 'HRCEN' && extraction.requests.some((request) => request.kind === 'amend')) {
     try {

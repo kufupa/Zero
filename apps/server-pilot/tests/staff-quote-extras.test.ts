@@ -28,7 +28,7 @@ function baseInput(overrides: Partial<StaffQuoteInput> = {}): StaffQuoteInput {
         quantity: 1,
         adults: 2,
         childrenAges: [],
-        board: 'bb',
+        mealPlan: 'bb',
       },
     ],
     ...overrides,
@@ -58,8 +58,8 @@ describe('buildStaffProposalFacts', () => {
   it('charges the dinner allowance only to the groups that took the B&B fallback, never to the other guests', async () => {
     const revision = await syntheticRevision();
     const groups = [
-      { id: 'g1', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 2, childrenAges: [], board: 'bb' as const },
-      { id: 'room', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 1, childrenAges: [], board: 'room_only' as const },
+      { id: 'g1', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 2, childrenAges: [], mealPlan: 'bb' as const },
+      { id: 'room', arrivalDate: '2026-10-12', departureDate: '2026-10-15', quantity: 1, adults: 1, childrenAges: [], mealPlan: 'room_only' as const },
     ];
     const onDinner = buildStaffProposalFacts(
       baseInput({ groups, dinnerAllowanceMinor: 12_500, dinnerAllowanceUnit: 'per_person_per_night', dinnerAllowanceGroupIds: ['g1'] }),
@@ -138,10 +138,10 @@ describe('buildStaffProposalFacts', () => {
       revision,
       {
         attention: 'Staff',
-        company: 'Test',
+        organization: 'Test',
         clientEmail: 'test@example.invalid',
         clientTelephone: '',
-        agency: 'Test',
+        bookingAgency: 'Test',
         signerName: 'Test',
         signerEmail: 'test@example.invalid',
       },
@@ -161,10 +161,10 @@ describe('buildStaffProposalFacts', () => {
 
 const pdfHeader = {
   attention: 'Staff',
-  company: 'Test',
+  organization: 'Test',
   clientEmail: 'test@example.invalid',
   clientTelephone: '',
-  agency: 'Test',
+  bookingAgency: 'Test',
   signerName: 'Test',
   signerEmail: 'test@example.invalid',
 };

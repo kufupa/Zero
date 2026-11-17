@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { PROPERTY_REGISTRY, getPropertyRegistration } from './property-registry.mjs';
+import { PROPERTY_BOARD_MAP } from './property-board-map.mjs';
 
 const lookupActiveProperty = (value) => {
   const property = getPropertyRegistration(typeof value === 'string' ? value.trim() : '');
@@ -304,7 +305,9 @@ export function getProfileCancellation(propertyCode) {
 export function profileFor(propertyCode) {
   const file = typeof propertyCode === 'string' ? PROFILE_FILES.get(propertyCode) : undefined;
   if (!file) return null;
-  return validateProfile(JSON.parse(readFileSync(file, 'utf8')), propertyCode);
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  const boards = PROPERTY_BOARD_MAP[propertyCode];
+  return validateProfile(boards ? { ...raw, boards } : raw, propertyCode);
 }
 
 export function profileCms(profile) {

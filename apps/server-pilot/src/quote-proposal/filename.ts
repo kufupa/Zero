@@ -55,7 +55,9 @@ export function quoteFollowUpBody(sentOn: string, signer: string | null, propert
 }
 
 function sanitizePdfParty(raw: string | null | undefined): string {
-  return (raw ?? '').replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
+  return Array.from((raw ?? '').replace(/\s+/g, ' ').trim())
+    .filter((ch) => ch >= ' ' && ch !== '\x7f' && !'\\/:*?"<>|'.includes(ch))
+    .slice(0, 80).join('').trim();
 }
 
 /** Agency, then company, then guest/contact, then the From display name. Never "Guest". */

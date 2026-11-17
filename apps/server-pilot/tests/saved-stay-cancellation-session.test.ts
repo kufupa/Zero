@@ -58,10 +58,8 @@ vi.mock('../tooling/hms-cloud/cloud-session.mjs', () => ({
   },
 }));
 vi.mock('../tooling/hms-cloud/saved-stay-read-guard.mjs', () => ({ installSavedStayReadGuard: vi.fn() }));
-vi.mock('../tooling/hms-cloud/hms-readers.mjs', () => ({
-  readShallow: fixtures.readShallow,
-  readRecord: fixtures.readRecord,
-}));
+vi.mock('../tooling/hms-cloud/stay360-confirmation.mjs', () => ({ readConfirmationFromStay360: fixtures.readShallow }));
+vi.mock('../tooling/hms-cloud/stay360-record-view.mjs', () => ({ readRecordViewFromStay360: fixtures.readRecord }));
 import { withSavedStayAgentSession } from '../tooling/hms-cloud/saved-stay-agent-session.mjs';
 
 const withTestSession = (operation: Parameters<typeof withSavedStayAgentSession>[0], options: Record<string, unknown> = {}) =>

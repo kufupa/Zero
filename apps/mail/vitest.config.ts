@@ -12,6 +12,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(appRoot, '.'),
     },
+    dedupe: ['@noble/hashes'],
   },
   test: {
     environment: 'node',

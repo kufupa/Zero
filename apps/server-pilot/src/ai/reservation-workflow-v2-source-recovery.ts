@@ -155,60 +155,37 @@ export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkf
     if (!extracted || links.filter(link => link === extracted).length !== 1) continue;
     const bodyRoot = `/proposal/content/requests/${encodeURIComponent(request.id)}/body`;
     const bodyAlias = `/proposal/content/requests/${requestIndex}/body`;
-    const hasOccupancy = extracted.occupancy.some(row => row.adults || row.childCount || row.childAges?.length);
-    const occupancyConflict = draft.proposal.issues.some(issue => issue.kind.includes('occupancy') &&
-      (issue.path.includes(`/requests/${request.id}/`) || issue.path.includes(`/requests/${encodeURIComponent(request.id)}/`)));
-    if (input.propertyCode === 'HRCEN' && occupancySourceComplete) {
-      if (request.kind === 'quote') {
-        for (const [index, group] of request.body.groups.entries()) {
-          const occupancy = group.occupancy;
-          const hasChildren = extracted.occupancy.some(row => Boolean(row.childCount || row.childAges?.length));
-          const root = `${bodyRoot}/groups/${index}/occupancy`, alias = `${bodyAlias}/groups/${index}/occupancy`;
-          const parentOverrides = [root, alias].flatMap((path) => {
-            const override = draft.fieldOverrides[path];
+    if (request.kind === 'quote') {
+      // Older drafts could store policy guesses as though they were guest facts.
+      // Clear an untouched guess, including a copy in a parent occupancy edit;
+      // keep an explicit field edit or a value that staff actually changed.
+      for (const [index, group] of request.body.groups.entries()) {
+        const root = `${bodyRoot}/groups/${index}/occupancy`, alias = `${bodyAlias}/groups/${index}/occupancy`;
+        for (const field of ['adults', 'childCount'] as const) {
+          const path = `${root}/${field}`;
+          if (!draft.proposal.annotations.some(row => row.path === path && row.basis === 'policy') ||
+              [path, `${alias}/${field}`].some(key => draft.fieldOverrides[key]?.state === 'set') ||
+              [path, `${alias}/${field}`].some(key => draft.staffReviews[key]?.status === 'accepted' && draft.staffReviews[key]?.note === 'Reviewed by staff')) continue;
+          const original = group.occupancy[field];
+          const parents = [root, alias].flatMap(key => {
+            const override = draft.fieldOverrides[key];
             return override?.state === 'set' && override.value && typeof override.value === 'object' && !Array.isArray(override.value)
-              ? [{ override, value: override.value as Record<string, unknown> }] : [];
+              ? [override] : [];
           });
-          const leafOverride = (field: 'childCount' | 'childAges') => [root, alias]
-            .map((path) => draft.fieldOverrides[`${path}/${field}`]).find((override) => override && override.state !== 'inherit');
-          const parentValue = (field: 'childCount' | 'childAges') => parentOverrides[0]?.value[field] ?? occupancy[field];
-          const childCountOverride = leafOverride('childCount'), childAgesOverride = leafOverride('childAges');
-          const effectiveChildCount = childCountOverride?.state === 'set' ? childCountOverride.value :
-            childCountOverride ? undefined : parentValue('childCount');
-          const effectiveChildAges = childAgesOverride?.state === 'set' ? childAgesOverride.value :
-            childAgesOverride ? undefined : parentValue('childAges');
-          if (!hasChildren && effectiveChildCount === null && effectiveChildAges === null) {
-            occupancy.childCount = 0;
-            occupancy.childAges = [];
-            for (const { override, value } of parentOverrides) override.value = { ...value, childCount: 0, childAges: [] };
-            if (childCountOverride?.state === 'set') childCountOverride.value = 0;
-            if (childAgesOverride?.state === 'set') childAgesOverride.value = [];
-            for (const path of [`${root}/childCount`, `${root}/childAges`]) {
-              draft.proposal.annotations = draft.proposal.annotations.filter(annotation => annotation.path !== path);
-              if (draft.proposal.annotations.length < 2000)
-                draft.proposal.annotations.push({ path, basis: 'policy', evidenceRefs: [] });
-              paths.push(path);
-            }
-          }
-          for (const [field, value] of [['scope', 'per_room'], ['adults', 1], ['childCount', 0], ['childAges', []]] as const) {
-            if ((field === 'scope' || field === 'adults') && (occupancyConflict || hasOccupancy || occupancy.scope !== 'unresolved' && occupancy.scope !== 'per_room')) continue;
-            if ((field === 'childCount' || field === 'childAges') && hasChildren) continue;
-            if ((field === 'childCount' || field === 'childAges') &&
-                (occupancy.childCount !== null && occupancy.childCount !== 0 || occupancy.childAges?.length ||
-                 covered(`${root}/childCount`, `${alias}/childCount`) || covered(`${root}/childAges`, `${alias}/childAges`))) continue;
-            if (draft.proposal.annotations.length < 2000 && (field === 'scope' ? occupancy.scope === 'unresolved' : occupancy[field] === null) &&
-                !covered(`${root}/${field}`, `${alias}/${field}`)) {
-              if (field === 'scope') occupancy.scope = value;
-              else if (field === 'adults') occupancy.adults = value;
-              else if (field === 'childCount') occupancy.childCount = value;
-              else occupancy.childAges = [];
-              draft.proposal.annotations = draft.proposal.annotations.filter(annotation => annotation.path !== `${root}/${field}`);
-              draft.proposal.annotations.push({ path: `${root}/${field}`, basis: 'policy', evidenceRefs: [] });
-              paths.push(`${root}/${field}`);
-            }
-          }
+          if (parents.some(parent => (parent.value as Record<string, unknown>)[field] !== original)) continue;
+          group.occupancy[field] = null;
+          if (field === 'childCount') group.occupancy.childAges = null;
+          for (const parent of parents) parent.value = { ...(parent.value as Record<string, unknown>), [field]: null,
+            ...(field === 'childCount' ? { childAges: null } : {}) };
+          draft.proposal.annotations = draft.proposal.annotations.filter(row => row.path !== path &&
+            !(field === 'childCount' && row.path === `${root}/childAges` && row.basis === 'policy'));
+          delete draft.staffReviews[path]; delete draft.staffReviews[`${alias}/${field}`];
+          paths.push(path);
         }
-      } else if (request.kind === 'create' && !extracted.occupancy.some(row =>
+      }
+    }
+    if (input.propertyCode === 'HRCEN' && occupancySourceComplete) {
+      if (request.kind === 'create' && !extracted.occupancy.some(row =>
         row.childCount && row.childCount.value !== 0 || row.childAges?.length)) {
         for (const [index, allocation] of request.body.allocations.entries()) {
           const root = `${bodyRoot}/allocations/${index}/occupancy`, alias = `${bodyAlias}/allocations/${index}/occupancy`;

@@ -393,6 +393,13 @@
       "when": 1791072022000,
       "tag": "0055_reservation_prefill_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794824700000,
+      "tag": "0056_hms_credential_admission",
+      "breakpoints": true
     }
   ]
 }

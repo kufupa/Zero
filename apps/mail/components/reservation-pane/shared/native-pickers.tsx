@@ -348,9 +348,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   }, [path, staleCode]);
   useEffect(() => {
     const key = `native-selection:${selectionPath}`;
-    setCatalogueUncommitted.current(key, staleIdentity);
+    setCatalogueUncommitted.current(key, staleIdentity && !quoteName);
     return () => setCatalogueUncommitted.current(key, false);
-  }, [selectionPath, staleIdentity]);
+  }, [selectionPath, staleIdentity, quoteName]);
   const display = open && catalogueSearch !== null ? catalogueSearch : dirty || open ? query : guestPath
     ? selectedChoice?.label || [text(valueAt(editor.snapshot, `${guestPath}/firstName`)), saved].filter(Boolean).join(' ')
     : amendTrack && trackDisplay && trackDisplay !== saved ? `${saved} — ${trackDisplay}`

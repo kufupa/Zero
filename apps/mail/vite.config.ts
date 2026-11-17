@@ -91,7 +91,7 @@ export default defineConfig({
       tslib: 'tslib/tslib.es6.js',
     },
     // React Compiler runtime and react-dom must share one `react` instance or `H` stays null.
-    dedupe: ['react', 'react-dom'],
+    dedupe: ['react', 'react-dom', '@noble/hashes'],
   },
   optimizeDeps: {
     include: ['react', 'react/jsx-runtime', 'react-dom/client', 'react/compiler-runtime'],

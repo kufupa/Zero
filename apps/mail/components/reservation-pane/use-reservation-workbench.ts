@@ -1,13 +1,26 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ReservationActionQueue } from './reservation-action-queue';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import { ReservationWorkflowStaleRevisionError, type ReservationFieldOverride, type ReservationPaneSnapshot, type ReservationSourceContext, type ReservationWorkflowClient, type ReservationWorkflowKind, type PropertyConfiguration } from '@/lib/reservation-workflow/types';
 import { effectiveAt, guestProfileDefaultsToNew, valueAt, record, requestPath, snapshotMatchesSource, staffEnteredAt, text, type WorkbenchCommands } from '@/lib/reservation-workflow/views';
 import { sameGuestName } from '../../../server-pilot/src/ai/guest-name-match.js';
+import { compilePreparedUnavailableQuote, compileQuote, currentQuoteAvailabilityObservation, quoteOverridesMatch, quoteReadiness, quoteReadinessBeforeSplit } from '../../../server-pilot/src/ai/reservation-workflow-v2-quote-readiness';
+import { completeQuotePackage, getQuoteOutput, quoteFamilyMembers } from '@/lib/reservation-workflow/quote-output';
+import { quoteFamilyOptions } from '../../../server-pilot/src/ai/reservation-workflow-v2-quote-family';
 
 type Pending = { path: string; value: unknown; state: ReservationFieldOverride['state']; token: number;
   generation: string | null; rows: { path: string; identity: string }[] };
+
+function hmsBusy(value: unknown): boolean {
+  const result = record(value);
+  return result.outcomeClass === 'hms_busy' ||
+    [result.failureClass, result.issue, result.status].some(item =>
+      item === 'HMS_LOCK_BUSY' || item === 'STAFF_QUOTE_ACTIVE' || item === 'refused_lock_busy') ||
+    Array.isArray(result.quotes) && result.quotes.some(hmsBusy) ||
+    Array.isArray(result.lookups) && result.lookups.some(hmsBusy);
+}
 
 function rowIdentity(value: unknown): string {
   const row = record(value);
@@ -45,7 +58,7 @@ type Buffer = {
   pendingMutationHeld: boolean;
   actionsPending: number;
   token: number;
-  queue: Promise<void>;
+  queue: ReservationActionQueue;
   listeners: Set<() => void>;
 };
 const buffers = new Map<string, Buffer>();
@@ -125,10 +138,8 @@ function releasePendingMutation(buffer: Buffer) {
   }
 }
 
-function enqueue(buffer: Buffer, action: () => Promise<void>): Promise<void> {
-  const next = buffer.queue.then(action, action);
-  buffer.queue = next.catch(() => {});
-  return next;
+function enqueue(buffer: Buffer, action: () => Promise<void>, background = false): Promise<void> {
+  return buffer.queue.enqueue(action, background ? 'background' : 'staff');
 }
 
 /** Pending edits are visible immediately, but never become a command's server cursor. */
@@ -215,7 +226,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   const safeSnapshot = scoped && snapshotMatchesSource(snapshot, source) ? snapshot : null;
   const owner = useRef(Symbol('reservation-workbench')).current;
   if (!buffers.has(draftKey)) buffers.set(draftKey, { sourceKey: key, owner, snapshot: safeSnapshot, sourceReviewBase: null, pending: new Map(), conflict: false,
-    error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: Promise.resolve(), listeners: new Set() });
+    error: null, pendingMutationHeld: false, actionsPending: 0, token: 0, queue: new ReservationActionQueue(), listeners: new Set() });
   const entry = buffers.get(draftKey)!;
   if (entry.sourceKey !== key || entry.owner !== owner) {
     entry.sourceKey = key;
@@ -235,6 +246,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   active.current = { key, epoch: source.selectionEpoch };
   const mounted = useRef(false);
   const [busy, setBusy] = useState(false);
+  const [quoteWaiting, setQuoteWaiting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [changed, rerender] = useState(0);
   const [uncommitted, setUncommitted] = useState<Set<string>>(new Set());
@@ -243,7 +255,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeAction = useRef(activeId);
   activeAction.current = activeId;
-  useEffect(() => { setError(null); setUncommitted(new Set()); setActiveId(null); }, [key]);
+  useEffect(() => { setError(null); setQuoteWaiting(false); setUncommitted(new Set()); setActiveId(null); }, [key]);
 
   const apply = useCallback((next: ReservationPaneSnapshot, bound: ReservationSourceContext, buffer: Buffer) => {
     if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(next, bound)) return;
@@ -325,19 +337,25 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       if (captured.length) void enqueue(buffer, () => flushCaptured(bound, buffer, captured)).catch(() => {});
     };
   }, [key, source.selectionEpoch, client]);
-  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false, filing = false, quietError = false): Promise<void> => {
+  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false, background = false, filing = false, quietError = false): Promise<void> => {
     const bound = source;
     const buffer = entry;
     const execute = async () => {
       if (buffer.owner !== owner || !mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
-      setBusy(true); setError(null);
+      if (!background) { setBusy(true); setError(null); }
       if (write) beginMutation();
+      const waitNotice = !background ? setTimeout(() => {
+        if (mounted.current && active.current.key === key) setQuoteWaiting(true);
+      }, 30_000) : undefined;
       try {
         if (!skipFlush) await flush(bound, buffer);
         if (buffer.owner !== owner || buffer.sourceKey !== sourceKey(bound) || !snapshotMatchesSource(buffer.snapshot, bound)) throw new Error('The email draft is still opening.');
         if (!mounted.current || active.current.key !== sourceKey(bound) || active.current.epoch !== bound.selectionEpoch) return;
         const next = await action({ source: bound, snapshot: buffer.snapshot });
-        if (next) { apply(next, bound, buffer); if (next.serviceNotice) throw new Error(next.serviceNotice); }
+        if (next) {
+          apply(next, bound, buffer);
+          if (next.serviceNotice) throw Object.assign(new Error(next.serviceNotice), { hmsBusy: hmsBusy(next.workflowReply) });
+        }
       } catch (failure) {
         const currentBinding = buffer.owner === owner && buffer.sourceKey === sourceKey(bound);
         if (currentBinding && failure instanceof ReservationWorkflowStaleRevisionError) {
@@ -349,13 +367,15 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         if (!quietError && currentBinding && mounted.current && active.current.key === key) setError(displayed);
         throw filing && !(failure instanceof FilingActionError) ? new FilingActionError(displayed) : failure;
       } finally {
+        if (waitNotice) clearTimeout(waitNotice);
         if (write) endMutation();
-        if (mounted.current && active.current.key === key) { setBusy(false); rerender(value => value + 1); }
+        if (!background && mounted.current && active.current.key === key) setQuoteWaiting(false);
+        if (mounted.current && active.current.key === key) { if (!background) setBusy(false); rerender(value => value + 1); }
       }
     };
-    buffer.actionsPending++;
+    if (!background) buffer.actionsPending++;
     notify(buffer);
-    return enqueue(buffer, execute).finally(() => { buffer.actionsPending--; notify(buffer); });
+    return enqueue(buffer, execute, background).finally(() => { if (!background) buffer.actionsPending--; notify(buffer); });
   };
   const stageEdit = (path: string, value: unknown, state: ReservationFieldOverride['state'] = 'set', options?: { notify?: boolean }) => {
     if (!entry.pendingMutationHeld) { entry.pendingMutationHeld = true; beginMutation(); }
@@ -388,6 +408,10 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
   const verifyNativeLead = (client as ReservationWorkflowClient & {
     verifyNativeLead?: ReservationWorkflowClient['selectNative'];
   }).verifyNativeLead;
+  const quoteWaitControls = {
+    onQuoteWait: (waiting: boolean) => { if (mounted.current && active.current.key === key) setQuoteWaiting(waiting); },
+    shouldContinueQuoteWait: () => mounted.current && active.current.key === key && active.current.epoch === source.selectionEpoch,
+  };
   const commands: WorkbenchCommands = {
     stageEdit,
     setUncommitted(id, dirty) {
@@ -413,8 +437,8 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       if (!canReadRequest) return unavailable();
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
     } } : {}),
-    lookup() { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
-    lookupChoices(nativeFieldPath) { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath }), false, false, false,
+    lookup(background = false) { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest(), background, ...quoteWaitControls }), false, false, background); },
+    lookupChoices(nativeFieldPath) { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath }), false, false, false, false,
       request?.kind === 'quote' && /\/body\/parties\/(?:organization|bookingAgency)$/.test(nativeFieldPath)); },
     async guestProfileOptions(allocationId, field) {
       if (!canReadRequest) throw new Error('Guest profile choices are not available for this hotel yet.');
@@ -549,9 +573,91 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         return result;
       });
     },
-    prepare(allocationId) { if (!canPrepareRequest || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then check again.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId })); },
+    prepare(allocationId, background = false) { if (!canPrepareRequest || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then check again.')); return run(context => client.prepare({ ...context, requestId: requireRequest(), allocationId, background, ...quoteWaitControls }), false, false, background); },
     review(scope, ids) { return run(context => client.reviewScope({ ...context, requestId: requireRequest(), scope, ids })); },
     execute(allocationId) { if (!canExecuteRequest) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then save again.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.execute({ ...context, requestId: requireRequest(), allocationId, idempotencyKey: crypto.randomUUID() }), true); },
+    executeQuoteFamily() {
+      if (!canExecuteRequest || !canRead || request?.kind !== 'quote') return unavailable();
+      if (preview) return Promise.reject(new Error('Preview only. Quote generation is disabled.'));
+      const requestId = request.id;
+      return run(async context => {
+        let current = context.snapshot;
+        const members = quoteFamilyMembers(current, requestId);
+        const options = quoteFamilyOptions(current.session.draft, requestId);
+        if (!members?.length || !options?.length) throw new Error('The quote options changed. Review them before continuing.');
+        const family = JSON.stringify(options);
+        const ensureCurrent = () => {
+          const selected = (entry.snapshot?.requests.find(row => row.id === activeAction.current) ?? entry.snapshot?.requests[0])?.id;
+          if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch ||
+              entry.owner !== owner || entry.sourceKey !== sourceKey(context.source) || selected !== requestId || entry.conflict ||
+              entry.pending.size || liveInputs.current.uncommitted.size || entry.snapshot?.session.sourceChanged ||
+              entry.snapshot?.session.seq !== current.session.seq || entry.snapshot?.session.revision !== current.session.revision ||
+              JSON.stringify(quoteFamilyOptions(current.session.draft, requestId)) !== family)
+            throw new Error('The email or quote changed. Review it before continuing.');
+        };
+        const step = async (action: () => Promise<ReservationPaneSnapshot>) => {
+          ensureCurrent();
+          const next = await action();
+          ensureCurrent();
+          if (!snapshotMatchesSource(next, context.source) || next.session.sourceChanged ||
+              next.session.draft.generationId !== current.session.draft.generationId ||
+              JSON.stringify(quoteFamilyOptions(next.session.draft, requestId)) !== family)
+            throw new Error('The email or quote changed. Review it before continuing.');
+          current = next;
+          apply(next, context.source, entry);
+          if (next.serviceNotice) throw new Error(next.serviceNotice);
+        };
+        const needsAttention = (id: string, message: string): never => {
+          setActiveId(id);
+          throw new Error(message);
+        };
+        const packageKinds = ['email_quote', 'pdf_quote', 'xlsx_quote'];
+        for (const member of members) {
+          const fieldPath = `${requestPath(member.requestId)}/body/outputIntent/artifacts`;
+          const requested = valueAt(current, fieldPath);
+          if (!Array.isArray(requested) || requested.length !== packageKinds.length ||
+              packageKinds.some(kind => !requested.includes(kind))) {
+            await step(() => client.edit({ source: context.source, snapshot: current, requestId: member.requestId,
+              fieldPath, state: 'set', value: packageKinds }));
+          }
+        }
+        // Review all inputs before preparing or generating any family member: later
+        // review mutations would otherwise make earlier generated documents stale.
+        for (const member of members) await step(() => client.reviewScope({ source: context.source, snapshot: current,
+          requestId: member.requestId, scope: 'request', ids: [member.requestId] }));
+        for (const member of members) {
+          const draft = current.session.draft;
+          const child = draft.proposal.content.requests.find(row => row.id === member.requestId && row.kind === 'quote');
+          if (!child || child.kind !== 'quote') {
+            setActiveId(member.requestId);
+            throw new Error(`Review ${member.label}.`);
+          }
+          const missing = quoteReadiness(draft, member.requestId, 'check');
+          if (missing.length) needsAttention(member.requestId, `${member.label}: ${missing.map(item => item.message).join(' ')}`);
+          const compiled = compileQuote(draft, child, false);
+          const observation = compiled.status === 'ok' ? currentQuoteAvailabilityObservation(draft, child.id, compiled.inputDigest) : null;
+          const operation = [...draft.operationResults].reverse().find(row => row.workflow === 'quote' && row.requestId === child.id &&
+            row.generationId === draft.generationId && row.status === 'prepared');
+          const result = record(observation?.result);
+          const readyPrice = observation?.status === 'complete' && observation.coverage.complete && operation?.observationRefs.includes(observation.ref) &&
+            Date.parse(text(result.freshUntil)) > Date.now() && quoteOverridesMatch(draft, child.id, result.inputOverrides);
+          if (!readyPrice && !compilePreparedUnavailableQuote(draft, child)) {
+            await step(() => client.prepare({ source: context.source, snapshot: current, requestId: member.requestId, ...quoteWaitControls }));
+          }
+        }
+        for (const member of members) {
+          const missing = quoteReadiness(current.session.draft, member.requestId, 'execute');
+          if (missing.length) needsAttention(member.requestId, `${member.label}: ${missing.map(item => item.message).join(' ')}`);
+        }
+        for (const option of options) {
+          const member = option.members[0]!;
+          await step(() => client.execute({ source: context.source, snapshot: current, requestId: member.requestId, idempotencyKey: crypto.randomUUID() }));
+          const output = getQuoteOutput(context.source, current, member.requestId, configuration);
+          if (!output || !completeQuotePackage(output)) needsAttention(member.requestId, `${member.label}: The quote package is incomplete. Review the result before continuing.`);
+        }
+        return current;
+      }, true);
+    },
     reconcile(operationId) { return run(context => {
       const operation = context.snapshot.operationResults.find(row => row.id === operationId);
       return operation?.workflow === 'services' ? client.reconcileServices({ ...context, operationId }) : client.reconcile({ ...context, operationId });
@@ -697,7 +803,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         if (!proof) throw new FilingActionError('Infor could not verify this PDF for the selected stay.');
         await step(() => client.reviewScope({ source: context.source, snapshot: current, requestId, scope: 'request', ids: [] }));
         await step(() => client.prepare({ source: context.source, snapshot: current, requestId }));
-      }, false, false, true);
+      }, false, false, false, true);
     },
     fileFiling(preparedRef, observationRef) {
       if (!canExecuteRequest) return unavailable();
@@ -755,11 +861,19 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           if (failure instanceof FilingActionError) throw failure;
           throw new FilingActionError('The filing outcome could not be confirmed. Check Infor before trying again.');
         }
-      }, true, false, true);
+      }, true, false, false, true);
     },
     lookupServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); return run(context => client.lookupServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
     previewServices(target, serviceId) { if (!canPrepareAddons || !canRead) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then check again.')); return run(context => client.previewServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId })); },
     executeServices(target, serviceId, reviewedPrepareRef) { if (!canSaveAddons) return unavailable(); if (liveInputs.current.key === key && liveInputs.current.uncommitted.size) return Promise.reject(new Error('Finish editing or select a current Infor option, then save again.')); if (preview) return Promise.reject(new Error('Preview only. Native Save is disabled.')); return run(context => client.executeServices({ ...context, requestId: requireRequest(), ...(typeof target === 'string' ? { allocationId: target } : { targetRef: target }), serviceId, reviewedPrepareRef, idempotencyKey: crypto.randomUUID() }), true); },
+  };
+  const retryBusyWarmup = (failure: unknown, reset: () => void) => {
+    if (record(failure).hmsBusy !== true) return;
+    setTimeout(() => {
+      if (!mounted.current || active.current.key !== key || active.current.epoch !== source.selectionEpoch) return;
+      reset();
+      rerender(value => value + 1);
+    }, 15_000);
   };
   const initialLookup = useRef(new Set<string>());
   const prefill = current?.session.draft.prefill;
@@ -771,7 +885,10 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         current.session.draft.prefill?.nativeChecks?.some(check => check.key === `create:lookup:${request.id}`)) return;
     const lookupKey = `${key}:${request.id}:${current.session.draft.generationId}`;
     if (initialLookup.current.has(lookupKey)) return;
-    const timer = setTimeout(() => { initialLookup.current.add(lookupKey); void commands.lookup().catch(() => {}); }, 700);
+    const timer = setTimeout(() => {
+      initialLookup.current.add(lookupKey);
+      void commands.lookup(true).catch(failure => retryBusyWarmup(failure, () => initialLookup.current.delete(lookupKey)));
+    }, 700);
     return () => clearTimeout(timer);
   }, [current, request, busy, changed, key, preview, arrivalChecksPending, canPrepareCreate, canRead]);
   // A created room unlocks its dependent PDF lookup without asking staff to copy the confirmation.
@@ -793,7 +910,8 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       const warmKey = `${key}:${filing.id}:${receipt.id}:${receipt.updatedAt}`;
       if (warmedFilings.current.has(warmKey)) continue;
       warmedFilings.current.add(warmKey);
-      void run(context => client.lookup({ ...context, requestId: filing.id })).catch(() => {});
+      void run(context => client.lookup({ ...context, requestId: filing.id, background: true }), false, false, true)
+        .catch(failure => retryBusyWarmup(failure, () => warmedFilings.current.delete(warmKey)));
       break;
     }
   }, [current, busy, changed, key, preview, arrivalChecksPending, uncommitted, canPrepareAttach, canRead]);
@@ -809,19 +927,11 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
     if (autoDigest.current.get(actionKey) === digest) return;
     const timer = setTimeout(() => {
       autoDigest.current.set(actionKey, digest);
+      const retry = (failure: unknown) => retryBusyWarmup(failure, () => {
+        if (autoDigest.current.get(actionKey) === digest) autoDigest.current.delete(actionKey);
+      });
       if (request.kind === 'quote') {
-        const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
-        if (groups.length && groups.every(group => {
-          const occupancy = record(group.occupancy), ages = occupancy.childAges;
-          return /^\d{4}-\d{2}-\d{2}$/.test(text(group.arrival)) && text(group.departure) > text(group.arrival)
-            && Number.isInteger(group.quantity) && Number(group.quantity) > 0 && occupancy.scope === 'per_room'
-            && Number.isInteger(occupancy.adults) && Number(occupancy.adults) >= 1 && Number(occupancy.adults) <= 6
-            && Number.isInteger(occupancy.childCount) && Number(occupancy.childCount) >= 0 && Number(occupancy.childCount) <= 6
-            && (Number(occupancy.childCount) === 0
-              ? ages === null || (Array.isArray(ages) && ages.length === 0)
-              : Array.isArray(ages) && ages.length === occupancy.childCount &&
-                ages.every(age => Number.isInteger(age) && Number(age) >= 0 && Number(age) <= 17));
-        })) void commands.lookup().catch(() => {});
+        if (!quoteReadinessBeforeSplit(current.session.draft, request.id).length) void commands.lookup(true).catch(retry);
       } else {
         const allocations = Array.isArray(body.allocations) ? body.allocations.map(record) : [];
         const sections = Array.isArray(body.dateSections) ? body.dateSections.map(record) : [];
@@ -839,7 +949,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           const finished = current.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === room.id
             && (row.status === 'succeeded' || row.status === 'unknown'));
           if (!finished && !current.preparationViews.some(view => view.requestId === request.id && view.allocationId === room.id && view.current))
-            void commands.prepare(String(room.id)).catch(() => {});
+            void commands.prepare(String(room.id), true).catch(retry);
         }
       }
     }, 700);
@@ -848,7 +958,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
 
   return { snapshot: current, readyForReply: () => mounted.current && active.current.key === key
       && active.current.epoch === source.selectionEpoch && entry.pending.size === 0 && !entry.conflict && entry.actionsPending === 0
-      && liveInputs.current.key === key && liveInputs.current.uncommitted.size === 0, latestSnapshot: () => entry.snapshot, request, commands, busy, error: error ?? entry.error, saving: entry.pending.size > 0, blocked: uncommitted.size > 0,
+      && liveInputs.current.key === key && liveInputs.current.uncommitted.size === 0, latestSnapshot: () => entry.snapshot, request, commands, busy: busy || entry.actionsPending > 0, quoteWaiting, error: error ?? entry.error, saving: entry.pending.size > 0, blocked: uncommitted.size > 0,
     conflict: entry.conflict, unresolvedPending, applicablePendingCount: pendingForCurrent.length, activeId: request?.id ?? null, setActiveId,
     addAction: (kind: Exclude<ReservationWorkflowKind, 'other'>) => run(async context => { const next = await client.addAction({ ...context, kind }); setActiveId(next.requests.at(-1)?.id ?? null); return next; }),
     undo: () => run(context => client.undo(context)), redo: () => run(context => client.redo(context)),

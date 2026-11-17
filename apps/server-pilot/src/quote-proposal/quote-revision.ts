@@ -1,3 +1,5 @@
+import { occupiedDates } from './quote-dates.js';
+export { occupiedDates } from './quote-dates.js';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import type { ReservationistSourceFreshnessProof } from '../ai/draft-approval.js';
@@ -196,21 +198,6 @@ export function hydrateStoredQuoteRevision(value: unknown): QuoteRevision | null
   if (groups.some((group) => !group)) return null;
   const hydrated = { ...revision, groups } as QuoteRevision;
   return quoteRevisionIdentityValid(hydrated) ? hydrated : null;
-}
-export function occupiedDates(arrival: string, departure: string): string[] {
-  const parse = (s: string) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) throw new Error('invalid_calendar');
-    const d = new Date(`${s}T00:00:00Z`);
-    if (!Number.isFinite(d.valueOf()) || d.toISOString().slice(0, 10) !== s)
-      throw new Error('invalid_calendar');
-    return d.valueOf();
-  };
-  const a = parse(arrival),
-    b = parse(departure);
-  if (b <= a || b - a > 366 * 86400000) throw new Error('invalid_calendar_order');
-  return Array.from({ length: (b - a) / 86400000 }, (_, i) =>
-    new Date(a + i * 86400000).toISOString().slice(0, 10),
-  );
 }
 export function exactMinor(amount: string): number {
   if (!/^\d+\.\d{2}$/.test(amount)) throw new Error('invalid_money_precision');
@@ -466,9 +453,9 @@ export async function resolveQuoteRevision(input: {
       },
       poolId: o.room.buildingCode
         ? `${input.propertyCode}:${o.room.buildingCode}:${o.room.code}`
-        : input.selections.length === 1
-          ? `${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`
-          : `${input.propertyCode}:profile:${o.room.code}`,
+        : profileOk
+          ? `${input.propertyCode}:profile:${o.room.code}`
+          : `${input.propertyCode}:source:${s.ref}:${selection.groupId}:${o.room.code}`,
     });
   }
   const pools = new Map<string, { demand: number; supply: number }>();

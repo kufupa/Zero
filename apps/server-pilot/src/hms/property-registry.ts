@@ -6,7 +6,8 @@ import {
 } from '../../tooling/hms-cloud/property-registry.mjs';
 
 export const propertyCodeSchema = z.enum(['HRCEN', 'HRDAV', 'HRDAVS']);
-export const propertySwitchSchema = z.enum(['HRDAV', 'HRDAVS']);
+import { propertySwitchSchema } from './property-switch.js';
+export { propertySwitchSchema } from './property-switch.js';
 export type PropertyCode = z.infer<typeof propertyCodeSchema>;
 export type PropertySwitch = z.infer<typeof propertySwitchSchema>;
 

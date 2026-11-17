@@ -1,3 +1,5 @@
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { currentCloudCredentialPriority, withCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import {
@@ -618,8 +620,8 @@ function withRunDeadline<T extends ReturnType<typeof prepareStaffQuote>>(
   };
 }
 
-async function assertPreparedQuoteCanContinue(db: DB, systemPrepared: boolean): Promise<void> {
-  if (systemPrepared && (await staffQuoteInFlight(db))) {
+async function assertPreparedQuoteCanContinue(db: DB, background: boolean, generationId: string): Promise<void> {
+  if (background && (await staffQuoteInFlight(db, generationId))) {
     throw Object.assign(new Error('A staff quote is waiting.'), { code: 'STAFF_QUOTE_ACTIVE' });
   }
 }
@@ -644,6 +646,8 @@ export async function runStaffQuote(
   if (!mail || mail.direction !== 'inbound')
     refuseQuote('mail_not_found', 'Selected inbound email not found', { code: 'NOT_FOUND' });
   const systemPrepared = identity.user === undefined;
+  const credentialPriority = currentCloudCredentialPriority(systemPrepared ? 'background' : undefined);
+  const background = credentialPriority === 'background';
   const quoteTarget = await resolveHmsQuoteJobTarget({
     transportId: identity.transportId,
     propertySwitch: input.propertySwitch,
@@ -663,9 +667,11 @@ export async function runStaffQuote(
   } catch {
     refuseQuote('installation_unavailable', 'Staff quotation installation unavailable');
   }
-  if (config.owner.propertyCode !== quoteTarget.target.propertyCode) {
+  const quoteProperty = getPropertyRegistration(quoteTarget.target.propertyCode);
+  if (!quoteProperty || config.owner.propertyCode !== quoteTarget.target.propertyCode) {
     refuseQuote('installation_unavailable', 'Staff quotation installation unavailable');
   }
+  const quoteTenantId = quoteProperty.expectedTenant;
   const scope = {
     transportId: identity.transportId,
     userId: identity.user?.id ?? null,
@@ -796,7 +802,7 @@ export async function runStaffQuote(
         generationId,
         transportId: scope.transportId,
         userId: identity.user!.id,
-        lockKey: propertyReadLockKey(config.tenantId, scope.propertyCode),
+        lockKey: propertyReadLockKey(quoteTenantId, scope.propertyCode),
       });
   // Provisional mode returns the quote once captured, while the run waits for its trace.
   const traceAsync = quoteTraceAsyncEnabled();
@@ -808,8 +814,8 @@ export async function runStaffQuote(
     let revision: QuoteRevision;
     const captured = deferredQuoteRevision();
     try {
-      lockRun = (async () => {
-          await assertPreparedQuoteCanContinue(db, systemPrepared);
+      lockRun = withCloudCredentialPriority(credentialPriority, async () => {
+          await assertPreparedQuoteCanContinue(db, background, generationId);
           queued.setPhase(1);
           const childEnv = process.env;
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
@@ -861,7 +867,7 @@ export async function runStaffQuote(
                   services.resolveQuoteTask &&
                   (async (quoteContext) => {
                     const resolved = await services.resolveQuoteTask!(quoteContext);
-                    await assertPreparedQuoteCanContinue(db, systemPrepared);
+                    await assertPreparedQuoteCanContinue(db, background, generationId);
                     queued.setPhase(2);
                     return resolved;
                   }),
@@ -945,7 +951,7 @@ export async function runStaffQuote(
             return result;
           })();
           return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
-        })();
+        });
       if (traceAsync) {
         lockRun.then(
           (value) => captured.resolve(value),
