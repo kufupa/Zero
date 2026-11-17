@@ -10,6 +10,17 @@ const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),val
 export const editInput=z.object({expected_revision:z.number().int().min(1),changes:z.array(change).min(1)}).strict();
 type Change=z.infer<typeof change>;
 type Container=Record<string,unknown>|unknown[];
+function quoteIdentities(draft:z.infer<typeof proposalDraft>) {
+  return draft.actions.filter(action=>action.type==='quote').map(({id,details})=>{
+    if(typeof details!=='object' || details===null || Array.isArray(details)) return {id,details};
+    const groups=Array.isArray(details.groups)?details.groups.map(group=>{
+      if(typeof group!=='object' || group===null || Array.isArray(group)) return group;
+      const rooms=Array.isArray(group.rooms)?group.rooms.map((room:unknown)=>typeof room==='object' && room!==null && !Array.isArray(room) && 'id' in room?room.id:room):group.rooms;
+      return {group_id:group.group_id,rooms};
+    }):details.groups;
+    return {id,quote_id:details.quote_id,groups};
+  });
+}
 function pointer(path:string) {
   if(!path.startsWith('/') || /~(?![01])/.test(path)) throw new Error('INVALID_PATH');
   const parts=path.slice(1).split('/').map(p=>p.replace(/~1/g,'/').replace(/~0/g,'~'));
@@ -40,6 +51,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(p.revision!==input.expected_revision) throw new Error('STALE_REVISION');
     if(p.phase!=='ready' && p.phase!=='waiting_go') throw new Error('NOT_EDITABLE');
     const draft=proposalDraft.parse(structuredClone(p.current));
+    const identities=JSON.stringify(quoteIdentities(draft));
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {
       const spec=draft.field_specs.find(f=>f.path===item.path);
@@ -49,6 +61,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       changes.push({change:item,...modified});
     }
     const valid=proposalDraft.parse(draft), revision=p.revision+1;
+    if(JSON.stringify(quoteIdentities(valid))!==identities) throw new Error('INVALID_PATH');
     const [last]=await tx`SELECT COALESCE(max(sequence),0)::int AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
     let sequence=last.n;
     await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,updated_at=now() WHERE id=${id}`;
