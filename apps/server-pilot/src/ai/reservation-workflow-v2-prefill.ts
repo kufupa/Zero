@@ -13,6 +13,7 @@ import { buildReservationWorkflowV2MailQuery, selectReservationWorkflowV2MailCan
 import { selectReservationWorkflowV2Guidance, type WorkflowGuidanceCatalog, type WorkflowGuidanceProjection, type WorkflowGuidanceReceipt } from './reservation-workflow-v2-memory.js';
 import { currentAuthoredMessageText, groundedSeparateAsk, selfSentPreStayCandidate } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
+import { isPdfAttachment } from './quote-attachment-review.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
   EXTRACTION_MAX_IMAGES,
@@ -1199,7 +1200,11 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
       const isPrior = Boolean(attachment.messageId && attachment.messageId !== source.messageId);
       const admittedRow = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) &&
         (isPrior ? (row.relation === 'prior_thread' || row.relation === 'attachment') : row.relation === 'attachment'));
-      return Boolean(admittedRow && admittedRow.text === maskCardNumbers(attachmentText));
+      if (!admittedRow || admittedRow.text !== maskCardNumbers(attachmentText)) return false;
+      // Non-empty pdftotext output does not prove every page has embedded text (e.g. a text cover + scanned request page).
+      // Require proven full-document vision coverage for PDFs before allowing host fullCausalAttachmentCoverage.
+      if (isPdfAttachment(attachment)) return audit.get(attachment.id) === 'read';
+      return true;
     }
     return audit.get(attachment.id) === 'read';
   });
