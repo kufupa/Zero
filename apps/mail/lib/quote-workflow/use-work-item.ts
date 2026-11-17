@@ -690,7 +690,7 @@ export function useStoredWork(args: {
       staffManual: stored.staffManual,
       existingStayInformation: stored.existingStayInformation === true,
       separateAsk: stored.separateAsk ?? null,
-      separateAskReview: stored.separateAskReview === true,
+      separateAskReview: stored.separateAskReview,
       confirmationNumbers: stored.confirmationNumbers ?? [],
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
