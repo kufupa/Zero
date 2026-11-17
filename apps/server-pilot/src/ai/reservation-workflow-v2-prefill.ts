@@ -98,7 +98,7 @@ const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an ex
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
-  const normalize = (item: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
+  const normalize = (item: unknown, isRoot = false): unknown | typeof OMIT_UNKNOWN_CLAIM => {
     if (Array.isArray(item)) return item.flatMap((child) => {
       const normalized = normalize(child);
       return normalized === OMIT_UNKNOWN_CLAIM ? [] : [normalized];
@@ -111,12 +111,16 @@ function omitUncitedUnknownClaims(value: unknown): unknown {
     }
     const output: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(row)) {
+      if (isRoot && key === 'issues') {
+        output[key] = child;
+        continue;
+      }
       const normalized = normalize(child);
       if (normalized !== OMIT_UNKNOWN_CLAIM) output[key] = normalized;
     }
     return output;
   };
-  const normalized = normalize(value);
+  const normalized = normalize(value, true);
   return normalized === OMIT_UNKNOWN_CLAIM ? undefined : normalized;
 }
 
