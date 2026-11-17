@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import type {RevisionProposalHeader} from '../quote-proposal/proposal-pdf.js';
 import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuoteSource} from './reservationist-accepted-quote-source.js';
-import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
+import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,isReservationistNativeCleanupCode,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
 import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
@@ -217,7 +217,10 @@ export function createReservationistBusinessServices(options:{authorizationId:st
   if(diagnosticWideningUsed||(staffApproval.claimDiagnosticWidening&&!staffApproval.claimDiagnosticWidening()))return;
   diagnosticWideningUsed=true;
   const widened={...searchRequest,search:{...searchRequest.search,includeAlternatives:true},rooms:searchRequest.rooms.map(room=>{const required={...room.required};delete required.roomCodes;delete required.rateCodes;return{...room,required};}),maxOptionsPerGroup:PARTY_SUMMARY_MAX_OPTIONS};
-  try{const other=await readBound(widened);reportSummary(other.source,'widened');}catch{ctx.signal.throwIfAborted();}
+  try{const other=await readBound(widened);reportSummary(other.source,'widened');}catch(error){
+   if(error&&typeof error==='object'&&'code' in error&&isReservationistNativeCleanupCode(error.code))throw error;
+   ctx.signal.throwIfAborted();
+  }
  };
  if(read.readError){if(read.readError instanceof ReservationistTaskEvidenceUnavailable&&['native_quote_no_matching_rate','native_quote_insufficient_inventory','native_quote_restricted_nights'].includes(read.readError.code))await widenIfHidden();throw read.readError;}
  const alternativeRequest=staffApproval?false:requestedQuoteAlternatives(ctx);

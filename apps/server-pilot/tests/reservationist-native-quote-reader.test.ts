@@ -47,12 +47,15 @@ function read() {
 describe('Cloud native quote reader', () => {
   it('dispatches the selected owner and reports the saved execution failure phase', async () => {
     const evidence = await savedCapture({ outcome: 'execution_failure', phase: 'hotel_availability' });
-    const signal = new AbortController().signal;
-    await expect(read()(request, signal)).rejects.toMatchObject({ code: 'EXECUTION_FAILURE', phase: 'hotel_availability' });
+    const controller = new AbortController();
+    await expect(read()(request, controller.signal)).rejects.toMatchObject({ code: 'EXECUTION_FAILURE', phase: 'hotel_availability' });
     expect(cloud.fetchQuote).toHaveBeenCalledWith(expect.objectContaining({
-      propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: join(root, 'out'), signal,
+      propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: join(root, 'out'), signal: expect.any(AbortSignal),
       request: expect.objectContaining({ schemaVersion: 2, propertyCode: 'HRCEN' }),
     }));
+    const dispatchedSignal = cloud.fetchQuote.mock.calls[0][0].signal as AbortSignal;
+    controller.abort();
+    expect(dispatchedSignal.aborted).toBe(true);
     expect(evidence.startsWith(join(root, 'out'))).toBe(true);
   });
 

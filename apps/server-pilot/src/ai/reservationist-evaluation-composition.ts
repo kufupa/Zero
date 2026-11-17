@@ -5,7 +5,7 @@ import {readFile} from 'node:fs/promises';
 import {resolve,join,relative,isAbsolute,basename} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-import {createReservationistDependencies,deriveRequestedArrivalAcknowledgement,deriveStaffAnswerTopics,ReservationistTaskEvidenceUnavailable,type ReservationistExecutionServices,type AuthorizedTaskAnswer} from './reservationist-execution.js';
+import {createReservationistDependencies,deriveRequestedArrivalAcknowledgement,deriveStaffAnswerTopics,isReservationistNativeCleanupCode,ReservationistTaskEvidenceUnavailable,type ReservationistExecutionServices,type AuthorizedTaskAnswer} from './reservationist-execution.js';
 import {runReservationistRuntime,type ReservationistRuntimeInput,type RuntimePlan} from './reservationist-runtime.js';
 import {createBudgetedReplayAdapter,type ReplayTextBudget} from './reservationist-replay.js';
 import {runQualifiedReservationistCurrentRead} from './reservationist-current-read.js';
@@ -18,6 +18,7 @@ import {extractLookupCandidates,filterExactReservationCandidates,isPlausibleExac
 import type {ValidatedDocumentFact} from './reservationist-document-facts.js';
 import {assertReservationistSubjectReference} from './reservationist-subject-source.js';
 import { fetchQuote, cloudQuoteDependencyDigest } from '../../tooling/hms-cloud/fetch-quote.mjs';
+import { currentCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { nativeReadCapabilityAvailable } from '../hms/hms-service.js';
 import { resolvePropertyScope, propertySwitchSchema } from '../hms/property-registry.js';
 
@@ -215,6 +216,7 @@ export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reaso
 }
 type NativeSummaryCapture={schemaVersion:number;outcome:string;propertyCode:string;observedAt:string;requested:QuoteSourceRecord['request'];groups:(Omit<QuoteSourceRecord['result']['groups'][number],'options'>&{outcome:string;issues:unknown[];restrictedNights?:{roomCode:string;roomLabel:string;date:string}[];options:(QuoteSourceRecord['result']['groups'][number]['options'][number]&{issues:unknown[];details?:{status:string}})[]})[];allocation:{status:string;reason?:string};issues:unknown[];searchCompleteness:{status:string};audit:{status:string};evidenceDirectory:string};
 export type ExistingOwnerNativeQuoteOptions={owner:{propertyCode:string;transportId:string};outputDir:string;onEvidenceDirectory?:(evidence:string)=>void};
+const BACKGROUND_QUOTE_READ_BUDGET_MS=80_000;
 const SAFE_EXECUTION_ERROR_NAME=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/;
 const ATTACH_LOG_KEEP=/timeout|ECONN|EPIPE|ENOTFOUND|ETIMEDOUT|Target\b.*\bclosed|browser has been closed|connectOverCDP|Protocol error|net::ERR_|CDP_/i;
 
@@ -248,11 +250,15 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   if(!await nativeReadCapabilityAvailable({propertyCode:owner.propertyCode,transportId:owner.transportId,capability:'quote'}))throw new Error('native_quote_capability_unavailable');
   const normalize=await import(pathToFileURL(contract).href) as {normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request?:unknown};composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string};shortfallsOf:(groups:unknown[],propertyCode:string)=>{roomCode:string;roomLabel:string;date:string;demand:number;supply:number}[];availableRoomAlternatives:(groups:unknown[],request:unknown)=>NativeRoomAlternative[]};
   const wire={schemaVersion:2,...structuredClone(request)},normalized=normalize.normalizeQuoteRequest(wire);if(!normalized.ok)throw new Error('native_quote_request_invalid');const toolHashBefore=cloudQuoteDependencyDigest();
-  const capture=await fetchQuote({request:wire,propertyCode:owner.propertyCode,transportId:owner.transportId,outputDir:output,signal});
-  signal.throwIfAborted();const evidence=capture.evidenceDirectory;
+  const readSignal=currentCloudCredentialPriority()==='background'?AbortSignal.any([signal,AbortSignal.timeout(BACKGROUND_QUOTE_READ_BUDGET_MS)]):signal;
+  const capture=await fetchQuote({request:wire,propertyCode:owner.propertyCode,transportId:owner.transportId,outputDir:output,signal:readSignal});
+  const evidence=capture.evidenceDirectory;
   if(!inside(evidence)||!resolve(evidence).startsWith(`${output}/`))throw new Error('native_quote_capture_unavailable');
   options.onEvidenceDirectory?.(evidence);
   const bytes=await readFile(join(evidence,'result.json'));if(bytes.length>20*1024*1024)throw new Error('native_quote_capture_oversized');const source=JSON.parse(bytes.toString()) as NativeSummaryCapture;
+  const executionError=source.outcome==='execution_failure'?(source as {error?:{message?:unknown}}).error?.message:undefined;
+  if(isReservationistNativeCleanupCode(executionError))throw Object.assign(new Error(executionError),{code:executionError});
+  readSignal.throwIfAborted();
   if(source.outcome==='execution_failure')throwSavedExecutionFailure(source as {phase?:unknown;error?:unknown});
   const summaryPartial=isReservationistAuditedSummaryPartial(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
   if(source.schemaVersion!==2||source.propertyCode!==request.propertyCode||source.requested.propertyCode!==request.propertyCode||source.audit?.status!=='complete'||quoteDigest(source.requested)!==quoteDigest(normalized.request)||source.evidenceDirectory!==evidence||!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.now()||!Array.isArray(source.groups)||quoteDigest(options.owner)!==ownerHash||!await nativeReadCapabilityAvailable({propertyCode:owner.propertyCode,transportId:owner.transportId,capability:'quote'}))throw new Error('native_quote_capture_scope_or_completeness_invalid');
