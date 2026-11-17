@@ -61,7 +61,7 @@ app.get('/capabilities',async c=>{
   }));
   const create=!!capabilities?.create?.stage;
   const enabled=installed ? Object.keys(installed.capabilities) : staffPrepareOnly() ? [] : create?['triage','create']:['quote'];
-  const modelTools=installed?.modelTools ?? (staffPrepareOnly()?['mail_read_thread','proposal_publish','reply_draft']:
+  const modelTools=installed?.modelTools ?? (staffPrepareOnly()?['mail_read_thread','proposal_publish']:
     ['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && capabilities?.create?.go_labtest?['hms_save']:[])]);
   const authConfigured=await authReady();
   return c.json({workflows:enabled,tools:modelTools,model,environment_type:'self_hosted',auth_ready:installed || create?authConfigured && c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:authConfigured,configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
@@ -119,7 +119,7 @@ app.get('/threads/:id/events',async c=>{
   if (![requested,lastEvent].every(value=>Number.isSafeInteger(value) && value>=0)) return c.json({error:{code:'INVALID_CURSOR',message:'Invalid sequence',details:null}},400);
   const start=Math.max(requested,lastEvent);
   const session=thread.session.id;
-  return streamSSE(c,async stream=>{let after=start; while(!stream.aborted) {const rows=await sql`SELECT sequence::text,id,managed_event_id,kind,payload,at FROM nava_agent.agent_event WHERE session_id=${session} AND sequence>${after} ORDER BY sequence LIMIT 200`; for(const row of rows){after=Number(row.sequence); await stream.writeSSE({id:String(after),event:'event',data:JSON.stringify({sequence:after,event_id:row.managed_event_id ?? row.id,kind:row.kind,at:row.at,session_id:session,proposal_id:row.payload?.proposal_id ?? null,payload:row.payload})});} if(!rows.length) await stream.sleep(1000); }});
+  return streamSSE(c,async stream=>{let after=start; while(!stream.aborted) {const rows=await sql`SELECT e.sequence::text,e.id,e.managed_event_id,e.kind,e.payload,e.at FROM nava_agent.agent_event e WHERE e.session_id=${session} AND e.sequence>${after} ORDER BY e.sequence LIMIT 200`; for(const row of rows){after=Number(row.sequence); await stream.writeSSE({id:String(after),event:'event',data:JSON.stringify({sequence:after,event_id:row.managed_event_id ?? row.id,kind:row.kind,at:row.at,session_id:session,proposal_id:row.payload?.proposal_id ?? null,payload:row.payload})});} if(!rows.length) await stream.sleep(1000); }});
 });
 app.post('/threads/:id/messages',async c=>{
   const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);

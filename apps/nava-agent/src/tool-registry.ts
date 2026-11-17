@@ -8,6 +8,8 @@ import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft,
 import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
+import { withCancelReviewFields } from '../tools/cancel/index.js';
+import { withTriageLookupFields } from '../tools/triage/index.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -33,6 +35,7 @@ export type StaffNativeContext = ToolContext & {propertyCode:string; credentialL
 
 const modelReadTools = new Set(['hms_quote','hms_search_reservations','hms_read_reservation','hms_read_catalogue','hms_search_parties']);
 const prepareOnlyTool = (name:string) => name==='skill_read' || modelReadTools.has(name);
+const replacedBaselineTool = (name:string) => name==='reply_draft' || prepareOnlyTool(name);
 const workflows = ['quote','create','amend','cancel','filing','triage'] as const;
 type ToolPack = {tools?:unknown;prepare?:unknown;save?:unknown;pinSkills?:unknown;quote?:unknown;quoteModelView?:unknown;stageRead?:unknown};
 type FilingPorts = Required<Pick<import('../tools/filing/index.js').ToolContext,'authorizeTarget'|'resolveAttachment'>>;
@@ -191,6 +194,9 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
             staffDraft=proposalDraft.parse(filing.withFilingSourceFields(staffDraft,selected?.payload));
           }
         }
+        if(staffPrepareOnly() && session.mode==='live') {
+          staffDraft=withCancelReviewFields(withTriageLookupFields(staffDraft));
+        }
         const normalized=normalizeProposalFields(staffDraft);
         if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
         const current=normalized.draft;
@@ -278,7 +284,7 @@ export class ToolRegistry {
   }
 
   definitions():ToolDefinition[] {
-    const merged=new Map<string,ToolDefinition>(tools.filter(tool=>!staffPrepareOnly() || !prepareOnlyTool(tool.name)).map(({name,description,input_schema})=>[name,{name,description,input_schema}]));
+    const merged=new Map<string,ToolDefinition>(tools.filter(tool=>!staffPrepareOnly() || !replacedBaselineTool(tool.name)).map(({name,description,input_schema})=>[name,{name,description,input_schema}]));
     for(const {name,description,input_schema} of this.packTools.values()) merged.set(name,{name,description,input_schema});
     if(this.mutations.size && !staffPrepareOnly()) {
       merged.set(prepareDefinition.name,prepareDefinition);
@@ -310,6 +316,7 @@ export class ToolRegistry {
 
   async run(name:string,input:unknown,context:RegistryContext):Promise<{kind:'result';result:ToolResult}|{kind:'pause';proposalId:string;revision:number}> {
     context.signal?.throwIfAborted();
+    if(name==='reply_draft' && staffPrepareOnly()) return {kind:'result',result:failureObject('UNAVAILABLE','Include draft text in proposal_publish for staff review.')};
     if(name==='hms_save') {
       if(!hmsSaveEnabled()) return {kind:'result',result:failureObject('SAVE_DISABLED','Only unsaved Prepare is available.')};
       const request=saveInput.safeParse(input);
@@ -425,7 +432,7 @@ export async function discoverToolPacks(registry:ToolRegistry,root=toolRoot,name
 
 export async function installedStaffTools() {
   const installed=await Promise.all((configuredToolPacks() ?? []).map(async name=>({name,pack:await loadToolPack(name,toolRoot)})));
-  const modelTools=new Set(tools.filter(tool=>!prepareOnlyTool(tool.name)).map(tool=>tool.name));
+  const modelTools=new Set(tools.filter(tool=>!replacedBaselineTool(tool.name)).map(tool=>tool.name));
   const stages:Workflow[]=[];
   for(const {name,pack} of installed) {
     if(!pack) continue;
