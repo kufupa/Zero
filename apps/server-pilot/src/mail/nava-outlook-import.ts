@@ -7,6 +7,7 @@ import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { resolvePropertyScope } from '../hms/property-registry.js';
 import { toParsedMessage } from '../trpc/wire-compat.js';
 import { loadConversationMetaForThread } from './conversation-group.js';
+import { htmlToPlainText } from './inbound-reaction-parser.js';
 
 const address = z.object({ name: z.string().nullable(), email: z.string() }).strict();
 const outlookImport = z.object({
@@ -15,7 +16,7 @@ const outlookImport = z.object({
   messages: z.array(z.object({
     id: z.string(), rfc_message_id: z.string().nullable(), direction: z.enum(['inbound', 'outbound']),
     from: address, to: z.array(address), cc: z.array(address), received_at: z.string(),
-    subject: z.string(), body_text: z.string(), body_html: z.null(),
+    subject: z.string(), body_text: z.string(), body_html: z.string().nullable(),
     attachment_status: z.enum(['complete', 'unknown', 'has_unread']).optional(), attachments: z.array(z.never()),
   }).strict()).min(1),
 }).strict();
@@ -53,11 +54,13 @@ export async function canonicalCenturionOutlookImport(payload: unknown, mailboxI
       const candidate = imported.get(row.id);
       if (!candidate || (row.direction === 'inbound' && isDaVinciMailboxOrigin(row))) return false;
       const canonical = toParsedMessage(row);
-      if (!canonical.body.trim() || (canonical.body === canonical.processedHtml && /<[a-z][\s\S]*>/i.test(canonical.body))) return false;
+      const htmlOnly = canonical.body === canonical.processedHtml && /<[a-z][\s\S]*>/i.test(canonical.body);
+      if (row.id === input.selected_message_id && (!canonical.body.trim() || htmlOnly)) return false;
       return isDeepStrictEqual(candidate, {
         id: canonical.id, rfc_message_id: canonical.messageId ?? null, direction: row.direction,
         from: sourceAddress(canonical.sender), to: canonical.to.map(sourceAddress), cc: (canonical.cc ?? []).map(sourceAddress),
-        received_at: canonical.receivedOn, subject: canonical.subject, body_text: canonical.body, body_html: null,
+        received_at: canonical.receivedOn, subject: canonical.subject,
+        body_text: htmlOnly ? htmlToPlainText(canonical.body) : canonical.body, body_html: htmlOnly ? canonical.processedHtml : null,
         ...(candidate.attachment_status === undefined ? {} : { attachment_status: candidate.attachment_status }), attachments: [],
       });
     });
