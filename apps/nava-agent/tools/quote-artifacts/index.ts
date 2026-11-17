@@ -51,6 +51,10 @@ function linesFor(quote: ReturnType<typeof snapshot.parse>): WorkbookLine[] {
       if (request.quantity !== room.quantity || request.adults !== room.adults || request.children !== room.children ||
           request.childAges.length !== room.child_ages.length || request.childAges.some((age, i) => age !== room.child_ages[i])) throw new Error('occupancy changed');
       const selected = option.parse(capturedRoom.native_result.options[index]);
+      const sameSearch = quote.groups.filter(item=>item.arrival_date===group.arrival_date && item.departure_date===group.departure_date);
+      if(sameSearch.reduce((sum,item)=>sum+item.rooms.length,0)>1 &&
+         (request.required?.roomCodes?.length!==1 || request.required.roomCodes[0]!==selected.room.code ||
+          request.required.rateCodes?.length!==1 || request.required.rateCodes[0]!==selected.rate.code)) throw new Error('allocation selection changed');
       const meal = typeof selected.mealPlan === 'string' ? selected.mealPlan : selected.mealPlan?.label || selected.mealPlan?.code || '';
       if (room.child_ages.length !== room.children) throw new Error('child ages');
       const label = (code: string, meaning?: string | null) => meaning && meaning !== code ? `${code} (${meaning})` : code;
