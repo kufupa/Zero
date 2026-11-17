@@ -133,3 +133,9 @@ export async function skillRead(input: unknown, context: ToolContext): Promise<T
 }
 
 export const tools = [{ ...skillReadDefinition, run: skillRead }];
+
+/** Bind trusted, session-specific configuration without extending the runtime's tool context. */
+export function createSkillTools(config: SkillConfig) {
+  return [{ ...skillReadDefinition, run: (input: unknown, context: ToolContext) =>
+    skillRead(input, { ...context, skillConfig: config }) }];
+}
