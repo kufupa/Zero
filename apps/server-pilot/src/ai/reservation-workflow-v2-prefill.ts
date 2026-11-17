@@ -2263,6 +2263,11 @@ function authoredSourceNoteClauses(input: { selection: SyncedQuoteSelection }): 
     .filter((line) => line.length > 3 && !/https?:\/\/|www\./i.test(line));
 }
 
+function corroboratedByAuthoredHtml(selection: SyncedQuoteSelection, clause: string): boolean {
+  return selection.authoredHtmlBodyText !== undefined && (selection.authoredHtmlBodyText === null ||
+    maskCardNumbers(currentAuthoredMessageText(selection.authoredHtmlBodyText)).includes(clause));
+}
+
 function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
   const clauses = authoredSourceNoteClauses(input).filter((line) =>
     !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(line) &&
@@ -3953,6 +3958,7 @@ function projectCurrentExtraction(input: {
         const matches = clauses.filter((clause) => clause.includes(raw) && clause.length <= 2000);
         if (matches.length !== 1) continue;
         const text = matches[0]!;
+        if (!corroboratedByAuthoredHtml(input.selection, text)) continue;
         const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message' &&
           claim.sourceRefs.includes(row.ref) && row.text.includes(text)).map((row) => row.ref).slice(0, 20);
         if (!sourceRefs.length || sourceCues.some((cue) => cue.kind === kind && cue.text === text)) continue;
@@ -5709,7 +5715,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
         row.result.reservationObservations.reservationNote.state === 'observed' &&
         typeof row.result.reservationObservations.reservationNote.value === 'string')) : [];
     if (!sourceNotes.length || matches.length !== 1 || !target) {
-      if (singleRequest) for (const clause of sourceNotes) addProjectionIssue(proposal, `${path}/reservationNote`,
+      if (singleRequest) for (const clause of sourceNotes.filter((text) => corroboratedByAuthoredHtml(input.selection, text))) addProjectionIssue(proposal, `${path}/reservationNote`,
         'source_note_for_review', `Source text to review: ${clause.slice(0, 1800)}${clause.length > 1800 ? '…' : ''}`,
         input.evidence.filter((row) => row.relation === 'current_message' && row.text.includes(clause)).map((row) => row.ref));
       addProjectionIssue(proposal, `${path}/reservationNote`, 'saved_note_requires_review',

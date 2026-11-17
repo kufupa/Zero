@@ -404,14 +404,19 @@ function SourceCues({ editor }: { editor: Editor }) {
   if (editor.snapshot.session.sourceChanged || draft.source.sourceHash !== editor.source.sourceHash) {
     return <div className={styles.warning}>The email changed. Review the current email before choosing rooms and rates.</div>;
   }
+  const sourcedCues = cues.flatMap(cue => {
+    const reference = cue.sourceRefs.find(ref => draft.observations.some(row => row.kind === 'source' &&
+      (row.status === 'complete' || row.status === 'partial') &&
+      row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+      row.sourceMessageId === draft.source.messageId && row.sourceRefs.includes(ref)));
+    return reference ? [{ cue, reference }] : [];
+  });
+  if (!sourcedCues.length) return null;
   return <div className={styles.card} role="note">
     <strong>Requests from the email</strong>
     <small className={styles.hint}>Confirm which stays these requests apply to before choosing rooms and rates.</small>
-    {cues.map((cue, index) => {
+    {sourcedCues.map(({ cue, reference }, index) => {
       const label = cue.kind === 'room_description' ? 'Room request' : 'Nightly price request';
-      const reference = cue.sourceRefs.find(ref => draft.observations.some(row => row.kind === 'source' &&
-        row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
-        row.sourceMessageId === draft.source.messageId && row.sourceRefs.includes(ref)));
       return <div key={index} className={styles.facts}>
         <span>{label}:</span>
         <span style={{ whiteSpace: 'pre-wrap' }}>{cue.text}</span>
@@ -419,7 +424,7 @@ function SourceCues({ editor }: { editor: Editor }) {
           aria-label={`View email for ${label}`} onClick={() => editor.onOpenEvidence?.(reference)}>View email</button></div>}
       </div>;
     })}
-    {cues.some(cue => cue.kind === 'nightly_price') && <small className={styles.hint}>
+    {sourcedCues.some(({ cue }) => cue.kind === 'nightly_price') && <small className={styles.hint}>
       Check nightly prices in Infor; the total shown here does not compare each night with this request.
     </small>}
   </div>;
@@ -436,6 +441,7 @@ export function AmendEditor(editor: Editor) {
     change.op === 'set' && change.field === 'requestedMealPlan' && /\blunch\b/i.test(text(change.value)));
   return <div className={styles.stack}>
     {lunchRequested && <p className={styles.warning} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
+    <SourceCues editor={editor} />
     <Section title={targets.length > 1 ? 'Find the bookings' : 'Find the booking'}>
       <p className={styles.hint}>Only the changes listed below are saved, including ones Nava filled in from the email. Everything else stays as it is in Infor.</p>
       {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Written or uncertain stays remain locked; untouched stays can still be corrected and checked. Reconcile before changing target scope.</div>}
@@ -472,7 +478,7 @@ export function AmendEditor(editor: Editor) {
       <div className={styles.row}><button type="button" disabled={editor.view.busy || scopeLocked} onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id })}>Add stay</button>
         <button type="button" disabled={editor.view.busy || !targets.length} onClick={() => void editor.commands.lookup()}>Find in Infor</button></div>
     </Section>
-    <Section title={targets.length > 1 ? 'Changes for every stay' : 'Changes'}><SourceCues editor={editor} /><ChangeList editor={editor} path={sharedPath} label="" /></Section>
+    <Section title={targets.length > 1 ? 'Changes for every stay' : 'Changes'}><ChangeList editor={editor} path={sharedPath} label="" /></Section>
     {targets.map((hint, i) => {
       const hintId = text(hint.id), perIndex = per.findIndex(row => row.hintId === hintId);
       const root = `${perPath}/${perIndex}`; const changes = perIndex < 0 ? [] : rows(effectiveAt(editor.snapshot, `${root}/changes`));
@@ -539,7 +545,6 @@ export function AmendEditor(editor: Editor) {
                 });
               })().catch(() => {})}>I reviewed the current and proposed notes</button>
           </div>}
-          <SourceCues editor={editor} />
           {(targets.length > 1 || changes.length > 0) && <ChangeList editor={editor} path={`${root}/changes`} label={targets.length > 1 ? '' : 'Only this stay'} />}
           <Field label="Room rate" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
           {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, guest, room or rate changes need Reprice in Infor.</div>}

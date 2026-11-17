@@ -441,6 +441,17 @@ async function applyHistoryMove(
     if (!nativeStructureIsSafe(item.state, state)) return { status: 'history_stale' as const, revision, revisionHead, seq };
     const previousV2 = item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
+    if (previousV2?.proposal && restoredV2?.proposal) {
+      // Source cues are host-produced for the current source, not historical staff edits.
+      for (const request of restoredV2.proposal.content.requests) {
+        if (request.kind !== 'amend') continue;
+        const current = previousV2.proposal.content.requests.find((row) => row.id === request.id && row.kind === 'amend');
+        request.body.sourceCues = current?.kind === 'amend' ? current.body.sourceCues ?? [] : [];
+      }
+      const otherIssues = restoredV2.proposal.issues.filter((issue) => issue.kind !== 'source_note_for_review');
+      const sourceIssues = previousV2.proposal.issues.filter((issue) => issue.kind === 'source_note_for_review');
+      restoredV2.proposal.issues = [...otherIssues, ...sourceIssues.slice(0, Math.max(0, 1000 - otherIssues.length))];
+    }
     if (previousV2?.proposal && restoredV2?.proposal && Array.isArray(previousV2.observations)) {
       restoredV2.observations = rebaseReservationV2Observations(previousV2, previousV2.proposal, restoredV2.proposal);
       // The verified profile selection is a native receipt, not an undoable
