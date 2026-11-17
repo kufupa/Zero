@@ -59,14 +59,14 @@ function setup(name: string, prepared = false, additive = false, differentOutput
       calls.push(`review:${requestId}`); const next = structuredClone(before); next.session.seq++; next.session.revision++; return next;
     }),
     prepare: vi.fn(async ({ snapshot: before, requestId }: { snapshot: ReservationPaneSnapshot; requestId: string }) => {
-      calls.push(`prepare:${requestId}`); const next = structuredClone(before); next.session.seq++;
+      calls.push(`prepare:${requestId}`); const next = structuredClone(before);
       next.session.draft.observations.push({ ref: `price-${requestId}`, criteria: { requestId }, status: 'complete', coverage: { complete: true },
         result: { freshUntil: new Date(Date.now() + 60_000).toISOString(), inputOverrides: {} } } as never);
       next.session.draft.operationResults.push({ workflow: 'quote', requestId, generationId: 'generation', status: 'prepared', observationRefs: [`price-${requestId}`] } as never);
       return next;
     }),
     execute: vi.fn(async ({ snapshot: before, requestId }: { snapshot: ReservationPaneSnapshot; requestId: string }) => {
-      calls.push(`execute:${requestId}`); const next = structuredClone(before); next.session.seq++;
+      calls.push(`execute:${requestId}`); const next = structuredClone(before);
       next.session.draft.operationResults.push({ workflow: 'quote', requestId, generationId: 'generation', status: 'succeeded', observationRefs: [] } as never);
       return next;
     }),
