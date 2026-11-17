@@ -24,6 +24,7 @@ export type WorkflowProps = {
   onOpenArtifact?: (artifactId: string) => void;
   attachmentsChecked: boolean;
   attachmentsAttention: boolean;
+  attachmentCoverageComplete: boolean;
   attachmentsBusy: boolean;
   attachmentMessages: ThreadInput['messages'];
   onAttachmentsCheckedChange: (checked: boolean) => void;
@@ -378,13 +379,14 @@ export function Workflow(props: WorkflowProps) {
     {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{proposal.missing.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
     {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
     {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <PaneSection title="Check attachments">
+      {!props.attachmentCoverageComplete && <PaneMessage tone="error">Nava cannot prepare this request because attachment coverage is incomplete or could not be verified. Handle the request using your usual process.</PaneMessage>}
       <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}Check the attachments in the selected email and each earlier email listed below in Outlook. Include all relevant attachment details in this proposal, then confirm.</p>
       {props.attachmentMessages.length > 0 ? <ul>{props.attachmentMessages.map(message => <li key={message.id}>
         {message.subject || '(No subject)'} · {message.from.name || message.from.email} · <time dateTime={message.received_at}>{message.received_at}</time>
         {message.attachment_status === 'has_unread' ? ' · Attachments not read by Nava' : message.attachment_status !== 'complete' ? ' · Attachment status unknown' : ''}
       </li>)}</ul> : <p>Emails used by Nava are unavailable. Refresh the proposal before confirming.</p>}
       <PaneField control="checkbox" label="I reviewed attachments for every relevant email in this conversation and reflected every material attachment instruction in the current proposal." value={props.attachmentsChecked}
-        disabled={locked || props.attachmentsBusy || Object.keys(props.drafts).length > 0 || props.attachmentMessages.length === 0}
+        disabled={locked || props.attachmentsBusy || !props.attachmentCoverageComplete || Object.keys(props.drafts).length > 0 || props.attachmentMessages.length === 0}
         onChange={props.onAttachmentsCheckedChange} />
     </PaneSection>}
     {proposal.workflow !== 'quote' && <ActionContext proposal={proposal} />}
