@@ -319,6 +319,8 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
       // Older partial source seeds can have a room count without its annotation.
       const legacySourceFallback = request.kind === 'create' && request.sourceRefs.length > 0 &&
         !draft.extraction && before.issues.some((issue) => issue.kind === 'prefill_partial');
+      const legacySourceSections = new Set(legacySourceFallback ? Array.from({ length: 100 }, (_, index) =>
+        `v2_${createHash('sha256').update([request.id, 'section', String(index)].join('\u001f')).digest('hex').slice(0, 24)}`) : []);
       let createdId: string | undefined;
       const changedDateIds = new Set<string>();
       const removeLinked = (kind: 'allocation' | 'quote_group' | 'saved_target', entityId: string) => {
@@ -355,7 +357,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
         }
         case 'add_date_section': {
           if (request.kind !== 'create' || request.body.dateSections.length >= 100) return null;
-          const date = { ...section(), requestedRooms: legacySourceFallback ? null : 0 }; request.body.dateSections.push(date);
+          const date = section(); date.requestedRooms = 0; request.body.dateSections.push(date);
           changedDateIds.add(date.id);
           createdId = date.id; changedRoots.push(`${root}/body/dateSections`); break;
         }
@@ -618,7 +620,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
           const previousIndex = previousRequest?.kind === 'create' ? previousRequest.body.dateSections.findIndex(row => row.id === date.id) : -1;
           const previousPaths = [`${root}/body/dateSections/${previousIndex}/requestedRooms`,
             `${root}/body/dateSections/${encodeURIComponent(date.id)}/requestedRooms`];
-          const sourceCount = legacySourceFallback || before.annotations.some(row => row.basis === 'source' && previousPaths.includes(row.path)) ||
+          const sourceCount = legacySourceSections.has(date.id) || before.annotations.some(row => row.basis === 'source' && previousPaths.includes(row.path)) ||
             before.sourceClaims.some(row => previousPaths.includes(row.path)) || previousPaths.some(path =>
               draft.fieldOverrides[path] && draft.fieldOverrides[path]!.state !== 'inherit');
           // Allocation edits change the working booking, not the cited request.
