@@ -256,7 +256,8 @@ export class ToolRegistry {
     let marked=false;
     const uncertain:ToolResult={ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before any retry.',retryable:false,outcome:'uncertain'}};
     try {
-      const value=await this.deps.native.withSave(property,context.signal,()=>pack.save!(input,{...context,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}}));
+      const request={workflow:input.workflow,booking:input.booking,action:input.action,executionId:input.executionId};
+      const value=await this.deps.native.withSave(property,context.signal,()=>pack.save!(request,{...context,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}}));
       const parsed=resultSchema.safeParse(value);
       if(!parsed.success) return marked ? uncertain : failureObject('INVALID_WRITER_RESULT','Writer returned an invalid result before dispatch.');
       if(!marked && parsed.data.ok) return failureObject('DISPATCH_MARKER_MISSING','Writer did not record dispatch.');

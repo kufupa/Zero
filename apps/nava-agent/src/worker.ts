@@ -46,7 +46,7 @@ export type ApprovedSave = MutationInput & {sessionId:string;proposalId:string;e
 export type SaveQueue = {
   // A claim is an already-authenticated, durably pinned Go, owned by this fenced lease.
   claimApprovedSave(lease:LeaseFence,supportsSave:(workflow:string)=>boolean):Promise<ApprovedSave|null>;
-  completeSave(lease:LeaseFence,job:ApprovedSave,result:ToolResult):Promise<void>;
+  completeSave(lease:LeaseFence,job:ApprovedSave,result:ToolResult):Promise<'completed'|'reconcile'>;
 };
 export type WorkerDeps = {store:SessionStore;runtime:RuntimeFactory;native:NativeAdmission;saveQueue?:SaveQueue};
 
@@ -182,8 +182,8 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       if(save) {
         if(save.sessionId!==sessionId || save.toolUseId!==state.pendingToolUseId || save.mode!==mode || save.propertyCode!==session.property_code) throw new Error('SAVE_BINDING_MISMATCH');
         const outcome:ToolResult=save.completed ?? (save.dispatch==='dispatched' ? {ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before retry.',retryable:false,outcome:'uncertain'}} : save.preflightFailure ?? await registry.save(save,{sessionId,mode,signal:abort.signal,markDispatched:details=>deps.store.markDispatched(lease,save.proposalId,save.executionId,details)}));
-        if(!save.completed) await deps.saveQueue!.completeSave(lease,save,outcome);
-        await runtime.resumeWithToolResult(sessionId,save.toolUseId,outcome);
+        const completion=save.completed ? 'completed' : await deps.saveQueue!.completeSave(lease,save,outcome);
+        if(completion==='completed') await runtime.resumeWithToolResult(sessionId,save.toolUseId,outcome);
       }
       return;
     }
@@ -237,6 +237,7 @@ export function createSaveQueue(store:SessionStore):SaveQueue {
       }
       if(!proposal?.execution?.go) return null;
       const go=goSchema.parse(proposal.execution.go);
+      if(proposal.phase==='uncertain' && !go.completion) return null;
       if(go.dispatch==='pending' && !go.completion && !supportsSave(proposal.workflow)) return null;
       if(go.toolUseId!==session.pending_tool_use_id) throw new Error('SAVE_BINDING_MISMATCH');
       const snapshot=savedSnapshotSchema.safeParse(go.snapshot);
@@ -258,7 +259,22 @@ export function createSaveQueue(store:SessionStore):SaveQueue {
     },
     async completeSave(lease,job,result) {
       const outcome=result.ok ? 'saved' : result.error?.outcome==='uncertain' ? 'uncertain' : 'not_saved';
+      if(outcome==='uncertain') {
+        const dispatched=await sql.begin(async tx=>{
+          const [session]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId} AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR UPDATE`;
+          if(!session) throw new Error('LEASE_LOST');
+          const [proposal]=await tx`SELECT phase,execution FROM nava_agent.proposal WHERE id=${job.proposalId} AND session_id=${lease.sessionId} FOR UPDATE`;
+          if(!proposal || proposal.phase!=='saving' || proposal.execution?.go?.executionId!==job.executionId) throw new Error('EXECUTION_MISMATCH');
+          if(proposal.execution.go.dispatch==='dispatched') return true;
+          await tx`UPDATE nava_agent.proposal SET phase='uncertain',result=${json(result.data)},execution=execution || ${json({unmarked_uncertain:true})}::jsonb,updated_at=now() WHERE id=${job.proposalId}`;
+          await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+lease.sessionId},0))`;
+          await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${lease.sessionId},'save_uncertain',${json({proposal_id:job.proposalId,execution_id:job.executionId,reason:'writer_uncertain_before_marker'})})`;
+          return false;
+        });
+        if(!dispatched) return 'reconcile';
+      }
       await store.finishGo(lease,job.proposalId,job.executionId,{outcome,toolResult:result,proposalResult:result.data});
+      return 'completed';
     },
   };
 }
