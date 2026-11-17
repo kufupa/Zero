@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { sql, uid, json, event } from './db.js';
 import { tools, type ThreadInput } from './schema.js';
@@ -12,11 +13,16 @@ export function runtimeProvider(): RuntimeProvider {
   if (value !== 'bedrock' && value !== 'cma') throw new Error('NAVA_AGENT_RUNTIME_INVALID');
   return value;
 }
+export function cmaServerConfigured():boolean {
+  const url=process.env.ANTHROPIC_BASE_URL;
+  if(!url) return false;
+  try { const parsed=new URL(url);return ['http:','https:'].includes(parsed.protocol) && parsed.hostname!=='anthropic.com' && !parsed.hostname.endsWith('.anthropic.com'); } catch { return false; }
+}
 export const model = runtimeProvider() === 'bedrock' ? 'global.anthropic.claude-haiku-5-5' : 'claude-haiku-5-5';
 export const environmentId = process.env.ANTHROPIC_ENVIRONMENT_ID;
 export const client = new Anthropic({apiKey: process.env.ANTHROPIC_API_KEY ?? 'not-configured'});
 export async function skillSnapshot() {
-  const root=resolve(process.env.NAVA_SKILLS_DIR ?? 'apps/nava-agent/skills');
+  const root=resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url)));
   const entries:Record<string,string>={};
   async function readTree(dir:string, prefix:string) {
     for (const entry of (await readdir(dir,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))) {
@@ -32,7 +38,7 @@ export async function skillSnapshot() {
 }
 export async function authReady() {
   if (runtimeProvider() === 'bedrock') return (process.env.AWS_REGION ?? 'eu-west-1') === 'eu-west-1';
-  if (!process.env.ANTHROPIC_API_KEY || !process.env.ANTHROPIC_ENVIRONMENT_KEY || !environmentId) return false;
+  if (!cmaServerConfigured() || !process.env.ANTHROPIC_API_KEY || !process.env.ANTHROPIC_ENVIRONMENT_KEY || !environmentId) return false;
   try { await skillSnapshot(); return true; } catch { return false; }
 }
 let authCheck: {until:number; ready:boolean}|undefined;
@@ -130,7 +136,7 @@ export async function snapshot(threadId:string) {
   return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposalWire),event_sequence:Number(sequence.n)};
 }
 export function proposalWire(p:Record<string,any>) {
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage:p.stage,result:p.result,error:p.execution?.error ?? null};
+  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage:p.stage,result:p.result,error:p.execution?.error ?? null};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;

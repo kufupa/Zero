@@ -1,24 +1,70 @@
 import { access } from 'node:fs/promises';
 import { posix, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { schemas, tools, type ProposalDraft } from './schema.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
-export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal };
+export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
+export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal; skillConfig?:SkillConfig };
 export type ToolResult = { ok: boolean; data: unknown; error: {code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'} | null };
 export type ToolDefinition = { name:string; description:string; input_schema:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:boolean} };
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>Promise<ToolResult>};
-export type NativeAdmission = {withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:()=>Promise<T>):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>};
+export type NativeAdmission = {withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:()=>Promise<T>, scope?:'quote'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
 
 function result(data:unknown) { return JSON.stringify({ok:true,data,error:null}); }
 function failure(code:string,message:string) { return JSON.stringify({ok:false,data:null,error:{code,message,retryable:false,outcome:'known'}}); }
+const groupedCaptureSchema=z.object({quote_order:z.array(z.string()),quotes:z.record(z.unknown()),searches:z.array(z.unknown()),display_rows:z.array(z.unknown())}).passthrough();
+const captureEnvelopeSchema=z.object({ok:z.boolean(),data:z.unknown()}).passthrough();
+function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{native:unknown;incomplete:boolean} {
+  const latest=new Map<string,{data:z.infer<typeof groupedCaptureSchema>;ok:boolean;input:unknown}>();
+  let legacy:unknown=null,legacyOk=false;
+  for(const value of values) {
+    const entry=z.object({response:z.unknown(),input:z.unknown()}).passthrough().safeParse(value);
+    if(!entry.success) continue;
+    const envelope=captureEnvelopeSchema.safeParse(entry.data.response);
+    if(!envelope.success) continue;
+    const grouped=groupedCaptureSchema.safeParse(envelope.data.data);
+    if(!grouped.success) {legacy=envelope.data.data;legacyOk=envelope.data.ok;continue;}
+    if(grouped.data.quote_order.length!==1) continue;
+    const id=grouped.data.quote_order[0];
+    if(Object.hasOwn(grouped.data.quotes,id)) latest.set(id,{data:grouped.data,ok:envelope.data.ok,input:entry.data.input});
+  }
+  if(!latest.size) return {native:legacy,incomplete:!legacyOk || expected.size>0};
+  const quoteOrder=expected.size ? [...expected.keys()] : [...latest.keys()];
+  const quotes:Record<string,unknown>=Object.create(null), searches:unknown[]=[],displayRows:unknown[]=[];
+  let incomplete=false;
+  for(const id of quoteOrder) {
+    const capture=latest.get(id);
+    if(!capture || (expected.has(id) && !isDeepStrictEqual(capture.input,expected.get(id)))) {incomplete=true;continue;}
+    incomplete ||= !capture.ok;
+    const offset=searches.length;
+    const quote=z.object({groups:z.record(z.unknown())}).passthrough().safeParse(capture.data.quotes[id]);
+    if(!quote.success) {incomplete=true;continue;}
+    const groups:Record<string,unknown>=Object.create(null);
+    for(const [groupId,value] of Object.entries(quote.data.groups)) {
+      const group=z.object({search_index:z.number().int().nonnegative().nullable()}).passthrough().safeParse(value);
+      if(!group.success) {incomplete=true;groups[groupId]=value;continue;}
+      groups[groupId]={...group.data,search_index:group.data.search_index===null?null:group.data.search_index+offset};
+    }
+    quotes[id]={...quote.data,groups};
+    searches.push(...capture.data.searches);
+    for(const value of capture.data.display_rows) {
+      const row=z.object({id:z.string(),native_path:z.string()}).passthrough().safeParse(value);
+      if(!row.success) {incomplete=true;continue;}
+      const path=row.data.native_path.replace(/^\/searches\/(\d+)(?=\/)/,(_match,index:string)=>`/searches/${Number(index)+offset}`);
+      displayRows.push({...row.data,id:`${id}:${row.data.id}`,native_path:path});
+    }
+  }
+  return {native:{quote_order:quoteOrder.filter(id=>Object.hasOwn(quotes,id)),quotes,searches,display_rows:displayRows},incomplete};
+}
 async function baselineDispatch(sessionId:string,name:string,input:unknown,toolEvent:string,emit:RegistryDeps['emit'],fence?:LeaseFence,signal?:AbortSignal) {
   const [session]=await sql`SELECT s.*,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${sessionId} OR s.managed_session_id=${sessionId}`;
   if (!session) return failure('SESSION_NOT_FOUND','Session is not registered.');
@@ -50,13 +96,13 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         const [prior]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='native_quote' AND payload->>'tool_event_id'=${toolEvent}`;
         if(prior) response=JSON.stringify(prior.payload.response);
         else {
-          const nativePath=process.env.NAVA_HMS_QUOTE_MODULE ?? resolve('apps/server-pilot/tooling/hms-cloud/fetch-quote.mjs');
+          const nativePath=process.env.NAVA_HMS_QUOTE_MODULE ?? fileURLToPath(new URL('../../server-pilot/tooling/hms-cloud/fetch-quote.mjs',import.meta.url));
           const {fetchQuote}=await import(nativePath);
           const request={schemaVersion:2,propertyCode:q.property_code,arrivalDate:q.arrival_date,departureDate:q.departure_date,rooms:q.rooms.map(r=>({id:r.id,quantity:r.quantity,adults:r.adults,children:r.children,childAges:r.child_ages})),...(q.search?{search:q.search}:{}),...(q.details?{details:q.details}:{}),...(q.max_options_per_group?{maxOptionsPerGroup:q.max_options_per_group}:{})};
           const native=await fetchQuote({propertyCode:q.property_code,request,signal});
           const complete=['quote','no_match','unavailable'].includes(native.outcome) && native.audit?.status==='complete';
           const envelope=complete ? {ok:true,data:native,error:null} : {ok:false,data:native,error:{code:typeof native.outcome==='string'?native.outcome.toUpperCase():'NATIVE_FAILURE',message:'Native quote incomplete or failed; inspect returned capture.',retryable:native.outcome==='execution_failure',outcome:'known'}};
-          await emit(session.id,'native_quote',{tool_event_id:toolEvent,response:envelope});
+          await emit(session.id,'native_quote',{tool_event_id:toolEvent,input,response:envelope});
           response=JSON.stringify(envelope);
         }
       }
@@ -69,17 +115,22 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${toolEvent},0))`;
         const [existing]=await tx`SELECT id,revision,phase FROM nava_agent.proposal WHERE session_id=${session.id} AND execution->>'publish_event_id'=${toolEvent}`;
         if(existing) return result({proposal_id:existing.id,revision:existing.revision,phase:existing.phase});
-        const [lastCall]=await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='tool_started' AND payload->>'tool'='hms_quote' AND sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0) ORDER BY sequence DESC LIMIT 1`;
-        const [capture]=lastCall ? await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='native_quote' AND payload->>'tool_event_id'=${lastCall.payload.tool_event_id} ORDER BY sequence DESC LIMIT 1` : [];
-        const native=capture?.payload.response.data ?? null;
-        if(draft.native_result!==null) {
-          const [same]=await tx`SELECT ${json(draft.native_result)}::jsonb IS NOT DISTINCT FROM ${json(native)}::jsonb AS equal`;
-          if(!same.equal || !capture || draft.workflow!=='quote') return failure('NATIVE_RESULT_MISMATCH','native_result must equal the actual quote capture for this session and request.');
+        const captures=await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='native_quote' AND sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0) ORDER BY sequence`;
+        const quoteRequests=new Map<string,unknown>();
+        for(const action of draft.actions) {
+          const details=z.object({quote_id:z.string().min(1)}).passthrough().safeParse(action.details);
+          if(action.type==='quote' && details.success) quoteRequests.set(details.data.quote_id,action.details);
         }
-        const incomplete=draft.workflow==='quote' && (!capture || capture.payload.response.ok!==true);
-        const current={...draft,native_result:draft.workflow==='quote'?native:null,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})};
+        const merged=mergeQuoteCaptures(captures.map(capture=>capture.payload),quoteRequests);
+        const native=draft.workflow==='quote'?merged.native:null;
+        if(draft.native_result!==null) {
+          const [same]=await tx`SELECT ${json(draft.native_result)}::jsonb IS NOT DISTINCT FROM ${json(native)}::jsonb OR EXISTS (SELECT 1 FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='native_quote' AND sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0) AND payload->'response'->'data' IS NOT DISTINCT FROM ${json(draft.native_result)}::jsonb) AS equal`;
+          if(!same.equal || draft.workflow!=='quote') return failure('NATIVE_RESULT_MISMATCH','native_result must equal an actual quote capture for this session and request.');
+        }
+        const incomplete=draft.workflow==='quote' && merged.incomplete;
+        const current={...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})};
         const id=uid('proposal');
-        await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,native_quote_event_id:capture?.payload.tool_event_id ?? null})})`;
+        await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,native_quote_event_ids:captures.map(capture=>capture.payload.tool_event_id)})})`;
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
         await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'proposal',${json({proposal_id:id,workflow:draft.workflow,revision:1,fields:{bookings:current.bookings,actions:current.actions}})})`;
         return result({proposal_id:id,revision:1,phase:'ready'});
@@ -103,7 +154,12 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
 const prepareInput=z.object({workflow:z.enum(['create','amend','cancel','filing']),booking:z.object({id:z.string(),property_code:z.string().nullable(),reservation_id:z.string().nullable(),current_state:z.record(z.unknown()).nullable(),fields:z.record(z.unknown())}).strict(),action:z.object({id:z.string(),type:z.string(),booking_ids:z.array(z.string()),details:z.unknown()}).strict()}).strict();
 const saveInput=z.object({proposal_id:z.string().min(1),expected_revision:z.number().int().positive()}).strict();
 const definitionSchema=z.object({name:z.string().regex(/^[a-z][a-z0-9_]*$/),description:z.string(),input_schema:z.object({type:z.literal('object'),properties:z.record(z.unknown()),required:z.array(z.string()).optional(),additionalProperties:z.boolean().optional()}).passthrough(),run:z.function()});
-const resultSchema=z.object({ok:z.boolean(),data:z.unknown(),error:z.object({code:z.string(),message:z.string(),retryable:z.boolean(),outcome:z.enum(['known','uncertain'])}).strict().nullable()}).strict();
+const resultSchema=z.object({ok:z.boolean(),data:z.unknown(),error:z.object({code:z.string(),message:z.string(),retryable:z.boolean(),outcome:z.enum(['known','uncertain'])}).strict().nullable()}).strict().refine(value=>value.ok ? value.error===null : value.error!==null);
+function parseResult(value:unknown):ToolResult {
+  if(typeof value!=='object' || value===null || !Object.hasOwn(value,'data')) throw new Error('INVALID_TOOL_RESULT');
+  const parsed=resultSchema.parse(value);
+  return {ok:parsed.ok,data:parsed.data,error:parsed.error};
+}
 const failureObject=(code:string,message:string):ToolResult=>({ok:false,data:null,error:{code,message,retryable:false,outcome:'known'}});
 const prepareDefinition:ToolDefinition={name:'hms_prepare',description:'Prepare a native change without saving.',input_schema:{type:'object',properties:{workflow:{type:'string',enum:['create','amend','cancel','filing']},booking:{type:'object'},action:{type:'object'}},required:['workflow','booking','action'],additionalProperties:false}};
 const saveDefinition:ToolDefinition={name:'hms_save',description:'Pause for approval before saving the current proposal.',input_schema:{type:'object',properties:{proposal_id:{type:'string'},expected_revision:{type:'integer',minimum:1}},required:['proposal_id','expected_revision'],additionalProperties:false}};
@@ -111,17 +167,22 @@ const saveDefinition:ToolDefinition={name:'hms_save',description:'Pause for appr
 export class ToolRegistry {
   private readonly packTools=new Map<string,PackTool>();
   private readonly mutations=new Map<string,MutationPack>();
+  private pinSkills?: (root:string)=>Promise<SkillConfig['pin']>;
   constructor(private readonly deps:RegistryDeps) {}
 
-  registerPack(name:string,pack:{tools?:unknown;prepare?:unknown;save?:unknown}) {
+  registerPack(name:string,pack:{tools?:unknown;prepare?:unknown;save?:unknown;pinSkills?:unknown}) {
+    if(name==='skills' && typeof pack.pinSkills==='function') {
+      const pin=pack.pinSkills;
+      this.pinSkills=async root=>z.object({version:z.string().min(1),files:z.record(z.string())}).strict().parse(await pin(root));
+    }
     if(pack.tools!==undefined) {
       if(!Array.isArray(pack.tools)) throw new Error(`INVALID_TOOL_PACK:${name}`);
       for(const item of pack.tools) {
         const parsed=definitionSchema.parse(item);
-        if(!parsed.name.startsWith('hms_') && !['skill_read','outlook_reply_draft'].includes(parsed.name)) throw new Error(`INVALID_PACK_TOOL:${parsed.name}`);
+        if(!parsed.name.startsWith('hms_') && !['skill_read','outlook_reply_draft','outlook_reply_command'].includes(parsed.name)) throw new Error(`INVALID_PACK_TOOL:${parsed.name}`);
         if(['hms_prepare','hms_save'].includes(parsed.name) || this.packTools.has(parsed.name)) throw new Error(`DUPLICATE_TOOL:${parsed.name}`);
         // The structural boundary checks declaration and callable handler; packs own their own input parsing.
-        const tool:PackTool={name:parsed.name,description:parsed.description,input_schema:parsed.input_schema,run:async(input,context)=>parsed.run(input,context)};
+        const tool:PackTool={name:parsed.name,description:parsed.description,input_schema:parsed.input_schema,run:async(input,context)=>parseResult(await parsed.run(input,context))};
         this.packTools.set(tool.name,tool);
       }
     }
@@ -131,6 +192,13 @@ export class ToolRegistry {
       const save=pack.save;
       this.mutations.set(name,{prepare:async(input,context)=>prepare(input,context),...(typeof save==='function'?{save:async(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>save(input,context)}:{})});
     }
+  }
+
+  hasSkillPack():boolean { return !!this.pinSkills; }
+  supportsSave(workflow:string):boolean { return typeof this.mutations.get(workflow)?.save==='function'; }
+
+  async pinSkillTree(root:string):Promise<SkillConfig|null> {
+    return this.pinSkills ? {root,pin:await this.pinSkills(root)} : null;
   }
 
   definitions():ToolDefinition[] {
@@ -164,9 +232,9 @@ export class ToolRegistry {
       if(name.startsWith('hms_')) {
         const request=z.object({property_code:z.string().min(1)}).passthrough().safeParse(input);
         if(!request.success || (context.propertyCode && context.propertyCode!==request.data.property_code)) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
-        response=await this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,()=>pack.run(input,context)));
+        response=await this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,()=>pack.run(input,context),name==='hms_quote'?'quote':undefined));
       } else response=await this.nativeResult(()=>pack.run(input,context));
-      if(name==='hms_quote') await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,response});
+      if(name==='hms_quote') await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,input,response});
       await this.deps.emit(context.sessionId,'tool_result',{tool:name,tool_event_id:context.toolUseId,result:response});
       return {kind:'result',result:response};
     }
@@ -196,18 +264,18 @@ export class ToolRegistry {
         const readback=z.object({confirmation:z.string().nullable(),reservation_id:z.string().nullable(),readback:z.unknown()}).strict().safeParse(parsed.data.data);
         if(!readback.success || readback.data.readback==null) return uncertain;
       }
-      return parsed.data;
+      return {ok:parsed.data.ok,data:parsed.data.data,error:parsed.data.error};
     } catch {
       return marked ? uncertain : failureObject('SAVE_FAILED','Save stopped before dispatch.');
     }
   }
 
   private async nativeResult(work:()=>Promise<ToolResult>):Promise<ToolResult> {
-    try { const parsed=resultSchema.safeParse(await work()); return parsed.success ? parsed.data : failureObject('INVALID_TOOL_RESULT','Tool returned an invalid result.'); } catch(error) { if(error instanceof Error && error.message==='LEASE_LOST') throw error; return failureObject('TOOL_FAILED','Tool execution failed or was interrupted.'); }
+    try { return parseResult(await work()); } catch(error) { if(error instanceof Error && error.message==='LEASE_LOST') throw error; if(error instanceof Error && ['HMS_CREDENTIAL_SESSION_CAP_REQUIRED','NATIVE_SHARED_LEASE_DATABASE_REQUIRED'].includes(error.message)) return failureObject(error.message,'Native shared admission is not configured.'); return failureObject('TOOL_FAILED','Tool execution failed or was interrupted.'); }
   }
 }
 
-export async function discoverToolPacks(registry:ToolRegistry,root=resolve('apps/nava-agent/tools')):Promise<void> {
+export async function discoverToolPacks(registry:ToolRegistry,root=fileURLToPath(new URL('../tools/',import.meta.url))):Promise<void> {
   for(const name of ['quote','create','amend','cancel','filing','triage','skills','outlook-reply']) {
     let path:string|undefined;
     for(const extension of ['js','ts']) {
