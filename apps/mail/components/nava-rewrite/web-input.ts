@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import type { IGetThreadResponse } from '@zero/server/driver/types';
 import { htmlToPlainText } from '../../../server-pilot/src/mail/inbound-reaction-parser';
 import { threadInputSchema, type ThreadInput } from './wire';
 
@@ -41,7 +40,7 @@ function address(value: WebAddress): { name: string | null; email: string } {
 export function webThreadInput({
   thread, requestedThreadId, selectedMessageId, connectionId, isDemo,
 }: {
-  thread: IGetThreadResponse;
+  thread: unknown;
   requestedThreadId: string;
   selectedMessageId: string;
   connectionId: string;
