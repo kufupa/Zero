@@ -39,7 +39,8 @@ type NativeIdentity = {
 type NativeRecord = { nativePreimage: NativeIdentity | null; details: { fields: unknown[] } };
 type NativeModules = {
   withCloudReadSession: <T>(fn: (page: unknown) => Promise<T>, options: Record<string, unknown>) => Promise<T>;
-  readConfirmationFromStay360: (page: unknown, confirmation: string, options?: Record<string, string>) => Promise<unknown>;
+  readConfirmationFromStay360: (page: unknown, confirmation: string,
+    options: { arrivalDate?: string; signal?: AbortSignal }) => Promise<unknown>;
   readRecordViewFromStay360: (page: unknown, confirmation: string, options: Record<string, unknown>) => Promise<NativeRecord>;
   readDocumentsFromStay360: (page: unknown, confirmation: string) => Promise<{
     documents: unknown[];
@@ -147,7 +148,8 @@ function matchesRequestedStay(request: TargetRequest, native: NativeIdentity, mo
       (request.reservationId && request.reservationId !== native.confirmation &&
         request.reservationId !== native.reservationId && request.reservationId !== native.reservationStayId)) return false;
   const name = (value: string) => value.normalize('NFC').trim().replace(/\s+/g, ' ').toLowerCase();
-  for (const [hint, actual] of [[request.fields.first_name, native.firstName], [request.fields.last_name, native.lastName]]) {
+  for (const [hint, actual] of [[request.fields.guest_first_name, native.firstName], [request.fields.first_name, native.firstName],
+    [request.fields.guest_last_name, native.lastName], [request.fields.last_name, native.lastName]]) {
     if (hint != null && (typeof hint !== 'string' || typeof actual !== 'string' || name(hint) !== name(actual))) return false;
   }
   if ((request.fields.arrival_date != null && request.fields.arrival_date !== native.arrival) ||
@@ -160,7 +162,9 @@ async function observeTarget(native: NativeModules, request: TargetRequest, cont
   transportId: string) {
   const approved = { current: null as NativeIdentity | null };
   return native.withCloudReadSession(async page => {
-    await native.readConfirmationFromStay360(page, request.confirmation);
+    const arrivalDate = request.fields.arrival_date;
+    await native.readConfirmationFromStay360(page, request.confirmation,
+      { arrivalDate: typeof arrivalDate === 'string' ? arrivalDate : undefined, signal: context.signal });
     context.signal?.throwIfAborted();
     const record = await native.readRecordViewFromStay360(page, request.confirmation,
       { nativePropertyCode: request.propertyCode, nativeIdentityOnly: true });
