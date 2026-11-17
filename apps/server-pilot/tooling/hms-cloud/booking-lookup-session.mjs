@@ -789,6 +789,7 @@ export async function runBookingLookupSessionCli(args = process.argv.slice(2)) {
     process.stdout.write(usage);
     return;
   }
+  if (process.env.NAVA_CREATE_PREPARE_ONLY === '1') throw new Error('CLI_PREPARE_REQUIRES_STAFF_API');
   const propertyIndex = args.indexOf('--property');
   const propertyCode = propertyIndex >= 0 ? args[propertyIndex + 1] : undefined;
   if (!getPropertyRegistration(propertyCode)?.active) throw new Error('PROPERTY_CODE_REQUIRED');
