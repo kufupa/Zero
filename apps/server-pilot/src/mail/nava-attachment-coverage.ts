@@ -22,6 +22,17 @@ function sourceAddress(value: {name?:string;email:string}) {
   return {name:value.name===localPart?null:value.name??null,email:value.email};
 }
 
+function containsUnresolvedMailHistory(subject:string|null, text:string, html:string|null, transportHeaders:unknown):boolean {
+  if (/(?:^|[\s:\]])(?:fw|fwd)[ \t]*:/i.test((subject??'').normalize('NFKC'))) return true;
+  if (typeof transportHeaders==='string' && /^Resent-(?:From|To|Date|Message-ID):/im.test(transportHeaders)) return true;
+  if (/<blockquote\b|\b(?:divRplyFwdMsg|gmail_quote|yahoo_quoted)\b/i.test(html??'')) return true;
+  const body=text.normalize('NFKC');
+  if (/^[ \t]*(?:begin forwarded message:|-{2,}[ \t]*(?:original|forwarded) message\b|on [^\r\n]{1,250} wrote:[ \t]*$|>[ \t]*\S)/im.test(body)) return true;
+  const lines=body.split(/\r?\n/);
+  return lines.some((line,i)=>/^[ \t]*from[ \t]*:/i.test(line)
+    && lines.slice(i+1,i+7).some(next=>/^[ \t]*(?:sent|date)[ \t]*:/i.test(next)));
+}
+
 const lineageId=z.string().min(1).max(512).refine(id=>id===id.trim() && !/[\x00-\x1f\x7f]/.test(id));
 const semanticVersion=z.union([z.number(),z.string().regex(/^[1-9]\d*$/)]).refine(value=>Number.isSafeInteger(Number(value)) && Number(value)>0);
 const noFileInventory=z.object({
@@ -86,6 +97,8 @@ export async function signNavaAttachmentCoverage(raw: string, mailboxId: string,
       const candidate = imported.get(row.id);
       const provenance = row.sourceProvenance;
       if (!candidate || !row.textBody?.trim() || !inventoried(provenance)) return null;
+      // The outer MIME inventory cannot vouch for files on an embedded message.
+      if (containsUnresolvedMailHistory(row.subject,row.textBody,row.htmlBody,provenance?.transportHeaders)) return null;
       // Known message links do not establish that all Outlook ancestors synced.
       // Refuse if the host has a causal reference but not its canonical message.
       if ([row.inReplyTo,...(row.references??[])].some(id=>id && !knownIds.has(messageIdKey(id)))) return null;
