@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { schemas, tools, type ProposalDraft } from './schema.js';
+import { normalizeProposalFields } from './proposal-fields.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -128,7 +129,9 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           if(!same.equal || draft.workflow!=='quote') return failure('NATIVE_RESULT_MISMATCH','native_result must equal an actual quote capture for this session and request.');
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
-        const current={...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})};
+        const normalized=normalizeProposalFields(schemas.proposal_publish.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})}));
+        if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
+        const current=normalized.draft;
         const id=uid('proposal');
         await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,native_quote_event_ids:captures.map(capture=>capture.payload.tool_event_id)})})`;
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;

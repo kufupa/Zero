@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
+import { editablePointer, pointerParts } from './proposal-fields.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
   if(x.op!=='remove' && !Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'value required'});
@@ -22,11 +23,8 @@ function quoteIdentities(draft:z.infer<typeof proposalDraft>) {
   });
 }
 function pointer(path:string) {
-  if(!path.startsWith('/') || /~(?![01])/.test(path)) throw new Error('INVALID_PATH');
-  const parts=path.slice(1).split('/').map(p=>p.replace(/~1/g,'/').replace(/~0/g,'~'));
-  if(parts.some(p=>['__proto__','prototype','constructor'].includes(p))) throw new Error('INVALID_PATH');
-  const editable=(parts[0]==='bookings' && /^\d+$/.test(parts[1]??'') && parts[2]==='fields' && parts.length>=4) || (parts[0]==='actions' && /^\d+$/.test(parts[1]??'') && parts[2]==='details' && parts.length>=4) || (parts.length===1 && parts[0]==='reply_draft');
-  if(!editable) throw new Error('INVALID_PATH');
+  const parts = pointerParts(path);
+  if (!parts || !editablePointer(parts)) throw new Error('INVALID_PATH');
   return parts;
 }
 function apply(root:unknown, change:Change) {
