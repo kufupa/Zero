@@ -51,9 +51,11 @@ function fakeReviewDb(options: {
     innerJoin: (...args: unknown[]) => Query;
     where: (...args: unknown[]) => Query;
     orderBy: (...args: unknown[]) => Query;
-    limit: (...args: unknown[]) => Promise<unknown[]>;
+    limit: (...args: unknown[]) => Promise<unknown[]> & { for: (...args: unknown[]) => Promise<unknown[]> };
   };
   const fakeDb = {
+    execute: async () => [],
+    transaction: async <T>(fn: (tx: typeof fakeDb) => Promise<T>): Promise<T> => fn(fakeDb),
     select: () => {
       const query: Query = {
         from(table) {
@@ -69,28 +71,33 @@ function fakeReviewDb(options: {
         orderBy() {
           return query;
         },
-        async limit() {
-          if (query.table === message) {
-            return options.sourceFound === false
-              ? []
-              : [{ threadId: 'thread-1', kind: 'booking', action: null }];
-          }
-          if (query.table === mailExtraction) {
-            return options.latestExtractionId
-              ? [{ id: options.latestExtractionId }]
-              : [{ id: EXTRACTION_ID }];
-          }
-          if (query.table === workItem && options.existingWorkItem !== false) {
-            return [
-              {
-                id: 'work-item-1',
-                status: 'needs_you',
-                state: {},
-                extractionId: EXTRACTION_ID,
-              },
-            ];
-          }
-          return [];
+        limit() {
+          const run = async () => {
+            if (query.table === message) {
+              return options.sourceFound === false
+                ? []
+                : [{ threadId: 'thread-1', kind: 'booking', action: null }];
+            }
+            if (query.table === mailExtraction) {
+              return options.latestExtractionId
+                ? [{ id: options.latestExtractionId }]
+                : [{ id: EXTRACTION_ID }];
+            }
+            if (query.table === workItem && options.existingWorkItem !== false) {
+              return [
+                {
+                  id: 'work-item-1',
+                  status: 'needs_you',
+                  state: {},
+                  extractionId: EXTRACTION_ID,
+                },
+              ];
+            }
+            return [];
+          };
+          const promise = run() as Promise<unknown[]> & { for: () => Promise<unknown[]> };
+          promise.for = () => promise;
+          return promise;
         },
       };
       return query;

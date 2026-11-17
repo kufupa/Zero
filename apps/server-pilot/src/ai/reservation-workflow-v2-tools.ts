@@ -25,6 +25,7 @@ import {
   lockReservationWorkflowV2Source,
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
+  withReservationWorkflowV2Draft,
   type ReservationNativeCheckBatch,
   type ReservationRecoveryScope,
   type ReservationWorkflowV2Context,
@@ -1614,7 +1615,7 @@ async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB[
     observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary };
   const operationResults = [...draft.operationResults.filter((entry) => entry.id !== nextResult.id), nextResult];
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations, operationResults });
-  const state = { ...(item ? item.state as Record<string, unknown> : {}), reservationWorkflowV2: nextDraft };
+  const state = withReservationWorkflowV2Draft(item ? item.state as Record<string, unknown> : {}, nextDraft);
   await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${nextResult.id}`,
@@ -1652,7 +1653,7 @@ async function persistNeverDispatchedCreate(tx: Parameters<Parameters<DB['transa
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
     observations: [...draft.observations, observation],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== prior.id), result] });
-  await tx.update(workItem).set({ state: { ...item.state, reservationWorkflowV2: nextDraft }, updatedAt: new Date() })
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft), updatedAt: new Date() })
     .where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${prior.id}`,
@@ -1737,7 +1738,7 @@ async function authorizeCurrentCreate(tx: Parameters<Parameters<DB['transaction'
     observationRefs: [attempt.ref], updatedAt: new Date().toISOString(), summary: 'Native Create claimed; outcome pending reconciliation' };
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
     observations: [...draft.observations, attempt], operationResults: [...draft.operationResults, result] });
-  await tx.update(workItem).set({ state: { ...item.state, reservationWorkflowV2: nextDraft }, updatedAt: new Date() })
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft), updatedAt: new Date() })
     .where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,

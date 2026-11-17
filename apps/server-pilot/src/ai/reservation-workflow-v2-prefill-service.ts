@@ -167,12 +167,14 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
       .from(attachment).where(and(eq(attachment.messageId, input.source.messageId),
         eq(attachment.isInline, false))).limit(1);
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
+    const { missing, missingCurrent, attachmentEvidenceUnknown: contextAttachmentEvidenceUnknown } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     const azureAdapter = createAzureExtractionAdapter(modelEnv);
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
       attachmentEvidenceUnknown: attachmentEvidenceUnknown(sourceMessage?.sourceProvenance),
+      contextAttachmentEvidenceUnknown,
       hasPersistedNonInlineAttachment: fileAttachmentPresence(fileAttachment != null, sourceMessage?.sourceProvenance) === true,
-      signal: operationSignal,
+      signal: operationSignal, currentAttachmentGaps: missingCurrent.length, contextAttachmentGaps: missing.length,
       adapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'extract',
         modelEnv.EXTRACTION_REASONING_EFFORT, jobFence?.runId),
       synthesisAdapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'synthesis',
@@ -187,7 +189,6 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
         activeClaim = checkpoint.claim;
         return true;
       } });
-    const { missing } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     if (missing.length) {
       generated.status = 'partial';
       generated.errors = [...(generated.errors ?? []).slice(0, 99), { stage: 'lookup', code: 'missing_attachment',
@@ -200,6 +201,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed, jobFence,
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
+        ...(generated.disposition ? { disposition: generated.disposition } : {}),
         proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch (error) {

@@ -2,6 +2,7 @@ import { failedReadFingerprint } from './extraction/retry-binding.js';
 import { randomUUID } from 'node:crypto';
 import { MANUAL_CREATE_KEY, manualCreateMarker, manualCreatePayload } from './manual-create-source.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
+import { attachmentEvidenceUnknown } from '../mail/ingest/attachment-evidence.js';
 import {
   and,
   asc,
@@ -91,9 +92,13 @@ import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-pers
 import { handledRequestKeys, handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 import { confirmedVoucherKey, voucherReviewFiles } from './voucher-pending.js';
 import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
+import { reservationArrivalEvidenceBatch } from './reservation-workflow-v2-evidence.js';
 import {
   reservationWorkflowV2DraftSchema,
+  hasFullCausalAttachmentCoverageProof,
+  reservationWorkflowV2IntakeSchema,
   type ReservationWorkflowV2Draft,
+  type ReservationWorkflowV2Intake,
 } from './reservation-workflow-v2-contract.js';
 import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
 import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
@@ -2748,6 +2753,7 @@ export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 
 // Leaf copies of reservation-workflow-v2-state's key/readers: importing that module would close an import cycle.
 const RESERVATION_WORKFLOW_V2_STATE_KEY = 'reservationWorkflowV2';
+const RESERVATION_WORKFLOW_V2_INTAKE_KEY = 'reservationWorkflowV2Intake';
 
 function hasReservationWorkflowV2Draft(state: Record<string, unknown>): boolean {
   return Object.hasOwn(state, RESERVATION_WORKFLOW_V2_STATE_KEY);
@@ -2757,6 +2763,32 @@ function reservationWorkflowV2DraftOf(state: Record<string, unknown>): Reservati
   const parsed = reservationWorkflowV2DraftSchema.safeParse(
     hydrateStoredReservationWorkflowV2(state[RESERVATION_WORKFLOW_V2_STATE_KEY]));
   return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The sibling intake record's no-action claim, when it still binds the parsed draft. Every failure
+ * returns null and keeps the row visible: an unparseable sidecar, a missing recorded evidence hash
+ * (the live reader tolerates its absence; hiding a row never does), a raw model declaration that
+ * never became the adjudicated decision, any decision other than host-adjudicated `no_action`, a
+ * generation or stored source hash that moved on, a draft without the evidence baseline the record
+ * was adjudicated against, or a draft that is not a complete, issue-free extraction — pending,
+ * partial or failed extraction and surviving requests, operations, issues or errors can still hide
+ * an unseen ask, so they are never read as affirmed no-action.
+ */
+function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationWorkflowV2Draft): ReservationWorkflowV2Intake | null {
+  const intake = reservationWorkflowV2IntakeSchema.safeParse(state[RESERVATION_WORKFLOW_V2_INTAKE_KEY]);
+  if (!intake.success || intake.data.evidenceHash === undefined ||
+      intake.data.evidenceHash !== draft.prefill?.evidenceHash) return null;
+  const { decision, generationId, sourceHash } = intake.data.disposition;
+  if (decision !== 'no_action' || generationId !== draft.generationId ||
+      sourceHash !== draft.source.sourceHash) return null;
+  if (draft.status !== 'ready' || !draft.extraction ||
+      draft.extractionGenerationId !== draft.generationId ||
+      draft.extraction.issues?.length ||
+      draft.proposal.issues?.length ||
+      draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0 ||
+      draft.errors.length > 0 || !hasFullCausalAttachmentCoverageProof(draft)) return null;
+  return intake.data;
 }
 
 /** The staff-queue kind of a V2 request kind; `services` and `other` asks stay review-needed. */
@@ -2774,10 +2806,10 @@ const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
  * empty or unreadable drafts stay visible as `other_actionable` with `reviewOnly: true` and no actions — an
  * unfinished, failed or ambiguous draft can still hide an unseen ask, so it never reads as affirmed no-action and
  * never invents an `other` task. Self-sent pre-stay mail is about an existing booking: a `create` request is never
- * an ask, so it is dropped from the actions; the item still lists because nothing yet records a typed,
- * evidence-backed no-action for it (skipped sources are filtered upstream). When no ask survives — an empty,
- * create-only, pending or failed draft — the row carries `reviewOnly` and no actions: it is for staff review, and
- * `other` must not claim a task no request supports.
+ * an ask, so it is dropped from the actions; unless a still-bound host-adjudicated no-action already hid the row
+ * upstream, it still lists rather than read as resolved. When no ask survives — an empty, create-only, pending or
+ * failed draft — the row carries `reviewOnly` and no actions: it is for staff review, and `other` must not claim a
+ * task no request supports.
  */
 function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[]; reviewOnly: boolean } {
   const kinds = [...new Set((draft?.proposal.content.requests ?? []).map((request) => request.kind))];
@@ -2796,11 +2828,13 @@ function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay
  * policy (`classifyMailSource`) decides whether a message is direct/reviewable or a skipped channel/system notice,
  * rather than trusting model-derived `origin`. Canonical V2 drafts are admitted on their own door and are never
  * hidden by model origin. Only quote, booking, amendment, cancellation and voucher_pop items are included, plus
- * self-prestay mail whose stored read left a separate ask grounded or could not prove none: an unread, stale or
- * unverified pre-stay read stays visible for review, only its own adjudicated no-ask verdict is dropped. Spam,
- * trashed and deleted threads are left out. Queued and In HMS come from the item's latest run on the HMS lane only
- * (KTD14), so a follow-up or extraction run never moves the chip. Otherwise a review item shows Review, and anything
- * else needs her. Rows sort by chip in NEEDS_YOU_CHIPS order, then the oldest mail first.
+ * grounded separate pre-stay requests. A self-sent pre-stay row whose separate-ask evidence is missing, failed or
+ * ungrounded stays listed as `reviewOnly`: an unknown ask is never read as no-action. The one door that hides a V2
+ * row is a host-adjudicated no-action intake record still bound to the canonical draft's generation, the message's
+ * live source hash and the live arrival-evidence hash; every missing, stale or uncertain piece keeps the row listed.
+ * Spam, trashed and deleted threads are left out. Queued and In HMS come from the item's latest run on the HMS lane
+ * only (KTD14), so a follow-up or extraction run never moves the chip. Otherwise a review item shows Review, and
+ * anything else needs her. Rows sort by chip in NEEDS_YOU_CHIPS order, then the oldest mail first.
  */
 export async function listWorkItems(
   db: DB,
@@ -2888,6 +2922,11 @@ export async function listWorkItems(
     // Probed per candidate page so the lookup stays proportional to the page, not mailbox history.
     const canonicalV2BySource = new Map<string, { id: string; updatedAt: Date }>();
     const fileAttachmentMessageIds = new Set<string>();
+    // Rows whose host-adjudicated no-action survived every binding check below. Only a draft-bearing
+    // item's own row can land here, and only after live source/evidence hashes re-verify — the same
+    // full inputs the reservationWorkflowV2 live reader uses (message row, causal thread, files,
+    // optional-missing provenance), read inside this same repeatable-read transaction.
+    const boundNoAction = new Set<string>();
     const fetchPageWithDrafts = async (cursor: NeedsYouCursor | null, size: number) => {
       const rows = await fetchPage(cursor, size);
       const sourceIds = [...new Set(rows.map((row) => row.sourceMessageId).filter((id): id is string => id !== null))];
@@ -2915,6 +2954,44 @@ export async function listWorkItems(
         if (!current || draft.updatedAt.getTime() > current.updatedAt.getTime()
             || (draft.updatedAt.getTime() === current.updatedAt.getTime() && draft.id > current.id)) {
           canonicalV2BySource.set(draft.sourceMessageId, { id: draft.id, updatedAt: draft.updatedAt });
+        }
+      }
+      const candidates: { row: (typeof rows)[number]; draft: ReservationWorkflowV2Draft; intake: ReservationWorkflowV2Intake }[] = [];
+      for (const row of rows) {
+        const state = row.state as Record<string, unknown> | null;
+        if (!row.sourceMessageId || !state) continue;
+        const draft = reservationWorkflowV2DraftOf(state);
+        if (!draft || draft.workItemId !== row.id ||
+            draft.source.messageId !== row.sourceMessageId || draft.source.threadId !== row.threadId) continue;
+        const intake = boundNoActionIntake(state, draft);
+        if (intake) candidates.push({ row, draft, intake });
+      }
+      if (candidates.length === 0) return rows;
+      const candidateIds = [...new Set(candidates.map(({ row }) => row.sourceMessageId!))];
+      const liveRows = await tx.select({ id: message.id, subject: message.subject,
+          textBody: message.textBody, htmlBody: message.htmlBody, direction: message.direction,
+          historyOnly: message.historyOnly, sourceProvenance: message.sourceProvenance,
+          arrivedAt: MESSAGE_ARRIVED_AT,
+          threadHistoryOnly: mailThread.historyOnly, threadTrashedAt: mailThread.trashedAt,
+          threadSpamAt: mailThread.spamAt })
+        .from(message)
+        .innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, message.transportId)))
+        .where(and(inArray(message.id, candidateIds), eq(message.transportId, input.transportId)));
+      const liveById = new Map(liveRows.map((row) => [row.id, row]));
+      const evidence = await reservationArrivalEvidenceBatch(tx, candidateIds);
+      for (const { row, draft, intake } of candidates) {
+        const live = row.sourceMessageId ? liveById.get(row.sourceMessageId) : undefined;
+        const liveEvidence = row.sourceMessageId ? evidence.get(row.sourceMessageId) : undefined;
+        if (live && live.direction === 'inbound' && live.historyOnly === false &&
+            live.threadHistoryOnly === false && live.threadTrashedAt === null && live.threadSpamAt === null &&
+            live.sourceProvenance?.attention == null &&
+            !attachmentEvidenceUnknown(live.sourceProvenance) &&
+            liveEvidence?.attachmentEvidenceUnknown === false &&
+            !(liveEvidence?.missing.length) &&
+            live.arrivedAt instanceof Date && live.arrivedAt.toISOString() === draft.source.arrivedAt &&
+            staffQuoteSourceHash(live) === draft.source.sourceHash &&
+            liveEvidence?.hash === intake.evidenceHash) {
+          boundNoAction.add(row.id);
         }
       }
       return rows;
@@ -2952,6 +3029,12 @@ export async function listWorkItems(
         const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId)?.id : undefined;
         if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
         if (v2) {
+          // A host-adjudicated no-action hides the row only while it is still bound: to the canonical
+          // draft's generation and stored source hash, to the message's live source hash and to the
+          // live arrival-evidence hash. Everything else — missing sidecar or evidence, stale source
+          // or evidence, incomplete or unparseable extraction, requests, operations, issues, errors,
+          // or an uncertain or actionable decision — stays listed for staff review.
+          if (boundNoAction.has(row.id)) return null;
           // The same deterministic source door the ensure/prefill paths keep: a known channel/system source never
           // queues (self-sent pre-stay is handled inside the admission — it is an automated notice by nature yet
           // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no

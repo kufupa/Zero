@@ -79,6 +79,8 @@ export type SyncedQuoteSelection = {
   /** Source-cutoff-only documents from causal prior messages; excludes later sibling confirmations. */
   threadAttachments?: SyncedQuoteAttachment[];
   attachments: SyncedQuoteAttachment[];
+  /** All persisted non-inline attachment IDs across the selected message and admitted causal prior messages. */
+  persistedNonInlineAttachmentIds?: string[];
   /** Stable DB ids of the selected message and its thread. Not part of the source hash. */
   messageId?: string;
   threadId?: string;
@@ -844,6 +846,9 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     ...(threadMessages ? { threadMessages } : {}),
     attachments: input.sourceCutoffOnly ? attachParentMessageIds(selectedAttachments, selectedRows) : selectedAttachments,
     ...(input.sourceCutoffOnly ? { threadAttachments: attachParentMessageIds(priorAttachments, priorAttachmentRows) } : {}),
+    persistedNonInlineAttachmentIds: [...selectedRows, ...priorAttachmentRows]
+      .filter((item) => item.isInline !== true)
+      .map((item) => item.id),
     messageId: row.id,
     threadId: row.threadId,
     fromAddress: row.fromAddress,

@@ -16,7 +16,7 @@ import { hmsDispatchTargetKey } from './hms-dispatch-target.js';
 import { hmsLabtestIntentTarget, type HmsLabtestIntent } from './hms-labtest-dispatch.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
 import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf,
-  RESERVATION_WORKFLOW_V2_STATE_KEY } from './reservation-workflow-v2-state.js';
+  RESERVATION_WORKFLOW_V2_STATE_KEY, withReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 import type { CreateFenceTransaction } from './pane-create-dispatch-fence.js';
 import { paneStayCloudTargetLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -209,8 +209,7 @@ export async function recordRecoveredAmend(tx: CreateFenceTransaction, intent: H
     ...prior, status: 'succeeded' as const, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary,
   }];
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation], operationResults });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft },
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
     updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
   await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${recovery.operationId}`,

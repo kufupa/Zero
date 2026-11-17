@@ -47,7 +47,7 @@ import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneS
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
 import { lockReservationWorkflowV2Source, RESERVATION_WORKFLOW_V2_STATE_KEY,
-  reservationWorkflowV2DraftOf } from './reservation-workflow-v2-state.js';
+  reservationWorkflowV2DraftOf, withReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 
 const cloudPreviewSource = z.object({ messageId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(200), sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
@@ -1236,7 +1236,7 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
       ...prior, status: 'succeeded' as const, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary,
     }];
     const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations, operationResults });
-    const state = { ...current.state, reservationWorkflowV2: nextDraft };
+    const state = withReservationWorkflowV2Draft(current.state, nextDraft);
     await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
     await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
       fieldPath: `reservationWorkflowV2:operationResults:${operationId}`,
