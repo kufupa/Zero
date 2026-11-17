@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { schemas } from './schema.js';
+import { proposalDraft, type ProposalDraft } from '../../src/schema.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; propertyCode?: string | null; credentialLease?: unknown; staffStage?: { jobId: string; workflow: string } };
 export type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
@@ -88,6 +89,29 @@ const stageInput = z.object({
   workflow: z.literal('triage'), booking: z.object({ id: z.string().min(1) }).passthrough().nullable(),
   action: z.object({ type: z.literal('triage'), details: z.object({ lookup: stageLookup }).passthrough() }).passthrough(),
 }).strict();
+
+export function withTriageLookupFields(draft: ProposalDraft): ProposalDraft {
+  if (draft.workflow !== 'triage' || draft.actions.length !== 1 || draft.actions[0].type !== 'triage') return draft;
+  const action = draft.actions[0];
+  if (action.details !== null && !obj(action.details)) return draft;
+  const details = obj(action.details) ? { ...action.details } : {};
+  if (details.lookup !== undefined && details.lookup !== null && !obj(details.lookup)) return draft;
+  const lookup: Record<string, unknown> = obj(details.lookup) ? { ...details.lookup } : {};
+  const definitions = [
+    ['reservation_id', 'Confirmation number', 'text'], ['guest_name', 'Guest surname or name', 'text'],
+    ['arrival_date', 'Arrival date', 'date'], ['departure_date', 'Departure date', 'date'],
+  ] as const;
+  const fieldSpecs = [...draft.field_specs];
+  for (const [key, label, control] of definitions) {
+    if (!Object.hasOwn(lookup, key)) lookup[key] = null;
+    const path = `/actions/0/details/lookup/${key}`;
+    const existing = fieldSpecs.findIndex(field => field.path === path || field.path === path.slice(1));
+    if (existing >= 0) fieldSpecs[existing] = { ...fieldSpecs[existing], editable: true };
+    else fieldSpecs.push({ path, label, control, provenance: 'unknown', editable: true,
+      required: false, error: null, options: [], evidence: [] });
+  }
+  return proposalDraft.parse({ ...draft, actions: [{ ...action, details: { ...details, lookup } }], field_specs: fieldSpecs });
+}
 
 /** Staff job: use only the revision-pinned lookup and the launcher's admitted read lease. */
 export async function stageRead(input: unknown, context: ToolContext): Promise<ToolResult> {
