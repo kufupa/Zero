@@ -196,8 +196,16 @@ function currentNativeResult(proposal: Proposal, drafts: WorkflowProps['drafts']
 function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) {
   const choices = currentNativeResult(proposal, drafts)?.rate_choices;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status === 'unavailable' || !Array.isArray(choices.items)) return [];
-  return choices.items.flatMap(item => item && typeof item === 'object' && !Array.isArray(item) && typeof item.value === 'string' && item.value && typeof item.label === 'string'
-    ? [{ value: item.value, label: item.label, meaning: typeof item.meaning === 'string' ? item.meaning : null }] : []);
+  return choices.items.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.value !== 'string' || !item.value || typeof item.label !== 'string') return [];
+    const meaning = [
+      typeof item.meaning === 'string' ? item.meaning : null,
+      typeof item.room_type === 'string' ? `Room: ${item.room_type}` : null,
+      typeof item.rate_scope === 'string' ? `Rate scope: ${item.rate_scope}` : null,
+      typeof item.availability === 'string' ? `Availability: ${item.availability}` : null,
+    ].filter(Boolean).join(' · ');
+    return [{ value: item.value, label: item.label, meaning: meaning || null }];
+  });
 }
 
 function FieldEvidence({ spec, label }: { spec: FieldSpec; label: string }) {
