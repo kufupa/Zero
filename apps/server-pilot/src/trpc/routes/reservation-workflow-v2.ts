@@ -169,11 +169,32 @@ import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { logReservationWorkflowFailure } from '../reservation-workflow-v2-diagnostics.js';
 
+const EXCLUDED_SOURCE_RECOVERY_ENDPOINTS = new Set([
+  'resolveSource',
+  'get',
+  'ensure',
+  'reconcile',
+  'reconcileServices',
+]);
+
 export const reservationWorkflowV2Procedure = mailboxProcedure.use(async ({ ctx, path, getRawInput, next }) => {
   const startedAt = Date.now();
+  const rawInput = await getRawInput();
+  const endpoint = path.split('.').pop() ?? path;
+  if (!EXCLUDED_SOURCE_RECOVERY_ENDPOINTS.has(endpoint) && rawInput && typeof rawInput === 'object' && 'source' in rawInput) {
+    const src = (rawInput as { source?: unknown }).source;
+    if (src && typeof src === 'object' && typeof (src as { messageId?: unknown }).messageId === 'string' &&
+        typeof (src as { threadId?: unknown }).threadId === 'string') {
+      await assertNotExcludedSource(
+        { db: getDb(), transportId: ctx.activeTransportId },
+        ctx.transportEmail,
+        { messageId: (src as { messageId: string }).messageId, threadId: (src as { threadId: string }).threadId },
+      );
+    }
+  }
   const result = await next();
   try {
-    await logReservationWorkflowFailure({ path, rawInput: await getRawInput(),
+    await logReservationWorkflowFailure({ path, rawInput,
       ...(result.ok ? { result: result.data } : { error: result.error }),
       userId: ctx.sessionUser.id, transportId: ctx.activeTransportId,
       db: getDb,
@@ -568,6 +589,16 @@ export const reservationWorkflowV2Router = router({
     const excluded = (await excludedSourceReason(scoped, ctx.transportEmail, input.source)) !== null;
     const result = excluded
       ? await getReservationWorkflowV2Draft(scoped, input, { allowSourceChanged: true, recoverSourceFields: false })
+          .then(draftResult => ({
+            ...draftResult,
+            preparationViews: 'draft' in draftResult && draftResult.draft
+              ? reservationWorkflowV2PreparationViews(draftResult.draft, scoped.propertyCode).map(view => ({
+                  ...view,
+                  current: false,
+                  issue: 'This source is excluded; recovery view is read-only.',
+                }))
+              : [],
+          }))
       : await withPreparation(getReservationWorkflowV2Draft(scoped, input,
           { allowSourceChanged: true, recoverSourceFields: true }), scoped.propertyCode);
     if (!('draft' in result) || !result.draft || result.status !== 'ok' ||
@@ -653,7 +684,7 @@ export const reservationWorkflowV2Router = router({
           ? { failureClass: ['BEDROCK_TRANSIENT', 'ARTIFACT_TRANSIENT', 'AUDIT_CAPTURE', 'STAFF_QUOTE_ACTIVE',
             'WORKER_SHUTDOWN', 'HMS_OUTAGE', 'UNKNOWN'].includes(run.failureClass) ? run.failureClass : 'UNKNOWN' } : {}) }];
     });
-    const workflowPreparations = preparations.flatMap(saved => {
+    const workflowPreparations = excluded ? [] : preparations.flatMap(saved => {
       const captured = saved.workflowContext;
       if (!captured || saved.operation === 'create') return [];
       return [{ endpoint: captured.endpoint, requestId: captured.input.requestId,
