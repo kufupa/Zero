@@ -63,7 +63,8 @@ describe('Quote review context', () => {
     const root = '/proposal/content/requests/request-1/body', compositionPath = `${root}/quoteComposition`;
     const group = { arrival: '2027-01-01', departure: '2027-01-02', quantity: 1, roomCodes: [], ratePlan: null,
       mealPlan: 'bb', requestedMealPlan: 'bb', occupancy: { scope: 'per_room', adults: 1, childCount: 0, childAges: [] }, priceObservationRefs: [] };
-    const request = { id: 'request-1', kind: 'quote', body: { groups: [1, 2, 3].map(id => ({ ...group, id: `group-${id}` })),
+    const request = { id: 'request-1', kind: 'quote', body: { groups: [1, 2, 3].map(id => ({ ...group, id: `group-${id}`,
+      ...(id === 2 ? { arrival: '2027-01-03', departure: '2027-01-04' } : {}) })),
       parties: {}, client: {}, requestedMoney: [], outputIntent: { artifacts: [] } } };
     const draft: any = { generationId: 'generation', propertyCode: 'HRCEN', source: { messageId: 'message', sourceHash: 'hash' },
       proposal: { content: { requests: [request] }, sourceClaims: [], annotations: [], issues: [] }, fieldOverrides: {},
