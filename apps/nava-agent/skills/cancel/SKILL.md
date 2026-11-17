@@ -5,15 +5,12 @@ description: Use when a current hotel email requests cancelling or releasing an 
 
 # Cancel
 
-Read [common rules](../references/common.md), [scope/fees/native order](references/rules.md), [reply drafts](references/replies.md).
+Read [common rules](../references/common.md), [scope and fees](references/rules.md), and [reply drafts](references/replies.md). For this workflow, the read-only instructions below govern any conflicting prepare or Save instructions in shared references.
 
-1. Identify current cancellation intent + actual saved stay. Withdrawing unaccepted quote ≠ cancelling booking. One-night shortening → amend, not whole-stay cancel.
-2. Search/read exact property/reservation/guest/dates. Resolve room/party scope; linked stays never imply group-wide permission. Zero/ambiguous candidates → specific clarification.
-3. Read current status. Already cancelled → no second write. In-house/completed/no-show/unsupported state → staff review; never force native status.
-4. Preview live reason code + meaning, note, affected stay and native fee. In `waiting_go`, staff see amount and choose supported charge/waive before one Go (R9; 5–10/51 threads mention fees). Unknown fee ≠ zero.
-5. Publish target/scope + preview; `hms_save` waits for one staff Go. Re-stage approved choice, cancel, read fresh. Unexpected/changed fee needs staff review and reconciliation; no second Go in same cancellation flow.
-6. Fresh read target/status/cancellation identifier/actual fee if exposed. Uncertain/partial result → read first; never cancel again blindly. Draft only supported cancellation/charge facts.
+1. Identify the current cancellation request and the affected stay. Withdrawing an unaccepted quote is not a cancellation; shortening a stay is an amendment. Preserve the requested guest, room and dates. Do not infer group-wide authority.
+2. Search and read the saved reservation by property, confirmation, guest and dates as available. Match the source to one current stay. If the target, identity, scope or current status is unclear, publish a specific clarification or staff review; do not assert that a failed search proves no booking exists. An already cancelled or unsupported-status stay needs staff review, not another cancellation.
+3. For an explicit whole-stay request on a uniquely matched Reserved stay, publish one `cancel` booking and action. Set `booking.reservation_id` to the verified confirmation and `action.booking_ids` to that booking's ID. Set `action.details.requested_scope` to `whole_stay`; use `specific_room` or `unspecified` only when supported by the request. Preserve real source evidence. Include editable field specs for `/actions/0/details/requested_scope` and, when known, target hints `/bookings/0/fields/guest_name` and `/bookings/0/fields/arrival_date`, so staff can correct them. Do not invent fields or a confirmation.
+4. Publish the proposal for staff review. Staff edits and starts the native read/preflight on the current revision. Do not call `hms_prepare`, `hms_save` or any cancellation action yourself. Nothing is cancelled by preflight.
+5. Report the fresh native target, status, scope coverage and policy facts as observed. The reader may not establish room/stay scope or a policy. A fee unknown before commit is unknown, never zero or waived. Do not claim a cancellation, fee decision or cancellation reference without an independently verified result. Draft only; never send.
 
-Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `hms_prepare`, `proposal_publish`, `hms_save`, `reply_draft`. Exact [bindings](../references/tools-and-proposal.md). Backend initial cancel handler absent; supported capability required.
-
-Example: cancel Guest A's extra room, book Guest B → cancel one verified room + separate create task. Never cancel associated party.
+Use the registered `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `proposal_publish`, and `reply_draft` tools as available. Exact [proposal bindings](../references/tools-and-proposal.md) apply except where the read-only flow above is more restrictive.
