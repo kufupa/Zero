@@ -151,6 +151,76 @@ function guestChoices(result: NativeResult) {
     returned:shown.length,truncated}};
 }
 
+// Use the native rate shop for the same stay and party; its rows are observations,
+// not a claim that a particular rate is the customer's contract.
+async function scopedRateChoices(request: NativeRequest, lease: Lease, transportId: string) {
+  const unavailable = {status:'unavailable',items:[],coverage:null};
+  const {arrival, departure, adults, childCount, childAges} = request.stay;
+  if (typeof arrival !== 'string' || typeof departure !== 'string' ||
+      !Number.isInteger(adults) || !Number.isInteger(childCount) || !Array.isArray(childAges) ||
+      childAges.length !== childCount || !childAges.every(Number.isInteger)) return unavailable;
+  const parties = object(request.parties) ? request.parties : {};
+  if (parties.arAccountId != null || parties.arAccountName != null) return unavailable;
+  const rateContext: Record<string, {nativeId:string;name:string}> = {};
+  for (const [kind,idKey,nameKey] of [
+    ['bookingAgency','agencyId','agencyName'], ['organization','organizationId','organizationName'],
+  ] as const) {
+    const id = parties[idKey], name = parties[nameKey];
+    if (id == null && name == null) continue;
+    if (typeof id !== 'string' || !/^\d+$/.test(id) || typeof name !== 'string' || !name.trim()) return unavailable;
+    rateContext[kind] = {nativeId:id,name:name.trim()};
+  }
+  const roomType = typeof request.room.roomType === 'string' && request.room.roomType.trim() ? request.room.roomType : undefined;
+  const shopRequest = {schemaVersion:2,propertyCode:request.propertyCode,arrivalDate:arrival,departureDate:departure,
+    rooms:[{id:'create',quantity:1,adults,children:childCount,childAges,
+      ...(roomType ? {required:{roomCodes:[roomType]}} : {})}],
+    ...(Object.keys(rateContext).length ? {rateContext} : {}),
+    search:{includeAlternatives:false},details:'summary',maxOptionsPerGroup:200};
+  try {
+    const base = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
+    const {fetchQuote} = await import(new URL('fetch-quote.mjs', base).href);
+    const quote: unknown = await fetchQuote({request:shopRequest,propertyCode:request.propertyCode,transportId,
+      credentialLease:lease,signal:lease.signal});
+    lease.signal.throwIfAborted();
+    if (!object(quote) || quote.outcome !== 'quote' || !object(quote.audit) || quote.audit.status !== 'complete' ||
+        !Array.isArray(quote.groups) || quote.groups.length !== 1 || !object(quote.groups[0])) return unavailable;
+    const group = quote.groups[0], completeness = group.completeness;
+    if (group.id !== 'create' || !object(completeness) || completeness.search !== 'complete' ||
+        completeness.requiredFacts !== 'complete' || !Array.isArray(group.options) || !Array.isArray(group.applied) ||
+        !group.applied.length || !object(group.resolvedContext)) return unavailable;
+    for (const [kind,idKey] of [['bookingAgency','travelAgencyID'],['organization','organizationID']] as const) {
+      const expected = rateContext[kind]?.nativeId ?? '';
+      const resolved = group.resolvedContext[kind];
+      if (expected && (!object(resolved) || resolved.id !== expected)) return unavailable;
+      if (group.applied.some(row => !object(row) || String(row[idKey] ?? '') !== expected)) return unavailable;
+    }
+    if (group.applied.some(row => !object(row) || row.propertyCodes !== request.propertyCode ||
+        row.adultCount !== adults || row.childCount !== childCount ||
+        JSON.stringify(row.childAges ?? (childCount === 0 ? [] : null)) !== JSON.stringify(childAges))) return unavailable;
+    const choices = new Map<string,{value:string;label:string;meaning:string;room_type:string;rate_scope:string;eligibility:string;availability:string}>();
+    for (const option of group.options) {
+      if (!object(option) || !object(option.rate) || !object(option.room) || option.eligibility !== 'verified' ||
+          typeof option.rate.code !== 'string' || !/^[A-Z0-9_-]{1,100}$/.test(option.rate.code) ||
+          typeof option.rate.label !== 'string' || !option.rate.label.trim() || option.rate.label.length > 200 ||
+          /[\r\n\p{Cc}]/u.test(option.rate.label) || typeof option.room.code !== 'string' ||
+          !/^[A-Z0-9_-]{1,100}$/.test(option.room.code) || (roomType && option.room.code !== roomType) ||
+          !['public','contextual','unknown'].includes(String(option.rateScope)) ||
+          !['available','unavailable','restricted','unknown'].includes(String(option.availability))) continue;
+      const value = option.rate.code, meaning = option.rate.label.trim();
+      const choice = {value,label:value,meaning,room_type:option.room.code,rate_scope:String(option.rateScope),eligibility:option.eligibility,
+        availability:String(option.availability)};
+      choices.set(JSON.stringify(choice),choice);
+    }
+    const all = [...choices.values()], items = all.slice(0,50);
+    const truncated = completeness.optionsTruncated !== false || completeness.matchingRowsUnseen !== false || items.length !== all.length;
+    return {status:'available',items,coverage:{complete:!truncated,possibly_truncated:truncated,
+      returned:items.length,source_options:completeness.sourceOptions,examined_options:completeness.examinedOptions}};
+  } catch (error) {
+    if (lease.signal.aborted) throw error;
+    return unavailable;
+  }
+}
+
 async function loadNativeResult(api: NativeApi, request: NativeRequest, options: Record<string, unknown>): Promise<NativeResult> {
   return nativeResult.parse(await api.createReservation(request, options));
 }
@@ -181,14 +251,20 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (!transportId) return fail('UNSUPPORTED_PROPERTY', 'Native HMS property or transport is unavailable.');
     const cloudTargetKey = api.createCloudTargetKey(expectedGuest, arrival, request.propertyCode);
     if (!cloudTargetKey) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
-    const run = (lease: Lease) => loadNativeResult(api, { ...request, mode: 'prepare' }, {
-      credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey, requireExplicitGuestSelection: true,
-      allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
-    });
-    const result = context.credentialLease ? await run(context.credentialLease) :
+    const run = async (lease: Lease) => {
+      const result = await loadNativeResult(api, { ...request, mode: 'prepare' }, {
+        credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey, requireExplicitGuestSelection: true,
+        allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
+      });
+      const needsRate = result.outcome === 'needs_input' && (!request.room.ratePlan || object(result.ratePlanIssue) ||
+        (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate'))));
+      const rateChoices = needsRate ? await scopedRateChoices(request,lease,transportId) : {status:'unavailable',items:[],coverage:null};
+      return {result,rateChoices};
+    };
+    const {result,rateChoices} = context.credentialLease ? await run(context.credentialLease) :
       await api.withCloudCredentialLease(request.propertyCode, run, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
     const data = bounded({ native: result, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
-      rate_choices:{status:'unavailable',items:[],coverage:null} });
+      rate_choices:rateChoices });
     if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);
   } catch (error) {
