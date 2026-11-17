@@ -966,19 +966,24 @@ export async function createReservation(input, options = {}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.umask(0o077);
-  try {
+  const refuse = issue => {
+    process.stdout.write(`${JSON.stringify({ outcome: 'refused', issue, approvalReady: false })}\n`);
+    process.exitCode = 1;
+  };
+  const run = async () => {
+    if (process.env.NAVA_CREATE_PREPARE_ONLY === '1') return refuse('CLI_PREPARE_REQUIRES_STAFF_API');
     let raw = '';
     for await (const chunk of process.stdin) raw += chunk;
     const input = JSON.parse(raw);
-    if (input?.mode !== 'prepare') {
-      process.stdout.write(`${JSON.stringify({ outcome: 'refused', issue: 'CLI_PREPARE_ONLY', approvalReady: false })}\n`);
-      process.exitCode = 1;
-    } else {
+    if (input?.mode !== 'prepare') return refuse('CLI_PREPARE_ONLY');
     const search = input?.guest?.search;
-    // The standalone CLI can stage a named real guest, but never authorize a real Save.
-    const realPreview = input?.mode === 'prepare' && validCreateGuest(search) && !isLabtestGuest(search);
-    const options = realPreview ? { allowRealGuest: true, expectedGuest: { firstName: search.firstName, lastName: search.lastName } } : {};
-    process.stdout.write(`${JSON.stringify(await createReservation(input, options))}\n`);
-    }
-  } catch { process.stdout.write(`${JSON.stringify({ outcome: 'needs_input', issue: 'invalid_json_or_input' })}\n`); process.exitCode = 1; }
+    const expectedGuest = { firstName: search?.firstName, lastName: search?.lastName };
+    const cloudTargetKey = createCloudTargetKey(expectedGuest, input?.stay?.arrival, input?.propertyCode);
+    if (!cloudTargetKey) return refuse('CLI_PREPARE_TARGET_REQUIRED');
+    process.stdout.write(`${JSON.stringify(await createReservation(input, {
+      allowRealGuest: !isLabtestGuest(expectedGuest), expectedGuest, cloudTargetKey,
+    }))}\n`);
+  };
+  try { await run(); }
+  catch { process.stdout.write(`${JSON.stringify({ outcome: 'needs_input', issue: 'invalid_json_or_input' })}\n`); process.exitCode = 1; }
 }
