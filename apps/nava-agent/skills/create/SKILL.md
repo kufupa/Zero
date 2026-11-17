@@ -15,6 +15,8 @@ Load shared rules with `skill_read({"skill_name":"create","path":"../references/
 6. `hms_save` waits for staff Go on real guest. Multi-room → sequential single-room saves/readbacks, no hard count cap; ≥10 → staff group review first (R8). Uncertain result → read/reconcile, never blind retry.
 7. Verify actual created identifier + intended business fields for each item. Draft confirmation only for verified items; uncertain/partial result remains explicit. Filing follow-up uses separate task.
 
+Staff pilot: clear booking intent with an unresolved native choice → `propose` so staff can edit and Prepare. For an agency “series rate” without a verified code, set `bookings[0].fields.rate_plan:null`; expose `/bookings/0/fields/rate_plan` as required, editable, `provenance:"unknown"`. Put the requested agency and rate wording in evidence/warnings. Staff selects the contract rate, then runs Prepare. Use `staff_review` for unsupported terms the editor cannot resolve.
+
 Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `hms_read_catalogue`, `hms_quote`, `hms_prepare`, `hms_save`, `proposal_publish`, `reply_draft`. Exact [inputs/proposal](../references/tools-and-proposal.md); runtime capabilities govern availability.
 
 ### Exact Create wire example
