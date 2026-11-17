@@ -164,6 +164,26 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
     expect(family.body.quoteFamily?.composition?.kind).toBe('scenarios');
   });
 
+  it('compiles the staff-selected dinner room group from workbench edits', () => {
+    const value = draft();
+    const request = value.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('quote fixture missing');
+    const group = request.body.groups[0]!;
+    group.ratePlan = 'BAR';
+    group.occupancy = { scope: 'per_room', adults: 1, childCount: 0, childAges: [] };
+    request.body.groups.push({ ...structuredClone(group), id: 'group-2' });
+    request.body.requestedMoney = [{ id: 'dinner', amount: '200', currency: 'ZAR', unit: 'per_person_per_night',
+      scope: 'unresolved', targetRefs: [], sourceRefs: [], staffAllowanceType: 'dinner' }];
+    value.fieldOverrides[`${requestRoot}/quoteComposition`] = { state: 'set', value: { kind: 'additive' }, updatedAt: now };
+    value.fieldOverrides[`${requestRoot}/requestedMoney/0/targetRefs`] = { state: 'set', value: ['group-2'], updatedAt: now };
+    value.fieldOverrides[`${requestRoot}/requestedMoney/0/scope`] = { state: 'set', value: 'per_target', updatedAt: now };
+    const compiled = compile(value);
+    expect(compiled.status).toBe('ok');
+    if (compiled.status !== 'ok') throw new Error(compiled.fields.join(', '));
+    expect(compiled.input).toMatchObject({ dinnerAllowanceMinor: 20_000, dinnerAllowanceUnit: 'per_person_per_night',
+      dinnerAllowanceGroupIds: ['group-2'] });
+  });
+
   it('keeps split quote dates on the selected Infor party while allowing typed names and separate options', () => {
     const value = draft();
     const first = value.proposal.content.requests[0]!;

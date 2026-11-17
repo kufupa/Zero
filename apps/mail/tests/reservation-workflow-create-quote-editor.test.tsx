@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteEditor } from '../components/reservation-pane/editors/quote-editor';
 import { CreateEditor } from '../components/reservation-pane/editors/create-editor';
@@ -7,6 +7,31 @@ import { CreateEditor } from '../components/reservation-pane/editors/create-edit
 afterEach(cleanup);
 
 describe('Quote review context', () => {
+  it('reviews the default values when staff add a dinner extra', async () => {
+    const group = { id: 'group-1', arrival: '2027-01-01', departure: '2027-01-02', quantity: 1,
+      roomCodes: [], ratePlan: null, mealPlan: 'bb', requestedMealPlan: 'bb',
+      occupancy: { scope: 'per_room', adults: 1, childCount: 0, childAges: [] }, priceObservationRefs: [] };
+    const request: any = { id: 'request-1', kind: 'quote', body: { groups: [group], parties: {}, client: {},
+      requestedMoney: [], outputIntent: { artifacts: [] } } };
+    const draft: any = { generationId: 'generation', propertyCode: 'HRCEN', source: { messageId: 'message' },
+      proposal: { content: { requests: [request] }, sourceClaims: [], annotations: [], issues: [] }, fieldOverrides: {},
+      fieldReviewRequirements: {}, staffReviews: {}, observations: [], operationResults: [] };
+    const acceptServiceReview = vi.fn().mockResolvedValue(undefined);
+    const editor: any = { source: { messageId: 'message' }, configuration: null, request,
+      snapshot: { session: { draft, seq: 1 }, operationResults: [] }, view: { busy: false, preview: false },
+      commands: { edit: vi.fn(), stageEdit: vi.fn(), setUncommitted: vi.fn(), lookup: vi.fn(),
+        changeRows: vi.fn().mockResolvedValue(undefined), acceptServiceReview } };
+    const { rerender } = render(<QuoteEditor {...editor} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add dinner' })); });
+    request.body.requestedMoney.push({ id: 'extra-1', staffAllowanceType: 'dinner', currency: 'ZAR',
+      unit: 'per_person_per_night', scope: 'overall', targetRefs: [] });
+    editor.snapshot.session.seq = 2;
+    rerender(<QuoteEditor {...editor} />);
+    await waitFor(() => expect(acceptServiceReview).toHaveBeenCalledTimes(5));
+    const base = '/proposal/content/requests/request-1/body/requestedMoney/0';
+    expect(acceptServiceReview.mock.calls.map(([path]) => path)).toEqual(
+      ['staffAllowanceType', 'currency', 'unit', 'scope', 'targetRefs'].map(key => `${base}/${key}`));
+  });
   it('shows the Create room request and warns without truncating a long booker name', () => {
     const request = { id: 'request-1', kind: 'create', body: { shared: { bookerName: 'N'.repeat(51),
       requestedRoomDescription: 'Quiet room' }, dateSections: [], allocations: [] } };
@@ -24,7 +49,7 @@ describe('Quote review context', () => {
     expect(booker.maxLength).toBe(300);
     expect(screen.getByRole('alert').textContent).toContain('at most 50 characters');
   });
-  it('keeps comma-containing names as individual rows and leaves current pricing current', () => {
+  it('keeps current pricing current when review-only fields change', () => {
     const bodyPath = '/proposal/content/requests/request-1/body';
     const group = { id: 'group-1', arrival: '2027-01-01', departure: '2027-01-02', quantity: 1,
       guestNames: ['Smith, Jane'], requestedRoomDescription: 'Quiet room', roomCodes: ['STD'], ratePlan: 'BAR',
@@ -44,32 +69,27 @@ describe('Quote review context', () => {
       commands: { edit, stageEdit: vi.fn(), setUncommitted: vi.fn(), lookup: vi.fn(), changeRows: vi.fn() } };
     const { rerender } = render(<QuoteEditor {...editor} />);
     expect(screen.getByText('Current Infor quote')).toBeDefined();
-    const rosters = screen.getAllByText('Guest roster (review context only)').map(item => item.parentElement!);
-    const groupName = within(rosters[1]!).getByLabelText('Guest 1');
-    fireEvent.change(groupName, { target: { value: 'Smith, Jane A' } });
-    fireEvent.blur(groupName);
-    expect(edit).toHaveBeenCalledWith(`${bodyPath}/groups/0/guestNames`, ['Smith, Jane A']);
+    expect(screen.queryByText(/Guest roster/)).toBeNull();
     draft.fieldOverrides[`${bodyPath}/groups/0/guestNames`] = { state: 'set', value: ['Smith, Jane A'] };
     draft.fieldOverrides[`${bodyPath}/guestNames`] = { state: 'set', value: ['Doe, Sam'] };
     draft.fieldOverrides[`${bodyPath}/groups/0/requestedRoomDescription`] = { state: 'set', value: 'Quiet room' };
     rerender(<QuoteEditor {...editor} />);
     expect(screen.getByText('Current Infor quote')).toBeDefined();
-    expect(screen.getByLabelText('Room Request (review context)')).toBeDefined();
+    expect(screen.getByText('Client asked for: Quiet room')).toBeDefined();
     draft.observations[0].status = 'partial';
     Object.assign(draft.observations[0].result, { sourceHash: 'hash', quoteDiagnostics: [{}], requestedGroups: [{
       id: 'group-1', arrivalDate: group.arrival, departureDate: group.departure, quantity: 1, adults: 1,
       mealPlan: 'bb', childrenAges: [], roomCodes: ['STD'], rateCode: 'BAR' }] });
     rerender(<QuoteEditor {...editor} />);
     expect(screen.getByText('Current Infor availability')).toBeDefined();
-    fireEvent.click(within(rosters[0]!).getByRole('button', { name: '+ Add guest' }));
-    expect(edit).toHaveBeenCalledWith(`${bodyPath}/guestNames`, ['Doe, Sam', '']);
   });
 
   it('lets staff keep related room groups together within separate quote options', () => {
     const root = '/proposal/content/requests/request-1/body', compositionPath = `${root}/quoteComposition`;
     const group = { arrival: '2027-01-01', departure: '2027-01-02', quantity: 1, roomCodes: [], ratePlan: null,
       mealPlan: 'bb', requestedMealPlan: 'bb', occupancy: { scope: 'per_room', adults: 1, childCount: 0, childAges: [] }, priceObservationRefs: [] };
-    const request = { id: 'request-1', kind: 'quote', body: { groups: [1, 2, 3].map(id => ({ ...group, id: `group-${id}` })),
+    const request = { id: 'request-1', kind: 'quote', body: { groups: [1, 2, 3].map(id => ({ ...group, id: `group-${id}`,
+      ...(id === 2 ? { arrival: '2027-01-03', departure: '2027-01-04' } : {}) })),
       parties: {}, client: {}, requestedMoney: [], outputIntent: { artifacts: [] } } };
     const draft: any = { generationId: 'generation', propertyCode: 'HRCEN', source: { messageId: 'message', sourceHash: 'hash' },
       proposal: { content: { requests: [request] }, sourceClaims: [], annotations: [], issues: [] }, fieldOverrides: {},
