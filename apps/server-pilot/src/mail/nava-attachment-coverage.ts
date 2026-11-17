@@ -6,7 +6,6 @@ import { getDb } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
 import { toParsedMessage } from '../trpc/wire-compat.js';
 import { loadConversationMetaForThread } from './conversation-group.js';
-import { fileAttachmentPresence, parseLinkedAttachmentScopes, UNAVAILABLE_ROLE } from './ingest/attachment-evidence.js';
 
 const address = z.object({ name:z.string().nullable(), email:z.string() }).strict();
 const importScope = z.object({
@@ -22,22 +21,21 @@ function sourceAddress(value: {name?:string;email:string}) {
   return {name:value.name===localPart?null:value.name??null,email:value.email};
 }
 
+const lineageId=z.string().min(1).max(512).refine(id=>id===id.trim() && !/[\x00-\x1f\x7f]/.test(id));
+const semanticVersion=z.union([z.number(),z.string().regex(/^[1-9]\d*$/)]).refine(value=>Number.isSafeInteger(Number(value)) && Number(value)>0);
+const noFileInventory=z.object({
+  linkedOptionalMissing:z.array(z.never()),
+  linkedAttachmentScopes:z.array(z.object({
+    sourceId:lineageId,sourceObservationId:lineageId,semanticVersion,enumerated:z.literal(true),
+    missing:z.array(z.never()),persisted:z.array(z.never()),
+  })).min(1),
+});
+
 function inventoried(provenance: Record<string, unknown> | null): boolean {
-  if (!provenance) return false;
-  if (Object.hasOwn(provenance, 'linkedAttachmentScopes')) {
-    const raw=provenance.linkedAttachmentScopes;
-    if (!Array.isArray(raw) || raw.some(scope=>!scope || typeof scope!=='object' || !Array.isArray(scope.persisted) || scope.persisted.length!==0)) return false;
-    const { scopes, malformed } = parseLinkedAttachmentScopes(raw);
-    return Array.isArray(provenance.linkedOptionalMissing) && !provenance.linkedOptionalMissing.length
-      && !malformed && scopes.length>0 && scopes.every(scope=>scope.enumerated && scope.semanticVersion!==null
-      && Array.isArray(scope.missing) && !scope.missing.length && !scope.persisted.length);
-  }
-  const evidence = provenance.evidence;
-  if (typeof evidence !== 'object' || !evidence || !('requiredArtifactRoles' in evidence)) return false;
-  const roles = evidence.requiredArtifactRoles;
-  return typeof provenance.sourceId==='string' && typeof provenance.sourceObservationId==='string'
-    && Array.isArray(roles) && roles.every(role=>typeof role==='string' && role!==UNAVAILABLE_ROLE && !role.startsWith('attachment:'))
-    && Array.isArray(provenance.linkedOptionalMissing ?? provenance.optionalMissing);
+  const parsed=noFileInventory.safeParse(provenance);
+  if (!parsed.success) return false;
+  const scopes=parsed.data.linkedAttachmentScopes;
+  return new Set(scopes.map(scope=>JSON.stringify([scope.sourceId,scope.sourceObservationId]))).size===scopes.length;
 }
 
 export function validCoverageRequest(raw:string, auth:string|null, secret:string): string|null {
@@ -70,7 +68,7 @@ export async function signNavaAttachmentCoverage(raw: string, mailboxId: string,
     for (const row of rows) {
       const candidate = imported.get(row.id);
       const provenance = row.sourceProvenance;
-      if (!candidate || !row.textBody?.trim() || !inventoried(provenance) || fileAttachmentPresence(false,provenance)!==false) return null;
+      if (!candidate || !row.textBody?.trim() || !inventoried(provenance)) return null;
       // Known message links do not establish that all Outlook ancestors synced.
       // Refuse if the host has a causal reference but not its canonical message.
       if ([row.inReplyTo,...(row.references??[])].some(id=>id && !knownIds.has(messageIdKey(id)))) return null;
