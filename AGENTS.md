@@ -1,5 +1,13 @@
 # Zero agent guidance
 
+## Standing facts (owner, 2026-11-17)
+
+- HMS: one login supports 10–12 parallel sessions; shared admission caps reads/unsaved prepares at 8, and Saves are exclusive.
+- London EC2 `i-0a804a8b80e252bf9` runs month replay, typechecks (`/home/orca/bin/box-typecheck.sh`) and heavy runs.
+- Month replay is core and feeds the dashboard.
+- Proof: run the real tool on real emails, stopping before Save; no proof drivers or sealed cases.
+- One coordinator; lanes post to `~/.local/share/zero/orch/events.log`.
+
 ## Start with the task
 
 This file is the single agent entry point. `PRODUCT.md` covers what staff get and the write rules.
@@ -41,7 +49,7 @@ This file is the single agent entry point. `PRODUCT.md` covers what staff get an
 
 ## Checks, review, merge
 
-- **Typecheck:** this VPS freezes under heavy checks. Typecheck only via `bash /home/orca/bin/remote-typecheck.sh <clean worktree> --app <mail|server-pilot>` on the final head. Never run local tsc/tsgo.
+- **Typecheck:** this VPS freezes under heavy checks. Typecheck on the final head via `bash /home/orca/bin/remote-typecheck.sh <clean worktree> --app <mail|server-pilot>` or `/home/orca/bin/box-typecheck.sh` on the London box. Never run local tsc/tsgo.
 - **Local tests:** targeted Vitest or `node --test` only.
   - At most three concurrent runs across harnesses, keeping at least 20% CPU/RAM headroom.
   - Unset `DATABASE_URL`, `VITEST_ALLOW_PILOT_RDS` and `TEST_DATABASE_URL` first.
