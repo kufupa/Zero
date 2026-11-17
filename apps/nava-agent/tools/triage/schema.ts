@@ -13,7 +13,7 @@ export const schemas = {
     items: { type: 'string', enum: ['room_type', 'rate_plan', 'meal_plan', 'source_of_business', 'track', 'guarantee_type', 'organization', 'agency'] } } }, ['property_code', 'kinds']),
   hms_search_parties: object({ property_code: string,
     kind: { type: 'string', enum: ['guest', 'organization', 'agency', 'ar_account'] },
-    field: { type: 'string', enum: ['last_name', 'first_name', 'email', 'phone', 'profile_id', 'name', 'iata', 'external_id'] },
+    field: { type: 'string', enum: ['last_name', 'first_name', 'email', 'phone', 'profile_id', 'name'] },
     query: string,
   }, ['property_code', 'kind', 'field', 'query']),
 };
