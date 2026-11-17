@@ -143,20 +143,20 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (!parsed.success) return fail('INVALID_INPUT', 'Create input does not match the booking and action contract.');
   const built = buildRequest(parsed.data);
   if ('ok' in built) return built;
+  const { request, expectedGuest } = built;
+  const arrival = request.stay.arrival;
+  if (!expectedGuest || typeof arrival !== 'string') return fail('INVALID_CREATE_TARGET', 'Create Prepare requires guest first name, last name, and arrival date.');
   if (!leaseDatabase()) return fail('HMS_SHARED_LEASE_DATABASE_REQUIRED', 'Configure the existing shared HMS admission database.');
   try {
     const api = await nativeApi();
-    const transportId = transport(api, built.request.propertyCode);
+    const transportId = transport(api, request.propertyCode);
     if (!transportId) return fail('UNSUPPORTED_PROPERTY', 'Native HMS property or transport is unavailable.');
-    const result = await api.withCloudCredentialLease(built.request.propertyCode, lease => {
-      const options: Record<string, unknown> = { credentialLease: lease, signal: lease.signal, transportId };
-      if (built.expectedGuest) options.expectedGuest = built.expectedGuest;
-      // Current/future real-guest prepares may stage supported fields; commit
-      // remains independently restricted to Labtest below.
-      if (context.mode === 'live' && built.expectedGuest && typeof built.request.stay.arrival === 'string' &&
-          built.request.stay.arrival >= new Date().toISOString().slice(0, 10)) options.allowRealGuest = true;
-      return loadNativeResult(api, { ...built.request, mode: 'prepare' }, options);
-    }, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
+    const cloudTargetKey = api.createCloudTargetKey(expectedGuest, arrival, request.propertyCode);
+    if (!cloudTargetKey) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
+    const result = await api.withCloudCredentialLease(request.propertyCode, lease => loadNativeResult(api, { ...request, mode: 'prepare' }, {
+      credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey,
+      allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
+    }), { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
     const data = bounded({ native: result, unsupportedFields: built.unknown });
     if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);
