@@ -193,7 +193,10 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return success({ confirmation: target.confirmation, reservation_id: readback.nativeStayId, readback });
     }
     if (markerStarted || result.requestDispatched === true) {
-      return error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain');
+      const uncertain = error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain');
+      if (result.outcome !== 'cancel_penalty_pending' && !result.penaltyText) return uncertain;
+      const notice = typeof result.penaltyText === 'string' && result.penaltyText.length <= 2000 ? result.penaltyText : null;
+      return { ...uncertain, data: { fee: { state: 'review_required', text: notice }, readback: readback ?? null } };
     }
     return nativeFailure(result);
   } catch (cause) {

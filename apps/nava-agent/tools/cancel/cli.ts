@@ -24,7 +24,7 @@ async function main() {
       (command === 'save-labtest' && !journalDir)) throw new Error('USAGE');
   const input: unknown = JSON.parse(await readFile(inputPath, 'utf8'));
   const mode: ToolContext['mode'] = command === 'prepare-live' ? 'live' : 'labtest';
-  const base: ToolContext = { sessionId: `cli-${randomUUID()}`, mode };
+  const base: ToolContext = { sessionId: `cli-${randomUUID()}`, mode, signal: AbortSignal.timeout(85_000) };
   // Operator must configure this process with the actual native admission DB on its existing box.
   if (process.env.NAVA_HMS_SHARED_ADMISSION !== '1') {
     const result = command === 'save-labtest'
@@ -46,7 +46,7 @@ async function main() {
     if (!('executionId' in input) || typeof input.executionId !== 'string' || !journalDir) throw new Error('INVALID_CANCEL_INPUT');
     const executionId = input.executionId;
     return save(input, { ...context, markDispatched: (details) => durableMarker(journalDir, executionId, details) });
-  }, { readOnly: command !== 'save-labtest' });
+  }, { readOnly: command !== 'save-labtest', signal: base.signal });
   process.stdout.write(`${JSON.stringify({ ok: result.ok, error: result.error,
     outcome: result.ok && typeof result.data === 'object' && result.data !== null && 'outcome' in result.data ? result.data.outcome : null })}\n`);
   process.exitCode = result.ok ? 0 : 1;
