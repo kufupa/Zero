@@ -6,15 +6,13 @@ import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
 import { Workflow, workflowPrimaryAction } from './workflow';
-import type { DraftValue } from './workflow';
+import type { DraftValue, GuestCandidate } from './workflow';
 import type { Capabilities, Change, FieldSpec, Json, Proposal, ThreadInput, Workflow as WorkflowName } from './wire';
 
 export type NavaControllerProps = {
   input: ThreadInput | null;
   email: SelectedEmail | null;
   api: NavaApi;
-  // Host may supply these only after verifying endpoint support and staff identity.
-  stageWorkflows?: readonly WorkflowName[];
   reconcileSupported?: boolean;
   onAuthenticationRequired?: () => void | Promise<void>;
 };
@@ -23,13 +21,14 @@ type Draft = { value: DraftValue; version: number; base: { exists: boolean; valu
 type Drafts = Record<string, Record<string, Draft>>;
 type Issue = { kind: 'conflict' | 'error'; message: string };
 type GoLock = 'accepted' | 'uncertain' | 'reconciling';
-type ActiveOperation = { kind: 'stage' | 'reconcile' | 'refresh' | 'attachments'; proposalId: string; signal: AbortSignal };
+type ActiveOperation = { kind: 'stage' | 'quote' | 'reconcile' | 'refresh' | 'attachments'; proposalId: string; signal: AbortSignal };
 type Cache = {
   drafts: Drafts;
   issues: Record<string, Issue>;
   goLocks: Record<string, GoLock>;
   goUncertainAfter: Record<string, number>;
   stagePending: Record<string, number>;
+  quoteAttempts: Record<string, string>;
   attachmentNeedsRecheck: Record<string, boolean>;
   operationStarts: Record<string, { phase: Proposal['phase']; at: number }>;
   selectedId: string | null;
@@ -38,7 +37,7 @@ type Cache = {
 };
 
 function emptyCache(): Cache {
-  return { drafts: {}, issues: {}, goLocks: {}, goUncertainAfter: {}, stagePending: {}, attachmentNeedsRecheck: {}, operationStarts: {}, selectedId: null, nextVersion: 0, inFlightEdit: null };
+  return { drafts: {}, issues: {}, goLocks: {}, goUncertainAfter: {}, stagePending: {}, quoteAttempts: {}, attachmentNeedsRecheck: {}, operationStarts: {}, selectedId: null, nextVersion: 0, inFlightEdit: null };
 }
 
 function pointer(root: unknown, path: string): { exists: boolean; value?: unknown } {
@@ -97,6 +96,32 @@ function supports(capabilities: Capabilities | null, key: 'tools' | 'workflows',
   return Array.isArray(value) && value.some(item => item === name);
 }
 
+function advertised(capabilities: Capabilities | null, workflow: WorkflowName, operation: 'stage' | 'quote'): boolean {
+  return capabilities?.auth_ready === true && supports(capabilities, 'workflows', workflow) &&
+    capabilities.workflow_capabilities?.[workflow]?.[operation] === true;
+}
+
+function needsAttachmentReview(workflow: WorkflowName): boolean {
+  return workflow === 'create' || workflow === 'amend' || workflow === 'cancel' || workflow === 'filing';
+}
+
+function hasQuote(proposal: Proposal, quoteId: string): boolean {
+  return proposal.actions.some(action => action.type === 'quote' && action.details !== null &&
+    typeof action.details === 'object' && !Array.isArray(action.details) && action.details.quote_id === quoteId);
+}
+
+function safeOperationError(error: unknown): string | null {
+  if (!(error instanceof NavaApiError)) return null;
+  switch (error.code) {
+    case 'ATTACHMENTS_UNCONFIRMED': return 'Review the attachments and confirm before running Prepare.';
+    case 'INVALID_GUEST_SELECTION': return 'Select a verified Infor profile with matching names and clear the email lookup.';
+    case 'STALE_REVISION': case 'INVALID_PHASE': case 'NOT_EDITABLE': return 'The proposal changed. Refresh it and review the latest details.';
+    case 'INVALID_INPUT': return 'Check the proposal details and try again.';
+    case 'UNAVAILABLE': return 'This Infor check is currently unavailable.';
+    default: return null;
+  }
+}
+
 function delay(signal: AbortSignal, ms: number): Promise<void> {
   return new Promise(resolve => {
     if (signal.aborted) { resolve(); return; }
@@ -128,7 +153,7 @@ export function NavaController(props: NavaControllerProps) {
 
 type ThreadControllerProps = Omit<NavaControllerProps, 'input' | 'email'> & { input: ThreadInput; email: SelectedEmail; cache: Cache };
 
-function ThreadController({ input, email, api, cache, stageWorkflows = [], reconcileSupported = false, onAuthenticationRequired }: ThreadControllerProps) {
+function ThreadController({ input, email, api, cache, reconcileSupported = false, onAuthenticationRequired }: ThreadControllerProps) {
   const [snapshot, setSnapshot] = useState<BoundThreadSnapshot | null>(null);
   const snapshotRef = useRef<BoundThreadSnapshot | null>(null);
   const inputKey = JSON.stringify(input);
@@ -465,15 +490,84 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  async function openArtifact(artifactId: string) {
+  async function selectGuest(proposal: Proposal, candidate: GuestCandidate) {
+    const signal = controllerRef.current?.signal;
+    const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
+    if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit ||
+        !current || cache.selectedId !== current.id || current.revision !== proposal.revision || current.workflow !== 'create' || current.bookings.length !== 1 ||
+        !['ready', 'waiting_go'].includes(current.phase) || current.stage?.revision !== current.revision ||
+        cache.goLocks[current.id] || cache.issues[current.id] || cache.stagePending[current.id] !== undefined ||
+        Object.keys(cache.drafts[current.id] ?? {}).length) return;
+    const native = current.stage.native_result;
+    const choices = native && typeof native === 'object' && !Array.isArray(native) ? native.guest_candidates : null;
+    const items = choices && typeof choices === 'object' && !Array.isArray(choices) && choices.status !== 'unavailable' && Array.isArray(choices.items) ? choices.items : [];
+    if (!/^\d{1,100}$/.test(candidate.nativeId) || !candidate.firstName.trim() || !candidate.lastName.trim() ||
+        items.filter(item => item && typeof item === 'object' && !Array.isArray(item) &&
+          item.native_id === candidate.nativeId && item.first_name === candidate.firstName && item.last_name === candidate.lastName).length !== 1) return;
+    const changes: Change[] = [];
+    for (const [field, value] of [['guest_profile_id', candidate.nativeId], ['first_name', candidate.firstName], ['last_name', candidate.lastName]] as const) {
+      const path = `/bookings/0/fields/${field}`;
+      if (!current.field_specs.some(spec => spec.path === path && spec.editable)) {
+        setMessage('Guest profile fields are unavailable. Refresh the proposal.'); return;
+      }
+      changes.push({ op: pointer(current, path).exists ? 'replace' : 'add', path, value });
+    }
+    const emailPath = '/bookings/0/fields/guest_email';
+    if (pointer(current, emailPath).exists) {
+      if (!current.field_specs.some(spec => spec.path === emailPath && spec.editable)) {
+        setMessage('The guest email lookup cannot be cleared here. Review this proposal in Infor.'); return;
+      }
+      changes.push({ op: 'remove', path: emailPath });
+    }
+    const editRequest = { proposalId: current.id, signal };
+    cache.inFlightEdit = editRequest;
+    cache.attachmentNeedsRecheck[current.id] = true;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const updated = await api.patchProposal({ proposalId: current.id, expectedRevision: current.revision, changes, signal });
+      if (signal.aborted) return;
+      const matches = updated.revision > current.revision && !updated.staff_attachments_checked && changes.every(change =>
+        change.op === 'remove' ? pointer(updated, change.path).value == null
+          : sameValue(pointer(updated, change.path).value, change.value));
+      applyProposal(updated);
+      if (!matches) cache.issues[current.id] = { kind: 'conflict', message: 'The selected guest profile changed. Review the latest details.' };
+    } catch (error) {
+      if (signal.aborted || expireAuthentication(error, signal)) return;
+      cache.issues[current.id] = { kind: error instanceof NavaApiError && error.kind === 'conflict' ? 'conflict' : 'error',
+        message: safeOperationError(error) ?? 'Could not save the selected guest profile. Refresh and try again.' };
+      try {
+        const threadId = snapshotRef.current?.id;
+        if (threadId) {
+          const latest = await api.getThread(threadId, { signal });
+          if (!signal.aborted) applySnapshot(latest);
+        }
+      } catch (refreshError) { if (!signal.aborted) expireAuthentication(refreshError, signal); }
+    } finally {
+      if (cache.inFlightEdit === editRequest) cache.inFlightEdit = null;
+      if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
+    }
+  }
+
+  async function openArtifact(proposalId: string, revision: number, artifactId: string) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current) return;
+    const current = snapshotRef.current?.proposals.find(item => item.id === proposalId);
+    if (!current || current.revision !== revision || cache.selectedId !== proposalId || Object.keys(cache.drafts[proposalId] ?? {}).length ||
+        current.phase === 'staging' || cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit) return;
+    const stageJobId = current.stage?.revision === revision ? current.stage.job_id : undefined;
+    const stageArtifact = current.stage?.revision === revision ? current.stage.artifacts?.find(item => item.id === artifactId) : undefined;
+    const artifact = stageArtifact ?? current.result?.artifacts.find(item => item.id === artifactId);
+    if (!artifact) return;
     try {
       const response = await api.getArtifact(artifactId, { signal });
       const blob = await response.blob();
       if (signal.aborted) return;
-      const artifact = snapshotRef.current?.proposals.flatMap(item => item.result?.artifacts ?? []).find(item => item.id === artifactId);
-      if (!artifact) return;
+      const latest = snapshotRef.current?.proposals.find(item => item.id === proposalId);
+      if (!latest || latest.revision !== revision || latest.phase === 'staging' || cache.selectedId !== proposalId || Object.keys(cache.drafts[proposalId] ?? {}).length ||
+          cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit ||
+          (stageArtifact ? latest.stage?.revision !== revision || latest.stage.job_id !== stageJobId || !latest.stage.artifacts?.some(item => item.id === artifactId)
+            : !latest.result?.artifacts.some(item => item.id === artifactId))) return;
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -519,16 +613,25 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  async function operation(kind: 'stage' | 'reconcile', proposal: Proposal) {
+  async function operation(kind: 'stage' | 'quote' | 'reconcile', proposal: Proposal, quoteId?: string) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
     if (kind !== 'reconcile' && (cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length)) return;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase) return;
-    if (kind === 'stage' && (!current.staff_attachments_checked || cache.attachmentNeedsRecheck[current.id] || !validSavedChildren(current))) return;
+    if (kind !== 'reconcile' && (cache.issues[current.id] || cache.goLocks[current.id] || !['ready', 'waiting_go'].includes(current.phase))) return;
+    if (kind === 'stage' && needsAttachmentReview(current.workflow) &&
+        (!current.staff_attachments_checked || cache.attachmentNeedsRecheck[current.id] || !validSavedChildren(current))) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
-    if (kind === 'stage' && (!stageWorkflows.includes(proposal.workflow) || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_prepare'))) return;
+    if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
+    if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
+    const attemptKey = kind === 'quote' ? JSON.stringify([proposal.id, proposal.revision, quoteId]) : null;
+    let idempotencyKey = attemptKey ? cache.quoteAttempts[attemptKey] : undefined;
+    if (attemptKey && !idempotencyKey) {
+      try { idempotencyKey = crypto.randomUUID(); cache.quoteAttempts[attemptKey] = idempotencyKey; }
+      catch { setMessage('Could not start the availability check. Try again.'); return; }
+    }
     const currentOperation = { kind, proposalId: proposal.id, signal };
     operationRef.current = currentOperation;
     setMessage(null);
@@ -537,9 +640,12 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     refreshVersion();
     const request = { proposalId: proposal.id, expectedRevision: proposal.revision, signal };
     try {
-      if (kind === 'stage') {
-        const accepted = await api.stage(request);
+      if (kind === 'stage' || kind === 'quote') {
+        const accepted = kind === 'stage' ? await api.stage(request)
+          : quoteId && idempotencyKey ? await api.quote({ ...request, quoteId, idempotencyKey }) : null;
+        if (!accepted) return;
         if (!signal.aborted) {
+          if (attemptKey) delete cache.quoteAttempts[attemptKey];
           cache.stagePending[proposal.id] = sequenceBeforeOperation;
           cache.operationStarts[proposal.id] = { phase: 'staging', at: Date.now() };
           applyProposal({ ...proposal, phase: accepted.phase });
@@ -552,11 +658,11 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
         const threadId = snapshotRef.current.id;
         try {
           const latest = await api.getThread(threadId, { signal });
-          if (!signal.aborted) applySnapshot(latest, true, kind === 'stage' ? proposal.id : undefined);
+          if (!signal.aborted) applySnapshot(latest, true, kind === 'stage' || kind === 'quote' ? proposal.id : undefined);
         } catch (error) {
           if (!signal.aborted && !expireAuthentication(error, signal)) setStreamMessage('Could not refresh Nava. Reconnecting to check the latest status.');
         }
-        if (kind === 'stage' && !signal.aborted && cache.stagePending[proposal.id] === sequenceBeforeOperation) {
+        if ((kind === 'stage' || kind === 'quote') && !signal.aborted && cache.stagePending[proposal.id] === sequenceBeforeOperation) {
           void recoverStage(threadId, proposal.id, sequenceBeforeOperation, signal);
         }
       }
@@ -564,7 +670,8 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
       if (signal.aborted) return;
       if (expireAuthentication(error, signal)) return;
       if (kind === 'reconcile') cache.goLocks[proposal.id] = 'uncertain';
-      setMessage(`Could not ${kind === 'stage' ? 'check in Infor' : 'check the Save outcome'}. Try again.`);
+      setMessage(safeOperationError(error) ?? (kind === 'quote' ? 'Could not confirm the availability check. Try again to check its status.'
+        : `Could not ${kind === 'stage' ? 'check in Infor' : 'check the Save outcome'}. Try again.`));
     } finally {
       if (operationRef.current === currentOperation) operationRef.current = null;
       if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
@@ -576,12 +683,12 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
   const issue = proposal ? cache.issues[proposal.id] : undefined;
   const lock = proposal ? cache.goLocks[proposal.id] : undefined;
   const isUncertain = Boolean(proposal && (lock === 'uncertain' || lock === 'reconciling' || proposal.phase === 'uncertain' || proposal.error?.outcome === 'uncertain'));
-  const canStage = Boolean(proposal && stageWorkflows.includes(proposal.workflow) && supports(capabilities, 'workflows', proposal.workflow) && supports(capabilities, 'tools', 'hms_prepare'));
+  const canStage = Boolean(proposal && proposal.workflow !== 'quote' && advertised(capabilities, proposal.workflow, 'stage'));
+  const canQuote = Boolean(proposal && proposal.workflow === 'quote' && advertised(capabilities, proposal.workflow, 'quote'));
   const primary = proposal && isUncertain
     ? reconcileSupported ? { label: 'Check Infor', disabled: busy, onClick: () => { void operation('reconcile', proposal); } } : undefined
-    : proposal && proposal.workflow === 'create' && proposal.stage?.revision === proposal.revision
-      ? undefined
-    : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || !proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]) || !validSavedChildren(proposal),
+    : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined ||
+        (needsAttachmentReview(proposal.workflow) && (!proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]))) || !validSavedChildren(proposal),
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
 
@@ -614,9 +721,11 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
         <button type="button" disabled={busy || authenticationExpired} onClick={() => { delete cache.issues[proposal.id]; delete cache.drafts[proposal.id]; refreshVersion(); }}>Discard my edits</button>
       </PaneMessage>}
       {Object.keys(drafts).length > 0 && !issue && <PaneMessage>Edits are waiting to be saved.</PaneMessage>}
-      <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={id => { void openArtifact(id); }}
-        attachmentsChecked={proposal.staff_attachments_checked && !cache.attachmentNeedsRecheck[proposal.id]} attachmentsAttention={input.messages.some(item => item.attachment_status !== 'complete')}
-        attachmentMessages={input.messages} attachmentsBusy={busy || authenticationExpired || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || Object.keys(drafts).length > 0}
+      <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={id => { void openArtifact(proposal.id, proposal.revision, id); }}
+        onSelectGuest={proposal.workflow === 'create' ? candidate => { void selectGuest(proposal, candidate); } : undefined}
+        onQuote={canQuote && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
+        attachmentsChecked={proposal.staff_attachments_checked && !cache.attachmentNeedsRecheck[proposal.id]} attachmentsAttention={(snapshot?.messages ?? []).some(item => item.attachment_status !== 'complete')}
+        attachmentMessages={snapshot?.messages ?? []} selectedMessageId={input.selected_message_id} attachmentsBusy={busy || authenticationExpired || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || Object.keys(drafts).length > 0}
         onAttachmentsCheckedChange={checked => { void setAttachmentsChecked(proposal, checked); }} />
     </>}
   </NavaPane>;

@@ -165,7 +165,15 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
       }
       return parsed.data;
     },
-    stage: request => json(`${proposalPath(request.proposalId)}/stage`, acceptedStageSchema, revisionBody(request)),
+    stage: async requestValue => {
+      const response = await request(`${proposalPath(requestValue.proposalId)}/stage`, revisionBody(requestValue));
+      const payload: unknown = await response.json().catch(() => null);
+      const parsed = acceptedStageSchema.safeParse(payload);
+      if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== requestValue.proposalId || parsed.data.revision !== requestValue.expectedRevision) {
+        throw new NavaApiError('Nava returned an invalid Prepare response.', 'invalid_response', response.status);
+      }
+      return parsed.data;
+    },
     reconcile: async requestValue => {
       await request(`${proposalPath(requestValue.proposalId)}/reconcile`, revisionBody(requestValue));
     },
