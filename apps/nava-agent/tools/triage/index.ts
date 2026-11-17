@@ -23,6 +23,7 @@ async function execute(context: ToolContext, action: () => Promise<ToolResult>):
     return context.signal?.aborted ? fail('ABORTED', 'HMS read aborted.') : result;
   } catch (error) {
     if (context.signal?.aborted) return fail('ABORTED', 'HMS read aborted.');
+    if (obj(error) && error.code === 'ERR_MODULE_NOT_FOUND') return fail('NATIVE_DEPENDENCIES_UNAVAILABLE', 'Native HMS module dependencies are unavailable.');
     const raw = error instanceof Error ? error.message.split('\n')[0] : '';
     const code = /^[A-Z][A-Z0-9_]{2,100}$/.test(raw) ? raw : 'HMS_READ_FAILED';
     return fail(code, 'Native HMS read failed; no result was inferred.', true);
@@ -42,8 +43,8 @@ export async function searchReservations(input: unknown, context: ToolContext): 
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
       !keys(input.criteria, ['reservation_id', 'guest_name', 'arrival_date', 'departure_date'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
   const { reservation_id: id, guest_name: name, arrival_date: arrival, departure_date: departure } = input.criteria;
-  if ([id, name].some(value => value !== undefined && !str(value)) ||
-      [arrival, departure].some(value => value !== undefined && !date(value))) return fail('INVALID_INPUT', 'Invalid search criterion.');
+  if ((id !== undefined && !str(id)) || (name !== undefined && !str(name)) ||
+      (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
   if (!id && !name) return fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
   if (id && !/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   if (id && departure) return fail('UNSUPPORTED_CRITERIA', 'Confirmation search cannot verify departure date.');
@@ -91,27 +92,33 @@ export async function readCatalogue(input: unknown, context: ToolContext): Promi
     const loaded = await loadHmsNativeCatalog(nativeCatalogReadOptions({ propertyCode: property }));
     const sections: Record<string, unknown> = {};
     for (const kind of kinds) {
-      if (kind === 'meal_plan') { sections[kind] = { status: 'unsupported', reason: 'No independent native meal-plan catalogue.' }; continue; }
-      const entry = loaded.status === 'available' ? loaded.catalog.catalogs[catalogueKinds[kind]] : undefined;
-      if (entry) {
-        sections[kind] = { ...entry, status: loaded.catalog.schemaVersion === 'hms-native-catalogs/v2' && entry.coverage.complete && entry.scope.wholeCatalogComplete ? 'available' : 'partial', captured_at: loaded.catalog.capturedAt };
-        continue;
+      if (context.signal?.aborted) throw new Error('ABORTED');
+      try {
+        if (kind === 'meal_plan') { sections[kind] = { status: 'unsupported', reason: 'No independent native meal-plan catalogue.' }; continue; }
+        const entry = loaded.status === 'available' ? loaded.catalog.catalogs[catalogueKinds[kind]] : undefined;
+        if (entry) {
+          sections[kind] = { ...entry, status: loaded.catalog.schemaVersion === 'hms-native-catalogs/v2' && entry.coverage.complete && entry.scope.wholeCatalogComplete ? 'available' : 'partial', captured_at: loaded.catalog.capturedAt };
+          continue;
+        }
+        const roomRateTool = kind === 'room_type' ? 'searchRoomTypes' : kind === 'rate_plan' ? 'searchRatePlans' : null;
+        if (roomRateTool) {
+          const { withCloudRoomRateReadSession } = await native('hms-lookup-read-session.mjs');
+          const result: Record<string, unknown> = await withCloudRoomRateReadSession(roomRateTool,
+            ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => runTool({ tool: roomRateTool, query: '', limit: 100 }),
+            { propertyCode: property, signal: context.signal });
+          sections[kind] = { status: ['matches', 'no_match'].includes(String(result.outcome)) ? 'partial' : 'unavailable', native: result };
+        } else if (kind === 'source_of_business' || kind === 'guarantee_type') {
+          const { withCloudLookupReadSession } = await native('hms-lookup-read-session.mjs');
+          const result: Record<string, unknown> = await withCloudLookupReadSession(
+            ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => runTool(kind === 'source_of_business' ?
+              { tool: 'searchGuestStaySourceBusiness', query: '' } : { tool: 'listGuestStayDropdown', field: 'guaranteeType' }),
+            { propertyCode: property, signal: context.signal });
+          sections[kind] = { status: ['matches', 'no_match', 'ok'].includes(String(result.outcome)) ? 'partial' : 'unavailable', native: result };
+        } else sections[kind] = { status: 'unavailable', reason: loaded.status === 'available' ? 'kind_not_captured' : loaded.issue };
+      } catch (error) {
+        if (context.signal?.aborted) throw error;
+        sections[kind] = { status: 'unavailable', reason: obj(error) && error.code === 'ERR_MODULE_NOT_FOUND' ? 'native_dependencies_unavailable' : 'native_read_failed' };
       }
-      const roomRateTool = kind === 'room_type' ? 'searchRoomTypes' : kind === 'rate_plan' ? 'searchRatePlans' : null;
-      if (roomRateTool) {
-        const { withCloudRoomRateReadSession } = await native('hms-lookup-read-session.mjs');
-        const result: Record<string, unknown> = await withCloudRoomRateReadSession(roomRateTool,
-          ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => runTool({ tool: roomRateTool, query: '', limit: 100 }),
-          { propertyCode: property, signal: context.signal });
-        sections[kind] = { status: ['matches', 'no_match'].includes(String(result.outcome)) ? 'partial' : 'unavailable', native: result };
-      } else if (kind === 'source_of_business' || kind === 'guarantee_type') {
-        const { withCloudLookupReadSession } = await native('hms-lookup-read-session.mjs');
-        const result: Record<string, unknown> = await withCloudLookupReadSession(
-          ({ runTool }: { runTool: (request: Record<string, unknown>) => Promise<Record<string, unknown>> }) => runTool(kind === 'source_of_business' ?
-            { tool: 'searchGuestStaySourceBusiness', query: '' } : { tool: 'listGuestStayDropdown', field: 'guaranteeType' }),
-          { propertyCode: property, signal: context.signal });
-        sections[kind] = { status: ['matches', 'no_match', 'ok'].includes(String(result.outcome)) ? 'partial' : 'unavailable', native: result };
-      } else sections[kind] = { status: 'unavailable', reason: loaded.status === 'available' ? 'kind_not_captured' : loaded.issue };
     }
     return ok({ property_code: property, sections });
   });
@@ -122,7 +129,7 @@ const partyFields: Record<string, Record<string, string>> = {
   organization: { name: 'name' }, agency: { name: 'name' }, ar_account: { name: 'name' },
 };
 export async function searchParties(input: unknown, context: ToolContext): Promise<ToolResult> {
-  if (!obj(input) || !keys(input, ['property_code', 'kind', 'field', 'query']) || !str(input.property_code) || !str(input.kind) || !str(input.field) || !str(input.query) || !partyFields[input.kind]?.[input.field]) return fail('INVALID_INPUT', 'Property, supported party kind, field and query are required.');
+  if (!obj(input) || !keys(input, ['property_code', 'kind', 'field', 'query']) || !str(input.property_code) || !str(input.kind) || !str(input.field) || !str(input.query) || !Object.hasOwn(partyFields, input.kind) || !Object.hasOwn(partyFields[input.kind], input.field)) return fail('INVALID_INPUT', 'Property, supported party kind, field and query are required.');
   const property = input.property_code, kind = input.kind, field = partyFields[kind][input.field], query = input.query;
   return execute(context, async () => {
     const { withCloudLookupReadSession } = await native('hms-lookup-read-session.mjs');
