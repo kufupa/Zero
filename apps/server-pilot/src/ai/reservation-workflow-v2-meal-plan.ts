@@ -15,19 +15,20 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const allMealsExcluded = exclusions.has('meal') || exclusions.has('meals');
   const lunchDeclined = /\blunch\s+(?:(?:is|was|will|would|should|must|may|can|could)\s+(?:be\s+)?)?(?:not|never)\s+(?:be\s+)?(?:required|needed|necessary|wanted|requested|included|provided)\b|\b(?:not|never)\s+(?:require|need|want|request|include|provide|have)\s+lunch\b/u.test(normalized);
   const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded && !lunchDeclined;
-  if (/\b(?:no|not|never|without|excluding|exclude|except|skip(?:ped|ping)?)\b/u.test(positive)) return { mealPlan: null, lunchRequested };
-  if (/\b(?:no|not|never|without|excluding|exclude|except)\b[^;]*\bsupper\b/u.test(phrase))
-    return { mealPlan: null, lunchRequested };
-  if (/\b(?:breakfast|lunch|dinner|supper|bb|b b|dbb)\b[^;]*\bor\b[^;]*\b(?:breakfast|lunch|dinner|supper|bb|b b|dbb)\b/u.test(normalized))
+  const supper = /\bsupper\b/u.test(phrase);
+  if (/\b(?:no|not|never|without|excluding|exclude|except)\b/u.test(positive) ||
+      supper && /\bskip(?:ped|ping)?\b/u.test(positive)) return { mealPlan: null, lunchRequested };
+  if (supper && /\b(?:no|not|never|without|excluding|exclude|except)\b[^;]*\bsupper\b/u.test(phrase))
     return { mealPlan: null, lunchRequested };
   const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
-  if (/\bsupper\b/u.test(board) && !['breakfast supper', 'supper breakfast', 'bb supper', 'supper bb', 'b b supper', 'supper b b'].includes(board))
+  const additiveSupper = /\b(?:breakfast|bb|b\s*&\s*b)\s+(?:and|with|plus|&)\s+supper\b|\bsupper\s+(?:and|with|plus|&)\s+(?:breakfast|bb|b\s*&\s*b)\b/u.test(phrase);
+  if (supper && (!additiveSupper || !['breakfast supper', 'supper breakfast', 'bb supper', 'supper bb', 'b b supper', 'supper b b'].includes(board)))
     return { mealPlan: null, lunchRequested };
   const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|supper|dbb)\b/u.test(board);
   if ((allMealsExcluded || exclusions.has('breakfast')) && breakfast || (allMealsExcluded || exclusions.has('dinner')) && dinner)
     return { mealPlan: null, lunchRequested };
   if (['room only', 'roomonly', 'ro', 'room only r'].includes(board)) return { mealPlan: 'room_only', lunchRequested };
-  if (['dbb', 'dinner bb', 'dinner b b', 'supper bb', 'supper b b'].includes(board) || /\b(?:dinner|supper)\b/u.test(board) && /\b(?:breakfast|bb)\b/u.test(board)) {
+  if (['dbb', 'dinner bb', 'dinner b b', 'supper bb', 'supper b b', 'b b supper'].includes(board) || /\b(?:dinner|supper)\b/u.test(board) && /\b(?:breakfast|bb)\b/u.test(board)) {
     return { mealPlan: 'dinner_bb', lunchRequested };
   }
   if (['bb', 'b b'].includes(board) || /\bbreakfast\b/u.test(board)) return { mealPlan: 'bb', lunchRequested };
