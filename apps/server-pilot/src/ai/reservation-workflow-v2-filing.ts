@@ -700,7 +700,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
         ? 'filing_stay_date_mismatch' : 'filing_stay_unverified';
     lookups.push({ status: candidate?.status === 'complete' ? 'candidate' : 'needs_input', requestId: request.id,
       ...(issue ? { issue } : {}), documentId: pair.document.id,
-      ...(loginFailure ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}),
+      ...(loginFailure ? { hmsLoginOutage: true } : {}),
       ...(linkedProof ? { createDependency: { status: 'succeeded', ...linkedProof } } : {}),
       targetCandidate: candidate ? { observationRef: candidate.ref, stay: record(record(candidate.result)?.stay) } : null });
   }
@@ -747,7 +747,7 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   }
   const preview = await runPreview(ctx, input, selection);
   if (preview.status !== 'ready') return { status: preview.status, issue: preview.reason,
-    ...(preview.failureCode ? { failureCode: preview.failureCode } : {}) };
+    ...(preview.hmsLoginOutage ? { hmsLoginOutage: true } : {}) };
   const selected = await selectedSource(ctx, input.source);
   if (!selected) return { status: 'refused', issue: 'source_mail_changed' };
   const expectedStay = { firstName: selection.firstName, status: selection.status, departure: selection.departure };
