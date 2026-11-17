@@ -55,6 +55,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   // token is not necessarily its surname (for example, "van der Merwe").
   const saved = party ? text(valueAt(editor.snapshot, `${path}/name`)) : amendTrack && typeof savedValue === 'object'
     ? text(record(savedValue).lookupCode) : text(savedValue);
+  const savedRef = useRef(saved);
+  savedRef.current = saved;
   const choiceKind = kind ?? (party ? 'party_candidate' : undefined);
   const catalogueField = ['create', 'quote', 'amend'].includes(editor.request.kind) &&
     ['room_type', 'room_type_for_charge', 'rate_plan', 'reason_for_stay', 'guarantee', 'cms_message', 'source_of_business', 'track'].includes(choiceKind ?? '');
@@ -83,6 +85,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const [applyingName, setApplyingName] = useState(false);
   const applyingNameRef = useRef(false);
   const [lookupError, setLookupError] = useState<string | null>(null);
+  const [failedSave, setFailedSave] = useState<'name' | 'clear' | null>(null);
+  const [pendingAccept, setPendingAccept] = useState<{ name: string; selection: string | null; generationId: string } | null>(null);
+  const [failedAccept, setFailedAccept] = useState<typeof pendingAccept>(null);
   const lookupFailure = (error: unknown) => quoteName && error instanceof Error && [
     'Infor could not search for this profile. Try again.',
     'Infor is in use. Wait for the current action to finish, then search again.',
@@ -95,6 +100,9 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const trackScope = amendTrack ? (JSON.stringify(effectiveAt(editor.snapshot, `${requestPath(editor.request.id)}/body/targets`)) ?? '') : '';
   const loadingRef = useRef(false);
   const editVersion = useRef(0);
+  const searchSeq = useRef(0);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const heldQuote = useRef<string | null>(null);
   const loadChoices = async () => {
     if (loadingRef.current) return;
     if (amendTrack) {
@@ -114,8 +122,8 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const openChoices = () => {
     if (!open) setCatalogueSearch(null);
     setOpen(true); setActiveIndex(-1);
-    if ((amendTrack && !open) || ((!rateCatalogueLoaded || !choices.length) && !lookupError &&
-        (entity ? Boolean(query.trim()) : true))) void loadChoices();
+    if ((!quoteName || !loading) && ((amendTrack && !open) || ((!rateCatalogueLoaded || !choices.length) && !lookupError &&
+        (entity ? Boolean(query.trim()) : true)))) void loadChoices();
   };
   useEffect(() => {
     if (!open) return;
@@ -145,16 +153,28 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     : ordered;
   const leads = entity && (!dirty || normalized(query) === normalized(saved))
     ? partialNativeLeads(editor.snapshot, selectionPath, choiceKind) : [];
-  useEffect(() => { if (!dirty) setQuery(saved); }, [saved, dirty]);
+  useEffect(() => {
+    if (dirty) return;
+    if (quoteName && heldQuote.current !== null) {
+      if (saved !== heldQuote.current) return;
+      heldQuote.current = null;
+    }
+    setQuery(saved);
+  }, [saved, dirty, quoteName]);
   useEffect(() => () => { if (catalogueField || quoteName || createUnlinkedParty) editor.commands.setUncommitted(path, false); }, [path, catalogueField, quoteName, createUnlinkedParty]);
   const editValue = (value: string) => quoteName && !value.trim() ? null : party ? { name: value, candidateRefs: [], suggestedRef: null } : value;
   const editState = (value: string) => quoteName && !value.trim() ? 'none' as const : 'set' as const;
   const editPath = party ? path : inputPath;
+  const queueManualAccept = (name: string, selection: string | null) => {
+    if (!quoteName) return;
+    setFailedAccept(null);
+    setPendingAccept({ name, selection, generationId: editor.snapshot.session.draft.generationId });
+  };
   const choose = async (ref: string, value: string, label: string) => {
     if (quoteName && applyingNameRef.current) return;
     editVersion.current += 1;
     const before = editVersion.current;
-    if (quoteName) { applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true); }
+    if (quoteName) { searchSeq.current += 1; setLoading(false); applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true); }
     try { if (entity) await editor.commands.selectNative(selectionPath, ref);
       else {
         await editor.commands.edit(path, amendTrack ? { lookupCode: value, display: label } : value);
@@ -170,9 +190,14 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       }
       if (editVersion.current === before) {
         if (catalogueField || quoteName || createUnlinkedParty) editor.commands.setUncommitted(path, false);
+        if (quoteName) {
+          const result = record(editor.snapshot.session.draft.observations.find(row => row.ref === ref)?.result);
+          const name = text(record(Array.isArray(result.candidates) ? result.candidates[0] : result).name) || value;
+          heldQuote.current = savedRef.current === name ? null : name; setQuery(name); setLookupError(null); queueManualAccept(name, ref);
+        }
         setCatalogueSearch(null); setDirty(false); setOpen(false); setActiveIndex(-1);
       } }
-    catch { if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); } }
+    catch { if (quoteName && editVersion.current === before) { if (!dirty) editor.commands.setUncommitted(path, false); setLookupError('Could not select this profile. Try again.'); } }
     finally { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } }
   };
   const saveSearch = async () => {
@@ -180,12 +205,22 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     const before = editVersion.current;
     try {
       await editor.commands.edit(editPath, editValue(query), editState(query));
-      if (editVersion.current === before) { setDirty(false); if (catalogueField || quoteName || createUnlinkedParty) editor.commands.setUncommitted(path, false); }
+      if (editVersion.current === before) {
+        if (quoteName) { if (!query.trim()) { heldQuote.current = savedRef.current ? '' : null; setQuery(''); } queueManualAccept(query.trim() ? query : '', null); }
+        setDirty(false); if (catalogueField || quoteName || createUnlinkedParty) editor.commands.setUncommitted(path, false);
+      }
     } catch (error) {
-      if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); }
+      if (quoteName && editVersion.current === before) setFailedSave('name');
       throw error;
     }
   };
+  useEffect(() => {
+    if (!quoteName || !failedSave || editor.view.saving || editor.view.busy || editor.view.error ||
+        (failedSave === 'name' ? !dirty || saved !== (query.trim() ? query : '') : saved !== '')) return;
+    const name = failedSave === 'clear' || !query.trim() ? '' : query;
+    heldQuote.current = null; setQuery(name); setFailedSave(null); setDirty(false); setLookupError(null);
+    editor.commands.setUncommitted(path, false); queueManualAccept(name, null);
+  }, [quoteName, failedSave, dirty, saved, query, editor.view.saving, editor.view.busy, editor.view.error]);
   const useTypedName = async () => {
     if (applyingNameRef.current) return;
     const before = ++editVersion.current;
@@ -203,6 +238,31 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     }
     finally { applyingNameRef.current = false; setApplyingName(false); }
   };
+  const quoteSearch = async (seq: number) => {
+    if (!quoteName || applyingNameRef.current || searchSeq.current !== seq) return;
+    setLoading(true); setLookupError(null);
+    try {
+      if (dirty) await saveSearch();
+      if (searchSeq.current !== seq) return;
+      if (editor.commands.lookupChoices) await editor.commands.lookupChoices(path);
+      else await editor.commands.lookup();
+    } catch (error) {
+      if (searchSeq.current === seq) setLookupError(lookupFailure(error));
+    } finally {
+      if (searchSeq.current === seq) setLoading(false);
+    }
+  };
+  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current); }, []);
+  useEffect(() => {
+    if (!quoteName || !dirty) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!query.trim()) return;
+    const seq = searchSeq.current;
+    debounceRef.current = setTimeout(() => { void quoteSearch(seq); }, 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  // seq + editVersion ignore stale lookups; keep deps to the typed query only.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quoteName, dirty, query]);
   const searchRecommendation = async (value: string) => {
     if (loadingRef.current) return;
     editVersion.current += 1;
@@ -229,7 +289,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   };
   const search = catalogueSearch ?? (dirty || entity ? query : '');
   const visible = choices.filter(row => !search || `${row.value} ${row.label} ${row.detail ?? ''}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  const shown = quoteName ? visible : visible.length ? visible : choices;
+  const shown = quoteName ? loading || normalized(query) !== normalized(saved) ? [] : choices : visible.length ? visible : choices;
   const selectionOverride = editor.snapshot.session.draft.fieldOverrides[selectionPath];
   const selectedRef = entity ? selectionOverride && selectionOverride.state !== 'inherit'
     ? valueAt(editor.snapshot, selectionPath)
@@ -242,6 +302,20 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
   const selectedVerified = entity && editor.snapshot.session.draft.observations.find(observation => observation.ref === selectedRef &&
     record(observation.criteria).kind === 'verified_native_row' && choices.some(choice => choice.ref === observation.ref));
   const selectedChoice = choices.find(row => entity ? row.ref === selectedRef : row.value === saved);
+  useEffect(() => {
+    if (!quoteName || !pendingAccept || dirty) return;
+    const draft = editor.snapshot.session.draft;
+    if (draft.generationId !== pendingAccept.generationId ||
+        normalized(text(valueAt(editor.snapshot, `${path}/name`))) !== normalized(pendingAccept.name) ||
+        (valueAt(editor.snapshot, selectionPath) ?? null) !== pendingAccept.selection) return;
+    const expected = { path, value: effectiveAt(editor.snapshot, path), generationId: draft.generationId };
+    setPendingAccept(null);
+    const before = editVersion.current;
+    void (async () => {
+      for (const field of [path, ...(pendingAccept.name ? [`${path}/name`] : []), ...(pendingAccept.selection ? [selectionPath] : [])])
+        await editor.commands.acceptServiceReview(field, 'Entered by staff', expected);
+    })().catch(() => { if (editVersion.current === before) setFailedAccept(pendingAccept); });
+  }, [quoteName, pendingAccept, editor.snapshot, path, selectionPath, dirty]);
   // Host auto-pick (contract v1): evidence expander + Read tick replace the right-side confirm for this field.
   const picked = autopickSuggestion(editor.snapshot, editor.request.id, selectionPath);
   const staffSet = Object.entries(editor.snapshot.session.draft.fieldOverrides).some(([key, value]) => value.state !== 'inherit' &&
@@ -296,16 +370,25 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
       aria-activedescendant={activeId}
       value={display} disabled={disabled || reviewing || applyingName} onFocus={quoteName ? undefined : openChoices} onClick={quoteName ? undefined : openChoices} placeholder={quoteName ? 'Name for quote (optional)' : guestPath ? 'Surname to find in Infor' : allowNone ? 'None / find in Infor' : 'Code or search'} onChange={event => {
         editVersion.current += 1;
-        const value = event.target.value; setCatalogueSearch(null); setQuery(value); setDirty(true); if (!quoteName) setOpen(true); setActiveIndex(-1);
+        const value = event.target.value;
+        if (quoteName) { searchSeq.current += 1; heldQuote.current = value; setLoading(false); setFailedSave(null); setPendingAccept(null); setFailedAccept(null); }
+        setCatalogueSearch(null); setQuery(value); setDirty(true); setOpen(true); setActiveIndex(-1);
         if (catalogueField) {
           editor.commands.setUncommitted(path, true);
           if (!amendTrack) editor.commands.stageEdit(editPath, editValue(value), 'set', { notify: false });
         } else {
           if (quoteName) editor.commands.setUncommitted(path, true);
           editor.commands.stageEdit(editPath, editValue(value), editState(value));
+          if (quoteName) editor.commands.stageEdit(selectionPath, null, 'none');
         }
       }}
-      onBlur={() => { void saveSearch().catch(() => {}); }} onKeyDown={event => {
+      onBlur={() => {
+        if (!quoteName) { void saveSearch().catch(() => {}); return; }
+        if (!applyingNameRef.current && dirty) {
+          if (query.trim()) void quoteSearch(++searchSeq.current);
+          else void saveSearch().catch(() => {});
+        }
+      }} onKeyDown={event => {
         if (event.key === 'Escape') {
           if (amendTrack) { setQuery(saved); setDirty(false); editor.commands.setUncommitted(path, false); }
           setOpen(false); setActiveIndex(-1);
@@ -314,17 +397,16 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
           event.preventDefault(); if (!open) openChoices();
           setActiveIndex(index => shown.length ? (event.key === 'ArrowDown' ? Math.min(index + 1, shown.length - 1) : index < 0 ? shown.length - 1 : Math.max(0, index - 1)) : -1);
         }
-        if (event.key === 'Enter') { event.preventDefault(); const row = open && (shown[activeIndex] ?? (!quoteName && visible.length === 1 ? visible[0] : undefined));
-          if (row) void choose(row.ref, row.value, row.label); else if (quoteName) void useTypedName(); else void saveSearch().catch(() => {}); }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          const row = open && (shown[activeIndex] ?? (!quoteName && visible.length === 1 ? visible[0] : undefined));
+          if (row) void choose(row.ref, row.value, row.label);
+          else if (quoteName) {
+            if (dirty) void saveSearch().catch(() => {});
+          } else void saveSearch().catch(() => {});
+        }
       }} />
-      <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing || applyingName} onMouseDown={event => event.preventDefault()} onClick={() => open ? setOpen(false) : quoteName ? (setOpen(true), void loadChoices()) : openChoices()}>⌄</button></div>
-    {quoteName && <div>
-      <button type="button" disabled={disabled || reviewing || applyingName || !query.trim()} onMouseDown={event => event.preventDefault()}
-        onClick={() => { setOpen(true); void loadChoices(); }}>Find in Infor</button>{' '}
-      <button type="button" disabled={disabled || reviewing || applyingName || !query.trim()} onMouseDown={event => event.preventDefault()}
-        onClick={() => { void useTypedName(); }}>Use typed name</button>
-      <small>No Infor profile will be selected for this name, so its contract rates will not apply.</small>
-    </div>}
+      <button type="button" aria-label={`Show ${label} choices`} disabled={disabled || reviewing || applyingName} onMouseDown={event => event.preventDefault()} onClick={() => open ? setOpen(false) : quoteName ? (setOpen(true), query.trim() && !loading ? void quoteSearch(++searchSeq.current) : undefined) : openChoices()}>⌄</button></div>
     {createUnlinkedParty && query.trim() && <div>
       <button type="button" disabled={disabled || reviewing || applyingName || editor.view.busy} onMouseDown={event => event.preventDefault()}
         onClick={() => { void useTypedName(); }}>Book without profile</button>
@@ -348,9 +430,12 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         editVersion.current += 1; const before = editVersion.current;
         if (quoteName) { applyingNameRef.current = true; setApplyingName(true); editor.commands.setUncommitted(path, true); }
         void editor.commands.edit(party ? path : inputPath, null, 'none').then(() => {
-          if (editVersion.current === before) { setQuery(''); setDirty(false); setOpen(false); if (catalogueField || quoteName || createUnlinkedParty) editor.commands.setUncommitted(path, false); }
+          if (editVersion.current === before) {
+            if (quoteName) { heldQuote.current = savedRef.current ? '' : null; queueManualAccept('', null); }
+            setQuery(''); setDirty(false); setOpen(false); if (catalogueField || quoteName || createUnlinkedParty) editor.commands.setUncommitted(path, false);
+          }
         }).catch(() => {
-          if (quoteName && editVersion.current === before) { setDirty(false); editor.commands.setUncommitted(path, false); }
+          if (quoteName && editVersion.current === before) setFailedSave('clear');
         }).finally(() => { if (quoteName) { applyingNameRef.current = false; setApplyingName(false); } });
       }}>None</button>}
       {shown.map((row, index) => <button id={`${id}-option-${index}`} key={`${row.ref}:${row.value}`} type="button" role="option" disabled={quoteName && applyingName} aria-selected={entity ? selectedRef === row.ref : saved === row.value}
@@ -368,30 +453,34 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         })}</div>}
       {loading && <small role="status">Loading {label.toLocaleLowerCase()} from Infor…</small>}
       {lookupError && <small role="alert">{lookupError}</small>}
-      {quoteName && choices.length > 0 && !shown.length && !loading && <small>No matching Infor profiles. Use the typed name on the quote or search again.</small>}
+      {quoteName && choices.length > 0 && !shown.length && !loading && <small>No matching Infor profiles for this name.</small>}
       {!choices.length && !loading && !lookupError && <small>{trackScopeChanged ? 'The stay selection changed. Refresh Infor choices.'
         : amendTrack && trackReady ? 'No common Track choices for the selected stays.'
-        : quoteName && query.trim() ? 'No Infor profiles returned. Use the typed name on the quote or search again.'
+        : quoteName && query.trim() ? 'No Infor profiles returned for this name.'
         : entity ? 'Enter a name to find Infor matches.' : 'No Infor choices loaded yet.'}</small>}
       {!entity && ['room_type', 'room_type_for_charge', 'rate_plan'].includes(choiceKind ?? '') && <small>Hotel codes and meanings. The booking check verifies prices and availability for these dates and guests.</small>}
-      <button type="button" disabled={loading || (quoteName && applyingName)} onMouseDown={event => event.preventDefault()} onClick={() => { void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>
+      {(!quoteName || lookupError) && <button type="button" disabled={loading || applyingName} onMouseDown={event => event.preventDefault()} onClick={() => { if (quoteName) void quoteSearch(++searchSeq.current); else void loadChoices(); }}>{lookupError ? 'Retry Infor' : entity ? 'Search Infor' : 'Refresh Infor choices'}</button>}
     </div>}
   {open && catalogueSearch !== null && <small>Searching {catalogueSearch}. Select an Infor rate to apply it.</small>}
-  {party && !dirty && !open && selectedChoice && selectedChoice.label !== saved && <small>Selected: {selectedChoice.label}</small>}
+  {party && !quoteName && !dirty && !open && selectedChoice && selectedChoice.label !== saved && <small>Selected: {selectedChoice.label}</small>}
   {createUnlinkedParty && !dirty && selectionOverride?.state === 'none' && query.trim() && <small>Will be added to the Reservation Note; no Infor profile linked.</small>}
   {createUnlinkedParty && !open && lookupError && <small role="alert">{lookupError}</small>}
+  {quoteName && !open && lookupError && <small role="alert">{lookupError}</small>}
   {dirty ? amendTrack ? <small>Select an Infor match. <button type="button" disabled={editor.view.busy} onClick={() => {
       editVersion.current += 1; setQuery(saved); setDirty(false); setOpen(false); editor.commands.setUncommitted(path, false);
-    }}>Cancel search</button></small> : <small>{quoteName ? 'Unsaved name' : 'Unsaved search'}</small>
+    }}>Cancel search</button></small> : !quoteName ? <small>Unsaved search</small> : null
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
     : entity && !selectedRef && query && !quoteName && !(createUnlinkedParty && selectionOverride?.state === 'none') ? <small>Select an Infor match</small> : null}
-    {quoteName && !dirty && query.trim() && <small>{selectedChoice ? `Infor profile selected: ${selectedChoice.label}.`
-      : selectedRef ? 'The selected Infor profile needs checking.' : 'Quote name only; no Infor profile selected for this name. Its contract rates will not apply.'}</small>}
+    {quoteName && query.trim() && <small>{selectedChoice && normalized(query) === normalized(saved)
+      ? `Linked to Infor profile ${selectedChoice.label} — contract rates can apply`
+      : selectedRef && normalized(query) === normalized(saved) ? 'Check the selected Infor profile' : 'Name only — public rates'}</small>}
     {staleIdentity && <small role="alert">The selected Infor match changed. Choose a current match or search again.</small>}
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>
     {suggestion ? <AutopickPanel editor={editor} suggestion={suggestion} selectionPath={selectionPath} label={label}
       changed={staffSet}
       onChoose={chooseSuggested} disabled={disabled || dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />
-      : compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}</div>;
+      : compact && <FieldReview editor={editor} path={path} label={label} disabled={amendTrack && dirty} onPendingChange={pending => { setReviewing(pending); if (pending) setOpen(false); }} />}
+    {quoteName && failedAccept && <small role="alert">Could not confirm this name. <button type="button" disabled={disabled || editor.view.busy}
+      onClick={() => { setPendingAccept(failedAccept); setFailedAccept(null); }}>Retry confirmation</button></small>}</div>;
 }
