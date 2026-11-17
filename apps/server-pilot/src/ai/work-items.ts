@@ -2782,7 +2782,11 @@ function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationW
   if (decision !== 'no_action' || generationId !== draft.generationId ||
       sourceHash !== draft.source.sourceHash) return null;
   const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
-  const sourceObsComplete = !sourceObs || (sourceObs.coverage.complete && sourceObs.result?.textCoverageComplete !== false);
+  const sourceObsComplete = Boolean(
+    sourceObs &&
+    sourceObs.coverage.complete === true &&
+    sourceObs.result?.textCoverageComplete === true,
+  );
   if (draft.status !== 'ready' || !draft.extraction ||
       draft.extractionGenerationId !== draft.generationId ||
       draft.extraction.issues?.length ||

@@ -10,6 +10,7 @@ import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { reservationArrivalEvidence } from './reservation-workflow-v2-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
+import { attachmentEvidenceUnknown } from '../mail/ingest/attachment-evidence.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { assertNoCreateDispatchFence } from './pane-create-dispatch-fence.js';
 import { assertNoUnresolvedHmsDispatchForWorkItem } from './hms-labtest-dispatch.js';
@@ -145,7 +146,11 @@ function storedReservationWorkflowV2Draft(draft: ReservationWorkflowV2Draft): Re
 /** A no-action decision is valid only on a complete, issue-free, error-free, zero-request/operation extraction. */
 function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boolean {
   const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
-  const sourceObsComplete = !sourceObs || (sourceObs.coverage.complete && sourceObs.result?.textCoverageComplete !== false);
+  const sourceObsComplete = Boolean(
+    sourceObs &&
+    sourceObs.coverage.complete === true &&
+    sourceObs.result?.textCoverageComplete === true,
+  );
   return draft.status === 'ready' &&
     Boolean(draft.extraction) &&
     draft.extractionGenerationId === draft.generationId &&
@@ -276,7 +281,8 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
         operation.id === recovery.operationId && operation.generationId === recovery.generationId &&
         ['unknown', 'succeeded', 'failed'].includes(operation.status)))) return { status: 'invalid_source' };
   const checkedSource = recovery?.currentSource ?? source;
-  if (!(await sourceMail(db, ctx, checkedSource))) return { status: 'invalid_source' };
+  const liveSource = await sourceMail(db, ctx, checkedSource);
+  if (!liveSource) return { status: 'invalid_source' };
   // Drafts without a recorded attachment baseline need an explicit review too:
   // there is no safe way to tell whether their current attachments were repaired.
   const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash ||
@@ -285,7 +291,11 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
   // The intake decision binds only to the generation, source and evidence it was
   // adjudicated on. Once any of them change it is parked until a fresh extraction
   // adjudicates again: a changed-source draft never surfaces a stale no-action.
-  const bound = sourceChanged ? { ...draft, disposition: undefined } : draft;
+  // Also block no_action when live provenance has unknown attachment enumeration
+  // (e.g., pre-fix drafts with textCoverageComplete=true and matching evidenceHash).
+  const noActionBlockedByUnknownAttachments =
+    draft.disposition?.decision === 'no_action' && attachmentEvidenceUnknown(liveSource.sourceProvenance);
+  const bound = sourceChanged || noActionBlockedByUnknownAttachments ? { ...draft, disposition: undefined } : draft;
   return { status: 'ok', draft: { ...bound, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };
 }
