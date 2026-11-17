@@ -11,6 +11,7 @@ const fail = (code: string, message: string, retryable = false): ToolResult => (
 const ok = (data: unknown): ToolResult => ({ ok: true, data, error: null });
 const obj = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const str = (value: unknown): value is string => typeof value === 'string' && !!value.trim() && value.length <= 256 && !/[\r\n]/.test(value);
+const normalizeSurname = (value: string) => value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
 const keys = (value: Record<string, unknown>, allowed: string[]) => Object.keys(value).every(key => allowed.includes(key));
 const date = (value: unknown): value is string => str(value) && /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
 const nativeRoot = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
@@ -67,7 +68,7 @@ export async function searchReservations(input: unknown, context: ToolContext): 
       (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
   if (!id && !name) return fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
   if (id && !/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
-  if (!id && name && (name.includes(' ') || name.includes(','))) return fail('UNSUPPORTED_CRITERIA', 'Surname search requires the surname alone.');
+  if (!id && name && name.includes(',')) return fail('UNSUPPORTED_CRITERIA', 'Surname search requires the surname alone.');
   const property = input.property_code;
   return execute(context, async () => {
     if (id) {
@@ -149,7 +150,7 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
     const native = result.data.native;
     const rows: unknown[] = Array.isArray(native.rows) ? native.rows : [];
     const matches = rows.filter(row => obj(row) && str(row.lastName) &&
-      row.lastName.toLocaleLowerCase() === lookup.guest_name?.toLocaleLowerCase() &&
+      !!lookup.guest_name && normalizeSurname(row.lastName) === normalizeSurname(lookup.guest_name) &&
       (!lookup.arrival_date || row.arrival === lookup.arrival_date) &&
       (!lookup.departure_date || row.departure === lookup.departure_date));
     return ok({ outcome: result.data.outcome, candidates: matches.slice(0, 25),
