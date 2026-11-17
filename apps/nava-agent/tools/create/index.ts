@@ -196,7 +196,7 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     }
     if (group.applied.some(row => !object(row) || row.propertyCodes !== request.propertyCode ||
         row.adultCount !== adults || row.childCount !== childCount ||
-        JSON.stringify(row.childAges ?? (childCount === 0 ? [] : null)) !== JSON.stringify(childAges))) return unavailable;
+        JSON.stringify(row.childAges === undefined && childCount === 0 ? [] : row.childAges) !== JSON.stringify(childAges))) return unavailable;
     const choices = new Map<string,{value:string;label:string;meaning:string;room_type:string;rate_scope:string;eligibility:string;availability:string}>();
     for (const option of group.options) {
       if (!object(option) || !object(option.rate) || !object(option.room) || option.eligibility !== 'verified' ||
