@@ -2311,6 +2311,7 @@ function retainQuoteRoomHints(
   if (!hints.length) return [];
   const original = request.body.groups;
   const used = new Set<string>();
+  const ambiguousHints = new Set<number>();
   const roomKey = quoteRoomHintKey;
   if (hints.length === 1 && original.length > 1 && original.every((group) => group.arrival && group.departure)) {
     const { hint, description } = hints[0]!;
@@ -2348,8 +2349,14 @@ function retainQuoteRoomHints(
     const quantity = count !== null && count >= 1 && count <= 100 ? count : null;
     const sourceId = stableId(request.id, 'source_room_hint', String(index));
     const hintKeys = new Set([description, ...(countedDescription ? [countedDescription] : [])].map(roomKey));
-    const matches = original.filter((group) => !used.has(group.id) &&
-      hintKeys.has(roomKey(group.requestedRoomDescription)));
+    const matches = original.filter((group) => hintKeys.has(roomKey(group.requestedRoomDescription)));
+    if (matches.length > 1 || matches.some(group => used.has(group.id))) {
+      const alreadyUsed = matches.some(group => used.has(group.id));
+      matches.forEach(group => used.add(group.id));
+      if (alreadyUsed || !singleDate || matches.some(group => group.arrival !== arrival || group.departure !== departure ||
+          (quantity !== null && group.quantity !== quantity))) ambiguousHints.add(index);
+      return matches[0]!;
+    }
     const existing = original.find(group => group.id === sourceId && !used.has(group.id)) ??
       (matches.length === 1 ? matches[0] : hints.length === 1 && original.length === 1 ? original[0] : undefined);
     if (existing) used.add(existing.id);
@@ -2383,7 +2390,7 @@ function retainQuoteRoomHints(
   const hasDatedGroup = retained.some((group) => group.arrival || group.departure);
   const unbound = hints.filter((_, index) => {
     const group = groups[index]!;
-    return !used.has(group.id) && hasDatedGroup && !group.arrival && !group.departure;
+    return ambiguousHints.has(index) || (!used.has(group.id) && hasDatedGroup && !group.arrival && !group.departure);
   });
   request.body.groups = [...retained.map((group) => unbound.length && (group.arrival || group.departure)
     ? { ...group, sourceAssociationUnresolved: true } : group),

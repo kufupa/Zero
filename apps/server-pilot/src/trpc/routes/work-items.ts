@@ -96,7 +96,7 @@ const quoteOutcomeInput = z.object({
   preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32),
   attachments: z.array(z.object({ fileName: z.string().min(1).max(255), mimeType: z.string().min(1).max(128),
     sizeBytes: z.number().int().min(0).max(32 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/),
-  }).strict()).max(32),
+  }).strict()).max(64),
 }).strict();
 
 // Field edits and accept/reject only. approve and review have their own procedures (U25, U18), so they are not here.

@@ -3,12 +3,14 @@
  * reads it back with its PDF for the Outlook pane's Insert saved reply.
  */
 import { TRPCError } from '@trpc/server';
+import { createHash } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { aiDraftGeneration, mailDraft, mailDraftRevision } from '../src/db/schema/mail.js';
 import { CENTURION_USER_ID, NAVA_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
 import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
+import { appRouter } from '../src/trpc/router.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
@@ -94,6 +96,33 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     });
     afterEach(() => {
       configureDraftArtifactStorage(null);
+    });
+
+    it('saves and reads back both files for 17 quote options without widening other replies', async () => {
+      await withSeededTestDb(async db => {
+        await seedThreads(db);
+        const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: TRANSPORT_ID });
+        const attachments = Array.from({ length: 17 }, (_, index) => ['pdf', 'xlsx'].map(extension => {
+          const bytes = Buffer.from(`${extension}-${index + 1}`);
+          return { name: `Option ${index + 1}.${extension}`,
+            type: extension === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            size: bytes.length, lastModified: 1, base64: bytes.toString('base64') };
+        })).flat();
+        await nava.drafts.saveReply({ ...saveInput('<p>Options</p>'), replyKind: 'quote', attachments });
+        const saved = await nava.drafts.savedReply({ threadId: THREAD_ID });
+        expect(saved?.attachments).toEqual(attachments.map(file => ({ fileName: file.name, pdfBase64: file.base64 })));
+        const outcomeFiles = attachments.map(file => ({ fileName: file.name, mimeType: file.type, sizeBytes: file.size,
+          sha256: createHash('sha256').update(Buffer.from(file.base64, 'base64')).digest('hex') }));
+        const workItems = appRouter.createCaller({ auth: null as never, reqHeaders: new Headers(), ...nava.ctx }).workItems;
+        expect(await workItems.recordQuoteOutcome({ sourceMessageId: MESSAGE_ID, replyHtml: '<p>Options</p>',
+          insertedAt: '2026-11-17T00:00:00.000Z', replyKind: 'quote', preparedVersions: [], attachments: outcomeFiles }))
+          .toEqual({ recorded: false });
+        const refused = await refusalOf(nava.drafts.saveReply({ ...saveInput('<p>Other</p>'), replyKind: 'other', attachments }));
+        expect(refused.message).toBe('INVALID_DRAFT_ATTACHMENTS');
+        const tooMany = await refusalOf(nava.drafts.saveReply({ ...saveInput('<p>Too many</p>'), replyKind: 'quote',
+          attachments: Array.from({ length: 65 }, () => PDF) }));
+        expect(tooMany.code).toBe('BAD_REQUEST');
+      });
     });
 
     it(

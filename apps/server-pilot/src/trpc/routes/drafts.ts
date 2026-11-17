@@ -180,8 +180,8 @@ let generatedArtifactStorage: DraftArtifactStorage | null = null;
 export function configureDraftArtifactStorage(storage: DraftArtifactStorage | null): void {
   generatedArtifactStorage = storage;
 }
-function decodeStaffAttachments(files: z.infer<typeof serializedAttachmentInput>[]) {
-  if (files.length > 32) throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
+function decodeStaffAttachments(files: z.infer<typeof serializedAttachmentInput>[], maxFiles = 32) {
+  if (files.length > maxFiles) throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
   let total = 0;
   return files.map(file => {
     if (!file.name || file.name.length > 255 || /[/\\]/.test(file.name) || [...file.name].some(char => char.charCodeAt(0) < 32) ||
@@ -2075,12 +2075,12 @@ export const draftsRouter = tRouter({
         html: z.string(),
         replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']).default('other'),
         preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32).default([]),
-        attachments: z.array(serializedAttachmentInput).max(32).default([]),
+        attachments: z.array(serializedAttachmentInput).max(64).default([]),
         replaceDraft: z.string().max(200).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const decodedAttachments = decodeStaffAttachments(input.attachments);
+      const decodedAttachments = decodeStaffAttachments(input.attachments, input.replyKind === 'quote' ? 64 : 32);
       const db = getDb();
       const transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
