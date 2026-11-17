@@ -39,10 +39,11 @@ app.use('*',async(c,next)=>{
   c.set('principal',principal);
   await next();
 });
-async function authorizedThread(id:string,principal:Principal) {
+async function threadDenial(id:string,principal:Principal):Promise<403|404|null> {
   const [thread]=await sql`SELECT mailbox_id FROM nava_agent.mail_thread WHERE id=${id}`;
-  return !!thread && hasMailbox(principal,thread.mailbox_id);
+  return !thread?404:hasMailbox(principal,thread.mailbox_id)?null:403;
 }
+const threadError=(status:403|404)=>({error:{code:status===403?'FORBIDDEN':'NOT_FOUND',message:status===403?'Mailbox unavailable':'Thread not found',details:null}});
 app.get('/capabilities',async c=>{
   const staff=!!process.env.NAVA_STAFF_JWT_SECRET;
   const workflow_capabilities=Object.fromEntries(workflows.map(workflow=>{
@@ -60,16 +61,16 @@ app.post('/threads',async c=>{
   try { const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
   catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; return c.json({error:{code:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'IMPORT_UNAVAILABLE',message:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'Unable to import thread',details:null}},['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?409:503); }
 });
-app.get('/threads/:id',async c=>{if(!await authorizedThread(c.req.param('id'),c.get('principal'))) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);const result=await snapshot(c.req.param('id')); return result?c.json(result):c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);});
+app.get('/threads/:id',async c=>{const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);const result=await snapshot(c.req.param('id')); return result?c.json(result):c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);});
 app.get('/threads/:id/events',async c=>{
-  if(!await authorizedThread(c.req.param('id'),c.get('principal'))) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
+  const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);
   const thread=await snapshot(c.req.param('id')); if (!thread || !thread.session) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
   const start=Number(c.req.query('after_sequence') ?? c.req.header('Last-Event-ID') ?? 0); if (!Number.isSafeInteger(start) || start<0) return c.json({error:{code:'INVALID_CURSOR',message:'Invalid sequence',details:null}},400);
   const session=thread.session.id;
   return streamSSE(c,async stream=>{let after=start; while(!stream.aborted) {const rows=await sql`SELECT sequence::text,id,managed_event_id,kind,payload,at FROM nava_agent.agent_event WHERE session_id=${session} AND sequence>${after} ORDER BY sequence LIMIT 200`; for(const row of rows){after=Number(row.sequence); await stream.writeSSE({id:String(after),event:'event',data:JSON.stringify({sequence:after,event_id:row.managed_event_id ?? row.id,kind:row.kind,at:row.at,session_id:session,proposal_id:row.payload?.proposal_id ?? null,payload:row.payload})});} if(!rows.length) await stream.sleep(1000); }});
 });
 app.post('/threads/:id/messages',async c=>{
-  if(!await authorizedThread(c.req.param('id'),c.get('principal'))) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
+  const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);
   const body=await c.req.json().catch(()=>null); if(!body || typeof body.text!=='string' || !body.text.trim()) return c.json({error:{code:'INVALID_INPUT',message:'text required',details:null}},400);
   if(body.proposal_id!==undefined && typeof body.proposal_id!=='string') return c.json({error:{code:'INVALID_INPUT',message:'Invalid proposal_id',details:null}},400);
   const [s]=await sql`SELECT * FROM nava_agent.agent_session WHERE thread_id=${c.req.param('id')}`; if(!s) return c.json({error:{code:'NOT_FOUND',message:'Session not found',details:null}},404);
@@ -88,8 +89,9 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       const [ref]=await tx`SELECT p.session_id,t.mailbox_id FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${c.req.param('id')}`;
       if(!ref) throw new OperationError('NOT_FOUND');
       if(!principal.mailboxes.includes(ref.mailbox_id)) throw new OperationError('FORBIDDEN');
-      await tx`SELECT id FROM nava_agent.agent_session WHERE id=${ref.session_id} FOR NO KEY UPDATE`;
-      const [p]=await tx`SELECT p.id,p.revision,p.workflow,p.phase,p.current,t.mailbox_id,t.mode FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${c.req.param('id')} FOR UPDATE OF p`;
+      const [session]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${ref.session_id} FOR NO KEY UPDATE`;
+      if(!session) throw new OperationError('NOT_FOUND');
+      const [p]=await tx`SELECT p.id,p.revision,p.workflow,p.phase,p.current,t.mailbox_id,t.mode FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${c.req.param('id')} AND p.session_id=${ref.session_id} FOR UPDATE OF p`;
       if(!p) throw new OperationError('NOT_FOUND');
       if(!principal.mailboxes.includes(p.mailbox_id)) throw new OperationError('FORBIDDEN');
       if(p.revision!==input.data.expected_revision) throw new OperationError('STALE_REVISION');
@@ -150,7 +152,7 @@ app.patch('/proposals/:id',async c=>{
   }
 });
 app.get('/threads/:id/staff-edits',async c=>{
-  if(!await authorizedThread(c.req.param('id'),c.get('principal'))) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
+  const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);
   const proposals=await sql`SELECT id,session_id,workflow,original,created_at FROM nava_agent.proposal WHERE thread_id=${c.req.param('id')} ORDER BY created_at,id`;
   const records:unknown[]=[];
   for(const p of proposals) {
