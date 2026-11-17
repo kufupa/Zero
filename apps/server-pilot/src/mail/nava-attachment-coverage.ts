@@ -25,7 +25,9 @@ function sourceAddress(value: {name?:string;email:string}) {
 function inventoried(provenance: Record<string, unknown> | null): boolean {
   if (!provenance) return false;
   if (Object.hasOwn(provenance, 'linkedAttachmentScopes')) {
-    const { scopes, malformed } = parseLinkedAttachmentScopes(provenance.linkedAttachmentScopes);
+    const raw=provenance.linkedAttachmentScopes;
+    if (!Array.isArray(raw) || raw.some(scope=>!scope || typeof scope!=='object' || !Array.isArray(scope.persisted) || scope.persisted.length!==0)) return false;
+    const { scopes, malformed } = parseLinkedAttachmentScopes(raw);
     return Array.isArray(provenance.linkedOptionalMissing) && !provenance.linkedOptionalMissing.length
       && !malformed && scopes.length>0 && scopes.every(scope=>scope.enumerated && scope.semanticVersion!==null
       && Array.isArray(scope.missing) && !scope.missing.length && !scope.persisted.length);
