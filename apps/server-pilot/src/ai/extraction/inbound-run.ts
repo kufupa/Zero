@@ -235,14 +235,16 @@ export async function refreshSelectedAmendExtraction(
     if (!inboundExtractionEnabled(env)) return { status: 'blocked', reason: 'disabled' };
     const run = await enqueueInboundExtraction({ transportId: input.transportId, threadId: thread.id, messageId: mail.id, priority: 2 },
       tx as unknown as DB);
+    if (run.state === 'queued' || run.state === 'retry_wait') {
+      await tx.update(aiWorkflowRun).set({ priority: sql`greatest(${aiWorkflowRun.priority}, 2)`, updatedAt: new Date() })
+        .where(and(eq(aiWorkflowRun.id, run.id), inArray(aiWorkflowRun.state, ['queued', 'retry_wait'])));
+    }
     if (run.state === 'retry_wait' && run.failureClass === 'POLICY_BLOCK') {
       return { status: 'blocked', reason: 'deferred' };
     }
     if (!['queued', 'claimed', 'running', 'retry_wait'].includes(run.state)) {
       return { status: 'blocked', reason: 'run_failed' };
     }
-    await tx.update(aiWorkflowRun).set({ priority: sql`greatest(${aiWorkflowRun.priority}, 2)`, updatedAt: new Date() })
-      .where(and(eq(aiWorkflowRun.id, run.id), inArray(aiWorkflowRun.state, ['queued', 'retry_wait'])));
     return { status: 'queued', runId: run.id };
   });
 }

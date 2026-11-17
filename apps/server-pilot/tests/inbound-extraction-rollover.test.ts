@@ -53,15 +53,14 @@ const enabled = { INBOUND_EXTRACTION: 'on' };
 
 function selectedDb(rows: unknown[][]): DB {
   const tx = {
+    update: vi.fn(() => ({ set: () => ({ where: async () => [] }) })),
     select: vi.fn(() => {
       const result = rows.shift();
       if (!result) throw new Error('unexpected select');
-      const query = {
-        from: () => query, where: () => query, limit: () => query,
+      return Object.assign(Promise.resolve(result), {
+        from() { return this; }, where() { return this; }, limit() { return this; },
         for: async () => result,
-        then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(result).then(resolve),
-      };
-      return query;
+      });
     }),
   };
   return { transaction: (fn: (transaction: unknown) => unknown) => fn(tx) } as unknown as DB;
