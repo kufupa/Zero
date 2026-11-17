@@ -58,7 +58,7 @@ function pointer(root: unknown, path: string): { exists: boolean; value?: unknow
   return { exists: true, value };
 }
 
-function editValue(spec: FieldSpec, draft: DraftValue): { ok: true; value: Json } | { ok: false; message: string } {
+function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName): { ok: true; value: Json } | { ok: false; message: string } {
   if (Array.isArray(draft)) {
     if (!/^\/bookings\/(?:0|[1-9]\d*)\/fields\/child_ages$/.test(spec.path) ||
         draft.some(age => !/^\d+$/.test(age) || Number(age) > 17)) {
@@ -69,6 +69,7 @@ function editValue(spec: FieldSpec, draft: DraftValue): { ok: true; value: Json 
   if (spec.control === 'checkbox') return typeof draft === 'boolean'
     ? { ok: true, value: draft } : { ok: false, message: `${spec.label}: choose yes or no.` };
   if (typeof draft !== 'string') return { ok: false, message: `${spec.label}: check this value.` };
+  if (workflow === 'create' && spec.path === '/bookings/0/fields/guest_profile_id' && draft === '') return { ok: true, value: null };
   if (spec.control === 'number') {
     if (!draft.trim()) return { ok: true, value: null };
     const value = Number(draft);
@@ -381,7 +382,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         cache.issues[proposalId] = { kind: 'conflict', message: 'This field changed elsewhere. Review the latest value before applying your draft.' };
         refreshVersion(); return;
       }
-      const parsed = editValue(spec, draft.value);
+      const parsed = editValue(spec, draft.value, proposal.workflow);
       if (!parsed.ok) { cache.issues[proposalId] = { kind: 'error', message: parsed.message }; refreshVersion(); return; }
       changes.push({ op: pointer(proposal, path).exists ? 'replace' : 'add', path, value: parsed.value });
     }
