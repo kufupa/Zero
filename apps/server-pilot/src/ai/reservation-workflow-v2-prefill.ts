@@ -30,7 +30,7 @@ import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
 import { loadReservationAutopickHistory, loadReservationMemoryGuidance, loadReservationNativeLeads,
   loadReservationRateTrackMapping } from './reservation-workflow-v2-native-leads.js';
 import { applyAutopick, AUTOPICK_MAX_ALTERNATIVES, AUTOPICK_SYNTHESIS_RULES, autopickModelSlots, autopickReadCriteria, clearsHistoryGate,
-  planAutopickPartyReads, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
+  planAutopickPartyReads, sourceMeaningCode, validateAutopickModelOutput, withAutopickResponseSchema } from './reservation-workflow-v2-autopick.js';
 import { loadNativeBookingCodes } from './booking-code-rules.js';
 import { RESERVATION_NOTE_MAX } from './reservation-note-presets.js';
 import { resolveSourceStayDate } from './stay-date-anchoring.js';
@@ -1285,7 +1285,8 @@ function cancelExceptionEvidence(input: {
 
 function buildFallbackProposal(input: {
   extraction: ReservationWorkflowV2Extraction | null; source: ReservationWorkflowV2Source;
-  evidence: ReservationWorkflowV2Evidence[]; reason: string;
+  evidence: ReservationWorkflowV2Evidence[]; reason: string; evidenceComplete?: boolean;
+  currentAuthoredText?: string;
 }): ReservationWorkflowV2Proposal {
   const knownRefs = new Set(input.evidence.map((item) => item.ref));
   const currentRefs = new Set(input.evidence.filter((item) => item.relation !== 'prior_thread').map((item) => item.ref));
@@ -1334,7 +1335,8 @@ function buildFallbackProposal(input: {
           quantity: quoteDatedRoomCount(request, date, currentRefs).count,
           guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300) ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? [],
           mealPlan: null, requestedMealPlan,
-          roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room').codes, ratePlan: null,
+          roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room', { evidence: input.evidence,
+            evidenceComplete: input.evidenceComplete, currentAuthoredText: input.currentAuthoredText }).codes, ratePlan: null,
           occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
         }));
       }) : (fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
@@ -1949,8 +1951,9 @@ function singleCurrentDatePair(dates: ProjectableDateClaim[], currentRefs: Set<s
   return !partial && pairs.size === 1 ? [...pairs][0]! : null;
 }
 
-function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 'rate',
-  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string } = {}): string | null {
+function exactSourceCode(claim: { raw: string; value: unknown; sourceRefs?: string[] }, kind: 'room' | 'rate',
+  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string;
+    evidence?: ReservationWorkflowV2Evidence[] } = {}): string | null {
   if (typeof claim.value !== 'string') return null;
   const code = claim.value.trim();
   if (!/^[A-Z][A-Z0-9_-]{0,15}$/.test(code)) return null;
@@ -1963,12 +1966,21 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
     if (!catalog || catalog.propertyCode !== options.propertyCode) return null;
     const envelope = kind === 'room' ? catalog.roomsEnvelope() : catalog.ratesEnvelope();
     if (envelope.status !== 'available' || envelope.coverage.scope !== 'whole_catalog' || !envelope.coverage.complete ||
+        (envelope.expiresAt !== null && Date.parse(envelope.expiresAt) <= Date.now()) ||
         catalog.lookupVerifiedCode(kind, code).status !== 'unique') return null;
   }
   const escaped = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const token = new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'gi' : 'g');
   const context = options.rawContext ?? raw;
   if (!context.includes(raw) || !new RegExp(`(?<![A-Za-z0-9_-])${escaped}(?![A-Za-z0-9_-])`, explicitlyLabeled ? 'i' : '').test(raw)) return null;
+  // With evidence supplied, at least one cited non-prior row must contain the raw span
+  // verbatim. Otherwise context falls back to the model's raw wording, so a raw "Room code
+  // KING" must be anchored in a row the claim itself cited. Negation stays clause-local
+  // below: a cue in a different utterance of the same row ("BAR is unavailable, please quote
+  // PROMO") must not veto a positively mentioned sibling code.
+  const cited = (options.evidence ?? []).filter((row) => row.relation !== 'prior_thread' &&
+    (claim.sourceRefs?.includes(row.ref) ?? false));
+  if (options.evidence && !cited.some((row) => row.text.includes(raw))) return null;
   if (/^(?:A|AN|AND|AS|AT|BE|BOOK|FOR|FROM|IN|IS|IT|NO|NOT|OF|ON|OR|PLEASE|THE|TO|WE|WITH)$/u.test(code)) return null;
   const negativePredicate = /\b(?:no|not|never|neither|unavailable|unwanted|unable|sold\s+out|fully\s+booked|closed|(?:is|are|was|were|do|does|did|ca|could|wo|would|should)n['’]t|cannot)\b/i;
   const negative = new RegExp(`${negativePredicate.source}|\\b(?:without|avoid|avoided|except|exclude|excluded|instead\\s+of|rather\\s+than)\\b`, 'i');
@@ -2037,21 +2049,59 @@ function exactSourceCode(claim: { raw: string; value: unknown }, kind: 'room' | 
   return code;
 }
 
+// The exact-code pass runs first and stands alone: once any claim resolves to an exact code,
+// claims whose wording produced no code are ignored as they always were, and the meaning
+// fallback never mixes its picks into an exact result.
+// Only when the exact pass resolves nothing may the meaning fallback run. It requires every
+// current claim to resolve cleanly: unresolvedClaims collects each current claim whose wording
+// still produced no code, and an abstained or unmapped hint vetoes the sibling codes that did
+// resolve so this shared pass never silently drops it. Claims with no current ref never block
+// (prior/uncited stay inert).
 function currentSourceCodes(claims: Array<{ raw: string; value: unknown; sourceRefs: string[] }>,
   currentRefs: Set<string>, kind: 'room' | 'rate',
-  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string; messageRefs?: Set<string> } = {}): { codes: string[]; sourceRefs: string[] } {
+  options: { nativeCatalog?: PreloadedNativeCatalog | null; propertyCode?: string; rawContext?: string; messageRefs?: Set<string>;
+    evidence?: ReservationWorkflowV2Evidence[]; evidenceComplete?: boolean; currentAuthoredText?: string } = {}): { codes: string[]; sourceRefs: string[];
+    unresolvedClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> } {
   const byCode = new Map<string, Set<string>>();
+  const currentClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> = [];
+  const collect = (claim: { raw: string; value: unknown; sourceRefs: string[] }, code: string) => {
+    const refs = byCode.get(code) ?? new Set<string>();
+    claim.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
+    byCode.set(code, refs);
+  };
   for (const claim of claims) {
     const current = currentClaim(claim, currentRefs);
     if (!current) continue;
-    const code = exactSourceCode(current, kind, options.messageRefs && !current.sourceRefs.some(ref => options.messageRefs!.has(ref))
-      ? {} : options);
-    if (!code) continue;
-    const refs = byCode.get(code) ?? new Set<string>();
-    current.sourceRefs.filter((ref) => currentRefs.has(ref)).forEach((ref) => refs.add(ref));
-    byCode.set(code, refs);
+    currentClaims.push(current);
+    // Cited rows outside the current message keep explicit code labels but never
+    // catalogue-verified lookups; message-cited claims keep the full options. Evidence is
+    // still supplied either way so the raw span must sit verbatim in one of the claim's own
+    // cited non-prior rows — an attachment-only claim cannot anchor a code its evidence never wrote.
+    const code = exactSourceCode(current, kind,
+      options.messageRefs && !current.sourceRefs.some(ref => options.messageRefs!.has(ref))
+        ? { evidence: options.evidence } : options);
+    if (code) collect(current, code);
   }
-  return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))] };
+  if (byCode.size) {
+    return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))],
+      unresolvedClaims: [] };
+  }
+  const unresolvedClaims: Array<{ raw: string; value: unknown; sourceRefs: string[] }> = [];
+  // The meaning fallback scans every admitted non-prior row for veto cues, never the
+  // extractor's cited subset, and runs only when the caller established complete current
+  // evidence: an uncited or unread attachment could carry a cue that contradicts the body.
+  for (const current of currentClaims) {
+    const match = sourceMeaningCode([current], kind, { catalog: options.nativeCatalog,
+      propertyCode: options.propertyCode, evidence: options.evidence ?? [], evidenceComplete: options.evidenceComplete,
+      currentAuthoredText: options.currentAuthoredText });
+    if (!match) {
+      unresolvedClaims.push(current);
+      continue;
+    }
+    collect(current, match.code);
+  }
+  return { codes: [...byCode.keys()], sourceRefs: [...new Set([...byCode.values()].flatMap((refs) => [...refs]))],
+    unresolvedClaims };
 }
 
 function roomDescription(claim: { raw: string; value: unknown; sourceRefs: string[] }, currentRefs: Set<string>, hasCode: boolean) {
@@ -2442,6 +2492,20 @@ function moneyMeaningsConflict(left: SourceMoneyMeaning, right: SourceMoneyMeani
 function sourceClaimsForRequestedMoney(proposal: ReservationWorkflowV2Proposal, requestId: string, index: number) {
   const targetPath = `/requests/${requestId}/body/requestedMoney/${index}`;
   return proposal.sourceClaims.filter((claim) => claim.path === targetPath || claim.path === `${targetPath}/amount`);
+}
+
+// A rate hint is money only when a real amount is stated: a numeric claim value beside a
+// money-cued wording (the same raw cue requestedMoney requires), or an explicit amount in the
+// raw itself. Bare basis words like "room", "per night", "person" or "total" with no amount
+// stay rate wording, and a null value keeps a named raw eligible for the rate-code issue.
+const RATE_HINT_MONEY_CUE = /[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b/i;
+const RATE_HINT_EXPLICIT_AMOUNT =
+  /[€£$]\s*\d|\d\s*[€£$]|\b(?:USD|GBP|EUR|AUD|CAD|ZAR)\s*\d|\d[\d,]*(?:\.\d{1,2})?\s*(?:USD|GBP|EUR|AUD|CAD|ZAR)\b|\d[\d,]*(?:\.\d{1,2})?\s*(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i;
+
+function isPriceRateHint(claim: { raw: string; value: unknown }): boolean {
+  const amountValue = typeof claim.value === 'number' && Number.isFinite(claim.value) && claim.value >= 0 ||
+    typeof claim.value === 'string' && /^\d{1,8}(?:\.\d{1,2})?$/.test(claim.value.trim());
+  return RATE_HINT_EXPLICIT_AMOUNT.test(claim.raw) || amountValue && RATE_HINT_MONEY_CUE.test(claim.raw);
 }
 
 function matchesTypedRequestedPrice(extracted: ReservationWorkflowV2Extraction['requests'][number],
@@ -3520,9 +3584,17 @@ function projectCurrentExtraction(input: {
   proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
+  // Filtered attachment lists cannot prove the source inventory is complete. Until an
+  // authoritative inventory and its invalidation are available, meaning mapping abstains.
+  const meaningEvidenceComplete = false;
+  // Meaning-mapped codes ground only in what the sender authored in this message;
+  // wording found only in quoted history abstains.
+  const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
+    input.selection.currentBodyText ?? input.selection.bodyText));
   const codeOptions = { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode,
-    rawContext: input.selection.currentBodyText ?? input.selection.bodyText,
-    messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) };
+    rawContext: input.selection.currentBodyText ?? input.selection.bodyText, evidence: input.evidence,
+    messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)),
+    evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody };
   const pdfs = currentPdfEvidence(input);
   appendExtractionSourceClaims(proposal, input.extraction, knownRefs);
   for (const issue of input.extraction.issues) {
@@ -3703,7 +3775,8 @@ function projectCurrentExtraction(input: {
   }
 
   const fallback = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
-    evidence: input.evidence, reason: 'The source facts were retained for staff review.' });
+    evidence: input.evidence, reason: 'The source facts were retained for staff review.', evidenceComplete: meaningEvidenceComplete,
+    currentAuthoredText: currentAuthoredBody });
   let addedRequests = 0;
   for (const extracted of currentExtraction.requests) {
     if (linkedExtractionRequests.has(extracted)) continue;
@@ -3892,16 +3965,52 @@ function projectCurrentExtraction(input: {
     const foreignMarkers = otherRequests.flatMap((row) => [...noteMarkers(row),
       normalizedFact(row.requestText.raw)].filter((marker) => marker.length >= 4));
     const authoredNoteClauses = authoredSourceNoteClauses(input);
-    const sourceNoteCandidates = [...operationalSourceNote(input), ...extracted.rateHints.flatMap((claim) =>
-      currentClaim(claim, currentRefs) && /\brate\b/i.test(claim.raw) &&
-      !exactSourceCode(claim, 'rate', { nativeCatalog: input.nativeCatalog, propertyCode: input.propertyCode }) &&
-      input.evidence.some(row => row.relation === 'current_message' && claim.sourceRefs.includes(row.ref) &&
-        row.text.includes(claim.raw)) ? authoredNoteClauses.filter(clause =>
-        clause.includes(claim.raw) && !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(clause)) : [])];
+    const messageRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
+    const sourceNoteCandidates = [...operationalSourceNote(input).map((clause) => ({ clause, sourceRefs: messageRefs })),
+      ...extracted.rateHints.flatMap((claim) => {
+        const current = currentClaim(claim, currentRefs);
+        if (!current || !/\brate\b/i.test(current.raw)) return [];
+        const anchoredRows = input.evidence.filter((row) => row.relation !== 'prior_thread' &&
+          claim.sourceRefs.includes(row.ref) && row.text.includes(current.raw));
+        const anchoredRefs = anchoredRows.map((row) => row.ref);
+        if (!anchoredRefs.length) return [];
+        const clauses = authoredNoteClauses.filter((clause) => clause.includes(current.raw));
+        // An expanded clause is authored-body wording beyond the claim's raw span, so the
+        // claim's anchored refs may not contain it (for example attachment-only anchors).
+        // Cite only current-message rows whose text contains the full clause; a clause with
+        // no such row is dropped rather than inventing refs, and the raw fallback keeps its
+        // own anchored attachment/current refs.
+        const expanded = clauses.map((clause) => ({ clause,
+          sourceRefs: input.evidence.filter((row) => row.relation === 'current_message' &&
+            row.text.includes(clause)).map((row) => row.ref) }))
+          .filter((note) => note.sourceRefs.length > 0);
+        // The raw fallback exists for attachment-anchored wording. A raw present verbatim in the
+        // current message but absent from every authored clause is quoted history, not an ask;
+        // it stays excluded instead of leaking into the note — unless a cited current attachment
+        // row also carries the span verbatim, which anchors the wording independently of the quote.
+        // Quoted text still cannot anchor anything on its own: every admitted anchor is a row the
+        // claim itself cited, prior rows are already excluded, and the attachment test accepts only
+        // the current message's own attachments.
+        const inCurrentMessage = input.evidence.some((row) => row.relation === 'current_message' &&
+          row.text.includes(current.raw));
+        const noted = (expanded.length ? expanded :
+          (!inCurrentMessage || anchoredRows.some((row) => row.relation === 'attachment')) &&
+            current.raw.length <= 300 ? [{ clause: current.raw, sourceRefs: anchoredRefs }] : [])
+          .filter((note) => !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(note.clause));
+        // Extractor spans may contain separate instructions; keep the source wording even
+        // when its rate code is selected so those instructions are not lost.
+        return noted;
+      })];
+    const dedupedNotes = new Map<string, { clause: string; sourceRefs: string[] }>();
+    for (const candidate of sourceNoteCandidates) {
+      const existing = dedupedNotes.get(candidate.clause);
+      if (existing) existing.sourceRefs = [...new Set([...existing.sourceRefs, ...candidate.sourceRefs])].slice(0, 100);
+      else dedupedNotes.set(candidate.clause, candidate);
+    }
     const sourceNotes = (request.kind === 'create' || request.kind === 'quote') &&
       currentExtraction.requests.filter((candidate) => candidate.kind === request.kind).length === 1
-      ? [...new Set(sourceNoteCandidates)].filter((clause) => {
-        const text = normalizedFact(clause);
+      ? [...dedupedNotes.values()].filter((candidate) => {
+        const text = normalizedFact(candidate.clause);
         return !otherRequests.length || !foreignMarkers.some((marker) => text.includes(marker)) &&
           !otherRequests.some((row) => normalizedFact(row.requestText.raw).includes(text)) &&
           (normalizedFact(extracted.requestText.raw).includes(text) || [...ownMarkers].some((marker) => text.includes(marker)));
@@ -3910,32 +4019,35 @@ function projectCurrentExtraction(input: {
       const existing = request.kind === 'create' ? request.body.shared.reservationNote : request.body.notes;
       const limit = request.kind === 'create' ? 2000 : 4000;
       const path = `/proposal/content/requests/${request.id}/body/${request.kind === 'create' ? 'shared/reservationNote' : 'notes'}`;
-      const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message').map((row) => row.ref);
+      const clauseRefs = (clause: string) => [...new Set(sourceNotes.filter((note) => note.clause === clause)
+        .flatMap((note) => note.sourceRefs))].slice(0, 100);
       const existingText = typeof existing === 'string' ? existing : '';
-      const { fullNote, additions } = mergeSourceNote(existingText, sourceNotes, input.evidence);
+      const { fullNote, additions } = mergeSourceNote(existingText, sourceNotes.map((note) => note.clause), input.evidence);
       const explicitlyNone = request.kind === 'create' && isRecord(existing) && existing.kind === 'none';
-      if (explicitlyNone) for (const clause of sourceNotes) {
-        if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && clause.length <= 2000 &&
-            !proposal.sourceClaims.some(claim => claim.path === path && claim.raw === clause))
-          proposal.sourceClaims.push({ path, raw: clause, sourceRefs });
+      if (explicitlyNone) for (const note of sourceNotes) {
+        if (proposal.sourceClaims.length < MAX_PROPOSAL_SOURCE_CLAIMS && note.clause.length <= 2000 &&
+            !proposal.sourceClaims.some(claim => claim.path === path && claim.raw === note.clause))
+          proposal.sourceClaims.push({ path, raw: note.clause, sourceRefs: clauseRefs(note.clause) });
       }
       if (!explicitlyNone && fullNote.length <= limit && additions.length) {
         if (request.kind === 'create') request.body.shared.reservationNote = fullNote;
         else request.body.notes = fullNote;
-        proposal.annotations.push({ path, basis: 'source', evidenceRefs: sourceRefs });
+        proposal.annotations.push({ path, basis: 'source', evidenceRefs: [...new Set(additions.flatMap(clauseRefs))].slice(0, 100) });
       }
       if (fullNote.length > limit) {
-        for (const clause of sourceNotes) for (let offset = 0; offset < clause.length; offset += 2000) {
+        for (const note of sourceNotes) for (let offset = 0; offset < note.clause.length; offset += 2000) {
           if (proposal.sourceClaims.length >= MAX_PROPOSAL_SOURCE_CLAIMS) break;
-          const raw = clause.slice(offset, offset + 2000);
-          if (!proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === raw)) proposal.sourceClaims.push({ path, raw, sourceRefs });
+          const raw = note.clause.slice(offset, offset + 2000);
+          if (!proposal.sourceClaims.some((claim) => claim.path === path && claim.raw === raw))
+            proposal.sourceClaims.push({ path, raw, sourceRefs: clauseRefs(note.clause) });
         }
         addProjectionIssue(proposal, path, 'source_note_exceeds_native_limit',
-          `This note exceeds HMS's ${limit}-character limit. Review and shorten it before saving; the source remains available in the selected email.`, sourceRefs);
+          `This note exceeds HMS's ${limit}-character limit. Review and shorten it before saving; the source remains available in the selected email.`,
+          [...new Set(sourceNotes.flatMap((note) => note.sourceRefs))].slice(0, 100));
       }
       if (fullNote.length <= limit) proposal.issues = proposal.issues.filter((issue) => {
         const description = normalizedFact(issue.explanation).replace(/^special request(?:ed)?\s*:?\s*/u, '');
-        return !sourceNotes.some((clause) => normalizedFact(clause) === description);
+        return !sourceNotes.some((note) => normalizedFact(note.clause) === description);
       });
     }
     if (request.kind === 'create' && extracted.requestedPrice) {
@@ -3992,8 +4104,6 @@ function projectCurrentExtraction(input: {
     const priorRoomCountRefs = priorOnlySourceRefs([sourceExtracted.roomCount], currentRefs, knownRefs);
     const priorBoardRefs = priorOnlySourceRefs(sourceExtracted.mealPlanHints, currentRefs, knownRefs);
     const priorRoomCodeRefs = priorOnlySourceRefs(sourceExtracted.roomTypeHints, currentRefs, knownRefs);
-    const isPriceRateHint = (claim: { raw: string; value: unknown }) => typeof claim.value === 'string' &&
-      /[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw);
     const priorRatePlanRefs = priorOnlySourceRefs(sourceExtracted.rateHints.filter((claim) => !isPriceRateHint(claim)), currentRefs, knownRefs);
     const priorAdultRefs = priorOnlySourceRefs(sourceExtracted.occupancy.map((row) => row.adults), currentRefs, knownRefs);
     const priorChildCountRefs = priorOnlySourceRefs(sourceExtracted.occupancy.map((row) => row.childCount), currentRefs, knownRefs);
@@ -4240,7 +4350,16 @@ function projectCurrentExtraction(input: {
         }
       }
 
-      if (roomCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
+      const unresolvedRoomHintRefs = [...new Set(roomCodes.unresolvedClaims.flatMap((claim) =>
+        claim.sourceRefs.filter((ref) => currentRefs.has(ref))))];
+      // Same veto as the rate pass below: an unresolved current room hint blocks every code
+      // pick, or the resolved sibling would be auto-selected and this hint's wording dropped.
+      if (unresolvedRoomHintRefs.length) {
+        for (const group of request.body.groups) group.roomCodes = [];
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
+          'The room preference could not be mapped to an explicit native code. Select the room code in the native-backed Quote editor.',
+          unresolvedRoomHintRefs);
+      } else if (roomCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
         if (roomCodes.codes.length === 1) {
           const code = roomCodes.codes[0]!;
           const sameScope = quoteGroupsShareRoomScope(request.body.groups);
@@ -4265,16 +4384,25 @@ function projectCurrentExtraction(input: {
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_room_code_not_projected',
           roomCodes.codes.length
             ? 'The exact source room code has no unambiguous date/group scope. Select the room code in the native-backed Quote editor.'
-            : 'Room preference text is not an exact native code; no code was inferred from its name. Select the room code in the native-backed Quote editor.',
+            : 'The room preference could not be mapped to an explicit native code. Select the room code in the native-backed Quote editor.',
           roomCodes.sourceRefs.length ? roomCodes.sourceRefs :
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
       if (currentRoomHints.length === 1 && request.body.groups.length === 1) request.body.groups[0]!.requestedRoomDescription =
         roomDescription(currentRoomHints[0]!, currentRefs, roomCodes.codes.length > 0) ?? null;
 
-      const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
       const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate', codeOptions);
-      if (rateCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
+      // A cue-abstained or unmapped current non-money hint vetoes every rate pick: assigning
+      // the other resolved code would silently drop this hint's wording.
+      const unresolvedRateHintRefs = [...new Set(rateCodes.unresolvedClaims.filter((claim) =>
+        !matchesTypedRequestedPrice(extracted, claim, currentRefs) && !isPriceRateHint(claim))
+        .flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))];
+      if (unresolvedRateHintRefs.length) {
+        for (const group of request.body.groups) group.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_not_projected',
+          'The source rate hint could not be mapped to an explicit native rate-plan code. Select a native rate code in the Quote editor.',
+          unresolvedRateHintRefs);
+      } else if (rateCodes.codes.length && currentDatePair && linkedQuoteGroups.length === request.body.groups.length) {
         if (rateCodes.codes.length === 1) {
           const code = rateCodes.codes[0]!;
           const existing = new Set(request.body.groups.map((group) => group.ratePlan));
@@ -4301,13 +4429,6 @@ function projectCurrentExtraction(input: {
         addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_scope_ambiguous',
           'The exact source rate-plan code has no unambiguous date/group scope. Rate choices were cleared for staff resolution; source claims remain available.',
           rateCodes.sourceRefs);
-      } else if (currentRateHints.length && currentRateHints.some((claim) =>
-        typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
-        !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))) {
-        for (const group of request.body.groups) group.ratePlan = null;
-        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_rate_code_not_projected',
-          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select a native rate code in the Quote editor.',
-          [...new Set(currentRateHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
       }
       const quoteParties = request.body.parties as unknown as Record<string, unknown>;
       projectPartyRole({ proposal, parties: extracted.parties, role: 'bookingAgency', currentRefs,
@@ -4327,7 +4448,7 @@ function projectCurrentExtraction(input: {
         typedRequestedPriceRefs);
       for (const [index, rate] of extracted.rateHints.entries()) {
         const sourceRate = currentClaim(rate, currentRefs);
-        if (!sourceRate || !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b/i.test(sourceRate.raw)) continue;
+        if (!sourceRate || !RATE_HINT_MONEY_CUE.test(sourceRate.raw)) continue;
         if (matchesTypedRequestedPrice(extracted, sourceRate, currentRefs)) continue;
         const amount = typeof sourceRate.value === 'number' && Number.isFinite(sourceRate.value) && sourceRate.value >= 0
           ? String(sourceRate.value) : typeof sourceRate.value === 'string' && /^\d{1,8}(?:\.\d{1,2})?$/.test(sourceRate.value.trim())
@@ -4662,11 +4783,13 @@ function projectCurrentExtraction(input: {
               appendProjectedSource(proposal, `${bookingRoot}/dateSections/0/requestedTotals/${field}`, occupancyRow[field], currentRefs);
           }
         }
-        const knownGuestNames = new Set(request.body.allocations.map((allocation) =>
-          normalizedFact([allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' '))).filter(Boolean));
+        const allocatedGuestNames = request.body.allocations.map((allocation) =>
+          [allocation.guest.firstName, allocation.guest.lastName].filter(Boolean).join(' ')).filter(Boolean);
+        const knownGuestNames = new Set(allocatedGuestNames.map(normalizedFact));
         for (const guest of extracted.guests) {
           const name = currentClaim(guest.name, currentRefs);
-          if (guest.role !== 'guest' || typeof name?.value !== 'string' || knownGuestNames.has(normalizedFact(name.value))) continue;
+          if (guest.role !== 'guest' || typeof name?.value !== 'string' || knownGuestNames.has(normalizedFact(name.value)) ||
+              allocatedGuestNames.some((assigned) => sameGuestName(assigned, name.value))) continue;
           if (name.value.length > 300) {
             addProjectionIssue(proposal, `/requests/${request.id}/body/dateSections/0/unassignedGuestNames`,
               'source_value_not_projected', 'A source guest name exceeds the 300-character destination limit; its raw claim remains available for staff review.', name.sourceRefs);
@@ -4734,13 +4857,22 @@ function projectCurrentExtraction(input: {
         if (description.length > 1000) addProjectionIssue(proposal, `/requests/${request.id}/body/shared/requestedRoomDescription`,
           'source_value_not_projected', 'The requested room description exceeds this field limit; its source claims remain available for review.',
           currentRoomHints.flatMap((hint) => hint.sourceRefs));
-        if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
+        const unresolvedRoomHintRefs = [...new Set(roomCodes.unresolvedClaims.flatMap((claim) =>
+          claim.sourceRefs.filter((ref) => currentRefs.has(ref))))];
+        // An unresolved current room hint vetoes the shared pick first; otherwise one resolved
+        // code would be selected while this hint's wording is silently dropped.
+        if (unresolvedRoomHintRefs.length) {
+          request.body.shared.roomType = null;
+          addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
+            'The source room preference could not be mapped to an explicit native room code. It remains available in source claims for staff selection.',
+            unresolvedRoomHintRefs);
+        } else if (roomCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.roomType = roomCodes.codes[0]!;
         else {
           request.body.shared.roomType = null;
           addProjectionIssue(proposal, `/requests/${request.id}/body/shared/roomType`, 'create_room_code_scope_ambiguous',
             roomCodes.codes.length
               ? 'The source room code cannot be mapped to one current Create date section. No shared room code was selected; staff must resolve the source scope.'
-              : 'The source room preference is not an exact explicit native room code. It remains available in source claims for staff selection.',
+              : 'The source room preference could not be mapped to an explicit native room code. It remains available in source claims for staff selection.',
             [...new Set(currentRoomHints.flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))]);
         }
       }
@@ -4768,13 +4900,17 @@ function projectCurrentExtraction(input: {
         const path = `/proposal/content/requests/${request.id}/body/shared/requestedMealPlan`;
         proposal.annotations.push({ path, basis: 'source', evidenceRefs: [...new Set(boardClaims.flatMap((hint) => hint.sourceRefs))] });
       }
-      const currentRateHints = extracted.rateHints.filter((hint) => currentClaim(hint, currentRefs));
       const rateCodes = currentSourceCodes(extracted.rateHints, currentRefs, 'rate', codeOptions);
-      const nonPriceRateHintRefs = [...new Set(currentRateHints.filter((claim) =>
-        typeof claim.value === 'string' && !matchesTypedRequestedPrice(extracted, claim, currentRefs) &&
-        !/[€£$]|\b(?:USD|GBP|EUR|AUD|CAD)\b|\b(?:per|nightly?|total|person|room)\b|^\s*(?:R|ZAR)\s*\d+(?:\.\d{1,2})?\s*$|^\s*\d+(?:\.\d{1,2})?\s*$/i.test(claim.raw))
+      // Same veto as the Quote pass: an unresolved current non-money hint blocks every code pick.
+      const unresolvedRateHintRefs = [...new Set(rateCodes.unresolvedClaims.filter((claim) =>
+        !matchesTypedRequestedPrice(extracted, claim, currentRefs) && !isPriceRateHint(claim))
         .flatMap((claim) => claim.sourceRefs.filter((ref) => currentRefs.has(ref))))];
-      if (rateCodes.codes.length) {
+      if (unresolvedRateHintRefs.length) {
+        request.body.shared.ratePlan = null;
+        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_not_projected',
+          'The source rate hint is not an exact native rate-plan code. Select the native rate code with staff.',
+          unresolvedRateHintRefs);
+      } else if (rateCodes.codes.length) {
         if (rateCodes.codes.length === 1 && oneSectionHasSourceDate) request.body.shared.ratePlan = rateCodes.codes[0]!;
         else {
           request.body.shared.ratePlan = null;
@@ -4782,11 +4918,6 @@ function projectCurrentExtraction(input: {
             'The source rate-plan code cannot be mapped to one current Create date section. No shared rate code was selected; staff must resolve the source scope.',
             rateCodes.sourceRefs);
         }
-      } else if (nonPriceRateHintRefs.length) {
-        request.body.shared.ratePlan = null;
-        addProjectionIssue(proposal, `/requests/${request.id}/body/shared/ratePlan`, 'create_rate_code_not_projected',
-          'The source rate hint is not an exact native rate-plan code; no rate code was inferred from its name. Select the native rate code with staff.',
-          nonPriceRateHintRefs);
       }
     }
   }
@@ -4870,7 +5001,8 @@ function projectCurrentExtraction(input: {
     addedIssues: Math.max(0, proposal.issues.length - existingIssueCount), extractionIdByProposalRequestId };
 
   const fallbackProposal = buildFallbackProposal({ extraction: currentExtraction, source: input.source,
-    evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.' });
+    evidence: input.evidence, reason: 'Projected source facts did not fit the editable workflow schema; raw claims remain available for staff review.',
+    evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody });
   appendExtractionSourceClaims(fallbackProposal, input.extraction, knownRefs);
   carryConfirmationClaimCapacityIssues({ source: proposal, target: fallbackProposal,
     sourceRequestToExtractionId: extractionIdByProposalRequestId,
@@ -4884,7 +5016,8 @@ function projectCurrentExtraction(input: {
     addedIssues: 1, extractionIdByProposalRequestId: new Map(currentExtraction.requests.map((request) => [request.id, request.id])) };
   // buildFallbackProposal already has a schema-safe unsupported envelope for this last-resort case.
   const lastResort = buildFallbackProposal({ extraction: null, source: input.source, evidence: input.evidence,
-    reason: 'Projected source facts could not be represented safely; staff review is required.' });
+    reason: 'Projected source facts could not be represented safely; staff review is required.', evidenceComplete: meaningEvidenceComplete,
+    currentAuthoredText: currentAuthoredBody });
   appendExtractionSourceClaims(lastResort, input.extraction, knownRefs);
   addProjectionIssue(lastResort, '/', 'source_projection_schema_rejected',
     'The editable fallback retained raw source claims because typed destination values failed schema validation.',
@@ -6404,13 +6537,21 @@ export async function runReservationWorkflowV2Prefill(input: {
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
+  const sourceReadComplete = observations[0]?.coverage.complete === true && textCoverageComplete;
+  // Match the projection: the filtered attachment list cannot prove inventory completeness.
+  const meaningEvidenceComplete = false;
+  // Meaning-mapped codes anchor only in sender-authored text, quoted history excluded — the
+  // same authored slice as the main projection.
+  const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
+    input.selection.currentBodyText ?? input.selection.bodyText));
   const base: Pick<ReservationWorkflowV2PrefillResult,
     'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements'> & { errors: NonNullable<ReservationWorkflowV2Draft['errors']> } = {
     generationId, extraction: empty, sourceBound: true, observations,
     fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as NonNullable<ReservationWorkflowV2Draft['errors']> };
   const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => ({
     ...base, status: 'partial', sourceBound: true,
-    proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason }),
+    proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason, evidenceComplete: meaningEvidenceComplete,
+      currentAuthoredText: currentAuthoredBody }),
     errors: [...base.errors, error],
   });
   if (!input.adapter) return fallback('Model adapter is unavailable; source text remains editable for staff review.');
@@ -6463,8 +6604,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     source: input.source, selection: input.selection, evidence });
   const extraction = anchorCurrentExtractionDates({ extraction: recoveredExtraction, source: input.source, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
-  const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete:
-    observations[0]?.coverage.complete === true && textCoverageComplete };
+  const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete };
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
@@ -6474,14 +6614,16 @@ export async function runReservationWorkflowV2Prefill(input: {
       groundedSeparateAsk(body, request.requestText.raw, 2000) ? [{ ...request, kind: 'other' as const }] : []);
     if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
       proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
-        reason: 'Self-sent pre-stay mail has no separate current request.' }),
+        reason: 'Self-sent pre-stay mail has no separate current request.', evidenceComplete: meaningEvidenceComplete,
+        currentAuthoredText: currentAuthoredBody }),
       errors: base.errors, skippedReason: 'self_prestay' };
     const separate = { ...extraction, requests };
     if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, separate))) {
       throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
     }
     const proposal = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction: separate, source: input.source, evidence,
-      reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.' }),
+      reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.', evidenceComplete: meaningEvidenceComplete,
+      currentAuthoredText: currentAuthoredBody }),
       extraction: separate, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode }).proposal;
     return { ...base, extraction: separate, status: 'partial',
       proposal,
@@ -6609,7 +6751,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     { source: input.source, selection: input.selection, evidence }) : null;
   let amendNoteRequirements: ReservationWorkflowV2Draft['fieldReviewRequirements'] = {};
   if (finalProposal) {
-    const autopick = applyAutopick({ proposal: finalProposal, observations: finalObservations, history: autopickHistory,
+    const autopick = applyAutopick({ proposal: finalProposal, observations: finalObservations, history: autopickHistory, extraction: currentActions,
       evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
       modelResults: autopickModelResults, extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map(),
       generationId, propertyCode, source: input.source });
@@ -6667,7 +6809,8 @@ export async function runReservationWorkflowV2Prefill(input: {
     else if (!finalParsed.success) error = { code: 'invalid_typed_synthesis', message: `Synthesis ${summarizeSchemaIssues(finalParsed.error)}; source extraction remains editable.` };
     else error = { code: 'invalid_proposal_refs', message: `Synthesis reference validation failed (${proposalIssue ?? reviewIssue}); source extraction remains editable.` };
     const reason = error.message;
-    const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason }),
+    const fallbackProjection = projectCurrentExtraction({ proposal: buildFallbackProposal({ extraction, source: input.source, evidence, reason,
+      evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody }),
       extraction, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode });
     const fallbackBinding = bindPartyObservations({ proposal: fallbackProjection.proposal, extraction: candidateExtraction,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, observations: finalObservations, generationId });
@@ -6743,9 +6886,10 @@ export async function runReservationWorkflowV2Prefill(input: {
     // A failed synthesis records no model choice: that is a synthesis failure, not an autopick parse failure.
     const autopick = applyAutopick({ proposal: applyDefaultCmsSendPolicy(fallbackSafety.proposal, propertyCode,
       currentActions, fallbackProjection.extractionIdByProposalRequestId,
-      { source: input.source, selection: input.selection, evidence }), observations: finalObservations, history: autopickHistory,
-      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env), modelResults: [],
-      extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId, generationId, propertyCode, source: input.source });
+      { source: input.source, selection: input.selection, evidence }), observations: finalObservations, history: autopickHistory, extraction: currentActions,
+      evidence, catalog: nativeCatalog, guaranteeChoices: await autopickGuaranteeChoices(propertyCode, env),
+      modelResults: [], extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId,
+      generationId, propertyCode, source: input.source });
     finalObservations.push(...autopick.observations);
     const trackResult = await applyRateTrackMemory({ proposal: autopick.proposal, source: input.source,
       propertyCode, generationId, env });
