@@ -118,14 +118,16 @@ try {
         .where(eq(mail.message.threadId, input.source.threadId));
       const attachments = attachmentSnapshot(attachmentRows.map(row => row.attachment));
       if (JSON.stringify(attachments) !== JSON.stringify(attachmentSnapshot(current.attachments))) throw Error('live_attachments_changed');
-      const threadRows = await db.select({ id: mail.message.id, subject: mail.message.subject, textBody: mail.message.textBody,
-        htmlBody: mail.message.htmlBody, sourceProvenance: mail.message.sourceProvenance, historyOnly: mail.message.historyOnly })
-        .from(mail.message).where(eq(mail.message.threadId, input.source.threadId));
+      const threadRows = await db.select().from(mail.message).where(eq(mail.message.threadId, input.source.threadId));
       if (threadRows.length !== current.messages.length || threadRows.some(row => {
         const prior = current.messages.find(message => message.id === row.id);
-        return !prior || (row.subject ?? '') !== (prior.subject ?? '') ||
-          (row.textBody ?? '') !== (prior.text_body ?? '') || (row.htmlBody ?? '') !== (prior.html_body ?? '') ||
-          row.historyOnly !== prior.history_only || JSON.stringify(row.sourceProvenance ?? null) !== JSON.stringify(prior.source_provenance ?? null);
+        const fields = [['subject', 'subject'], ['textBody', 'text_body'], ['htmlBody', 'html_body'],
+          ['sourceProvenance', 'source_provenance'], ['historyOnly', 'history_only'], ['direction', 'direction'],
+          ['receivedAt', 'received_at'], ['sentAt', 'sent_at'], ['createdAt', 'created_at'], ['fromAddress', 'from_address'],
+          ['toAddresses', 'to_addresses'], ['ccAddresses', 'cc_addresses'], ['bccAddresses', 'bcc_addresses'],
+          ['ownerHeaderValue', 'owner_header_value'], ['messageIdHeader', 'message_id_header'],
+          ['inReplyTo', 'in_reply_to'], ['references', 'references']];
+        return !prior || fields.some(([key, column]) => JSON.stringify(row[key] ?? null) !== JSON.stringify(prior[column] ?? null));
       })) throw Error('live_thread_changed');
       const selection = await loadSyncedQuoteSelectionFromMailbox({ db, transportId: input.transport.id, messageId: input.source.messageId,
         includeThreadState: true, sourceCutoffOnly: true, includeVisionImages: true, trackVisionImages: true, signal: AbortSignal.timeout(60_000) });
