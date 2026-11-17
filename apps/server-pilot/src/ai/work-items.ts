@@ -2966,17 +2966,8 @@ export async function listWorkItems(
             return null;
           }
           if (row.kind === 'other') {
-            if (payload === null) {
-              return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
-            }
-            if (payload.needsAction === true) {
+            if (payload?.needsAction === true) {
               return { ...row, kind: 'other_actionable', chip, actions: ['other'], reviewOnly: true };
-            }
-            if (
-              payload.needsAction === false
-              && (payload.actionConfidence === 'high' || payload.actionConfidence === 'medium')
-            ) {
-              return null;
             }
             return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
           }
