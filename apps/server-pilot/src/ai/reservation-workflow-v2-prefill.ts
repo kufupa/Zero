@@ -105,14 +105,26 @@ function omitUncitedUnknownClaims(value: unknown): unknown {
     });
     if (!item || typeof item !== 'object') return item;
     const row = item as Record<string, unknown>;
-    if (typeof row.raw === 'string' && Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0 &&
+    if (!isRoot && typeof row.raw === 'string' && Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0 &&
         (row.value === null || !Object.hasOwn(row, 'value'))) {
       return OMIT_UNKNOWN_CLAIM;
     }
     const output: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(row)) {
-      if (isRoot && key === 'issues') {
+      if (isRoot && (key === 'issues' || key === 'disposition')) {
         output[key] = child;
+        continue;
+      }
+      if (isRoot && key === 'requests') {
+        output[key] = Array.isArray(child) ? child.map((reqRow) => {
+          if (!isRecord(reqRow)) return reqRow;
+          const reqOut: Record<string, unknown> = {};
+          for (const [reqKey, reqVal] of Object.entries(reqRow)) {
+            const normalized = normalize(reqVal);
+            if (normalized !== OMIT_UNKNOWN_CLAIM) reqOut[reqKey] = normalized;
+          }
+          return reqOut;
+        }) : child;
         continue;
       }
       const normalized = normalize(child);
@@ -120,8 +132,7 @@ function omitUncitedUnknownClaims(value: unknown): unknown {
     }
     return output;
   };
-  const normalized = normalize(value, true);
-  return normalized === OMIT_UNKNOWN_CLAIM ? undefined : normalized;
+  return normalize(value, true);
 }
 
 /** Repair a mistyped citation only when the quoted claim occurs in exactly one admitted source. */
