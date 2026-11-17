@@ -5765,7 +5765,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
       .some((change) => change.op === 'set' && change.field === 'reservationNote')) continue;
     const prefixes = [`/proposal/content/requests/${request.id}/`, `/requests/${request.id}/`];
     for (const issue of proposal.issues) {
-      if (!prefixes.some((prefix) => issue.path.startsWith(prefix))) continue;
+      if (issue.kind === 'source_note_for_review' || !prefixes.some((prefix) => issue.path.startsWith(prefix))) continue;
       issue.explanation = issue.explanation.replace(
         /\b(?:is|was|has been)\s+(?:verbatim\s+)?(?:preserved|saved|added|copied|recorded|included|retained)(?:\s+verbatim)?\s+(?:in|to|within)\s+(?:the\s+)?reservation\s*note\b/giu,
         'needs email review');
