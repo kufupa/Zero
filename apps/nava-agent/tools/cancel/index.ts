@@ -161,8 +161,14 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       if (read.outcome !== 'ok') return nativeFailure(read);
       const result = await runTool({ tool: 'prepareCancellation', requestedScope: target.scope });
       if (result.outcome !== 'prepared_for_human_review') return nativeFailure(result);
-      return success({ ...result, display_rows: preflightDisplay(result, target.bookingId),
-        cancellation_fee: result.fee ?? null, request_dispatched: false });
+      const data = { ...result, display_rows: preflightDisplay(result, target.bookingId),
+        cancellation_fee: result.fee ?? null, request_dispatched: false };
+      const stay = object(result.stay) ? result.stay : {};
+      const status = object(stay.status) ? stay.status : {};
+      if (status.state !== 'observed' || typeof status.value !== 'string' || status.value.trim().toLowerCase() !== 'reserved') {
+        return { ...error('CANCEL_STATUS_REQUIRES_REVIEW', 'Fresh status is not confirmed Reserved; staff review is required.'), data };
+      }
+      return success(data);
     }, { propertyCode: target.propertyCode, transportId: property.mailboxTransportId,
       confirmation: target.confirmation, signal: context.signal, credentialLease: context.credentialLease });
   } catch (cause) {
