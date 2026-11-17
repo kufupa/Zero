@@ -1,19 +1,20 @@
 ---
 name: filing
-description: Use when a hotel email supplies a booking voucher, proof of payment, confirmation or other reservation document, or mixes a supplied file with invoice, payment or status questions.
+description: Use when an inbound hotel email supplies a voucher, proof of payment or reservation document, or combines a supplied file with a payment or invoice question.
 ---
 
 # Filing
 
-Read [common rules](../references/common.md), [document rules + native order](references/rules.md), [reply drafts](references/replies.md).
+Read [common rules](../references/common.md), [document rules and native order](references/rules.md), and [reply drafts](references/replies.md).
 
-1. Read actual supplied attachment. Classify contents: voucher, POP, confirmation, invoice/pro-forma, payment instructions, unknown. Filename/subject alone insufficient. Question without supplied file → separate read-supported answer or staff review.
-2. Match document to property + native reservation + guest/stay + room scope. Follow relevant corrections and cross-thread evidence; never auto-link from sender/time/number alone. Agency/GDS notice may still supply actionable voucher.
-3. Check existing documents for same file + target + category. Same filename ≠ duplicate. Ambiguous file, booking, scope or document code → clarify/staff review.
-4. Stage one explicit file: verified Stay 360 target → Documents → native document code/meaning → description → actual file. Publish target, file/attachment evidence, category/description, charge/payment scope if relevant, unresolved issues. No payment posting/refund.
-5. `hms_save` waits for real-guest staff Go. Backend re-stages then writes and reads fresh. Upload response ≠ persistence; unresolved readback → reconcile, never blind re-upload.
-6. Draft attachment confirmation only for verified document + stay. Receipt ≠ filed ≠ paid. Skip verified duplicate; retain distinct questions and filings.
+1. Use `mail_read_thread`. Look at the selected inbound first. Propose Filing for an explicit current submission with a real PDF listed on that message. An earlier quoted voucher, promised payment, invoice request, or pro-forma alone is not a Filing task.
+2. Match one exact HMS confirmation printed in the selected mail to the PDF's intended HRCEN stay. Check guest and stay hints; use scoped reservation search/read where available. If the exact confirmation or the file is unclear, use `needs_info` or `staff_review`. Keep separate questions distinct.
+3. Treat filename and sender wording as source hints. Unless document text is truly available, say the PDF contents were not read and staff must check the selected file and its booking before Prepare. Do not claim paid, filed or duplicate. Do not call absent attachment or filing tools.
+4. Publish one booking and one action, with `native_result: null`. Set `booking.property_code` to HRCEN and `booking.fields.confirmation_number` to the exact reference (including stay suffix). Put only sourced guest names or ISO stay dates in the corresponding fields. Use the following action:
+   - `type`: `voucher_submission`, `payment_proof_submission`, or `attach_document`, appropriate to the current request.
+   - `booking_ids`: the one booking ID.
+   - `details`: `{message_id, attachment_id, description}`. Use the selected inbound message ID and an exact PDF ID listed on it. Set a concise editable description based on the request, with no bank or card data.
+   - Add editable field specs for `/actions/0/details/description` (text) and `/actions/0/details/attachment_id` (select, source PDF IDs and filenames from this message only). The source message ID is fixed. Cite the source message/attachment in evidence.
+5. Staff checks the actual PDF, confirms the exact booking and runs Prepare on the edited revision. The worker checks the HMS Documents list and opens the unsaved form with the selected PDF and description. It reports the observed document code and list coverage. Nothing is uploaded or sent.
 
-Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `hms_prepare`, `proposal_publish`, `hms_save`, `reply_draft`. Exact [bindings](../references/tools-and-proposal.md); absent filing handler/readback → explicit review.
-
-Example: “POP attached” + unpaid pro-forma → no POP filing; clarify actual payment proof. Separate valid voucher on same email remains actionable.
+Tools: `skill_read`, `mail_read_thread`, scoped `hms_search_reservations`/`hms_read_reservation`, `proposal_publish`. Use the complete proposal shape in [bindings](../references/tools-and-proposal.md); staff Prepare replaces any model Prepare or Save for this workflow.

@@ -12,9 +12,9 @@ Proposed wording; no audited staff-verbatim template. Draft only. Fill placehold
 
 Unpaid pro-forma labelled POP: “The attached document appears to be a pro-forma invoice. Could you please send the payment confirmation for [verified reservation]?”
 
-## After verified fresh readback
+## After unsaved Prepare
 
-“We have attached [document type/filename] to reservation [actual reference] for [guest], [dates].” Separate actual verified items. No “paid” claim from filing success.
+The result is for staff review. Do not tell a sender the file has been attached or the stay has been paid.
 
 ## Duplicate / uncertain / separate inquiry
 
