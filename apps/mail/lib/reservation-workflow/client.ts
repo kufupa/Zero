@@ -680,7 +680,6 @@ function quoteLookupNotice(result: unknown): string | undefined {
   if (!isRecord(result) || !Array.isArray(result.quotes)) return undefined;
   const issues = result.quotes.flatMap((value) => {
     if (!isRecord(value) || value.status === 'priced') return [];
-    if (value.status === 'needs_input' && Array.isArray(value.partyCandidates)) return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
     const issue = nativeIssueText(value.issue);
     const fields = inputFieldLabels(value.fields);

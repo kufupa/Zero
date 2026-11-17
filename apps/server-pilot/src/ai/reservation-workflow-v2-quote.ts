@@ -1254,7 +1254,7 @@ async function lookupPartyCandidates(
       const saved = await persistObservation(ctx, input, observation);
       if (saved.status !== 'ok') return { status: saved.status, issue: 'party_lookup_result_not_persisted', candidates };
     }
-    if (!answered) return { status: 'failed', issue: 'native_party_search_incomplete', candidates };
+    if (onlyRole && !answered) return { status: 'failed', issue: 'native_party_search_incomplete', candidates };
   }
   return { status: 'ok', candidates };
 }
