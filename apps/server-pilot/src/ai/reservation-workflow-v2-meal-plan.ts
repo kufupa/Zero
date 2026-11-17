@@ -21,6 +21,8 @@ export function normalizeRequestedMealPlan(value: unknown): {
   if (/\b(?:breakfast|lunch|dinner|supper|bb|b b|dbb)\b[^;]*\bor\b[^;]*\b(?:breakfast|lunch|dinner|supper|bb|b b|dbb)\b/u.test(normalized))
     return { mealPlan: null, lunchRequested };
   const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
+  if (/\bsupper\b/u.test(board) && !['breakfast supper', 'supper breakfast', 'bb supper', 'supper bb', 'b b supper', 'supper b b'].includes(board))
+    return { mealPlan: null, lunchRequested };
   const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|supper|dbb)\b/u.test(board);
   if ((allMealsExcluded || exclusions.has('breakfast')) && breakfast || (allMealsExcluded || exclusions.has('dinner')) && dinner)
     return { mealPlan: null, lunchRequested };
