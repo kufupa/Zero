@@ -54,6 +54,42 @@ function issueText(issue: ReservationPaneSnapshot['issues'][number]) {
   return explanation;
 }
 
+function quoteStaffText(message: string) {
+  return /\b(?:synthesi[sz]ed|projection|observation|candidate|digest|stacktrace|trpc)\b|\b\w+_\w+\b|\/proposal\//i.test(message)
+    ? 'Check the quote details against the email, then try again.' : message;
+}
+
+/** Quote pane only: known kinds → staff wording; never invent severity or gating. */
+function quoteIssueText(issue: ReservationPaneSnapshot['issues'][number]) {
+  if (issue.kind === 'source_value_not_projected' && /exceeds/i.test(issue.explanation)) {
+    const limit = issue.explanation.match(/(\d+)-character/i)?.[1];
+    return `A value from the email is too long. Enter a shorter value${limit ? ` (maximum ${limit} characters)` : ''}.`;
+  }
+  const known: Record<string, string> = {
+    date_section_link_ambiguous: 'Confirm arrival and departure for each room group.',
+    synthesized_date_without_source: 'Enter arrival and departure for each room group.',
+    quote_group_quantity_scope_ambiguous: 'Check the room count for each group against the email.',
+    quote_room_count_invalid: 'Enter a valid room count for each group.',
+    quote_board_scope_ambiguous: 'Choose the meal plan for each room group.',
+    quote_occupancy_scope_ambiguous: 'Enter adults and children for each room group before checking.',
+    quote_room_code_not_projected: 'Choose the room type for each group.',
+    quote_room_code_scope_ambiguous: 'Choose which room type belongs to each group.',
+    quote_rate_code_not_projected: 'Choose the rate plan for each group.',
+    quote_rate_code_scope_ambiguous: 'Choose which rate plan belongs to each group.',
+    quote_guest_room_count_inferred: 'Check the room count — it was inferred from the email.',
+    booker_contact_ambiguous: 'Confirm the booker contact details for this quote.',
+    source_value_not_projected: 'Enter the missing value from the email, or clear the field if it does not apply.',
+    ambiguous_party_role_source: 'Choose the matching organisation or booking agency, or leave it blank.',
+  };
+  if (known[issue.kind]) return known[issue.kind];
+  const plain = issueText(issue);
+  if (/synthesized date (?:group|section)/i.test(plain)) return 'Confirm arrival and departure for each room group.';
+  if (/host source observation|observation partial/i.test(plain)) {
+    return 'Some email details could not be read fully. Check the quote fields below, then continue.';
+  }
+  return quoteStaffText(plain);
+}
+
 function attentionButtons(fields: string[], snapshot: ReservationPaneSnapshot, requestId: string, kind: ReservationWorkflowKind) {
   const buttons = fields.map(field => {
     const room = field.match(/\/allocations\/(\d+)(?:\/|:|$)/);
@@ -647,7 +683,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         {row.id === request?.id && <button type="button" className={styles.tabChevron} aria-label={`Options for ${labels[row.kind]}`} aria-expanded={actionMenu === row.id}
           onClick={() => { setActionMenu(current => current === row.id ? null : row.id); setConfirmRemove(false); }}>▾</button>}
       </span>)}
-      </div><select className={styles.actionAdd} aria-label="Add action" value="" disabled={!snapshot || busy || editBlocked || Boolean(pendingDispatch)} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !editBlocked && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <option key={kind} value={kind}>{labels[kind]}</option>)}</select>
+      </div><select className={styles.actionAdd} aria-label="Add action" value="" disabled={!snapshot || busy || editBlocked || Boolean(pendingDispatch)} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !editBlocked && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">Add action</option>{actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <option key={kind} value={kind}>{labels[kind]}</option>)}</select>
     </div>
     {request && actionMenu === request.id && <div className={styles.actionMenu}>
       {actionLocked ? <p>This action has an Infor result and must stay in the draft.</p> : confirmRemove ? <>
@@ -659,7 +695,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     </div>}</nav>
     <div className={styles.sources}>{source.attachments.map(file => <button type="button" key={file.sourceRef} onClick={() => props.onOpenAttachment?.(file.sourceRef)}>{file.name}</button>)}</div>
     <main className={`${styles.content} nava-pane-scroll`}>
-    {(props.loadError || visibleError || workbench.conflict) && <div className={styles.error} role="alert">{[...new Set([props.loadError, visibleError].filter((error): error is string => Boolean(error)))].map(error => <p key={error}>{knownFailureCopy(error) ?? error}</p>)}{workbench.conflict && <>
+    {(props.loadError || visibleError || workbench.conflict) && <div className={styles.error} role="alert">{[...new Set([props.loadError, visibleError].filter((error): error is string => Boolean(error)))].map(error => <p key={error}>{request?.kind === 'quote' ? quoteStaffText(knownFailureCopy(error) ?? error) : knownFailureCopy(error) ?? error}</p>)}{workbench.conflict && <>
       {workbench.unresolvedPending.length > 0 && <div><p>These edits need to be entered again. Copy the values before discarding:</p>
         {workbench.unresolvedPending.map(edit => <p key={edit.path}><strong>{edit.label}:</strong> {edit.value || '(empty)'}</p>)}</div>}
       <div><button type="button" disabled={editBlocked || busy || !workbench.applicablePendingCount} onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div></>}</div>}
@@ -678,8 +714,8 @@ export function ReservationPane(props: ReservationPaneProps) {
         <strong>{currentAttention.phase === 'review' ? 'Review needed before continuing.'
           : currentAttention.phase === 'save' ? request?.kind === 'quote' ? 'Quote generation didn’t finish — check the result before trying again.' : 'Save didn’t finish — check the outcome in Infor before trying again.'
           : hadWrite ? 'Check didn’t finish — review the details below.' : 'Check didn’t finish — no booking, stay or file was saved by this check.'}</strong>
-        <p>{currentAttention.message}</p>
-        {[...new Set(currentIssues.map(issueText))].map(reason => <p key={reason}>{reason}</p>)}
+        <p>{request?.kind === 'quote' ? quoteStaffText(currentAttention.message) : currentAttention.message}</p>
+        {request?.kind !== 'quote' && [...new Set(currentIssues.map(issueText))].map(reason => <p key={reason}>{reason}</p>)}
         {reviewButtons.length > 0 && <div>{reviewButtons.map(({ field, label, target }) => <button type="button" key={label} onClick={() => { if (target) activeTarget.current = target; focusField(field); }}>{label}</button>)}</div>}
       </div>}
       {!recoveryOnly && props.skippedSource ? (props.skippedSource.kind === 'channel' || props.skippedSource.kind === 'system') && props.skippedSource.source
@@ -690,8 +726,8 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p>This pre-stay email describes an existing reservation. It cannot create a new booking.</p>
       </div>}
       {!snapshot ? (props.skippedSource ? null : <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>)
-        : reviewOnlyEmpty ? <div className={styles.empty}><h2>Needs review</h2><p>Nava could not confirm what this email needs.{snapshot.session.draft.disposition?.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''} Check the email and decide if it needs work.</p>{[...new Set(earlierIssues.map(issueText))].map(reason => <p key={reason} className={styles.notice}>{reason}</p>)}<p className={styles.small}>If this email needs work, use + Action above.</p></div>
-        : !request && !sourceChanged && snapshot.session.draft.disposition?.decision === 'no_action' && snapshot.session.draft.status === 'ready' && Boolean(snapshot.session.draft.extraction) && snapshot.session.draft.extractionGenerationId === snapshot.session.draft.generationId ? <div className={styles.empty}><h2>No action needed</h2><p>Nava checked this email and its attachments and found nothing for staff to do.{snapshot.session.draft.disposition.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''}</p><p className={styles.small}>If this email does need work, use + Action above.</p></div>
+        : reviewOnlyEmpty ? <div className={styles.empty}><h2>Needs review</h2><p>Nava could not confirm what this email needs.{snapshot.session.draft.disposition?.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''} Check the email and decide if it needs work.</p>{[...new Set(earlierIssues.map(issueText))].map(reason => <p key={reason} className={styles.notice}>{reason}</p>)}<p className={styles.small}>If this email needs work, use Add action above.</p></div>
+        : !request && !sourceChanged && snapshot.session.draft.disposition?.decision === 'no_action' && snapshot.session.draft.status === 'ready' && Boolean(snapshot.session.draft.extraction) && snapshot.session.draft.extractionGenerationId === snapshot.session.draft.generationId ? <div className={styles.empty}><h2>No action needed</h2><p>Nava checked this email and its attachments and found nothing for staff to do.{snapshot.session.draft.disposition.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''}</p><p className={styles.small}>If this email does need work, use Add action above.</p></div>
         : !request ? (() => {
           const needsReview = prefill?.status === 'failed' || snapshot.session.draft.status === 'prefill_failed' || (snapshot.session.draft.status === 'partial' && ['complete', 'failed', 'superseded'].includes(prefill?.status ?? ''));
           return <div className={styles.empty}><h2>{needsReview ? 'Needs review' : 'What does this email need?'}</h2><p>{needsReview ? 'No automatic action was extracted. Add an action to begin, or retry prefill.' : 'Add an action to begin. Prefill will appear here when ready; your edits are saved.'}</p>{!source.selfPreStay && <button type="button" disabled={editBlocked} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>;
@@ -781,8 +817,18 @@ export function ReservationPane(props: ReservationPaneProps) {
       {['queued', 'running'].includes(prefill?.status ?? '') && <p className={styles.small}>{prefill?.status === 'queued' ? 'Prefill is queued.' : prefill?.phase === 'native_checks' ? 'Checking the extracted details in Infor.' : 'Reading the email and attachments.'} You can start editing now.</p>}
       {directPrefillAbandoned && prefill.attemptCount < 2 && <p className={styles.small}>Prefill appears interrupted. Your edits are kept. <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button></p>}
       {!venueOnly && prefill?.status === 'failed' && <p className={styles.small}>Prefill did not finish. Your form still works. {(prefill.phase === 'native_checks' || prefill.attemptCount < 2 || prefill.jobRunId) && <button type="button" disabled={disabled || workbench.saving} onClick={() => { void workbench.retryPrefill().catch(() => {}); }}>Retry prefill</button>}</p>}
-      {!venueOnly && !currentAttention && currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>)}
-      {!venueOnly && earlierIssues.length > 0 && !reviewOnlyEmpty && <details className={styles.earlierChecks}>
+      {!venueOnly && (request?.kind === 'quote' ? (() => {
+        const head = currentAttention ? [] : currentIssues.slice(0, 2);
+        const rest = [...currentIssues.slice(head.length), ...earlierIssues];
+        return <>
+          {head.map((issue, index) => <p className={styles.notice} key={index}>{quoteIssueText(issue)}</p>)}
+          {rest.length > 0 && <details className={styles.earlierChecks}>
+            <summary>Details · {rest.length}</summary>
+            {rest.map((issue, index) => <p className={styles.notice} key={index}>{quoteIssueText(issue)}</p>)}
+          </details>}
+        </>;
+      })() : !currentAttention && currentIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>))}
+      {!venueOnly && request?.kind !== 'quote' && earlierIssues.length > 0 && !reviewOnlyEmpty && <details className={styles.earlierChecks}>
         <summary>Earlier email checks · {earlierIssues.length} notices</summary>
         {earlierIssues.map((issue, index) => <p className={styles.notice} key={index}>{issueText(issue)}</p>)}
       </details>}
@@ -804,7 +850,10 @@ export function ReservationPane(props: ReservationPaneProps) {
         <br />Infor details may change when you check the price. Review that price before saving.
       </div>}
       {stage && <div className={styles.stage} aria-label="Workflow progress">
-        <ol>{stage.steps.map((step, index) => <li key={`${index}:${step.label}`} data-state={step.state} aria-current={step.state === 'current' ? 'step' : undefined} aria-label={`${index + 1}. ${step.label}: ${step.state}`}>{index + 1}. {step.label}</li>)}</ol>
+        <ol>{stage.steps.map((step, index) => {
+          const label = request.kind === 'quote' && step.label === 'Send' ? 'Draft saved' : step.label;
+          return <li key={`${index}:${step.label}`} data-state={step.state} aria-current={step.state === 'current' ? 'step' : undefined} aria-label={`${index + 1}. ${label}: ${step.state}`}>{index + 1}. {label}</li>;
+        })}</ol>
         <p><strong>Now / Next:</strong> {currentAttention ? `Fix ${reviewButtons.length || 'the'} ${reviewButtons.length === 1 ? 'item' : 'items'} above. ` : ''}{stage.now}</p>
         {stage.showOutcomes && <><p><strong>You get:</strong> {stage.youGet}</p>
         <p><strong>Guest gets:</strong> {stage.guestGets}</p></>}
