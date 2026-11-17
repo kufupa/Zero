@@ -3,7 +3,7 @@ import { prepareInput, saveInput, type CreateInput } from './schema.js';
 import { hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
-export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; staffStage?:StaffStage };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; staffStage?:StaffStage; credentialLease?:Lease };
 type SaveContext = ToolContext & { markDispatched(details: unknown): Promise<void> };
 type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
 
@@ -96,7 +96,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (value === null && (field === 'agency_id' || field === 'agency_name')) continue;
+    if (value === null && ['agency_id', 'agency_name', 'guest_profile_id', 'source_of_business', 'track'].includes(field)) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');
@@ -117,7 +117,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   // A chosen native ID and name can coexist in the proposal; the native request
   // selects by ID and verifies the supplied name separately.
   if ('profileId' in request.guest && 'search' in request.guest) {
-    if (!expectedGuest || booking.fields.guest_email !== undefined) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name; email lookup cannot be combined.');
+    if (!expectedGuest || booking.fields.guest_email != null) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name; email lookup cannot be combined.');
     delete request.guest.search;
   }
   return { request, unknown, ...(expectedGuest ? { expectedGuest } : {}) };
@@ -127,6 +127,28 @@ function bounded(value: unknown): unknown {
   const json = JSON.stringify(value);
   if (json === undefined || Buffer.byteLength(json) > 512_000) throw new Error('NATIVE_RESULT_TOO_LARGE');
   return JSON.parse(json);
+}
+
+function guestChoices(result: NativeResult) {
+  const candidates = result.guestCandidates;
+  const coverage = result.guestCoverage;
+  if (!Array.isArray(candidates) || !object(coverage)) return {status:'unavailable',items:[],coverage:null};
+  const text = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 200 && !/[\r\n\p{Cc}]/u.test(value) ? value : null;
+  const items = candidates.flatMap(value => {
+    if (!object(value)) return [];
+    const nativeId = typeof value.nativeId === 'string' && /^\d{1,100}$/.test(value.nativeId) ? value.nativeId : null;
+    const firstName = text(value.firstName), lastName = text(value.lastName);
+    if (!nativeId || !firstName || !lastName) return [];
+    return [{native_id:nativeId,first_name:firstName,last_name:lastName,city:text(value.city),country:text(value.country)}];
+  });
+  const shown = items.slice(0,30);
+  const truncated = shown.length !== candidates.length;
+  const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const loaded = count(coverage.loaded), total = count(coverage.total);
+  const complete = coverage.possiblyTruncated === false && loaded !== null && total === loaded &&
+    candidates.length === loaded && !truncated;
+  return {status:'available',items:shown,coverage:{loaded,total,complete,possibly_truncated:!complete,
+    returned:shown.length,truncated}};
 }
 
 async function loadNativeResult(api: NativeApi, request: NativeRequest, options: Record<string, unknown>): Promise<NativeResult> {
@@ -159,11 +181,14 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (!transportId) return fail('UNSUPPORTED_PROPERTY', 'Native HMS property or transport is unavailable.');
     const cloudTargetKey = api.createCloudTargetKey(expectedGuest, arrival, request.propertyCode);
     if (!cloudTargetKey) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
-    const result = await api.withCloudCredentialLease(request.propertyCode, lease => loadNativeResult(api, { ...request, mode: 'prepare' }, {
+    const run = (lease: Lease) => loadNativeResult(api, { ...request, mode: 'prepare' }, {
       credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey,
       allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
-    }), { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
-    const data = bounded({ native: result, unsupportedFields: built.unknown });
+    });
+    const result = context.credentialLease ? await run(context.credentialLease) :
+      await api.withCloudCredentialLease(request.propertyCode, run, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
+    const data = bounded({ native: result, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
+      rate_choices:{status:'unavailable',items:[],coverage:null} });
     if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);
   } catch (error) {
