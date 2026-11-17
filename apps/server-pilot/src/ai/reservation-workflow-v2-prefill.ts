@@ -3936,6 +3936,8 @@ function projectCurrentExtraction(input: {
       currentMessage: input.selection.currentBodyText ?? input.selection.bodyText,
       messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) });
     if (request.kind === 'amend') {
+      const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
+        input.selection.currentBodyText ?? input.selection.bodyText));
       const clauses = authoredSourceNoteClauses(input);
       const cueClaims = [
         ...extracted.roomTypeHints.map((claim) => ({ kind: 'room_description' as const, claim })),
