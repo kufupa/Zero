@@ -305,6 +305,7 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
       direction: item.businessDirection === 'outbound' ? 'outbound' : 'inbound', createdAt: new Date(item.createdAt),
       receivedAt: item.receivedAt ? new Date(item.receivedAt) : null, sentAt: item.sentAt ? new Date(item.sentAt) : null,
       to: addresses(item.to), cc: addresses(item.cc), bcc: addresses(item.bcc),
+      messageIdHeader: item.messageId ?? null, inReplyTo: item.inReplyTo ?? null, references: item.references ?? [],
     }));
     try {
       result.triage = await classifyWorkflowMailTriage({ transportId: 'transport-centurion', threadId: row.threadId,
