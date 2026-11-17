@@ -1211,8 +1211,10 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
       // scanned pages, DOCX with embedded screenshots). Only plain text and XLSX (which rejects drawings/charts)
       // are text-complete without full-document vision proof.
       const mime = (attachment.mimeType ?? '').split(';')[0].trim().toLowerCase();
-      const isPlainText = mime === 'text/plain' || ((mime === '' || mime === 'application/octet-stream') && /\.txt$/i.test(attachment.filename));
-      const isXlsx = mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || /\.xlsx$/i.test(attachment.filename);
+      const filename = attachment.filename?.trim() ?? '';
+      const ext = /\.([a-z0-9]+)$/i.exec(filename)?.[1]?.toLowerCase() ?? '';
+      const isPlainText = mime === 'text/plain' && (!ext || ext === 'txt');
+      const isXlsx = mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && (!ext || ext === 'xlsx');
       if (!isPlainText && !isXlsx) {
         return audit.get(attachment.id) === 'read';
       }
