@@ -2283,6 +2283,37 @@ function quoteRoomHintForDate(date: ReservationWorkflowV2Extraction['requests'][
   return matches.length === 1 ? matches[0] : undefined;
 }
 
+function sourceHasAdditiveRoomList(counts: string[], text: string, requestText: string, singleCurrentRequest: boolean): boolean {
+  if (counts.length < 2 || new Set(counts.map(normalizedFact)).size !== counts.length) return false;
+  const lines = text.split(/\r?\n/u);
+  const positions = counts.map((count) => count.trim() ? lines.flatMap((line, index) =>
+    normalizedFact(line).includes(normalizedFact(count)) ? [index] : []) : []);
+  if (positions.some((matches) => matches.length !== 1) || new Set(positions.map((matches) => matches[0])).size !== counts.length)
+    return false;
+  const first = Math.min(...positions.map((matches) => matches[0]!));
+  const last = Math.max(...positions.map((matches) => matches[0]!));
+  const header = lines.slice(0, first).findLastIndex((line) =>
+    /^\s*(?:[*•-]\s*)?(?:rooms?(?:\s+(?:required|requirements))?|accommodation)\s*:?\s*$/iu.test(line));
+  const ask = normalizedFact(requestText), prefix = normalizedFact(lines.slice(0, last + 1).join('\n'));
+  if (header < 0 || !ask) return false;
+  let askOffset = prefix.indexOf(ask);
+  if (askOffset < 0 && singleCurrentRequest) {
+    const quoteRequests = [...prefix.matchAll(/\b(?:please|kindly)\s+(?:quote|provide\s+(?:a\s+)?(?:quote|quotation))\b/giu)];
+    if (quoteRequests.length === 1) askOffset = quoteRequests[0]!.index;
+  }
+  if (askOffset < 0) return false;
+  const section = lines.slice(first, last + 1).filter((line) => line.trim());
+  const fullText = normalizedFact(lines.join('\n'));
+  const alternatives = /\b(?:or|either|alternatives?|options?|separate(?:ly)?|individual(?:ly)?|respectively|instead|choose|choice|versus|one\s+of)\b/iu;
+  const competingScope = /\b(?:hotels?|propert(?:y|ies)|clients?|customers?|agenc(?:y|ies)|recipients?|budgets?|rates?|prices?|costs?|billing|invoices?)\b|\b(?:zar|usd|eur|gbp|r)\s*\d/iu;
+  const separateDelivery = /\b(?:send|deliver|email|address|invoice|bill|charge)\b[^.!?]{0,120}\b(?:to|for)\b/iu;
+  const perRoomScope = /\b(?:send|deliver|email|invoice|bill|charge|recipient|property|hotel|budget|rate|price|cost)\b|\b(?:to|for)\s+(?!(?:\d+|one|two|three|four|five|six|seven|eight|nine)\b)/iu;
+  return section.length === counts.length && section.every((line) =>
+    !perRoomScope.test(line) && counts.some((count) => normalizedFact(line).includes(normalizedFact(count)))) &&
+    !alternatives.test(fullText.slice(askOffset)) && !competingScope.test(fullText.slice(askOffset)) &&
+    !separateDelivery.test(lines.slice(last + 1).join('\n'));
+}
+
 /** Preserve each source room preference even when no native code or date association is known. */
 function retainQuoteRoomHints(
   request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'quote' }>,
@@ -5040,7 +5071,81 @@ function projectCurrentExtraction(input: {
       }
       if ([...groupsByDate.values()].some(count => count > 1)) {
         const refs = request.sourceRefs.filter(ref => currentRefs.has(ref));
-        request.body.quoteComposition = { kind: 'unresolved', evidenceRefs: refs };
+        const authored = currentAuthoredMessageText(input.selection.currentBodyText ?? input.selection.bodyText);
+        const signOff = OPERATIONAL_NOTE_REGARDS.exec(authored)?.index ?? [...authored.matchAll(OPERATIONAL_NOTE_THANKS)].at(-1)?.index;
+        const authoredContent = authored.slice(0, signOff).trim();
+        const relationshipSourceTrusted = Boolean(authoredContent) && corroboratedByAuthoredHtml(input.selection, authoredContent);
+        const currentText = [authoredContent, ...input.evidence.filter((row) =>
+          refs.includes(row.ref) && row.relation !== 'current_message').map((row) => row.text)].join('\n');
+        const couldBeAlternatives = /\b(?:or|alternatives?|options?|separate(?:ly)?|different\s+quot(?:es?|ations?)|another\s+quot(?:e|ation)|(?:two|three|four|\d+)\s+quot(?:es?|ations?))\b/iu.test(currentText);
+        const matchedDates = new Set<number>();
+        const groupDates = request.body.groups.map((group) => extracted.dates.flatMap((date, index) => {
+            const hint = quoteRoomHintForDate(date, extracted, currentRefs);
+            return hint && quoteRoomHintKey(hint.value ?? hint.raw) === quoteRoomHintKey(group.requestedRoomDescription) &&
+              safeCurrentText(date.arrival, currentRefs, 40) === group.arrival &&
+              safeCurrentText(date.departure, currentRefs, 40) === group.departure &&
+              quoteDatedRoomCount(extracted, date, currentRefs).count === group.quantity ? [index] : [];
+          }));
+        const datedRoomsBound = groupDates.every((dates) => {
+          if (dates.length !== 1 || matchedDates.has(dates[0]!)) return false;
+          matchedDates.add(dates[0]!);
+          return true;
+        }) && matchedDates.size === extracted.dates.length;
+        const sourceCategoriesBound = sourceRoomByGroupId.size > 0 &&
+          request.body.groups.every(group => sourceRoomByGroupId.has(group.id));
+        const countClaims = request.body.groups.flatMap((group, index) => {
+          const raw = sourceRoomByGroupId.get(group.id)?.claim.raw ??
+            (groupDates[index]?.length === 1 ? extracted.dates[groupDates[index]![0]!]?.roomCount?.raw : undefined);
+          return raw ? [raw] : [];
+        });
+        const countedRoomsBound = relationshipSourceTrusted && !couldBeAlternatives && (datedRoomsBound || sourceCategoriesBound) &&
+          countClaims.length === request.body.groups.length &&
+          sourceHasAdditiveRoomList(countClaims, authored.slice(0, signOff), extracted.requestText.raw,
+            currentExtraction.requests.length === 1 && input.evidence.some((row) => row.relation === 'current_message' &&
+              extracted.requestText.sourceRefs.includes(row.ref)));
+        const optionHeaders = [...authoredContent.matchAll(/\boption\s+([a-z]|\d{1,2})\s*[:.)-]/giu)];
+        const options = optionHeaders.map((header, index) => ({
+          label: `Option ${header[1]}`,
+          text: normalizedFact(authoredContent.slice(header.index + header[0].length, optionHeaders[index + 1]?.index)),
+          groupIds: [] as string[],
+        }));
+        const differentBoards = new Set(request.body.groups.map((group) => boardMeaning(group.requestedMealPlan ?? group.mealPlan))).size > 1;
+        const differentAdults = new Set(request.body.groups.map((group) => group.occupancy.adults)).size > 1;
+        const differentChildren = new Set(request.body.groups.map((group) => group.occupancy.childCount)).size > 1;
+        const differentDates = new Set(request.body.groups.map((group) => `${group.arrival}/${group.departure}`)).size > 1;
+        const differentRates = new Set(request.body.groups.map((group) => group.ratePlan)).size > 1;
+        const differentCodes = new Set(request.body.groups.map((group) => [...group.roomCodes].sort().join(','))).size > 1;
+        if (options.length >= 2 && options.length <= 32) {
+          for (const [index, group] of request.body.groups.entries()) {
+            const key = quoteRoomHintKey(group.requestedRoomDescription);
+            const date = groupDates[index]?.length === 1 ? extracted.dates[groupDates[index]![0]!] : undefined;
+            const count = currentClaim(date?.roomCount, currentRefs);
+            const matching = key && count?.raw.trim() ? options.filter((option) => {
+              if (!option.text.includes(key) || !option.text.includes(normalizedFact(count.raw))) return false;
+              if (option.text.replace(normalizedFact(count.raw), '').replace(/[^\p{L}\p{N}]+/gu, '')) return false;
+              if (differentDates && (!date?.arrival?.raw.trim() || !date.departure?.raw.trim() ||
+                  !option.text.includes(normalizedFact(date.arrival.raw)) || !option.text.includes(normalizedFact(date.departure.raw)))) return false;
+              if (differentRates && (!group.ratePlan || !option.text.includes(normalizedFact(group.ratePlan)))) return false;
+              if (differentCodes && (!group.roomCodes.length || group.roomCodes.some((code) => !option.text.includes(normalizedFact(code))))) return false;
+              if (group.guestNames?.some((name) => !option.text.includes(normalizedFact(name))) || group.occupancy.childAges?.length) return false;
+              if (differentBoards && !extracted.mealPlanHints.some((claim) => currentClaim(claim, currentRefs) &&
+                  boardMeaning(claim.value) === boardMeaning(group.requestedMealPlan ?? group.mealPlan) &&
+                  claim.raw.trim() && option.text.includes(normalizedFact(claim.raw)))) return false;
+              return ([['adults', differentAdults], ['childCount', differentChildren]] as const).every(([field, different]) =>
+                !different || group.occupancy[field] === null || extracted.occupancy.some((row) => {
+                  const claim = currentClaim(row[field], currentRefs);
+                  return claim && claim.value === group.occupancy[field] && claim.raw.trim() &&
+                    option.text.includes(normalizedFact(claim.raw));
+                }));
+            }) : [];
+            if (matching.length === 1) matching[0]!.groupIds.push(group.id);
+          }
+        }
+        const linkedOptions = relationshipSourceTrusted && options.length >= 2 && options.length <= 32 && options.every((option) => option.groupIds.length > 0) &&
+          options.reduce((total, option) => total + option.groupIds.length, 0) === request.body.groups.length;
+        request.body.quoteComposition = linkedOptions ? { kind: 'scenarios', scenarios: options.map((option, index) => ({
+          id: stableId(request.id, 'source_option', String(index)), label: option.label, groupIds: option.groupIds, evidenceRefs: refs,
+        })) } : countedRoomsBound ? { kind: 'additive' } : { kind: 'unresolved', evidenceRefs: refs };
       }
       if (!request.body.outputIntent.artifacts.length) request.body.outputIntent.artifacts = ['email_quote', 'pdf_quote', 'xlsx_quote'];
     }
