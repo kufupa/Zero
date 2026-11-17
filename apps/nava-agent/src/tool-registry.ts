@@ -12,7 +12,7 @@ export type ToolDefinition = { name:string; description:string; input_schema:{ty
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>Promise<ToolResult>};
-export type NativeAdmission = {withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:()=>Promise<T>):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>};
+export type NativeAdmission = {withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:()=>Promise<T>):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>;withQuote?<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
@@ -118,6 +118,7 @@ export class ToolRegistry {
       if(!Array.isArray(pack.tools)) throw new Error(`INVALID_TOOL_PACK:${name}`);
       for(const item of pack.tools) {
         const parsed=definitionSchema.parse(item);
+        if(parsed.name==='hms_prepare' && typeof pack.prepare==='function') continue;
         if(!parsed.name.startsWith('hms_') && !['skill_read','outlook_reply_draft'].includes(parsed.name)) throw new Error(`INVALID_PACK_TOOL:${parsed.name}`);
         if(['hms_prepare','hms_save'].includes(parsed.name) || this.packTools.has(parsed.name)) throw new Error(`DUPLICATE_TOOL:${parsed.name}`);
         // The structural boundary checks declaration and callable handler; packs own their own input parsing.
@@ -164,7 +165,8 @@ export class ToolRegistry {
       if(name.startsWith('hms_')) {
         const request=z.object({property_code:z.string().min(1)}).passthrough().safeParse(input);
         if(!request.success || (context.propertyCode && context.propertyCode!==request.data.property_code)) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
-        response=await this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,()=>pack.run(input,context)));
+        const admission=name==='hms_quote' ? this.deps.native.withQuote ?? this.deps.native.withRead : this.deps.native.withRead;
+        response=await this.nativeResult(()=>admission(request.data.property_code,context.signal,()=>pack.run(input,context)));
       } else response=await this.nativeResult(()=>pack.run(input,context));
       if(name==='hms_quote') await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,response});
       await this.deps.emit(context.sessionId,'tool_result',{tool:name,tool_event_id:context.toolUseId,result:response});
@@ -207,8 +209,8 @@ export class ToolRegistry {
   }
 }
 
-export async function discoverToolPacks(registry:ToolRegistry,root=resolve('apps/nava-agent/tools')):Promise<void> {
-  for(const name of ['quote','create','amend','cancel','filing','triage','skills','outlook-reply']) {
+export async function discoverToolPacks(registry:ToolRegistry,root=resolve('apps/nava-agent/tools'),names=['quote','create','amend','cancel','filing','triage','outlook-reply']):Promise<void> {
+  for(const name of names) {
     let path:string|undefined;
     for(const extension of ['js','ts']) {
       const candidate=resolve(root,name,`index.${extension}`);

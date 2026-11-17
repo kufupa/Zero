@@ -130,7 +130,8 @@ export async function snapshot(threadId:string) {
   return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposalWire),event_sequence:Number(sequence.n)};
 }
 export function proposalWire(p:Record<string,any>) {
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage:p.stage,result:p.result,error:p.execution?.error ?? null};
+  const capture=p.current?.native_result;
+  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:Array.isArray(capture?.display_rows)?capture.display_rows:quoteDisplayRows(capture),created_at:p.created_at,updated_at:p.updated_at,stage:p.stage,result:p.result,error:p.execution?.error ?? null};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;
