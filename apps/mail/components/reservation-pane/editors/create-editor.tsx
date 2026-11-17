@@ -444,6 +444,8 @@ export function CreateEditor(editor: Editor) {
   useEffect(() => { if (commissionNeedsAttention) setCommissionOpen(true); }, [commissionNeedsAttention]);
   const guarantee = stayFields.find(field => field.key === 'guaranteeType')!;
   const sharedBooking = roomFields;
+  const addingRequestedRooms = useRef(false);
+  const [addingRooms, setAddingRooms] = useState(false);
   const lunchRequested = [valueAt(snapshot, `${shared}/requestedMealPlan`), ...sections.map(section => record(section.defaults).requestedMealPlan),
     ...allocations.map(allocation => record(allocation.overrides).requestedMealPlan)].some(value => /\blunch\b/i.test(text(value)));
   const extraStay = [...stayFields.filter(field => field.key !== 'guaranteeType'), trackField];
@@ -458,6 +460,8 @@ export function CreateEditor(editor: Editor) {
       const sectionHasCompleted = rooms.some(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
       const sectionAllCompleted = rooms.length > 0 && rooms.every(({ allocation }) => Boolean(completedRoom(editor, text(allocation.id))));
       const requested = valueAt(snapshot, `${sectionPath}/requestedRooms`);
+      const missingRooms = typeof requested === 'number' && Number.isSafeInteger(requested) && requested <= 8
+        ? requested - rooms.length : 0;
       const requestedTotals = record(effectiveAt(snapshot, `${sectionPath}/requestedTotals`));
       const roomTotal = (field: 'adults' | 'childCount') => {
         const values = rooms.map(({ allocation }) => record(allocation.occupancy)[field]);
@@ -473,7 +477,7 @@ export function CreateEditor(editor: Editor) {
       const unresolved = requestedTotals.adults != null && adults === null || requestedTotals.childCount != null && children === null;
       return <section className={styles.group} key={sectionId || sectionIndex}>
         <div className={styles.groupHeading}><strong>{sections.length > 1 ? `Date range ${sectionIndex + 1}` : 'Stay dates'}</strong>
-          <button type="button" className={styles.linkButton} aria-label={`Add room to date range ${sectionIndex + 1}`} disabled={view.busy || allocations.length >= 8 || !sectionId}
+          <button type="button" className={styles.linkButton} aria-label={`Add room to date range ${sectionIndex + 1}`} disabled={view.busy || addingRooms || allocations.length >= 8 || !sectionId}
             onClick={() => void commands.changeRows({ kind: 'add_allocation', requestId: request.id, parentId: sectionId,
               entityId: `room_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Room</button></div>
         <div className={styles.dateFields}>
@@ -483,6 +487,24 @@ export function CreateEditor(editor: Editor) {
         </div>
         <p className={styles.note}>{rooms.length} {rooms.length === 1 ? 'room' : 'rooms'} · {adults ?? 'unknown'} adults · {children ?? 'unknown'} children on these dates</p>
         {discrepancies.length > 0 && <p className={styles.notice} role="alert">The rooms do not match the email ({discrepancies.join('; ')}). Fix the rooms, or correct what the email asked for.</p>}
+        {missingRooms > 0 && allocations.length + missingRooms <= 8 && sectionId && <div>
+          <button type="button" className={styles.linkButton} disabled={view.busy || addingRooms} onClick={() => {
+            if (addingRequestedRooms.current) return;
+            addingRequestedRooms.current = true;
+            setAddingRooms(true);
+            void (async () => {
+              try {
+                for (let index = 0; index < missingRooms; index++) {
+                  await commands.changeRows({ kind: 'add_allocation', requestId: request.id, parentId: sectionId });
+                }
+              } finally {
+                addingRequestedRooms.current = false;
+                setAddingRooms(false);
+              }
+            })().catch(() => {});
+          }}>Add {missingRooms} {missingRooms === 1 ? 'room' : 'rooms'}</button>
+          <p className={styles.note}>Enter guest and occupancy details for each room.</p>
+        </div>}
         {unresolved && <p className={styles.note}>Enter occupancy for every room to compare with the requested totals.</p>}
         <details className={styles.details}><summary>What the email asked for</summary>
           <p className={styles.note}>Requested: {requested == null ? 'unknown' : text(requested)} rooms · {requestedTotals.adults == null ? 'unknown' : text(requestedTotals.adults)} adults · {requestedTotals.childCount == null ? 'unknown' : text(requestedTotals.childCount)} children.</p>
