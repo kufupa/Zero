@@ -7,10 +7,11 @@ import { pathToFileURL } from 'node:url';
 const [inputFile, outputDir] = process.argv.slice(2);
 const pilot = process.env.LOOP_PILOT_ROOT;
 const isolatedUrl = process.env.LOOP_ISOLATED_DATABASE_URL;
-if (!inputFile || !outputDir || !pilot || !isolatedUrl || !process.env.DATABASE_URL) throw Error('loop_native_configuration_missing');
-const isolated = new URL(isolatedUrl);
-if (!['localhost', '127.0.0.1', '::1', '[::1]'].includes(isolated.hostname)) throw Error('loop_database_must_be_local');
+if (!inputFile || !outputDir || !pilot || !process.env.DATABASE_URL) throw Error('loop_native_configuration_missing');
 const input = JSON.parse(await readFile(inputFile, 'utf8'));
+const sourceOnly = input.selectionOnly || input.candidate?.kind === 'mail_candidate';
+if (!sourceOnly && !isolatedUrl) throw Error('loop_native_configuration_missing');
+if (isolatedUrl && !['localhost', '127.0.0.1', '::1', '[::1]'].includes(new URL(isolatedUrl).hostname)) throw Error('loop_database_must_be_local');
 const load = file => import(pathToFileURL(resolve(pilot, file)).href);
 const [client, mail, auth, state, quote, create, amend, cancel, filing] = await Promise.all([
   load('src/db/client.ts'), load('src/db/schema/mail.ts'), load('src/db/schema/auth.ts'),
@@ -19,6 +20,7 @@ const [client, mail, auth, state, quote, create, amend, cancel, filing] = await 
   load('src/ai/reservation-workflow-v2-cancel.ts'), load('src/ai/reservation-workflow-v2-filing.ts'),
 ]);
 const live = client.createDb(process.env.DATABASE_URL);
+const liveStarted = performance.now();
 const attachmentSnapshot = files => files.map(file => ({
   id: file.id, messageId: file.messageId ?? file.message_id, filename: file.filename,
   mimeType: file.mimeType ?? file.mime_type, sizeBytes: Number(file.sizeBytes ?? file.size_bytes),
@@ -121,6 +123,13 @@ try {
         candidates: [input.candidate] })(input.candidate), { isolationLevel: 'repeatable read', accessMode: 'read only' });
   }
 } finally { await live.conn.end(); }
+if (sourceOnly) {
+  await mkdir(outputDir, { recursive: true, mode: 0o700 });
+  const result = input.selectionOnly ? { ...input.loaded, stages: [], requests: 0 } : { candidate: input.mailCandidate,
+    stages: [{ name: 'candidate_lookup', seconds: (performance.now() - liveStarted) / 1000, result: input.mailCandidate }], requests: 0 };
+  await writeFile(join(outputDir, 'native.json'), JSON.stringify(result,
+    (_, value) => value instanceof Uint8Array ? { loopBytes: Buffer.from(value).toString('base64') } : value), { mode: 0o600 });
+} else {
 const { db, conn } = client.createDb(isolatedUrl);
 client.__setDbForTests({ db, conn });
 await mkdir(outputDir, { recursive: true, mode: 0o700 });
@@ -182,10 +191,7 @@ try {
   }
   const stateCtx = { db, transportId, userId: actorId, propertyCode };
   const ctx = { db, user: { id: actorId }, transport: { id: transportId }, property: { propertyCode } };
-  if (input.selectionOnly) {
-    await writeFile(join(outputDir, 'native.json'), JSON.stringify({ ...input.loaded, stages: [], requests: 0 },
-      (_, value) => value instanceof Uint8Array ? { loopBytes: Buffer.from(value).toString('base64') } : value), { mode: 0o600 });
-  } else if (input.candidate) {
+  if (input.candidate) {
     const prefill = await load('src/ai/reservation-workflow-v2-prefill.ts');
     const reader = prefill.createReservationWorkflowV2CandidateReader({ db, transportId, propertyCode, source,
       participants: input.participants, candidates: [input.candidate], signal: AbortSignal.timeout(80_000) });
@@ -289,4 +295,5 @@ try {
 } finally {
   client.__setDbForTests(null);
   await conn.end();
+}
 }

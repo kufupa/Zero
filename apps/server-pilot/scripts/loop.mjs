@@ -114,23 +114,6 @@ async function model(runtimeEnv) {
     ? createAzureExtractionAdapter({ ...env, EXTRACTION_REASONING_EFFORT: 'medium' }) : null;
   return { adapter, simpleSynthesisAdapter, env };
 }
-function selection(row, thread) {
-  const before = thread.filter(item => item.id !== row.id && Date.parse(instant(item)) <= Date.parse(instant(row)))
-    .sort((a, b) => Date.parse(instant(a)) - Date.parse(instant(b)));
-  const attachment = item => ({ id: item.id, filename: item.filename, mimeType: item.contentType, byteSize: item.byteSize,
-    isInline: item.inline === true, bytesPresent: false, readFailure: 'Corpus contains metadata only', messageId: item.messageId });
-  const attachments = (row.attachmentDescriptors ?? []).map(attachment);
-  const priorAttachments = before.flatMap(item => (item.attachmentDescriptors ?? []).map(attachment));
-  return { messageId: row.id, threadId: row.threadId, subject: row.subject ?? '', bodyText: body(row),
-    receivedAt: row.receivedAt ?? instant(row), fromAddress: addresses(row.from)[0] ?? '',
-    participants: [...addresses(row.from), ...addresses(row.to), ...addresses(row.cc)],
-    attachments, threadAttachments: priorAttachments,
-    persistedNonInlineAttachmentIds: [...attachments, ...priorAttachments].filter(item => !item.isInline).map(item => item.id),
-    preceding: before.map(item => ({ bodyText: body(item), direction: item.businessDirection === 'outbound' ? 'outbound' : 'inbound' })),
-    threadMessages: before.map(item => ({ messageId: item.id, arrivedAt: item.receivedAt ?? undefined,
-      direction: item.businessDirection === 'outbound' ? 'outbound' : 'inbound', timestamp: instant(item),
-      subject: item.subject ?? '', bodyText: body(item) })) };
-}
 export async function sendSsm(commands, timeout = 600) {
   const params = JSON.stringify({ commands, executionTimeout: [String(timeout)] });
   const instance = process.env.LOOP_HMS_INSTANCE_ID ?? 'i-008f737974a9ba9b3';
@@ -282,26 +265,14 @@ export async function native(payload, directory) {
 }
 async function extractEmail(row, thread, options, adapters, outputDir) {
   const timings = {}, started = performance.now();
-  let selected = selection(row, thread);
   const source = { propertyId: 'HRCEN', threadId: row.threadId, messageId: row.id,
     sourceHash: staffQuoteSourceHash({ id: row.id, subject: row.subject ?? null, textBody: row.textBody ?? null, htmlBody: row.htmlBody ?? null }),
     arrivedAt: row.receivedAt ?? instant(row) };
   const result = { id: row.id, subject: row.subject, source: { from: addresses(row.from), receivedAt: source.arrivedAt,
     body: body(row), attachments: row.attachmentDescriptors ?? [] }, startedAt: new Date().toISOString(),
     timings, status: 'FAIL', reason: '', hms: null, extracted: null };
-  let stageName = 'triage', at = performance.now();
+  let stageName = 'source', at = performance.now();
   try {
-    const gate = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
-      bodyText: selected.bodyText, mailboxAddress: 'centurion@legacyhotels.co.za',
-      hasAttachments: selected.attachments.some(item => !item.isInline) ? true : undefined });
-    if (gate.skippedReason) {
-      result.triage = { output: mailSourceTriageOutput(gate.classification), skippedReason: gate.skippedReason };
-      timings.triage = (performance.now() - at) / 1000;
-      result.status = options.workflow === 'triage' ? 'PASS' : 'NEEDS-STAFF';
-      result.reason = `Source excluded: ${gate.skippedReason}`;
-      return { result };
-    }
-    stageName = 'source'; at = performance.now();
     const sourceDir = join(outputDir, row.id, 'source');
     let loaded;
     try { loaded = await native({ selectionOnly: true, workflow: options.workflow, propertyCode: 'HRCEN',
@@ -313,12 +284,25 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
         new Uint8Array(Buffer.from(value.loopBytes, 'base64')) : Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, restore(entry)]));
       return value;
     };
-    selected = restore(loaded.selection);
+    const selected = restore(loaded.selection);
     Object.assign(source, loaded.source);
     result.source.body = selected.bodyText;
+    result.source.from = selected.fromAddress ? [selected.fromAddress] : [];
+    result.source.attachments = loaded.attachmentSnapshot.filter(file => file.messageId === row.id);
     result.source.arrivedAt = source.arrivedAt;
     timings.source = (performance.now() - at) / 1000;
     stageName = 'triage'; at = performance.now();
+    const gate = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
+      bodyText: selected.bodyText, mailboxAddress: loaded.mailboxAddress,
+      hasAttachments: loaded.hasPersistedNonInlineAttachment || selected.attachments.some(item => !item.isInline)
+        ? true : loaded.attachmentEvidenceUnknown ? undefined : false });
+    if (gate.skippedReason) {
+      result.triage = { output: mailSourceTriageOutput(gate.classification), skippedReason: gate.skippedReason };
+      timings.triage = (performance.now() - at) / 1000;
+      result.status = options.workflow === 'triage' ? 'PASS' : 'NEEDS-STAFF';
+      result.reason = `Source excluded: ${gate.skippedReason}`;
+      return { result };
+    }
     if (thread.some(item => !item.createdAt || !Number.isFinite(Date.parse(item.createdAt)))) throw Error('Triage message creation time unavailable');
     const triageMessages = thread.map(item => ({
       id: item.id, from: addresses(item.from)[0] ?? '', subject: item.subject ?? '', body: body(item),

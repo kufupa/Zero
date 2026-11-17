@@ -17,8 +17,6 @@ nodebin = Path('/home/ubuntu/.nvm/versions/node/v22.23.1/bin')
 pgbin = next((p for p in [Path(os.environ.get('LOOP_PGBIN', '/usr/lib/postgresql/16/bin')),
                            Path('/tmp/nava-pgtest-20261102.WzDOzKK2/unpacked/usr/lib/postgresql/16/bin')]
               if (p / 'initdb').is_file()), None)
-if not pgbin:
-    raise RuntimeError('isolated_postgresql_unavailable')
 
 def call(args, **kwargs):
     try:
@@ -28,22 +26,28 @@ def call(args, **kwargs):
 
 def main():
     pg = run / 'pg'
-    password = secrets.token_hex(24)
-    pwfile = run / 'pg-password'
-    pwfile.write_text(password + '\n')
-    os.chmod(pwfile, 0o600)
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0))
-        port = sock.getsockname()[1]
-    call([str(pgbin / 'initdb'), '-D', str(pg), '--auth-local=trust', '--auth-host=scram-sha-256',
-          '--pwfile=' + str(pwfile), '--no-locale', '--encoding=UTF8'])
-    pwfile.unlink()
+    request = json.loads((run / 'input.json').read_text())
+    source_only = request.get('selectionOnly') or (request.get('candidate') or {}).get('kind') == 'mail_candidate'
     started = False
     try:
-        call([str(pgbin / 'pg_ctl'), '-D', str(pg), '-l', str(run / 'postgres.log'), '-o',
-              f'-k {run} -p {port} -c listen_addresses=127.0.0.1 -c ssl=off -c unix_socket_permissions=0700', '-w', 'start'])
-        started = True
-        isolated = f'postgresql://ubuntu:{quote(password)}@127.0.0.1:{port}/postgres?sslmode=disable'
+        isolated = ''
+        if not source_only:
+            if not pgbin:
+                raise RuntimeError('isolated_postgresql_unavailable')
+            password = secrets.token_hex(24)
+            pwfile = run / 'pg-password'
+            pwfile.write_text(password + '\n')
+            os.chmod(pwfile, 0o600)
+            with socket.socket() as sock:
+                sock.bind(('127.0.0.1', 0))
+                port = sock.getsockname()[1]
+            call([str(pgbin / 'initdb'), '-D', str(pg), '--auth-local=trust', '--auth-host=scram-sha-256',
+                  '--pwfile=' + str(pwfile), '--no-locale', '--encoding=UTF8'])
+            pwfile.unlink()
+            call([str(pgbin / 'pg_ctl'), '-D', str(pg), '-l', str(run / 'postgres.log'), '-o',
+                  f'-k {run} -p {port} -c listen_addresses=127.0.0.1 -c ssl=off -c unix_socket_permissions=0700', '-w', 'start'])
+            started = True
+            isolated = f'postgresql://ubuntu:{quote(password)}@127.0.0.1:{port}/postgres?sslmode=disable'
         entries = json.loads(call([str(nodebin / 'pm2'), 'jlist']))
         http = [entry for entry in entries if entry.get('name') == 'http' and entry.get('pm2_env', {}).get('status') == 'online']
         if len(http) != 1:
@@ -65,7 +69,8 @@ import {migrate} from 'drizzle-orm/postgres-js/migrator';
 const db=postgres(process.env.LOOP_ISOLATED_DATABASE_URL,{max:1});
 try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { await db.end(); }
 """
-        call([str(nodebin / 'node'), '--import', 'tsx', '--input-type=module', '-e', migrate], cwd=pilot, env=env, timeout=120)
+        if not source_only:
+            call([str(nodebin / 'node'), '--import', 'tsx', '--input-type=module', '-e', migrate], cwd=pilot, env=env, timeout=120)
         output = run / 'output'
         process = subprocess.Popen([str(nodebin / 'node'), '--import', 'tsx', str(run / 'runner.mjs'),
                                     str(run / 'input.json'), str(output)], cwd=pilot, env=env,
@@ -75,7 +80,7 @@ try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { awa
             match = re.search(rb'(?m)^Error: ([a-zA-Z0-9_:-]{1,100})$', error or b'')
             raise RuntimeError('native_case_failed' + (':' + match.group(1).decode() if match else ''))
         files = []
-        fast_transfer = json.loads((run / 'input.json').read_text()).get('fastTransfer') is True
+        fast_transfer = request.get('fastTransfer') is True
         for path in output.iterdir():
             entry = {'name': path.name, 'size': path.stat().st_size}
             if fast_transfer:
