@@ -163,6 +163,7 @@ export async function enqueueInboundExtraction(
     admissionSnapshotId?: string;
     admissionSnapshotHash?: string;
     nextRunAt?: Date;
+    priority?: number;
     metrics?: Record<string, unknown>;
   },
   db: DB = getDb(),
@@ -179,6 +180,7 @@ export async function enqueueInboundExtraction(
       admissionSnapshotId: input.admissionSnapshotId,
       admissionSnapshotHash: input.admissionSnapshotHash,
       nextRunAt: input.nextRunAt,
+      priority: input.priority,
       metrics: input.metrics,
     },
     db,
@@ -231,8 +233,12 @@ export async function refreshSelectedAmendExtraction(
       return { status: 'current', extractionId: current.id };
     }
     if (!inboundExtractionEnabled(env)) return { status: 'blocked', reason: 'disabled' };
-    const run = await enqueueInboundExtraction({ transportId: input.transportId, threadId: thread.id, messageId: mail.id },
+    const run = await enqueueInboundExtraction({ transportId: input.transportId, threadId: thread.id, messageId: mail.id, priority: 2 },
       tx as unknown as DB);
+    if (run.state === 'queued' || run.state === 'retry_wait') {
+      await tx.update(aiWorkflowRun).set({ priority: sql`greatest(${aiWorkflowRun.priority}, 2)`, updatedAt: new Date() })
+        .where(and(eq(aiWorkflowRun.id, run.id), inArray(aiWorkflowRun.state, ['queued', 'retry_wait'])));
+    }
     if (run.state === 'retry_wait' && run.failureClass === 'POLICY_BLOCK') {
       return { status: 'blocked', reason: 'deferred' };
     }
@@ -326,7 +332,8 @@ export async function retrySelectedFailedRead(db: DB, input: {
       internetMessageId: input.internetMessageId, selection: input.selection };
     const run = await enqueueAiRun({ transportId: input.transportId, threadId: thread.id, triggerMessageId: mail.id,
       runKind: 'inbound_extraction', idempotencyKey: `inbound-extraction-retry:${read.id}:${randomUUID()}`,
-      modelId: EXTRACTION_MODEL_ID, promptVersion: EXTRACTION_VERSION, metrics: { failedReadRetry: binding } }, tx as unknown as DB);
+      modelId: EXTRACTION_MODEL_ID, promptVersion: EXTRACTION_VERSION, priority: 2,
+      metrics: { failedReadRetry: binding } }, tx as unknown as DB);
     return { status: 'queued' as const, runId: run.id };
   });
 }

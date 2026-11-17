@@ -4285,6 +4285,8 @@ export async function executeAiRun(
   runId: string,
   options: {
     shutdownSignal?: AbortSignal;
+    /** The caller's claim, not a newer lease read after a delayed dispatch. */
+    expectedClaim?: { claimOwner: string | null; claimToken: string | null };
     /** Injectable claim-safe tool session (tests / Task 7 mocks). */
     candidateSessionFactory?: CandidateSessionFactory;
     candidatePlanModel?: (prompt: {
@@ -4334,6 +4336,10 @@ export async function executeAiRun(
   const env = parseEnv(process.env as Record<string, string | undefined>);
   const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).limit(1);
   if (!run) throw new Error(`AI run not found: ${runId}`);
+  if (options.expectedClaim && (run.claimOwner !== options.expectedClaim.claimOwner ||
+      run.claimToken !== options.expectedClaim.claimToken || run.state !== 'claimed')) {
+    return { runId, state: 'retry_wait' };
+  }
 
   const owner = claimOwnerFor(run);
   const now = new Date();
@@ -5068,51 +5074,54 @@ export async function executeAiRun(
               ? 'needs_clarification'
               : 'insufficient_evidence';
 
-        const draft = await persistAiCandidateDraft({
-          db,
-          transportId: run.transportId,
-          threadId: run.threadId,
-          replyToMessageId: run.triggerMessageId,
-          createdByUserId,
-          generationId,
-          model: run.modelId,
-          promptVersion: run.promptVersion,
-          contextMessageIds: [run.triggerMessageId],
-          toAddresses: [replyTo],
-          subject,
-          textBody: preparedReply.textBody,
-          htmlBody: preparedReply.htmlBody,
-          outcome: persistedOutcome,
-          ...(candidateDraftRoute?.release
-            ? {
-                routeBinding: {
-                  ...candidateDraftRoute.route,
-                  release: candidateDraftRoute.release,
-                },
-              }
-            : {}),
-          persistDraft: true,
-        });
-        const marked = await markAiRunSucceeded({
-          runId,
-          claimOwner: owner,
-          claimToken,
-          expectedStates: ['running'],
-          generationId: draft.generationId ?? generationId,
-          metrics: {
-            draftId: draft.id,
+        await db.transaction(async (tx) => {
+          const draft = await persistAiCandidateDraft({
+            db: tx as unknown as typeof db,
+            transportId: run.transportId,
+            threadId: run.threadId,
+            replyToMessageId: run.triggerMessageId,
+            createdByUserId,
+            generationId,
+            model: run.modelId,
+            promptVersion: run.promptVersion,
+            contextMessageIds: [run.triggerMessageId],
+            toAddresses: [replyTo],
+            subject,
+            textBody: preparedReply.textBody,
+            htmlBody: preparedReply.htmlBody,
+            outcome: persistedOutcome,
+            workflowRunId: runId,
+            runFence: fence,
+            signal,
+            ...(candidateDraftRoute?.release
+              ? {
+                  routeBinding: {
+                    ...candidateDraftRoute.route,
+                    release: candidateDraftRoute.release,
+                  },
+                }
+              : {}),
+            persistDraft: true,
+          });
+          const marked = await markAiRunSucceeded({
+            runId,
+            claimOwner: owner,
+            claimToken,
+            expectedStates: ['running'],
             generationId: draft.generationId ?? generationId,
-            modelId: run.modelId,
-            hmsMode: 'off',
-            ...(preparedReply.metrics as Record<string, unknown>),
-            preparedReplyOutcome: preparedReply.outcome,
-            preparedReplyAssessment: preparedReply.assessment.issues.map((issue) => issue.code),
-            preparedInputSerializedBytes: Buffer.byteLength(preparedReply.serializedInput, 'utf8'),
-          },
+            metrics: {
+              draftId: draft.id,
+              generationId: draft.generationId ?? generationId,
+              modelId: run.modelId,
+              hmsMode: 'off',
+              ...(preparedReply.metrics as Record<string, unknown>),
+              preparedReplyOutcome: preparedReply.outcome,
+              preparedReplyAssessment: preparedReply.assessment.issues.map((issue) => issue.code),
+              preparedInputSerializedBytes: Buffer.byteLength(preparedReply.serializedInput, 'utf8'),
+            },
+          }, tx as unknown as typeof db);
+          if (!marked) throw new Error(`draft claim lost before completion: ${runId}`);
         });
-        if (!marked) {
-          return { runId, state: 'retry_wait' };
-        }
         return { runId, state: 'succeeded' };
       }
 
@@ -5699,7 +5708,7 @@ export async function executeAiRun(
     // read that keeps its worker from stopping is not requeued forever.
     const cutAgain = run.failureClass === 'WORKER_SHUTDOWN';
     if (
-      (run.runKind === 'inbound_extraction' || run.runKind === 'reservation_prefill') &&
+      (run.runKind === 'inbound_extraction' || run.runKind === 'reservation_prefill' || run.runKind === 'candidate_draft' || run.runKind === 'read_tool') &&
       shutdownSignal.aborted &&
       signal.reason === shutdownSignal.reason &&
       !(cutAgain && run.attempts >= MAX_WORKER_SHUTDOWN_ATTEMPTS)
@@ -5759,8 +5768,9 @@ function maybeInitHmsRuntime(lane: AiExecutorLane): void {
 
 export type RunAiWorkerOnceOptions = {
   shutdownSignal?: AbortSignal;
-  /** Owned by the serial default loop; scoped drains retain strict priority. */
+  /** Shared by the default pool; scoped drains retain strict priority. */
   fairness?: { backgroundPrefills: number };
+  performMaintenance?: boolean;
   /** Lane hms claims wait on this until the restart sweep has succeeded. */
   hmsRecovery?: HmsRecoveryGate;
   readToolExecutor?: NonNullable<Parameters<typeof executeAiRun>[1]>['readToolExecutor'];
@@ -5787,6 +5797,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   const {
     shutdownSignal,
     fairness,
+    performMaintenance,
     hmsRecovery,
     readToolExecutor,
     mailBaselineExtractionRoute,
@@ -5822,12 +5833,13 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     : scope;
   // Lane hms also claims HMS reads (jobs-only and read-service modes), so it waits for the restart sweep first.
   if (lane === 'hms' && hmsRecovery && !(await hmsRecovery.mayClaim())) return false;
+  if (shutdownSignal?.aborted) return false;
   const claimed = await claimNextAiRun({ ownerId: owner, lane, ...claimScope,
     preferDeferredWork: lane === 'default' && (fairness?.backgroundPrefills ?? 0) >= 5,
   });
   if (!claimed) {
     // Jobs-only hms worker: no maintenance, as before this lane claimed jobs.
-    if (hmsJobsOnly) return false;
+    if (hmsJobsOnly || performMaintenance === false || shutdownSignal?.aborted) return false;
     // Assessment and retention are private, bounded database lanes. They run
     // only after the claim check, so a normal queued prediction cannot be
     // hidden behind maintenance work; no route factory is initialized here.
@@ -5835,6 +5847,14 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     const due = await assessDueShadowPredictions({ limit: 100 });
     return purge.deletedPredictions > 0 || purge.deletedAdmissions > 0 || due.processed > 0;
   }
+  if (shutdownSignal?.aborted) {
+    const fence = toAiRunFence(claimed);
+    if (fence) await markAiRunRetry({ ...fence, expectedStates: ['claimed'], attempts: claimed.attempts,
+      nextRunAt: new Date(), lastError: 'worker shutdown before dispatch', failureClass: 'WORKER_SHUTDOWN',
+      resetDeadline: true });
+    return false;
+  }
+  const expectedClaim = { claimOwner: claimed.claimOwner, claimToken: claimed.claimToken };
   if (lane === 'default' && fairness) {
     if (claimed.runKind === 'reservation_prefill' && claimed.priority === 1) {
       fairness.backgroundPrefills = Math.min(5, fairness.backgroundPrefills + 1);
@@ -5846,16 +5866,16 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
   // through executeAiRun's policy-block path without constructing any route
   // factory or model transport.
   if (claimed.runKind === 'shadow_prediction' && !resolveShadowAdmissionPolicy()) {
-    await executeAiRun(claimed.id, { shutdownSignal });
+    await executeAiRun(claimed.id, { shutdownSignal, expectedClaim });
     return true;
   }
   if (claimed.runKind === 'reservation_prefill') {
-    await executeAiRun(claimed.id, { shutdownSignal });
+    await executeAiRun(claimed.id, { shutdownSignal, expectedClaim });
     return true;
   }
   if (claimed.runKind === 'inbound_triage' && !isLegacyInboundTriagePipelineEnabled(process.env) &&
       claimed.idempotencyKey !== `external-sent-baseline:${claimed.triggerMessageId}`) {
-    await executeAiRun(claimed.id, { shutdownSignal });
+    await executeAiRun(claimed.id, { shutdownSignal, expectedClaim });
     return true;
   }
   const queuedMailSourceDecision =
@@ -5868,7 +5888,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     queuedMailSourceDecision.kind !== 'direct'
   ) {
     // Deterministic channel/system routing needs no model routes or cache warming.
-    await executeAiRun(claimed.id, { shutdownSignal });
+    await executeAiRun(claimed.id, { shutdownSignal, expectedClaim });
     return true;
   }
   const composedMailBaselineExtractionRoute =
@@ -5879,6 +5899,7 @@ export async function runAiWorkerOnce(options: RunAiWorkerOnceOptions = {}): Pro
     shadowModelRouteFactory?.() ?? createProductionShadowModelRouteFactory()();
   const executed = await executeAiRun(claimed.id, {
     shutdownSignal,
+    expectedClaim,
     readToolExecutor,
     mailBaselineExtractionRoute: composedMailBaselineExtractionRoute,
     candidatePlanModel,
@@ -5925,8 +5946,9 @@ export async function runHmsJobOnce(
     execute?: (runId: string) => Promise<unknown>;
   } = {},
 ): Promise<boolean> {
-  if (!hmsJobQueueEnabled()) return false;
+  if (!hmsJobQueueEnabled() || options.shutdownSignal?.aborted) return false;
   if (options.recovery && !(await options.recovery.mayClaim())) return false;
+  if (options.shutdownSignal?.aborted) return false;
   const claimed = await claimNextAiRun({
     ownerId: aiWorkerOwnerId('hms'),
     lane: 'hms',
@@ -5935,8 +5957,16 @@ export async function runHmsJobOnce(
     ...(options.db ? { db: options.db } : {}),
   });
   if (!claimed) return false;
+  if (options.shutdownSignal?.aborted) {
+    const fence = toAiRunFence(claimed);
+    if (fence) await markAiRunRetry({ ...fence, expectedStates: ['claimed'], attempts: claimed.attempts,
+      nextRunAt: new Date(), lastError: 'worker shutdown before dispatch', failureClass: 'WORKER_SHUTDOWN',
+      resetDeadline: true }, options.db);
+    return false;
+  }
   const execute =
-    options.execute ?? ((runId: string) => executeAiRun(runId, { shutdownSignal: options.shutdownSignal }));
+    options.execute ?? ((runId: string) => executeAiRun(runId, { shutdownSignal: options.shutdownSignal,
+      expectedClaim: { claimOwner: claimed.claimOwner, claimToken: claimed.claimToken } }));
   await execute(claimed.id);
   return true;
 }
@@ -6170,6 +6200,9 @@ export async function runAiWorkerLoop(
   scope: AiRunScopeFilter = {},
   mailBaselineExtractionRouteFactory: MailBaselineExtractionRouteFactory = createProductionMailBaselineExtractionRouteFactory(),
 ): Promise<void> {
+  // The HMS shadow lane owns a singleton runtime and remains serial.
+  const concurrency = resolveWorkerLane() === 'default'
+    ? parseEnv(process.env as Record<string, string | undefined>).AI_WORKER_CONCURRENCY : 1;
   let stopping = false;
   const shutdown = new AbortController();
   const stop = () => {
@@ -6210,20 +6243,30 @@ export async function runAiWorkerLoop(
   const fairness = !scope.transportId && !scope.runKind && !scope.promptVersion && !scope.idempotencyPrefix
     ? { backgroundPrefills: 0 }
     : undefined;
-
   try {
-    while (!stopping) {
-      const worked = await runAiWorkerOnce({
-        ...scope,
-        shutdownSignal: shutdown.signal,
-        fairness,
-        hmsRecovery,
-        mailBaselineExtractionRouteFactory,
-      });
-      if (!worked) {
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    const workers = Array.from({ length: concurrency }, (_, slot) => (async () => {
+      try {
+        while (!stopping) {
+          const worked = await runAiWorkerOnce({
+            ...scope,
+            shutdownSignal: shutdown.signal,
+            fairness,
+            performMaintenance: slot === 0,
+            hmsRecovery,
+            mailBaselineExtractionRouteFactory,
+          });
+          if (!worked && !stopping) {
+            await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+          }
+        }
+      } catch (error) {
+        stop();
+        throw error;
       }
-    }
+    })());
+    const results = await Promise.allSettled(workers);
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
   } finally {
     process.off('SIGTERM', stop);
     process.off('SIGINT', stop);

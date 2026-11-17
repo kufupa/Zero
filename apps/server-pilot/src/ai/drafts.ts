@@ -459,10 +459,11 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
   try {
     await input.db.transaction(async (tx) => {
       if (input.signal?.aborted) throw new Error('draft_cancelled');
-      if (input.reservationistResult && persistDraft) {
+      if ((input.reservationistResult && persistDraft) || input.runFence) {
         const fence = input.runFence;
         if (
           !fence ||
+          !input.workflowRunId ||
           !fence.claimOwner ||
           !fence.claimToken ||
           !Number.isFinite(fence.deadlineAt.getTime())
@@ -491,7 +492,7 @@ export async function persistAiCandidateDraft(input: PersistAiCandidateDraftInpu
           claimed.deadlineAt.getTime() <= Date.now()
         )
           throw new Error('draft_claim_fence_stale');
-        if (!input.revalidateSources || !(await input.revalidateSources()))
+        if (input.reservationistResult && (!input.revalidateSources || !(await input.revalidateSources())))
           throw new Error('draft_source_revalidation_failed');
       }
 

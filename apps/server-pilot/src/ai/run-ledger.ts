@@ -29,8 +29,8 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
+import { and, desc, eq, gt, gte, inArray, like, lt, lte, ne, notExists, notInArray, or, sql, type SQL } from 'drizzle-orm';
+import { alias, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
@@ -81,6 +81,8 @@ const BACKGROUND_PREFILL_PROPERTY_ORDER = PREFILL_PROPERTY_PRIORITY.length
 /** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
 const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
 const RESERVATION_ARRIVAL_RUN_DEADLINE_MS = 16 * 60_000;
+const ORDERED_EMAIL_RUNS = ['inbound_triage', 'inbound_extraction', 'reservation_prefill'] as const;
+const ORDERED_THREAD_RUNS = [...ORDERED_EMAIL_RUNS, 'candidate_draft'] as const;
 /** An unclaimed staff quote that waited this long is stale and must be queued again explicitly. */
 const HMS_STAFF_QUOTE_QUEUE_TTL_MS = 10 * 60_000;
 export const READ_TOOL_RUN_KIND = 'read_tool' as const;
@@ -666,6 +668,21 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const inStaffHours = utcHour >= startHour && utcHour < endHour;
   const higherTierRun = alias(aiWorkflowRun, 'higher_tier_hms_run');
   const busyArrival = alias(aiWorkflowRun, 'busy_arrival_run');
+  const threadRun = alias(aiWorkflowRun, 'earlier_thread_run');
+  const emailOrder = sql`CASE ${aiWorkflowRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
+  const threadEmailOrder = sql`CASE ${threadRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
+  type QueueColumns = { priority: AnyPgColumn; runKind: AnyPgColumn; readRequest: AnyPgColumn;
+    metrics: AnyPgColumn; idempotencyKey: AnyPgColumn; executorLane: AnyPgColumn };
+  const staffOrder = (run: QueueColumns) => sql`CASE WHEN ${run.priority} >= 2
+    OR ${run.runKind} = 'candidate_draft' OR ${run.readRequest}->>'kind' = 'quote_pdf'
+    OR ${run.metrics}->'failedReadRetry' IS NOT NULL THEN 1 ELSE 0 END`;
+  const enabled = (run: QueueColumns) => and(
+    process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' ? undefined : ne(run.runKind, 'reservation_prefill'),
+    process.env.INBOUND_EXTRACTION === 'on' ? undefined : ne(run.runKind, 'inbound_extraction'),
+    process.env.LEGACY_INBOUND_TRIAGE_PIPELINE === 'on' ? undefined
+      : or(ne(run.runKind, 'inbound_triage'), like(run.idempotencyKey, 'external-sent-baseline:%')),
+    env.HMS_LANE_PAUSED || env.HMS_DRAFT_ENRICHMENT_MODE === 'off' ? ne(run.executorLane, 'hms') : undefined,
+  );
   const sameHmsSlot = or(
     eq(higherTierRun.transportId, aiWorkflowRun.transportId),
     ...ACTIVE_HMS_TRANSPORT_GROUPS.map((transportIds) =>
@@ -719,13 +736,47 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const claimable = and(
     eq(aiWorkflowRun.executorLane, input.lane),
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+    // Disabled email jobs stay parked until their workflow is enabled again.
+    ...(input.lane === 'default' ? [enabled(aiWorkflowRun)] : []),
     ...scope,
     devGate,
-    // A busy arrival must not hide unrelated jobs behind it in the shared lane.
-    or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), notExists(db.select({ id: busyArrival.id })
-      .from(busyArrival).where(and(eq(busyArrival.runKind, 'reservation_prefill'),
-        eq(busyArrival.transportId, aiWorkflowRun.transportId), ne(busyArrival.id, aiWorkflowRun.id),
-        inArray(busyArrival.state, ['claimed', 'running']), gt(busyArrival.updatedAt, staleBefore))))),
+    // Email jobs and candidate drafts each run in thread order; pane HMS jobs keep staff priority.
+    or(notInArray(aiWorkflowRun.runKind, [...ORDERED_THREAD_RUNS]),
+      notExists(db.select({ id: threadRun.id }).from(threadRun).where(and(
+        eq(threadRun.transportId, aiWorkflowRun.transportId), eq(threadRun.threadId, aiWorkflowRun.threadId),
+        ne(threadRun.id, aiWorkflowRun.id),
+        or(and(inArray(aiWorkflowRun.runKind, ORDERED_EMAIL_RUNS), inArray(threadRun.runKind, ORDERED_EMAIL_RUNS)),
+          and(eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(threadRun.runKind, 'candidate_draft'))),
+        or(
+          // An in-flight sibling can still write, even if its flag has since changed.
+          and(inArray(threadRun.state, ['claimed', 'running']), gt(threadRun.updatedAt, staleBefore)),
+          and(enabled(threadRun),
+            or(and(inArray(threadRun.state, ['queued', 'retry_wait']),
+              or(sql`${threadRun.nextRunAt} IS NULL`, lte(threadRun.nextRunAt, now))),
+              and(inArray(threadRun.state, ['claimed', 'running']), lte(threadRun.updatedAt, staleBefore))),
+            or(ne(threadRun.runKind, 'reservation_prefill'), sql`(
+              ${db.select({ count: sql<number>`count(*)` }).from(busyArrival).where(and(
+                eq(busyArrival.runKind, 'reservation_prefill'), eq(busyArrival.transportId, threadRun.transportId),
+                ne(busyArrival.id, threadRun.id), inArray(busyArrival.state, ['claimed', 'running']),
+                gt(busyArrival.updatedAt, staleBefore)))}
+              ) < ${env.RESERVATION_PREFILL_CONCURRENCY}`),
+            or(sql`${threadRun.deadlineAt} IS NULL`, gt(threadRun.deadlineAt, now),
+              and(eq(threadRun.runKind, 'reservation_prefill'), inArray(threadRun.state, ['claimed', 'running']))),
+            or(sql`${staffOrder(threadRun)} > ${staffOrder(aiWorkflowRun)}`,
+              and(sql`${staffOrder(threadRun)} = ${staffOrder(aiWorkflowRun)}`,
+                or(lt(threadRun.createdAt, aiWorkflowRun.createdAt),
+                  and(eq(threadRun.createdAt, aiWorkflowRun.createdAt),
+                    or(sql`${threadEmailOrder} < ${emailOrder}`,
+                      and(sql`${threadEmailOrder} = ${emailOrder}`, lt(threadRun.id, aiWorkflowRun.id)))))))),
+        ),
+      )))),
+    // Skip a full mailbox here so unrelated work remains claimable.
+    or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), sql`(
+      ${db.select({ count: sql<number>`count(*)` }).from(busyArrival).where(and(
+        eq(busyArrival.runKind, 'reservation_prefill'), eq(busyArrival.transportId, aiWorkflowRun.transportId),
+        ne(busyArrival.id, aiWorkflowRun.id), inArray(busyArrival.state, ['claimed', 'running']),
+        gt(busyArrival.updatedAt, staleBefore)))}
+      ) < ${env.RESERVATION_PREFILL_CONCURRENCY}`),
     or(
       and(
         inArray(aiWorkflowRun.state, hmsWriteClaim ? ['queued'] : ['queued', 'retry_wait']),
@@ -736,14 +787,16 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   );
 
   return db.transaction(async (tx) => {
+    const skipped: string[] = [];
     for (let attempt = 0; attempt < 32; attempt++) {
       const [candidate] = await tx
         .select()
         .from(aiWorkflowRun)
-        .where(claimable)
+        .where(and(claimable, skipped.length ? notInArray(aiWorkflowRun.id, skipped) : undefined))
         // staff_quote shares HMS_JOB_PRIORITY_USER with party/find; jump those reads on this serial lane.
         // hms_write is a separate claim (runKind filter) and keeps HMS_WRITE_PRIORITY.
         .orderBy(
+          ...(input.lane === 'default' ? [desc(staffOrder(aiWorkflowRun))] : []),
           ...(input.lane === 'default' && input.preferDeferredWork
             ? [desc(sql`CASE
                 WHEN ${aiWorkflowRun.priority} >= 2 OR (${aiWorkflowRun.priority} = 1 AND ${aiWorkflowRun.runKind} <> 'reservation_prefill') THEN 2
@@ -754,11 +807,59 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           desc(sql`CASE WHEN ${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote' THEN 1 ELSE 0 END`),
           BACKGROUND_PREFILL_PROPERTY_ORDER,
           aiWorkflowRun.createdAt,
+          aiWorkflowRun.id,
         )
         .limit(1)
         .for('update', { skipLocked: true });
 
       if (!candidate) return null;
+
+      if (ORDERED_THREAD_RUNS.some((kind) => kind === candidate.runKind)) {
+        const orderedKinds = candidate.runKind === 'candidate_draft' ? ['candidate_draft'] as const : ORDERED_EMAIL_RUNS;
+        // Claims on different rows still need a common thread fence across worker processes.
+        const threadLock = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
+          ${JSON.stringify(['ai-thread', candidate.runKind === 'candidate_draft' ? 'draft' : 'email', candidate.transportId, candidate.threadId])}, 0)) as locked`);
+        if (!threadLock[0]?.locked) { skipped.push(candidate.id); continue; }
+        // Reconcile stale siblings left by older workers before starting the oldest job.
+        const staleSiblings = and(eq(aiWorkflowRun.transportId, candidate.transportId),
+          eq(aiWorkflowRun.threadId, candidate.threadId), ne(aiWorkflowRun.id, candidate.id),
+          inArray(aiWorkflowRun.runKind, orderedKinds), inArray(aiWorkflowRun.state, ['claimed', 'running']),
+          lte(aiWorkflowRun.updatedAt, staleBefore));
+        const stale = await tx.select().from(aiWorkflowRun).where(staleSiblings)
+          .orderBy(aiWorkflowRun.id).limit(32).for('update', { skipLocked: true });
+        for (const sibling of stale) {
+          const priorReclaims = Number(sibling.metrics?.reclaimCount ?? 0);
+          const exhausted = sibling.runKind === 'reservation_prefill' && (priorReclaims >= 1 || sibling.attempts >= 1);
+          await tx.update(aiWorkflowRun).set({
+            state: exhausted ? 'dead_letter' : 'retry_wait', claimOwner: null, claimToken: null,
+            nextRunAt: exhausted ? null : now, ...(sibling.runKind === 'reservation_prefill' ? { deadlineAt: null } : {}),
+            failureClass: 'LEASE_LOST', lastError: exhausted ? 'reservation prefill recovery limit reached' : 'stale sibling lease',
+            ...(exhausted ? { finishedAt: now } : {}), updatedAt: now,
+            metrics: { ...sibling.metrics, reclaimCount: priorReclaims + 1,
+              ...(sibling.runKind === 'reservation_prefill' && sibling.heartbeatAt
+                ? { interruptedHeartbeatAt: sibling.heartbeatAt.toISOString() } : {}) },
+          }).where(eq(aiWorkflowRun.id, sibling.id));
+        }
+        // A sibling held by another transaction must be reconciled before this job starts.
+        const [remaining] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(staleSiblings).limit(1);
+        if (remaining) { skipped.push(candidate.id); continue; }
+
+        // A parked older job must not overwrite a newer completed result on resumption.
+        const newerRun = alias(aiWorkflowRun, 'newer_thread_run');
+        const [newer] = await tx.select({ id: newerRun.id }).from(newerRun)
+          .innerJoin(aiWorkflowRun, eq(aiWorkflowRun.id, candidate.id)).where(and(
+            eq(newerRun.transportId, aiWorkflowRun.transportId), eq(newerRun.threadId, aiWorkflowRun.threadId),
+            eq(newerRun.runKind, aiWorkflowRun.runKind), eq(newerRun.state, 'succeeded'),
+            or(gt(newerRun.createdAt, aiWorkflowRun.createdAt),
+              and(eq(newerRun.createdAt, aiWorkflowRun.createdAt), gt(newerRun.id, aiWorkflowRun.id))),
+          )).limit(1);
+        if (newer) {
+          await tx.update(aiWorkflowRun).set({ state: 'superseded', claimOwner: null, claimToken: null,
+            finishedAt: now, updatedAt: now, lastError: 'newer same-thread run succeeded',
+            metrics: { ...candidate.metrics, supersededBy: newer.id } }).where(eq(aiWorkflowRun.id, candidate.id));
+          continue;
+        }
+      }
 
       const request =
         candidate.readRequest && typeof candidate.readRequest === 'object' && !Array.isArray(candidate.readRequest)
@@ -815,15 +916,15 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
       let arrivalStarts: string[] | undefined;
       if (candidate.runKind === 'reservation_prefill') {
-        // A transactional mailbox lock closes the race between workers claiming different arrivals.
+        // Serialize the count and claim across processes, not just pool slots.
         const lockRows = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(
           ${`reservation-arrival:${candidate.transportId}`}, 0)) as locked`);
-        if (!lockRows[0]?.locked) return null;
-        const [active] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+        if (!lockRows[0]?.locked) { skipped.push(candidate.id); continue; }
+        const [active] = await tx.select({ count: sql<number>`count(*)::integer` }).from(aiWorkflowRun).where(and(
           eq(aiWorkflowRun.runKind, 'reservation_prefill'), eq(aiWorkflowRun.transportId, candidate.transportId),
           ne(aiWorkflowRun.id, candidate.id), inArray(aiWorkflowRun.state, ['claimed', 'running']),
-          gt(aiWorkflowRun.updatedAt, staleBefore))).limit(1);
-        if (active) return null;
+          gt(aiWorkflowRun.updatedAt, staleBefore)));
+        if (Number(active?.count ?? 0) >= env.RESERVATION_PREFILL_CONCURRENCY) { skipped.push(candidate.id); continue; }
         const priorReclaims = Number(candidate.metrics?.reclaimCount ?? 0);
         if (isReclaim && (priorReclaims >= 1 || candidate.attempts >= 1)) {
           await tx.update(aiWorkflowRun).set({ state: 'dead_letter', failureClass: 'LEASE_LOST',
@@ -841,8 +942,9 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             Number.isFinite(Date.parse(value)) && Date.parse(value) >= windowStart.getTime())
             : startedAt && startedAt >= windowStart ? [startedAt.toISOString()] : [];
         };
-        // Every execution can spend two model calls. Count retries and lease reclaims too.
-        if (hourly.reduce((total, row) => total + recentStarts(row.metrics, row.startedAt).length, 0) >= 30) {
+        // Each execution can spend two model calls; retries and reclaims count too.
+        if (hourly.reduce((total, row) => total + recentStarts(row.metrics, row.startedAt).length, 0) >=
+            env.RESERVATION_PREFILL_STARTS_PER_HOUR) {
           await tx.update(aiWorkflowRun).set({ nextRunAt: new Date(now.getTime() + 5 * 60_000), updatedAt: now,
             ...(isReclaim ? { state: 'retry_wait' as const, claimOwner: null, claimToken: null, deadlineAt: null } : {}),
             metrics: { ...candidate.metrics, phase: 'deferred', reason: 'hourly_model_budget',

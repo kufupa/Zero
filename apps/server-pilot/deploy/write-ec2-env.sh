@@ -55,7 +55,14 @@ for key in HMS_PREFETCH_PER_HOUR HMS_GUEST_PREFETCH_PER_HOUR HMS_AVAILABILITY_PE
   value="${!key:-}"
   if [[ -n "$value" && ! "$value" =~ ^[0-9]{1,15}$ ]]; then echo "invalid $key" >&2; exit 2; fi
 done
-unset key value
+for key in AI_WORKER_CONCURRENCY RESERVATION_PREFILL_CONCURRENCY RESERVATION_PREFILL_STARTS_PER_HOUR; do
+  value="${!key:-}"
+  [[ -z "$value" ]] && continue
+  limit=16
+  [[ "$key" == RESERVATION_PREFILL_STARTS_PER_HOUR ]] && limit=10000
+  if [[ ! "$value" =~ ^[0-9]{1,5}$ ]] || (( 10#$value < 1 || 10#$value > limit )); then echo "invalid $key" >&2; exit 2; fi
+done
+unset key value limit
 
 DATABASE_URL="$(
   aws secretsmanager get-secret-value \
@@ -144,6 +151,9 @@ append_env SMTP_USER "${SMTP_USER:-}"
 # Optional: leftover SMTP_PASSWORD is ignored by RealSmtpTransport on Rocketseed.
 append_env SMTP_PASSWORD "${SMTP_PASSWORD:-}"
 append_env AI_DRAFTS_ENABLED "${AI_DRAFTS_ENABLED:-}"
+append_env AI_WORKER_CONCURRENCY "${AI_WORKER_CONCURRENCY:-}"
+append_env RESERVATION_PREFILL_CONCURRENCY "${RESERVATION_PREFILL_CONCURRENCY:-}"
+append_env RESERVATION_PREFILL_STARTS_PER_HOUR "${RESERVATION_PREFILL_STARTS_PER_HOUR:-}"
 append_env CATCHUP_UPLOAD_ENABLED "${CATCHUP_UPLOAD_ENABLED:-}"
 # Real-mail: durable triage writes on by default (ops can still override).
 if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then

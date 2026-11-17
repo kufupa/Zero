@@ -112,6 +112,9 @@ export interface MailEnv {
   WORKFLOW_TRIAGE_V6: boolean;
   INGEST_REQUIRE_OWNER_HEADER: boolean;
   AI_STALE_RUN_TIMEOUT_MS: number;
+  AI_WORKER_CONCURRENCY: number;
+  RESERVATION_PREFILL_CONCURRENCY: number;
+  RESERVATION_PREFILL_STARTS_PER_HOUR: number;
   AI_WORKER_LANE: AiExecutorLane;
   AI_MODEL_ID?: string;
   BEDROCK_REGION?: string;
@@ -218,6 +221,12 @@ function toInt(name: string, raw: string): number {
     throw new Error(`env ${name} must be integer, got: ${raw}`);
   }
   return n;
+}
+
+function concurrency(name: string, raw: string | undefined): number {
+  const value = raw === undefined || raw === '' ? 4 : toInt(name, raw);
+  if (value < 1 || value > 16) throw new Error(`env ${name} must be between 1 and 16`);
+  return value;
 }
 
 function toBool(name: string, raw: string, acceptOn = false): boolean {
@@ -471,6 +480,10 @@ export function parseEnv(input: EnvInput): MailEnv {
     WORKFLOW_TRIAGE_V6: false,
     INGEST_REQUIRE_OWNER_HEADER: true,
     AI_STALE_RUN_TIMEOUT_MS: 15 * 60_000,
+    AI_WORKER_CONCURRENCY: concurrency('AI_WORKER_CONCURRENCY', input.AI_WORKER_CONCURRENCY),
+    RESERVATION_PREFILL_CONCURRENCY: concurrency('RESERVATION_PREFILL_CONCURRENCY', input.RESERVATION_PREFILL_CONCURRENCY),
+    RESERVATION_PREFILL_STARTS_PER_HOUR: input.RESERVATION_PREFILL_STARTS_PER_HOUR
+      ? toInt('RESERVATION_PREFILL_STARTS_PER_HOUR', input.RESERVATION_PREFILL_STARTS_PER_HOUR) : 480,
     AI_WORKER_LANE: 'default',
     HMS_DRAFT_ENRICHMENT_MODE: 'off',
     HMS_READ_SERVICE_ENABLED: false,
@@ -485,6 +498,10 @@ export function parseEnv(input: EnvInput): MailEnv {
     HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
     HMS_CIRCUIT_COOLDOWN_MS: 30_000,
   };
+
+  if (env.RESERVATION_PREFILL_STARTS_PER_HOUR < 1 || env.RESERVATION_PREFILL_STARTS_PER_HOUR > 10_000) {
+    throw new Error('env RESERVATION_PREFILL_STARTS_PER_HOUR must be between 1 and 10000');
+  }
 
   const needsYouSince = input.NEEDS_YOU_SINCE;
   if (needsYouSince !== undefined && needsYouSince !== '') {
