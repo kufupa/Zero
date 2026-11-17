@@ -54,17 +54,20 @@ export function normalizeTrainCase(raw: unknown, runId: string, mailboxId: strin
 export async function loadTrainCase(path: string, decision: string): Promise<unknown> {
   id.parse(decision);
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  if (hash.digest('hex') !== approvedSha256) throw new Error('Only the approved model-safe dataset is accepted');
+  const stream = createReadStream(path);
+  stream.on('data', chunk => hash.update(chunk));
   let found: unknown;
-  for await (const line of createInterface({ input: createReadStream(path), crlfDelay: Infinity })) {
+  let duplicate = false;
+  for await (const line of createInterface({ input: stream, crlfDelay: Infinity })) {
     if (!line.trim()) continue;
     const raw: unknown = JSON.parse(line);
     if (typeof raw !== 'object' || raw === null || !('split' in raw) || raw.split !== 'train' ||
         !('decision_id' in raw) || raw.decision_id !== decision) continue;
-    if (found !== undefined) throw new Error('DUPLICATE_TRAIN_DECISION');
-    found = raw;
+    if (found !== undefined) duplicate = true;
+    else found = raw;
   }
+  if (hash.digest('hex') !== approvedSha256) throw new Error('Only the approved model-safe dataset is accepted');
+  if (duplicate) throw new Error('DUPLICATE_TRAIN_DECISION');
   if (found === undefined) throw new Error('Train decision not found');
   return found;
 }
