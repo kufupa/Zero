@@ -30,7 +30,7 @@ import type {
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
 import { and, desc, eq, gt, gte, inArray, like, lt, lte, ne, notExists, notInArray, or, sql, type SQL } from 'drizzle-orm';
-import { alias } from 'drizzle-orm/pg-core';
+import { alias, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
@@ -671,10 +671,12 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const threadRun = alias(aiWorkflowRun, 'earlier_thread_run');
   const emailOrder = sql`CASE ${aiWorkflowRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
   const threadEmailOrder = sql`CASE ${threadRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
-  const staffOrder = (run: typeof aiWorkflowRun) => sql`CASE WHEN ${run.priority} >= 2
+  type QueueColumns = { priority: AnyPgColumn; runKind: AnyPgColumn; readRequest: AnyPgColumn;
+    metrics: AnyPgColumn; idempotencyKey: AnyPgColumn; executorLane: AnyPgColumn };
+  const staffOrder = (run: QueueColumns) => sql`CASE WHEN ${run.priority} >= 2
     OR ${run.runKind} = 'candidate_draft' OR ${run.readRequest}->>'kind' = 'quote_pdf'
     OR ${run.metrics}->'failedReadRetry' IS NOT NULL THEN 1 ELSE 0 END`;
-  const enabled = (run: typeof aiWorkflowRun) => and(
+  const enabled = (run: QueueColumns) => and(
     process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' ? undefined : ne(run.runKind, 'reservation_prefill'),
     process.env.INBOUND_EXTRACTION === 'on' ? undefined : ne(run.runKind, 'inbound_extraction'),
     process.env.LEGACY_INBOUND_TRIAGE_PIPELINE === 'on' ? undefined
