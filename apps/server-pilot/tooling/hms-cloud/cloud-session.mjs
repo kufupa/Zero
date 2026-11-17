@@ -995,7 +995,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
       timer.unref?.();
     }
     const lease = Object.freeze({
-      signal: loss.signal,
+      signal: signal ? AbortSignal.any([loss.signal, signal]) : loss.signal,
       async release() {
         if (state.released) return;
         if (state.borrowers) throw new Error('HMS_CREDENTIAL_LEASE_IN_USE');

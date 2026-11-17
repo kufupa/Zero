@@ -23,6 +23,7 @@ import { propertyCodeSchema } from '../hms/property-registry.js';
 import { buildStaffProposalFacts, staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
 import { sanitizeHmsExecutionLogMessage } from './reservationist-evaluation-composition.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
 import { quotePropertyIdentity } from '../quote-proposal/filename.js';
 import {
@@ -640,7 +641,7 @@ async function priceQuote(
       searchContext: { salesStrategy: compiled.input.salesStrategy,
         strategySource: compiled.strategyDefaulted ? 'discovery_default' : 'draft',
       mealPlanDefaultedGroupIds: compiled.mealPlanDefaultedGroupIds },
-      failureCode: cause.code,
+      failureCode: classifyHmsLoginOutage(error) ? 'AUTHENTICATED_SHELL_TIMEOUT' : cause.code,
       failurePhase: cause.phase ?? 'unknown',
       failureKind: !answered ? 'system_fault' : cause.code === 'native_quote_no_matching_rate' ? 'requested_mismatch'
         : mismatch ? 'requested_unqualified' : shortage ? 'proven_shortage' : 'restricted',
@@ -780,13 +781,15 @@ async function lookupPartyCandidates(
       };
       const saved = await persistObservation(ctx, input, observation);
       return saved.status === 'ok'
-        ? { status: 'failed', issue: 'native_party_search_failed', candidates }
+        ? { status: 'failed', issue: 'native_party_search_failed', candidates,
+          ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) }
         : { status: saved.status, issue: 'party_lookup_result_not_persisted', candidates };
     }
     if (found.outcome === 'refused_lock_busy') return { status: 'failed', issue: 'HMS_LOCK_BUSY', outcomeClass: 'hms_busy', candidates };
     if (!['resolved', 'ambiguous', 'no_match'].includes(found.outcome)) {
       console.warn('quote_party_lookup_failed', { workItemId: input.workItemId, requestId: request.id, code: found.outcome });
-      return { status: 'failed', issue: 'native_party_search_failed', outcomeClass: 'system_fault', candidates };
+      return { status: 'failed', issue: 'native_party_search_failed', outcomeClass: 'system_fault', candidates,
+        ...(classifyHmsLoginOutage(found) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
     }
     if (found.truncated) {
       console.warn('quote_party_lookup_incomplete', { workItemId: input.workItemId, requestId: request.id });
@@ -882,7 +885,8 @@ export async function reservationWorkflowV2QuoteLookup(
       const busy = cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE';
       if (!busy) console.warn('quote_lookup_failed', { workItemId: input.workItemId, requestId: request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
       results.push({ status: 'failed', requestId: request.id, issue: busy ? cause.code : 'native_quote_price_unavailable',
-        outcomeClass: busy ? 'hms_busy' : 'system_fault', partyCandidates: parties.candidates });
+        outcomeClass: busy ? 'hms_busy' : 'system_fault', partyCandidates: parties.candidates,
+        ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) });
     }
   }
   const current = await getReservationWorkflowV2Draft(stateContext(ctx), { workItemId: input.workItemId, source: input.source });

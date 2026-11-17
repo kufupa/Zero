@@ -5,6 +5,9 @@ import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import { staffSessionSchema } from '../hms/hms-preparation.js';
+import { resolvePropertyScope } from '../hms/property-registry.js';
+import { classifyHmsLoginOutage, clearPropertyOutage, decidePropertyReadJob, noteLoginOutage,
+  HMS_OUTAGE_FAILURE_CLASS, HMS_OUTAGE_LAST_ERROR } from '../hms/property-outage.js';
 import { reservationWorkflowV2PrepareInputSchema } from './reservation-workflow-v2-contract.js';
 import { getReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 import { HMS_JOB_PROMPT_VERSION, NOT_APPLICABLE_MODEL_ID, markAiRunDeadLetter, markAiRunRetry,
@@ -58,6 +61,19 @@ function busy(value: unknown): boolean {
     ['quotes', 'lookups', 'cause'].includes(key) && busy(child));
 }
 
+// Results deliberately contain only sanitized native failure metadata.
+function loginOutage(value: unknown, depth = 0): boolean {
+  if (depth > 4 || !value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(child => loginOutage(child, depth + 1));
+  if (classifyHmsLoginOutage(value)) return true;
+  if ('failureCode' in value || 'failurePhase' in value) {
+    if (classifyHmsLoginOutage({ code: 'failureCode' in value ? value.failureCode : undefined,
+      phase: 'failurePhase' in value ? value.failurePhase : undefined })) return true;
+  }
+  return Object.entries(value).some(([key, child]) =>
+    ['quotes', 'quote', 'lookups', 'cause'].includes(key) && loginOutage(child, depth + 1));
+}
+
 export async function executeReservationWarmup(input: {
   db: DB; run: AiWorkflowRun; fence: AiRunFence; signal?: AbortSignal; request: ReservationWarmupRequest;
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
@@ -78,9 +94,29 @@ export async function executeReservationWarmup(input: {
     await markAiRunDeadLetter({ ...mark, lastError: 'reservation warmup binding invalid', failureClass: 'POLICY_BLOCK' }, db);
     return 'dead_letter';
   }
+  let propertyCode: string | null = null;
+  try {
+    const scope = resolvePropertyScope({ transportId: run.transportId, propertySwitch: request.input.propertySwitch });
+    if ((request.input.source.propertyId ?? 'HRCEN') === scope.propertyCode) propertyCode = scope.propertyCode;
+  } catch { /* The native route reports invalid property bindings. */ }
+  const park = async (delayMs: number) => {
+    const retained = await markAiRunRetry({ ...mark, attempts: run.attempts,
+      nextRunAt: new Date(Date.now() + delayMs), lastError: HMS_OUTAGE_LAST_ERROR,
+      failureClass: HMS_OUTAGE_FAILURE_CLASS, resetDeadline: true }, db);
+    return retained ? 'retry_wait' as const : 'dead_letter' as const;
+  };
+  input.signal?.throwIfAborted();
+  const outage = decidePropertyReadJob(propertyCode);
+  if (outage.kind === 'park') return park(outage.delayMs);
   try {
     const native = await import('../trpc/routes/reservation-workflow-v2.js');
     const result = await native.runReservationWorkflowV2Warmup({ transportId: run.transportId, request, fence, signal: input.signal });
+    input.signal?.throwIfAborted();
+    if (loginOutage(result)) {
+      const parked = noteLoginOutage(propertyCode);
+      if (parked.kind === 'park') return park(parked.delayMs);
+      throw new Error('reservation warmup native check failed');
+    }
     if (busy(result) || result.status === 'stale_revision' ||
         result.status === 'unsupported' && result.issue === 'warmup_queue_disabled') return retry('reservation warmup yielded');
     if (result.status === 'failed' || result.status === 'unsupported' ||
@@ -88,13 +124,22 @@ export async function executeReservationWarmup(input: {
           row && typeof row === 'object' && row.issue === 'filing_stay_lookup_failed') ||
         'quotes' in result && Array.isArray(result.quotes) && result.quotes.some(row => row && typeof row === 'object' && row.status === 'failed'))
       throw new Error('reservation warmup native check failed');
+    if (result.status === 'prepared' || result.status === 'ok' &&
+        ('catalogues' in result || 'quotes' in result && Array.isArray(result.quotes) && result.quotes.some(row =>
+          row && typeof row === 'object' && row.status === 'priced') ||
+          'lookups' in result && Array.isArray(result.lookups) && result.lookups.some(row =>
+            row && typeof row === 'object' && row.status === 'candidate'))) clearPropertyOutage(propertyCode);
     const completed = await markAiRunSucceeded({ ...mark, metrics: { ...run.metrics,
       warmupStatus: result.status, ...(result.status === 'superseded' ? { superseded: true } : {}) } }, db);
     return completed ? 'succeeded' : 'retry_wait';
   } catch (failure) {
+    input.signal?.throwIfAborted();
+    if (classifyHmsLoginOutage(failure)) {
+      const parked = noteLoginOutage(propertyCode);
+      if (parked.kind === 'park') return park(parked.delayMs);
+    }
     if (failure instanceof Error && (failure.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' || busy(failure)))
       return retry('reservation warmup waiting for HMS');
-    input.signal?.throwIfAborted();
     if (run.attempts < 3) {
       const retained = await markAiRunRetry({ ...mark, attempts: run.attempts + 1,
         nextRunAt: new Date(Date.now() + 30_000), lastError: 'reservation warmup failed',
