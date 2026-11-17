@@ -93,6 +93,8 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
     && item.status === 'complete' && item.criteria.workflow === 'cancel' && item.criteria.stage === 'prepare'
     && item.criteria.requestId === editor.request.id && item.criteria.hintId === hintId && item.criteria.selectionRef === selected);
   const result = record(preview?.result);
+  const preparedFeeCanPauseForStaffGo = result.ready === true && typeof result.penaltyText === 'string' &&
+    Boolean(result.penaltyText.trim());
   const charge = cancelChargeForSelection(editor.snapshot, editor.request.id);
   const selectedLookup = editor.snapshot.session.draft.observations.find(item => item.ref === selected && item.kind === 'stay_candidate'
     && item.status === 'complete' && item.generationId === editor.snapshot.session.draft.generationId
@@ -192,7 +194,9 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
     </Section>
     <Section title="Cancellation details">
-      <p className={styles.warning}>If Infor shows a cancellation charge, finish this one in HMS.</p>
+      <p className={styles.warning}>{preparedFeeCanPauseForStaffGo
+        ? 'Infor showed this penalty with the unsaved cancellation reason and note. Nava will pause for a separate staff decision if a fee appears during Go.'
+        : 'If Infor shows a cancellation charge, finish this one in HMS.'}</p>
       {charge && <div className={styles.warning} role="alert"><strong>This booking has a cancellation charge - finish this one in HMS</strong><p>{charge}</p></div>}
       {text(pendingFee.penaltyText) && <div className={styles.warning} role="alert">
         <strong>This booking has a cancellation charge - finish this one in HMS</strong>
@@ -238,7 +242,9 @@ export function CancelEditor(editor: WorkbenchEditorProps) {
       </div>
       {canReview && <div className={styles.row}>{accepted ? <span>Current cancellation policy and fee reviewed.</span> : <button type="button" disabled={editor.view.busy}
         onClick={() => void editor.commands.acceptFinancialReview(String(binding.reviewFieldPath), String(binding.reviewNote), String(binding.observationRef))}>I checked the stay, policy and fee</button>}</div>}
-      <small className={styles.hint}>If Infor shows a charge, finish this one in HMS.</small>
+      <small className={styles.hint}>{preparedFeeCanPauseForStaffGo
+        ? 'If the fee appears in the live cancellation dialog, Nava will pause for a separate staff Go before continuing.'
+        : 'If Infor shows a charge, finish this one in HMS.'}</small>
     </Section>}
     <div className={styles.hint}>Cancelling does not remove Add-Ons or issue a refund.</div>
   </div>;

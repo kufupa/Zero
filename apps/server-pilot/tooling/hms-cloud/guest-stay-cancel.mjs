@@ -61,6 +61,10 @@ function actionDeadline(page, timeoutMs, hooks) {
   const onDialog = (dialog) => {
     const observed = { type: dialog.type(), message: dialog.message() };
     const reject = () => { stop('NATIVE_DIALOG', observed); void dialog.dismiss().catch(() => {}); };
+    if (hooks.observeOnlyNativeDialogs) {
+      stop('NATIVE_DIALOG_OBSERVED', observed);
+      return;
+    }
     if (hooks.onNativeCharge && observed.type === 'confirm' && /penalt|fee|charge|deposit/i.test(observed.message)) {
       void (async () => {
         if (await hooks.onNativeCharge(observed) !== true || stopped) return reject();
@@ -78,6 +82,125 @@ function actionDeadline(page, timeoutMs, hooks) {
     check() { if (stopped) { hooks.quarantine(); throw new Error(stopped); } },
     finish() { clearTimeout(timer); page.off?.('dialog', onDialog); },
   };
+}
+
+async function cancellationFeeStageEvidence(frame) {
+  try {
+    const captured = await frame.evaluate(() => {
+      const visible = (element) => Boolean((element.offsetWidth || element.offsetHeight) &&
+        getComputedStyle(element).visibility !== 'hidden');
+      const windows = [...document.querySelectorAll('.x-window')].filter(visible);
+      const kind = (text) => /cancellation reason/i.test(text) ? 'reason' :
+        /penalt|fee|charge|deposit/i.test(text) ? 'fee' : 'other';
+      const ranked = windows.map((element) => ({ element, kind: kind(element.innerText || ''),
+        z: Number.parseInt(getComputedStyle(element).zIndex, 10) }));
+      const rankedFinite = ranked.filter((item) => Number.isFinite(item.z));
+      const highest = rankedFinite.length ? Math.max(...rankedFinite.map((item) => item.z)) : null;
+      const top = highest === null ? [] : rankedFinite.filter((item) => item.z === highest);
+      const topWindowKind = top.length === 1 ? top[0].kind : windows.length ? 'ambiguous' : 'none';
+      const feeWindowCount = ranked.filter((item) => item.kind === 'fee').length;
+      const reasonWindowCount = ranked.filter((item) => item.kind === 'reason').length;
+      const reasons = [...document.querySelectorAll('input[name="cancelreason"]')].filter(visible);
+      const notes = [...document.querySelectorAll('textarea[name="cancellationnote"]')].filter(visible);
+      const reasonDialogHasFeeText = ranked.some((item) => item.kind === 'reason' &&
+        /penalt|fee|charge|deposit/i.test(item.element.innerText || ''));
+      const reasonDialogFeeText = reasonDialogHasFeeText && reasonWindowCount === 1
+        ? ranked.find((item) => item.kind === 'reason')?.element.innerText?.trim() ?? null : null;
+      const feeWindow = feeWindowCount === 1 ? ranked.find((item) => item.kind === 'fee')?.element : null;
+      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() || feeWindow?.innerText?.trim() || null;
+      const feeButtons = feeWindow ? [...feeWindow.querySelectorAll('.x-btn')].filter(visible) : [];
+      return { visibleWindowCount: windows.length, feeWindowCount, reasonWindowCount, topWindowKind,
+        reasonDialogHasFeeText, reasonControlCount: reasons.length,
+        reasonControlEnabled: reasons.length === 1 && !reasons[0].disabled && !reasons[0].readOnly,
+        noteControlCount: notes.length,
+        noteControlEnabled: notes.length === 1 && !notes[0].disabled && !notes[0].readOnly,
+        feePromptMayObstructReason: feeWindowCount > 0, feeDialogText, reasonDialogFeeText,
+        feeButtonCount: feeButtons.length, feeButtonLabels: feeButtons.map((button) => button.innerText.trim()) };
+    });
+    const { feeDialogText, reasonDialogFeeText, feeButtonLabels, feeButtonCount, ...evidence } = captured ?? {};
+    return { ...evidence, ...feeDialogEvidence({ text: feeDialogText || reasonDialogFeeText,
+      buttonLabels: feeButtonLabels,
+      buttonCount: feeButtonCount, buttonSource: 'dom' }) };
+  } catch { return null; }
+}
+
+const feeActionLabels = new Set(['OK', 'Yes', 'Accept']);
+function cancellationPenaltyNoticeText(value) {
+  if (typeof value !== 'string') return null;
+  const match = /Cancellation\s+Penalty\s+of\s+\d{1,12}\.\d{2}\s+may\s+be\s+added\s+to\s+account\./i.exec(value);
+  return match?.[0]?.replace(/\s+/g, ' ') ?? null;
+}
+
+function feeDialogEvidence({ text, buttonLabels = [], buttonCount = 0, buttonSource }) {
+  const feeLike = typeof text === 'string' && /penalt|fee|charge|deposit/i.test(text);
+  const noticeText = cancellationPenaltyNoticeText(text);
+  const notice = noticeText ? cancellationPenaltyNotice(noticeText) : null;
+  const observedLabels = Array.isArray(buttonLabels) ? buttonLabels.filter((label) =>
+    typeof label === 'string' && feeActionLabels.has(label.trim())) : [];
+  const buttonLabel = observedLabels.length === 1 && buttonCount === 1 ? observedLabels[0].trim() : null;
+  return {
+    penaltyNoticeValidated: notice !== null,
+    penaltyAmount: notice?.amount ?? null,
+    positivePenaltyObserved: Boolean(notice && !/^0+\.00$/.test(notice.amount)),
+    feeTiming: feeLike ? 'before_save' : null,
+    feeButtonLabel: buttonLabel,
+    feeButtonEvidence: !feeLike ? 'not_observed' : buttonSource === 'native_dialog'
+      ? 'browser_native_dialog_control_unavailable' : buttonLabel ? 'unique_visible_native_button'
+        : buttonCount === 0 ? 'no_visible_button' : 'ambiguous_or_unsupported_button',
+    feeButtonCount: Number.isSafeInteger(buttonCount) && buttonCount >= 0 ? buttonCount : null,
+  };
+}
+
+async function stageNoteOnlyInUnobstructedReason(frame, expectedReason, noteValue) {
+  try {
+    const captured = await frame.evaluate(({ expectedReason, noteValue }) => {
+      const visible = element => Boolean((element.offsetWidth || element.offsetHeight) &&
+        getComputedStyle(element).visibility !== 'hidden');
+      const windows = [...document.querySelectorAll('.x-window')].filter(visible);
+      const kind = text => /cancellation reason/i.test(text) ? 'reason' :
+        /penalt|fee|charge|deposit/i.test(text) ? 'fee' : 'other';
+      const ranked = windows.map(element => ({ element, kind: kind(element.innerText || ''),
+        z: Number.parseInt(getComputedStyle(element).zIndex, 10) }));
+      const finite = ranked.filter(item => Number.isFinite(item.z));
+      const highest = finite.length ? Math.max(...finite.map(item => item.z)) : null;
+      const top = highest === null ? [] : finite.filter(item => item.z === highest);
+      const topWindowKind = top.length === 1 ? top[0].kind : windows.length ? 'ambiguous' : 'none';
+      const feeWindowCount = ranked.filter(item => item.kind === 'fee').length;
+      const reasonWindowCount = ranked.filter(item => item.kind === 'reason').length;
+      const reasonDialogHasFeeText = ranked.some(item => item.kind === 'reason' &&
+        /penalt|fee|charge|deposit/i.test(item.element.innerText || ''));
+      const reasonDialogFeeText = reasonDialogHasFeeText && reasonWindowCount === 1
+        ? ranked.find(item => item.kind === 'reason')?.element.innerText?.trim() ?? null : null;
+      const feeWindow = feeWindowCount === 1 ? ranked.find(item => item.kind === 'fee')?.element : null;
+      const feeDialogText = feeWindow?.querySelector('.x-window-body')?.innerText?.trim() || feeWindow?.innerText?.trim() || null;
+      const feeButtons = feeWindow ? [...feeWindow.querySelectorAll('.x-btn')].filter(visible) : [];
+      const reasons = [...document.querySelectorAll('input[name="cancelreason"]')].filter(visible);
+      const notes = [...document.querySelectorAll('textarea[name="cancellationnote"]')].filter(visible);
+      const evidence = { visibleWindowCount: windows.length, feeWindowCount, reasonWindowCount, topWindowKind,
+        reasonDialogHasFeeText, reasonDialogFeeText,
+        reasonControlCount: reasons.length,
+        reasonControlEnabled: reasons.length === 1 && !reasons[0].disabled && !reasons[0].readOnly,
+        noteControlCount: notes.length,
+        noteControlEnabled: notes.length === 1 && !notes[0].disabled && !notes[0].readOnly,
+        feePromptMayObstructReason: feeWindowCount > 0, feeDialogText,
+        feeButtonCount: feeButtons.length, feeButtonLabels: feeButtons.map(button => button.innerText.trim()) };
+      if (evidence.visibleWindowCount !== 1 || evidence.feeWindowCount !== 0 ||
+          evidence.reasonWindowCount !== 1 || evidence.topWindowKind !== 'reason' ||
+          evidence.reasonControlCount !== 1 || !evidence.reasonControlEnabled ||
+          evidence.noteControlCount !== 1 || !evidence.noteControlEnabled) return { evidence, noteStaged: false };
+      const reasonComponent = globalThis.Ext?.getCmp?.(reasons[0].id.replace(/-inputEl$/, ''));
+      if (reasonComponent?.getValue?.() !== expectedReason) return { evidence, noteStaged: false };
+      const noteComponent = globalThis.Ext?.getCmp?.(notes[0].id.replace(/-inputEl$/, ''));
+      if (!noteComponent?.setValue) return { evidence, noteStaged: false };
+      noteComponent.setValue(noteValue);
+      noteComponent.fireEvent?.('blur', noteComponent);
+      return { evidence, noteStaged: notes[0].value === noteValue && noteComponent.getValue?.() === noteValue };
+    }, { expectedReason, noteValue });
+    const { feeDialogText, reasonDialogFeeText, feeButtonLabels, feeButtonCount, ...evidence } = captured?.evidence ?? {};
+    return { evidence: { ...evidence, ...feeDialogEvidence({ text: feeDialogText || reasonDialogFeeText,
+      buttonLabels: feeButtonLabels, buttonCount: feeButtonCount, buttonSource: 'dom' }) },
+      noteStaged: captured?.noteStaged === true };
+  } catch { return { evidence: null, noteStaged: false }; }
 }
 
 function cleanSnapshot(snapshot) {
@@ -204,17 +327,23 @@ function matchesOpen(request, frame, expected) {
 /** Opens only the initial cancellation form. It never chooses a reason or confirms cancellation.
  * `requestDispatched` means cancellation Save; the separate OSCNRS form-open POST is reported explicitly. */
 export async function openLabtestCancellation(page, expected = {}, { timeoutMs = 20_000, awaitChargeApproval,
-  prepareChargeWithAuthority, continuationAllowed = () => true, bindDepositReceived = false } = {}) {
+  prepareChargeWithAuthority, continuationAllowed = () => true, bindDepositReceived = false,
+  observeFeeBeforeReason = false, refuseFeeBeforeReasonStage = false } = {}) {
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED', requestDispatched: false,
     dialogOpenRequestDispatched: false, cancellationSaveDispatched: false, chargeApproved: false, chargeDispatched: false };
+  if (observeFeeBeforeReason && (expected.allowRealGuest !== false || typeof awaitChargeApproval === 'function' ||
+      typeof prepareChargeWithAuthority === 'function')) return { outcome: 'refused', issue: 'FEE_STAGE_OBSERVATION_SCOPE_INVALID',
+        requestDispatched: false, dialogOpenRequestDispatched: false, cancellationSaveDispatched: false,
+        chargeApproved: false, chargeDispatched: false };
   let armed = false, dialogOpenDispatched = false, nativeDialog = null, response = null, authorizedRequest;
   let fence, scope, interactionStarted = false, openedReady = false, baselineVerified = false;
-  let preChargeStarted = false, preChargeText = null, seenChargeText = null;
+  let preChargeStarted = false, preChargeText = null, seenChargeText = null, feeStageObservation = null;
   const blocked = [];
   const forwarded = new WeakSet();
   const approvePreCharge = async (dialog) => {
     preChargeText = dialog.text;
-    if (!baselineVerified || typeof awaitChargeApproval !== 'function' || typeof prepareChargeWithAuthority !== 'function' ||
+    if (refuseFeeBeforeReasonStage || !baselineVerified || typeof awaitChargeApproval !== 'function' ||
+        typeof prepareChargeWithAuthority !== 'function' ||
         continuationAllowed() !== true || await awaitChargeApproval(dialog) !== true || action.isStopped() ||
         continuationAllowed() !== true) return false;
     await prepareChargeWithAuthority();
@@ -223,16 +352,30 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     return continuationAllowed() === true && Boolean(fence && !fence.isQuarantined());
   };
   const action = actionDeadline(page, timeoutMs, {
+    observeOnlyNativeDialogs: observeFeeBeforeReason,
     disarm: () => { armed = false; }, recordDialog: (dialog) => { nativeDialog = dialog; },
     quarantine: () => { fence?.quarantine(); scope?.close(); },
-    result: (reason, dialog) => ({ outcome: preChargeStarted ? 'fee_accepted_unconfirmed' :
+    result: (reason, dialog) => observeFeeBeforeReason ? ({
+      outcome: dialog && /penalt|fee|charge|deposit/i.test(dialog.message) ? 'fee_dialog_pending' : 'unexpected_dialog',
+      issue: reason, openRequestDispatched: dialogOpenDispatched, httpStatus: response?.status() || null,
+      nativeDialogObserved: Boolean(dialog), nativeDialogType: dialog?.type ?? null,
+      nativeDialogFeeLike: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+      nativeDialogTextLength: typeof dialog?.message === 'string' ? dialog.message.length : null,
+      feeStageObservation: { state: 'native_dialog', nativeDialogObserved: Boolean(dialog),
+        nativeDialogType: dialog?.type ?? null,
+        nativeDialogFeeLike: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+        nativeDialogTextLength: typeof dialog?.message === 'string' ? dialog.message.length : null,
+        feeDialogVisible: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+        reasonDialogVisible: false, reasonControlCount: null, noteControlCount: null,
+        ...feeDialogEvidence({ text: dialog?.message, buttonSource: 'native_dialog' }) },
+    }) : ({ outcome: preChargeStarted ? 'fee_accepted_unconfirmed' :
       (preChargeText ?? seenChargeText) || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
       dialogOpenDispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
     requestDispatched: false, dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
     httpStatus: response?.status() || null, nativeDialog,
     chargeApproved: preChargeStarted, chargeDispatched: false,
     penaltyText: dialog?.message ?? preChargeText ?? seenChargeText, blockedRequests: [...blocked] }),
-    onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK' }),
+    onNativeCharge: async (dialog) => approvePreCharge({ text: dialog.message, button: 'OK', timing: 'before_save' }),
   });
   const work = (async () => { try {
     const policyPath = `/api/booking/${encodeURIComponent(expected.propertyCode)}/cancelPolicy/${encodeURIComponent(expected.confirmation)}`;
@@ -312,16 +455,22 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const windows = frame.locator('.x-window:visible:not(.x-menu)');
     let dialogs = await windows.evaluateAll((windows) =>
       windows.map((window) => window.innerText.trim())).catch(() => []);
+    if (observeFeeBeforeReason) feeStageObservation = await cancellationFeeStageEvidence(frame);
     let fee = dialogs.some((text) => /penalt|fee|charge|deposit/i.test(text) && !/cancellation reason/i.test(text)) ||
       Boolean(nativeDialog && /penalt|fee|charge|deposit/i.test(nativeDialog.message));
     // A later abort must still report the charge text this scan found.
     if (fee) seenChargeText = dialogs.find((text) => /penalt|fee|charge|deposit/i.test(text) && !/cancellation reason/i.test(text)) ??
       nativeDialog?.message ?? null;
     const reasons = cancelReasons(policy);
+    if (observeFeeBeforeReason && feeStageObservation) {
+      feeStageObservation = { ...feeStageObservation, reasonOptionCount: reasons?.length ?? 0,
+        testReasonAvailable: (reasons ?? []).filter((item) => item.value === 'TEST' &&
+          item.display === 'Test Reservations').length === 1 };
+    }
     const policyReady = Boolean(reasons && (expected.allowRealGuest === true || reasons.some((item) =>
       item.value === 'TEST' && item.display === 'Test Reservations')));
     let afterOpen = await recordSnapshot(frame);
-    if (fee && !nativeDialog && policyReady && dialogOpenDispatched && response?.status() === 200 && !blocked.length &&
+    if (fee && !refuseFeeBeforeReasonStage && !nativeDialog && policyReady && dialogOpenDispatched && response?.status() === 200 && !blocked.length &&
         readySnapshot(afterOpen, expected) && sameParties(state, afterOpen, expected) && unchangedExcept(baseline, afterOpen, {}) &&
         unchangedCancellationFields(baseline, afterOpen, expected) &&
         typeof awaitChargeApproval === 'function' && typeof prepareChargeWithAuthority === 'function') {
@@ -333,7 +482,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
             await chargeTargetIsCurrent(frame, expected)) {
           const label = (await button.innerText()).trim();
           preChargeText = text;
-          const approved = await awaitChargeApproval({ text, button: label });
+          const approved = await awaitChargeApproval({ text, button: label, timing: 'before_save' });
           action.check();
           if (approved === true && continuationAllowed() === true && await charge.count() === 1 &&
               (await charge.innerText()).trim() === text && await button.count() === 1 &&
@@ -366,6 +515,15 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
       blocked, baseline: afterOpen, fence, forwarded, reasons, partyPreimage: state.partyPreimage,
       chargeApproved: preChargeStarted, penaltyText: preChargeText, dialogSeen: () => nativeDialog });
     openedReady = reasonReady;
+    const outcome = preChargeStarted && !reasonReady ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' :
+      reasonReady ? 'reason_ready' : !policyReady && policy ? 'policy_requires_review' :
+        dialogOpenDispatched && dialogs.length ? 'unexpected_dialog' : dialogOpenDispatched ? 'uncertain' : 'not_dispatched';
+    if (observeFeeBeforeReason) return { outcome, requestDispatched: false, cancellationSaveDispatched: false,
+      openRequestDispatched: dialogOpenDispatched,
+      httpStatus: response?.status() || null, reasonOptionCount: reasons?.length ?? 0,
+      testReasonAvailable: (reasons ?? []).filter((item) => item.value === 'TEST' && item.display === 'Test Reservations').length === 1,
+      reasons: (reasons ?? []).filter((item) => item.value === 'TEST' && item.display === 'Test Reservations'),
+      blockedRequestCount: blocked.length, feeStageObservation: feeStageObservation ?? { state: 'unavailable' } };
     return { outcome: preChargeStarted && !reasonReady ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' : reasonReady ? 'reason_ready' : policy && !policyReady ? 'policy_requires_review' :
       dialogOpenDispatched && dialogs.length ? 'unexpected_dialog' : dialogOpenDispatched ? 'uncertain' : 'not_dispatched',
     requestDispatched: false, dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
@@ -376,6 +534,10 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     dialogs, nativeDialog, blockedRequests: blocked };
   } catch (error) {
     armed = false;
+    if (observeFeeBeforeReason) return { outcome: (preChargeText ?? seenChargeText) ? 'fee_dialog_pending' :
+      dialogOpenDispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), openRequestDispatched: dialogOpenDispatched,
+      httpStatus: response?.status() || null, blockedRequestCount: blocked.length,
+      feeStageObservation: feeStageObservation ?? { state: 'unavailable' } };
     return { outcome: preChargeStarted ? 'fee_accepted_unconfirmed' : (preChargeText ?? seenChargeText) ? 'fee_dialog_pending' :
       dialogOpenDispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), requestDispatched: false,
       dialogOpenRequestDispatched: dialogOpenDispatched, cancellationSaveDispatched: false,
@@ -449,7 +611,7 @@ async function chargeTargetIsCurrent(frame, expected) {
 export async function confirmLabtestCancellation(page, expected = {}, { cancellationNote = '', reasonCode,
   reasonLabel, timeoutMs = 20_000, beforeDispatch, dispatchWithAuthority, continuationAllowed = () => true,
   onDispatched, awaitChargeApproval, prepareChargeWithAuthority, dispatchChargeWithAuthority, bindDepositReceived = false,
-  stageOnly = false } = {}) {
+  stageOnly = false, observeFeeBeforeReason = false } = {}) {
   const opened = pendingPages.get(page);
   pendingPages.delete(page);
   if (!opened) return { outcome: 'refused', issue: 'CANCEL_REASON_NOT_CURRENT' };
@@ -458,6 +620,10 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
   }
   if (expected.allowRealGuest !== true) {
     reasonCode ??= 'TEST'; reasonLabel ??= 'Test Reservations';
+  }
+  if (observeFeeBeforeReason && (!stageOnly || expected.allowRealGuest !== false || beforeDispatch || dispatchWithAuthority ||
+      onDispatched || awaitChargeApproval || prepareChargeWithAuthority || dispatchChargeWithAuthority)) {
+    return { outcome: 'refused', issue: 'FEE_STAGE_OBSERVATION_SCOPE_INVALID', requestDispatched: false };
   }
   if (!opened.reasons?.some((item) => item.value === reasonCode && item.display === reasonLabel) ||
       (expected.allowRealGuest && !stageOnly &&
@@ -473,10 +639,26 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
   const blocked = [], earlyTaxReads = [];
   const captureChargeResponse = (item) => { if (item.request() === chargeRequest) chargeResponse = item; };
   page.on('response', captureChargeResponse);
+  let feeStageObservation = null;
   const action = actionDeadline(page, timeoutMs, {
+    observeOnlyNativeDialogs: observeFeeBeforeReason,
     disarm: () => { armed = false; chargeArmed = false; }, recordDialog: (dialog) => { nativeDialog = dialog; },
     quarantine: () => { fence?.quarantine(); scope?.close(); },
-    result: (reason, dialog) => ({ outcome: chargeApproved ? 'fee_accepted_unconfirmed' :
+    result: (reason, dialog) => observeFeeBeforeReason ? ({
+      outcome: dialog && /penalt|fee|charge|deposit/i.test(dialog.message) ? 'fee_dialog_pending' : 'unexpected_dialog',
+      issue: reason, requestDispatched: false, nativeDialogObserved: Boolean(dialog),
+      nativeDialogType: dialog?.type ?? null,
+      nativeDialogFeeLike: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+      nativeDialogTextLength: typeof dialog?.message === 'string' ? dialog.message.length : null,
+      chargeApproved: false, chargeDispatched: false, browserSendRequests: sendRequests,
+      dispatchCallbacksDrained: pendingDispatch === 0,
+      feeStageObservation: { ...(feeStageObservation ?? {}), state: 'native_dialog',
+        nativeDialogObserved: Boolean(dialog), nativeDialogType: dialog?.type ?? null,
+        nativeDialogFeeLike: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+        nativeDialogTextLength: typeof dialog?.message === 'string' ? dialog.message.length : null,
+        feeDialogVisible: Boolean(dialog && /penalt|fee|charge|deposit/i.test(dialog.message)),
+        ...feeDialogEvidence({ text: dialog?.message, buttonSource: 'native_dialog' }) },
+    }) : ({ outcome: chargeApproved ? 'fee_accepted_unconfirmed' :
       chargeText || (dialog && /penalt|fee|charge|deposit/i.test(dialog.message)) ? 'fee_dialog_pending' :
       dispatched ? 'uncertain' : dialog ? 'unexpected_dialog' : 'not_dispatched', issue: reason,
     requestDispatched: dispatched, httpStatus: response?.status() || null, nativeDialog,
@@ -484,20 +666,22 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     chargeApproved, chargeDispatched, browserSendRequests: sendRequests, dispatchCallbacksDrained: pendingDispatch === 0 }),
     onNativeCharge: async (dialog) => {
       // A JS confirm pauses the verified form. Before Save, hold the target before accepting it;
-      // after Save, the separate charge request must use its existing dispatch authority.
-      const beforeSave = !dispatched;
+      // after Save, the separate charge request must use its existing dispatch authority. Once the
+      // Save request exists, the dialog rides on that submission: it is never a before-Save confirm.
+      const beforeSave = !dispatched && !authorizedRequest;
       penaltyTiming = beforeSave ? 'before_save' : 'after_save';
       if (typeof awaitChargeApproval !== 'function' || (beforeSave
         ? (!armed || !preparedSnapshot || typeof prepareChargeWithAuthority !== 'function')
         : typeof dispatchChargeWithAuthority !== 'function')) return false;
       chargeText = dialog.message;
-      if (await awaitChargeApproval({ text: dialog.message, button: 'OK' }) !== true ||
+      if (await awaitChargeApproval({ text: dialog.message, button: 'OK', timing: beforeSave ? 'before_save' : 'after_save' }) !== true ||
           action.isStopped() || continuationAllowed() !== true) return false;
       if (beforeSave) {
-        if (dispatched || !armed || !preparedSnapshot || !fence || fence.isQuarantined()) return false;
+        if (dispatched || authorizedRequest || !armed || !preparedSnapshot || !fence || fence.isQuarantined()) return false;
         await prepareChargeWithAuthority();
         chargeApproved = true;
-        return !action.isStopped() && continuationAllowed() === true && !dispatched && armed && !fence.isQuarantined();
+        return !action.isStopped() && continuationAllowed() === true && !dispatched && !authorizedRequest &&
+          armed && !fence.isQuarantined();
       }
       chargeApproved = true;
       chargeArmed = true;
@@ -647,7 +831,26 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     reasonSelected = true;
     await choice.click();
     action.check();
-    const filled = await note.evaluate((el, value) => {
+    if (observeFeeBeforeReason) {
+      // Reason selection can trigger tax reads and a fee window. Wait for those reads and
+      // prove the reason window still owns the controls before changing the note.
+      await settleEarlyTaxReads();
+      await page.waitForTimeout(1_000);
+      action.check();
+      const stagedNote = await stageNoteOnlyInUnobstructedReason(frame, reasonCode, cancellationNote);
+      feeStageObservation = stagedNote.evidence;
+      if (!feeStageObservation || feeStageObservation.visibleWindowCount !== 1 ||
+          feeStageObservation.reasonWindowCount !== 1 || feeStageObservation.topWindowKind !== 'reason' ||
+          feeStageObservation.feeWindowCount !== 0 || feeStageObservation.reasonControlCount !== 1 ||
+          feeStageObservation.noteControlCount !== 1 || !feeStageObservation.reasonControlEnabled ||
+          !feeStageObservation.noteControlEnabled || !stagedNote.noteStaged) {
+        return { outcome: feeStageObservation?.feeWindowCount ? 'fee_dialog_pending' : 'fee_stage_inconclusive',
+          issue: 'FEE_STAGE_WINDOW_NOT_UNOBSTRUCTED', requestDispatched: false,
+          chargeApproved: false, chargeDispatched: false, browserSendRequests: sendRequests,
+          dispatchCallbacksDrained: pendingDispatch === 0, feeStageObservation };
+      }
+    }
+    const filled = observeFeeBeforeReason ? true : await note.evaluate((el, value) => {
       const component = globalThis.Ext?.getCmp?.(el.id.replace(/-inputEl$/, ''));
       if (!component?.setValue || el.disabled || el.readOnly) return false;
       component.setValue(value);
@@ -698,7 +901,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
         stagedDialogText: reasonText.length <= 2000 ? reasonText : null, httpStatus: response?.status() || null,
         dialogs: [reasonText], nativeDialog, blockedRequests: blocked, browserSendRequests: sendRequests,
         penaltyText: chargeText, chargeApproved: false, chargeDispatched: false,
-        dispatchCallbacksDrained: pendingDispatch === 0 };
+        dispatchCallbacksDrained: pendingDispatch === 0,
+        ...(observeFeeBeforeReason ? { feeStageObservation: await cancellationFeeStageEvidence(frame) } : {}) };
     }
     if (/penalt|fee|charge|deposit/i.test(reasonText)) {
       chargeText = reasonText;
@@ -706,7 +910,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
       const label = (await ok.innerText()).trim();
       if (reasonText.length > 2000 || typeof awaitChargeApproval !== 'function' ||
           typeof prepareChargeWithAuthority !== 'function' || !await chargeTargetIsCurrent(frame, expected) ||
-          await awaitChargeApproval({ text: reasonText, button: label }) !== true || continuationAllowed() !== true) {
+          await awaitChargeApproval({ text: reasonText, button: label, timing: 'before_save' }) !== true || continuationAllowed() !== true) {
         throw new Error('CANCEL_CHARGE_NOT_APPROVED');
       }
       action.check();
@@ -803,7 +1007,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
             await chargeTargetIsCurrent(frame, expected)) {
           const label = (await button.innerText()).trim();
           chargeText = text;
-          const approved = await awaitChargeApproval({ text, button: label });
+          const approved = await awaitChargeApproval({ text, button: label, timing: 'after_save' });
           action.check();
           if (approved === true && continuationAllowed() === true && await charge.count() === 1 &&
               (await charge.innerText()).trim() === text && await button.count() === 1 &&
@@ -836,6 +1040,17 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
     ...(zeroNotice ? { zeroPenaltyNotice } : {}) };
   } catch (error) {
     armed = false;
+    if (observeFeeBeforeReason) {
+      feeStageObservation = await cancellationFeeStageEvidence(opened.frame) ?? feeStageObservation;
+      return { outcome: chargeText ? 'fee_dialog_pending' : dispatched ? 'uncertain' : 'not_dispatched',
+        issue: issue(error), requestDispatched: false, nativeDialogObserved: Boolean(nativeDialog),
+        nativeDialogType: nativeDialog?.type ?? null,
+        nativeDialogFeeLike: Boolean(nativeDialog && /penalt|fee|charge|deposit/i.test(nativeDialog.message)),
+        nativeDialogTextLength: typeof nativeDialog?.message === 'string' ? nativeDialog.message.length : null,
+        chargeApproved: false, chargeDispatched: false, browserSendRequests: sendRequests,
+        dispatchCallbacksDrained: pendingDispatch === 0,
+        blockedRequests: blocked, feeStageObservation: feeStageObservation ?? { state: 'unavailable' } };
+    }
     return { outcome: chargeText ? chargeApproved ? 'fee_accepted_unconfirmed' : 'fee_dialog_pending'
       : dispatched ? 'uncertain' : 'not_dispatched', issue: issue(error), penaltyText: chargeText,
       httpStatus: response?.status() || null, requestDispatched: dispatched, dispatchCallbacksDrained: pendingDispatch === 0,

@@ -16,6 +16,7 @@ import { QuoteEditor } from './editors/quote-editor';
 import { createReadiness } from '../../../server-pilot/src/ai/reservation-workflow-v2-create-readiness';
 import { AmendEditor, isExactConfirmation } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
+import { CancelChargePrompt } from './editors/cancel-charge-prompt';
 import { AddonsEditor } from './editors/addons-editor';
 import { FilingEditor } from './editors/filing-editor';
 import styles from './reservation-pane.module.css';
@@ -562,6 +563,32 @@ export function ReservationPane(props: ReservationPaneProps) {
   const sourceChanged = snapshot?.session.sourceChanged === true;
   const pendingDispatch = snapshot?.preparationViews.find(view => view.dispatch)?.dispatch ??
     snapshot?.session.workflowDispatches?.find(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review');
+  const cancelDispatch = !sourceChanged ? snapshot?.session.workflowDispatches?.find(dispatch =>
+    dispatch.endpoint === 'execute' && ['queued', 'claimed', 'running', 'retry_wait'].includes(dispatch.status) &&
+    snapshot.session.draft.proposal.content.requests.some(row => row.id === dispatch.requestId && row.kind === 'cancel')) : undefined;
+  const cancelTargetLabel = (() => {
+    if (!snapshot || !cancelDispatch) return null;
+    const draft = snapshot.session.draft, root = `${requestPath(cancelDispatch.requestId)}/body`;
+    const scope = record(effectiveAt(snapshot, `${root}/targets`));
+    const targets = Array.isArray(scope.include) ? scope.include.map(record) : [];
+    if (scope.mode !== 'explicit') return null;
+    const index = cancelDispatch.allocationId
+      ? targets.findIndex(target => target.id === cancelDispatch.allocationId) : targets.length === 1 ? 0 : -1;
+    if (index < 0) return null;
+    const hintId = targets[index]?.id;
+    const selected = valueAt(snapshot, `${root}/targets/include/${index}/suggestedRef`);
+    if (typeof selected !== 'string' || !selected) return null;
+    const prepared = [...draft.observations].reverse().find(row => row.kind === 'stay_candidate' && row.status === 'complete' &&
+      row.coverage.complete && row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+      row.sourceMessageId === draft.source.messageId && row.criteria.workflow === 'cancel' && row.criteria.stage === 'prepare' &&
+      row.criteria.requestId === cancelDispatch.requestId && row.criteria.hintId === hintId && row.criteria.selectionRef === selected &&
+      record(row.result).ready === true && draft.operationResults.some(operation => operation.workflow === 'cancel' &&
+        operation.status === 'prepared' && operation.requestId === cancelDispatch.requestId && operation.allocationId === hintId &&
+        operation.observationRefs.includes(row.ref)));
+    const target = record(record(prepared?.result).target);
+    const confirmation = text(target.confirmation), name = [text(target.firstName), text(target.lastName)].filter(Boolean).join(' ');
+    return isExactConfirmation(confirmation) && text(target.lastName) ? `${confirmation} · ${name}` : null;
+  })();
   // Grants arrive newest first. A later success retires failed warnings, never uncertain outcomes.
   const dispatchNotices = snapshot?.session.workflowDispatches?.filter((dispatch, index, dispatches) =>
     dispatch.requestId === request?.id && (dispatch.status === 'failed' || dispatch.status === 'needs_reconcile' || dispatch.failureClass) &&
@@ -657,6 +684,14 @@ export function ReservationPane(props: ReservationPaneProps) {
             {actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <button type="button" key={kind}
               disabled={disabled} onClick={() => { void workbench.addAction(kind).catch(() => {}); }}>{labels[kind]}</button>)}
           </div></div>}
+      {snapshot && cancelDispatch && !preview && request?.id !== cancelDispatch.requestId && <div className={styles.notice} role="status">
+        <p>A cancellation is in progress. Open its action to review any fee from Infor.</p>
+        <button type="button" onClick={() => { workbench.setActiveId(cancelDispatch.requestId); setChecked(null); setActionMenu(null); setConfirmRemove(false); }}>Open cancellation</button>
+      </div>}
+      {snapshot && cancelDispatch && !preview && <CancelChargePrompt
+        key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${cancelDispatch.operationId}`}
+        client={props.client} source={source} snapshot={snapshot} operationId={cancelDispatch.operationId}
+        active={request?.kind === 'cancel' && request.id === cancelDispatch.requestId} targetLabel={cancelTargetLabel} />}
       {hasPendingAmendPrice && amendPriceReviews.length === 0 && <p className={styles.notice}>
         An earlier price review no longer matches the selected stay. Restore the selection and check again before saving.
       </p>}

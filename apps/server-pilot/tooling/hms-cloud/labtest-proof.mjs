@@ -3,13 +3,14 @@
 //
 // Run on the box from apps/server-pilot with the production env loaded and
 // NAVA_BUILD_COMMIT=<deployed sha> (deploy/proof.sh does this):
-//   node tooling/hms-cloud/labtest-proof.mjs --stage <prepare|workflow> \
+//   node tooling/hms-cloud/labtest-proof.mjs --stage <prepare|workflow|cancel-stage-observe> \
 //     --property HRCEN|HRDAV|HRDAVS --expected-sha <40-hex> --request <private json> [--state-dir <dir>]
 //
 // prepare: a read-only census picks the first arrival without a live Proof Labtest stay
 //          (the request dates are the preference), then unsaved Prepare.
 // create:  one Save of the prepared request, then a fresh readback.
 // cancel:  cancels the stay this journal created, then a fresh readback.
+// cancel-stage-observe: previews/stages only on the created stay; never approves a fee or saves.
 //
 // State under --state-dir (default ~/.local/state/nava-labtest-proof):
 //   <sha>/<property>-journal.json  evidence for deploy/install-canary-ledger.mjs
@@ -36,6 +37,7 @@ for (const key of Object.keys(process.env)) {
 
 const APP_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const CANCELLATION_NOTE = 'Labtest proof cleanup';
+const CANCELLATION_STAGE_NOTE = 'Labtest fee stage observation';
 const ZERO_PENALTY_NOTICE = 'Cancellation Penalty of 0.00 may be added to account.';
 const fail = code => { throw new Error(code); };
 const assert = (condition, code) => { if (!condition) fail(code); };
@@ -77,11 +79,13 @@ function parseArgs(argv) {
   }
   assert(['HRCEN', 'HRDAV', 'HRDAVS'].includes(values['--property']) &&
     /^[a-f0-9]{40}$/.test(values['--expected-sha'] ?? '') &&
-    ['prepare', 'create', 'guest_profile_create', 'amend', 'amend_adults', 'attach', 'addons', 'cancel'].includes(values['--stage']) &&
+    ['prepare', 'create', 'guest_profile_create', 'amend', 'amend_adults', 'attach', 'addons', 'cancel',
+      'cancel-stage-observe'].includes(values['--stage']) &&
     values['--request'], 'ARGUMENTS_INVALID');
   assert(values['--stage'] === 'cancel' ? values['--property'] === 'HRCEN' &&
     ['zero', 'penalty'].includes(values['--cancel-scenario']) : !values['--cancel-scenario'] &&
-    !values['--approve-labtest-penalty'], 'CANCEL_SCENARIO_REQUIRED');
+    !values['--approve-labtest-penalty'] && (values['--stage'] !== 'cancel-stage-observe' || values['--property'] === 'HRCEN'),
+  'CANCEL_SCENARIO_REQUIRED');
   const approvedPenalty = values['--approve-labtest-penalty'];
   assert(approvedPenalty === undefined || values['--cancel-scenario'] === 'penalty' &&
     /^\d{1,12}\.\d{2}$/.test(approvedPenalty) && !/^0+\.00$/.test(approvedPenalty), 'PENALTY_APPROVAL_INVALID');
@@ -228,6 +232,83 @@ function safeNativeResult(result) {
   return safe;
 }
 
+function exactStayField(record, name) {
+  const fields = record?.details?.fields;
+  const matches = Array.isArray(fields) ? fields.filter(field => field?.name === name) : [];
+  assert(matches.length === 1, 'CANCEL_STAGE_READBACK_FIELD_UNVERIFIED');
+  const value = name === 'reservationnote' ? matches[0].rawValue : matches[0].value;
+  assert(typeof value === 'string', 'CANCEL_STAGE_READBACK_FIELD_UNVERIFIED');
+  return value;
+}
+
+function assertUncancelledLabtest(record, expected, own) {
+  const native = record?.nativePreimage;
+  const send = record?.details?.fields?.filter(field => field?.name === 'udfchkbox04');
+  assert(native?.source === 'record_view_ext_model' && native.propertyCode === expected.propertyCode &&
+    native.confirmation === expected.confirmation && native.reservationStayId === expected.nativeStayId &&
+    native.guestId === expected.guestId && native.firstName === 'Proof' && native.lastName === 'Labtest' &&
+    native.arrival === expected.arrival && native.departure === expected.departure && native.status === 'Reserved' &&
+    Array.isArray(send) && send.length === 1 && send[0].value === false &&
+    exactStayField(record, 'cancelreason') === '' && exactStayField(record, 'cancellationnote') === '' &&
+    exactStayField(record, 'reservationnote') === own.note, 'CANCEL_STAGE_STAY_CHANGED');
+}
+
+function safeCancelStageEvidence(result) {
+  const raw = result?.feeStageObservation && typeof result.feeStageObservation === 'object'
+    ? result.feeStageObservation : {};
+  const integer = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const validatedPenalty = typeof raw.penaltyAmount === 'string'
+    ? cancellationPenaltyNotice(`Cancellation Penalty of ${raw.penaltyAmount} may be added to account.`) : null;
+  const penaltyAmount = raw.penaltyNoticeValidated === true ? validatedPenalty?.amount ?? null : null;
+  const noDispatch = result?.requestDispatched === false && result?.chargeDispatched === false &&
+    result?.feeButtonClicked === false && result?.feeApprovalPerformed === false;
+  const feeButtonLabel = ['OK', 'Yes', 'Accept'].includes(raw.feeButtonLabel) ? raw.feeButtonLabel : null;
+  const feeButtonEvidence = ['not_observed', 'browser_native_dialog_control_unavailable', 'unique_visible_native_button',
+    'no_visible_button', 'ambiguous_or_unsupported_button'].includes(raw.feeButtonEvidence)
+    ? raw.feeButtonEvidence : 'not_observed';
+  const kind = ['fee', 'reason', 'other', 'ambiguous', 'none'].includes(raw.topWindowKind) ? raw.topWindowKind : null;
+  const state = ['native_dialog', 'unavailable'].includes(raw.state) ? raw.state : 'window_inspection';
+  const stageWasRecorded = result?.outcome === 'preview_ok' && result.requestDispatched === false &&
+    result.staged?.reasonCode === 'TEST' && result.staged?.reasonLabel === 'Test Reservations' &&
+    result.staged?.cancellationNote === CANCELLATION_STAGE_NOTE;
+  const feeObservedInReason = raw.reasonDialogHasFeeText === true;
+  const feeModalObserved = raw.feeWindowCount > 0 || raw.nativeDialogFeeLike === true || raw.feeDialogVisible === true ||
+    result?.nativeDialogFeeLike === true;
+  const finding = stageWasRecorded && feeObservedInReason ? 'reason_note_staged_before_fee_approval' :
+    feeModalObserved && raw.feePromptMayObstructReason === true ? 'separate_fee_prompt_preempts_reason_stage' :
+    stageWasRecorded ? 'reason_note_staged_no_fee_prompt_seen' :
+    feeModalObserved ? 'fee_prompt_seen_stageability_not_demonstrated' : 'no_fee_prompt_seen';
+  return {
+    finding,
+    openOutcome: ['reason_ready', 'preview_ok', 'fee_stage_observation', 'fee_stage_inconclusive', 'unexpected_dialog', 'uncertain',
+      'not_dispatched', 'policy_requires_review', 'refused'].includes(result?.outcome) ? result.outcome : 'unknown',
+    feeApprovalPerformed: false, feeButtonClicked: false, nativeDialogAction: 'none',
+    cancelFormOpenRequestDispatched: result?.openRequestDispatched === true,
+    nativeSaveRequestDispatched: result?.requestDispatched === true,
+    dispatchCallbacksDrained: result?.dispatchCallbacksDrained === true,
+    writerSessionClosed: result?.writerSessionClosed === true,
+    blockedRequestCount: integer(result?.blockedRequestCount),
+    reasonOptionCount: integer(result?.reasonOptionCount), testReasonAvailable: result?.testReasonAvailable === true,
+    reasonNoteStaged: stageWasRecorded,
+    feeStage: { state, nativeDialogObserved: raw.nativeDialogObserved === true || result?.nativeDialogObserved === true,
+      nativeDialogType: (raw.nativeDialogType ?? result?.nativeDialogType) === 'confirm' ||
+        (raw.nativeDialogType ?? result?.nativeDialogType) === 'alert' ||
+        (raw.nativeDialogType ?? result?.nativeDialogType) === 'prompt'
+        ? raw.nativeDialogType ?? result.nativeDialogType : null,
+      nativeDialogFeeLike: raw.nativeDialogFeeLike === true || result?.nativeDialogFeeLike === true,
+      feeTextLength: integer(raw.nativeDialogTextLength ?? result?.nativeDialogTextLength), feeWindowCount: integer(raw.feeWindowCount),
+      reasonWindowCount: integer(raw.reasonWindowCount), visibleWindowCount: integer(raw.visibleWindowCount),
+      topWindowKind: kind, reasonDialogHasFeeText: feeObservedInReason,
+      reasonControlCount: integer(raw.reasonControlCount), reasonControlEnabled: raw.reasonControlEnabled === true,
+      noteControlCount: integer(raw.noteControlCount), noteControlEnabled: raw.noteControlEnabled === true,
+      feePromptMayObstructReason: raw.feePromptMayObstructReason === true,
+      penaltyNoticeValidated: penaltyAmount !== null, penaltyAmount,
+      positivePenaltyObserved: Boolean(penaltyAmount && !/^0+\.00$/.test(penaltyAmount)),
+      feeTiming: noDispatch && raw.feeTiming === 'before_save' ? 'before_save' : null,
+      feeButtonLabel, feeButtonEvidence, feeButtonCount: integer(raw.feeButtonCount) },
+  };
+}
+
 async function main() {
   args = parseArgs(process.argv.slice(2));
   await checkHold();
@@ -292,7 +373,7 @@ async function main() {
     const profileHeld = journal?.status === 'guest_profile_create_possible' ||
       journal?.status === 'uncertain_held' && journal.workflowAttempt?.workflow === 'guest_profile_create';
     if (profileHeld && priorProfile && journal.created?.freshReadbackVerified === true &&
-        ['amend', 'amend_adults', 'attach', 'addons', 'cancel'].includes(args.stage)) {
+        ['amend', 'amend_adults', 'attach', 'addons', 'cancel', 'cancel-stage-observe'].includes(args.stage)) {
       journal = { ...journal, status: 'created',
         workflowHolds: { ...journal.workflowHolds, guest_profile_create: {
           status: 'uncertain_held', issue: journal.issue, attempt: priorProfile } } };
@@ -311,7 +392,7 @@ async function main() {
       assert(['prepared', 'created'].includes(journal.status), 'JOURNAL_REQUIRES_RECONCILIATION');
       assert(journal.status === (args.stage === 'create' ? 'prepared' : 'created'), 'STAGE_INVALID');
     }
-    if (!['prepare', 'create', 'cancel'].includes(args.stage)) {
+    if (!['prepare', 'create', 'cancel', 'cancel-stage-observe'].includes(args.stage)) {
       const order = ['amend', 'attach', 'addons', 'amend_adults'];
       assert(!journal.workflowHolds?.[args.stage], 'JOURNAL_HELD');
       assert(!journal.workflowProofs?.[args.stage] && !(args.stage === 'guest_profile_create' ? [] : order.slice(order.indexOf(args.stage) + 1))
@@ -328,7 +409,8 @@ async function main() {
     let writerDependencyDigest;
     if (args.stage !== 'prepare') {
       const { hmsWriterDependencyDigest } = await load('tooling/hms-cloud/hms-workflow-policy.mjs');
-      writerDependencyDigest = hmsWriterDependencyDigest(args.stage === 'amend_adults' ? 'amend' : args.stage);
+      writerDependencyDigest = hmsWriterDependencyDigest(args.stage === 'amend_adults' ? 'amend' :
+        args.stage === 'cancel-stage-observe' ? 'cancel' : args.stage);
       assert(/^[a-f0-9]{64}$/.test(writerDependencyDigest), 'WRITER_DEPENDENCY_DIGEST_INVALID');
     }
     const provenance = { ...journal?.provenance, [args.stage]: Object.freeze({
@@ -467,6 +549,82 @@ async function main() {
         return { status: 'created', created: { confirmation: saved.confirmation, nativeStayId: saved.nativeStayId,
           guestId: effective.guest.profileId, note: effective.note, save: safeNativeResult(saved.save),
           freshReadbackVerified: true, screenshots: saved.screenshots } };
+      });
+    } else if (args.stage === 'cancel-stage-observe') {
+      const { readShallow, readRecord } = await load('tooling/hms-cloud/hms-readers.mjs');
+      const { installSavedStayReadGuard } = await load('tooling/hms-cloud/saved-stay-read-guard.mjs');
+      const { cancellationNativePreimage, runCloudPaneCancel } = await load('tooling/hms-cloud/pane-cancel-session.mjs');
+      const { labtestProofStayAdults } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
+      const own = journal.created, effective = requestSchema.parse(journal.effectiveRequest);
+      const expectedAdults = labtestProofStayAdults(journal);
+      assert(args.propertyCode === 'HRCEN' && own?.freshReadbackVerified === true &&
+        /^\d+-\d+$/.test(own.confirmation ?? '') && /^\d+$/.test(own.nativeStayId ?? '') &&
+        own.note === effective.note && own.guestId === effective.guest.profileId && own.note.length > 0,
+      'CANCEL_STAGE_TARGET_INVALID');
+      const lookup = async page => {
+        await checkHold();
+        await readShallow(page, own.confirmation, { guestName: 'Proof Labtest', arrivalDate: effective.stay.arrival });
+        return readRecord(page, own.confirmation, { nativePropertyCode: args.propertyCode });
+      };
+      result = await withTarget({ propertyCode: args.propertyCode, kind: 'saved', confirmation: own.confirmation,
+        nativeStayId: own.nativeStayId }, async options => {
+        const readOptions = { propertyCode: args.propertyCode, transportId, credentialLease: options.credentialLease,
+          signal: options.signal, startScreen: 'OSRESS',
+          prepareContext: context => installSavedStayReadGuard(context, {
+            propertyCode: args.propertyCode, confirmation: own.confirmation }) };
+        const initial = await cloud.withCloudReadSession(lookup, readOptions);
+        const expected = cancellationNativePreimage(initial, { propertyCode: args.propertyCode, allowRealGuest: false });
+        const observedAges = native => native?.children === 0 ? [] : native?.childAges;
+        const sortedAges = ages => hash([...ages].sort((a, b) => a - b));
+        assert(effective.room.ratePlan === 'BAR' && expected && expected.allowRealGuest === false &&
+          expected.cmsSend === false && expected.ratePlan === 'BAR' &&
+          expected.firstName === 'Proof' && expected.lastName === 'Labtest' &&
+          expected.arrival === effective.stay.arrival && expected.departure === effective.stay.departure &&
+          expected.confirmation === own.confirmation && expected.nativeStayId === own.nativeStayId &&
+          expected.guestId === own.guestId && expected.note === own.note &&
+          initial.nativePreimage?.ratePlan === 'BAR' && initial.nativePreimage?.adults === expectedAdults &&
+          Array.isArray(observedAges(initial.nativePreimage)) &&
+          sortedAges(observedAges(initial.nativePreimage)) === sortedAges(effective.stay.childAges),
+        'CANCEL_STAGE_PREIMAGE_INVALID');
+        // If the preview invariant is ever violated, a durable hold survives until an operator reconciles HMS.
+        await markPossible('cancel_stage_observation_possible', { cancelStageExpected: expected });
+        const native = await runCloudPaneCancel({ target: { propertyCode: args.propertyCode, kind: 'saved',
+            confirmation: own.confirmation, nativeStayId: own.nativeStayId }, transportId,
+          credentialLease: options.credentialLease, signal: options.signal, cloudTargetKey: options.cloudTargetKey,
+          confirmation: own.confirmation, arrival: effective.stay.arrival, expected, mode: 'preview',
+          allowRealGuest: false, previewStage: { reasonLabel: 'Test Reservations',
+            cancellationNote: CANCELLATION_STAGE_NOTE }, observeFeeBeforeReason: true });
+        assert(native?.writerSessionClosed === true && native.dispatchCallbacksDrained === true,
+          'CANCEL_STAGE_SESSION_CLOSE_UNVERIFIED');
+        const stageEvidence = safeCancelStageEvidence(native);
+        const final = await cloud.withCloudReadSession(lookup, readOptions);
+        assertUncancelledLabtest(final, expected, own);
+        assert(final.nativePreimage?.roomType === expected.roomType &&
+          final.nativePreimage?.ratePlan === expected.ratePlan &&
+          final.nativePreimage?.adults === expectedAdults &&
+          Array.isArray(observedAges(final.nativePreimage)) &&
+          sortedAges(observedAges(final.nativePreimage)) === sortedAges(effective.stay.childAges),
+        'CANCEL_STAGE_READBACK_IDENTITY_UNVERIFIED');
+        assert(native.requestDispatched === false && native.feeApprovalPerformed === false &&
+          native.feeButtonClicked === false && native.nativeDialogAction === 'none' &&
+          native.chargeApprovalHandlerSupplied === false && native.chargeDispatchHandlerSupplied === false &&
+          native.chargeApproved !== true && native.chargeDispatched !== true,
+        'CANCEL_STAGE_NO_DISPATCH_UNVERIFIED');
+        if (native.outcome === 'preview_ok') {
+          assert(native.openRequestDispatched === true && native.staged?.reasonCode === 'TEST' &&
+            native.staged?.reasonLabel === 'Test Reservations' &&
+            native.staged?.cancellationNote === CANCELLATION_STAGE_NOTE &&
+            native.browserSendRequests === 0 && native.blockedRequestCount === 0 &&
+            Array.isArray(native.blockedRequests) &&
+            native.blockedRequests.length === 0, 'CANCEL_STAGE_NOT_VERIFIED');
+        } else {
+          assert(['fee_stage_observation', 'fee_stage_inconclusive'].includes(native.outcome),
+            'CANCEL_STAGE_OBSERVATION_UNVERIFIED');
+        }
+        return { status: 'created', cancelStageObservation: { ...stageEvidence,
+          untouchedReadback: { verified: true, status: 'Reserved', cancellationReasonBlank: true,
+            cancellationNoteBlank: true, reservationNoteUnchanged: true, cmsSendOff: true,
+            observedAt: new Date().toISOString() } } };
       });
     } else if (args.stage !== 'cancel') {
       const { runLabtestWorkflow, verifyLabtestWorkflowProof } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
