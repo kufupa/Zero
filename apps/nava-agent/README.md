@@ -1,11 +1,48 @@
-# Nava quote backend
+# Nava agent deployment
 
-Node 22+. Run `npm ci --prefix apps/nava-agent`, then from repository root run `apps/nava-agent/run.sh migrate`, `start`, and `worker` (API and worker separate). API defaults to `127.0.0.1:3107`. Deploy alongside pilot with the existing `apps/server-pilot/tooling/hms-cloud` tree, its deterministic imports, dependencies and Playwright browser. Node and browser must be installed for the worker account.
+Build alongside the pilot. Do not deploy or start staging until the integrated app, runtime, native tools and DB have been proved together. No pilot process, checkout, port, DB or volume is replaced by these scripts.
 
-Server-only env: `DATABASE_URL`, `NAVA_API_TOKEN`, `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_ID`, `ANTHROPIC_ENVIRONMENT_KEY`, and `NAVA_SKILLS_DIR` pointing at the skills lane's complete tree. First-party SDK 1.9.0 worker auth implemented; AWS workspace/worker auth not implemented. API token never goes to browser. Optional `NAVA_STAFF_JWT_SECRET` enables verification of short-lived HS256 host staff tokens with mailbox scopes. Host token issuance and deployment are not yet verified. Staff Go is unavailable. No Save or outgoing email tool is registered.
+## Build
 
-A session snapshots the actual quote skill and shared Markdown references, hashes them and serves them using `skill_read`; references stay within the pinned tree. This is local pinning, not Managed Skills upload/versioning. `hms_quote` calls the existing native read-only module, retaining its PostgreSQL credential lease: default cap eight shared readers and exclusive Save coordination across processes using the same database and credential identity. Ten worker loops by default do not guarantee ten native sessions. The SDK aborts a single tool after 120 seconds. Native partial, input gap, execution failure or incomplete audit return an error envelope with actual capture. Proposal `native_result` is server-bound to the last actual quote call in that session since its latest mail/staff input; mismatches are rejected. Display rows derive only from native capture; calculated sums are explicitly non-official.
+From a clean, committed checkout with Node 22 and npm:
 
-`POST /api/nava/v1/threads` accepts complete contract `ThreadInput` plus `Idempotency-Key`. New messages reuse the thread session. Host supplies live mail; this app does not fetch or delete it. Historical mode requires `input_cutoff`, rejects later messages and denies live HMS. SSE resumes via backend `after_sequence`. `/capabilities` lists supported tools. Staff PATCH requires a verified staff token, editable field paths and the expected revision; each edit is recorded with per-proposal sequence and before/after values. Staff-edit JSONL exports the original and edits; no final Go snapshot exists yet. Undo, redo, stage, Go and reconcile return 501; artifact delivery is unavailable.
+```sh
+bash apps/nava-agent/deploy/bundle.sh /tmp/nava-agent-<sha>.tar.gz
+```
 
-For train-only historical import, run `apps/nava-agent/run.sh import-train /home/orca/.local/share/zero/rewrite/halloween-dataset/dataset/backtest/inputs.model-safe.jsonl <decision_id> <run_id> <mailbox_id>`. It accepts only the SHA-256-pinned model-safe file (which may be copied to the worker) and `split=train`, imports selected and earlier source-backed messages without rewriting their text or dates, and stores the exact original model-safe record. Source already contains masking; absent HTML, attachment handles, RFC message IDs and display names remain unavailable. BCC and source-backed PDF metadata stay in the original record, not the v0 message projection. Historical sessions expose only pre-cutoff source data to the agent; no split or hidden references. Run IDs isolate evaluations. This does not import or prove a live future request.
+The bundle contains the committed app, its production dependencies, deterministic HMS Cloud tools, their native dependencies, and required trace/request helpers. It records `COMMIT_SHA` and prints the archive SHA-256. Browser binaries and secrets are not included. The separate legacy `tooling/playwright-quote` tree is included only if present at the committed revision. Copy the archive and verify its SHA-256 before extracting into a **new** private directory on each box. Never extract over a live checkout. Rebuild and verify on the integrated commit; unit-branch proof is not integrated proof.
+
+For developer use, `npm ci --prefix apps/nava-agent` and `bash apps/nava-agent/run.sh migrate|start|worker|import-train` run from the repo root. Do not use pilot DB for local work or tests. Approved remote typecheck: `bash /home/orca/bin/remote-typecheck.sh <worktree> --app nava-agent` (state archive, not necessarily committed SHA); coordinate the run with other heavy checks.
+
+## Staging prerequisites
+
+- Existing prod EC2 `i-008f737974a9ba9b3` and London EC2 `i-0a804a8b80e252bf9`: Node 22, private release/work dirs, matching Playwright 1.63 Chromium plus OS libraries, AWS access and native HMS credentials. No new paid infrastructure. Both workers use the same dedicated rewrite PostgreSQL 16+ DB; API listens on a separate loopback port, e.g. `NAVA_HOST=127.0.0.1`, `NAVA_PORT=3107` only after confirming it is free. Private host proxy/access must be configured separately.
+- Rewrite DB must be separate from pilot RDS. **cma-server must always have its own PostgreSQL 16+ instance and storage volume**, separate from both pilot and rewrite app DB. cma archive entitlement, sandbox host, server bootstrap and API/environment keys are outstanding. Do not subscribe to Claude Platform on AWS.
+- Native HMS uses PostgreSQL advisory locks in `DATABASE_URL`. Separate rewrite and pilot databases do not share those locks. Do not run against an HMS login used by pilot or another uncoordinated deployment: use a verified distinct login or implement/prove common admission first. Never bypass the smaller native read cap (currently 8) or exclusive Save lease. Configured worker count is not proven throughput.
+- Interim inference uses AWS Bedrock `eu-west-1`; operator-provided AWS credentials and config must be readable by the service account. Existing native secret client also takes `AWS_REGION` (default `af-south-1`): confirm the integrated native secret-region wiring before any HMS call. Do not assume one `AWS_REGION` reaches both services correctly.
+
+## Server-only environment
+
+Provision a separate, service-account-owned `0600` dotenv file outside the release directory on each box. Do not put credentials in the bundle, shell history, client, logs or Git. Set `NAVA_ENV_FILE` to its absolute path; launcher loads it with Node, checks owner/mode and starts with a clean inherited environment. Dotenv values are literal; do not use shell substitutions. Set paths separately on each host.
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Dedicated rewrite DB connection; same DB for both rewrite boxes. |
+| `NAVA_API_TOKEN` | Server-only service token; never in browser. |
+| `NAVA_STAFF_JWT_SECRET` | Server-only host/backend signing secret; staff bridge must be integrated and verified before real-guest Go. |
+| `NAVA_HOST`, `NAVA_PORT` | Isolated API bind address and free port. |
+| `NAVA_HMS_SLOTS`, `HMS_CREDENTIAL_SESSION_CAP` | Worker concurrency and native admission cap; never exceed actual cap. |
+| `NAVA_SKILLS_DIR`, `NAVA_WORK_DIR` | Absolute paths to integrated skills and private writable work directory. |
+| `AWS_REGION`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` | Bedrock region `eu-west-1` and local AWS default credential-chain paths; resolve native region issue above first. |
+| `ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_ENVIRONMENT_KEY` | Future cma-server local endpoint and bootstrap keys only; never an Anthropic hosted API key. Omit for interim Bedrock. |
+
+`NAVA_ENV_FILE` itself is passed to the launcher, not stored in the dotenv file. On integrated proof only, after separately provisioning the isolated DB, deploy release directories and env files, run migration once and start API/worker as separate processes under a dedicated supervisor identity. Example from the extracted release root:
+
+```sh
+export NAVA_ENV_FILE=/absolute/private/nava-agent.env
+bash apps/nava-agent/run.sh migrate
+bash apps/nava-agent/run.sh start   # API box, own supervisor process
+bash apps/nava-agent/run.sh worker  # each worker box, own supervisor process
+```
+
+Do not run migration twice concurrently. No commands here provision infrastructure, modify pilot, or authorize an HMS Save. Integrated proof must cover isolated DB, API, both workers, real tool trace, exact installed native dependencies and the selected runtime before deployment. Archive-gated cma proof remains separate.
