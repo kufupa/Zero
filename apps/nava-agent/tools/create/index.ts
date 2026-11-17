@@ -12,11 +12,18 @@ const nativeResult = z.object({
   outcome: z.string(), issue: z.string().optional(), applied: z.record(z.unknown()).optional(),
   appliedVerification: z.object({ visibleFields: z.boolean().optional() }).passthrough().optional(),
   requestBinding: z.object({ digest: z.string(), request: z.unknown(), arAccountProfileId: z.string().optional() }).passthrough().optional(),
-  ratePlanAvailability: z.object({ averageRate: z.string(), totalRate: z.string(), currency: z.string() }).passthrough().optional(),
+  ratePlanAvailability: z.record(z.unknown()).optional(),
   confirmation: z.string().nullable().optional(), nativeStayId: z.string().optional(),
   writerSessionClosed: z.boolean().optional(),
   save: z.object({ dispatchCallbacksDrained: z.boolean().optional(), browserSendRequests: z.number().optional() }).passthrough().optional(),
   readback: z.object({ mismatches: z.array(z.unknown()).optional() }).passthrough().optional(),
+}).passthrough();
+const stagedBinding = z.object({
+  propertyCode: z.literal('HRCEN'),
+  guest: z.object({ nativeId: z.string().regex(/^\d+$/), firstName: z.literal('Proof'), lastName: z.literal('Labtest') }).passthrough(),
+  stay: z.object({ arrival: z.string(), departure: z.string() }).passthrough(),
+  note: z.string(),
+  sendHmsConfirmation: z.object({ kind: z.literal('never') }).strict(),
 }).passthrough();
 type NativeResult = z.infer<typeof nativeResult>;
 type NativeRequest = Record<string, unknown> & { propertyCode: string; guest: Record<string, unknown>; stay: Record<string, unknown>; room: Record<string, unknown> };
@@ -25,6 +32,7 @@ type NativeApi = {
   createReservation(input: unknown, options: unknown): Promise<unknown>;
   withCloudCredentialLease<T>(property: string, operation: (lease: Lease) => Promise<T>, options: unknown): Promise<T>;
   createCloudTargetKey(guest: { firstName: string; lastName: string }, arrival: string, property: string): string | null;
+  getPropertyRegistration(property: string): unknown;
 };
 
 const labGuest = { firstName: 'Proof', lastName: 'Labtest' };
@@ -34,12 +42,21 @@ const success = (data: unknown): ToolResult => ({ ok: true, data, error: null })
 
 async function nativeApi(): Promise<NativeApi> {
   const base = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
-  const [create, cloud, policy] = await Promise.all([
+  const [create, cloud, policy, properties] = await Promise.all([
     import(new URL('create-reservation.mjs', base).href),
     import(new URL('cloud-session.mjs', base).href),
     import(new URL('cloud-create-policy.mjs', base).href),
+    import(new URL('property-registry.mjs', base).href),
   ]);
-  return { createReservation: create.createReservation, withCloudCredentialLease: cloud.withCloudCredentialLease, createCloudTargetKey: policy.createCloudTargetKey };
+  return { createReservation: create.createReservation, withCloudCredentialLease: cloud.withCloudCredentialLease,
+    createCloudTargetKey: policy.createCloudTargetKey, getPropertyRegistration: properties.getPropertyRegistration };
+}
+
+function transport(api: NativeApi, property: string): string | null {
+  const registration = api.getPropertyRegistration(property);
+  if (!object(registration) || registration.active !== true || typeof registration.mailboxTransportId !== 'string' ||
+      !Array.isArray(registration.transportIds) || !registration.transportIds.includes(registration.mailboxTransportId)) return null;
+  return registration.mailboxTransportId;
 }
 
 // These names are the backend contract's business fields, not inferred HMS codes.
@@ -129,8 +146,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (!leaseDatabase()) return fail('HMS_SHARED_LEASE_DATABASE_REQUIRED', 'Configure the existing shared HMS admission database.');
   try {
     const api = await nativeApi();
+    const transportId = transport(api, built.request.propertyCode);
+    if (!transportId) return fail('UNSUPPORTED_PROPERTY', 'Native HMS property or transport is unavailable.');
     const result = await api.withCloudCredentialLease(built.request.propertyCode, lease => {
-      const options: Record<string, unknown> = { credentialLease: lease, signal: lease.signal };
+      const options: Record<string, unknown> = { credentialLease: lease, signal: lease.signal, transportId };
       if (built.expectedGuest) options.expectedGuest = built.expectedGuest;
       // Current/future real-guest prepares may stage supported fields; commit
       // remains independently restricted to Labtest below.
@@ -164,24 +183,33 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   let markerAttempted = false;
   try {
     const api = await nativeApi();
+    const transportId = transport(api, request.propertyCode);
+    if (!transportId) return fail('UNSUPPORTED_PROPERTY', 'Native HMS property or transport is unavailable.');
     const target = api.createCloudTargetKey(labGuest, request.stay.arrival, request.propertyCode);
     if (!target) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
     return await api.withCloudCredentialLease(request.propertyCode, async lease => {
-      const options = { credentialLease: lease, signal: lease.signal, expectedGuest: labGuest, cloudTargetKey: target };
+      const options = { credentialLease: lease, signal: lease.signal, expectedGuest: labGuest, cloudTargetKey: target, transportId };
       const stage = await loadNativeResult(api, { ...request, mode: 'prepare' }, options);
       const guest = stage.applied?.guest;
       const note = stage.applied?.note;
+      const binding = stagedBinding.safeParse(stage.requestBinding?.request);
       if (stage.outcome !== 'prepared' || stage.appliedVerification?.visibleFields !== true ||
           !object(guest) || guest.firstName !== 'Proof' || guest.lastName !== 'Labtest' ||
           !/^\d+$/.test(String(guest.nativeId ?? '')) || typeof note !== 'string' || !note ||
-          !stage.requestBinding || !/^[a-f0-9]{64}$/.test(stage.requestBinding.digest)) {
+          !stage.requestBinding || !/^[a-f0-9]{64}$/.test(stage.requestBinding.digest) || !binding.success ||
+          binding.data.guest.nativeId !== String(guest.nativeId) || binding.data.stay.arrival !== request.stay.arrival ||
+          binding.data.stay.departure !== request.stay.departure || binding.data.note !== note) {
         return fail('CREATE_RESTAGE_INCOMPLETE', stage.issue ?? 'Fresh Labtest stage was not verified.', 'known', bounded({ native: stage }));
       }
       const commit = { ...request, mode: 'commit', guest: { profileId: String(guest.nativeId) }, note };
+      const price = stage.ratePlanAvailability;
+      if (price && !['averageRate', 'totalRate', 'currency'].every(key => typeof price[key] === 'string' && price[key].trim())) {
+        return fail('CREATE_PRICE_UNVERIFIED', 'Native staged price is incomplete.', 'known', bounded({ native: stage }));
+      }
       const saved = await loadNativeResult(api, commit, {
         ...options,
         expectedRequestDigest: stage.requestBinding.digest,
-        ...(stage.ratePlanAvailability ? { expectedRateAvailability: stage.ratePlanAvailability } : {}),
+        ...(price ? { expectedRateAvailability: price } : {}),
         ...(stage.requestBinding.arAccountProfileId ? { expectedArProfileId: stage.requestBinding.arAccountProfileId } : {}),
         authorizeCandidate: async () => !lease.signal.aborted && !markerAttempted,
         dispatchCandidate: async (_candidate: unknown, proceed: () => Promise<unknown>) => {
