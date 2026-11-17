@@ -790,7 +790,13 @@ export function quoteReadinessBeforeSplit(draft: ReservationWorkflowV2Draft, req
     return true;
   }) && composition !== 'unresolved' && composition !== 'invalid' && dates.size > 1 && dates.size <= 32 &&
     [...dates.values()].every(count => count <= 8);
-  return quoteReadiness(draft, requestId, 'check').filter(item => (item.code !== 'separate_quote_runs_required' || !canSplit) &&
+  const items = quoteReadiness(draft, requestId, 'check');
+  const linkedServicesPreventSplit = Boolean(canSplit && request?.serviceRefs.length && items.some(item =>
+    item.code === 'separate_quote_runs_required' || item.code === 'separate_quote_options_required'));
+  const ready = items.filter(item => (item.code !== 'separate_quote_runs_required' || !canSplit) &&
     (item.code !== 'separate_quote_options_required' || !canSplit) &&
     (item.code !== 'native_quote_group_limit' || !canSplit));
+  if (linkedServicesPreventSplit) ready.push({ code: 'quote_split_linked_services_unsupported', path: compositionPath,
+    message: 'This quote has linked services and separate dates or options. Prepare it manually and include the services from the email.' });
+  return ready;
 }
