@@ -172,6 +172,8 @@ import { fileAttachmentPresence } from '../../mail/ingest/attachment-evidence.js
 import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { logReservationWorkflowFailure } from '../reservation-workflow-v2-diagnostics.js';
+import { staffQuoteCauseSummary } from '../../ai/staff-quote-run.js';
+import { sanitizeHmsExecutionLogMessage } from '../../ai/reservationist-evaluation-composition.js';
 
 type NativeAdmission = { kind: 'admitted' } | { kind: 'hms_busy' } | { kind: 'system_fault' };
 function nativeAdmissionReply(admission: NativeAdmission) {
@@ -229,6 +231,13 @@ return mailboxProcedure.input(schema).use(async ({ ctx, path, type, input, signa
         lease => withReservationActionLane({ ...cursor, signal: lease.signal }, () => nextFor(), { acquisitionSignal: signal }),
         { signal, priority: 'staff', readOnly: true }));
     } catch (failure) {
+      if (method === 'lookup' && typeof action.data.nativeFieldPath === 'string' &&
+          /\/body\/parties\/(?:organization|bookingAgency)$/.test(action.data.nativeFieldPath)) {
+        const cause = staffQuoteCauseSummary(failure);
+        console.warn('quote_party_lookup_admission_failed', { workItemId: action.data.workItemId,
+          code: cause.code, name: cause.name, phase: cause.phase ?? 'unknown',
+          detail: failure instanceof Error ? sanitizeHmsExecutionLogMessage(failure.message) : undefined });
+      }
       return nextFor({ kind: failure instanceof Error && failure.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' ? 'hms_busy' : 'system_fault' });
     }
   };

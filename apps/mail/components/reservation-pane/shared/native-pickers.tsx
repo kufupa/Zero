@@ -323,7 +323,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
         onClick={() => { setOpen(true); void loadChoices(); }}>Find in Infor</button>{' '}
       <button type="button" disabled={disabled || reviewing || applyingName || !query.trim()} onMouseDown={event => event.preventDefault()}
         onClick={() => { void useTypedName(); }}>Use typed name on quote</button>
-      <small>No Infor profile will be selected, so contract rates will not apply.</small>
+      <small>No Infor profile will be selected for this name, so its contract rates will not apply.</small>
     </div>}
     {createUnlinkedParty && query.trim() && <div>
       <button type="button" disabled={disabled || reviewing || applyingName || editor.view.busy} onMouseDown={event => event.preventDefault()}
@@ -386,7 +386,7 @@ export function NativePicker({ label, path, editor, kind, allowNone = false, com
     : amendTrack && typeof savedValue === 'string' && saved ? <small>Select an Infor match for this requested Track.</small>
     : entity && !selectedRef && query && !quoteName && !(createUnlinkedParty && selectionOverride?.state === 'none') ? <small>Select an Infor match</small> : null}
     {quoteName && !dirty && query.trim() && <small>{selectedChoice ? `Infor profile selected: ${selectedChoice.label}.`
-      : 'Quote name only; no Infor profile selected. Contract rates will not apply.'}</small>}
+      : 'Quote name only; no Infor profile selected for this name. Its contract rates will not apply.'}</small>}
     {staleIdentity && !quoteName && <small role="alert">The selected Infor match changed. Choose a current match or search again.</small>}
     {staleCode && <small role="alert">This code was not returned by the latest Infor choices. Choose a current code or refresh.</small>}{hint && <small>{hint}</small>}
     {autoTransfer && (!dirty || normalized(query) === normalized(saved)) && <small role="note" className={styles.memoryBadge}>History: Auto Transfer was recorded on {autoTransfer.support} of {autoTransfer.denominator} earlier stays for this {autoTransfer.partyKind === 'organization' ? 'organization' : 'A/R account'}. Check the current Infor setting.</small>}</div>

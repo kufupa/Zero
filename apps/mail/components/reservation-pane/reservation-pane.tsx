@@ -197,9 +197,9 @@ export function ReservationPane(props: ReservationPaneProps) {
   const quoteGroups = Array.isArray(body.groups) ? body.groups.map(record) : [];
   const venueWords = /\b(?:venue|conference|workshop|event|meeting)\b/i;
   const roomWords = /\b(?:rooms?|bedrooms?|accommodation|lodging|overnight|stays?)\b/i;
-  const withoutVenueRooms = (value: string) => value.replace(/\b(?:conference|meeting|function|board|venue|event)\s+rooms?\b/gi, '');
+  const withoutVenueRooms = (value: string) => value.replace(/\b(?:conference|meeting|function|board|venue|event|workshop)\s+rooms?\b/gi, '');
   const lodgingText = withoutVenueRooms(quoteText)
-    .replace(/\b(?:no|without)\s+(?:guest\s+|hotel\s+)?rooms?\b/gi, '');
+    .replace(/\b(?:no|without)\s+(?:(?:guest|hotel|overnight)\s+)?(?:rooms?|accommodation|lodging|stays?)\b/gi, '');
   const hasRoomInputs = quoteGroups.some(group => {
     const occupancy = record(group.occupancy);
     return Boolean(text(group.departure) || Number(group.quantity) > 0 || Number(occupancy.adults) > 0 ||
