@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { getDb } from './db/client.js';
 import { mailboxAccess, mailboxTransport } from './db/schema/mail.js';
 import { resolvePilotTrustedOrigins, type Auth } from './lib/auth.js';
+import { isCenturionOutlookImport } from './mail/nava-outlook-import.js';
 
 const resourceId = '([^/]+)';
 const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
@@ -27,6 +28,23 @@ function error(status: number, code: string, message: string): Response {
 
 function eligibility(eligible: boolean): Response {
   return Response.json({ eligible }, { headers: { 'Cache-Control': 'private, no-store' } });
+}
+
+async function readImportBody(body: ReadableStream<Uint8Array>): Promise<string | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) return Buffer.concat(chunks).toString('utf8');
+      size += chunk.value.length;
+      if (size > 2 * 1024 * 1024) { await reader.cancel(); return null; }
+      chunks.push(chunk.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function configuredAgentOrigin(value: string | undefined): string | null {
@@ -186,7 +204,18 @@ export function createNavaRewriteGateway(auth: Auth) {
         redirect: 'manual',
         signal: request.signal,
       };
-      if (request.method !== 'GET' && request.body) {
+      if (request.method === 'POST' && url.pathname === '/api/nava/v1/threads') {
+        if (!request.body) return error(400, 'invalid_input', 'An Outlook thread is required');
+        const body = await readImportBody(request.body);
+        if (body === null) return error(413, 'invalid_input', 'Outlook thread is too large');
+        let payload: unknown;
+        try { payload = JSON.parse(body); }
+        catch { return error(400, 'invalid_input', 'Invalid Outlook thread'); }
+        if (!await isCenturionOutlookImport(payload, cohortMailboxId)) {
+          return error(403, 'source_not_eligible', 'This Outlook email is not an eligible Centurion source');
+        }
+        init.body = body;
+      } else if (request.method !== 'GET' && request.body) {
         init.body = request.body;
         init.duplex = 'half';
       }
