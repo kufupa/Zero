@@ -386,9 +386,10 @@ async function main() {
   const output = resolve(options.json), outputDir = `${output}.artifacts`;
   const rows = options.ids || options.since ? dataset.candidates : dataset.candidates.slice(0, options.emails);
   const entries = Array.from({ length: rows.length });
-  let index = 0, completed = 0, saving = Promise.resolve();
+  let index = 0, completed = 0, lastSaved = 0, saving = Promise.resolve();
   await mkdir(dirname(output), { recursive: true });
   const saveProgress = () => {
+    lastSaved = Date.now();
     const results = entries.filter(entry => entry?.result?.observedAt).map(entry => entry.result);
     const document = { workflow: options.workflow, productSha, generatedAt: new Date().toISOString(),
       corpus: dataset.path, corpusLatest: dataset.latest, totalRows: rows.length, complete: results.length === rows.length, rows: results };
@@ -408,13 +409,24 @@ async function main() {
       await prepareEmail(entries[i], options, outputDir);
       entries[i].result.observedAt = new Date().toISOString();
       completed++;
-      if (completed === 1 || completed % (rows.length > 200 ? 100 : 1) === 0) await saveProgress();
+      if (completed === 1 || rows.length <= 200 || Date.now() - lastSaved >= 5000) await saveProgress();
       console.error(`Prepared ${i + 1}/${rows.length}: ${rows[i].id} ${entries[i].result.status}`);
     }
   }));
   const results = entries.map(entry => entry.result);
   await saveProgress();
   const brief = (value, limit = 180) => String(value ?? '').replace(/\s+/g, ' ').slice(0, limit);
+  const claims = row => {
+    const found = [];
+    const visit = (value, path) => {
+      if (Array.isArray(value)) return value.forEach((item, index) => visit(item, `${path}[${index}]`));
+      if (!value || typeof value !== 'object') return;
+      if ('raw' in value && 'value' in value) { found.push({ path, raw: value.raw, value: value.value }); return; }
+      for (const [key, child] of Object.entries(value)) if (key !== 'sourceRefs' && key !== 'id') visit(child, path ? `${path}.${key}` : key);
+    };
+    visit(row.extracted?.extraction?.requests ?? [], '');
+    return found;
+  };
   const hmsSummary = row => (row.hms?.stages ?? []).map(stage => {
     const result = stage.result, detail = result?.quotes?.[0] ?? result, quote = detail?.quote;
     const price = quote?.totalMinor != null ? ` ${quote.currency ?? ''} ${(quote.totalMinor / 100).toFixed(2)}` :
@@ -423,9 +435,14 @@ async function main() {
     const document = result?.documentName ? ` ${result.documentName}${result.target?.confirmation ? ` ${result.target.confirmation}` : ''}` : '';
     return `${stage.name}:${detail?.status ?? 'unknown'}${detail?.issue ? ` (${detail.issue})` : ''}${price}${fee}${document}`;
   }).join('; ');
-  console.table(results.map(row => ({ id: row.id, subject: brief(row.subject, 65), extracted: brief(JSON.stringify(row.extracted?.proposal?.content?.requests ?? row.triage?.output ?? [])),
-    source: brief(row.source.body), hms: brief(hmsSummary(row)), status: row.status, reason: brief(row.reason),
-    seconds: JSON.stringify({ ...row.timings, native: row.hms?.stages?.map(stage => [stage.name, stage.seconds]) ?? [] }) })));
+  console.table(results.map(row => {
+    const fields = claims(row);
+    return { id: row.id, subject: brief(row.subject, 65),
+    extracted: brief(fields.length ? JSON.stringify(fields.map(({ path, value }) => [path, value])) : JSON.stringify(row.triage?.output ?? []), 600),
+    source: brief(fields.length ? JSON.stringify(fields.map(({ path, raw }) => [path, raw])) : row.source.body, 600),
+    hms: brief(hmsSummary(row)), status: row.status, reason: brief(row.reason),
+    seconds: JSON.stringify({ ...row.timings, native: row.hms?.stages?.map(stage => [stage.name, stage.seconds]) ?? [] }) };
+  }));
   console.log(`Corpus latest: ${dataset.latest}; JSON: ${output}`);
   if (results.some(row => row.status === 'FAIL')) process.exitCode = 1;
   } finally { if (runtime.directory) await rm(runtime.directory, { recursive: true, force: true }); }
