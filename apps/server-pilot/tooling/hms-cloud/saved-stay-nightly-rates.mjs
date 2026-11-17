@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { withCloudReadSession, cloudSessionIdentity } from './cloud-session.mjs';
 import { readQuote } from './quote-read.mjs';
+import { searchHotelAvailabilityParty, selectHotelAvailabilityParty } from './hotel-availability.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 import { cleanLabtestRecord, snapshotLabtestRecord } from './labtest-record.mjs';
 import { createSavedStayRateReadCapability, installSavedStayRateReadRouteChain } from './saved-stay-save-route-chain.mjs';
@@ -288,12 +289,28 @@ export async function readAmendNightlyQuote(input, state, { openSession = withCl
       if (new URL(page.url()).origin !== ORIGIN || cloudSessionIdentity(page)?.propertyCode !== selected.propertyCode) {
         throw new Error('PROPERTY_OR_ORIGIN_MISMATCH');
       }
+      const partyContext = {};
+      for (const [kind, id, name] of [
+        ['group', party.groupid, party.groupname],
+        ['organization', party.companyid, party.company || party.companyname],
+        ['bookingAgency', party.taid1, party.ta1],
+      ]) {
+        if (!id && !name) continue;
+        if (typeof id !== 'string' || !/^\d{1,100}$/.test(id) || typeof name !== 'string' || !name.trim()) {
+          throw new Error('NATIVE_QUOTE_PARTY_UNVERIFIED');
+        }
+        const found = await searchHotelAvailabilityParty(page, { propertyCode: selected.propertyCode, kind, query: name });
+        if (found.outcome !== 'matches' || found.candidates.filter(candidate => candidate.nativeId === id).length !== 1) {
+          throw new Error('NATIVE_QUOTE_PARTY_UNVERIFIED');
+        }
+        const choice = await selectHotelAvailabilityParty(page, { kind, searchId: found.searchId, nativeId: id });
+        if (choice.outcome !== 'selected' || choice.nativeId !== id) throw new Error('NATIVE_QUOTE_PARTY_UNVERIFIED');
+        partyContext[kind] = id;
+      }
       const result = await readQuote(page, { criteria: { propertyCode: selected.propertyCode, arrivalDate: changes.arrival ?? selected.arrival,
         departureDate: changes.departure ?? selected.departure, adults: changes.adults ?? selected.adults, childAges,
-        roomTypes: [changes.roomType ?? selected.roomType], ratePlans: 'all', partyContext: {
-          ...(party.groupid ? { group: party.groupname } : {}),
-          ...(party.companyid ? { organization: party.company || party.companyname } : {}),
-          ...(party.taid1 ? { bookingAgency: party.ta1 } : {}) } }, roomQuantity: 1, snapshotPath, view: { nightLimit: 30 } });
+        roomTypes: [changes.roomType ?? selected.roomType], ratePlans: 'all', partyContext },
+      roomQuantity: 1, snapshotPath, view: { nightLimit: 30 } });
       if (result.outcome !== 'ok') throw new Error(/^[A-Z][A-Z0-9_]{2,100}$/.test(result.issue || '')
         ? result.issue : 'NATIVE_QUOTE_UNVERIFIED');
     }, { propertyCode: selected.propertyCode, transportId: input.transportId, credentialLease: input.credentialLease,
