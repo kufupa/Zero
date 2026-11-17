@@ -412,7 +412,7 @@ async function stageSavedRoomPicker(context, current, target) {
   return after;
 }
 
-async function stageSavedRatePicker(context, current, target) {
+async function stageSavedRatePicker(context, current, target, trackAfterRate) {
   const { page, frame, rateStageGate: gate } = context;
   const before = await snapshotLabtestRecord(frame);
   if (!gate?.arm(before, current, target) || !context.isActive()) throw new Error('RATE_STAGE_GATE_INVALID');
@@ -424,12 +424,26 @@ async function stageSavedRatePicker(context, current, target) {
   await input.fill(target, { timeout: 5_000 });
   await input.press('Tab', { timeout: Math.max(1, Math.min(12_000, context.remainingMs())) });
   const responses = await Promise.all([validation, change]);
+  const bodies = [];
   for (const response of responses) {
     if (!response || response.status() !== 200) throw new Error('RATE_CHANGE_UNVERIFIED');
-    parseSavedStayNativeResponse(await response.text());
+    const body = await response.text();
+    parseSavedStayNativeResponse(body);
+    bodies.push(body);
   }
   await frame.waitForFunction(() => !globalThis.Ext?.Ajax?.isLoading?.(), null,
     { timeout: Math.max(1, Math.min(10_000, context.remainingMs())) });
+  const refreshRequest = trackAfterRate ? gate.rateRefreshRequest() : null;
+  if (refreshRequest) {
+    let timer;
+    const refreshed = await Promise.race([refreshRequest.response().catch(() => null), new Promise(resolve => {
+      timer = setTimeout(() => resolve(null), Math.max(1, Math.min(30_000, context.remainingMs())));
+    })]).finally(() => clearTimeout(timer));
+    if (!refreshed || refreshed.status() !== 200) throw new Error('RATE_CHANGE_UNVERIFIED');
+    const body = await refreshed.text();
+    parseSavedStayNativeResponse(body);
+    responses.push(refreshed); bodies.push(body);
+  }
   const control = await input.evaluate((element) => {
     const component = globalThis.Ext?.getCmp?.(element.id?.replace(/-inputEl$/, ''));
     return { value: String(component?.getValue?.() ?? ''), input: element.value,
@@ -441,18 +455,20 @@ async function stageSavedRatePicker(context, current, target) {
       String(after?.data?.rateplan ?? '') !== target || String(after?.values?.rateplan ?? '') !== target) {
     throw new Error('RATE_CHANGE_UNVERIFIED');
   }
-  gate.close();
+  if (trackAfterRate) {
+    if (!gate.completeRateForTrack(after, trackAfterRate, responses, bodies)) throw new Error('RATE_CHANGE_UNVERIFIED');
+  } else gate.close();
   return after;
 }
 
 /** Select a loaded native option only while the saved-stay request fence is active. */
-export async function stageSavedRoomRateForComposition(context, fieldName, current, target) {
+export async function stageSavedRoomRateForComposition(context, fieldName, current, target, options = {}) {
   const spec = SPECS[fieldName];
   if (!isLabtestAmendStageContext(context) || !context.isActive() || !spec || spec.type !== 'option' ||
       typeof current !== 'string' || typeof target !== 'string' || !target) throw new Error('AMEND_INPUT_INVALID');
   if (current === target) return snapshotLabtestRecord(context.frame);
   if (fieldName === 'roomType' && context.roomStageGate) return stageSavedRoomPicker(context, current, target);
-  if (fieldName === 'ratePlan' && context.rateStageGate) return stageSavedRatePicker(context, current, target);
+  if (fieldName === 'ratePlan' && context.rateStageGate) return stageSavedRatePicker(context, current, target, options.trackAfterRate);
   const input = context.frame.locator(`input[name="${spec.name}"]:visible`);
   if (await input.count() !== 1) throw new Error('AMEND_CONTROL_NOT_UNIQUE');
   const nativeId = await input.evaluate((element, { spec, target }) => {

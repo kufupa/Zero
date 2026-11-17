@@ -17,7 +17,8 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
       !/^\d+$/.test(selected.recordId || '') || !Number.isFinite(deadlineAt) || deadlineAt <= performance.now()) {
     throw new Error('RATE_STAGE_GATE_INPUT_INVALID');
   }
-  let state = 'ready', native, target, trackTarget, trackGrid, trackRows, validationGrid = 'LVRATEPLANS2', chargeVerified = false;
+  let state = 'ready', native, target, trackTarget, trackGrid, trackRows, trackAfterRate = null,
+    validationGrid = 'LVRATEPLANS2', chargeVerified = false;
   const requests = new Map();
   const active = () => {
     if (performance.now() >= deadlineAt) state = 'closed';
@@ -25,11 +26,14 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
   };
   const armTrack = (snapshot, next, readOnly = false) => {
     const data = snapshot?.data, display = snapshot?.values?.track;
-    if (!active() || state !== 'ready' || !data || typeof display !== 'string' || String(data.track ?? '') !== display ||
+    const afterRate = state === 'track_after_rate_ready';
+    if (!active() || (state !== 'ready' && !afterRate) || !data || typeof display !== 'string' || String(data.track ?? '') !== display ||
         data.propertycode !== selected.propertyCode || data.status !== 'Reserved' ||
         String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
         String(data.reservationstayid ?? '') !== selected.reservationStayId || String(data.reservationid ?? '') !== selected.reservationId ||
         String(data.recordid ?? '') !== selected.recordId ||
+        (afterRate && (readOnly || next?.lookupCode !== trackAfterRate?.lookupCode || next?.display !== trackAfterRate?.display ||
+          String(data.rateplan ?? '') !== target || String(snapshot?.values?.rateplan ?? '') !== target)) ||
         (!readOnly && (![false, 0, '0', 'false', ''].includes(data.udfchkbox04) ||
           !next || !/^[A-Z0-9]{1,12}$/.test(next.lookupCode || '') || typeof next.display !== 'string' ||
           !next.display.trim() || next.display !== next.display.trim() || next.display.length > 200 || /[\p{Cc}]/u.test(next.display)))) return false;
@@ -73,7 +77,7 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
     trackChoices() { return active() && state === 'track_verified' && trackRows ? structuredClone(trackRows) : null; },
     completeTrack() {
       if (!active() || state !== 'track_verified') return false;
-      state = 'ready'; return true;
+      state = trackAfterRate ? 'closed' : 'ready'; trackAfterRate = null; return true;
     },
     armCharge(snapshot, current, next) {
       const data = snapshot?.data;
@@ -155,6 +159,27 @@ export function createSavedRateStageRequestGate({ frame, selected, deadlineAt } 
         else state = 'validation_verified';
         return true;
       } catch { return false; }
+    },
+    rateRefreshRequest() { return active() && state === 'refresh_consumed' ? requests.get('refresh') : null; },
+    completeRateForTrack(snapshot, next, responses, bodies) {
+      const data = snapshot?.data, values = snapshot?.values;
+      const kinds = state === 'refresh_consumed' ? ['validation', 'change', 'refresh'] : ['validation', 'change'];
+      if (!active() || !['change_consumed', 'refresh_consumed'].includes(state) || !data || !values || !next ||
+          !/^[A-Z0-9]{1,12}$/.test(next.lookupCode || '') || typeof next.display !== 'string' ||
+          !next.display.trim() || next.display !== next.display.trim() || next.display.length > 200 || /[\p{Cc}]/u.test(next.display) ||
+          !Array.isArray(responses) || responses.length !== kinds.length || !Array.isArray(bodies) || bodies.length !== kinds.length ||
+          data.propertycode !== selected.propertyCode || data.status !== 'Reserved' ||
+          String(data.confirmationnumber ?? '') !== selected.confirmation || String(data.guestid ?? '') !== selected.guestId ||
+          String(data.reservationstayid ?? '') !== selected.reservationStayId || String(data.reservationid ?? '') !== selected.reservationId ||
+          String(data.recordid ?? '') !== selected.recordId || String(data.firstname ?? '') !== selected.firstName ||
+          String(data.lastname ?? '') !== selected.lastName || ![false, 0, '0', 'false', ''].includes(data.udfchkbox04) ||
+          String(data.rateplan ?? '') !== target || String(values.rateplan ?? '') !== target) return false;
+      try {
+        if (responses.some((response, index) => response?.request() !== requests.get(kinds[index]) || response.status() !== 200)) return false;
+        bodies.forEach(parseSavedStayNativeResponse);
+      } catch { return false; }
+      trackAfterRate = { lookupCode: next.lookupCode, display: next.display };
+      state = 'track_after_rate_ready'; return true;
     },
     isRequest(kind, request) { return requests.get(kind) === request; },
     isActive() { return active(); },
