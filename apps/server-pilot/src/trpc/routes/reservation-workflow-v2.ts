@@ -8,6 +8,37 @@ import { outlookSyncObservation, outlookSyncSource } from '../../db/schema/outlo
 import { workEvent, workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
+import { hasRecoverableHmsOperation } from '../../ai/reservation-workflow-v2-source-recovery.js';
+import { hasReservationWorkflowV2Draft, reservationWorkflowV2DraftOf } from '../../ai/reservation-workflow-v2-state.js';
+
+async function findRecoverableExcludedSourceWorkItem(
+  scoped: ReturnType<typeof context>,
+  source: { messageId: string; threadId: string; sourceHash: string },
+): Promise<string | null> {
+  const candidates = await scoped.db
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state })
+    .from(workItem)
+    .where(and(
+      eq(workItem.transportId, scoped.transportId),
+      eq(workItem.threadId, source.threadId),
+      eq(workItem.sourceMessageId, source.messageId),
+    ))
+    .orderBy(desc(workItem.updatedAt), desc(workItem.id))
+    .limit(10);
+  for (const row of candidates) {
+    if (row.status === 'done') continue;
+    if (!hasReservationWorkflowV2Draft(row.state ?? {})) continue;
+    const draft = reservationWorkflowV2DraftOf(row.state ?? {});
+    if (!draft || draft.propertyCode !== scoped.propertyCode ||
+        draft.source.messageId !== source.messageId ||
+        draft.source.threadId !== source.threadId ||
+        draft.source.sourceHash !== source.sourceHash) continue;
+    if (await hasRecoverableHmsOperation(scoped.db, { workItemId: row.id, draft })) {
+      return row.id;
+    }
+  }
+  return null;
+}
 import { canonicalJson } from '../../ai/draft-approval.js';
 import { approveHmsWrite, formDigest, hmsAllocationOperationId, HmsApprovalError, prepareNativeHmsWrite, revokeUnsentFilingPreparation, type V2HmsNativePreparation } from '../../ai/hms-approval.js';
 import { hmsConfigurationIdentities, hmsPreparationSchema, hmsWriteGrantV2Schema, loadHmsPreparation,
@@ -390,6 +421,10 @@ export const reservationWorkflowV2Router = router({
       bodyText: canonicalSourceBodyText({ textBody: selected.textBody, htmlBody: selected.htmlBody }),
       mailboxAddress: ctx.transportEmail,
       hasAttachments: fileAttachmentPresence(fileAttachment != null, selected.sourceProvenance) });
+    const sourceHash = staffQuoteSourceHash(selected);
+    const sourceRecoveryOnly = admission.skippedReason
+      ? (await findRecoverableExcludedSourceWorkItem(scoped, { messageId: selected.id, threadId: selected.threadId, sourceHash })) !== null
+      : false;
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
@@ -397,9 +432,10 @@ export const reservationWorkflowV2Router = router({
       selfPreStay: admission.selfPreStay,
       skippedSource: admission.skippedReason
         ? { kind: admission.skippedReason, source: admission.classification.source } : null,
+      sourceRecoveryOnly,
       attachments,
       source: { propertyId: scoped.propertyCode, threadId: selected.threadId, messageId: selected.id,
-        sourceHash: staffQuoteSourceHash(selected), arrivedAt: selected.arrivedAt.toISOString() } };
+        sourceHash, arrivedAt: selected.arrivedAt.toISOString() } };
   }),
   ensure: reservationWorkflowV2Procedure.input(reservationWorkflowV2EnsureInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
@@ -424,8 +460,25 @@ export const reservationWorkflowV2Router = router({
       bodyText: canonicalSourceBodyText({ textBody: source.textBody, htmlBody: source.htmlBody }),
       mailboxAddress: ctx.transportEmail,
       hasAttachments: fileAttachmentPresence(fileAttachment != null, source.sourceProvenance) });
-    if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.`,
-      skippedSource: { kind: admission.skippedReason, source: admission.classification.source } };
+    if (admission.skippedReason) {
+      const recoverableWorkItemId = await findRecoverableExcludedSourceWorkItem(scoped, {
+        messageId: source.id,
+        threadId: source.threadId,
+        sourceHash: input.source.sourceHash,
+      });
+      if (!recoverableWorkItemId) {
+        return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.`,
+          skippedSource: { kind: admission.skippedReason, source: admission.classification.source } };
+      }
+      return withPreparation(
+        getReservationWorkflowV2Draft(
+          scoped,
+          { workItemId: recoverableWorkItemId, source: canonicalSource },
+          { allowSourceChanged: false, recoverSourceFields: false },
+        ),
+        scoped.propertyCode,
+      );
+    }
     const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource, { allowSourceChanged: true });
     // Staff opened an email whose arrival job is still waiting: move that job ahead of newly admitted mail.
     const waitingJobId = initialized.status === 'ok' && !initialized.sourceChanged &&

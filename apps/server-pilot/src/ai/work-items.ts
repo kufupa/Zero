@@ -1,4 +1,5 @@
 import { failedReadFingerprint } from './extraction/retry-binding.js';
+import { hasRecoverableHmsOperation } from './reservation-workflow-v2-source-recovery.js';
 import { randomUUID } from 'node:crypto';
 import { MANUAL_CREATE_KEY, manualCreateMarker, manualCreatePayload } from './manual-create-source.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
@@ -2998,9 +2999,21 @@ export async function listWorkItems(
       }
       return rows;
     };
+    const recoverableHmsIds = new Set<string>();
+    const fetchPageWithRecoverable = async (cursor?: { rank: number; sortAge: Date | null; createdAt: Date; id: string }) => {
+      const rows = await fetchPageWithDrafts(cursor);
+      for (const row of rows) {
+        if (row.status !== 'done' && hasReservationWorkflowV2Draft(row.state ?? {})) {
+          if (await hasRecoverableHmsOperation(tx, { workItemId: row.id, draft: reservationWorkflowV2DraftOf(row.state ?? {}) })) {
+            recoverableHmsIds.add(row.id);
+          }
+        }
+      }
+      return rows;
+    };
     return collectNeedsYouPages({
       limit: input.limit,
-      fetchPage: fetchPageWithDrafts,
+      fetchPage: fetchPageWithRecoverable,
       validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, sourceProvenance, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
@@ -3042,7 +3055,9 @@ export async function listWorkItems(
           // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no
           // binding to this source or generation, so it never hides a V2 draft: anything uncertain stays reviewable.
           if (!preStayAsk && classifyMailSource({ fromAddress: row.sender,
-              subject: row.subject, bodyText: sourceBodyText, hasAttachments }).kind !== 'direct') return null;
+              subject: row.subject, bodyText: sourceBodyText, hasAttachments }).kind !== 'direct') {
+            if (row.status === 'done' || !recoverableHmsIds.has(row.id)) return null;
+          }
           const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
           return { ...row, kind: admission.kind, chip, actions: admission.actions,
             ...(admission.reviewOnly ? { reviewOnly: true } : {}) };

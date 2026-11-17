@@ -52,7 +52,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
     setLoadError(null);
     const earlySkipped = source.skippedSource ?? null;
     setSkippedSource(earlySkipped);
-    if (earlySkipped) return () => { live = false; };
+    if (earlySkipped && !source.sourceRecoveryOnly) return () => { live = false; };
     const matching = request.current?.key === key ? request.current : null;
     const initialRequest = matching ?? { key, promise: client.ensure({ source, mode: 'initialize' }), prefill: null };
     request.current = initialRequest;
@@ -79,7 +79,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
         return;
       }
       acceptPrefill(next);
-      if (!next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
+      if (!source.sourceRecoveryOnly && !next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
         const prefill = initialRequest.prefill ?? client.prefill({ source, snapshot: next });
         initialRequest.prefill = prefill;
         void prefill.then(acceptPrefill).catch((error: unknown) => {

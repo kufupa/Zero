@@ -284,6 +284,7 @@ export function ReservationPaneHost({ bridge, preview = false, webSelectedThread
           skippedSource: result.skippedSource &&
             (result.skippedSource.kind === 'channel' || result.skippedSource.kind === 'system' || result.skippedSource.kind === 'spam')
             ? { kind: result.skippedSource.kind, source: result.skippedSource.source } : null,
+          sourceRecoveryOnly: result.sourceRecoveryOnly ?? false,
           receivedAt: result.source.arrivedAt,
           attachments: result.attachments.filter((item) => !item.isInline).map((item) => ({
             sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes,
