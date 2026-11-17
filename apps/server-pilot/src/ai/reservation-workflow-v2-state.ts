@@ -998,7 +998,7 @@ function pathParts(path: string): string[] | null {
 }
 
 const NEVER_EDIT = new Set(['id', 'kind', 'dateSectionId', 'sourceRefs', 'serviceRefs', 'documentRefs', 'candidateRefs', 'priceObservationRefs',
-  'evidenceRefs', 'lookupResultRefs', 'annotations', 'issues', 'sourceClaims', 'observations', 'suggestedRef']);
+  'evidenceRefs', 'lookupResultRefs', 'annotations', 'issues', 'sourceClaims', 'sourceCues', 'observations', 'suggestedRef']);
 
 function effectiveSavedTargetRows(draft: ReservationWorkflowV2Draft, requestId: string,
   collection: 'include' | 'exclude' = 'include'): unknown[] {
@@ -1276,6 +1276,7 @@ function editablePath(draft: ReservationWorkflowV2Draft, path: string): boolean 
     const request = draft.proposal.content.requests.find((entry) => entry.id === stableId) ??
       draft.proposal.content.requests[rowIndex];
     if (request?.kind === 'cancel') return branch === 'requestText' && parts.length === 5 || editableCancelBodyField(draft, parts);
+    if (request?.kind === 'amend' && branch === 'body' && parts.length === 5) return false;
     if (parts.some((part) => NEVER_EDIT.has(part) && !(part === 'suggestedRef' && targetSelection))) return false;
     return branch === 'body' || (branch === 'requestText' && parts.length === 5);
   }

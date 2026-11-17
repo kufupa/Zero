@@ -246,11 +246,17 @@ const changeSchema = z.discriminatedUnion('op', [
       message: 'Billing Reference must be at most 50 characters.' });
   }
 });
+const amendSourceCueSchema = z.object({
+  kind: z.enum(['room_description', 'nightly_price']),
+  text: z.string().min(1).max(2000),
+  sourceRefs: z.array(refSchema).min(1).max(20),
+}).strict();
 const amendBodySchema = z.object({
   targets: savedScopeSchema,
   sharedChanges: z.array(changeSchema).max(200),
   perTarget: z.array(z.object({ hintId: idSchema, changes: z.array(changeSchema).max(200),
     rateHandling: z.enum(['retain', 'reprice']).nullable(), currentObservationRefs: z.array(refSchema).max(100) }).strict()).max(100),
+  sourceCues: z.array(amendSourceCueSchema).max(20).optional(),
 }).strict();
 const cancelBodySchema = z.object({
   targets: savedScopeSchema,
@@ -380,6 +386,7 @@ const storedAmendBodySchema = z.object({
   sharedChanges: z.array(storedAmendChangeSchema).max(200),
   perTarget: z.array(z.object({ hintId: idSchema, changes: z.array(storedAmendChangeSchema).max(200),
     rateHandling: z.enum(['retain', 'reprice']).nullable(), currentObservationRefs: z.array(refSchema).max(100) }).strict()).max(100),
+  sourceCues: z.array(amendSourceCueSchema).max(20).optional(),
 }).strict();
 const storedRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0],
   requestSchema.options[1].extend({ body: storedCreateBodySchema }),
@@ -496,7 +503,8 @@ const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuote
   requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),
-  requestSchema.options[1].extend({ body: modelCreateBodySchema }), requestSchema.options[2],
+  requestSchema.options[1].extend({ body: modelCreateBodySchema }),
+  requestSchema.options[2].extend({ body: amendBodySchema.omit({ sourceCues: true }) }),
   requestSchema.options[3], requestSchema.options[4], requestSchema.options[5], requestSchema.options[6].extend({
     body: requestSchema.options[6].shape.body.extend({
       separatedFrom: z.object({ requestId: idSchema, moneyId: idSchema }).strict().optional(),

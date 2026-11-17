@@ -3936,6 +3936,28 @@ function projectCurrentExtraction(input: {
       currentMessage: input.selection.currentBodyText ?? input.selection.bodyText,
       messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) });
     if (request.kind === 'amend') {
+      const clauses = authoredSourceNoteClauses(input);
+      const cueClaims = [
+        ...extracted.roomTypeHints.map((claim) => ({ kind: 'room_description' as const, claim })),
+        ...(extracted.requestedPrice?.nightlyRate ? [{ kind: 'nightly_price' as const, claim: extracted.requestedPrice.nightlyRate }] : []),
+      ];
+      const sourceCues: NonNullable<typeof request.body.sourceCues> = [];
+      for (const { kind, claim } of cueClaims) {
+        const raw = claim.raw.trim();
+        if (!raw || !currentClaim(claim, currentRefs) || !currentAuthoredBody.includes(raw) ||
+            currentAuthoredBody.indexOf(raw) !== currentAuthoredBody.lastIndexOf(raw)) continue;
+        if (currentExtraction.requests.length > 1 && (!extracted.requestText.raw.includes(raw) ||
+            currentExtraction.requests.some((other) => other !== extracted && other.requestText.raw.includes(raw)))) continue;
+        const matches = clauses.filter((clause) => clause.includes(raw) && clause.length <= 2000);
+        if (matches.length !== 1) continue;
+        const text = matches[0]!;
+        const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message' &&
+          claim.sourceRefs.includes(row.ref) && row.text.includes(text)).map((row) => row.ref).slice(0, 20);
+        if (!sourceRefs.length || sourceCues.some((cue) => cue.kind === kind && cue.text === text)) continue;
+        sourceCues.push({ kind, text, sourceRefs });
+        if (sourceCues.length === 20) break;
+      }
+      if (sourceCues.length) request.body.sourceCues = sourceCues;
       const mealClaims = extracted.mealPlanHints.filter((claim) => currentClaim(claim, currentRefs) && Boolean(claim.raw.trim()) &&
         typeof claim.value === 'string' && claim.value.trim() && claim.value.length <= 120 &&
         !/[\p{Cc}]/u.test(claim.value) && input.evidence.some((row) => currentRefs.has(row.ref) &&
@@ -5727,6 +5749,17 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
     proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, observation.ref])].slice(0, 1000);
     requirements[valuePath] = { required: true, reasons: ['Review the saved note and the added source instructions before saving.'],
       evidenceRefs: [observation.ref, ...sourceRefs] };
+  }
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'amend' || [...request.body.sharedChanges, ...request.body.perTarget.flatMap((row) => row.changes)]
+      .some((change) => change.op === 'set' && change.field === 'reservationNote')) continue;
+    const prefixes = [`/proposal/content/requests/${request.id}/`, `/requests/${request.id}/`];
+    for (const issue of proposal.issues) {
+      if (!prefixes.some((prefix) => issue.path.startsWith(prefix))) continue;
+      issue.explanation = issue.explanation.replace(
+        /\b(?:is|was|has been)\s+(?:verbatim\s+)?(?:preserved|saved|added|copied|recorded|included|retained)(?:\s+verbatim)?\s+(?:in|to|within)\s+(?:the\s+)?reservation\s*note\b/giu,
+        'is available in the email for review');
+    }
   }
   return { proposal, observations, requirements };
 }
