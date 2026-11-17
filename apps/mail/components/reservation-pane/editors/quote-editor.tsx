@@ -30,7 +30,7 @@ function GuestRoster({ editor, path }: { editor: Editor; path: string }) {
     const savedVersion = version.current;
     void editor.commands.edit(path, next).then(() => { if (version.current === savedVersion) setDirty(false); }).catch(() => {});
   };
-  return <div className={styles.stack} data-field-path={path}>
+  return <div className={`${styles.stack} ${styles.roster}`} data-field-path={path}>
     <strong>Guest roster (review context only)</strong>
     {names.map((name, index) => <div className={styles.inlineButtons} key={index}>
       <input aria-label={`Guest ${index + 1}`} value={name} maxLength={300} disabled={editor.view.busy}
@@ -38,7 +38,7 @@ function GuestRoster({ editor, path }: { editor: Editor; path: string }) {
         onBlur={() => { if (dirty) save(names); }} />
       <button type="button" disabled={editor.view.busy} onClick={() => { const next = names.filter((_, i) => i !== index); stage(next); save(next); }}>Remove</button>
     </div>)}
-    <button type="button" className={styles.linkButton} disabled={editor.view.busy || names.length >= 200}
+    <button type="button" className={styles.secondaryButton} disabled={editor.view.busy || names.length >= 200}
       onClick={() => { const next = [...names, '']; stage(next); save(next); }}>+ Add guest</button>
   </div>;
 }
@@ -293,45 +293,95 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
   </div>;
 }
 
+const EXTRA_KINDS = [
+  { kind: 'lunch', label: 'Add lunch', heading: 'Lunch' },
+  { kind: 'airport_transfer', label: 'Add airport transfer', heading: 'Airport transfer' },
+  { kind: 'office_transfer', label: 'Add office transfer', heading: 'Office transfer' },
+  { kind: 'dinner', label: 'Add dinner', heading: 'Dinner' },
+] as const;
+const extraHeading = (kind: string) => EXTRA_KINDS.find((row) => row.kind === kind)?.heading
+  ?? (kind === 'unsupported' ? 'Separate other request' : 'Extra');
+const extraUnitDefault = (kind: string) => kind === 'airport_transfer' ? 'per_trip' : 'per_person_per_night';
+
 function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bodyPath: string; groups: Record<string, unknown>[]; rows: Record<string, unknown>[] }) {
+  const [pendingAdd, setPendingAdd] = useState<{ beforeIds: Set<string>; kind: string; generationId: string; seq: number } | null>(null);
+  const [reviewError, setReviewError] = useState(false);
+  useEffect(() => {
+    const pending = pendingAdd;
+    if (!pending) return;
+    const generationId = editor.snapshot.session.draft.generationId;
+    if (generationId !== pending.generationId || editor.snapshot.session.seq > pending.seq + 1) { setPendingAdd(null); return; }
+    if (editor.snapshot.session.seq !== pending.seq + 1 || ['queued', 'running'].includes(editor.snapshot.session.draft.prefill?.status ?? '')) return;
+    const added = rows.filter((row) => !pending.beforeIds.has(text(row.id)) && text(row.staffAllowanceType) === pending.kind);
+    if (added.length !== 1 || rows.length !== pending.beforeIds.size + 1) { setPendingAdd(null); return; }
+    const moneyId = text(added[0]!.id);
+    const index = rows.findIndex((row) => text(row.id) === moneyId);
+    if (index < 0) { setPendingAdd(null); return; }
+    setPendingAdd(null);
+    const base = `${bodyPath}/requestedMoney/${index}`;
+    const fields: [string, unknown][] = [
+      ['staffAllowanceType', pending.kind], ['currency', 'ZAR'], ['unit', extraUnitDefault(pending.kind)],
+      ['scope', 'overall'], ['targetRefs', []],
+    ];
+    void (async () => {
+      for (const [key, value] of fields) {
+        const fieldPath = `${base}/${key}`;
+        try {
+          if (JSON.stringify(added[0]?.[key]) !== JSON.stringify(value)) return;
+          await editor.commands.acceptServiceReview(fieldPath, 'Reviewed by staff', { path: base, value: added[0], generationId });
+        } catch { setReviewError(true); return; }
+      }
+    })();
+  }, [pendingAdd, rows, bodyPath, editor]);
   return <Section title="Extras">
-    <p className={styles.note}>Add lunch and transfers as separate lines.</p>
-    <div className={styles.inlineButtons}>{[
-      { kind: 'lunch', label: 'Lunch' },
-      { kind: 'airport_transfer', label: 'Airport Transfer / Shuttle' },
-      { kind: 'office_transfer', label: 'Office Transfer' },
-      { kind: 'dinner', label: 'Dinner' },
-    ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || rows.length >= 100}
+    <p className={styles.note}>Add each extra as a separate line.</p>
+    {reviewError && <p role="alert" className={styles.notice}>Check the quote to confirm your changes.</p>}
+    <div className={styles.inlineButtons}>{EXTRA_KINDS.map((extra) => <button type="button" key={extra.kind} className={styles.secondaryButton}
+      disabled={editor.view.busy || rows.length >= 100}
       data-field-path={extra.kind === 'lunch' ? `${bodyPath}/requestedMoney` : undefined}
-      onClick={() => void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })}>+ {extra.label}</button>)}</div>
+      onClick={() => {
+        const pending = { beforeIds: new Set(rows.map((row) => text(row.id))), kind: extra.kind,
+          generationId: editor.snapshot.session.draft.generationId, seq: editor.snapshot.session.seq };
+        setReviewError(false);
+        void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })
+          .then(() => setPendingAdd(pending)).catch(() => { setPendingAdd(null); });
+      }}>{extra.label}</button>)}</div>
     <p className={styles.note}>Customer amounts are separate from Infor room rates. They never replace a native rate.</p>
     {rows.map((row, index) => {
       const path = `${bodyPath}/requestedMoney/${index}`;
       const kindPath = `${path}/staffAllowanceType`;
+      const scopePath = `${path}/scope`;
       const kind = text(valueAt(editor.snapshot, kindPath));
       const moneyId = text(row.id);
+      const handleId = `quote-extra-handle-${moneyId || index}`, scopeId = `quote-extra-scope-${moneyId || index}`;
       const separateOtherSaved = hasSavedSeparateOther(editor, editor.request.id, moneyId);
-      const scope = text(valueAt(editor.snapshot, `${path}/scope`));
+      const scope = text(valueAt(editor.snapshot, scopePath));
       const targets = valueAt(editor.snapshot, `${path}/targetRefs`);
       const selected = Array.isArray(targets) ? targets.map(text) : [];
+      const generationId = editor.snapshot.session.draft.generationId;
       return <div className={styles.roomCard} key={text(row.id) || index}>
-        <div className={styles.twoCol}><Field label="Requested amount" path={`${path}/amount`} editor={editor} review requireReview />
-          <Field label="Currency" path={`${path}/currency`} editor={editor} review requireReview /></div>
-        <Field label="Unit" path={`${path}/unit`} editor={editor} review requireReview options={[
+        <strong>{extraHeading(kind)}</strong>
+        <div className={styles.twoCol}><Field label="Amount (see unit)" path={`${path}/amount`} editor={editor} review requireReview />
+          <div className={styles.currencyField}><Field label="Currency" path={`${path}/currency`} editor={editor} review requireReview /></div></div>
+        <Field label="Unit (check basis)" path={`${path}/unit`} editor={editor} review requireReview options={[
           { value: 'per_person_per_night', label: 'Per person per night' },
           { value: 'per_room_per_night', label: 'Per room per night' },
           { value: 'per_person', label: 'Per person' },
           { value: 'per_trip', label: 'Per trip' },
           { value: 'item', label: 'Once' },
         ]} />
-        <label data-field-path={kindPath} className={styles.localField}>Handle as
-          <FieldReview editor={editor} path={kindPath} label="extra type" requireReview />
-          <select value={kind || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
+        <div data-field-path={kindPath} className={styles.localField}>
+          <div className={styles.countHeading}><label htmlFor={handleId}>Handle as</label>
+            <FieldReview editor={editor} path={kindPath} label="extra type" requireReview /></div>
+          <select id={handleId} aria-label="Handle as" value={kind || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
             const next = event.target.value;
             if (next === 'unsupported') {
               if (kind === 'unsupported' && separateOtherSaved) return;
               void editor.commands.changeRows({ kind: 'separate_quote_money', requestId: editor.request.id, entityId: String(index) } as never);
-            } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) void editor.commands.edit(kindPath, next);
+            } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) {
+              void editor.commands.edit(kindPath, next).then(() => editor.commands.acceptServiceReview(kindPath, 'Reviewed by staff',
+                { path, value: { ...row, staffAllowanceType: next }, generationId })).catch(() => setReviewError(true));
+            }
           }}>
             <option value="unresolved">Choose how to handle</option>
             <option value="dinner">Dinner allowance</option>
@@ -340,24 +390,30 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
             <option value="office_transfer">Office Transfer</option>
             <option value="unsupported">Other request · handle separately</option>
           </select>
-        </label>
-        <label data-field-path={`${path}/scope`} className={styles.localField}>Scope
-          <FieldReview editor={editor} path={`${path}/scope`} label="extra scope" requireReview />
-          <select value={scope || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
+        </div>
+        <div data-field-path={scopePath} className={styles.localField}>
+          <div className={styles.countHeading}><label htmlFor={scopeId}>Scope</label>
+            <FieldReview editor={editor} path={scopePath} label="extra scope" requireReview /></div>
+          <select id={scopeId} aria-label="Scope" value={scope || 'unresolved'} disabled={editor.view.busy} onChange={(event) => {
             const nextScope = event.target.value;
-            editor.commands.setUncommitted(`${path}/scope`, true);
+            editor.commands.setUncommitted(scopePath, true);
             void (async () => {
               if (nextScope === 'overall' && selected.length) await editor.commands.edit(`${path}/targetRefs`, []);
-              await editor.commands.edit(`${path}/scope`, nextScope);
-            })().finally(() => editor.commands.setUncommitted(`${path}/scope`, false)).catch(() => {});
+              await editor.commands.edit(scopePath, nextScope);
+              await editor.commands.acceptServiceReview(scopePath, 'Reviewed by staff', { path, value: { ...row, scope: nextScope,
+                targetRefs: nextScope === 'overall' && selected.length ? [] : targets }, generationId });
+            })().finally(() => editor.commands.setUncommitted(scopePath, false)).catch(() => setReviewError(true));
           }}><option value="unresolved">Unresolved</option><option value="overall">All groups</option>
             <option value="per_target">Selected groups</option></select>
-        </label>
-        <div data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="extra groups" requireReview /></div>
+        </div>
+        <div data-field-path={`${path}/targetRefs`} className={styles.countHeading}><span>Groups</span><FieldReview editor={editor} path={`${path}/targetRefs`} label="extra groups" requireReview /></div>
         {scope === 'per_target' && <fieldset className={styles.targetFields}><legend>Apply to groups</legend>
           {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id}>
-            <input type="checkbox" checked={selected.includes(id)} onChange={(event) => void editor.commands.edit(`${path}/targetRefs`,
-              event.target.checked ? [...selected, id] : selected.filter((value) => value !== id))} /> Group {groupIndex + 1}
+            <input type="checkbox" checked={selected.includes(id)} onChange={(event) => {
+              const next = event.target.checked ? [...selected, id] : selected.filter((value) => value !== id);
+              void editor.commands.edit(`${path}/targetRefs`, next).then(() => editor.commands.acceptServiceReview(`${path}/targetRefs`,
+                'Reviewed by staff', { path, value: { ...row, targetRefs: next }, generationId })).catch(() => setReviewError(true));
+            }} /> Group {groupIndex + 1}
           </label>; })}
         </fieldset>}
         {kind === 'unsupported' && separateOtherSaved
@@ -464,11 +520,11 @@ export function QuoteEditor(editor: Editor) {
       {!groups.length && <p className={styles.notice}>Add a room group to start a manual quote.</p>}
       {availabilityNotice && <p className={styles.notice}>{offersCurrent ? availabilityNotice : `Earlier Infor result: ${availabilityNotice} Refresh before relying on it.`}</p>}
       <div className={styles.groupHeading}><strong>Room groups</strong>
-        <button type="button" className={styles.linkButton} aria-label="Add room group"
+        <button type="button" className={styles.secondaryButton} aria-label="Add room group"
           data-field-path={`${bodyPath}/groups`}
           disabled={view.busy || groups.length >= 8}
           onClick={() => void commands.changeRows({ kind: 'add_quote_group', requestId: request.id,
-            entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>+ Group</button></div>
+            entityId: `group_${crypto.randomUUID().replaceAll('-', '')}` })}>Add room group</button></div>
       {groups.map((group, index) => {
         const groupPath = `${bodyPath}/groups/${index}`;
         const roomSource = snapshot.session.draft.proposal.sourceClaims.find((claim) => claim.path === `${groupPath}/quantity`);
@@ -508,16 +564,18 @@ export function QuoteEditor(editor: Editor) {
       {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : offersCurrent ? 'Current Infor availability' : 'Earlier Infor observation'}</strong>
         {money(result.totalMinor, result.currency) && <span>{money(result.totalMinor, result.currency)} total</span>}
         <small>{text(result.arrivalDate)} – {text(result.departureDate)}{observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>
-        {rows.some((_, i) => !['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/staffAllowanceType`))) || !text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/amount`)).trim()) &&
-          <small>Unresolved requests above are not included in this total.</small>}</div>}
+        {rows.length > 0 && <small>Check whether this total includes the extras below.</small>}</div>}
     </Section>
     <Section title="Organization and booking agency">
       <p className={styles.note}>Enter names for the quote. Find and select an Infor profile when a contract rate is needed; typing a name does not create a profile.</p>
       <NativePicker label="Organization" path={`${bodyPath}/parties/organization`} editor={editor} kind="party_candidate" allowNone compact quoteName />
       <NativePicker label="Primary Booking Agency" path={`${bodyPath}/parties/bookingAgency`} editor={editor} kind="party_candidate" allowNone compact quoteName />
       <Field label="Sales strategy" path={`${bodyPath}/salesStrategy`} editor={editor} compact options={strategies} />
-      {strategyUsedDiscoveryBar && selectedStrategy !== 'BAR' && <p className={styles.notice}>
-        This source price used BAR as a discovery default; no sales strategy was selected. Choose the intended strategy above before Review/Check. If it is not BAR, check and prepare the price again.
+      {strategyUsedDiscoveryBar && !selectedStrategy && <p className={styles.notice}>
+        Infor's initial search used BAR. Choose a sales strategy before checking the quote.
+      </p>}
+      {strategyUsedDiscoveryBar && selectedStrategy && selectedStrategy !== 'BAR' && <p className={styles.notice}>
+        Infor's initial search used BAR. Check the quote again to use {selectedStrategy}.
       </p>}
     </Section>
     <MoneyRequests editor={editor} bodyPath={bodyPath} groups={groups} rows={rows} />
@@ -539,8 +597,9 @@ export function QuoteEditor(editor: Editor) {
       {!allOutputsSelected && <button type="button" className={styles.linkButton} disabled={view.busy}
         onClick={() => void commands.edit(artifactPath, outputOptions.map((option) => option.kind))}>Select full quote package</button>}
       <p className={styles.note}>A provisional booking needs a separate Create action.</p>
-      {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`} className={styles.notice}>This request has not been confirmed as quote-only.
-        <button type="button" className={styles.linkButton} onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Continue with quote only</button>
+      {provisional !== false && <div data-field-path={`${bodyPath}/provisionalBookingRequested`}>
+        <button type="button" className={styles.secondaryButton} disabled={view.busy}
+          onClick={() => void commands.edit(`${bodyPath}/provisionalBookingRequested`, false)}>Quote only</button>
       </div>}
     </Section>
   </div>;
