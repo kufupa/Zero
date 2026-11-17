@@ -474,6 +474,8 @@ const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
 async function runPaneLookup(scoped: Awaited<ReturnType<typeof nativeContext>>, input: z.infer<typeof reservationWorkflowV2LookupInputSchema>) {
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
+    if (input.nativeFieldPath && workflow.kind === 'quote' && /\/body\/parties\/(?:organization|bookingAgency)$/.test(input.nativeFieldPath))
+      return reservationWorkflowV2QuoteLookup(scoped, input);
     if (input.nativeFieldPath) return reservationWorkflowV2NativeChoices(scoped, input);
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);

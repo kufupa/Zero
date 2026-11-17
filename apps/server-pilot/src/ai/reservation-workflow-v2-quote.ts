@@ -22,6 +22,7 @@ import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import { propertyCodeSchema } from '../hms/property-registry.js';
 import { buildStaffProposalFacts, staffQuoteInput } from './staff-quote-workflow.js';
 import { runStaffQuote, staffQuoteCauseSummary } from './staff-quote-run.js';
+import { sanitizeHmsExecutionLogMessage } from './reservationist-evaluation-composition.js';
 import { buildStaysProposalPdf } from '../quote-proposal/proposal-pdf.js';
 import { quotePropertyIdentity } from '../quote-proposal/filename.js';
 import {
@@ -56,7 +57,7 @@ type QuoteBaseInput = {
   expectedRevision: number;
   expectedSeq: number;
 };
-export type ReservationWorkflowV2QuoteLookupInput = QuoteBaseInput & { requestId?: string };
+export type ReservationWorkflowV2QuoteLookupInput = QuoteBaseInput & { requestId?: string; nativeFieldPath?: string };
 export type ReservationWorkflowV2QuotePrepareInput = QuoteBaseInput & { requestId: string };
 export type ReservationWorkflowV2QuoteExecuteInput = QuoteBaseInput & {
   requestId: string;
@@ -697,11 +698,16 @@ async function lookupPartyCandidates(
   input: QuoteBaseInput,
   draft: ReservationWorkflowV2Draft,
   request: QuoteRequest,
+  onlyRole?: 'organization' | 'bookingAgency',
 ) {
   const target = await quoteTarget(ctx, input);
-  if (!target.target) return { status: 'unsupported', issue: target.issue, candidates: [] as unknown[] };
+  if (!target.target) {
+    console.warn('quote_party_lookup_target_unavailable', { workItemId: input.workItemId, requestId: request.id, issue: target.issue });
+    return { status: 'unsupported', issue: target.issue, candidates: [] as unknown[] };
+  }
   const candidates: Array<Record<string, unknown>> = [];
   for (const role of ['organization', 'bookingAgency'] as const) {
+    if (onlyRole && onlyRole !== role) continue;
     const basePath = ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', role);
     const partyLeaf = resolvedLeaf(draft, basePath, request.body.parties[role]);
     const party = !('issue' in partyLeaf) ? record(partyLeaf.value) : null;
@@ -745,7 +751,7 @@ async function lookupPartyCandidates(
         if (row) candidates.push({ ...row, ref: observation.ref, kind: role });
       }
       if (found.status !== 'complete') {
-        console.warn('quote_party_lookup_incomplete', { workItemId: input.workItemId, requestId: request.id });
+        console.warn('quote_party_lookup_incomplete', { workItemId: input.workItemId, requestId: request.id, role, outcome: found.result.outcome, reason: found.result.reason, notes: found.coverage.notes });
         return { status: 'failed', issue: 'native_party_search_incomplete', outcomeClass: 'system_fault', candidates };
       }
       continue;
@@ -758,7 +764,9 @@ async function lookupPartyCandidates(
       if (cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE') {
         return { status: 'failed', issue: cause.code, outcomeClass: 'hms_busy', candidates };
       }
-      console.warn('quote_party_lookup_failed', { workItemId: input.workItemId, requestId: request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
+      console.warn('quote_party_lookup_failed', { workItemId: input.workItemId, requestId: request.id, role,
+        name: cause.name, code: cause.code, phase: cause.phase ?? 'unknown',
+        detail: error instanceof Error ? sanitizeHmsExecutionLogMessage(error.message) : undefined });
       const observation: ReservationWorkflowV2Observation = {
         ref: randomUUID(), generationId: draft.generationId, kind: 'party_candidate', status: 'failed',
         observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
@@ -830,6 +838,21 @@ export async function reservationWorkflowV2QuoteLookup(
   const requests = quoteRequests(loaded.draft, input.requestId);
   if (input.requestId && !requests.length) return { status: 'not_found' };
   if (!requests.length) return { status: 'needs_input', issue: 'quote_request_required' };
+  if (input.nativeFieldPath) {
+    const request = requests[0]!;
+    const role = (['organization', 'bookingAgency'] as const).find(candidate =>
+      input.nativeFieldPath === ptr('proposal', 'content', 'requests', request.id, 'body', 'parties', candidate));
+    if (!input.requestId || !role) return { status: 'unsupported', issue: 'quote_party_field_not_supported' };
+    try {
+      return await lookupPartyCandidates(ctx, input, loaded.draft, request, role);
+    } catch (error) {
+      const cause = staffQuoteCauseSummary(error);
+      console.warn('quote_party_lookup_failed', { workItemId: input.workItemId, requestId: request.id, role,
+        name: cause.name, code: cause.code, phase: cause.phase ?? 'unknown',
+        detail: error instanceof Error ? sanitizeHmsExecutionLogMessage(error.message) : undefined });
+      return { status: 'failed', issue: 'native_party_search_failed' };
+    }
+  }
   const results: Outcome[] = [];
   for (const request of requests) {
     const parties = await lookupPartyCandidates(ctx, input, loaded.draft, request);
