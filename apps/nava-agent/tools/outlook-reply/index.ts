@@ -31,10 +31,11 @@ function isSnapshot(value: unknown): value is OutlookReplySnapshot {
   const { thread, selected_message: message, proposal } = value;
   return thread.source === 'outlook' && nonempty(thread.id) && nonempty(thread.mailbox_id) &&
     nonempty(thread.selected_message_id) && nonempty(message.id) && nonempty(message.entryId) &&
-    nonempty(message.storeId) && nonempty(message.folderEntryId) && nonempty(proposal.id) &&
-    nonempty(proposal.thread_id) && nonempty(proposal.session_id) && revision(proposal.revision) &&
+    nonempty(message.storeId) && message.storeId.length <= 2048 && nonempty(message.folderEntryId) &&
+    message.entryId.length <= 512 && message.folderEntryId.length <= 512 && nonempty(proposal.id) &&
+    nonempty(proposal.thread_id) && nonempty(proposal.session_id) && nonempty(proposal.source_message_id) && revision(proposal.revision) &&
     (typeof proposal.reply_draft === 'string' || proposal.reply_draft === null) &&
-    typeof value.operationId === 'string' && /^op_\d+_[0-9a-f]{32}$/i.test(value.operationId);
+    typeof value.operationId === 'string' && /^op_\d{13}_[0-9a-f]{32}$/.test(value.operationId);
 }
 
 function textToHtml(text: string): string {
@@ -55,7 +56,7 @@ export async function createOutlookReplyCommand(input: unknown, context: ToolCon
   if (!isSnapshot(context.outlookReply)) return failure('REPLY_CONTEXT_UNAVAILABLE', 'Authorized Outlook selection and proposal snapshot are required.');
   const { thread, selected_message: message, proposal, operationId } = context.outlookReply;
   if (!nonempty(context.sessionId) || proposal.session_id !== context.sessionId || proposal.thread_id !== thread.id ||
-      proposal.id !== input.proposal_id || message.id !== thread.selected_message_id) {
+      proposal.id !== input.proposal_id || message.id !== thread.selected_message_id || proposal.source_message_id !== message.id) {
     return failure('REPLY_BINDING_MISMATCH', 'Selection and proposal must belong to the current session and thread.');
   }
   if (proposal.revision !== input.expected_revision) return failure('STALE_PROPOSAL', 'Proposal revision changed; reload before drafting.');

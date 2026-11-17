@@ -13,7 +13,7 @@ export const outlookReplyCommandName = 'outlook_reply_command';
 export type OutlookReplySnapshot = {
   thread: { id: string; source: 'outlook'; mailbox_id: string; selected_message_id: string };
   selected_message: { id: string; entryId: string; storeId: string; folderEntryId: string };
-  proposal: { id: string; thread_id: string; session_id: string; revision: number; reply_draft: string | null };
+  proposal: { id: string; thread_id: string; session_id: string; source_message_id: string; revision: number; reply_draft: string | null };
   operationId: string;
 };
 
