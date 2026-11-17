@@ -18,12 +18,13 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const supper = /\bsupper\b/u.test(phrase);
   if (/\b(?:no|not|never|without|excluding|exclude|except)\b/u.test(positive) ||
       supper && /\bskip(?:ped|ping)?\b/u.test(positive)) return { mealPlan: null, lunchRequested };
-  if (supper && /\b(?:no|not|never|without|excluding|exclude|except)\s+(?:(?:any|the)\s+)?(?:(?:breakfast|lunch|dinner|meals?)(?:\s*,\s*|\s+(?:and|or)\s+))*supper\b/u.test(phrase))
+  const supperExclusions = phrase.replace(/[,+\s&/_-]+/gu, ' ');
+  if (supper && /\b(?:no(?:\s+(?:need|requirement|request)(?:\s+for)?)?|without|excluding|exclude|(?:not|never)(?:\s+(?:including|need|require|want|request|include|provide|have))?|except)\s+(?:(?:any|the)\s+)?(?:(?:breakfast|lunch|dinner|meals?)\s+(?:(?:and|or)\s+)?)*supper\b/u.test(supperExclusions))
     return { mealPlan: null, lunchRequested };
   let board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
   if (supper) {
-    board = board.replace(/[.!?]+$/u, '').trim();
-    if (/\bfor all\s+(?:guests|rooms|people|participants)[.!?]*$/u.test(phrase))
+    board = board.replace(/[.!]+$/u, '').trim();
+    if (/\bfor all\s+(?:guests|rooms|people|participants)[.!]*$/u.test(phrase))
       board = board.replace(/\s+(?:guests|rooms|people|participants)$/u, '');
   }
   const additiveSupper = /\b(?:breakfast|bb|b\s*&\s*b)\s+(?:and|with|plus|&)\s+supper\b|\bsupper\s+(?:and|with|plus|&)\s+(?:breakfast|bb|b\s*&\s*b)\b/u.test(phrase);
