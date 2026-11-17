@@ -879,9 +879,9 @@ async function credentialRunPromoted(connection, fence) {
 }
 
 /** A dedicated connection holds capped shared admission or an exclusive write lease. */
-export async function acquireCloudCredentialLease(propertyCode, { signal, readOnly = false, priority = currentCloudCredentialPriority(), databaseUrl = process.env.DATABASE_URL, deadlineAt } = {}) {
+export async function acquireCloudCredentialLease(propertyCode, { signal, readOnly = false, priority = currentCloudCredentialPriority(), databaseUrl = process.env.DATABASE_URL, deadlineAt, tryOnce = false } = {}) {
   const property = registeredProperty(propertyCode);
-  if (typeof readOnly !== 'boolean' || !['staff', 'background'].includes(priority) ||
+  if (typeof readOnly !== 'boolean' || typeof tryOnce !== 'boolean' || !['staff', 'background'].includes(priority) ||
       (deadlineAt !== undefined && !Number.isFinite(deadlineAt))) throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
   const cap = readOnly ? credentialSessionCap() : 0;
   signal?.throwIfAborted();
@@ -916,7 +916,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
       // Staff mark themselves waiting before competing for a read slot or the
       // main lock. Background can only attempt admission while no staff waits.
       await runUntilAborted(() => connection.unsafe("SELECT set_config('lock_timeout', $1, false)",
-        [`${waitMs}ms`]), acquisitionSignal);
+        [tryOnce ? '1ms' : `${waitMs}ms`]), acquisitionSignal);
       const trySlot = async () => {
         if (!readOnly) return true;
         for (let slot = 0; slot < cap; slot += 1) {
@@ -937,9 +937,18 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
       const unlockSql = readOnly ? 'SELECT pg_advisory_unlock_shared($1::bigint) AS released' : 'SELECT pg_advisory_unlock($1::bigint) AS released';
       const enterStaff = async () => {
         phase = 'contention';
-        await runUntilAborted(() => connection.unsafe('SELECT pg_advisory_lock_shared($1::bigint)', [waiterKey]), acquisitionSignal);
-        while (!await trySlot()) await delay(250, undefined, { signal: acquisitionSignal });
-        await runUntilAborted(() => connection.unsafe(lockSql, [key]), acquisitionSignal);
+        const marker = await runUntilAborted(() => connection.unsafe(tryOnce
+          ? 'SELECT pg_try_advisory_lock_shared($1::bigint) AS acquired'
+          : 'SELECT pg_advisory_lock_shared($1::bigint)', [waiterKey]), acquisitionSignal);
+        if (tryOnce && marker[0]?.acquired !== true) throw new Error('HMS_CREDENTIAL_LEASE_CONTENDED');
+        if (tryOnce) {
+          if (!await trySlot()) throw new Error('HMS_CREDENTIAL_LEASE_CONTENDED');
+          const rows = await runUntilAborted(() => connection.unsafe(tryLockSql, [key]), acquisitionSignal);
+          if (rows[0]?.acquired !== true) throw new Error('HMS_CREDENTIAL_LEASE_CONTENDED');
+        } else {
+          while (!await trySlot()) await delay(250, undefined, { signal: acquisitionSignal });
+          await runUntilAborted(() => connection.unsafe(lockSql, [key]), acquisitionSignal);
+        }
         acquired = true;
         state.priority = 'staff';
         const released = await runUntilAborted(() => connection.unsafe('SELECT pg_advisory_unlock_shared($1::bigint) AS released', [waiterKey]), acquisitionSignal);
@@ -972,7 +981,10 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
               if (released[0]?.released !== true) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
             }
           }
-          if (!acquired) await delay(250, undefined, { signal: acquisitionSignal });
+          if (!acquired) {
+            if (tryOnce) throw new Error('HMS_CREDENTIAL_LEASE_CONTENDED');
+            await delay(250, undefined, { signal: acquisitionSignal });
+          }
         }
         await runUntilAborted(() => connection.unsafe(`UPDATE hms_credential_admission SET owner_pid = pg_backend_pid(),
           owner_started_at = (SELECT backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()) WHERE operation_key = $1`,
@@ -1050,7 +1062,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
     if (timer) clearInterval(timer);
     try { await client?.end({ timeout: 5 }); } catch { throw new Error('HMS_CREDENTIAL_LEASE_RELEASE_FAILED'); }
     if (signal?.aborted) signal.throwIfAborted();
-    if (['HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED', 'HMS_CREDENTIAL_RUN_STALE', 'HMS_CREDENTIAL_ADMISSION_SCOPE_INVALID'].includes(error?.message)) throw error;
+    if (['HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED', 'HMS_CREDENTIAL_RUN_STALE', 'HMS_CREDENTIAL_ADMISSION_SCOPE_INVALID', 'HMS_CREDENTIAL_LEASE_CONTENDED'].includes(error?.message)) throw error;
     throw new Error(phase === 'quiescence' ? 'HMS_CREDENTIAL_LEASE_QUIESCENCE_FAILED' :
       error?.code === '55P03' || (phase === 'contention' && acquisitionTimeout.aborted) ? 'HMS_CREDENTIAL_LEASE_CONTENDED' :
         'HMS_CREDENTIAL_LEASE_CONNECTION_FAILED');

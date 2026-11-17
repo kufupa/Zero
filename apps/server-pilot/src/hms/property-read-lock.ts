@@ -354,7 +354,7 @@ async function withCredentialBeforeLock<T>(
     return await withCloudCredentialLease(input.propertyCode, async (lease) => {
       const signal = options.signal ? AbortSignal.any([options.signal, lease.signal]) : lease.signal;
       return operation({ ...options, signal });
-    }, { signal: options.signal, deadlineAt: acquisitionDeadlineAt(options), readOnly,
+    }, { signal: options.signal, deadlineAt: acquisitionDeadlineAt(options), tryOnce: options.tryOnce, readOnly,
       databaseUrl: input.databaseUrl });
   } catch (cause) {
     if (cause instanceof Error && cause.message === 'HMS_CREDENTIAL_LEASE_CONTENDED') {

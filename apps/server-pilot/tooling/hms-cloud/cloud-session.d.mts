@@ -65,9 +65,10 @@ export declare function acquireCloudCredentialLease(propertyCode: string, option
   priority?: CloudCredentialPriority;
   databaseUrl?: string;
   deadlineAt?: number;
+  tryOnce?: boolean;
 }): Promise<CloudCredentialLease>;
 export declare function withCloudCredentialLease<T>(propertyCode: string,
-  operation: (lease: CloudCredentialLease) => T | Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; priority?: CloudCredentialPriority; databaseUrl?: string; deadlineAt?: number }): Promise<T>;
+  operation: (lease: CloudCredentialLease) => T | Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; priority?: CloudCredentialPriority; databaseUrl?: string; deadlineAt?: number; tryOnce?: boolean }): Promise<T>;
 export declare function verifyCloudProperty(page: Page, input: {
   propertyCode: string;
   tenantId?: string;
