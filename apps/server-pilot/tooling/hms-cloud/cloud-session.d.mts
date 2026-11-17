@@ -27,6 +27,7 @@ export type CloudSessionOptions = {
   readRequestPolicy?: (request: Request) => boolean;
   requireBoundCredentialVersion?: boolean;
   allowUnboundCredentialVersion?: boolean;
+  staging?: boolean;
   startScreen?: 'BSSTRT' | 'OSRESV' | 'OSRESS';
   loadSecret?: CloudSecretLoader;
   credentialLease?: CloudCredentialLease;
@@ -34,7 +35,7 @@ export type CloudSessionOptions = {
   cloudTargetKeys?: readonly string[];
 };
 export declare function installCloudReadGuard(context: BrowserContext, property: { origin: string; propertyCode: string; expectedTenant: string }, state: {
-  writer: boolean; verified: boolean; authenticated: boolean; switching: string | null; ownedPage: Page | null;
+  writer: boolean; shared?: boolean; verified: boolean; authenticated: boolean; switching: string | null; ownedPage: Page | null;
   readRequestPolicy?: (request: Request) => boolean;
 }): Promise<void>;
 export declare function cloudCredentialLeaseKey(propertyCode: string): string;

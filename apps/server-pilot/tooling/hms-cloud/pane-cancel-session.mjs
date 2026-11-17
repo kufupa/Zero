@@ -179,7 +179,8 @@ export async function runCloudPaneCancel(input, dependencies = {}) {
   const propertyCode = input?.target?.propertyCode;
   if (!validScope(propertyCode, input?.transportId)) return { outcome: 'refused_input', requestDispatched: false };
   const execute = credentialLease => runCloudPaneCancelWithLease(input, { ...dependencies, credentialLease });
-  return input.credentialLease ? execute(input.credentialLease) : withCloudCredentialLease(propertyCode, execute, { signal: input.signal });
+  return input.credentialLease ? execute(input.credentialLease) : withCloudCredentialLease(propertyCode, execute,
+    { signal: input.signal, readOnly: input.mode !== 'commit' });
 }
 
 async function runCloudPaneCancelWithLease(input, { openSession = withCloudWriterSession, openReadSession = withCloudReadSession,
@@ -210,7 +211,7 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
   const options = { propertyCode: input.target.propertyCode, transportId: input.transportId, credentialLease, startScreen: 'OSRESS', signal,
     cloudTargetKeys: savedTargetKeys(input.target.propertyCode, input.confirmation, input.expected?.nativeStayId),
     ...(input.cloudTargetKey ? { cloudTargetKey: input.cloudTargetKey } : {}) };
-  const writerOptions = { ...options, prepareContext: context => installSavedStayReadGuard(context, {
+  const writerOptions = { ...options, staging: input.mode !== 'commit', prepareContext: context => installSavedStayReadGuard(context, {
     propertyCode: input.target.propertyCode, confirmation: input.confirmation,
     getOwnedPage: () => writerPage.current, forwardToCloud: true,
   }) };

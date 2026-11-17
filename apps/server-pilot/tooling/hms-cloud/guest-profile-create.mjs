@@ -557,7 +557,7 @@ async function guardedSession(openSession, state, operation, options) {
   return result;
 }
 
-async function withReadSession(operation, state, options = {}) {
+async function withReadSession(operation, state, options = {}, staging = true) {
   const propertyCode = options.propertyCode;
   const property = getPropertyRegistration(propertyCode);
   if (!property?.active || typeof options.transportId !== 'string' || !property.transportIds.includes(options.transportId)) {
@@ -594,7 +594,7 @@ async function withReadSession(operation, state, options = {}) {
       await openNewGuestStay(page, { propertyCode });
       return await operation(page, state);
     } finally { scope.close(); fence.quarantine(); }
-  }, { propertyCode, transportId: options.transportId, credentialLease: options.credentialLease,
+  }, { propertyCode, transportId: options.transportId, credentialLease: options.credentialLease, staging,
     cloudTargetKeys: options.cloudTargetKeys, signal, startScreen: 'BSSTRT',
     prepareContext: async context => {
       await prepareGuardedContext(context);
@@ -871,7 +871,7 @@ async function stageProfile(page, state, fields, input) {
     requiredFields: staged.required.map(field => field.name) };
 }
 
-async function runStaged(input, options, operation) {
+async function runStaged(input, options, operation, staging = true) {
   const fields = profileBusinessFields(input);
   if (!fields || !getPropertyRegistration(input?.propertyCode)?.active) return { outcome: 'needs_input', issue: profileInputIssue(input) };
   options = { ...options, propertyCode: input.propertyCode };
@@ -880,7 +880,7 @@ async function runStaged(input, options, operation) {
     const result = await withReadSession(async page => {
       const staged = await stageProfile(page, state, fields, input);
       return staged.outcome === 'ready' ? await operation(page, state, staged) : staged;
-    }, state, options);
+    }, state, options, staging);
     if (state.write?.dispatched && (state.write.issue || state.write.handlers.size || !state.write.callbackDrained)) {
       return failureEvidence(state.write, 'PROFILE_SAVE_UNCERTAIN');
     }
@@ -1049,7 +1049,7 @@ export async function createGuestProfile(input, { authorizeCandidate, dispatchCa
   const run = async credentialLease => {
   options = { ...options, credentialLease, propertyCode: input.propertyCode, cloudTargetKeys: profileTargetKeys(input) };
   const result = await runStaged(input, options, (page, state, staged) =>
-    savePreparedProfile(page, state, staged, { authorizeCandidate, dispatchCandidate, recordResponse, recordFailureDiagnostics, attemptId }));
+    savePreparedProfile(page, state, staged, { authorizeCandidate, dispatchCandidate, recordResponse, recordFailureDiagnostics, attemptId }), false);
   if (result.dispatched === true) dispatchedResult = result;
   if (result.outcome !== 'awaiting_readback') return result;
   let readback;

@@ -15,6 +15,10 @@ const failures = {
     happened: 'Infor is busy with another quote.',
     next: 'Wait for that quote to finish before trying again.',
   },
+  HMS_CREDENTIAL_LEASE_CONTENDED: {
+    happened: 'Infor is busy.',
+    next: 'Please try again.',
+  },
   WORKER_SHUTDOWN: {
     happened: 'Nava restarted before this step finished.',
     next: 'Refresh the email to check the latest status before continuing.',
