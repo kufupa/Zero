@@ -2263,6 +2263,11 @@ function authoredSourceNoteClauses(input: { selection: SyncedQuoteSelection }): 
     .filter((line) => line.length > 3 && !/https?:\/\/|www\./i.test(line));
 }
 
+function corroboratedByAuthoredHtml(selection: SyncedQuoteSelection, clause: string): boolean {
+  return selection.authoredHtmlBodyText !== undefined && (selection.authoredHtmlBodyText === null ||
+    maskCardNumbers(currentAuthoredMessageText(selection.authoredHtmlBodyText)).includes(clause));
+}
+
 function operationalSourceNote(input: { selection: SyncedQuoteSelection }): string[] {
   const clauses = authoredSourceNoteClauses(input).filter((line) =>
     !OPERATIONAL_NOTE_MONEY_MOVEMENT.test(line) &&
@@ -3579,9 +3584,9 @@ function projectCurrentExtraction(input: {
 }): { proposal: ReservationWorkflowV2Proposal; addedRequests: number; addedIssues: number;
   extractionIdByProposalRequestId: Map<string, string> } {
   const proposal = structuredClone(input.proposal);
-  // Synthesis issues are untrusted; only this host compactor may assert that its
-  // per-request confirmation claim exceeded the durable source-claim budget.
-  proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE);
+  // These issues are authored only by the host, never by synthesis.
+  proposal.issues = proposal.issues.filter((issue) => issue.kind !== CONFIRMATION_CLAIM_CAPACITY_ISSUE &&
+    issue.kind !== 'source_note_for_review');
   const knownRefs = new Set(input.evidence.map((row) => row.ref));
   const currentRefs = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   // Filtered attachment lists cannot prove the source inventory is complete. Until an
@@ -3935,6 +3940,31 @@ function projectCurrentExtraction(input: {
     projectBookerContacts({ proposal, request, extracted, currentRefs,
       currentMessage: input.selection.currentBodyText ?? input.selection.bodyText,
       messageRefs: new Set(input.evidence.filter(row => row.relation === 'current_message').map(row => row.ref)) });
+    if (request.kind === 'amend' && currentExtraction.requests.length === 1 && proposal.content.requests.length === 1) {
+      const currentAuthoredBody = maskCardNumbers(currentAuthoredMessageText(
+        input.selection.currentBodyText ?? input.selection.bodyText));
+      const clauses = authoredSourceNoteClauses(input);
+      const cueClaims = [
+        ...extracted.roomTypeHints.map((claim) => ({ kind: 'room_description' as const, claim })),
+        ...(extracted.requestedPrice?.nightlyRate ? [{ kind: 'nightly_price' as const, claim: extracted.requestedPrice.nightlyRate }] : []),
+      ];
+      const sourceCues: NonNullable<typeof request.body.sourceCues> = [];
+      for (const { kind, claim } of cueClaims) {
+        const raw = claim.raw.trim();
+        if (!raw || !currentClaim(claim, currentRefs) || !currentAuthoredBody.includes(raw) ||
+            currentAuthoredBody.indexOf(raw) !== currentAuthoredBody.lastIndexOf(raw)) continue;
+        const matches = clauses.filter((clause) => clause.includes(raw) && clause.length <= 2000);
+        if (matches.length !== 1) continue;
+        const text = matches[0]!;
+        if (!corroboratedByAuthoredHtml(input.selection, text)) continue;
+        const sourceRefs = input.evidence.filter((row) => row.relation === 'current_message' &&
+          claim.sourceRefs.includes(row.ref) && row.text.includes(text)).map((row) => row.ref).slice(0, 20);
+        if (!sourceRefs.length || sourceCues.some((cue) => cue.kind === kind && cue.text === text)) continue;
+        sourceCues.push({ kind, text, sourceRefs });
+        if (sourceCues.length === 20) break;
+      }
+      if (sourceCues.length) request.body.sourceCues = sourceCues;
+    }
     if (request.kind === 'amend') {
       const mealClaims = extracted.mealPlanHints.filter((claim) => currentClaim(claim, currentRefs) && Boolean(claim.raw.trim()) &&
         typeof claim.value === 'string' && claim.value.trim() && claim.value.length <= 120 &&
@@ -5685,6 +5715,11 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
         row.result.reservationObservations.reservationNote.state === 'observed' &&
         typeof row.result.reservationObservations.reservationNote.value === 'string')) : [];
     if (!sourceNotes.length || matches.length !== 1 || !target) {
+      const authoredClauses = authoredSourceNoteClauses(input);
+      if (singleRequest && proposal.content.requests.length === 1) for (const clause of sourceNotes.filter((text) =>
+        authoredClauses.includes(text) && corroboratedByAuthoredHtml(input.selection, text))) addProjectionIssue(proposal, `${path}/reservationNote`,
+        'source_note_for_review', `Source text to review: ${clause.slice(0, 1800)}${clause.length > 1800 ? '…' : ''}`,
+        input.evidence.filter((row) => row.relation === 'current_message' && row.text.includes(clause)).map((row) => row.ref));
       addProjectionIssue(proposal, `${path}/reservationNote`, 'saved_note_requires_review',
         'Review the current saved note before adding or replacing reservation instructions.', sourceRefs);
       continue;
@@ -5724,6 +5759,17 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
     proposal.lookupResultRefs = [...new Set([...proposal.lookupResultRefs, observation.ref])].slice(0, 1000);
     requirements[valuePath] = { required: true, reasons: ['Review the saved note and the added source instructions before saving.'],
       evidenceRefs: [observation.ref, ...sourceRefs] };
+  }
+  for (const request of proposal.content.requests) {
+    if (request.kind !== 'amend' || [...request.body.sharedChanges, ...request.body.perTarget.flatMap((row) => row.changes)]
+      .some((change) => change.op === 'set' && change.field === 'reservationNote')) continue;
+    const prefixes = [`/proposal/content/requests/${request.id}/`, `/requests/${request.id}/`];
+    for (const issue of proposal.issues) {
+      if (issue.kind === 'source_note_for_review' || !prefixes.some((prefix) => issue.path.startsWith(prefix))) continue;
+      issue.explanation = issue.explanation.replace(
+        /\b(?:is|was|has been)\s+(?:verbatim\s+)?(?:preserved|saved|added|copied|recorded|included|retained)(?:\s+verbatim)?\s+(?:in|to|within)\s+(?:the\s+)?reservation\s*note\b/giu,
+        'needs email review');
+    }
   }
   return { proposal, observations, requirements };
 }

@@ -396,6 +396,40 @@ function displayPrice(price: unknown) {
   return /^\d+$/.test(cents) ? `${text(row.currency)} ${(Number(cents) / 100).toFixed(2)}` : 'Not returned';
 }
 
+function SourceCues({ editor }: { editor: Editor }) {
+  const draft = editor.snapshot.session.draft;
+  const request = draft.proposal.content.requests.find(row => row.id === editor.request.id && row.kind === 'amend');
+  const cues = request?.kind === 'amend' ? (request.body.sourceCues ?? []).filter(cue => cue.text.trim()) : [];
+  if (!cues.length) return null;
+  if (editor.snapshot.session.sourceChanged || draft.source.sourceHash !== editor.source.sourceHash) {
+    return <div className={styles.warning}>The email changed. Review the current email before choosing rooms and rates.</div>;
+  }
+  const sourcedCues = cues.flatMap(cue => {
+    const reference = cue.sourceRefs.find(ref => draft.observations.some(row => row.kind === 'source' &&
+      (row.status === 'complete' || row.status === 'partial') &&
+      row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+      row.sourceMessageId === draft.source.messageId && row.sourceRefs.includes(ref)));
+    return reference ? [{ cue, reference }] : [];
+  });
+  if (!sourcedCues.length) return null;
+  return <div className={styles.card} role="note">
+    <strong>Requests from the email</strong>
+    <small className={styles.hint}>Confirm which stays these requests apply to before choosing rooms and rates.</small>
+    {sourcedCues.map(({ cue, reference }, index) => {
+      const label = cue.kind === 'room_description' ? 'Room request' : 'Nightly price request';
+      return <div key={index} className={styles.facts}>
+        <span>{label}:</span>
+        <span style={{ whiteSpace: 'pre-wrap' }}>{cue.text}</span>
+        {reference && editor.onOpenEvidence && <div className={styles.row}><button type="button"
+          aria-label={`View email for ${label}`} onClick={() => editor.onOpenEvidence?.(reference)}>View email</button></div>}
+      </div>;
+    })}
+    {sourcedCues.some(({ cue }) => cue.kind === 'nightly_price') && <small className={styles.hint}>
+      Check nightly prices in Infor; the total shown here does not compare each night with this request.
+    </small>}
+  </div>;
+}
+
 export function AmendEditor(editor: Editor) {
   const body = `${requestPath(editor.request.id)}/body`;
   const scope = record(effectiveAt(editor.snapshot, `${body}/targets`));
@@ -407,6 +441,7 @@ export function AmendEditor(editor: Editor) {
     change.op === 'set' && change.field === 'requestedMealPlan' && /\blunch\b/i.test(text(change.value)));
   return <div className={styles.stack}>
     {lunchRequested && <p className={styles.warning} role="note">Meal Plans do not include lunch. Arrange lunch as a separate extra.</p>}
+    <SourceCues editor={editor} />
     <Section title={targets.length > 1 ? 'Find the bookings' : 'Find the booking'}>
       <p className={styles.hint}>Only the changes listed below are saved, including ones Nava filled in from the email. Everything else stays as it is in Infor.</p>
       {scopeLocked && <div className={styles.warning}>This Amend has a recorded success, failure, or uncertain result. Written or uncertain stays remain locked; untouched stays can still be corrected and checked. Reconcile before changing target scope.</div>}
