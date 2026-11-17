@@ -1252,7 +1252,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       if (discovery.outcome !== 'prepared' || !baseline || !preserved || typeof baseline.beforeNote !== 'string' ||
           typeof baseline.beforeGuaranteeCode !== 'string' || typeof baseline.beforeGuaranteeDisplay !== 'string' ||
           (typeof compiled.baseChanges.guaranteeType === 'string' && typeof baseline.requestedGuaranteeDisplay !== 'string')) {
-        return { issue: nativeAmendFailure(discovery, 'native_amend_baseline_unavailable') };
+        return { issue: 'native_amend_baseline_unavailable' };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const observation = draft.observations.find(item => item.ref === compiled.selectedRef);
@@ -1282,7 +1282,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
           stagedBaseline.beforeNote !== baseline.beforeNote || stagedBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
-        return { issue: nativeAmendFailure(staged, 'native_amend_prepare_unverified') };
+        return { issue: 'native_amend_prepare_unverified' };
       }
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
@@ -1363,7 +1363,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             (Object.hasOwn(ordinaryChanges, 'taCommission') && (typeof ordinaryBaseline.beforeCommission !== 'number' ||
               !Number.isFinite(ordinaryBaseline.beforeCommission) || !record(ordinaryPreserved.bookingAgency)?.nativeId)) ||
             (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
-          return { issue: nativeAmendFailure(ordinary, 'native_amend_prepare_unverified') };
+          return { issue: 'native_amend_prepare_unverified' };
         }
         if (!mealPlanVerified(draft, compiled, ordinary)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, ordinary) };
         const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
