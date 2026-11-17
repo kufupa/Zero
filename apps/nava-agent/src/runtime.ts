@@ -8,7 +8,7 @@ import { tools, type ThreadInput } from './schema.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
-import { attachmentCheckPath, attachmentsUnconfirmed, attachmentSnapshotDigest, canonicalJson, completeAttachmentSnapshot } from './attachment-gate.js';
+import { attachmentCheckPath, attachmentsUnconfirmed } from './attachment-gate.js';
 
 export type RuntimeProvider = 'bedrock' | 'cma';
 export function runtimeProvider(): RuntimeProvider {
@@ -64,10 +64,13 @@ export async function verifiedAuth() {
 }
 const content = (text:string) => [{type:'text' as const,text}];
 type ImportOptions = {manualCreateLabtest:{arrival_date:string;departure_date:string}};
-export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown, options?:ImportOptions, coverageVersion:string|null=null) {
+function canonicalJson(value:unknown):string {
+  return JSON.stringify(value,(_key,item:unknown)=>item && typeof item==='object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)) : item);
+}
+export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown, options?:ImportOptions) {
   const prepareLive=process.env.NAVA_CREATE_PREPARE_ONLY==='1' && input.mode==='live';
-  const coverage=prepareLive && coverageVersion ? {version:coverageVersion,digest:attachmentSnapshotDigest(input,input.messages)} : null;
-  const payload={input,sourceInput:sourceInput ?? null,...(options ? {options} : {}),...(coverage ? {attachment_coverage:coverage} : {})};
+  const payload={input,sourceInput:sourceInput ?? null,...(options ? {options} : {})};
   const requestHash=createHash('sha256').update(prepareLive?canonicalJson(payload):JSON.stringify(payload)).digest('hex');
   const selectionKey=prepareLive?`prepare:${requestHash}`:'';
   const keyHash=createHash('sha256').update(prepareLive?canonicalJson(['prepare',input.source,input.mailbox_id,input.source_thread_id,requestHash]):key).digest('hex');
@@ -104,7 +107,7 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
     if (options && (input.mode!=='labtest' || session || before)) throw new Error('LABTEST_SEED_CONFLICT');
     if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null,...(options ? {manual_create_labtest:options.manualCreateLabtest} : {})})}) RETURNING *`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
-    await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash,...(coverage?{attachment_coverage:coverage}:{})})})`;
+    await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash})})`;
     if(sourceInput !== undefined) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'train_source',${json(sourceInput)})`;
     if(createSession || messagesNew || (before && before.selected_message_id!==input.selected_message_id)) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'mail_pending',${json({message_id:input.selected_message_id,delivered:false})})`;
     return {id:thread.id as string,created:!before,skipped:false};
@@ -157,8 +160,7 @@ export async function snapshot(threadId:string) {
       FROM nava_agent.proposal p WHERE p.thread_id=${threadId} ORDER BY p.created_at`;
     const [sequence]=session ? await tx`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${session.id}` : [{n:'0'}];
     const sourceMessageId=thread.selection_key.startsWith('prepare:') ? thread.selected_message_id : null;
-    const complete=sourceMessageId && proposals.length && session ? await completeAttachmentSnapshot(tx,session.id) : false;
-    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire({...proposal,attachment_coverage_complete:complete},sourceMessageId)),event_sequence:Number(sequence.n)};
+    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire(proposal,sourceMessageId)),event_sequence:Number(sequence.n)};
   });
 }
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
@@ -183,7 +185,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
     recovery:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,attachment_coverage_complete:p.attachment_coverage_complete===true,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
+  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;

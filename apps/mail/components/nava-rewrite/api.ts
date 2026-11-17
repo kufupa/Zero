@@ -9,7 +9,6 @@ import type {
 
 const boundProposalSchema = proposalSchema.extend({ source_message_id: z.string().min(1).nullable().optional() });
 const boundThreadSnapshotSchema = threadSnapshotSchema.extend({ proposals: z.array(boundProposalSchema) });
-export type BoundProposal = z.infer<typeof boundProposalSchema>;
 export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 
 export type RequestOptions = { signal?: AbortSignal };
@@ -19,7 +18,7 @@ export type NavaApi = {
   getThread: (id: string, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getCapabilities: (options?: RequestOptions) => Promise<Capabilities>;
   events: (id: string, afterSequence: number, options?: RequestOptions) => AsyncGenerator<NavaEvent>;
-  patchProposal: (request: RevisionRequest & { changes: Change[]; staffAttachmentsChecked?: boolean }) => Promise<BoundProposal>;
+  patchProposal: (request: RevisionRequest & { changes: Change[]; staffAttachmentsChecked?: boolean }) => Promise<Proposal>;
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
@@ -149,7 +148,7 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
     getThread: (id, options) => json(`/threads/${pathId(id)}`, boundThreadSnapshotSchema, { signal: options?.signal }),
     getCapabilities: options => json('/capabilities', capabilitiesSchema, { signal: options?.signal }),
     events,
-    patchProposal: ({ proposalId, expectedRevision, changes, staffAttachmentsChecked, signal }) => json(proposalPath(proposalId), boundProposalSchema, {
+    patchProposal: ({ proposalId, expectedRevision, changes, staffAttachmentsChecked, signal }) => json(proposalPath(proposalId), proposalSchema, {
       ...body({ expected_revision: expectedRevision, changes, ...(staffAttachmentsChecked === undefined ? {} : { staff_attachments_checked: staffAttachmentsChecked }) }, signal), method: 'PATCH',
     }),
     undo: request => json(`${proposalPath(request.proposalId)}/undo`, proposalSchema, revisionBody(request)),
