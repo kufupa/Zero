@@ -325,7 +325,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       if (captured.length) void enqueue(buffer, () => flushCaptured(bound, buffer, captured)).catch(() => {});
     };
   }, [key, source.selectionEpoch, client]);
-  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false, filing = false): Promise<void> => {
+  const run = (action: (context: { source: ReservationSourceContext; snapshot: ReservationPaneSnapshot }) => Promise<ReservationPaneSnapshot | void>, write = false, skipFlush = false, filing = false, quietError = false): Promise<void> => {
     const bound = source;
     const buffer = entry;
     const execute = async () => {
@@ -346,7 +346,7 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         const displayed = filing && !(failure instanceof FilingActionError)
           ? 'Infor could not complete this step. Check the details and try again.'
           : failure instanceof Error ? failure.message : 'Infor could not complete this step. Your draft is retained.';
-        if (currentBinding && mounted.current && active.current.key === key) setError(displayed);
+        if (!quietError && currentBinding && mounted.current && active.current.key === key) setError(displayed);
         throw filing && !(failure instanceof FilingActionError) ? new FilingActionError(displayed) : failure;
       } finally {
         if (write) endMutation();
@@ -414,7 +414,8 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
       return run(context => verifyNativeLead.call(client, { ...context, requestId: requireRequest(), fieldPath, observationRef }));
     } } : {}),
     lookup() { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest() })); },
-    lookupChoices(nativeFieldPath) { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath })); },
+    lookupChoices(nativeFieldPath) { if (!canReadRequest) return unavailable(); return run(context => client.lookup({ ...context, requestId: requireRequest(), nativeFieldPath }), false, false, false,
+      request?.kind === 'quote' && /\/body\/parties\/(?:organization|bookingAgency)$/.test(nativeFieldPath)); },
     async guestProfileOptions(allocationId, field) {
       if (!canReadRequest) throw new Error('Guest profile choices are not available for this hotel yet.');
       const requestId = requireRequest();
