@@ -1,4 +1,5 @@
 import { hmsSaveEnabled } from '../../src/hms-mode.js';
+import type { ProposalDraft } from '../../src/schema.js';
 
 export type ToolContext = {
   sessionId: string;
@@ -36,6 +37,38 @@ const date = (value: unknown): value is string => {
 const error = (code: string, message: string, outcome: 'known' | 'uncertain' = 'known'): ToolResult =>
   ({ ok: false, data: null, error: { code, message, retryable: false, outcome } });
 const success = (data: unknown): ToolResult => ({ ok: true, data, error: null });
+
+export function withCancelReviewFields(draft: ProposalDraft): ProposalDraft {
+  if (draft.workflow !== 'cancel' || draft.disposition !== 'propose' || draft.actions.length !== 1) return draft;
+  const action = draft.actions[0];
+  if (action.type !== 'cancel' || action.booking_ids.length !== 1 ||
+      (action.details !== null && !object(action.details))) return draft;
+  const matches = draft.bookings.map((booking, index) => ({ booking, index }))
+    .filter(({ booking }) => booking.id === action.booking_ids[0]);
+  if (matches.length !== 1) return draft;
+  const { booking, index } = matches[0];
+  const details = object(action.details) ? { ...action.details } : {};
+  const fields = { ...booking.fields };
+  const specs = [...draft.field_specs];
+  const definitions = [
+    { target: details, key: 'requested_scope', path: '/actions/0/details/requested_scope', label: 'Cancellation scope', control: 'select' as const,
+      options: [{ value: 'whole_stay', label: 'Whole stay', meaning: null },
+        { value: 'specific_room', label: 'Specific room', meaning: null },
+        { value: 'unspecified', label: 'Unspecified', meaning: null }] },
+    { target: fields, key: 'guest_name', path: `/bookings/${index}/fields/guest_name`, label: 'Guest name', control: 'text' as const, options: [] },
+    { target: fields, key: 'arrival_date', path: `/bookings/${index}/fields/arrival_date`, label: 'Arrival date', control: 'date' as const, options: [] },
+  ];
+  for (const { target, key, path, label, control, options } of definitions) {
+    if (!Object.hasOwn(target, key)) target[key] = null;
+    const existing = specs.findIndex(spec => spec.path === path || spec.path === path.slice(1));
+    if (existing >= 0) specs[existing] = { ...specs[existing], path, control, options, editable: true };
+    else specs.push({ path, label, control, options, provenance: 'unknown', editable: true,
+      required: false, error: null, evidence: [] });
+  }
+  const bookings = [...draft.bookings];
+  bookings[index] = { ...booking, fields };
+  return { ...draft, bookings, actions: [{ ...action, details }], field_specs: specs };
+}
 
 function parse(input: unknown): Parsed | null {
   if (!object(input) || input.workflow !== 'cancel' || !object(input.booking) || !object(input.action)) return null;
