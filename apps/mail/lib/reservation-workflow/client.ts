@@ -595,6 +595,14 @@ function operationNotice(result: unknown, success: string[]): string | undefined
   if (!isRecord(result)) return 'The reservation service returned an unreadable native-tool result.';
   if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Use the action button below to continue.';
   if (success.includes(String(result.status))) return undefined;
+  if (result.issue === 'amend_native_track_review_required') {
+    const effect = isRecord(result.nativeTrackEffect) ? result.nativeTrackEffect : null;
+    const safe = (value: unknown): value is string => typeof value === 'string' && value.length <= 200 &&
+      value === value.trim() && !/[\p{Cc}]/u.test(value);
+    const change = effect && safe(effect.before) && safe(effect.after) && effect.after && effect.before !== effect.after
+      ? ` from “${effect.before || '(blank)'}” to “${effect.after}”` : '';
+    return `Infor changed Track / Sub Segment${change} when the rate changed. Add a Track / Sub Segment change, select the Track you want, then check again.`;
+  }
   const failure = knownFailureCopy(result.failureClass ?? result.issue ?? result.status,
     result.status === 'unknown' || result.status === 'needs_reconcile');
   if (failure) return failure;

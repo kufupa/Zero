@@ -421,7 +421,9 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
           recoveryBaseline: result.recoveryBaseline, nativePartyBaseline: result.nativePartyBaseline,
           ...(input.captureBusinessImage ? { sourceBusinessImage: result.sourceBusinessImage } : {}) };
       }
-      return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED' };
+      return { outcome: 'refused', issue: result.issue || 'AMEND_PREPARE_UNVERIFIED',
+        ...(result.issue === 'AMEND_TRACK_REVIEW_REQUIRED' && result.nativeTrackEffect
+          ? { nativeTrackEffect: result.nativeTrackEffect } : {}) };
     }, { ...protectedSession.options, staging: true });
   } catch (error) {
     return { outcome: 'refused', issue: 'NATIVE_READ_UNAVAILABLE', diagnostic: safeReadError(error, phase) };
@@ -852,7 +854,7 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
   let dispatch = null;
   let firstSnapshot = null, questionSnapshot = null, extendSnapshot = null;
   let preparedState = null, nativeDigest = null, preserved = null, quoted = null, stopOperation = null;
-  let rateScope = null, operationBounded = null, callbackEffects = null;
+  let rateScope = null, operationBounded = null, callbackEffects = null, nativeTrackEffect = null;
   const rateTarget = { propertyCode: selected.propertyCode, confirmation: selected.confirmation, nativeStayId: selected.reservationStayId,
     arrival: selected.arrival, departure: selected.departure };
   const readSavedBasis = (state, bounded, requestScope = null) => readRates(page, state, rateTarget,
@@ -1215,13 +1217,28 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
           percent: changes.taCommission }));
       }
       draft = await bounded(snapshot(prepared.frame));
-      if (!context.isActive() || !valid(draft, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
+      if (!context.isActive()) throw new Error('AMEND_DRAFT_CHANGED');
+      if (!valid(draft, prepared)) {
+        const before = prepared.baseline?.data?.track, after = draft?.data?.track;
+        const safeTrack = value => typeof value === 'string' && value.length <= 200 &&
+          value === value.trim() && !/[\p{Cc}]/u.test(value);
+        // This normalized snapshot is diagnostic only; the real draft never passes validation here.
+        if (prepareOnly && !callbackMode && rateChanged && !trackChanged &&
+            safeTrack(before) && safeTrack(after) && after && before !== after &&
+            prepared.baseline?.values?.track === before && draft?.values?.track === after &&
+            valid({ ...draft, data: { ...draft.data, track: before }, values: { ...draft.values, track: before } }, prepared)) {
+          nativeTrackEffect = { before, after };
+          throw new Error('AMEND_TRACK_REVIEW_REQUIRED');
+        }
+        throw new Error('AMEND_DRAFT_CHANGED');
+      }
       if (!needsAvailability) checkMealPlan(draft);
       return { draft, approvedPrices: needsAvailability ? null : approvalPrice(draft, prepared) };
     },
     validate: async (_bounded, prepared, staged) => Boolean(staged?.draft && valid(staged.draft, prepared) &&
       (needsAvailability || staged.approvedPrices)),
     stageDetails: (staged) => ({ nativeDigest, preserved, approvedPrices: staged?.approvedPrices ?? null,
+      ...(nativeTrackEffect ? { nativeTrackEffect } : {}),
       ...(input.captureMealPlan ? { applied: { mealPlan: observedAmendMealPlan(staged?.draft) } } : {}),
       ...(callbackMode ? { callbackEffects } : {}),
       ...(callbackFinal ? { finalParties: preparedState?.state?.partyPreimage ?? null,
