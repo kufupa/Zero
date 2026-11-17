@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { cloudWriterIdentity, cloudWriterQuiesced, withCloudCredentialLease, withCloudReadSession, withCloudWriterSession } from './cloud-session.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
-import { readShallow, readRecord, readDocuments } from './hms-readers.mjs';
+import { readConfirmationFromStay360 as readShallow } from './stay360-confirmation.mjs';
+import { readRecordViewFromStay360 as readRecord } from './stay360-record-view.mjs';
+import { readDocumentsFromStay360 as readDocuments } from './stay360-documents.mjs';
 import { installPaneAttachReadGuard } from './pane-attach-read-guard.mjs';
 import { attachLabtestDocument } from './stay360-document-attach.mjs';
 

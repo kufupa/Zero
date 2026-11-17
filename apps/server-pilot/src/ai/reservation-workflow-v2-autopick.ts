@@ -477,8 +477,10 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
             ? [{ ref: row.ref, nativeId: String(native.nativeId), name: native.name }] : [];
         }).filter((row, index, all) => all.findIndex((other) => other.nativeId === row.nativeId) === index);
         if (!candidates.length) continue;
+        if (request.kind === 'quote' && candidates.filter(row => norm(row.name) === norm(party.name)).length !== 1) continue;
         candidates = candidates.map((row, index) => ({ row, index })).sort((a, b) =>
-          Number(same(b.row.name, String(party.name))) - Number(same(a.row.name, String(party.name))) ||
+          (request.kind === 'quote' ? Number(norm(b.row.name) === norm(party.name)) - Number(norm(a.row.name) === norm(party.name))
+            : Number(same(b.row.name, String(party.name))) - Number(same(a.row.name, String(party.name)))) ||
           (statFor(b.row.name)?.count ?? 0) - (statFor(a.row.name)?.count ?? 0) || a.index - b.index).map(({ row }) => row);
         // Create auto-selects only one distinct canonical-name identity. Zero or duplicate
         // same-name identities keep the source text and stay a required staff pick.
@@ -547,7 +549,7 @@ export function applyAutopick(input: ApplyInput): { proposal: ReservationWorkflo
       }
       const pick = candidates[pickIndex]!;
       const target = rec(owner[field])!;
-      target.name = pick.name;
+      if (request.kind !== 'quote' || typeof target.name !== 'string' || !target.name.trim()) target.name = pick.name;
       const candidateRefs = candidates.slice(0, AUTOPICK_MAX_ALTERNATIVES + 1).map((row) => row.ref);
       target.candidateRefs = candidateRefs;
       target.suggestedRef = pick.ref;

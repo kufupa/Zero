@@ -1,3 +1,4 @@
+import { assertReservationActionFence, lockReservationActionClaim } from './reservation-workflow-v2-action-lane.js';
 import { isLunchOnlyMealRequest, normalizeRequestedMealPlan } from './reservation-workflow-v2-meal-plan.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -50,6 +51,7 @@ import { acquisitionWithin, assertTargetAliasesHeld, createPostgresTargetAliasLo
   PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline, type HeldTargetAliasLock } from '../hms/property-read-lock.js';
 import { loadNativeRatePlans, propertyConfigurationForScope } from '../hms/rate-catalogue.js';
 import { propertySwitchSchema, resolvePropertyScope } from '../hms/property-registry.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { cloudCreatePolicyIssue } from './pane-create-cloud-input.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock } from './pane-stay-save.js';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
@@ -1005,8 +1007,9 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
       }
       return { lookups: perAllocation, observations: nativeObservations, catalogues, sessionSafe: true };
     }, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
-  } catch {
-    return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null };
+  } catch (error) {
+    return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null,
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
   if (!sessionResult || sessionResult.sessionSafe !== true || !Array.isArray(sessionResult.observations) ||
       !Array.isArray(sessionResult.lookups)) {
@@ -1030,8 +1033,9 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
       for (const target of uniqueTargets) nativeObservations.push(
         createCatalogueObservation(loaded.draft!, target, catalogue, 'closed_unsaved'));
     }
-  } catch {
-    return { status: 'failed', issue: 'native_catalogue_session_not_clean', requestId: input.requestId ?? null };
+  } catch (error) {
+    return { status: 'failed', issue: 'native_catalogue_session_not_clean', requestId: input.requestId ?? null,
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
   const observations = nativeObservations.filter((item): item is ReservationWorkflowV2Observation => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
@@ -1100,12 +1104,13 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
       fields: [...new Set([...(native.missing ?? []).filter((field): field is string => typeof field === 'string')
         .map(field => field.split('.').at(-1)!), ...(native.issue === 'RATE_NOT_AVAILABLE' ? ['ratePlan'] : [])])],
       observationRef: observation.ref, ratePlanIssue: native.ratePlanIssue };
-    return { status: 'prepared', requestId: input.requestId, allocationId: input.allocationId,
+    return { status: 'prepared', hmsReadCompleted: true, requestId: input.requestId, allocationId: input.allocationId,
       observationRef: observation.ref, requestDigest: native.requestBinding?.digest,
       ratePlanAvailability: price, applied: native.applied ?? {}, commitOnlyFields: native.commitOnlyFields ?? [],
       screenshot: prepareShot };
-  } catch {
-    return { status: 'failed', issue: 'native_create_prepare_failed' };
+  } catch (error) {
+    return { status: 'failed', issue: 'native_create_prepare_failed',
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
 }
 
@@ -1596,6 +1601,8 @@ function nativeObservation(draft: ReservationWorkflowV2Draft, input: Reservation
 
 async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB['transaction']>[0]>[0], ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2ExecuteInput, observation: ReservationWorkflowV2Observation, summary: string) {
+  await lockReservationActionClaim(tx, input.workItemId);
+  await assertReservationActionFence(tx, input.workItemId);
   const [item] = await tx.select({ state: workItem.state, revision: workItem.revision, revisionSeq: workItem.revisionSeq })
     .from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state as Record<string, unknown>);
@@ -1627,6 +1634,8 @@ async function persistOperationResultInTransaction(tx: Parameters<Parameters<DB[
 /** A one-use native proof permits a failure receipt even if the email or access changed after the claim. */
 async function persistNeverDispatchedCreate(tx: Parameters<Parameters<DB['transaction']>[0]>[0], ctx: ReservationWorkflowV2ServerContext,
   input: ReservationWorkflowV2ExecuteInput, intent: Readonly<HmsLabtestIntent>, generationId: string, approvedDigest: string) {
+  await lockReservationActionClaim(tx, input.workItemId);
+  await assertReservationActionFence(tx, input.workItemId);
   const [item] = await tx.select({ state: workItem.state }).from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, ctx.transport.id))).limit(1).for('update');
   const draft = item && reservationWorkflowV2DraftOf(item.state);

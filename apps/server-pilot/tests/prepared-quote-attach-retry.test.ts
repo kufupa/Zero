@@ -45,6 +45,7 @@ vi.mock('../src/hms/property-queue-state.js', async (importOriginal) => ({
 
 import { executeHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
+import { resetPropertyOutageMarkersForTests } from '../src/hms/property-outage.js';
 
 const STAFF_QUOTE_INPUT = {
   messageId: 'message-1',
@@ -79,7 +80,7 @@ function preparedRun(overrides: Partial<AiWorkflowRun> = {}) {
   const request = { kind: 'staff_quote', input: STAFF_QUOTE_INPUT };
   const run = {
     id: 'job-1',
-    transportId: 'transport-1',
+    transportId: 'transport-centurion',
     threadId: 'thread-1',
     runKind: 'read_tool',
     promptVersion: HMS_JOB_PROMPT_VERSION,
@@ -100,6 +101,7 @@ function preparedRun(overrides: Partial<AiWorkflowRun> = {}) {
 }
 
 beforeEach(() => {
+  resetPropertyOutageMarkersForTests();
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markDeadLetter.mockReset().mockResolvedValue({ id: 'job-1' });
@@ -130,7 +132,7 @@ describe('prepared quote attach-phase retry', () => {
     expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
   });
 
-  it('requeues a prepared quote once when the reader fails in the attach phase', async () => {
+  it('parks a prepared quote without charging an attempt when the reader fails in the attach phase', async () => {
     const { run, fence } = preparedRun();
     jobMocks.runStaffQuote.mockRejectedValue(
       new TRPCError({
@@ -150,9 +152,9 @@ describe('prepared quote attach-phase retry', () => {
     expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
     expect(jobMocks.markRetry).toHaveBeenCalledWith(
       expect.objectContaining({
-        attempts: 1,
-        failureClass: 'TRANSIENT_NETWORK',
-        lastError: 'staff quote attach failed',
+        attempts: 0,
+        failureClass: 'HMS_OUTAGE',
+        lastError: 'hms_outage',
       }),
       db,
     );
@@ -193,23 +195,24 @@ describe('prepared quote attach-phase retry', () => {
     expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
   });
 
-  it('dead-letters a prepared quote after a second attach failure', async () => {
+  it('parks a prepared quote after a second attach failure without charging an attempt', async () => {
     const { run, fence } = preparedRun({ attempts: 1, lastError: 'staff quote attach failed' });
     jobMocks.runStaffQuote.mockRejectedValue(
       Object.assign(new Error('EXECUTION_FAILURE'), { code: 'EXECUTION_FAILURE', phase: 'attach' }),
     );
 
-    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
 
     expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
-    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
       expect.objectContaining({
-        failureClass: 'TRANSIENT_NETWORK',
-        lastError: 'staff quote attach failed',
+        attempts: 1,
+        failureClass: 'HMS_OUTAGE',
+        lastError: 'hms_outage',
       }),
       db,
     );
-    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
   });
 
   it('keeps the attach retry when a later claim yields to a staff quote', async () => {

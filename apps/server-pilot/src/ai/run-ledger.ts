@@ -29,7 +29,7 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, like, lte, ne, notExists, notInArray, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
@@ -39,6 +39,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
 import { PROPERTY_REGISTRY } from '../../tooling/hms-cloud/property-registry.mjs';
+import { cloudCredentialAdmissionEligibilitySql, cloudCredentialLeaseKey, hmsJobConsumerAvailableSql, hmsJobQueueAvailable }
+  from '../../tooling/hms-cloud/cloud-session.mjs';
 import { HMS_LABTEST_AMEND_PROMPT_VERSION, HMS_LABTEST_AMEND_RUN_DEADLINE_MS } from './pane-cloud-amend-readiness.js';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
@@ -718,6 +720,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   // One predicate for the candidate select and the claim CAS below, so a row cannot pass one and fail the other.
   const claimable = and(
     eq(aiWorkflowRun.executorLane, input.lane),
+    input.lane === 'hms' && !hmsJobQueueAvailable() ? ne(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION) : undefined,
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     ...scope,
     devGate,
@@ -736,11 +739,65 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   );
 
   return db.transaction(async (tx) => {
+    const backgroundHeads: string[] = [];
+    // A serial default worker must claim a waiting prefill before a later
+    // background prefill that would otherwise wait for its credential ticket.
+    const defaultPrefillHeads: Array<{ transports: string[]; runId: string }> = [];
+    if ((input.lane === 'hms' && !hmsWriteClaim) || input.lane === 'default') {
+      const credentials = new Set<string>();
+      for (const property of PROPERTY_REGISTRY.properties.filter(entry => entry.active)) {
+        if (credentials.has(property.credentialSecretRef)) continue;
+        credentials.add(property.credentialSecretRef);
+        const transports = [...new Set(PROPERTY_REGISTRY.properties.filter(entry => entry.active &&
+          entry.credentialSecretRef === property.credentialSecretRef).flatMap(entry => [...entry.transportIds]))];
+        const transportArray = sql`ARRAY[${sql.join(transports.map(transport => sql`${transport}`), sql`, `)}]::text[]`;
+        // A scoped caller is itself a consumer for its matching jobs. Its live
+        // credential session makes an already claimed job visible to all other
+        // callers; unrelated suspended tickets remain ineligible.
+        const scopedParts = [input.transportId ? sql`run.transport_id = ${input.transportId}` : undefined,
+          input.runKind ? sql`run.run_kind = ${input.runKind}` : undefined,
+          input.promptVersion ? sql`run.prompt_version = ${input.promptVersion}` : undefined,
+          input.idempotencyPrefix ? sql`run.idempotency_key LIKE ${`${input.idempotencyPrefix}%`}` : undefined]
+          .filter((part): part is SQL => part !== undefined);
+        const consumer = scopedParts.length
+          ? sql`(${sql.raw(hmsJobConsumerAvailableSql)} OR (${sql.join(scopedParts, sql` AND `)}))`
+          : sql.raw(hmsJobConsumerAvailableSql);
+        const eligible = sql.join(cloudCredentialAdmissionEligibilitySql
+          .replace(hmsJobConsumerAvailableSql, '$5::boolean')
+          .split(/(\$2::text\[\]|\$3::boolean|\$4::timestamptz|\$5::boolean)/)
+          .map((part) => part === '$2::text[]' ? transportArray
+            : part === '$3::boolean' ? sql`${process.env.HMS_DEV_GATE === 'off' || !inStaffHours}::boolean`
+              : part === '$4::timestamptz' ? sql`${now.toISOString()}::timestamptz`
+                : part === '$5::boolean' ? consumer : sql.raw(part)), sql``);
+        const defaultPrefill = input.lane === 'default' ? sql`AND run.executor_lane = 'default'
+          AND run.run_kind = 'reservation_prefill'
+          AND (run.state IN ('queued', 'retry_wait') OR
+            (run.state IN ('claimed', 'running') AND run.updated_at <= ${staleBefore.toISOString()}::timestamptz))
+          ${scopedParts.length ? sql`AND ${sql.join(scopedParts, sql` AND `)}` : sql``}` : sql``;
+        const rows = await tx.execute(sql`SELECT admission.run_id FROM hms_credential_admission admission
+          LEFT JOIN ai_workflow_run run ON run.id = admission.run_id
+          WHERE (admission.credential_key = ${cloudCredentialLeaseKey(property.propertyCode)}::bigint OR
+            run.transport_id = ANY(${transportArray}))
+            AND ${eligible} ${defaultPrefill} ORDER BY admission.position LIMIT 1`);
+        if (typeof rows[0]?.run_id === 'string') {
+          if (input.lane === 'default') defaultPrefillHeads.push({ transports, runId: rows[0].run_id });
+          else backgroundHeads.push(rows[0].run_id);
+        }
+      }
+    }
     for (let attempt = 0; attempt < 32; attempt++) {
       const [candidate] = await tx
         .select()
         .from(aiWorkflowRun)
-        .where(claimable)
+        .where(and(claimable, input.lane === 'hms' && !hmsWriteClaim
+          ? or(ne(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION), gte(aiWorkflowRun.priority, 10),
+            backgroundHeads.length ? inArray(aiWorkflowRun.id, backgroundHeads) : sql`false`)
+          : undefined, defaultPrefillHeads.length ? or(
+            ne(aiWorkflowRun.runKind, 'reservation_prefill'),
+            sql`coalesce(${aiWorkflowRun.metrics}->>'staffPrefillRequested', 'false') = 'true'`,
+            and(...defaultPrefillHeads.map(({ transports, runId }) =>
+              or(notInArray(aiWorkflowRun.transportId, transports), eq(aiWorkflowRun.id, runId)))),
+          ) : undefined))
         // staff_quote shares HMS_JOB_PRIORITY_USER with party/find; jump those reads on this serial lane.
         // hms_write is a separate claim (runKind filter) and keeps HMS_WRITE_PRIORITY.
         .orderBy(
@@ -764,6 +821,11 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         candidate.readRequest && typeof candidate.readRequest === 'object' && !Array.isArray(candidate.readRequest)
           ? (candidate.readRequest as Record<string, unknown>)
           : null;
+      const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
+      const warmup = candidate.runKind === READ_TOOL_RUN_KIND &&
+        candidate.executorLane === 'hms' && candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
+        request?.kind === 'reservation_warmup';
+      const warmupReclaim = isReclaim && warmup;
       // Staff-clicked quotes: a 10-min wait is useless to someone at the pane.
       // Background-prepared (`quotePrepared`) wait on a serial HMS lane (~60–100s
       // each); a 9-strategy plan cannot fit that TTL. Source-hash/stillCurrent
@@ -796,7 +858,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
       }
 
       if (candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime() &&
-          !(candidate.runKind === 'reservation_prefill' && ['claimed', 'running'].includes(candidate.state))) {
+          !(candidate.runKind === 'reservation_prefill' && isReclaim) && !warmup) {
         await tx
           .update(aiWorkflowRun)
           .set({
@@ -812,7 +874,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         continue;
       }
 
-      const isReclaim = candidate.state === 'claimed' || candidate.state === 'running';
+      const warmupReclaims = Number(candidate.metrics?.reclaimCount ?? 0);
+      if (warmupReclaim && (!Number.isInteger(warmupReclaims) || warmupReclaims < 0 || warmupReclaims >= 3)) {
+        await tx.update(aiWorkflowRun).set({ state: 'dead_letter', failureClass: 'LEASE_LOST',
+          lastError: 'reservation warmup recovery limit reached', claimOwner: null, claimToken: null,
+          finishedAt: now, updatedAt: now }).where(eq(aiWorkflowRun.id, candidate.id));
+        continue;
+      }
       let arrivalStarts: string[] | undefined;
       if (candidate.runKind === 'reservation_prefill') {
         // A transactional mailbox lock closes the race between workers claiming different arrivals.
@@ -871,10 +939,11 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
           : candidate.runKind === 'read_tool' &&
         candidate.executorLane === 'hms' &&
         candidate.promptVersion === HMS_JOB_PROMPT_VERSION &&
-        request?.kind === 'staff_quote'
+        (request?.kind === 'staff_quote' || request?.kind === 'reservation_warmup')
           ? Math.max(runDeadlineMs, HMS_STAFF_QUOTE_RUN_DEADLINE_MS)
           : runDeadlineMs;
-      const deadlineAt = candidate.runKind === 'reservation_prefill' && isReclaim
+      const deadlineAt = (candidate.runKind === 'reservation_prefill' && isReclaim) || warmupReclaim ||
+        (warmup && !!candidate.deadlineAt && candidate.deadlineAt.getTime() <= now.getTime())
         ? new Date(now.getTime() + requestDeadlineMs)
         : candidate.deadlineAt ?? new Date(now.getTime() + requestDeadlineMs);
       const claimToken = randomUUID();

@@ -12,6 +12,7 @@ export type CloudSessionIdentity = CloudPropertyIdentity & Readonly<{
 }>;
 export type CloudSecretLoader = (input: { secretArn: string; signal?: AbortSignal }) => Promise<unknown>;
 export type CloudLoadedSecret = Readonly<{ secret: unknown; versionId: string; versionStages: readonly string[] }>;
+export type CloudCredentialPriority = 'staff' | 'background';
 declare const cloudCredentialLeaseBrand: unique symbol;
 export type CloudCredentialLease = Readonly<{
   [cloudCredentialLeaseBrand]: never;
@@ -38,6 +39,17 @@ export declare function installCloudReadGuard(context: BrowserContext, property:
   readRequestPolicy?: (request: Request) => boolean;
 }): Promise<void>;
 export declare function cloudCredentialLeaseKey(propertyCode: string): string;
+export declare function withCloudCredentialPriority<T>(priority: CloudCredentialPriority, operation: () => T): T;
+export declare function hmsJobQueueEnabled(env?: NodeJS.Dict<string>): boolean;
+export declare function hmsJobQueueAvailable(env?: NodeJS.Dict<string>): boolean;
+export declare const hmsJobConsumerAvailableSql: string;
+export type CloudCredentialRunFence = { runId: string; claimOwner: string; claimToken: string };
+export declare function withCloudCredentialRun<T>(fence: CloudCredentialRunFence, operation: () => T): T;
+export declare const cloudCredentialAdmissionEligibilitySql: string;
+export declare function cloudDevBackgroundEligible(): boolean;
+export declare function currentCloudCredentialPriority(fallback?: CloudCredentialPriority): CloudCredentialPriority;
+export declare function currentCloudCredentialLease(propertyCode: string): CloudCredentialLease | undefined;
+export declare function borrowCloudCredentialLease(propertyCode: string, lease: CloudCredentialLease): () => void;
 export declare function verifyCloudCredentialVersion(input: {
   propertyCode: string;
   transportId?: string;
@@ -49,9 +61,12 @@ export declare function verifyCloudCredentialVersion(input: {
 export declare function acquireCloudCredentialLease(propertyCode: string, options?: {
   signal?: AbortSignal;
   readOnly?: boolean;
+  priority?: CloudCredentialPriority;
+  databaseUrl?: string;
+  deadlineAt?: number;
 }): Promise<CloudCredentialLease>;
 export declare function withCloudCredentialLease<T>(propertyCode: string,
-  operation: (lease: CloudCredentialLease) => T | Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean }): Promise<T>;
+  operation: (lease: CloudCredentialLease) => T | Promise<T>, options?: { signal?: AbortSignal; readOnly?: boolean; priority?: CloudCredentialPriority; databaseUrl?: string; deadlineAt?: number }): Promise<T>;
 export declare function verifyCloudProperty(page: Page, input: {
   propertyCode: string;
   tenantId?: string;

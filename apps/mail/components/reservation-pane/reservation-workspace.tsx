@@ -80,7 +80,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
       }
       acceptPrefill(next);
       if (!source.sourceRecoveryOnly && !next.session.sourceChanged && (!next.session.draft.prefill || next.session.draft.prefill.status === 'idle')) {
-        const prefill = initialRequest.prefill ?? client.prefill({ source, snapshot: next });
+        const prefill = initialRequest.prefill ?? client.prefill({ source, snapshot: next, background: true });
         initialRequest.prefill = prefill;
         void prefill.then(acceptPrefill).catch((error: unknown) => {
           if (initialRequest.prefill === prefill) initialRequest.prefill = null;
@@ -111,7 +111,7 @@ export function ReservationWorkspace({ source, activeProperty, configuration, cl
   }, [key, source]);
 
   useEffect(() => {
-    if (!snapshot || snapshot.session.sourceChanged || !['running', 'queued'].includes(snapshot.session.draft.prefill?.status ?? '')) {
+    if (!snapshot || snapshot.session.sourceChanged || !['running', 'queued'].includes(snapshot.session.draft.prefill?.status ?? '') && !['running', 'queued'].includes(snapshot.session.backgroundChecks ?? '')) {
       refreshCount.current = 0;
       return;
     }

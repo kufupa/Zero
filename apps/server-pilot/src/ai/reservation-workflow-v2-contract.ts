@@ -201,6 +201,21 @@ const createBodySchema = z.object({
   }).strict()).max(100),
 }).strict();
 
+export const quoteCompositionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('additive') }).strict(),
+  z.object({ kind: z.literal('unresolved'), evidenceRefs: z.array(refSchema).max(100) }).strict(),
+  z.object({ kind: z.literal('scenarios'), scenarios: z.array(z.object({
+    id: idSchema, label: z.string().min(1).max(120), groupIds: z.array(idSchema).min(1).max(200),
+    evidenceRefs: z.array(refSchema).max(100),
+  }).strict()).min(2).max(32) }).strict(),
+]);
+const quoteFamilyCompositionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('additive') }).strict(),
+  z.object({ kind: z.literal('scenarios'), options: z.array(z.object({
+    id: idSchema, label: z.string().min(1).max(120), requestIds: z.array(idSchema).min(1).max(32),
+    evidenceRefs: z.array(refSchema).max(100),
+  }).strict()).min(2).max(32) }).strict(),
+]);
 const quoteBodySchema = z.object({
   groups: z.array(z.object({
     id: idSchema,
@@ -210,12 +225,13 @@ const quoteBodySchema = z.object({
     mealPlan: z.string().max(120).nullable(),
     requestedMealPlan: z.string().max(120).nullable().default(null),
     requestedRoomDescription: z.string().max(1000).nullable().optional(),
+    sourceAssociationUnresolved: z.boolean().optional(),
     guestNames: z.array(z.string().max(300)).max(200).optional(),
     roomCodes: z.array(z.string().max(120)).max(100),
     ratePlan: z.string().max(120).nullable(),
     occupancy: occupancySchema.extend({ scope: z.enum(['per_room', 'whole_group', 'unresolved']) }),
     priceObservationRefs: z.array(refSchema).max(100),
-  }).strict()).max(100),
+  }).strict()).max(200),
   guestNames: z.array(z.string().max(300)).max(200).optional(),
   parties: z.object({ organization: value(partySchema).optional(), bookingAgency: value(partySchema).optional() }).strict(),
   salesStrategy: z.string().max(1000).nullable(),
@@ -226,6 +242,11 @@ const quoteBodySchema = z.object({
   outputIntent: z.object({ artifacts: z.array(z.enum(['email_quote', 'pdf_quote', 'xlsx_quote'])).max(3),
     evidenceRefs: z.array(refSchema).max(100) }).strict(),
   provisionalBookingRequested: z.boolean().nullable(),
+  quoteComposition: quoteCompositionSchema.optional(),
+  quoteFamily: z.object({ id: idSchema, label: z.string().min(1).max(120),
+    members: z.array(z.object({ requestId: idSchema, label: z.string().min(1).max(120) }).strict()).min(2).max(32),
+    composition: quoteFamilyCompositionSchema.optional(),
+  }).strict().optional(),
 }).strict();
 
 const amendFieldSchema = z.enum([
@@ -572,9 +593,9 @@ const modelCreateBodySchema = createBodySchema.extend({
   allocations: z.array(createBodySchema.shape.allocations.element.extend({ overrides: modelBookingFieldsSchema })).max(100),
 });
 const modelMoneyRequestSchema = moneyRequestSchema.omit({ staffAllowanceType: true });
-const modelQuoteGroupSchema = quoteBodySchema.shape.groups.element.omit({ mealPlan: true })
+const modelQuoteGroupSchema = quoteBodySchema.shape.groups.element.omit({ mealPlan: true, sourceAssociationUnresolved: true })
   .transform((group) => ({ ...group, mealPlan: null }));
-const modelQuoteBodySchema = quoteBodySchema.extend({ groups: z.array(modelQuoteGroupSchema).max(100),
+const modelQuoteBodySchema = quoteBodySchema.omit({ quoteComposition: true, quoteFamily: true }).extend({ groups: z.array(modelQuoteGroupSchema).max(100),
   requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelServiceRequestSchema = serviceRequestSchema.extend({ requestedMoney: z.array(modelMoneyRequestSchema).max(100) });
 const modelRequestSchema = z.discriminatedUnion('kind', [requestSchema.options[0].extend({ body: modelQuoteBodySchema }),

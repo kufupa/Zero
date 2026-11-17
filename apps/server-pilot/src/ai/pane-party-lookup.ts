@@ -23,6 +23,7 @@ import { and, desc, eq, gte, sql } from 'drizzle-orm';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import { getDb, type DB } from '../db/client.js';
 import { execFile } from 'node:child_process';
+import { currentCloudCredentialLease, currentCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
@@ -380,6 +381,16 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
       mode: 0o600,
       flag: 'wx',
     });
+    const credentialLease = currentCloudCredentialLease(target.propertyCode);
+    if (credentialLease) {
+      // Keep the existing native tool in this process so it borrows the outer
+      // credential rather than waiting on its parent's lock in a subprocess.
+      const signal = AbortSignal.any([credentialLease.signal,
+        AbortSignal.timeout(spawnTimeoutMs(plannedSearchesOf(input).length)),
+        ...(input.signal ? [input.signal] : [])]);
+      const native = await import(new URL('../../tooling/hms-cloud/party-lookup.mjs', import.meta.url).href);
+      return await native.lookupParty({ requestPath, transportId: input.transportId, signal, credentialLease });
+    }
     let stdout = '';
     try {
       ({ stdout } = await execFileAsync(
@@ -390,7 +401,7 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
         {
           timeout: spawnTimeoutMs(plannedSearchesOf(input).length),
           killSignal: 'SIGKILL',
-          env: paneStaySpawnEnv(process.env, target),
+          env: { ...paneStaySpawnEnv(process.env, target), NAVA_HMS_CHILD_PRIORITY: currentCloudCredentialPriority() },
           maxBuffer: 1024 * 1024,
           signal: input.signal,
         },

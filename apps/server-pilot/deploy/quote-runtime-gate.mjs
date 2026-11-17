@@ -38,6 +38,7 @@ if (mode === '--validate-only') process.exit(0);
 
 try {
   const { fetchQuote } = await import(pathToFileURL(resolve('tooling/hms-cloud/fetch-quote.mjs')));
+  const { withCloudCredentialPriority } = await import(pathToFileURL(resolve('tooling/hms-cloud/cloud-session.mjs')));
   const { normalizeQuoteRequest } = await import(pathToFileURL(resolve('tooling/hms-cloud/quote-contract.mjs')));
   const now = Date.now(), date = days => new Date(now + days * 86400000).toISOString().slice(0, 10);
   const example = JSON.parse(readFileSync('tooling/hms-cloud/examples/v2-broad.json', 'utf8'));
@@ -47,15 +48,15 @@ try {
   const normalized = normalizeQuoteRequest(request);
   if (!normalized.ok) throw new Error();
   const started = Date.now(), signal = AbortSignal.timeout(360000);
-  const read = () => fetchQuote({ request, propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: config.outputDir,
-    signal, env: { ...process.env, QUOTE_DETAIL_BUDGET_MS: '10000' } });
+  const read = () => withCloudCredentialPriority('background', () => fetchQuote({ request, propertyCode: 'HRCEN', transportId: 'transport-centurion', outputDir: config.outputDir,
+    signal, env: { ...process.env, QUOTE_DETAIL_BUDGET_MS: '10000' } }));
   const busy = result => result.outcome === 'execution_failure' && result.phase === 'login' && result.error?.message === 'HMS_CREDENTIAL_LEASE_CONTENDED';
   let result = await read();
   if (busy(result)) {
     console.warn('Centurion quote gate: HMS credential lease busy; retrying in 60 seconds');
     await delay(60000, undefined, { signal });
     result = await read();
-    if (busy(result)) { console.warn('Centurion quote gate WARNING: HMS credential lease still busy; quote check not verified'); process.exit(0); }
+    if (busy(result)) fail('HMS credential lease still busy; quote check not verified');
   }
   const observed = Date.parse(result.observedAt);
   if (result.schemaVersion !== 2 || result.propertyCode !== 'HRCEN' || result.requested?.propertyCode !== 'HRCEN' ||

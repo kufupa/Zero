@@ -20,12 +20,14 @@ vi.mock('../tooling/hms-cloud/saved-stay-read-guard.mjs', () => ({
     fixtures.events.push('guard');
   },
 }));
-vi.mock('../tooling/hms-cloud/hms-readers.mjs', () => ({
-  readShallow: async (_page: unknown, confirmation: string) => {
+vi.mock('../tooling/hms-cloud/stay360-confirmation.mjs', () => ({
+  readConfirmationFromStay360: async (_page: unknown, confirmation: string) => {
     fixtures.events.push('confirmation');
     return { confirmation };
   },
-  readRecord: async () => { fixtures.events.push('record-view'); return {}; },
+}));
+vi.mock('../tooling/hms-cloud/stay360-record-view.mjs', () => ({
+  readRecordViewFromStay360: async () => { fixtures.events.push('record-view'); return {}; },
 }));
 vi.mock('../tooling/hms-cloud/labtest-record.mjs', async (importOriginal) => {
   const { blankSavedPartyFields } = await import('../tooling/hms-cloud/labtest-party-fields.mjs');

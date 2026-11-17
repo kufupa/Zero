@@ -2,7 +2,8 @@
 import { withCloudReadSession } from './cloud-session.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
-import { readShallow, readRecord } from './hms-readers.mjs';
+import { readConfirmationFromStay360 as readShallow } from './stay360-confirmation.mjs';
+import { readRecordViewFromStay360 as readRecord } from './stay360-record-view.mjs';
 import { isCreateDate, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
 
 // Runs inside the saved record frame; callers still verify the extracted evidence.
