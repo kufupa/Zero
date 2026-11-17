@@ -776,6 +776,9 @@ function nativeModule() {
   }>;
 }
 
+const nativeAmendFailure = (result: Record<string, unknown>, fallback: string) =>
+  result.outcome === 'refused' && result.issue === 'RATE_NOT_AVAILABLE' ? 'RATE_NOT_AVAILABLE' : fallback;
+
 async function persistAmendShot(ctx: ReservationWorkflowV2AmendContext, workItemId: string,
   runId: string, sourcePath: string, name: 'before.png' | 'saved.png') {
   const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-amend-shot-'));
@@ -1539,8 +1542,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
-        return { issue: discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
-          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable' };
+        return { issue: nativeAmendFailure(discovery, discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
+          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable') };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const selectedObservation = loaded.draft!.observations.find(item => item.ref === compiled.selectedRef);
@@ -1592,7 +1595,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
           canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
             key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
-          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return {
+        issue: nativeAmendFailure(native, 'native_amend_prepare_unverified') };
       // A stale stay lookup can hide a live guarantee change; its Go-time callback is not in this staged price.
       if (typeof changes.guaranteeType === 'string' && changes.guaranteeType !== recoveryBaseline.beforeGuaranteeCode) {
         return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: ['guaranteeType'] };
