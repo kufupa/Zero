@@ -1,7 +1,8 @@
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { day, patch, prepareEnvelope, prepareManifest } from './schema.js';
 
-type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal };
+type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; credentialLease?: unknown };
 type ToolResult =
   | { ok: true; data: unknown; error: null }
   | { ok: false; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' } };
@@ -36,13 +37,17 @@ const freshRead = z.object({
   record: z.object({
     nativePreimage: selectedStay,
     details: z.object({ fields: z.array(z.object({
-      name: z.string().nullable(), value: z.unknown(), rawValue: z.unknown().optional(),
+      name: z.string().nullable(), type: z.string().optional(), value: z.unknown(), rawValue: z.unknown().optional(),
     })) }),
   }),
 });
 const nativeStatus = z.object({ outcome: z.string(), issue: z.string().regex(/^[A-Z][A-Z_0-9]{2,80}$/).optional(),
   diagnostic: z.object({ phase: z.enum(['credential_lease', 'party_preimage', 'nightly_quote', 'native_prepare']) }).optional() });
 const minor = z.string().regex(/^\d{1,24}$/);
+const major = (cents: string) => {
+  const padded = cents.padStart(3, '0');
+  return `${padded.slice(0, -2)}.${padded.slice(-2)}`;
+};
 const prepared = z.object({
   nativeDigest: z.string().regex(/^[a-f0-9]{64}$/),
   approvedPrices: z.object({
@@ -89,6 +94,7 @@ function nativeRefusal(raw: unknown, fallback: string, message: string): ToolRes
 export async function prepare(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (context.mode === 'historical') return refuse('HISTORICAL_HMS_UNAVAILABLE', 'Historical sessions cannot contact HMS.');
   if (context.signal?.aborted) return refuse('AMEND_ABORTED', 'Amendment preparation was aborted.');
+  if (!context.credentialLease) return refuse('HMS_SHARED_LEASE_REQUIRED', 'The host must supply an admitted HMS credential lease.');
   const envelope = prepareEnvelope.safeParse(input);
   if (!envelope.success) return refuse('AMEND_INPUT_INVALID', 'Supply one booking, its property, and an amend action.');
   const { booking, action } = envelope.data;
@@ -102,6 +108,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   }
   const requested = delta.data;
   if (!Object.keys(requested).length) return refuse('AMEND_CHANGE_REQUIRED', 'Supply at least one requested change.');
+  if (typeof booking.current_state?.first_name !== 'string' || !booking.current_state.first_name.trim() ||
+      typeof booking.current_state?.last_name !== 'string' || !booking.current_state.last_name.trim() ||
+      typeof booking.current_state?.arrival_date !== 'string') {
+    return refuse('AMEND_IDENTITY_REQUIRED', 'Supply the verified current guest name and arrival before preparing.');
+  }
   const hint = booking.current_state?.arrival_date;
   const expectedArrival = hint == null ? null : day.safeParse(hint);
   if (expectedArrival?.success === false) return refuse('AMEND_INPUT_INVALID', 'Current arrival, if supplied, must be an ISO calendar date.');
@@ -109,7 +120,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   const confirmation = action.details.confirmation_number ??
     (candidateConfirmation && /^\d{6,10}(?:-\d{1,10})?$/.test(candidateConfirmation) ? candidateConfirmation : null);
   if (!confirmation) return refuse('AMEND_CONFIRMATION_REQUIRED', 'Supply the confirmation number for the selected stay.');
-  const signal = AbortSignal.any([AbortSignal.timeout(5 * 60_000), ...(context.signal ? [context.signal] : [])]);
+  const signal = AbortSignal.any([AbortSignal.timeout(10 * 60_000), ...(context.signal ? [context.signal] : [])]);
   let phase: 'adapter' | 'target_read' | 'native_prepare' = 'adapter';
 
   try {
@@ -119,12 +130,12 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (!property?.active) return refuse('AMEND_PROPERTY_UNSUPPORTED', 'Property has no active native adapter.');
     const reader: { withSavedStayAgentSession(
       run: (session: { runTool: ReadTool }) => Promise<unknown>,
-      options: { readOnly: true; readOnlyConfirmation: string; propertyCode: string; signal: AbortSignal },
+      options: { readOnly: true; readOnlyConfirmation: string; propertyCode: string; signal: AbortSignal; credentialLease: unknown },
     ): Promise<unknown> } = await import(nativePath('saved-stay-agent-session'));
     phase = 'target_read';
     const raw = await reader.withSavedStayAgentSession(({ runTool }) => runTool({
       tool: 'read', confirmation, arrivalDate: expectedArrival?.data, includeNativePreimage: true,
-    }), { readOnly: true, readOnlyConfirmation: confirmation, propertyCode: property.propertyCode, signal });
+    }), { readOnly: true, readOnlyConfirmation: confirmation, propertyCode: property.propertyCode, signal, credentialLease: context.credentialLease });
     signal.throwIfAborted();
     if (nativeStatus.safeParse(raw).data?.outcome !== 'ok') {
       return nativeRefusal(raw, 'AMEND_TARGET_UNVERIFIED', 'HMS did not resolve one exact stay. Verify the confirmation and current arrival.');
@@ -142,6 +153,16 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       return refuse('AMEND_TARGET_MISMATCH', 'Fresh read did not match the requested stay identity.');
     }
     if (selected.status !== 'Reserved') return refuse('AMEND_STATUS_UNSUPPORTED', 'Only Reserved stays can be staged by this adapter.');
+    for (const [key, native] of Object.entries(stayFields)) {
+      const expected = booking.current_state?.[key];
+      if (expected !== undefined && expected !== null && expected !== selected[native]) {
+        return refuse('AMEND_PREIMAGE_CHANGED', 'The current stay no longer matches the proposal. Read it again before preparing.');
+      }
+    }
+    const cms = record.details.fields.filter(field => field.name === 'udfchkbox04');
+    if (cms.length !== 1 || cms[0]?.type !== 'checkbox' || cms[0].value !== false) {
+      return refuse('AMEND_CMS_PRESERVATION_UNSUPPORTED', 'CMS send must be observed off before this preview; the current setting was not changed.');
+    }
     const before = {
       ...Object.fromEntries(Object.entries(stayFields).map(([key, native]) => [key, selected[native]])),
       ...Object.fromEntries(Object.entries(recordFields).map(([key, native]) => {
@@ -153,6 +174,9 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     };
     const changedKeys = patch.keyof().options.filter(key => requested[key] !== undefined && before[key] !== requested[key]);
     if (!changedKeys.length) return refuse('AMEND_UNCHANGED', 'Requested fields already match HMS.');
+    if (changedKeys.some(key => Object.hasOwn(recordFields, key) && before[key] === null)) {
+      return refuse('AMEND_PREIMAGE_UNVERIFIED', 'The current value of a requested field was not observed.');
+    }
     if ((requested.arrival_date ?? selected.arrival) >= (requested.departure_date ?? selected.departure)) {
       return refuse('AMEND_DATES_INVALID', 'Departure must follow arrival.');
     }
@@ -167,8 +191,12 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     phase = 'native_prepare';
     const native: { prepareCloudPaneAmend(input: {
       target: Property; selected: NativeStay; confirmation: string; arrival: string; changes: Record<string, unknown>;
-      discoveryOnly: true; allowRealGuest: true; signal: AbortSignal;
-    }): Promise<unknown> } = await import(nativePath('pane-amend-session'));
+      discoveryOnly: true; allowRealGuest: true; signal: AbortSignal; credentialLease: unknown;
+    }, dependencies: { current: (...args: unknown[]) => Promise<unknown>;
+      stageGuest: (context: unknown, fields: Record<string, unknown>) => Promise<unknown> }): Promise<unknown> } = await import(nativePath('pane-amend-session'));
+    const recordModule: { currentLabtestRecord(...args: unknown[]): Promise<unknown> } = await import(nativePath('labtest-record'));
+    const contactModule: { stageSavedGuestFieldsForComposition(context: unknown, fields: Record<string, unknown>): Promise<unknown> } =
+      await import(nativePath('guest-stay-amend-contact'));
     const changes = {
       ...Object.fromEntries(changedKeys.map(key => [fieldMap[key], requested[key]])),
       retainRates: retainRates ? 'yes' : 'no',
@@ -176,7 +204,20 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     };
     const response = await native.prepareCloudPaneAmend({
       target: property, selected, confirmation: selected.confirmation, arrival: selected.arrival,
-      changes, discoveryOnly: true, allowRealGuest: true, signal,
+      changes, discoveryOnly: true, allowRealGuest: true, signal, credentialLease: context.credentialLease,
+    }, {
+      current: async (...args) => {
+        const current = await recordModule.currentLabtestRecord(...args);
+        if (!z.object({ cmsSend: z.literal(false) }).passthrough().safeParse(current).success) {
+          throw new Error('AMEND_CMS_PRESERVATION_UNSUPPORTED');
+        }
+        return current;
+      },
+      stageGuest: async (stageContext, fields) => {
+        const { cmsSend, ...otherFields } = fields;
+        if (cmsSend !== false) throw new Error('AMEND_CMS_PRESERVATION_UNSUPPORTED');
+        return contactModule.stageSavedGuestFieldsForComposition(stageContext, otherFields);
+      },
     });
     signal.throwIfAborted();
     if (nativeStatus.safeParse(response).data?.outcome !== 'prepared') {
@@ -187,14 +228,56 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (staged.data.preserved.cmsSend) {
       return refuse('AMEND_CMS_PRESERVATION_UNSUPPORTED', 'Current CMS send setting cannot be preserved by this preview.');
     }
+    phase = 'target_read';
+    const rereadRaw = await reader.withSavedStayAgentSession(({ runTool }) => runTool({
+      tool: 'read', confirmation: selected.confirmation, arrivalDate: selected.arrival, includeNativePreimage: true,
+    }), { readOnly: true, readOnlyConfirmation: selected.confirmation, propertyCode: property.propertyCode,
+      signal, credentialLease: context.credentialLease });
+    signal.throwIfAborted();
+    const reread = freshRead.safeParse(rereadRaw);
+    if (nativeStatus.safeParse(rereadRaw).data?.outcome !== 'ok' || !reread.success ||
+        reread.data.shallow.confirmation !== selected.confirmation ||
+        !isDeepStrictEqual(reread.data.record.nativePreimage, selected)) {
+      return refuse('AMEND_READBACK_UNVERIFIED', 'The original stay could not be confirmed unchanged after the unsaved preview.');
+    }
+    const afterFields = reread.data.record.details.fields;
+    const afterCms = afterFields.filter(field => field.name === 'udfchkbox04');
+    if (afterCms.length !== 1 || afterCms[0]?.type !== 'checkbox' || afterCms[0].value !== false ||
+        changedKeys.some(key => {
+          if (!Object.hasOwn(recordFields, key)) return false;
+          const native = recordFields[key as keyof typeof recordFields];
+          const fields = afterFields.filter(field => field.name === native);
+          return fields.length !== 1 || (key === 'reservation_note' ? fields[0]?.rawValue : fields[0]?.value) !== before[key];
+        })) {
+      return refuse('AMEND_READBACK_UNVERIFIED', 'The original stay or CMS state could not be confirmed unchanged after the unsaved preview.');
+    }
     const price = staged.data.approvedPrices;
     const options = price.options.slice(0, 20);
+    const displayRows = [
+      { id: 'availability', booking_id: booking.id, kind: 'availability', label: 'Amendment availability',
+        native_path: '/availability/status', status: needsAvailability ? 'available' : 'unknown', rooms_available: null },
+      { id: 'total', booking_id: booking.id, kind: 'money', label: 'Stay total', native_path: '/price/total_cents',
+        amount: major(price.totalCents), currency: price.currency, unit: 'stay', date: null, basis: 'native', official: true },
+      ...(price.averageCents === null ? [] : [{ id: 'average', booking_id: booking.id, kind: 'money',
+        label: 'Average nightly rate', native_path: '/price/average_nightly_cents', amount: major(price.averageCents),
+        currency: price.currency, unit: 'night', date: null, basis: 'native', official: true }]),
+      ...options.flatMap((option, i) => [
+        { id: `option-${i}-room`, booking_id: booking.id, kind: 'code', label: `Rate Shop option ${i + 1} room`,
+          native_path: `/price/rate_shop_options/${i}/room_type`, code: option.roomType, meaning: null },
+        { id: `option-${i}-rate`, booking_id: booking.id, kind: 'code', label: `Rate Shop option ${i + 1} rate`,
+          native_path: `/price/rate_shop_options/${i}/rate_plan`, code: option.ratePlan, meaning: null },
+        ...option.nightly.slice(0, 31).map((night, j) => ({ id: `option-${i}-night-${j}`, booking_id: booking.id,
+          kind: 'money', label: `Rate Shop option ${i + 1} nightly price`,
+          native_path: `/price/rate_shop_options/${i}/nightly/${j}/amount_cents`, amount: major(night.amountCents),
+          currency: option.currency, unit: 'night', date: night.date, basis: 'native', official: false })),
+      ]),
+    ];
     return { ok: true, error: null, data: {
       outcome: 'prepared', workflow: 'amend', property_code: property.propertyCode,
       confirmation: selected.confirmation, reservation_id: selected.confirmation, native_stay_id: selected.reservationStayId,
-      current_state: Object.fromEntries(patch.keyof().options.filter(key => requested[key] !== undefined)
-        .map(key => [key, before[key] ?? null])),
+      current_state: { ...before, children: selected.children, child_ages: selected.childAges },
       fields: requested, changed_fields: changedKeys,
+      original_stay_unchanged: true,
       cms_send: false, current_cms_send: staged.data.preserved.cmsSend,
       native_digest: staged.data.nativeDigest,
       availability: { status: needsAvailability ? 'native_check_passed' : 'not_checked' },
@@ -207,6 +290,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
         })),
         rate_options_observed: price.options.length,
         rate_options_returned: options.length },
+      display_rows: displayRows,
+      coverage: { rate_options_observed: price.options.length, rate_options_returned: options.length,
+        nights_truncated: options.some(option => option.nightly.length > 31),
+        note: 'Rate Shop options are bounded observations, not a complete catalogue or a held price.' },
       warnings: ['Unsaved preview. No reservation or email was changed.',
         'Rate Shop observations do not hold inventory or establish the final payable total.'],
     } };

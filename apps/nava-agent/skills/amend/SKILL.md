@@ -1,20 +1,16 @@
 ---
 name: amend
-description: Use when a current hotel email requests changing dates, guest details, occupancy, room, rate, contact, billing or preferences on an existing reservation, including extensions and per-room changes.
+description: Use when a current hotel email requests changing an existing reservation, including dates, occupancy, guest details, room, rate, contact or preferences.
 ---
 
 # Amend
 
-Read [common rules](../references/common.md), [patch rules + fields](references/rules.md), [reply drafts](references/replies.md).
+Read `../references/common.md`, `../references/tools-and-proposal.md`, `references/rules.md` and `references/replies.md` with `skill_read`.
 
-1. Resolve property + existing native reservation; verify guest/stay. Confirmation number is candidate evidence, not arbitrary ID substitution. Ambiguous target → exact clarification.
-2. Fresh-read `current_state`. Extract latest delta only. Existing pre-stay guest text → note/Amend candidate, never Create from notice (R6). Preserve scope. Separate genuine new-room ask; shortening stay ≠ whole cancellation.
-3. For dates/room/occupancy/rate changes, native-reprice/check availability in affected stay context. `hms_quote` supports pricing options; generic offer cannot alone prove existing held room unavailable. Publish price change/unknown scope.
-4. Stage requested supported fields: find/read → patch fill/blur/read → Check Availability → preview. Exact fixed staff field order unproven; proposed grouping in reference. Unsupported field → explicit review, not no-op success.
-5. Publish ordered patch + before-state + native preview + source/target IDs. Show CMS Send default on + editable requester recipient (R3; Labtest off). No copied old dates/rates overriding current ask.
-6. `hms_save` after publish waits for staff Go. Backend re-stages edited delta, Save + fresh readback. Compare changed values/target; uncertain/partial state → read first, no blind retry.
-7. Draft revised confirmation only verified fields/items; preserve unresolved requests for staff. Preference note ≠ fulfilled amenity.
+1. Read the selected message and conversation. Use the latest request, preserving the exact guest and stay scope. If attachments are unknown, unread or omitted, warn staff to check them; never invent their contents.
+2. Identify the property and confirmation. Use scoped native reads when available to verify the guest, current stay and Reserved status. A confirmation is a candidate, not proof that it belongs to the requested guest. Ambiguous identity, unsupported fields or an unclear change requires staff review.
+3. Publish one editable Amend proposal for each independently identified stay. Set `booking.reservation_id` to the confirmation, `booking.current_state` to verified original stay facts or null, and `booking.fields` to the requested changes only. Prepare requires verified `current_state.first_name`, `current_state.last_name` and `current_state.arrival_date` matching the saved stay; if unknown, do not invent them. Supported change keys are `arrival_date`, `departure_date`, `adults`, `room_type`, `rate_plan`, `first_name`, `last_name`, `booker_name`, `booker_contact` and `reservation_note`. Omit unrequested fields; never copy current dates or rates into the change. Dates use YYYY-MM-DD. Include an editable `field_specs` path for each requested field and its source evidence. Use action `{id,type:"amend",booking_ids:[booking.id],details:{}}`; use `details.confirmation_number` only when the booking identifier is a native ID rather than the confirmation.
+4. Publish `native_result:null`. For date, occupancy, room or rate changes, tell staff native availability and revised totals are pending Prepare. The backend reads the exact saved stay, verifies CMS and identity, and checks availability and price on the staff-edited revision. Rate Shop options are observations, not held inventory.
+5. Stop after publishing. Staff reviews attachments and runs Prepare on the current revision. Prepare is unsaved. Do not call a staging tool, Save, Go or send a message. Draft text may acknowledge the request but must not claim the booking changed.
 
-Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `hms_read_catalogue`, `hms_quote`, `hms_prepare`, `proposal_publish`, `hms_save`, `reply_draft`. Exact [bindings](../references/tools-and-proposal.md); initial backend may lack amend handler.
-
-Example: “Guest A leaves one day earlier; Guest B unchanged” → A departure patch, B unchanged evidence; never cancel party or reset B rate.
+Example: “Guest A leaves one day earlier; Guest B unchanged” means a departure-date change for A and no change to B. Do not cancel the party or reset B's rate.
