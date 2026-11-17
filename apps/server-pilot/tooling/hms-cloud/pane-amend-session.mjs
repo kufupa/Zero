@@ -1198,11 +1198,12 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
         prepared.roomStageGate.close();
       }
       if (chargeChanged) draft = await bounded(stageCharge(context, changes.roomTypeForCharge));
-      if (trackChanged) draft = await bounded(stageSavedTrackForComposition(context, changes.track));
       const currentRate = String(draft.data?.rateplan ?? selected.ratePlan);
       if (currentRate !== target.ratePlan) {
-        draft = await bounded(stageOption(context, 'ratePlan', currentRate, target.ratePlan));
+        draft = await bounded(stageOption(context, 'ratePlan', currentRate, target.ratePlan,
+          trackChanged ? { trackAfterRate: changes.track } : undefined));
       }
+      if (trackChanged) draft = await bounded(stageSavedTrackForComposition(context, changes.track));
       const fields = Object.fromEntries(['firstName', 'lastName', 'guestEmail', 'bookerName', 'bookerContact', 'reservationNote', 'billingReference']
         .filter((key) => Object.hasOwn(changes, key)).map((key) => [key, changes[key]]));
       fields.cmsSend = changes.cmsSend;
