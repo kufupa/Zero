@@ -9,6 +9,26 @@ function hasStaffOverride(editor: WorkbenchEditorProps, path: string) {
     (path === key || path.startsWith(`${key}/`)) && value.state !== 'inherit');
 }
 
+/** Quote only: same acceptance as the review tick, after a real staff edit. */
+function acceptQuoteStaffEdit(editor: WorkbenchEditorProps, path: string, value: unknown, alive: () => boolean,
+  onPendingChange?: (pending: boolean) => void) {
+  if (editor.request.kind !== 'quote') return;
+  if (value == null || value === '' || Array.isArray(value) && value.length === 0) return;
+  if (typeof value === 'number' && (!Number.isFinite(value) || !Number.isInteger(value))) return;
+  const draft = editor.snapshot.session.draft;
+  if (draft.fieldReviewRequirements[path]?.required === false) return;
+  const row = path.match(/^(.*\/(?:groups|requestedMoney)\/\d+)(\/.*)$/);
+  const replace = (current: unknown, parts: string[]): unknown => parts.length
+    ? { ...record(current), [parts[0]!]: replace(record(current)[parts[0]!], parts.slice(1)) } : value;
+  const guardPath = row?.[1] ?? path;
+  const guardValue = row ? replace(effectiveAt(editor.snapshot, guardPath), row[2]!.slice(1).split('/').map(decodeURIComponent)) : value;
+  const expected = { path: guardPath, value: guardValue, generationId: draft.generationId };
+  onPendingChange?.(true);
+  void editor.commands.acceptServiceReview(path, 'Reviewed by staff', expected)
+    .catch(() => {})
+    .finally(() => { if (alive()) onPendingChange?.(false); });
+}
+
 function fieldEvidence(editor: WorkbenchEditorProps, path: string) {
   const draft = editor.snapshot.session.draft;
   const claim = draft.proposal.sourceClaims.find(row => row.path === path);
@@ -74,9 +94,11 @@ export function FieldReview({ editor, path, label, onPendingChange, requireRevie
   const draft = editor.snapshot.session.draft;
   const { reference, excerpt } = fieldEvidence(editor, path);
   const value = effectiveAt(editor.snapshot, path);
-  if (hasStaffOverride(editor, path)) return null;
-  if (!reference && (!requireReview || value == null || value === '' || draft.fieldReviewRequirements[path]?.required === false)) return null;
   const accepted = draft.staffReviews[path]?.status === 'accepted' || draft.fieldReviewRequirements[path]?.required === false;
+  const staffOverride = hasStaffOverride(editor, path);
+  const pendingStaff = editor.request.kind === 'quote' && requireReview && staffOverride && !accepted;
+  if (staffOverride && !pendingStaff || editor.request.kind === 'quote' && accepted && !reference) return null;
+  if (!reference && !pendingStaff && (!requireReview || value == null || value === '' || draft.fieldReviewRequirements[path]?.required === false)) return null;
   const showSource = async () => {
     try {
       const input = new TextEncoder().encode(`${editor.source.messageId}\u001fmessage\u001f${editor.source.messageId}`);
@@ -120,6 +142,8 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
   const [dirty, setDirty] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const version = useRef(0);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const percentage = type === 'percentage';
   const percentValid = (value: string) => value === '' || (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) &&
     Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 100);
@@ -139,10 +163,22 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
     : value === '' && defaultValue ? defaultValue : value;
   const stateFor = (raw: string, value: unknown) => raw === '' && emptyState ? emptyState
     : clearedCreateOptional(value) ? 'none' as const : 'set' as const;
+  const afterStaffEdit = (token: number, value: unknown, raw: string) => {
+    if (!review || !mounted.current || version.current !== token) return;
+    if (invalidPercent || exceedsNativeLimit) return;
+    if (type === 'date' && typeof value === 'string' && value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) return;
+    if (raw === '' || value == null) return;
+    acceptQuoteStaffEdit(editor, path, value, () => mounted.current, setReviewing);
+  };
   const save = async () => {
     if ((!dirty && !unconfirmedPercent) || invalidPercent) return;
     const value = parsedValue(local), before = version.current;
-    try { await editor.commands.edit(path, value, stateFor(local, value)); if (version.current === before) { setDirty(false); if (percentage) editor.commands.setUncommitted(path, false); } } catch { /* keep unsaved input */ }
+    try {
+      await editor.commands.edit(path, value, stateFor(local, value));
+      if (version.current !== before || !mounted.current) return;
+      setDirty(false); if (percentage) editor.commands.setUncommitted(path, false);
+      afterStaffEdit(before, value, local);
+    } catch { /* keep unsaved input */ }
   };
   const onChange = (value: string) => {
     version.current += 1; setLocal(value); setDirty(true); const parsed = parsedValue(value);
@@ -152,8 +188,8 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
   return <div data-field-path={path} className={`${styles.field} ${compact ? styles.compactField : ''}`}><div className={styles.fieldLabel}><label htmlFor={id}>{label}</label>{!compact && (review ? <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} requireReview={requireReview} disabled={disabled} /> : <FieldSource editor={editor} path={path} label={label} />)}</div>
     <div className={styles.controlSlot}>
     {type === 'checkbox' ? <input id={id} type="checkbox" checked={saved === true} disabled={disabled || reviewing || editor.view.busy}
-      onChange={event => { void editor.commands.edit(path, event.target.checked).catch(() => {}); }} />
-      : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; setLocal(value); void editor.commands.edit(path, value).catch(() => setDirty(true)); }}>
+      onChange={event => { const token = ++version.current; const next = event.target.checked; void editor.commands.edit(path, next).then(() => afterStaffEdit(token, next, next ? '1' : '')).catch(() => {}); }} />
+      : options ? <select id={id} value={local} disabled={disabled || reviewing} onChange={event => { const value = event.target.value; const token = ++version.current; setLocal(value); void editor.commands.edit(path, value).then(() => { if (version.current === token) setDirty(false); afterStaffEdit(token, value, value); }).catch(() => setDirty(true)); }}>
         <option value="">Choose…</option>{local && !options.some(option => option.value === local) && <option value={local} disabled={Boolean(unmatchedOptionLabel)}>{local}{unmatchedOptionLabel ? ` · ${unmatchedOptionLabel}` : ''}</option>}{options.filter(option => option.value).map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
       : type === 'textarea' || type === 'string-list' ? <textarea id={id} value={local} maxLength={maxLength} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} />
       : <input id={id} type={percentage ? 'text' : type} inputMode={percentage ? 'decimal' : undefined} value={local} maxLength={maxLength} aria-invalid={exceedsNativeLimit || invalidPercent || unconfirmedPercent || undefined} placeholder={defaultValue} disabled={disabled || reviewing} onChange={event => onChange(event.target.value)} onBlur={() => { void save(); }} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); } }} />}
@@ -168,10 +204,20 @@ export function Field({ label, path, editor, type = 'text', options, disabled, h
 
 export function Count({ label, path, editor, min = 0, max = 12, review = false, asSelect = false }: { label: string; path: string; editor: WorkbenchEditorProps; min?: number; max?: number; review?: boolean; asSelect?: boolean }) {
   const [reviewing, setReviewing] = useState(false);
+  const token = useRef(0);
+  const typedValue = useRef<number | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const value = valueAt(editor.snapshot, path);
   const numeric = typeof value === 'number' ? value : null;
-  const change = (next: number | null) => {
-    void editor.commands.edit(path, next === null ? null : Math.max(min, Math.min(max, next)), next === null ? 'unknown' : 'set').catch(() => {});
+  const change = (next: number | null, reviewNow = true) => {
+    const stored = next === null ? null : Math.max(min, Math.min(max, next));
+    if (!reviewNow) typedValue.current = stored === next ? stored : null;
+    const mine = ++token.current;
+    void editor.commands.edit(path, stored, stored === null ? 'unknown' : 'set').then(() => {
+      if (!reviewNow || !review || stored === null || !mounted.current || token.current !== mine) return;
+      acceptQuoteStaffEdit(editor, path, stored, () => mounted.current, setReviewing);
+    }).catch(() => {});
   };
   return <div data-field-path={path} className={styles.field}><div className={styles.fieldLabel}><label>{label}</label>{review && <FieldReview editor={editor} path={path} label={label} onPendingChange={setReviewing} />}</div>{asSelect
     ? <select aria-label={label} value={numeric ?? ''} disabled={reviewing || editor.view.busy} onChange={event => change(event.target.value === '' ? null : Number(event.target.value))}>
@@ -179,7 +225,9 @@ export function Count({ label, path, editor, min = 0, max = 12, review = false, 
       {Array.from({ length: max - min + 1 }, (_, i) => min + i).map(option => <option key={option} value={option}>{option}</option>)}
     </select> : <div className={styles.stepper}>
     <button type="button" aria-label={`Decrease ${label}`} disabled={reviewing || numeric === null || numeric <= min || editor.view.busy} onClick={() => change((numeric ?? min) - 1)}>−</button>
-    <input aria-label={label} type="number" min={min} max={max} value={numeric ?? ''} placeholder="?" disabled={reviewing} onChange={event => { const next = Number(event.target.value); if (event.target.value === '') change(null); else if (Number.isInteger(next)) change(next); }} />
+    <input aria-label={label} type="number" min={min} max={max} value={numeric ?? ''} placeholder="?" disabled={reviewing && editor.request.kind !== 'quote'}
+      onChange={event => { const next = Number(event.target.value); if (event.target.value === '') change(null, false); else if (Number.isInteger(next)) change(next, false); }}
+      onBlur={() => { const next = typedValue.current; typedValue.current = null; if (review && next !== null) acceptQuoteStaffEdit(editor, path, next, () => mounted.current); }} />
     <button type="button" aria-label={`Increase ${label}`} disabled={reviewing || numeric !== null && numeric >= max || editor.view.busy} onClick={() => change((numeric ?? min - 1) + 1)}>+</button>
   </div>}</div>;
 }
