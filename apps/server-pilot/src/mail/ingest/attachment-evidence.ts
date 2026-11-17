@@ -242,24 +242,31 @@ export function mergeLinkedAttachmentEvidence(input: {
     } else if (fileName !== null && optionalMissingItems([gaps[index]])[0]?.fileName === null)
       gaps[index] = item;
   };
-  let unavailable = stored.malformed;
+  const unavailable = stored.malformed;
   for (const scope of scopes) {
+    const scopeRef = { sourceId: scope.sourceId, sourceObservationId: scope.sourceObservationId };
+    const putScopedUnavailable = () =>
+      put(`${scopeKeyOf(scope)}${UNAVAILABLE_ROLE}`, {
+        role: UNAVAILABLE_ROLE,
+        fileName: null,
+        scope: scopeRef,
+      }, null);
     const items = optionalMissingItems(scope.missing);
     if (scope.missing != null && (!Array.isArray(scope.missing) || scope.missing.length !== items.length))
-      unavailable = true;
+      putScopedUnavailable();
     for (const item of items) {
       if (item.role === UNAVAILABLE_ROLE) {
-        unavailable = true;
+        putScopedUnavailable();
         continue;
       }
       if (item.role.startsWith('attachment:') && scope.persisted.includes(item.role.slice(11)))
         continue;
       put(`${scopeKeyOf(scope)}${item.role}`, {
         ...item,
-        scope: { sourceId: scope.sourceId, sourceObservationId: scope.sourceObservationId },
+        scope: scopeRef,
       }, item.fileName);
     }
-    if (!scope.enumerated) unavailable = true;
+    if (!scope.enumerated) putScopedUnavailable();
   }
   const scoped = (entry: unknown) => {
     const scope = (entry as Record<string, unknown> | null)?.scope;
