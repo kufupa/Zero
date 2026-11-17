@@ -14,6 +14,7 @@ export const editInput=z.object({expected_revision:z.number().int().min(1),chang
   .refine(input=>input.changes.length>0 || input.staff_attachments_checked!==undefined,{message:'Nothing to edit'});
 type Change=z.infer<typeof change>;
 type Container=Record<string,unknown>|unknown[];
+const nativeGuestCandidates=z.object({items:z.array(z.object({native_id:z.string(),first_name:z.string(),last_name:z.string()}))});
 function quoteIdentities(draft:z.infer<typeof proposalDraft>) {
   return draft.actions.filter(action=>action.type==='quote').map(({id,details})=>{
     if(typeof details!=='object' || details===null || Array.isArray(details)) return {id,details};
@@ -55,6 +56,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     const draft=p.phase==='ready' ? withCreateNativeFields(stored) : stored;
     const identities=JSON.stringify(quoteIdentities(draft));
     const quoteActions=p.workflow==='quote'?structuredClone(draft.actions):null;
+    const priorProfiles=p.workflow==='create'?draft.bookings.map(booking=>booking.fields.guest_profile_id):[];
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {
       const spec=draft.field_specs.find(f=>f.path===item.path);
@@ -65,7 +67,23 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     }
     const valid=proposalDraft.parse(draft), revision=p.revision+1;
     if(JSON.stringify(quoteIdentities(valid))!==identities) throw new Error('INVALID_PATH');
-    if(quoteActions && !isDeepStrictEqual(quoteActions,valid.actions)) valid.native_result=null;
+    if(quoteActions && !isDeepStrictEqual(quoteActions,valid.actions)) {
+      valid.native_result=null;
+      if(!input.changes.some(change=>change.path==='/reply_draft')) valid.reply_draft=null;
+    }
+    if(p.workflow==='create') {
+      const candidates=nativeGuestCandidates.safeParse(p.stage?.revision===p.revision?p.stage.native_result?.guest_candidates:null);
+      for(const [index,{fields}] of valid.bookings.entries()) {
+        const {guest_profile_id:profile,first_name:first,last_name:last}=fields;
+        if(profile==null || priorProfiles[index]===profile) continue;
+        if(typeof profile!=='string' || !profile.trim() || typeof first!=='string' || !first.trim()
+          || typeof last!=='string' || !last.trim() || fields.guest_email!=null) throw new Error('INVALID_GUEST_SELECTION');
+        if(candidates.success && candidates.data.items.length && !candidates.data.items.some(candidate=>
+          candidate.native_id===profile && candidate.first_name===first && candidate.last_name===last)) {
+          throw new Error('INVALID_GUEST_SELECTION');
+        }
+      }
+    }
     if(p.workflow==='create') for(const change of input.changes) {
       const match=/^\/bookings\/(\d+)\/fields\/child_(?:count|ages)(?:\/|$)/.exec(change.path);
       const fields=match && valid.bookings[Number(match[1])]?.fields;
