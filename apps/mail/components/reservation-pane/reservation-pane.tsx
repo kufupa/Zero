@@ -13,6 +13,7 @@ import { useReservationWorkbench } from './use-reservation-workbench';
 import { CreateEditor, resolveCreateCmsRecipientDefault } from './editors/create-editor';
 import { useCmsRecipientDefault } from './shared/cms-recipient-default';
 import { QuoteEditor } from './editors/quote-editor';
+import { createReadiness } from '../../../server-pilot/src/ai/reservation-workflow-v2-create-readiness';
 import { AmendEditor, isExactConfirmation } from './editors/amend-editor';
 import { CancelEditor } from './editors/cancel-editor';
 import { AddonsEditor } from './editors/addons-editor';
@@ -416,6 +417,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   const needsCheck = () => checked !== digest || request?.kind === 'amend' && (checkedAmendReview !== null || hasPendingAmendPrice) &&
     !amendPriceReviews.some(row => row.observation.ref === checkedAmendReview) || !hasPendingAmendPrice && Boolean(amendCallbackTargets[0]?.commissionUnknown) ||
     request?.kind === 'quote' && (!quoteObservation || !(Date.parse(text(record(quoteObservation.result).freshUntil)) > Date.now()));
+  const readiness = snapshot && request?.kind === 'create'
+    ? createReadiness(snapshot.session.draft, request.id, needsCheck() ? 'check' : 'execute') : [];
   const pendingAmendReview = amendPriceReviews.find(row => row.observation.ref === checkedAmendReview) ??
     amendPriceReviews.find(row => row.id === activeTarget.current) ?? amendPriceReviews[0];
   const quoteExtras = record(quoteObservation?.result).extrasReviewItems;
@@ -733,6 +736,12 @@ export function ReservationPane(props: ReservationPaneProps) {
       {checked === digest && !pendingAmendReview && amendCallbackTargets[0]?.commissionUnknown && <div className={styles.notice}>
         Infor's agency commission could not be verified. Check the agency again before applying changes.
       </div>}
+      {readiness.length > 0 && <div className={styles.notice} role="status">
+        <strong>Complete before {needsCheck() ? 'checking' : 'saving'} the booking:</strong>
+        <ul>{readiness.map((item, index) => <li key={`${item.code}:${item.path}:${index}`}>
+          <button type="button" onClick={() => focusField(item.path)}>{item.message}</button>
+        </li>)}</ul>
+      </div>}
       {!needsCheck() && !pendingAmendReview && amendCallbackTargets[0] && <div className={styles.notice}>
         For {text(amendCallbackTargets[0].target.confirmation)} · {text(amendCallbackTargets[0].target.arrival)} → {text(amendCallbackTargets[0].target.departure)}.
         {amendCallbackTargets[0].commission && <><br />Agency {amendCallbackTargets[0].commission.name}: Infor selection default TA commission {amendCallbackTargets[0].commission.nativeDefault}%.
@@ -746,7 +755,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p><strong>Guest gets:</strong> {stage.guestGets}</p></>}
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || (capabilitySaveUnavailable && !needsCheck()) || filingLocked || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || readiness.length > 0 || (capabilitySaveUnavailable && !needsCheck()) || filingLocked || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
       {!currentAttention && (workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;
