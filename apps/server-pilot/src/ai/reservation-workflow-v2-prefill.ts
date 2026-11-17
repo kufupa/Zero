@@ -5685,6 +5685,9 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
         row.result.reservationObservations.reservationNote.state === 'observed' &&
         typeof row.result.reservationObservations.reservationNote.value === 'string')) : [];
     if (!sourceNotes.length || matches.length !== 1 || !target) {
+      if (singleRequest) for (const clause of sourceNotes) addProjectionIssue(proposal, `${path}/reservationNote`,
+        'source_note_for_review', `Source text to review: ${clause.slice(0, 1800)}${clause.length > 1800 ? '…' : ''}`,
+        input.evidence.filter((row) => row.relation === 'current_message' && row.text.includes(clause)).map((row) => row.ref));
       addProjectionIssue(proposal, `${path}/reservationNote`, 'saved_note_requires_review',
         'Review the current saved note before adding or replacing reservation instructions.', sourceRefs);
       continue;
