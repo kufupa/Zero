@@ -3730,12 +3730,15 @@ function projectCurrentExtraction(input: {
     evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody };
   const pdfs = currentPdfEvidence(input);
   appendExtractionSourceClaims(proposal, input.extraction, knownRefs);
+  const uncitedIssueExplanation =
+    'Nava could not extract all details from the current email; review the current email for any uncaptured requests.';
   for (const issue of input.extraction.issues) {
     const evidenceRefs = [...new Set(issue.sourceRefs.filter((ref) => knownRefs.has(ref)))].slice(0, 100);
-    if (evidenceRefs.length && proposal.issues.length < 1000 && !proposal.issues.some((row) =>
-      row.kind === 'extraction_issue' && row.explanation === issue.explanation &&
+    const explanation = evidenceRefs.length ? issue.explanation : uncitedIssueExplanation;
+    if (proposal.issues.length < 1000 && !proposal.issues.some((row) =>
+      row.path === '/' && row.kind === 'extraction_issue' && row.explanation === explanation &&
       row.evidenceRefs.length === evidenceRefs.length && evidenceRefs.every((ref) => row.evidenceRefs.includes(ref)))) {
-      proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation: issue.explanation, evidenceRefs });
+      proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation, evidenceRefs });
     }
   }
 
