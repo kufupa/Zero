@@ -230,7 +230,18 @@ app.get('/threads/:id/staff-edits',async c=>{
 });
 return app;
 }
+
+export async function installQuoteArtifacts(app:ReturnType<typeof createApp>) {
+  if(!staffPrepareOnly() || !process.env.NAVA_QUOTE_ARTIFACT_DIR
+      || !(process.env.NAVA_QUOTE_GOTENBERG_URL ?? process.env.GOTENBERG_URL)) return;
+  const path='./quote-artifact-routes.js';
+  const {registerQuoteArtifacts}=await import(path);
+  registerQuoteArtifacts(app);
+}
+
 if (process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   if (!process.env.DATABASE_URL || !process.env.NAVA_API_TOKEN) throw new Error('DATABASE_URL and NAVA_API_TOKEN required');
-  serve({fetch:createApp().fetch,hostname:process.env.NAVA_HOST ?? '127.0.0.1',port:Number(process.env.NAVA_PORT ?? 3107)});
+  const app=createApp();
+  await installQuoteArtifacts(app);
+  serve({fetch:app.fetch,hostname:process.env.NAVA_HOST ?? '127.0.0.1',port:Number(process.env.NAVA_PORT ?? 3107)});
 }

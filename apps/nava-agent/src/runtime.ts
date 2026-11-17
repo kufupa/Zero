@@ -170,7 +170,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
   const stage=p.stage && p.stage.state!=='queued' && p.stage.revision===p.revision ? {
     revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
     display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],
-    ...Object.fromEntries(['job_id','quote_id','observed_fields','coverage','cancellation_fee']
+    ...Object.fromEntries(['job_id','quote_id','observed_fields','coverage','cancellation_fee','artifacts']
       .filter(key=>p.stage[key]!==undefined).map(key=>[key,p.stage[key]])),
   } : null;
   const result=p.phase==='done' && p.result ? {
