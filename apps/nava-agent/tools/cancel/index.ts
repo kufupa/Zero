@@ -1,4 +1,3 @@
-import { prepareSchema, toolName } from './schema.js';
 import { hmsSaveEnabled } from '../../src/hms-mode.js';
 
 export type ToolContext = {
@@ -16,6 +15,7 @@ export type ToolResult = {
 };
 
 type Parsed = {
+  bookingId: string;
   confirmation: string;
   propertyCode: string;
   guestName?: string;
@@ -55,6 +55,7 @@ function parse(input: unknown): Parsed | null {
   const note = details.cancellation_note ?? '';
   if (typeof note !== 'string' || note.length > 200 || /[\p{Cc}]/u.test(note)) return null;
   return {
+    bookingId: booking.id,
     confirmation: booking.reservation_id,
     propertyCode: booking.property_code,
     ...(typeof fields.guest_name === 'string' ? { guestName: fields.guest_name } : {}),
@@ -63,14 +64,22 @@ function parse(input: unknown): Parsed | null {
   };
 }
 
-async function nativeModules() {
+async function nativePreflightModules() {
   const root = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
-  const [preflight, cancel, registry] = await Promise.all([
+  const [preflight, registry] = await Promise.all([
     import(new URL('cancellation-preflight-session.mjs', root).href),
+    import(new URL('property-registry.mjs', root).href),
+  ]);
+  return { preflight, registry };
+}
+
+async function nativeWriterModules() {
+  const root = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
+  const [cancel, registry] = await Promise.all([
     import(new URL('pane-cancel-session.mjs', root).href),
     import(new URL('property-registry.mjs', root).href),
   ]);
-  return { preflight, cancel, registry };
+  return { cancel, registry };
 }
 
 function nativeFailure(result: NativeResult): ToolResult {
@@ -87,7 +96,7 @@ function commonInput(target: Parsed, transportId: string, context: ToolContext) 
   };
 }
 
-async function labStage(target: Parsed, transportId: string, context: ToolContext, cancel: Awaited<ReturnType<typeof nativeModules>>['cancel']) {
+async function labStage(target: Parsed, transportId: string, context: ToolContext, cancel: Awaited<ReturnType<typeof nativeWriterModules>>['cancel']) {
   return cancel.runCloudPaneCancel({ ...commonInput(target, transportId, context), mode: 'preview',
     previewStage: { reasonLabel: 'Test Reservations', cancellationNote: target.note } });
 }
@@ -111,6 +120,27 @@ function labTarget(target: Parsed): boolean {
     target.arrival !== undefined && target.arrival >= '2027-01-01' && target.scope === 'whole_stay';
 }
 
+function preflightDisplay(result: NativeResult, bookingId: string) {
+  const stay = object(result.stay) ? result.stay : {};
+  const observed = (value: unknown) => object(value) && value.state === 'observed' && typeof value.value === 'string'
+    ? value.value : null;
+  const row = (id: string, label: string, nativePath: string, value: string | null) =>
+    ({ id, booking_id: bookingId, label, native_path: nativePath, kind: 'text' as const, value });
+  const scope = object(result.roomScope) ? result.roomScope : {};
+  const policy = object(result.policy) ? result.policy : {};
+  const fee = object(result.fee) ? result.fee : {};
+  return [
+    row('target', 'Reservation', '/target/confirmation', object(result.target) && typeof result.target.confirmation === 'string' ? result.target.confirmation : null),
+    row('status', 'Current status', '/stay/status', observed(stay.status)),
+    row('arrival', 'Arrival', '/stay/arrivalDate', observed(stay.arrivalDate)),
+    row('departure', 'Departure', '/stay/departureDate', observed(stay.departureDate)),
+    row('scope', 'Requested scope', '/roomScope/requested', typeof scope.requested === 'string' ? scope.requested : null),
+    row('scope-coverage', 'Scope verification', '/roomScope/complete', scope.complete === true ? 'Complete' : 'Incomplete; staff review required'),
+    row('policy', 'Cancellation policy', '/policy/state', policy.state === 'unknown' ? 'Not verified by this read' : null),
+    row('fee', 'Cancellation fee', '/fee/state', fee.state === 'unknown_precommit' ? 'Unknown before commit' : null),
+  ];
+}
+
 export async function prepare(input: unknown, context: ToolContext): Promise<ToolResult> {
   const target = parse(input);
   if (!target) return error('INVALID_CANCEL_INPUT', 'Provide one cancellation target and action.');
@@ -121,24 +151,18 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (context.signal?.aborted) return error('ABORTED', 'Cancellation preparation was aborted.');
   if (!context.credentialLease) return error('HMS_SHARED_LEASE_REQUIRED', 'The host must supply a native shared HMS credential lease.');
   try {
-    const { preflight, cancel, registry } = await nativeModules();
+    const { preflight, registry } = await nativePreflightModules();
     const property = registry.getPropertyRegistration(target.propertyCode);
     if (!property?.active || !text(property.mailboxTransportId)) return error('HMS_PROPERTY_UNSUPPORTED', 'Property is not supported.');
-    if (context.mode === 'labtest') {
-      if (!labTarget(target)) return error('LABTEST_TARGET_REQUIRED', 'Use one whole Proof Labtest stay at HRCEN with arrival in 2027 or later.');
-      const stage: NativeResult = await labStage(target, property.mailboxTransportId, context, cancel);
-      const refusal = validateStage(stage);
-      if (refusal) return refusal;
-      return success({ outcome: 'staged', expected: stage.expected, staged: stage.staged,
-        policy_facts: stage.policyFacts ?? [], fee: { state: 'unknown_precommit' }, request_dispatched: false });
-    }
     return await preflight.withCancellationPreflightSession(async ({ runTool }: { runTool: (request: unknown) => Promise<NativeResult> }) => {
       const read = await runTool({ tool: 'read', confirmation: target.confirmation,
         ...(target.guestName ? { guestName: target.guestName } : {}),
         ...(target.arrival ? { arrivalDate: target.arrival } : {}) });
       if (read.outcome !== 'ok') return nativeFailure(read);
       const result = await runTool({ tool: 'prepareCancellation', requestedScope: target.scope });
-      return result.outcome === 'prepared_for_human_review' ? success(result) : nativeFailure(result);
+      if (result.outcome !== 'prepared_for_human_review') return nativeFailure(result);
+      return success({ ...result, display_rows: preflightDisplay(result, target.bookingId),
+        cancellation_fee: result.fee ?? null, request_dispatched: false });
     }, { propertyCode: target.propertyCode, transportId: property.mailboxTransportId,
       confirmation: target.confirmation, signal: context.signal, credentialLease: context.credentialLease });
   } catch (cause) {
@@ -164,7 +188,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   const executionId = input.executionId;
   let markerStarted = false;
   try {
-    const { cancel, registry } = await nativeModules();
+    const { cancel, registry } = await nativeWriterModules();
     const property = registry.getPropertyRegistration(target.propertyCode);
     if (!property?.active || !text(property.mailboxTransportId)) return error('HMS_PROPERTY_UNSUPPORTED', 'Property is not supported.');
     const stage: NativeResult = await labStage(target, property.mailboxTransportId, context, cancel);
@@ -208,10 +232,3 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     return error(code, 'Native cancellation failed before dispatch.');
   }
 }
-
-export const tools = [{
-  name: toolName,
-  description: 'Prepare cancellation facts for one reservation. Live mode reads only; Labtest mode stages without saving.',
-  input_schema: prepareSchema,
-  run: prepare,
-}];
