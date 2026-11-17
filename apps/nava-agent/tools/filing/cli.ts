@@ -30,6 +30,12 @@ async function main(): Promise<void> {
       (flags.has('--fixture') && (!flags.has('--labtest') || flags.has('--inspect')))) throw new Error('INVALID_CLI_OPTIONS');
   const input: unknown = JSON.parse(readFileSync(0, 'utf8'));
   const context: ToolContext = { sessionId: 'filing-cli', mode: flags.has('--labtest') ? 'labtest' : 'live' };
+  // The CLI operator supplies the selected booking; production must bind this to the session's authorized selection.
+  const booking = typeof input === 'object' && input !== null && 'booking' in input &&
+    typeof input.booking === 'object' && input.booking !== null ? input.booking : null;
+  context.authorizeTarget = async target => Boolean(booking && 'id' in booking && 'property_code' in booking &&
+    'reservation_id' in booking && target.sessionId === context.sessionId && target.bookingId === booking.id &&
+    target.propertyCode === booking.property_code && target.reservationId === booking.reservation_id);
   if (flags.has('--fixture')) {
     context.resolveAttachment = async ref => ref.messageId === 'labtest-message' &&
       ref.attachmentId === 'labtest-pdf' && ref.handle === 'generated-labtest-pdf'

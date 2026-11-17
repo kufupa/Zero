@@ -7,9 +7,13 @@ export type ToolContext = {
   mode: 'live' | 'labtest' | 'historical';
   signal?: AbortSignal;
   hmsCredentialLease?: unknown;
+  authorizeTarget?: (request: TargetAuthorization, options: { signal: AbortSignal }) => Promise<boolean>;
   resolveAttachment?: (request: AttachmentReference, options: { signal: AbortSignal }) => Promise<TrustedAttachment | null>;
 };
 
+export type TargetAuthorization = {
+  sessionId: string; bookingId: string; propertyCode: string; reservationId: string | null; confirmation: string;
+};
 type AttachmentReference = {
   sessionId: string;
   messageId: string;
@@ -105,20 +109,32 @@ function matchesAttachment(reference: AttachmentReference, attachment: TrustedAt
     attachment.bytes.subarray(0, 5).equals(Buffer.from('%PDF-')));
 }
 
-async function resolveAttachment(context: ToolContext, reference: AttachmentReference): Promise<TrustedAttachment | null> {
-  if (!context.resolveAttachment) return null;
+function effectiveSignal(context: ToolContext): AbortSignal | undefined {
+  const lease = context.hmsCredentialLease;
+  const leaseSignal = object(lease) && lease.signal instanceof AbortSignal ? lease.signal : undefined;
+  return context.signal && leaseSignal ? AbortSignal.any([context.signal, leaseSignal]) : context.signal ?? leaseSignal;
+}
+
+async function bounded<T>(context: ToolContext, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const timeout = AbortSignal.timeout(60_000);
   const signal = context.signal ? AbortSignal.any([context.signal, timeout]) : timeout;
   signal.throwIfAborted();
-  const resolver = context.resolveAttachment;
   return new Promise((resolve, reject) => {
     const onAbort = () => { signal.removeEventListener('abort', onAbort); reject(signal.reason); };
     signal.addEventListener('abort', onAbort, { once: true });
-    Promise.resolve().then(() => resolver(reference, { signal })).then(
+    Promise.resolve().then(() => operation(signal)).then(
       value => { signal.removeEventListener('abort', onAbort); resolve(value); },
       error => { signal.removeEventListener('abort', onAbort); reject(error); },
     );
   });
+}
+
+async function authorize(context: ToolContext, request: TargetRequest): Promise<boolean> {
+  const check = context.authorizeTarget;
+  if (!check) return false;
+  const target = { sessionId: context.sessionId, bookingId: request.bookingId, propertyCode: request.propertyCode,
+    reservationId: request.reservationId, confirmation: request.confirmation };
+  return (await bounded(context, signal => check(target, { signal }))) === true;
 }
 
 async function nativeModules(): Promise<NativeModules> {
@@ -175,11 +191,15 @@ async function observeTarget(native: NativeModules, request: TargetRequest, cont
 export async function inspect(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (context?.mode === 'historical') return failure('HISTORICAL_HMS_UNAVAILABLE', 'Historical sessions cannot access live HMS.');
   if (!context || !text(context.sessionId) || !['live', 'labtest'].includes(context.mode)) return failure('INVALID_CONTEXT', 'Server session context is invalid.');
+  context = { ...context, signal: effectiveSignal(context) };
   if (context.signal?.aborted) return failure('ABORTED', 'Filing document lookup was aborted.');
   const request = object(input) ? parseBooking(input.booking) : null;
   if (!request) return failure('INVALID_FILING_INPUT', 'One booking with its exact confirmation is required.');
+  if (typeof context.authorizeTarget !== 'function') return failure('TARGET_AUTHORIZATION_UNAVAILABLE', 'Session-authorized booking selection is unavailable.');
   if (!context.hmsCredentialLease) return failure('HMS_ADMISSION_UNAVAILABLE', 'A lease from the existing shared HMS admission service is required.');
   try {
+    if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
+    context.signal?.throwIfAborted();
     const native = await nativeModules();
     const property = native.getPropertyRegistration(request.propertyCode);
     if (!property?.active) return failure('PROPERTY_UNAVAILABLE', 'The selected HMS property is unavailable.');
@@ -200,14 +220,18 @@ export async function inspect(input: unknown, context: ToolContext): Promise<Too
 export async function prepare(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (context?.mode === 'historical') return failure('HISTORICAL_HMS_UNAVAILABLE', 'Historical sessions cannot access live HMS.');
   if (!context || !text(context.sessionId) || !['live', 'labtest'].includes(context.mode)) return failure('INVALID_CONTEXT', 'Server session context is invalid.');
+  context = { ...context, signal: effectiveSignal(context) };
   if (context.signal?.aborted) return failure('ABORTED', 'Filing preflight was aborted.');
   const request = parse(input);
   if (!request) return failure('INVALID_FILING_INPUT', 'One booking, its exact confirmation, and one selected attachment are required.');
+  if (typeof context.authorizeTarget !== 'function') return failure('TARGET_AUTHORIZATION_UNAVAILABLE', 'Session-authorized booking selection is unavailable.');
   if (typeof context.resolveAttachment !== 'function') return failure('ATTACHMENT_SOURCE_UNAVAILABLE', 'Session-authorized attachment resolver is unavailable.');
   if (!context.hmsCredentialLease) return failure('HMS_ADMISSION_UNAVAILABLE', 'A lease from the existing shared HMS admission service is required.');
   const reference = { sessionId: context.sessionId, ...request.ref };
   try {
-    const attachment = await resolveAttachment(context, reference);
+    if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
+    const resolver = context.resolveAttachment;
+    const attachment = await bounded(context, signal => resolver(reference, { signal }));
     context.signal?.throwIfAborted();
     if (!matchesAttachment(reference, attachment)) return failure('ATTACHMENT_UNAVAILABLE', 'The selected session attachment is not an available PDF.');
     const bytes = Buffer.from(attachment.bytes);
