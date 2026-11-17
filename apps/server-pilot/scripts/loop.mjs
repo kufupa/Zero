@@ -256,8 +256,8 @@ export async function native(payload, directory) {
     if (error instanceof Error && /^HMS command Failed:.*LOOP_ERROR /s.test(error.message)) remoteFinished = true;
     throw error;
   } finally {
+    await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
     if (remoteFinished) {
-      await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
       await exec('aws', ['s3', 'rm', `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/`, '--recursive',
         '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
       await sendSsm([`sudo -u ubuntu rm -rf ${remote}`], 60).catch(() => {});
@@ -399,7 +399,7 @@ async function prepareEmail(entry, options, outputDir) {
     if (incomplete?.result?.fields?.length) result.reason += `: ${incomplete.result.fields.join(', ')}`;
     if (result.status === 'PASS' && artifacts.some(stage => stage.result?.unavailableInventory)) result.reason = 'HMS unavailable; unsent decline prepared';
     if (!hasArtifacts) result.reason ||= 'Cover email, PDF or XLSX unavailable';
-  } catch (error) { result.reason = error instanceof Error ? error.message : 'Unknown error'; }
+  } catch (error) { result.reason = errorReason(error, 'HMS'); }
   finally { result.timings.hms = (performance.now() - at) / 1000; result.timings.total += result.timings.hms; }
 }
 async function main() {
