@@ -19,6 +19,13 @@ const [client, mail, auth, state, quote, create, amend, cancel, filing] = await 
   load('src/ai/reservation-workflow-v2-cancel.ts'), load('src/ai/reservation-workflow-v2-filing.ts'),
 ]);
 const live = client.createDb(process.env.DATABASE_URL);
+const attachmentSnapshot = files => files.map(file => ({
+  id: file.id, messageId: file.messageId ?? file.message_id, filename: file.filename,
+  mimeType: file.mimeType ?? file.mime_type, sizeBytes: Number(file.sizeBytes ?? file.size_bytes),
+  sha256: file.sha256 ?? null, sourceAttachmentId: file.sourceAttachmentId ?? file.source_attachment_id ?? null,
+  s3Key: file.s3Key ?? file.s3_key ?? null, isInline: file.isInline ?? file.is_inline,
+  contentId: file.contentId ?? file.content_id ?? null,
+})).sort((a, b) => a.id.localeCompare(b.id));
 try {
   const current = await live.conn.begin('isolation level repeatable read read only', async sql => {
     const transports = await sql`select id, email, owner_header_value, mailbox_type, display_name, is_active
@@ -33,6 +40,8 @@ try {
     return { transport: transports[0], messages, attachments, ingest };
   });
   if (!current.transport) throw Error('live_mailbox_unavailable');
+  if (input.attachmentSnapshot && JSON.stringify(attachmentSnapshot(current.attachments)) !== JSON.stringify(input.attachmentSnapshot))
+    throw Error('live_attachments_changed');
   input.transport = { id: current.transport.id, email: current.transport.email, ownerHeaderValue: current.transport.owner_header_value,
     mailboxType: current.transport.mailbox_type, displayName: current.transport.display_name, isActive: current.transport.is_active };
   const selected = current.messages.find(row => row.id === input.source.messageId);
@@ -88,11 +97,16 @@ try {
       load('src/mail/ingest/attachment-evidence.ts'),
     ]);
     input.loaded = await live.db.transaction(async db => {
+      const attachmentRows = await db.select({ attachment: mail.attachment }).from(mail.attachment)
+        .innerJoin(mail.message, eq(mail.attachment.messageId, mail.message.id))
+        .where(eq(mail.message.threadId, input.source.threadId));
+      const attachments = attachmentSnapshot(attachmentRows.map(row => row.attachment));
+      if (JSON.stringify(attachments) !== JSON.stringify(attachmentSnapshot(current.attachments))) throw Error('live_attachments_changed');
       const selection = await loadSyncedQuoteSelectionFromMailbox({ db, transportId: input.transport.id, messageId: input.source.messageId,
         includeThreadState: true, sourceCutoffOnly: true, includeVisionImages: true, trackVisionImages: true, signal: AbortSignal.timeout(60_000) });
       if (!selection) throw Error('live_selection_unavailable');
       const evidence = await reservationArrivalEvidence(db, input.source.messageId);
-      return { selection, source: input.source, mailboxAddress: input.transport.email,
+      return { selection, source: input.source, attachmentSnapshot: attachments, mailboxAddress: input.transport.email,
         attachmentEvidenceUnknown: attachmentEvidenceUnknown(selected.source_provenance),
         contextAttachmentEvidenceUnknown: evidence.attachmentEvidenceUnknown,
         hasPersistedNonInlineAttachment: fileAttachmentPresence(current.attachments.some(file => file.message_id === selected.id && !file.is_inline), selected.source_provenance) === true,
@@ -116,7 +130,8 @@ const propertyCode = input.propertyCode;
 const addresses = value => (value ?? []).map(item => typeof item === 'string' ? item : item?.email).filter(item => typeof item === 'string' && item.trim());
 const date = value => value && Number.isFinite(Date.parse(value)) ? new Date(value) : null;
 let requestCount = 0;
-const checkpoint = stages => writeFile(join(outputDir, 'native.json'), JSON.stringify({ stages, requests: requestCount }), { mode: 0o600 });
+const assumptions = [];
+const checkpoint = stages => writeFile(join(outputDir, 'native.json'), JSON.stringify({ stages, assumptions, requests: requestCount }), { mode: 0o600 });
 const stage = async (name, requestId, fn, stages) => {
   const started = performance.now();
   const record = { name, requestId, seconds: 0, result: { status: 'running' } };
@@ -199,19 +214,60 @@ try {
   };
   const [lookup, prepare] = adapters[input.workflow];
   for (const request of requests) {
+    const quotePath = relative => `/proposal/content/requests/${encodeURIComponent(request.id)}/body/${relative}`;
+    const editQuote = async (relative, value, reason) => {
+      const edited = await state.editReservationWorkflowV2Draft(stateCtx, { ...await refresh(), fieldPath: quotePath(relative),
+        value: { state: 'set', value, updatedAt: new Date().toISOString() } });
+      if (edited.status !== 'ok') throw Error(`quote_simulated_edit:${edited.status}`);
+      assumptions.push({ requestId: request.id, field: relative, value, reason });
+    };
+    const reviewQuote = async fieldPath => {
+      const reviewed = await state.reviewReservationWorkflowV2Draft(stateCtx, { ...await refresh(), fieldPath,
+        decision: 'accepted', note: 'Replay simulation; not staff approval' });
+      if (reviewed.status !== 'ok') throw Error(`quote_simulated_review:${reviewed.status}`);
+      assumptions.push({ requestId: request.id, field: fieldPath, reason: 'Replay accepted proposed field for an unsent illustration' });
+    };
     if (request.kind === 'quote') {
-      const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/outputIntent/artifacts`;
-      const edited = await state.editReservationWorkflowV2Draft(stateCtx, { ...await refresh(), fieldPath: path,
-        value: { state: 'set', value: ['email_quote', 'pdf_quote', 'xlsx_quote'], updatedAt: new Date().toISOString() } });
-      if (edited.status !== 'ok') throw Error(`quote_output_selection:${edited.status}`);
+      await editQuote('outputIntent/artifacts', ['email_quote', 'pdf_quote', 'xlsx_quote'], 'Requested replay outputs');
+      if (request.body.salesStrategy == null) await editQuote('salesStrategy', 'BAR', 'Illustrative public-rate search');
+      if (request.body.provisionalBookingRequested == null)
+        await editQuote('provisionalBookingRequested', false, 'Quote-only replay; no booking is made');
     }
-    await stage('lookup', request.id, async () => lookup(ctx, { ...await refresh(), requestId: request.id }), stages);
+    const lookedUp = await stage('lookup', request.id, async () => lookup({ ...ctx, signal: AbortSignal.timeout(70_000) },
+      { ...await refresh(), requestId: request.id }), stages);
+    if (request.kind === 'quote') {
+      await refresh();
+      const discovery = quote.compileReservationWorkflowV2Quote(current.draft, request, false);
+      const priced = lookedUp.quotes?.find(row => row.requestId === request.id && row.status === 'priced');
+      if (discovery.status === 'ok' && discovery.input.salesStrategy === 'BAR' && priced) {
+        for (const [index, group] of discovery.input.groups.entries()) {
+          const offers = (priced.quote?.rateOptions ?? []).filter(row => row.groupId === group.id && row.roomCode &&
+            row.rateCode === 'BAR' && row.contract === false && row.matchesRequest === true &&
+            row.mealPlan === group.mealPlan && (!group.rateCode || group.rateCode === row.rateCode) &&
+            (!group.roomCodes?.length || group.roomCodes.length === 1 && group.roomCodes[0] === row.roomCode) &&
+            Number.isSafeInteger(row.totalMinor) && row.totalMinor > 0)
+            .sort((a, b) => a.totalMinor - b.totalMinor || a.roomCode.localeCompare(b.roomCode));
+          const offer = offers[0];
+          if (!offer) continue;
+          for (const [field, value] of [['roomCodes', [offer.roomCode]], ['ratePlan', offer.rateCode], ['mealPlan', offer.mealPlan]])
+            await editQuote(`groups/${index}/${field}`, value, 'Illustrative matching BAR offer from HMS');
+        }
+        await refresh();
+        const compiled = quote.compileReservationWorkflowV2Quote(current.draft, request, true);
+        if (compiled.issue === 'quote_requires_staff_acceptance') {
+          for (const path of compiled.fields.filter(field => field.startsWith('/') && !field.includes(':'))) await reviewQuote(path);
+        }
+      }
+    }
     const targets = request.kind === 'create' ? request.body.allocations ?? [] :
       ['amend', 'cancel'].includes(request.kind) ? request.body.targets?.include ?? [] : [null];
     for (const target of targets.length ? targets : [null]) {
-      const result = await stage('prepare', request.id, async () => prepare(ctx, { ...await refresh(), requestId: request.id,
+      const result = await stage('prepare', request.id, async () => prepare({ ...ctx, signal: AbortSignal.timeout(70_000) }, { ...await refresh(), requestId: request.id,
         ...(target ? { allocationId: target.id } : {}) }), stages);
       if (request.kind === 'quote' && result.status === 'prepared') {
+        await refresh();
+        const observation = current.draft.observations.find(row => row.ref === result.observationRef);
+        if (observation?.result?.extrasReviewItems?.length) await reviewQuote(quotePath('').replace(/\/$/, ''));
         const output = await stage('artifacts', request.id, async () => quote.reservationWorkflowV2QuoteExecute(ctx, {
           ...await refresh(), requestId: request.id, go: true, idempotencyKey: randomUUID(),
         }), stages);
@@ -228,7 +284,7 @@ try {
       }
     }
   }
-  await writeFile(join(outputDir, 'native.json'), JSON.stringify({ stages, requests: requests.length }, null, 2), { mode: 0o600 });
+  await writeFile(join(outputDir, 'native.json'), JSON.stringify({ stages, assumptions, requests: requests.length }, null, 2), { mode: 0o600 });
   }
 } finally {
   client.__setDbForTests(null);

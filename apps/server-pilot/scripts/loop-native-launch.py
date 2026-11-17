@@ -4,11 +4,9 @@ import os
 import re
 import secrets
 import shutil
-import signal
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -72,47 +70,8 @@ try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { awa
         process = subprocess.Popen([str(nodebin / 'node'), '--import', 'tsx', str(run / 'runner.mjs'),
                                     str(run / 'input.json'), str(output)], cwd=pilot, env=env,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
-        timed_out = False
-        stage_key = None
-        stage_started = time.monotonic()
-        stage_limit = 85
-        while True:
-            try:
-                _, error = process.communicate(timeout=1)
-                break
-            except subprocess.TimeoutExpired:
-                try:
-                    stages = json.loads((output / 'native.json').read_text()).get('stages', [])
-                    latest = stages[-1] if stages else None
-                    key = (len(stages), latest.get('name')) if latest else None
-                    if key != stage_key:
-                        stage_key = key
-                        stage_started = time.monotonic()
-                        stage_limit = 300 if latest and latest.get('name') == 'artifacts' else 85
-                except (OSError, ValueError, TypeError, AttributeError):
-                    pass
-                if time.monotonic() - stage_started < stage_limit:
-                    continue
-                timed_out = True
-                break
-        if timed_out:
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.communicate(timeout=4)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.communicate()
-            output.mkdir(mode=0o700, exist_ok=True)
-            result_path = output / 'native.json'
-            try:
-                result = json.loads(result_path.read_text())
-            except (OSError, ValueError):
-                result = {'stages': [], 'requests': 0}
-            result['stages'].append({'name': 'timeout', 'seconds': stage_limit,
-                                     'result': {'status': 'failed', 'issue': 'artifact_generation_timed_out'
-                                                if stage_key and stage_key[1] == 'artifacts' else 'native_case_timed_out'}})
-            result_path.write_text(json.dumps(result))
-        if process.returncode and not timed_out:
+        _, error = process.communicate()
+        if process.returncode:
             match = re.search(rb'(?m)^Error: ([a-zA-Z0-9_:-]{1,100})$', error or b'')
             raise RuntimeError('native_case_failed' + (':' + match.group(1).decode() if match else ''))
         files = []
