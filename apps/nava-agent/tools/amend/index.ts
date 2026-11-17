@@ -136,6 +136,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (selected.propertyCode !== property.propertyCode || selected.confirmation !== shallow.confirmation ||
         (confirmation.includes('-') ? selected.confirmation !== confirmation : selected.confirmation.split('-')[0] !== confirmation) ||
         (booking.reservation_id !== null && booking.reservation_id !== selected.reservationStayId &&
+          booking.reservation_id !== selected.reservationId &&
           booking.reservation_id !== selected.confirmation && booking.reservation_id !== selected.confirmation.split('-')[0]) ||
         (expectedArrival?.data !== undefined && expectedArrival.data !== selected.arrival)) {
       return refuse('AMEND_TARGET_MISMATCH', 'Fresh read did not match the requested stay identity.');
