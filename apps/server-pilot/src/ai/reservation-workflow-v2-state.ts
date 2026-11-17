@@ -24,6 +24,7 @@ import {
   separatedQuoteMoneyLinked,
   RESERVATION_PREFILL_SCHEMA_VERSION,
   RESERVATION_WORKFLOW_V2_VERSION,
+  hasFullCausalAttachmentCoverageProof,
   reservationWorkflowV2DraftSchema,
   reservationWorkflowV2ExtractionSchema,
   reservationWorkflowV2FieldOverrideSchema,
@@ -145,12 +146,6 @@ function storedReservationWorkflowV2Draft(draft: ReservationWorkflowV2Draft): Re
 
 /** A no-action decision is valid only on a complete, issue-free, error-free, zero-request/operation extraction. */
 function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boolean {
-  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
-  const sourceObsComplete = Boolean(
-    sourceObs &&
-    sourceObs.coverage.complete === true &&
-    sourceObs.result?.textCoverageComplete === true,
-  );
   return draft.status === 'ready' &&
     Boolean(draft.extraction) &&
     draft.extractionGenerationId === draft.generationId &&
@@ -159,7 +154,7 @@ function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boole
     !draft.extraction?.issues?.length &&
     !draft.proposal.issues?.length &&
     draft.errors.length === 0 &&
-    sourceObsComplete;
+    hasFullCausalAttachmentCoverageProof(draft);
 }
 
 /** The intake decision applies only while it still binds to this exact draft. */

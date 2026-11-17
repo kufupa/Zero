@@ -1187,10 +1187,9 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
       row.relation === 'current_message' && row.text === sourceText(selection))) return false;
   const audit = new Map(input.attachmentReads.map((row) => [row.id, row.status]));
   const admitted = [...selection.attachments, ...(selection.threadAttachments ?? [])];
-  if (selection.persistedNonInlineAttachmentIds) {
-    const admittedIds = new Set(admitted.map((attachment) => attachment.id));
-    if (selection.persistedNonInlineAttachmentIds.some((id) => !admittedIds.has(id))) return false;
-  }
+  if (!Array.isArray(selection.persistedNonInlineAttachmentIds)) return false;
+  const admittedIds = new Set(admitted.map((attachment) => attachment.id));
+  if (selection.persistedNonInlineAttachmentIds.some((id) => !admittedIds.has(id))) return false;
   return admitted.every(attachment => {
     if (attachment.isInline) return true;
     // Unprocessed, unread, unsupported or partially masked bytes are never complete.
@@ -6517,11 +6516,21 @@ export async function runReservationWorkflowV2Prefill(input: {
     input.contextAttachmentEvidenceUnknown !== true &&
     completeCurrentSourceText({ source: input.source, selection: input.selection, evidence,
       attachmentReads: vision.attachmentReads });
+  const fullCausalAttachmentCoverage = textCoverageComplete && Array.isArray(input.selection.persistedNonInlineAttachmentIds)
+    ? {
+        version: 1 as const,
+        complete: true as const,
+        adjudicatedBy: 'host' as const,
+        persistedNonInlineAttachmentCount: input.selection.persistedNonInlineAttachmentIds.length,
+        admittedNonInlineAttachmentCount: admittedAttachments.filter((attachment) => !attachment.isInline).length,
+      }
+    : undefined;
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });
   const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
     generationId, propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
     status: vision.attachmentReads.some((row) => row.status !== 'read') ? 'partial' : 'complete',
     result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads, textCoverageComplete,
+      ...(fullCausalAttachmentCoverage ? { fullCausalAttachmentCoverage } : {}),
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];

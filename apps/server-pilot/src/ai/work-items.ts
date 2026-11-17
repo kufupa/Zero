@@ -95,6 +95,7 @@ import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-st
 import { reservationArrivalEvidenceBatch } from './reservation-workflow-v2-evidence.js';
 import {
   reservationWorkflowV2DraftSchema,
+  hasFullCausalAttachmentCoverageProof,
   reservationWorkflowV2IntakeSchema,
   type ReservationWorkflowV2Draft,
   type ReservationWorkflowV2Intake,
@@ -2781,18 +2782,12 @@ function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationW
   const { decision, generationId, sourceHash } = intake.data.disposition;
   if (decision !== 'no_action' || generationId !== draft.generationId ||
       sourceHash !== draft.source.sourceHash) return null;
-  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
-  const sourceObsComplete = Boolean(
-    sourceObs &&
-    sourceObs.coverage.complete === true &&
-    sourceObs.result?.textCoverageComplete === true,
-  );
   if (draft.status !== 'ready' || !draft.extraction ||
       draft.extractionGenerationId !== draft.generationId ||
       draft.extraction.issues?.length ||
       draft.proposal.issues?.length ||
       draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0 ||
-      draft.errors.length > 0 || !sourceObsComplete) return null;
+      draft.errors.length > 0 || !hasFullCausalAttachmentCoverageProof(draft)) return null;
   return intake.data;
 }
 
