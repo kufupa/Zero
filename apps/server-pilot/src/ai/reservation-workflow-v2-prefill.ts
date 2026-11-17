@@ -1496,8 +1496,8 @@ function buildFallbackProposal(input: {
   for (const request of projected) {
     if (request.kind !== 'quote') continue;
     const extracted = requests.find((candidate) => candidate.id === request.id && candidate.kind === 'quote');
-    const unbound = extracted && retainQuoteRoomHints(request, extracted, currentRefs, input.evidence);
-    if (unbound) {
+    const unboundRooms = extracted ? retainQuoteRoomHints(request, extracted, currentRefs, input.evidence) : [];
+    for (const unbound of unboundRooms) {
       const path = `/requests/${request.id}/body/groups`;
       const sourceRefs = unbound.hint.sourceRefs.filter((ref) => currentRefs.has(ref));
       sourceClaims.push({ path, raw: unbound.hint.raw, sourceRefs });
@@ -2268,8 +2268,7 @@ function roomDescription(claim: { raw: string; value: unknown; sourceRefs: strin
 }
 
 function quoteRoomHintKey(value: unknown): string {
-  return normalizedFact(value).replace(/^\s*\d{1,3}\s*(?:[x×-]\s*)?/u, '')
-    .replace(/\s*\([^()]*\)\s*$/u, '').replace(/\brooms\b/gu, 'room').trim();
+  return normalizedFact(value).replace(/\s*\([^()]*\)\s*$/u, '').replace(/\brooms\b/gu, 'room').trim();
 }
 
 function containsWholeFact(haystack: unknown, needle: unknown): boolean {
@@ -2304,11 +2303,12 @@ function retainQuoteRoomHints(
   evidence: ReservationWorkflowV2Evidence[],
 ) {
   const hints = extracted.roomTypeHints.flatMap((hint) => {
-    if (!currentClaim(hint, currentRefs)) return [];
+    if (!currentClaim(hint, currentRefs) || !evidence.some((row) => currentRefs.has(row.ref) &&
+        hint.sourceRefs.includes(row.ref) && containsWholeFact(row.text, hint.raw))) return [];
     const description = (roomDescription(hint, currentRefs, false) ?? hint.raw.slice(0, 1000)).trim();
     return description ? [{ hint, description }] : [];
   });
-  if (!hints.length) return;
+  if (!hints.length) return [];
   const original = request.body.groups;
   const used = new Set<string>();
   const roomKey = quoteRoomHintKey;
@@ -2324,7 +2324,7 @@ function retainQuoteRoomHints(
       return matched
         ? { ...group, requestedRoomDescription: description } : { ...group, sourceAssociationUnresolved: true };
     });
-    return unbound ? hints[0] : undefined;
+    return unbound ? [hints[0]!] : [];
   }
   const groups = hints.map(({ hint, description }, index) => {
     const counted = /^\s*(\d{1,3})\s*(?:[x×-]\s*)?(.+?\brooms?)(?:\s*\([^()]*\))?\s*$/iu.exec(hint.raw);
@@ -2369,9 +2369,9 @@ function retainQuoteRoomHints(
     else {
       request.body.groups = original.map((group) => group.arrival || group.departure
         ? { ...group, sourceAssociationUnresolved: true } : group);
-      return hints[0];
+      return [hints[0]!];
     }
-    return undefined;
+    return [];
   }
   const retained = original.map((group) => {
     const matched = groups.find(candidate => candidate.id === group.id);
@@ -2380,7 +2380,15 @@ function retainQuoteRoomHints(
       groups.some((source) => source.arrival === group.arrival && source.departure === group.departure);
     return overlaps ? { ...group, sourceAssociationUnresolved: true } : group;
   });
-  request.body.groups = [...retained, ...groups.filter(group => !used.has(group.id))];
+  const hasDatedGroup = retained.some((group) => group.arrival || group.departure);
+  const unbound = hints.filter((_, index) => {
+    const group = groups[index]!;
+    return !used.has(group.id) && hasDatedGroup && !group.arrival && !group.departure;
+  });
+  request.body.groups = [...retained.map((group) => unbound.length && (group.arrival || group.departure)
+    ? { ...group, sourceAssociationUnresolved: true } : group),
+  ...groups.filter((group, index) => !used.has(group.id) && !unbound.includes(hints[index]!))];
+  return unbound;
 }
 
 function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): boolean {
@@ -5031,8 +5039,8 @@ function projectCurrentExtraction(input: {
             `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${groupIndex}/requestedMealPlan`, claim, currentRefs);
         }
       }
-      const unboundRoom = retainQuoteRoomHints(request, extracted, currentRefs, input.evidence);
-      if (unboundRoom) {
+      const unboundRooms = retainQuoteRoomHints(request, extracted, currentRefs, input.evidence);
+      for (const unboundRoom of unboundRooms) {
         const path = `/requests/${request.id}/body/groups`;
         appendProjectedSource(proposal, path, unboundRoom.hint, currentRefs);
         addProjectionIssue(proposal, path, 'quote_room_scope_ambiguous',

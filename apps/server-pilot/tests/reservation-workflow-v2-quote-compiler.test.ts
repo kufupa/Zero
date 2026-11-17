@@ -131,6 +131,39 @@ function fields(value: ReservationWorkflowV2Draft, execute = false): string[] {
 }
 
 describe('reservation workflow v2 Quote compiler staff edits', () => {
+  it('requires a staff relationship choice for different-date options before splitting', async () => {
+    const value = draft();
+    const request = value.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('quote fixture missing');
+    request.body.groups.push({ ...structuredClone(request.body.groups[0]!), id: 'group-2',
+      arrival: '2027-02-05', departure: '2027-02-06' });
+    const path = `${requestRoot}/quoteComposition`;
+    const issue = `${path}:quote_relationship_unresolved`;
+    expect(fields(value)).toContain(issue);
+    backend.mutate.mockImplementation(async (_ctx, _input, mutation) => mutation.apply(value, {}));
+    expect(await changeReservationWorkflowV2Rows({} as never, { kind: 'split_quote_dates', requestId: request.id } as never)).toBeNull();
+
+    value.fieldOverrides[path] = { state: 'set', value: { kind: 'additive' }, updatedAt: now };
+    expect(fields(value)).not.toContain(issue);
+    const additive = structuredClone(value);
+    backend.mutate.mockImplementation(async (_ctx, _input, mutation) => mutation.apply(additive, {}));
+    const additiveSplit = await changeReservationWorkflowV2Rows({} as never, { kind: 'split_quote_dates', requestId: request.id } as never) as unknown as { draft: ReservationWorkflowV2Draft } | null;
+    const combined = additiveSplit?.draft.proposal.content.requests.find(row => row.kind === 'quote');
+    expect(combined?.kind === 'quote' && combined.body.quoteFamily?.composition?.kind).toBe('additive');
+    delete value.fieldOverrides[path]; // Undoing the choice restores the unresolved relationship.
+    expect(fields(value)).toContain(issue);
+    value.fieldOverrides[path] = { state: 'set', value: { kind: 'scenarios', scenarios: [
+      { id: 'a', label: 'First date', groupIds: ['group-1'], evidenceRefs: [] },
+      { id: 'b', label: 'Second date', groupIds: ['group-2'], evidenceRefs: [] },
+    ] }, updatedAt: now };
+    backend.mutate.mockImplementation(async (_ctx, _input, mutation) => mutation.apply(value, {}));
+    const split = await changeReservationWorkflowV2Rows({} as never, { kind: 'split_quote_dates', requestId: request.id } as never) as unknown as { draft: ReservationWorkflowV2Draft } | null;
+    expect(split).not.toBeNull();
+    const family = split!.draft.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!family || family.kind !== 'quote') throw new Error('split quote missing');
+    expect(family.body.quoteFamily?.composition?.kind).toBe('scenarios');
+  });
+
   it('keeps split quote dates on the selected Infor party while allowing typed names and separate options', () => {
     const value = draft();
     const first = value.proposal.content.requests[0]!;
@@ -271,6 +304,7 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
     if (request.kind !== 'quote') throw new Error('quote fixture missing');
     request.body.groups.push({ ...structuredClone(request.body.groups[0]!), id: 'group-2',
       arrival: '2027-02-03', departure: '2027-02-04' });
+    value.fieldOverrides[`${requestRoot}/quoteComposition`] = { state: 'set', value: { kind: 'additive' }, updatedAt: now };
     const extra = { id: 'dinner', amount: '200', currency: 'ZAR', unit: 'per_person' as const,
       scope: 'overall' as const, targetRefs: [], sourceRefs: [], staffAllowanceType: 'dinner' as const };
     request.body.requestedMoney = [extra];

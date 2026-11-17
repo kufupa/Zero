@@ -212,16 +212,7 @@ export function quoteCompositionStatus(draft: ReservationWorkflowV2Draft, reques
   const leaf = resolvedLeaf(draft, `${root}/quoteComposition`, request.body.quoteComposition);
   if ('issue' in leaf) return 'invalid';
   if (leaf.value == null) {
-    const byDate = new Map<string, number>();
-    for (const [index, group] of request.body.groups.entries()) {
-      const base = `${root}/groups/${index}`;
-      const arrival = resolvedLeaf(draft, `${base}/arrival`, group.arrival);
-      const departure = resolvedLeaf(draft, `${base}/departure`, group.departure);
-      if ('issue' in arrival || 'issue' in departure || !arrival.value || !departure.value) continue;
-      const key = `${arrival.value}/${departure.value}`;
-      byDate.set(key, (byDate.get(key) ?? 0) + 1);
-    }
-    return [...byDate.values()].some(count => count > 1) ? 'unresolved' : 'additive';
+    return request.body.groups.length > 1 ? 'unresolved' : 'additive';
   }
   const parsed = quoteCompositionSchema.safeParse(leaf.value);
   if (!parsed.success) return 'invalid';

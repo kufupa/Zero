@@ -116,6 +116,39 @@ function allocatedCreate(ref: string, shared: Record<string, unknown> = {}) {
 }
 
 describe('reservation workflow host projection', () => {
+  it.each([
+    ['twin room', 'queen room'],
+    ['1 twin room', '1 queen room'],
+  ])('keeps unbound room hints for staff review without adding phantom groups: %s / %s', async (firstHint, secondHint) => {
+    const body = `Please quote ${firstHint} and ${secondHint} on 2027-01-10 to 2027-01-12 and 2027-01-13 to 2027-01-15.`;
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: [claim(firstHint, firstHint, ref), claim(secondHint, secondHint, ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref), roomCount: claim('1', 1, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref), roomCount: claim('1', 1, ref) },
+      ] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    expect(request.body.groups).toHaveLength(2);
+    expect(request.body.groups.every(group => group.sourceAssociationUnresolved)).toBe(true);
+    const notices = result.proposal.issues.filter(issue => issue.kind === 'quote_room_scope_ambiguous');
+    expect(notices).toHaveLength(2);
+    expect(notices.some(issue => issue.explanation.includes(firstHint))).toBe(true);
+    expect(notices.some(issue => issue.explanation.includes(secondHint))).toBe(true);
+  });
+
+  it('distinguishes numeric room names when binding hints to dated groups', async () => {
+    const body = 'Please quote 1 2 Bedroom Suite 2027-01-10 to 2027-01-12 and 1 1 Bedroom Suite 2027-01-13 to 2027-01-15.';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: [claim('2 Bedroom Suite', '2 Bedroom Suite', ref), claim('1 Bedroom Suite', '1 Bedroom Suite', ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref), roomCount: claim('1 2 Bedroom Suite', 1, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref), roomCount: claim('1 1 Bedroom Suite', 1, ref) },
+      ] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    expect(request.body.groups.find(row => row.arrival === '2027-01-10')?.requestedRoomDescription).toBe('2 Bedroom Suite');
+    expect(request.body.groups.find(row => row.arrival === '2027-01-13')?.requestedRoomDescription).toBe('1 Bedroom Suite');
+  });
+
   it.each(['5 smoking rooms', '5 king rooms'])('does not attach a room hint from a partial word or ungrounded count: %s', async (firstCount) => {
     const body = 'Please quote 5 smoking rooms 2027-01-10 to 2027-01-12 and 1 king room 2027-01-13 to 2027-01-15.';
     const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
