@@ -10,9 +10,11 @@ type Props = {
   source: ReservationSourceContext;
   snapshot: ReservationPaneSnapshot;
   operationId: string;
+  active: boolean;
+  targetLabel: string | null;
 };
 
-export function CancelChargePrompt({ client, source, snapshot, operationId }: Props) {
+export function CancelChargePrompt({ client, source, snapshot, operationId, active, targetLabel }: Props) {
   const context = useRef({ source, snapshot });
   context.current = { source, snapshot };
   const deciding = useRef(false);
@@ -61,7 +63,7 @@ export function CancelChargePrompt({ client, source, snapshot, operationId }: Pr
   }, [client, operationId]);
 
   const decide = async (decision: 'accept' | 'decline') => {
-    if (deciding.current || !client.cancelChargeDecision || !charge || charge.status !== 'pending' || message ||
+    if (!active || !targetLabel || deciding.current || !client.cancelChargeDecision || !charge || charge.status !== 'pending' || message ||
       storageReadyFor !== charge.challengeId || decisionResult?.challengeId === charge.challengeId) return;
     const challengeId = charge.challengeId;
     try {
@@ -81,10 +83,14 @@ export function CancelChargePrompt({ client, source, snapshot, operationId }: Pr
   };
 
   if (!client.cancelCharge || !client.cancelChargeDecision) return null;
+  if (!active) return null;
   const currentDecision = !charge || charge.status === 'none' || decisionResult?.challengeId === charge.challengeId
     ? decisionResult?.status : undefined;
+  if (charge?.status === 'pending' && storageReadyFor === charge.challengeId && !currentDecision && !message && !targetLabel)
+    return <p className={styles.notice} role="alert">The cancellation being charged could not be identified. Check the outcome in Infor before continuing.</p>;
   if (charge?.status === 'pending' && storageReadyFor === charge.challengeId && !currentDecision && !message) return <div className={styles.notice} role="alert">
     <strong>Infor shows a cancellation fee</strong>
+    <p>Cancellation for {targetLabel}</p>
     <p>{charge.penaltyText}</p>
     <p>Infor button: {charge.button}</p>
     {!charge.matchesReviewed && <p>Infor showed this fee after your earlier check.</p>}
