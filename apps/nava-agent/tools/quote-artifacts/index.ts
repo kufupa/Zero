@@ -65,6 +65,7 @@ function linesFor(quote: ReturnType<typeof snapshot.parse>): WorkbookLine[] {
       for (const night of selected.nightly) {
         if (night.date !== expected || night.date >= group.departure_date || night.inventory < room.quantity) throw new Error('night coverage');
         const rateMinor = cents(night.price.amount);
+        if (rateMinor === 0) throw new Error('zero price requires staff review');
         const totalMinor = rateMinor * room.quantity;
         if (!Number.isSafeInteger(totalMinor)) throw new Error('money overflow');
         lines.push({ dateLabel: quoteDateLabel(night.date, dateAfter(night.date)), description, qty: room.quantity,
