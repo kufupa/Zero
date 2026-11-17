@@ -6,11 +6,12 @@ cd "$root"
 out=$1
 [[ $out == /* && ! -e $out ]] || { echo 'output must be an absolute path that does not exist' >&2; exit 2; }
 [[ $(node -p 'process.versions.node.split(".")[0]') == 22 ]] || { echo 'build requires Node 22' >&2; exit 1; }
-git diff --quiet HEAD -- apps/nava-agent apps/server-pilot/tooling/hms-cloud apps/server-pilot/src/hms apps/server-pilot/src/ops/playwright-quote-purge.ts tooling/playwright-quote || { echo 'commit changes to bundle inputs first' >&2; exit 1; }
+gateway=(apps/server-pilot/deploy/nava-gateway-env.sh apps/server-pilot/deploy/write-ec2-remote-env.sh)
+git diff --quiet HEAD -- apps/nava-agent apps/server-pilot/tooling/hms-cloud apps/server-pilot/src/hms apps/server-pilot/src/ops/playwright-quote-purge.ts tooling/playwright-quote "${gateway[@]}" || { echo 'commit changes to bundle inputs first' >&2; exit 1; }
 sha=$(git rev-parse HEAD)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-paths=(apps/nava-agent apps/server-pilot/tooling/hms-cloud apps/server-pilot/src/hms/request-policy.ts apps/server-pilot/src/hms/private-digests.ts apps/server-pilot/src/hms/trace-privacy.ts apps/server-pilot/src/hms/trace-privacy-worker.ts apps/server-pilot/src/ops/playwright-quote-purge.ts)
+paths=(apps/nava-agent apps/server-pilot/tooling/hms-cloud apps/server-pilot/src/hms/request-policy.ts apps/server-pilot/src/hms/private-digests.ts apps/server-pilot/src/hms/trace-privacy.ts apps/server-pilot/src/hms/trace-privacy-worker.ts apps/server-pilot/src/ops/playwright-quote-purge.ts "${gateway[@]}")
 contents=(apps COMMIT_SHA)
 if git cat-file -e "$sha:tooling/playwright-quote" 2>/dev/null; then paths+=(tooling/playwright-quote); contents+=(tooling); fi
 git archive "$sha" "${paths[@]}" | tar -x -C "$tmp"
