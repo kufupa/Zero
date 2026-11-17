@@ -328,7 +328,7 @@ function matchesOpen(request, frame, expected) {
  * `requestDispatched` means cancellation Save; the separate OSCNRS form-open POST is reported explicitly. */
 export async function openLabtestCancellation(page, expected = {}, { timeoutMs = 20_000, awaitChargeApproval,
   prepareChargeWithAuthority, continuationAllowed = () => true, bindDepositReceived = false,
-  observeFeeBeforeReason = false } = {}) {
+  observeFeeBeforeReason = false, refuseFeeBeforeReasonStage = false } = {}) {
   if (usedPages.has(page)) return { outcome: 'refused', issue: 'PAGE_WRITE_ALREADY_USED', requestDispatched: false,
     dialogOpenRequestDispatched: false, cancellationSaveDispatched: false, chargeApproved: false, chargeDispatched: false };
   if (observeFeeBeforeReason && (expected.allowRealGuest !== false || typeof awaitChargeApproval === 'function' ||
@@ -342,7 +342,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
   const forwarded = new WeakSet();
   const approvePreCharge = async (dialog) => {
     preChargeText = dialog.text;
-    if (!baselineVerified || typeof awaitChargeApproval !== 'function' || typeof prepareChargeWithAuthority !== 'function' ||
+    if (refuseFeeBeforeReasonStage || !baselineVerified || typeof awaitChargeApproval !== 'function' ||
+        typeof prepareChargeWithAuthority !== 'function' ||
         continuationAllowed() !== true || await awaitChargeApproval(dialog) !== true || action.isStopped() ||
         continuationAllowed() !== true) return false;
     await prepareChargeWithAuthority();
@@ -469,7 +470,7 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const policyReady = Boolean(reasons && (expected.allowRealGuest === true || reasons.some((item) =>
       item.value === 'TEST' && item.display === 'Test Reservations')));
     let afterOpen = await recordSnapshot(frame);
-    if (fee && !nativeDialog && policyReady && dialogOpenDispatched && response?.status() === 200 && !blocked.length &&
+    if (fee && !refuseFeeBeforeReasonStage && !nativeDialog && policyReady && dialogOpenDispatched && response?.status() === 200 && !blocked.length &&
         readySnapshot(afterOpen, expected) && sameParties(state, afterOpen, expected) && unchangedExcept(baseline, afterOpen, {}) &&
         unchangedCancellationFields(baseline, afterOpen, expected) &&
         typeof awaitChargeApproval === 'function' && typeof prepareChargeWithAuthority === 'function') {

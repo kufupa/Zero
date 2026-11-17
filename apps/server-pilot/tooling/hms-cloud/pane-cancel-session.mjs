@@ -263,6 +263,10 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
       const opened = await open(page, expected, input.mode === 'commit' ? {
         timeoutMs: remaining, continuationAllowed, awaitChargeApproval: awaitCharge,
         prepareChargeWithAuthority: prepareCharge, bindDepositReceived: input.bindDepositReceived === true,
+        // The committed writer is a new native session; a fee can reappear before its reason
+        // controls are staged even when both earlier previews were fee-free. Keep that case
+        // non-approvable so the second Go can only occur after reason/note staging in this writer.
+        refuseFeeBeforeReasonStage: true,
       } : observeFeeBeforeReason ? { observeFeeBeforeReason: true } : {});
       if (input.mode === 'preview' && observeFeeBeforeReason && opened.outcome !== 'reason_ready') {
         return { outcome: opened.outcome === 'fee_dialog_pending' ? 'fee_stage_observation' : 'fee_stage_inconclusive',
