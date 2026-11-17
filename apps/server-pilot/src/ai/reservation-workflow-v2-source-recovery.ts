@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import type { DB } from '../db/index.js';
-import { aiWorkflowRun, workEvent } from '../db/schema.js';
+import type { DB } from '../db/client.js';
+import { aiWorkflowRun } from '../db/schema/mail.js';
+import { workEvent } from '../db/schema/work.js';
+import { hmsPreparationSchema, hmsWriteGrantV2Schema } from '../hms/hms-preparation.js';
 import {
   hmsAllocationOperationId,
-  hmsPreparationSchema,
-  hmsWriteGrantV2Schema,
   reservationWorkflowV2DraftSchema,
   type ReservationWorkflowV2Draft,
 } from './reservation-workflow-v2-contract.js';
@@ -33,6 +33,7 @@ export async function hasRecoverableHmsOperation(
       eq(workEvent.workItemId, input.workItemId),
       inArray(workEvent.type, ['hms.prepared', 'approval.granted']),
     ))
+    .orderBy(desc(workEvent.createdAt), desc(workEvent.id))
     .limit(1000);
 
   const preparedRefs = new Set<string>();

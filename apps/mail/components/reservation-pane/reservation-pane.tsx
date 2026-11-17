@@ -562,6 +562,8 @@ export function ReservationPane(props: ReservationPaneProps) {
   };
   const Editor = request && request.kind !== 'other' ? editors[request.kind] : null;
   const sourceChanged = snapshot?.session.sourceChanged === true;
+  const recoveryOnly = source.sourceRecoveryOnly === true;
+  const editBlocked = sourceChanged || recoveryOnly;
   const pendingDispatch = snapshot?.preparationViews.find(view => view.dispatch)?.dispatch ??
     snapshot?.session.workflowDispatches?.find(dispatch => dispatch.status !== 'succeeded' && dispatch.status !== 'failed' && dispatch.status !== 'needs_review');
   // Grants arrive newest first. A later success retires failed warnings, never uncertain outcomes.
@@ -570,7 +572,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     !(dispatch.status === 'failed' && dispatches.slice(0, index).some(newer => newer.status === 'succeeded' &&
       newer.endpoint === dispatch.endpoint && newer.requestId === dispatch.requestId &&
       newer.allocationId === dispatch.allocationId && newer.serviceId === dispatch.serviceId))) ?? [];
-  const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || sourceChanged || capabilityUnavailable || Boolean(pendingDispatch);
+  const disabled = busy || !snapshot || workbench.blocked || workbench.conflict || editBlocked || capabilityUnavailable || Boolean(pendingDispatch);
   const actionLocked = snapshot?.operationResults.some(row => row.requestId === request?.id && ['succeeded', 'unknown'].includes(text(row.status))) ||
     Boolean(pendingDispatch) || hasPendingAmendPrice || (request?.kind === 'create' && ids.some(id => Boolean(commands.guestProfilePending(id))));
   const scopedIssues = snapshot?.issues.filter(issue => issue.kind !== 'source_changed' &&
@@ -624,7 +626,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         {row.id === request?.id && <button type="button" className={styles.tabChevron} aria-label={`Options for ${labels[row.kind]}`} aria-expanded={actionMenu === row.id}
           onClick={() => { setActionMenu(current => current === row.id ? null : row.id); setConfirmRemove(false); }}>▾</button>}
       </span>)}
-      </div><select className={styles.actionAdd} aria-label="Add action" value="" disabled={!snapshot || busy || sourceChanged || Boolean(pendingDispatch)} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <option key={kind} value={kind}>{labels[kind]}</option>)}</select>
+      </div><select className={styles.actionAdd} aria-label="Add action" value="" disabled={!snapshot || busy || editBlocked || Boolean(pendingDispatch)} onChange={event => { const kind = event.target.value as Exclude<ReservationWorkflowKind, 'other'>; if (kind && !editBlocked && !(source.selfPreStay && kind === 'create')) { setActionMenu(null); void workbench.addAction(kind).catch(() => {}); } }}><option value="">+ Action</option>{actionKinds.filter(kind => !(source.selfPreStay && kind === 'create')).map(kind => <option key={kind} value={kind}>{labels[kind]}</option>)}</select>
     </div>
     {request && actionMenu === request.id && <div className={styles.actionMenu}>
       {actionLocked ? <p>This action has an Infor result and must stay in the draft.</p> : confirmRemove ? <>
@@ -639,7 +641,7 @@ export function ReservationPane(props: ReservationPaneProps) {
     {(props.loadError || visibleError || workbench.conflict) && <div className={styles.error} role="alert">{[...new Set([props.loadError, visibleError].filter((error): error is string => Boolean(error)))].map(error => <p key={error}>{knownFailureCopy(error) ?? error}</p>)}{workbench.conflict && <>
       {workbench.unresolvedPending.length > 0 && <div><p>These edits need to be entered again. Copy the values before discarding:</p>
         {workbench.unresolvedPending.map(edit => <p key={edit.path}><strong>{edit.label}:</strong> {edit.value || '(empty)'}</p>)}</div>}
-      <div><button type="button" disabled={sourceChanged || busy || !workbench.applicablePendingCount} onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div></>}</div>}
+      <div><button type="button" disabled={editBlocked || busy || !workbench.applicablePendingCount} onClick={() => { void workbench.applyPending().catch(() => {}); }}>Apply my edits</button><button type="button" onClick={() => { workbench.discardPending(); setFormReset(value => value + 1); }}>Discard pending edits</button></div></>}</div>}
     {sourceChanged && snapshot && <div className={styles.notice}>
       <p>The email or attachments changed. Review the updated evidence; previous Infor checks will need to be repeated.</p>
       <details><summary>Review updated email</summary><div className={styles.changedSourceText}>{source.sourceText || 'Open this email in Outlook to review it.'}</div></details>
@@ -647,7 +649,7 @@ export function ReservationPane(props: ReservationPaneProps) {
       {snapshot.operationResults.some(row => row.status === 'unknown')
         ? <><p>Check earlier save outcomes before continuing.</p>{snapshot.operationResults.filter(row => row.status === 'unknown').map(row =>
           <div key={text(row.id)}>{row.workflow === 'guest_profile' ? 'Guest profile outcome unknown.' : text(row.summary) || text(row.workflow)} <button type="button" disabled={busy} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
-        : <button type="button" disabled={busy || preview || Boolean(pendingDispatch)} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
+        : !recoveryOnly && <button type="button" disabled={busy || preview || Boolean(pendingDispatch)} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
     </div>}
       {currentAttention && <div className={styles.notice} role="alert">
         <strong>{currentAttention.phase === 'review' ? 'Review needed before continuing.'
@@ -669,10 +671,10 @@ export function ReservationPane(props: ReservationPaneProps) {
         : !request && !sourceChanged && snapshot.session.draft.disposition?.decision === 'no_action' && snapshot.session.draft.status === 'ready' && Boolean(snapshot.session.draft.extraction) && snapshot.session.draft.extractionGenerationId === snapshot.session.draft.generationId ? <div className={styles.empty}><h2>No action needed</h2><p>Nava checked this email and its attachments and found nothing for staff to do.{snapshot.session.draft.disposition.reason ? ` ${snapshot.session.draft.disposition.reason}` : ''}</p><p className={styles.small}>If this email does need work, use + Action above.</p></div>
         : !request ? (() => {
           const needsReview = prefill?.status === 'failed' || snapshot.session.draft.status === 'prefill_failed' || (snapshot.session.draft.status === 'partial' && ['complete', 'failed', 'superseded'].includes(prefill?.status ?? ''));
-          return <div className={styles.empty}><h2>{needsReview ? 'Needs review' : 'What does this email need?'}</h2><p>{needsReview ? 'No automatic action was extracted. Add an action to begin, or retry prefill.' : 'Add an action to begin. Prefill will appear here when ready; your edits are saved.'}</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>;
+          return <div className={styles.empty}><h2>{needsReview ? 'Needs review' : 'What does this email need?'}</h2><p>{needsReview ? 'No automatic action was extracted. Add an action to begin, or retry prefill.' : 'Add an action to begin. Prefill will appear here when ready; your edits are saved.'}</p>{!source.selfPreStay && <button type="button" disabled={editBlocked} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>;
         })()
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
-        : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={sourceChanged || Boolean(pendingDispatch)}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>
+        : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={editBlocked || Boolean(pendingDispatch)}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>
         : <div className={styles.empty}><h2>What does this email need?</h2>
           <p>{text(body.requestedText) || 'No supported task was identified. If this email needs work, choose an action to open its fields.'}</p>{Boolean(body.separatedFrom) && <p>This request is retained for staff to handle separately. It is excluded from the room quote.</p>}
           <div className={styles.otherActions} aria-label="Choose an email action">
@@ -719,7 +721,7 @@ export function ReservationPane(props: ReservationPaneProps) {
               onClick={() => { if (workbench.readyForReply()) void commands.acceptFinancialReview(review.path, review.note, review.observation.ref).then(() => setAttention(null)).catch(() => {}); }}>I reviewed this Infor price</button>}
         </section>;
       })}
-      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel output={output} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} onSaved={setSavedQuoteOperation} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || sourceChanged} />}
+      {request?.kind === 'quote' && snapshot && <QuoteOutputPanel output={output} snapshot={snapshot} requestId={request.id} save={props.onSaveQuoteOutput} latestSnapshot={workbench.latestSnapshot} readyForReply={workbench.readyForReply} onSaved={setSavedQuoteOperation} blocked={busy || workbench.saving || workbench.blocked || workbench.conflict || editBlocked} />}
       {request?.kind === 'create' && snapshot?.preparationViews.filter(view => view.requestId === request.id && !snapshot.operationResults.some(row => row.workflow === 'create' && row.requestId === request.id && row.allocationId === view.allocationId && ['succeeded','unknown'].includes(text(row.status)))).map(view => {
         const comparison = record(record(view).priceComparison), requested = record(comparison.requested);
         const hasSourcePrice = !['', 'not_requested', 'not_applicable'].includes(text(comparison.status));
@@ -777,7 +779,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p><strong>Guest gets:</strong> {stage.guestGets}</p></>}
       </div>}
       <div className={styles.actions}>
-        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || sourceChanged || preview || capabilityUnavailable || Boolean(pendingDispatch) || readiness.length > 0 || (capabilitySaveUnavailable && !needsCheck()) || filingLocked || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
+        <button type="button" className={styles.primary} disabled={busy || !snapshot || workbench.conflict || editBlocked || preview || capabilityUnavailable || Boolean(pendingDispatch) || readiness.length > 0 || (capabilitySaveUnavailable && !needsCheck()) || filingLocked || request.kind === 'amend' && (workbench.saving || workbench.blocked)} onMouseDown={event => event.preventDefault()} onClick={() => { void submit(save); }}>{stage?.button}</button></div>
       {!currentAttention && (workbench.blocked || request.kind === 'amend' && workbench.saving) && <small>Finish editing or choose a selection before checking.</small>}
     </footer>}
   </div>;

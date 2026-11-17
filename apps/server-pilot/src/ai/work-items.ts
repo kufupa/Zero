@@ -3000,10 +3000,10 @@ export async function listWorkItems(
       return rows;
     };
     const recoverableHmsIds = new Set<string>();
-    const fetchPageWithRecoverable = async (cursor?: { rank: number; sortAge: Date | null; createdAt: Date; id: string }) => {
-      const rows = await fetchPageWithDrafts(cursor);
+    const fetchPageWithRecoverable = async (cursor: NeedsYouCursor | null, size: number) => {
+      const rows = await fetchPageWithDrafts(cursor, size);
       for (const row of rows) {
-        if (row.status !== 'done' && hasReservationWorkflowV2Draft(row.state ?? {})) {
+        if (hasReservationWorkflowV2Draft(row.state ?? {})) {
           if (await hasRecoverableHmsOperation(tx, { workItemId: row.id, draft: reservationWorkflowV2DraftOf(row.state ?? {}) })) {
             recoverableHmsIds.add(row.id);
           }
