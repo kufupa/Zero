@@ -39,7 +39,7 @@ export function validChildAges(count: unknown, ages: unknown): boolean {
     && ages.every((age:unknown)=>typeof age==='number' && Number.isInteger(age) && age>=0 && age<=17);
 }
 
-function createStaffFields(draft: ProposalDraft): ProposalDraft {
+function createChildFields(draft: ProposalDraft): ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
@@ -54,20 +54,26 @@ function createStaffFields(draft: ProposalDraft): ProposalDraft {
       if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
       else fieldSpecs.push({path,label,control,editable:true,provenance:'default',required:false,error:null,options:[],evidence:[]});
     }
-    if(draft.disposition==='propose') {
-      const path=`${root}/guarantee_type`;
-      if(!Object.hasOwn(fields,'guarantee_type')) fields.guarantee_type=null;
-      const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
-      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required:true,control:'text'};
-      else fieldSpecs.push({path,label:'Guarantee type',editable:true,required:true,control:'text',provenance:'unknown',error:null,options:[],evidence:[]});
-    }
     return {...booking,fields};
   });
   return {...draft,bookings,field_specs:fieldSpecs};
 }
 
+export function withCreateGuaranteeField(draft: ProposalDraft): ProposalDraft {
+  if(draft.workflow!=='create' || draft.disposition!=='propose') return draft;
+  const fieldSpecs=[...draft.field_specs];
+  const bookings=draft.bookings.map((booking,index)=>{
+    const path=`/bookings/${index}/fields/guarantee_type`;
+    const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
+    if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required:true,control:'text'};
+    else fieldSpecs.push({path,label:'Guarantee type',editable:true,required:true,control:'text',provenance:'unknown',error:null,options:[],evidence:[]});
+    return Object.hasOwn(booking.fields,'guarantee_type') ? booking : {...booking,fields:{...booking.fields,guarantee_type:null}};
+  });
+  return {...draft,bookings,field_specs:fieldSpecs};
+}
+
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
-  if(draft.workflow==='create') draft=createStaffFields(draft);
+  if(draft.workflow==='create') draft=withCreateGuaranteeField(createChildFields(draft));
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
     id: 'quote-input', type: 'quote', booking_ids: [],

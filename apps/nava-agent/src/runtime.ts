@@ -4,7 +4,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { sql, uid, json, event } from './db.js';
-import { tools, type ThreadInput } from './schema.js';
+import { proposalDraft, tools, type ThreadInput } from './schema.js';
+import { withCreateGuaranteeField } from './proposal-fields.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
@@ -164,6 +165,8 @@ export async function snapshot(threadId:string) {
   });
 }
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
+  const draft=p.phase==='ready' && p.workflow==='create' ? proposalDraft.safeParse(p.current) : null;
+  const current=draft?.success ? withCreateGuaranteeField(draft.data) : p.current;
   const stage=p.stage && p.stage.state!=='queued' ? {
     revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
     display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],...(p.stage.cancellation_fee!==undefined ? {cancellation_fee:p.stage.cancellation_fee} : {}),
@@ -185,7 +188,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
     recovery:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
+  return {...current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;

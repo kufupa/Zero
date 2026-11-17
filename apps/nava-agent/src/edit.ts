@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
-import { editablePointer, pointerParts, validChildAges } from './proposal-fields.js';
+import { editablePointer, pointerParts, validChildAges, withCreateGuaranteeField } from './proposal-fields.js';
 import { attachmentCheckPath, staffAttachmentsChecked } from './attachment-gate.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
@@ -50,7 +50,8 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(!mailboxIds.includes(p.mailbox_id)) throw new Error('FORBIDDEN');
     if(p.revision!==input.expected_revision) throw new Error('STALE_REVISION');
     if(p.phase!=='ready' && p.phase!=='waiting_go') throw new Error('NOT_EDITABLE');
-    const draft=proposalDraft.parse(structuredClone(p.current));
+    const stored=proposalDraft.parse(structuredClone(p.current));
+    const draft=p.phase==='ready' ? withCreateGuaranteeField(stored) : stored;
     const identities=JSON.stringify(quoteIdentities(draft));
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {
