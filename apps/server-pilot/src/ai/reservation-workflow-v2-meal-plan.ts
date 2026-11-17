@@ -15,13 +15,27 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const allMealsExcluded = exclusions.has('meal') || exclusions.has('meals');
   const lunchDeclined = /\blunch\s+(?:(?:is|was|will|would|should|must|may|can|could)\s+(?:be\s+)?)?(?:not|never)\s+(?:be\s+)?(?:required|needed|necessary|wanted|requested|included|provided)\b|\b(?:not|never)\s+(?:require|need|want|request|include|provide|have)\s+lunch\b/u.test(normalized);
   const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded && !lunchDeclined;
-  if (/\b(?:no|not|never|without|excluding|exclude|except)\b/u.test(positive)) return { mealPlan: null, lunchRequested };
-  const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
-  const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|dbb)\b/u.test(board);
+  const supper = /\bsupper\b/u.test(phrase);
+  if (/\b(?:no|not|never|without|excluding|exclude|except)\b/u.test(positive) ||
+      supper && /\bskip(?:ped|ping)?\b/u.test(positive)) return { mealPlan: null, lunchRequested };
+  const supperExclusions = phrase.replace(/[,+\s&/_-]+/gu, ' ');
+  if (supper && /\b(?:no(?:\s+(?:need|requirement|request)(?:\s+for)?)?|without|excluding|exclude|(?:not|never)(?:\s+(?:including|need|require|want|request|include|provide|have))?|except)\s+(?:(?:any|the)\s+)?(?:(?:breakfast|lunch|dinner|meals?)\s+(?:(?:and|or)\s+)?)*supper\b/u.test(supperExclusions))
+    return { mealPlan: null, lunchRequested };
+  if (supper && exclusions.has('lunch') && /\blunch\b/u.test(positive)) return { mealPlan: null, lunchRequested };
+  let board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
+  if (supper) {
+    board = board.replace(/[.!]+$/u, '').trim();
+    if (/\bfor all\s+(?:guests|rooms|people|participants)[.!]*$/u.test(phrase))
+      board = board.replace(/\s+(?:guests|rooms|people|participants)$/u, '');
+  }
+  const additiveSupper = /\b(?:breakfast|bb|b\s*&\s*b)(?:\s+(?:and|with|plus)\s+|\s*[+&]\s*)(?:lunch(?:\s+(?:and|with|plus)\s+|\s*[+&]\s*))?supper\b|\bsupper(?:\s+(?:and|with|plus)\s+|\s*[+&]\s*)(?:lunch(?:\s+(?:and|with|plus)\s+|\s*[+&]\s*))?(?:breakfast|bb|b\s*&\s*b)\b/u.test(phrase);
+  if (supper && (!additiveSupper || !['breakfast supper', 'supper breakfast', 'bb supper', 'supper bb', 'b b supper', 'supper b b'].includes(board)))
+    return { mealPlan: null, lunchRequested };
+  const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|supper|dbb)\b/u.test(board);
   if ((allMealsExcluded || exclusions.has('breakfast')) && breakfast || (allMealsExcluded || exclusions.has('dinner')) && dinner)
     return { mealPlan: null, lunchRequested };
   if (['room only', 'roomonly', 'ro', 'room only r'].includes(board)) return { mealPlan: 'room_only', lunchRequested };
-  if (['dbb', 'dinner bb', 'dinner b b'].includes(board) || /\bdinner\b/u.test(board) && /\b(?:breakfast|bb)\b/u.test(board)) {
+  if (['dbb', 'dinner bb', 'dinner b b', 'supper bb', 'supper b b', 'b b supper'].includes(board) || /\b(?:dinner|supper)\b/u.test(board) && /\b(?:breakfast|bb)\b/u.test(board)) {
     return { mealPlan: 'dinner_bb', lunchRequested };
   }
   if (['bb', 'b b'].includes(board) || /\bbreakfast\b/u.test(board)) return { mealPlan: 'bb', lunchRequested };
