@@ -1,0 +1,19 @@
+---
+name: cancel
+description: Use when a current hotel email requests cancelling or releasing an existing guest reservation or booked room, including partial party cancellation, no-longer-travelling messages and cancellation-charge questions.
+---
+
+# Cancel
+
+Read [common rules](../references/common.md), [scope/fees/native order](references/rules.md), [reply drafts](references/replies.md).
+
+1. Identify current cancellation intent + actual saved stay. Withdrawing unaccepted quote ≠ cancelling booking. One-night shortening → amend, not whole-stay cancel.
+2. Search/read exact property/reservation/guest/dates. Resolve room/party scope; linked stays never imply group-wide permission. Zero/ambiguous candidates → specific clarification.
+3. Read current status. Already cancelled → no second write. In-house/completed/no-show/unsupported state → staff review; never force native status.
+4. Supported preview: live reason code + meaning, note, affected stay, native penalty information. Fee unknown ≠ zero/waived. Missing reason-picker/fee capability explicit, no fabricated catalogue kind.
+5. Publish exact target/scope + native preview/unknown fees. `hms_save` waits for staff Go. Backend re-stage, cancel, fresh readback. Unexpected native charge decision remains visible; may arise after cancellation applied.
+6. Fresh read target/status/cancellation identifier/actual fee if exposed. Uncertain/partial result → read first; never cancel again blindly. Draft only supported cancellation/charge facts.
+
+Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `hms_prepare`, `proposal_publish`, `hms_save`, `reply_draft`. Exact [bindings](../references/tools-and-proposal.md). Backend initial cancel handler absent; supported capability required.
+
+Example: cancel Guest A's extra room, book Guest B → cancel one verified room + separate create task. Never cancel associated party.
