@@ -1,0 +1,14 @@
+{
+  "name": "nava-native-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "3.1077.0",
+    "fflate": "0.8.2",
+    "playwright": "1.63.0",
+    "postgres": "3.4.5",
+    "tsx": "4.20.5",
+    "zod": "3.25.76"
+  }
+}
