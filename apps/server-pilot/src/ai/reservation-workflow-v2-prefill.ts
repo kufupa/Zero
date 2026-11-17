@@ -1398,17 +1398,14 @@ function buildFallbackProposal(input: {
     if (request.kind === 'filing') return { ...base, kind: 'filing' as const, body: { targets: null } };
     return { ...base, kind: 'other' as const, body: { requestedText: request.requestText.raw.slice(0, 2_000), supported: false as const } };
   });
-  if (!projected.length && currentRef) projected.push({ id: stableId(input.source.messageId, 'request', 'fallback'), requestText: 'Review this selected message and identify any reservation work.',
-    sourceRefs: [currentRef], serviceRefs: [], documentRefs: [], kind: 'other', body: { requestedText: 'Review the source message; prefill extraction was unavailable.', supported: false } });
   const valid = reservationWorkflowV2ProposalSchema.safeParse({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
     content: { requests: projected, services: [], documents: [] }, annotations: [],
     issues: [issue('/', 'prefill_partial', input.reason, currentRef ? [currentRef] : [])], sourceClaims,
     lookupResultRefs: [], });
   if (valid.success) return valid.data;
-  // The fallback is deliberately only an unsupported, source-linked editable item if projection itself is malformed.
+  // The fallback is deliberately an empty, issue-bearing envelope if projection itself is malformed.
   const fallback = reservationWorkflowV2ProposalSchema.parse({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
-    content: { requests: currentRef ? [{ id: stableId(input.source.messageId, 'fallback'), requestText: 'Review the selected source message.',
-      sourceRefs: [currentRef], serviceRefs: [], documentRefs: [], kind: 'other', body: { requestedText: 'Prefill projection failed; staff review required.', supported: false } }] : [], services: [], documents: [] },
+    content: { requests: [], services: [], documents: [] },
     annotations: [], issues: [issue('/', 'prefill_partial', input.reason, currentRef ? [currentRef] : [])], sourceClaims: [], lookupResultRefs: [] });
   return fallback;
 }

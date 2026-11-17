@@ -95,7 +95,7 @@ import {
   message,
 } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { preStaySourceText, selfSentPreStayCandidate } from './existing-stay-information.js';
 import {
   isMailSourceClassification,
 } from './mail-source.js';
@@ -4607,11 +4607,12 @@ export async function executeAiRun(
       const confirmationNumbers = Array.isArray(rawConfirmationNumbers)
         ? rawConfirmationNumbers.filter((value): value is string => typeof value === 'string')
         : [];
-      const existingStayInformation = isSelfSentPreStayInformationMail({
+      const existingStayInformation = selfSentPreStayCandidate({
         fromAddress: trigger?.fromAddress,
         mailboxAddress: mailbox?.email,
         subject: trigger?.subject,
         confirmationNumbers,
+        bodyText: preStaySourceText(trigger?.textBody, trigger?.htmlBody),
       });
 
       const threadMessages = admissionSnapshot

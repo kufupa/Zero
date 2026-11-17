@@ -657,7 +657,10 @@ export function ReservationPane(props: ReservationPaneProps) {
         <p>This pre-stay email describes an existing reservation. It cannot create a new booking.</p>
       </div>}
       {!snapshot ? (props.skippedSource ? null : <div className={styles.empty}>{props.loadError ? 'This email could not be opened.' : 'Opening your email draft…'}</div>)
-        : !request ? <div className={styles.empty}><h2>What does this email need?</h2><p>Add an action to begin. Prefill will appear here when ready; your edits are saved.</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>
+        : !request ? (() => {
+          const needsReview = prefill?.status === 'failed' || snapshot.session.draft.status === 'prefill_failed' || (snapshot.session.draft.status === 'partial' && ['complete', 'failed', 'superseded'].includes(prefill?.status ?? ''));
+          return <div className={styles.empty}><h2>{needsReview ? 'Needs review' : 'What does this email need?'}</h2><p>{needsReview ? 'No automatic action was extracted. Add an action to begin, or retry prefill.' : 'Add an action to begin. Prefill will appear here when ready; your edits are saved.'}</p>{!source.selfPreStay && <button type="button" disabled={sourceChanged} onClick={() => { void workbench.addAction('create').catch(() => {}); }}>New booking</button>}</div>;
+        })()
         : createBlocked ? <div className={styles.empty}>This pre-stay email describes an existing reservation. Choose another action.</div>
         : Editor && editor ? <fieldset className={styles.sourceFieldset} disabled={sourceChanged || Boolean(pendingDispatch)}><Editor key={`${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />{(request.kind === 'create' || request.kind === 'amend') && snapshot.session.draft.proposal.content.services.some(service => service.ownerRequestId === request.id || request && snapshot.session.draft.proposal.content.requests.find(row => row.id === request.id)?.serviceRefs.includes(service.id)) && <AddonsEditor key={`addons:${source.messageId}:${source.sourceHash}:${source.selectionEpoch}:${request.id}:${formReset}`} {...editor} />}</fieldset>
         : <div className={styles.empty}><h2>What does this email need?</h2>

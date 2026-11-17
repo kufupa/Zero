@@ -24,7 +24,7 @@ import {
 import { computeConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ConversationTriageMetrics } from '../../mail/conversation-triage-metrics.js';
 import type { ModelAdapter, ModelInvokeResult } from '../bedrock/adapter.js';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail } from '../existing-stay-information.js';
+import { groundedSeparateAsk, selfSentPreStayCandidate } from '../existing-stay-information.js';
 import type { IndexableMessage } from '../../mail/conversation-signals.js';
 import { validateStructuredJsonOutput } from '../security/policy.js';
 import { createStep, createWorkflow } from '@mastra/core/workflows';
@@ -842,11 +842,12 @@ export async function classifyWorkflowMailTriage(
     },
     rawOutput,
   );
-  const existingStayInformation = isSelfSentPreStayInformationMail({
+  const existingStayInformation = selfSentPreStayCandidate({
     fromAddress: triggerMessage.from,
     mailboxAddress: input.mailboxAddress,
     subject: triggerMessage.subject,
     confirmationNumbers: input.confirmationNumbers,
+    bodyText: triggerMessage.body,
   });
   const separateAsk = existingStayInformation
     ? groundedSeparateAsk(triggerMessage.body, modelFields.separateAsk)

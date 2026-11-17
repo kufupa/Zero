@@ -60,7 +60,7 @@ import {
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
-import { isSelfSentPreStaySubject, selfSentPreStayAskVerdict } from './existing-stay-information.js';
+import { isSelfSentPreStaySubject, preStaySourceText, selfSentPreStayAskVerdict } from './existing-stay-information.js';
 import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
@@ -90,6 +90,13 @@ import { assertCreateDispatchFenceOwner, assertNoCreateDispatchFence, CreateFenc
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { handledRequestKeys, handledRequestStates, hasOutstandingRequestHistory } from './reservationist-task-completion.js';
 import { confirmedVoucherKey, voucherReviewFiles } from './voucher-pending.js';
+import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
+import {
+  reservationWorkflowV2DraftSchema,
+  type ReservationWorkflowV2Draft,
+} from './reservation-workflow-v2-contract.js';
+import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
+import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
@@ -1660,32 +1667,15 @@ export async function planThreadWork(
     }) : null;
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
-    // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
-    const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
-    const replyChange: ThreadWorkChange | undefined =
-      lastHotel && answered && !item.hmsOpen && !outstanding
-        ? {
-            workItemId: item.id,
-            kind,
-            to: 'done' as const,
-            reason: HOTEL_REPLIED,
-            sentAt: new Date(lastHotel.at),
-            sentMessageId: lastHotel.m.id,
-          }
-        : undefined;
-    const closeOnReply =
-      replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
+    // Outbound/ownSent messages lack stored Auto-Submitted provenance, verified human authorship, or substantive-answer
+    // evidence, and outbound_send_queue.status='sent' is not recipient delivery proof. Never auto-close unfinished or
+    // unproven work merely because an outbound reply was sent; without verifiable current complete source+task
+    // evidence, reopen current-kind system/HOTEL_REPLIED closures on touched-thread refresh for staff review.
     // A prior pure-information read may have been automatically closed as staff-sent. A pre-stay the read could not
     // clear also reopens: it may still carry a current ask, so it is never auto-done on a missing verdict.
     if (preStayAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
-      if (closeOnReply && lastHotel) {
-        if (lastHotel.m.id !== item.sentMessageId) {
-          changes.push({ workItemId: item.id, kind, repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id } });
-        }
-      } else {
-        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
-        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      }
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       continue;
     }
     if (item.status === 'dismissed') {
@@ -1695,7 +1685,8 @@ export async function planThreadWork(
       }
       continue;
     }
-    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+    if (item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+      if (!currentKind) continue;
       changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
       open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       continue;
@@ -1703,11 +1694,9 @@ export async function planThreadWork(
     // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
     const domainOther = kind === 'other' && ownDomain(source);
     if (!untouched) {
-      if (item.status === 'needs_you' && closeOnReply) {
-        changes.push(closeOnReply);
-      } else if (item.status === 'needs_you') {
+      if (item.status === 'needs_you') {
         open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime() && !answered) {
+      } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime()) {
         // A hotel reply closed it, then a person touched it: a later guest mail still reopens it. A person's close has no
         // reply link, so it stays.
         changes.push({
@@ -1725,17 +1714,13 @@ export async function planThreadWork(
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
-      } else if (closeOnReply) {
-        changes.push(closeOnReply);
       } else {
         open.push({ id: item.id, kind, at, untouched: true, humanWritten });
       }
     } else if (!domainOther) {
-      // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
-      // rules closed before the reply link existed has no link, so the hotel's latest answer stands in for it (the
-      // backfill links it). Touched rows are handled above, so this branch sees untouched rows only.
+      // Closed by a hotel reply: reopened by a later guest mail. Touched rows are handled above, so this branch sees untouched rows only.
       const linkedAt = item.sentAt ? item.sentAt.getTime() : lastHotel?.at;
-      if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt && !answered) {
+      if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt) {
         changes.push({
           workItemId: item.id,
           kind,
@@ -1744,12 +1729,6 @@ export async function planThreadWork(
           previousSentMessageId: item.sentMessageId,
         });
         open.push({ id: item.id, kind, at, untouched: true, humanWritten });
-      } else if (lastHotel && answered && lastHotel.m.id !== item.sentMessageId) {
-        changes.push({
-          workItemId: item.id,
-          kind,
-          repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id },
-        });
       }
     }
   }
@@ -2767,15 +2746,61 @@ export const FOLLOW_UP_WORK_KINDS = ['quote', 'booking'] as const;
 export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
 export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 
+// Leaf copies of reservation-workflow-v2-state's key/readers: importing that module would close an import cycle.
+const RESERVATION_WORKFLOW_V2_STATE_KEY = 'reservationWorkflowV2';
+
+function hasReservationWorkflowV2Draft(state: Record<string, unknown>): boolean {
+  return Object.hasOwn(state, RESERVATION_WORKFLOW_V2_STATE_KEY);
+}
+
+function reservationWorkflowV2DraftOf(state: Record<string, unknown>): ReservationWorkflowV2Draft | null {
+  const parsed = reservationWorkflowV2DraftSchema.safeParse(
+    hydrateStoredReservationWorkflowV2(state[RESERVATION_WORKFLOW_V2_STATE_KEY]));
+  return parsed.success ? parsed.data : null;
+}
+
+/** The staff-queue kind of a V2 request kind; `services` and `other` asks stay review-needed. */
+const V2_REQUEST_MAIL_KIND: Record<string, MailKind> = {
+  quote: 'quote',
+  create: 'booking',
+  amend: 'amendment',
+  cancel: 'cancellation',
+  filing: 'voucher_pop',
+};
+
 /**
- * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
- * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
- * booking, amendment, cancellation and voucher_pop items are included, plus self-prestay mail whose stored read left a
- * separate ask grounded or could not prove none: an unread, stale or unverified pre-stay read stays visible for review,
- * only its own adjudicated no-ask verdict is dropped. Spam, trashed and deleted threads are left out.
- * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
- * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
- * NEEDS_YOU_CHIPS order, then the oldest mail first.
+ * The Needs-you admission of a work item's canonical V2 draft. `actions` carries every distinct request kind in
+ * draft order so the row names each ask; `kind` stays the first supported action for older readers. Unsupported,
+ * empty or unreadable drafts stay visible as `other_actionable` with `reviewOnly: true` and no actions — an
+ * unfinished, failed or ambiguous draft can still hide an unseen ask, so it never reads as affirmed no-action and
+ * never invents an `other` task. Self-sent pre-stay mail is about an existing booking: a `create` request is never
+ * an ask, so it is dropped from the actions; the item still lists because nothing yet records a typed,
+ * evidence-backed no-action for it (skipped sources are filtered upstream). When no ask survives — an empty,
+ * create-only, pending or failed draft — the row carries `reviewOnly` and no actions: it is for staff review, and
+ * `other` must not claim a task no request supports.
+ */
+function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay: boolean): { kind: string; actions: string[]; reviewOnly: boolean } {
+  const kinds = [...new Set((draft?.proposal.content.requests ?? []).map((request) => request.kind))];
+  const asks = isPreStay ? kinds.filter((kind) => kind !== 'create') : kinds;
+  const reviewOnly = asks.length === 0;
+  const actions = asks;
+  for (const action of actions) {
+    const kind = V2_REQUEST_MAIL_KIND[action];
+    if (kind) return { kind, actions, reviewOnly };
+  }
+  return { kind: 'other_actionable', actions, reviewOnly };
+}
+
+/**
+ * Work items in this transport with the given statuses, the Needs-you list. On legacy kinds, deterministic source
+ * policy (`classifyMailSource`) decides whether a message is direct/reviewable or a skipped channel/system notice,
+ * rather than trusting model-derived `origin`. Canonical V2 drafts are admitted on their own door and are never
+ * hidden by model origin. Only quote, booking, amendment, cancellation and voucher_pop items are included, plus
+ * self-prestay mail whose stored read left a separate ask grounded or could not prove none: an unread, stale or
+ * unverified pre-stay read stays visible for review, only its own adjudicated no-ask verdict is dropped. Spam,
+ * trashed and deleted threads are left out. Queued and In HMS come from the item's latest run on the HMS lane only
+ * (KTD14), so a follow-up or extraction run never moves the chip. Otherwise a review item shows Review, and anything
+ * else needs her. Rows sort by chip in NEEDS_YOU_CHIPS order, then the oldest mail first.
  */
 export async function listWorkItems(
   db: DB,
@@ -2784,9 +2809,6 @@ export async function listWorkItems(
   if (input.statuses.length === 0 || input.limit <= 0) return [];
   // Every candidate page must see the same order and source data.
   return db.transaction(async (tx) => {
-    // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
-    // Coalesce keeps missing origin human-written.
-    const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
     const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
     const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
       .mapWith(Number);
@@ -2822,9 +2844,10 @@ export async function listWorkItems(
         receivedAt: message.receivedAt,
         confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
         extractionPayload: mailExtraction.payload,
-        origin: origin.as('origin'),
         sourceBody: message.textBody,
         sourceHtml: message.htmlBody,
+        sourceProvenance: message.sourceProvenance,
+        state: workItem.state,
         reopenReason: sql<string | null>`(
           select we.value->>'reasonLine'
           from ${workEvent} as we
@@ -2848,8 +2871,9 @@ export async function listWorkItems(
           inArray(workItem.status, [...input.statuses]),
           or(
             ...(preStayCandidate ? [preStayCandidate] : []),
-            and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
-            and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
+            inArray(workItem.kind, [...NEEDS_YOU_KINDS, 'other']),
+            // A canonical V2 draft is its own admission: every stored request kind reaches the queue.
+            sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
           ),
           isNull(mailThread.spamAt),
           isNull(mailThread.trashedAt),
@@ -2859,40 +2883,103 @@ export async function listWorkItems(
       )
       .orderBy(sql`chip_rank`, asc(sortAge), asc(workItem.id))
       .limit(size);
+    // One queue row per source: when a source message has canonical V2 drafts, only the draft-bearing item the
+    // ensure path would reopen (latest updated, then id) represents the mail; legacy and stale duplicate rows hide.
+    // Probed per candidate page so the lookup stays proportional to the page, not mailbox history.
+    const canonicalV2BySource = new Map<string, { id: string; updatedAt: Date }>();
+    const fileAttachmentMessageIds = new Set<string>();
+    const fetchPageWithDrafts = async (cursor: NeedsYouCursor | null, size: number) => {
+      const rows = await fetchPage(cursor, size);
+      const sourceIds = [...new Set(rows.map((row) => row.sourceMessageId).filter((id): id is string => id !== null))];
+      if (sourceIds.length === 0) return rows;
+      const [drafts, fileAttachments] = await Promise.all([
+        tx
+          .select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId, updatedAt: workItem.updatedAt })
+          .from(workItem)
+          .where(and(
+            eq(workItem.transportId, input.transportId),
+            inArray(workItem.sourceMessageId, sourceIds),
+            sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
+          )),
+        tx
+          .selectDistinct({ messageId: attachment.messageId })
+          .from(attachment)
+          .where(and(inArray(attachment.messageId, sourceIds), eq(attachment.isInline, false))),
+      ]);
+      for (const att of fileAttachments) {
+        fileAttachmentMessageIds.add(att.messageId);
+      }
+      for (const draft of drafts) {
+        if (!draft.sourceMessageId) continue;
+        const current = canonicalV2BySource.get(draft.sourceMessageId);
+        if (!current || draft.updatedAt.getTime() > current.updatedAt.getTime()
+            || (draft.updatedAt.getTime() === current.updatedAt.getTime() && draft.id > current.id)) {
+          canonicalV2BySource.set(draft.sourceMessageId, { id: draft.id, updatedAt: draft.updatedAt });
+        }
+      }
+      return rows;
+    };
     return collectNeedsYouPages({
       limit: input.limit,
-      fetchPage: async (cursor, size) => fetchPage(cursor, size),
-      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, ...row }) => {
+      fetchPage: fetchPageWithDrafts,
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, sourceProvenance, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
+        const sourceText = preStaySourceText(sourceBody, sourceHtml);
+        const sourceBodyText = canonicalSourceBodyText({ textBody: sourceBody, htmlBody: sourceHtml });
+        // The same self-prestay evidence the ensure/prefill door uses: a confirmation number may live only in
+        // the body, so a missing or empty extraction must not turn real pre-stay mail into a channel/system hide.
+        const sourceConfirmationNumbers = `${row.subject ?? ''}\n${sourceText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
         const preStayAsk = selfSentPreStayAskVerdict({
           fromAddress: row.sender,
           mailboxAddress: mailbox?.email,
           subject: row.subject,
           textBody: sourceBody,
           htmlBody: sourceHtml,
-          confirmationNumbers: Array.isArray(confirmationNumbers)
-            ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
-            : [],
+          confirmationNumbers: [
+            ...(Array.isArray(confirmationNumbers)
+              ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
+              : []),
+            ...sourceConfirmationNumbers,
+          ],
           payload,
         });
+        const chip = NEEDS_YOU_CHIPS[rank] ?? 'needs_you';
+        const hasAttachments = row.sourceMessageId
+          ? fileAttachmentPresence(fileAttachmentMessageIds.has(row.sourceMessageId), sourceProvenance)
+          : undefined;
+        const v2 = hasReservationWorkflowV2Draft(state ?? {});
+        const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId)?.id : undefined;
+        if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
+        if (v2) {
+          // The same deterministic source door the ensure/prefill paths keep: a known channel/system source never
+          // queues (self-sent pre-stay is handled inside the admission — it is an automated notice by nature yet
+          // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no
+          // binding to this source or generation, so it never hides a V2 draft: anything uncertain stays reviewable.
+          if (!preStayAsk && classifyMailSource({ fromAddress: row.sender,
+              subject: row.subject, bodyText: sourceBodyText, hasAttachments }).kind !== 'direct') return null;
+          const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
+          return { ...row, kind: admission.kind, chip, actions: admission.actions,
+            ...(admission.reviewOnly ? { reviewOnly: true } : {}) };
+        }
         if (!preStayAsk) {
-          if (
-            row.kind === 'other'
-            || !NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])
-            || rowOrigin === 'system_notice'
-          ) {
+          if (classifyMailSource({ fromAddress: row.sender, subject: row.subject, bodyText: sourceBodyText, hasAttachments }).kind !== 'direct') {
             return null;
           }
+          if (row.kind === 'other') {
+            if (payload?.needsAction === true) {
+              return { ...row, kind: 'other_actionable', chip, actions: ['other'], reviewOnly: true };
+            }
+            return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
+          }
+          if (!NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])) {
+            return null;
+          }
+          return { ...row, chip };
         }
-        const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
-        const reviewOnly = preStayAsk?.status === 'review';
-        return {
-          ...row,
-          kind: separateAsk ? 'other_actionable' : row.kind,
-          chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
-          ...(reviewOnly ? { reviewOnly: true } : {}),
-        };
+        const separateAsk = preStayAsk.status === 'ask' ? preStayAsk.excerpt : null;
+        if (separateAsk) return { ...row, kind: 'other_actionable', chip };
+        return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
       },
     });
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });

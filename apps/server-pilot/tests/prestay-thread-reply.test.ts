@@ -37,9 +37,9 @@ function fixture(hasReply: boolean): DB {
 describe('re-reading a self-sent pre-stay request', () => {
   const input = { transportId: 'transport-centurion', threadId: 'thread-1' };
 
-  it('keeps an answered request closed and links the later staff reply', async () => {
+  it('reopens a pre-stay request even when an unverified outbound reply exists', async () => {
     expect(await planThreadWork(fixture(true), input)).toEqual([
-      { workItemId: 'work-1', kind: 'other', repoint: { sentAt: replyAt, sentMessageId: 'reply-1' } },
+      expect.objectContaining({ workItemId: 'work-1', to: 'needs_you', reason: 'requests_outstanding' }),
     ]);
   });
 
