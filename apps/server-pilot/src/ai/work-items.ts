@@ -96,6 +96,7 @@ import {
   type ReservationWorkflowV2Draft,
 } from './reservation-workflow-v2-contract.js';
 import { classifyMailSource } from './mail-source.js';
+import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
 /**
@@ -2845,6 +2846,7 @@ export async function listWorkItems(
         extractionPayload: mailExtraction.payload,
         sourceBody: message.textBody,
         sourceHtml: message.htmlBody,
+        sourceProvenance: message.sourceProvenance,
         state: workItem.state,
         reopenReason: sql<string | null>`(
           select we.value->>'reasonLine'
@@ -2869,8 +2871,7 @@ export async function listWorkItems(
           inArray(workItem.status, [...input.statuses]),
           or(
             ...(preStayCandidate ? [preStayCandidate] : []),
-            inArray(workItem.kind, [...NEEDS_YOU_KINDS]),
-            and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
+            inArray(workItem.kind, [...NEEDS_YOU_KINDS, 'other']),
             // A canonical V2 draft is its own admission: every stored request kind reaches the queue.
             sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
           ),
@@ -2886,18 +2887,28 @@ export async function listWorkItems(
     // ensure path would reopen (latest updated, then id) represents the mail; legacy and stale duplicate rows hide.
     // Probed per candidate page so the lookup stays proportional to the page, not mailbox history.
     const canonicalV2BySource = new Map<string, { id: string; updatedAt: Date }>();
+    const fileAttachmentMessageIds = new Set<string>();
     const fetchPageWithDrafts = async (cursor: NeedsYouCursor | null, size: number) => {
       const rows = await fetchPage(cursor, size);
       const sourceIds = [...new Set(rows.map((row) => row.sourceMessageId).filter((id): id is string => id !== null))];
       if (sourceIds.length === 0) return rows;
-      const drafts = await tx
-        .select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId, updatedAt: workItem.updatedAt })
-        .from(workItem)
-        .where(and(
-          eq(workItem.transportId, input.transportId),
-          inArray(workItem.sourceMessageId, sourceIds),
-          sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
-        ));
+      const [drafts, fileAttachments] = await Promise.all([
+        tx
+          .select({ id: workItem.id, sourceMessageId: workItem.sourceMessageId, updatedAt: workItem.updatedAt })
+          .from(workItem)
+          .where(and(
+            eq(workItem.transportId, input.transportId),
+            inArray(workItem.sourceMessageId, sourceIds),
+            sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
+          )),
+        tx
+          .selectDistinct({ messageId: attachment.messageId })
+          .from(attachment)
+          .where(and(inArray(attachment.messageId, sourceIds), eq(attachment.isInline, false))),
+      ]);
+      for (const att of fileAttachments) {
+        fileAttachmentMessageIds.add(att.messageId);
+      }
       for (const draft of drafts) {
         if (!draft.sourceMessageId) continue;
         const current = canonicalV2BySource.get(draft.sourceMessageId);
@@ -2911,7 +2922,7 @@ export async function listWorkItems(
     return collectNeedsYouPages({
       limit: input.limit,
       fetchPage: fetchPageWithDrafts,
-      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, state, ...row }) => {
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, sourceProvenance, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
         const sourceText = preStaySourceText(sourceBody, sourceHtml);
@@ -2933,6 +2944,9 @@ export async function listWorkItems(
           payload,
         });
         const chip = NEEDS_YOU_CHIPS[rank] ?? 'needs_you';
+        const hasAttachments = row.sourceMessageId
+          ? fileAttachmentPresence(fileAttachmentMessageIds.has(row.sourceMessageId), sourceProvenance)
+          : undefined;
         const v2 = hasReservationWorkflowV2Draft(state ?? {});
         const canonicalV2Id = row.sourceMessageId ? canonicalV2BySource.get(row.sourceMessageId)?.id : undefined;
         if (canonicalV2Id !== undefined && (!v2 || canonicalV2Id !== row.id)) return null;
@@ -2942,17 +2956,25 @@ export async function listWorkItems(
           // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no
           // binding to this source or generation, so it never hides a V2 draft: anything uncertain stays reviewable.
           if (!preStayAsk && classifyMailSource({ fromAddress: row.sender,
-              subject: row.subject, bodyText: sourceText }).kind !== 'direct') return null;
+              subject: row.subject, bodyText: sourceText, hasAttachments }).kind !== 'direct') return null;
           const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
           return { ...row, kind: admission.kind, chip, actions: admission.actions,
             ...(admission.reviewOnly ? { reviewOnly: true } : {}) };
         }
         if (!preStayAsk) {
-          if (
-            row.kind === 'other'
-            || !NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])
-            || classifyMailSource({ fromAddress: row.sender, subject: row.subject, bodyText: sourceText }).kind !== 'direct'
-          ) {
+          if (classifyMailSource({ fromAddress: row.sender, subject: row.subject, bodyText: sourceText, hasAttachments }).kind !== 'direct') {
+            return null;
+          }
+          if (row.kind === 'other') {
+            if (payload === null) {
+              return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
+            }
+            if (payload.needsAction === true) {
+              return { ...row, kind: 'other_actionable', chip, actions: ['other'], reviewOnly: true };
+            }
+            return null;
+          }
+          if (!NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])) {
             return null;
           }
           return { ...row, chip };
