@@ -396,6 +396,35 @@ function displayPrice(price: unknown) {
   return /^\d+$/.test(cents) ? `${text(row.currency)} ${(Number(cents) / 100).toFixed(2)}` : 'Not returned';
 }
 
+function SourceCues({ editor }: { editor: Editor }) {
+  const draft = editor.snapshot.session.draft;
+  const request = draft.proposal.content.requests.find(row => row.id === editor.request.id && row.kind === 'amend');
+  const cues = request?.kind === 'amend' ? (request.body.sourceCues ?? []).filter(cue => cue.text.trim()) : [];
+  if (!cues.length) return null;
+  if (editor.snapshot.session.sourceChanged || draft.source.sourceHash !== editor.source.sourceHash) {
+    return <div className={styles.warning}>The email changed. Review the current email before choosing rooms and rates.</div>;
+  }
+  return <div className={styles.card} role="note">
+    <strong>Requests from the email</strong>
+    <small className={styles.hint}>Confirm which stays these requests apply to before choosing rooms and rates.</small>
+    {cues.map((cue, index) => {
+      const label = cue.kind === 'room_description' ? 'Room request' : 'Nightly price request';
+      const reference = cue.sourceRefs.find(ref => draft.observations.some(row => row.kind === 'source' &&
+        row.generationId === draft.generationId && row.propertyCode === draft.propertyCode &&
+        row.sourceMessageId === draft.source.messageId && row.sourceRefs.includes(ref)));
+      return <div key={index} className={styles.facts}>
+        <span>{label}:</span>
+        <span style={{ whiteSpace: 'pre-wrap' }}>{cue.text}</span>
+        {reference && editor.onOpenEvidence && <div className={styles.row}><button type="button"
+          aria-label={`View email for ${label}`} onClick={() => editor.onOpenEvidence?.(reference)}>View email</button></div>}
+      </div>;
+    })}
+    {cues.some(cue => cue.kind === 'nightly_price') && <small className={styles.hint}>
+      Check nightly prices in Infor; the total shown here does not compare each night with this request.
+    </small>}
+  </div>;
+}
+
 export function AmendEditor(editor: Editor) {
   const body = `${requestPath(editor.request.id)}/body`;
   const scope = record(effectiveAt(editor.snapshot, `${body}/targets`));
@@ -443,7 +472,7 @@ export function AmendEditor(editor: Editor) {
       <div className={styles.row}><button type="button" disabled={editor.view.busy || scopeLocked} onClick={() => void editor.commands.changeRows({ kind: 'add_target', requestId: editor.request.id })}>Add stay</button>
         <button type="button" disabled={editor.view.busy || !targets.length} onClick={() => void editor.commands.lookup()}>Find in Infor</button></div>
     </Section>
-    <Section title={targets.length > 1 ? 'Changes for every stay' : 'Changes'}><ChangeList editor={editor} path={sharedPath} label="" /></Section>
+    <Section title={targets.length > 1 ? 'Changes for every stay' : 'Changes'}><SourceCues editor={editor} /><ChangeList editor={editor} path={sharedPath} label="" /></Section>
     {targets.map((hint, i) => {
       const hintId = text(hint.id), perIndex = per.findIndex(row => row.hintId === hintId);
       const root = `${perPath}/${perIndex}`; const changes = perIndex < 0 ? [] : rows(effectiveAt(editor.snapshot, `${root}/changes`));
@@ -510,6 +539,7 @@ export function AmendEditor(editor: Editor) {
                 });
               })().catch(() => {})}>I reviewed the current and proposed notes</button>
           </div>}
+          <SourceCues editor={editor} />
           {(targets.length > 1 || changes.length > 0) && <ChangeList editor={editor} path={`${root}/changes`} label={targets.length > 1 ? '' : 'Only this stay'} />}
           <Field label="Room rate" path={`${root}/rateHandling`} editor={editor} compact options={[{ value: 'retain', label: 'Keep current rate' }, { value: 'reprice', label: 'Reprice in Infor' }]} />
           {pricing && valueAt(editor.snapshot, `${root}/rateHandling`) !== 'reprice' && <div className={styles.warning}>Date, guest, room or rate changes need Reprice in Infor.</div>}
