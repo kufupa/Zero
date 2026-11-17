@@ -366,6 +366,7 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
   const { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
   current = currentLabtestRecord, snapshot = snapshotLabtestRecord, bind = labtestCombinedAmendPreimageBinding,
+  stageGuest = stageSavedGuestFieldsForComposition,
   quote = readAmendNightlyQuote } = dependencies;
   const selected = input?.selected;
   if (!validTarget(input?.target, input?.selected) || !amendTarget(selected, input?.changes, { allowRealGuest: input?.allowRealGuest === true }) ||
@@ -413,7 +414,7 @@ export async function prepareCloudPaneAmend(input, dependencies = {}) {
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
       const result = await runLabtestAmendSave(page, cloudPaneAmendRunOptions({ page, input: {
         ...input, signal: protectedSession.options.signal }, expected, prepareOnly: true },
-      { current, snapshot, bind, quote: stageQuote, recordOptions: nativeOptions(input, record) }));
+      { current, snapshot, bind, stageGuest, quote: stageQuote, recordOptions: nativeOptions(input, record) }));
       if (result.issue === 'PREPARE_ONLY' && result.nativeDigest && result.approvedPrices && result.preserved) {
         return { outcome: 'prepared', nativeDigest: result.nativeDigest,
           approvedPrices: result.approvedPrices, preserved: result.preserved,
