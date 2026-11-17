@@ -37,7 +37,11 @@ const recoverySchema = z.object({
   approved: z.record(z.string(), z.unknown()),
   approvedPrices: z.record(z.string(), z.unknown()),
   preserved: z.record(z.string(), z.unknown()),
-  applied: z.object({ mealPlan: z.string().min(1).max(120) }).passthrough(),
+  applied: z.object({
+    mealPlan: z.string().max(120).refine(
+      (value) => value === '' || (Boolean(value.trim()) && !/[\p{Cc}]/u.test(value)),
+      'meal plan must be exact blank or a valid non-empty value'),
+  }).passthrough(),
   expectedFinalCommission: z.number().finite().min(0).max(100).optional(),
   nativeDigest: digest,
   recoveryBaseline: z.object({
