@@ -652,22 +652,12 @@ function isRoutineSystemMail(
     /\bprofitroom\b/i.test(haystack) &&
     /\b(?:reservation\s+confirmed|booking\s+update|default\s+contact\s+form)\b/i.test(haystack);
 
-  const tboNotice =
-    /\btbo(?:\s+holidays)?\b/i.test(haystack) &&
-    /\b(?:booking\s+(?:confirmed|cancelled|canceled)|modification\s+alert)\b/i.test(haystack);
-
   const webbedsNotice =
     /\bwebbeds\b/i.test(haystack) &&
     /\b(?:reservation\s+confirmation|cancellation|booking\s+update)\b/i.test(haystack);
 
   const expediaPartnerCentral =
     /\bexpedia\s+partner\s+central\b/i.test(haystack) && /\bnew\s+booking\b/i.test(haystack);
-
-  const travelitNotice =
-    /\btravelit\b/i.test(haystack) &&
-    /\b(?:booking\s+made\s+through\s+travelit|new\s+booking\s+\d+|booking\s+cancellation\s+notification)\b/i.test(
-      haystack,
-    );
 
   const erevmaxNotice =
     /\berevmax\b/i.test(haystack) && /\bupdate\s+failure\s+notification\b/i.test(haystack);
@@ -696,10 +686,8 @@ function isRoutineSystemMail(
     calendarCanceled ||
     bookingComNotice ||
     profitroomNotice ||
-    tboNotice ||
     webbedsNotice ||
     expediaPartnerCentral ||
-    travelitNotice ||
     erevmaxNotice ||
     otaFromDomainNotice
   );

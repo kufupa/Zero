@@ -26,6 +26,7 @@ import {
   appendReservationWorkflowV2Observation,
   getReservationWorkflowV2Draft,
   RESERVATION_WORKFLOW_V2_STATE_KEY,
+  withReservationWorkflowV2Draft,
 } from './reservation-workflow-v2-state.js';
 import {
   reservationWorkflowV2DraftSchema,
@@ -577,7 +578,7 @@ async function claimServiceDispatch(ctx: ReservationWorkflowV2ServerContext, inp
       summary: 'Add-On Save may dispatch; fresh HMS reconciliation required before retry' };
     const operationResults = appendOperationResult(draft, operation);
     const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, operationResults });
-    const nextState = { ...(workItemRow.state as Record<string, unknown>), [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft };
+    const nextState = withReservationWorkflowV2Draft(workItemRow.state as Record<string, unknown>, nextDraft);
     await tx.update(workItem).set({ state: nextState, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     await tx.insert(workEvent).values({ id: intentRef, workItemId: input.workItemId, actorKind: 'system', actorUserId: ctx.user.id,
       type: 'write.evidence', fieldPath: DISPATCH_FIELD, value: intent,
@@ -672,8 +673,8 @@ async function persistResolvedServiceTx(tx: DispatchTx, ctx: ReservationWorkflow
     updatedAt: new Date().toISOString(), summary };
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: appendOperationResult(draft, nextResult) });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${intent.operationId}`,
     value: { id: intent.operationId, requestId: input.requestId, allocationId: input.allocationId,
@@ -1347,7 +1348,7 @@ async function claimSavedService(ctx: ReservationWorkflowV2ServerContext, input:
       observationRefs: [approved.preview.ref], updatedAt: new Date().toISOString(),
       summary: 'Add-On Save may dispatch; reconcile before retry' };
     const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, operationResults: appendOperationResult(draft, operation) });
-    await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft },
+    await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
       updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', actorUserId: ctx.user.id,
       type: 'write.evidence', fieldPath: DISPATCH_FIELD, value: intent,
@@ -1434,7 +1435,7 @@ async function persistSavedServiceTx(tx: DispatchTx, ctx: ReservationWorkflowV2S
       : 'Add-On saved and verified in Infor' };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: appendOperationResult(draft, result) });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), [RESERVATION_WORKFLOW_V2_STATE_KEY]: next },
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, next),
     updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
   await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: DISPATCH_FIELD, value: { version: 1, kind: 'resolved', variant: 'saved_target', operationId: intent.operationId,

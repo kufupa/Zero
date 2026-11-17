@@ -1,4 +1,4 @@
-import { MAIL_SOURCE_RULE_DATA, type MailSourceRuleData } from '../../config/mail-source-rules.js';
+import { MAIL_SOURCE_RULE_DATA, ROUTINE_NOTICE_EXCLUSION_DATA, type MailSourceRuleData, type RoutineNoticeExclusionData } from '../../config/mail-source-rules.js';
 
 export type MailSourceKind = 'channel' | 'system' | 'direct';
 
@@ -22,14 +22,18 @@ export function isMailSourceClassification(value: unknown): value is MailSourceC
 
 type MailSourceRule = Omit<
   MailSourceRuleData,
-  'forwardedSubjectPatterns' | 'directSubjectPatterns' | 'skipSubjectPatterns'
+  | 'senderPatterns'
+  | 'skipSubjectPatterns'
+  | 'directSubjectPatterns'
+  | 'skipBodyPatterns'
 > & {
-  forwardedSubjectPatterns?: readonly RegExp[];
-  directSubjectPatterns?: readonly RegExp[];
+  senderPatterns?: readonly RegExp[];
   skipSubjectPatterns?: readonly RegExp[];
+  directSubjectPatterns?: readonly RegExp[];
+  skipBodyPatterns?: readonly RegExp[];
 };
 
-type MailSourcePatternData = NonNullable<MailSourceRuleData['forwardedSubjectPatterns']>[number];
+type MailSourcePatternData = NonNullable<MailSourceRuleData['senderPatterns']>[number];
 
 function compilePatterns(patterns: readonly MailSourcePatternData[]): readonly RegExp[] {
   return patterns.map(({ source, flags }) => new RegExp(source, flags));
@@ -41,9 +45,7 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
     kind: rule.kind,
     source: rule.source,
     domains: rule.domains,
-    ...(rule.forwardedSubjectPatterns === undefined
-      ? {}
-      : { forwardedSubjectPatterns: compilePatterns(rule.forwardedSubjectPatterns) }),
+    ...(rule.exactHost === undefined ? {} : { exactHost: rule.exactHost }),
     ...(rule.otaChip === undefined ? {} : { otaChip: rule.otaChip }),
     ...(rule.bookingPhrase === undefined ? {} : { bookingPhrase: rule.bookingPhrase }),
     ...(rule.directSubjectPatterns === undefined
@@ -52,23 +54,36 @@ function compileRule(rule: MailSourceRuleData): MailSourceRule {
     ...(rule.skipSubjectPatterns === undefined
       ? {}
       : { skipSubjectPatterns: compilePatterns(rule.skipSubjectPatterns) }),
+    ...(rule.senderPatterns === undefined ? {} : { senderPatterns: compilePatterns(rule.senderPatterns) }),
+    ...(rule.skipBodyPatterns === undefined
+      ? {}
+      : { skipBodyPatterns: compilePatterns(rule.skipBodyPatterns) }),
+    ...(rule.requiresNoAttachments === undefined ? {} : { requiresNoAttachments: rule.requiresNoAttachments }),
   };
 }
 
 /** Compile configured regex data once for the browser-safe server/pane registry. */
 export const MAIL_SOURCE_RULES: readonly MailSourceRule[] = MAIL_SOURCE_RULE_DATA.map(compileRule);
 
-const INTERNAL_FORWARD_DOMAINS = ['legacyhotels.co.za'] as const;
-const FORWARD_SUBJECT_PREFIX = /^(?:(?:fw|fwd|forwarded)\s*:\s*)+/i;
-const FORWARDED_HEADER_LINE = /^\s*(?:>\s*)*(?:from|sender)\s*:\s*(.*?)\s*$/i;
-const FORWARDED_SUBJECT_LINE = /^\s*(?:>\s*)*subject\s*:\s*(.*?)\s*$/i;
-/** Header lines after the forwarded From line that may hold its Subject (Sent, To, Cc, Subject). */
-const FORWARD_SUBJECT_LOOKAHEAD_LINES = 6;
+type RoutineNoticeExclusion = Omit<RoutineNoticeExclusionData, 'senderPattern' | 'subjectPattern' | 'humanOrigin'> & {
+  senderPattern: RegExp;
+  subjectPattern: RegExp;
+  humanOrigin?: boolean;
+};
+
+const ROUTINE_NOTICE_EXCLUSIONS: readonly RoutineNoticeExclusion[] = ROUTINE_NOTICE_EXCLUSION_DATA.map((entry) => ({
+  id: entry.id,
+  kind: entry.kind,
+  source: entry.source,
+  senderPattern: new RegExp(entry.senderPattern.source, entry.senderPattern.flags),
+  subjectPattern: new RegExp(entry.subjectPattern.source, entry.subjectPattern.flags),
+  ...(entry.humanOrigin === undefined ? {} : { humanOrigin: entry.humanOrigin }),
+}));
+
 const EMAIL_ADDRESS = /[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?\.)+[A-Z0-9-]{2,63}/i;
 const HTML_TAG = /<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/i;
 const HTML_BLOCK_TAG = /<\/?(?:address|article|aside|blockquote|body|br|dd|div|dl|dt|fieldset|figcaption|figure|footer|form|h[1-6]|header|hr|html|li|main|nav|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s+[^<>]*)?\s*\/?>/gi;
 const HTML_ENTITY = /&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;/gi;
-const MAX_FORWARD_HEADER_CHARS = 5_000;
 
 function extractDomain(rawAddress: string | null | undefined): string {
   if (!rawAddress) return '';
@@ -77,20 +92,16 @@ function extractDomain(rawAddress: string | null | undefined): string {
   return address.slice(address.lastIndexOf('@') + 1).replace(/\.+$/, '').toLowerCase();
 }
 
-function domainMatches(domain: string, registeredDomain: string): boolean {
-  return domain === registeredDomain || domain.endsWith(`.${registeredDomain}`);
+function domainMatches(domain: string, registeredDomain: string, exactHost?: boolean): boolean {
+  return domain === registeredDomain || (!exactHost && domain.endsWith(`.${registeredDomain}`));
 }
 
 function ruleForDomain(domain: string): { rule: MailSourceRule; registeredDomain: string } | null {
   for (const rule of MAIL_SOURCE_RULES) {
-    const registeredDomain = rule.domains.find((candidate) => domainMatches(domain, candidate));
+    const registeredDomain = rule.domains.find((candidate) => domainMatches(domain, candidate, rule.exactHost));
     if (registeredDomain) return { rule, registeredDomain };
   }
   return null;
-}
-
-function isInternalForwardSender(domain: string): boolean {
-  return INTERNAL_FORWARD_DOMAINS.some((registeredDomain) => domainMatches(domain, registeredDomain));
 }
 
 function matchedSource(
@@ -100,18 +111,32 @@ function matchedSource(
   return { kind: rule.kind, source: rule.source, reason };
 }
 
-/** A known sender's mail stays direct when it relays a person's enquiry, or falls outside the rule's skip subjects. */
+/** A known sender's mail stays direct when it relays a person's enquiry, or fails a configured skip-evidence gate. */
 function directExemption(
   rule: MailSourceRule,
-  subjects: readonly (string | null | undefined)[],
+  subject: string | null | undefined,
+  evidence: { fromAddress?: string | null; bodyText?: string | null; hasAttachments?: boolean },
 ): MailSourceClassification | null {
   const matches = (patterns: readonly RegExp[] | undefined) =>
-    subjects.some((subject) => patterns?.some((pattern) => pattern.test(subject ?? '')));
+    patterns?.some((pattern) => pattern.test(subject ?? '')) === true;
+  if (rule.senderPatterns && !rule.senderPatterns.some((pattern) => pattern.test(evidence.fromAddress ?? ''))) {
+    return { kind: 'direct', source: null, reason: `unmatched_sender:${rule.id}` };
+  }
   if (matches(rule.directSubjectPatterns)) {
     return { kind: 'direct', source: null, reason: `relayed_enquiry:${rule.id}` };
   }
   if (rule.skipSubjectPatterns && !matches(rule.skipSubjectPatterns)) {
     return { kind: 'direct', source: null, reason: `unskipped_subject:${rule.id}` };
+  }
+  if (rule.skipBodyPatterns && !rule.skipBodyPatterns.every((pattern) => pattern.test(plainTextBody(evidence.bodyText ?? '')))) {
+    return { kind: 'direct', source: null, reason: `unmatched_body:${rule.id}` };
+  }
+  if (rule.requiresNoAttachments && evidence.hasAttachments !== false) {
+    return {
+      kind: 'direct',
+      source: null,
+      reason: evidence.hasAttachments === true ? `attachments_present:${rule.id}` : `attachments_unverified:${rule.id}`,
+    };
   }
   return null;
 }
@@ -119,6 +144,8 @@ function directExemption(
 function plainTextBody(bodyText: string): string {
   if (!HTML_TAG.test(bodyText)) return bodyText;
   return bodyText
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(HTML_BLOCK_TAG, '\n')
     .replace(/<\/?[a-z][a-z0-9-]*(?:\s+[^<>]*)?\s*\/?>/gi, '')
     .replace(HTML_ENTITY, (entity) => {
@@ -141,74 +168,79 @@ function plainTextBody(bodyText: string): string {
     });
 }
 
-function originalForwardSender(
-  bodyText: string,
-): { rule: MailSourceRule; domain: string; subject: string | null } | null {
-  const lines = bodyText.slice(0, MAX_FORWARD_HEADER_CHARS).split(/\r?\n/);
-  for (const [index, line] of lines.entries()) {
-    const header = FORWARDED_HEADER_LINE.exec(line);
-    if (!header) continue;
-    const domain = extractDomain(header[1]);
-    const match = ruleForDomain(domain);
-    if (!match) return null;
-    // HTML forwards put blank lines between header fields, so only non-blank lines count toward the lookahead.
-    const subjectLine = lines
-      .slice(index + 1)
-      .filter((candidate) => candidate.trim() !== '')
-      .slice(0, FORWARD_SUBJECT_LOOKAHEAD_LINES)
-      .map((candidate) => FORWARDED_SUBJECT_LINE.exec(candidate)?.[1])
-      .find((subject) => subject !== undefined);
-    return { rule: match.rule, domain: match.registeredDomain, subject: subjectLine ?? null };
-  }
-  return null;
-}
-
-function forwardedSubject(subject: string): string | null {
-  const trimmed = subject.trim();
-  const prefix = FORWARD_SUBJECT_PREFIX.exec(trimmed);
-  return prefix ? trimmed.slice(prefix[0].length).trim() : null;
+/**
+ * A human-origin routine notice is suppressed only by a proven content-free
+ * send: the subject must be the exact bare notice subject (enforced by the
+ * exclusion's anchored pattern, so a reply, forward or any added text stays
+ * reviewable), the body must be empty, and attachments must be proven absent.
+ * Any body line could be staff-authored, and a present or unverified file can
+ * carry a whole separate ask, so both keep the mail reviewable.
+ */
+function humanOriginNoticeSuppressed(input: {
+  /** Body already reduced to plain text by the caller. */
+  plainBody: string;
+  /** Tri-state attachment evidence; only `false` (proven none) counts. */
+  hasAttachments?: boolean;
+}): boolean {
+  return input.hasAttachments === false && !input.plainBody.trim();
 }
 
 /**
- * Classify only known sender domains, or a known source in an internal forward. Ordinary message text is never evidence:
- * a guest or travel agent can mention an OTA without turning their direct request into channel mail.
+ * Classify only known sender domains and exact routine notices. Ordinary
+ * message text is never evidence: a guest or travel agent can mention an OTA
+ * without turning their direct request into channel mail, and a human forward
+ * of a channel or notice can never be proved unannotated — any body line can
+ * be staff-authored even when it resembles an embedded header — so every
+ * human-origin forward stays reviewable for first-pass adjudication.
  */
 export function classifyMailSource(input: {
   fromAddress?: string | null;
   subject?: string | null;
   bodyText?: string | null;
+  /** Whether the message carries at least one non-inline attachment; undefined means unknown. A human-origin send skips only on a proven-empty set, since a file can carry the whole ask. */
+  hasAttachments?: boolean;
 }): MailSourceClassification {
+  const plainBody = plainTextBody(input.bodyText ?? '');
+  const routineNotice = ROUTINE_NOTICE_EXCLUSIONS.find(
+    (exclusion) =>
+      exclusion.senderPattern.test(input.fromAddress?.trim() ?? '') &&
+      exclusion.subjectPattern.test(input.subject?.trim() ?? '') &&
+      (exclusion.humanOrigin !== true ||
+        humanOriginNoticeSuppressed({ plainBody, hasAttachments: input.hasAttachments })),
+  );
+  if (routineNotice) {
+    return { kind: 'system', source: routineNotice.source, reason: `routine_notice:${routineNotice.id}` };
+  }
   const senderDomain = extractDomain(input.fromAddress);
   const senderMatch = ruleForDomain(senderDomain);
   if (senderMatch) {
-    const exemption = directExemption(senderMatch.rule, [input.subject]);
+    const exemption = directExemption(senderMatch.rule, input.subject, {
+      fromAddress: input.fromAddress,
+      bodyText: input.bodyText,
+      hasAttachments: input.hasAttachments,
+    });
     if (exemption) return exemption;
     return matchedSource(senderMatch.rule, `sender_domain:${senderMatch.registeredDomain}`);
-  }
-
-  if (isInternalForwardSender(senderDomain)) {
-    const forwardedSender = originalForwardSender(plainTextBody(input.bodyText ?? ''));
-    if (forwardedSender) {
-      const exemption = directExemption(forwardedSender.rule, [input.subject, forwardedSender.subject]);
-      if (exemption) return exemption;
-      return matchedSource(forwardedSender.rule, `forwarded_sender:${forwardedSender.domain}`);
-    }
-
-    const originalSubject = forwardedSubject(input.subject ?? '');
-    if (originalSubject) {
-      for (const rule of MAIL_SOURCE_RULES) {
-        if (rule.forwardedSubjectPatterns?.some((pattern) => pattern.test(originalSubject))) {
-          return matchedSource(rule, `forwarded_subject:${rule.id}`);
-        }
-      }
-    }
   }
 
   return {
     kind: 'direct',
     source: null,
-    reason: 'no_matching_sender_or_forward_header',
+    reason: 'no_matching_sender',
   };
+}
+
+/**
+ * Canonical body for source admission at every gate (ingest, live admission,
+ * arrival, pane): the plain-text body when present, else the HTML body reduced
+ * to text. An empty or whitespace-only text body never hides a real HTML body.
+ */
+export function canonicalSourceBodyText(input: {
+  textBody?: string | null;
+  htmlBody?: string | null;
+}): string {
+  if (input.textBody?.trim()) return input.textBody;
+  return input.htmlBody ? plainTextBody(input.htmlBody) : '';
 }
 
 function channelPhrase(phrase: string): RegExp {

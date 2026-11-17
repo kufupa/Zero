@@ -1,9 +1,10 @@
 import { and, eq, inArray, isNull, lt } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
-import { classifyMailSource } from './mail-source.js';
-import { preStaySourceText } from './existing-stay-information.js';
+import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
+import { selfSentPreStayCandidate } from './existing-stay-information.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
 import { enqueueAiRun, NOT_APPLICABLE_MODEL_ID } from './run-ledger.js';
@@ -31,23 +32,19 @@ export async function enqueueReservationArrival(db: DB, input: {
       eq(message.direction, 'inbound'), eq(message.historyOnly, false), eq(mailThread.historyOnly, false),
       isNull(mailThread.trashedAt), isNull(mailThread.spamAt))).limit(1);
   if (!row || row.sourceProvenance?.attention != null || !row.arrivedAt) return null;
-  const body = preStaySourceText(row.textBody, row.htmlBody);
+  const body = canonicalSourceBodyText({ textBody: row.textBody, htmlBody: row.htmlBody });
   // A staff-selected message may be attachment-only; admission still waits for a body.
   if (!body.trim() && !input.requestedByPane) return null;
-  if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body }).kind !== 'direct') return null;
-  // FortiMail's quarantine digest is an internal wrapper, not the quarantined
-  // sender's request. Do not spend a model call on its contents.
-  if (/@fortimail-[a-z0-9-]+\.[a-z0-9.-]+\s*>?$/i.test(row.fromAddress.trim()) &&
-      /^quarantine\s+summary\b/i.test(row.subject?.trim() ?? '')) return null;
-  // A routine internal function sheet is an operations handover, not a client request.
-  if (/@legacyhotels\.(?:co\.za|com)\s*>?$/i.test(row.fromAddress.trim()) &&
-      /^(?:re:\s*|fw(?:d)?:\s*)*(?:new\s+|updated\s+)?function\s+sheet\b/i.test(row.subject?.trim() ?? '')) return null;
-  if (!input.requestedByPane) {
-    if (/^(?:[^<>]*<)?no-reply@grfeedback-b\.com\s*>?$/i.test(row.fromAddress.trim()) &&
-        /^(?:The Centurion Hotel has received a new online review|The Centurion Hotel has received a Post-Stay survey response from |The Centurion Hotel - GuestRevu (?:Daily|Weekly) Summary)/i.test(row.subject?.trim() ?? '')) return null;
-    if (/^(?:[^<>]*<)?calendar-notification@google\.com\s*>?$/i.test(row.fromAddress.trim()) &&
-        /^(?:Invitation:|Declined:|Canceled event:)/i.test(row.subject?.trim() ?? '')) return null;
-  }
+  const [fileAttachment] = await db.select({ id: attachment.id }).from(attachment)
+    .where(and(eq(attachment.messageId, row.id), eq(attachment.isInline, false))).limit(1);
+  // Source classification shares the canonical body and notice gates with
+  // ingest, admission and the pane, including routine automated notices. The
+  // same self-prestay exemption admission and the pane apply keeps a real
+  // self-sent pre-stay mail eligible for prefill.
+  if (classifyMailSource({ fromAddress: row.fromAddress, subject: row.subject, bodyText: body,
+    hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) }).kind !== 'direct' &&
+    !selfSentPreStayCandidate({ fromAddress: row.fromAddress, mailboxAddress: row.mailboxAddress,
+      subject: row.subject, bodyText: body })) return null;
   const sourceHash = staffQuoteSourceHash(row);
   const evidence = await reservationArrivalEvidence(db, row.id);
   const priority = input.requestedByPane ? PANE_REQUEST_PRIORITY : input.priority ?? 0;

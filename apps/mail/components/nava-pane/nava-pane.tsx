@@ -142,8 +142,8 @@ import { useSavedReply } from './use-saved-reply';
 import { useQuotePdfJob } from './use-quote-pdf-job';
 import { useStaffQuoteAutostart } from './use-staff-quote-autostart';
 import { useSystemCheck } from './use-system-check';
-import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
-import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
+import { canonicalSourceBodyText, classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
+import { selfSentPreStayBodyConfirmationNumbers, selfSentPreStayCandidate } from '../../../server-pilot/src/ai/existing-stay-information.js';
 import { readAsForAnalysis, workStateForStatus } from '@/lib/quote-workflow/workflow-vocabulary';
 import { GOLD_ACTION_FOR_READ_AS } from '@/lib/workflow-action-labels';
 
@@ -174,21 +174,33 @@ function externalSenderFallback(
   };
 }
 
-function ExistingStayInformationCard({ confirmationNumbers, separateAsk }: {
+function ExistingStayInformationCard({ confirmationNumbers, separateAsk, needsReview }: {
   confirmationNumbers: string[];
   separateAsk: string | null;
+  needsReview: boolean;
 }) {
+  const ariaLabel = needsReview
+    ? 'Existing stay information — needs review'
+    : separateAsk
+      ? 'Existing stay information — also needs attention'
+      : 'Existing stay information — no booking or quote action';
   return (
     <section
       role="status"
-      aria-label="Existing stay information — no booking or quote action"
+      aria-label={ariaLabel}
       data-testid="existing-stay-information"
       className="flex flex-col gap-2 rounded-[4px] border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2.5"
     >
       <p className="text-[13px] leading-5 text-[#475569]">
         <span className="font-semibold text-[#1e293b]">Existing stay information</span> — this confirmation is for a
-        reservation already on file. Nava takes no booking or quote action.
+        reservation already on file.{needsReview ? '' : ' Nava takes no booking or quote action.'}
       </p>
+      {needsReview ? (
+        <p className="text-[13px] leading-5 text-[#475569]">
+          <span className="font-semibold text-[#92400e]">Needs review</span>: this mail may also ask for something else.
+          Read the email and action any other request by hand in HMS — Nava cannot action it here.
+        </p>
+      ) : null}
       {confirmationNumbers.length ? (
         <p className="text-[13px] leading-5 text-[#475569]">
           <span className="font-semibold text-[#1e293b]">
@@ -198,9 +210,14 @@ function ExistingStayInformationCard({ confirmationNumbers, separateAsk }: {
         </p>
       ) : null}
       {separateAsk ? (
-        <p className="text-[13px] leading-5 text-[#475569]">
-          <span className="font-semibold text-[#1e293b]">Also needs attention</span>: {separateAsk}
-        </p>
+        <>
+          <p className="text-[13px] leading-5 text-[#475569]">
+            <span className="font-semibold text-[#1e293b]">Also needs attention</span>: {separateAsk}
+          </p>
+          <p className="text-[13px] leading-5 text-[#475569]">
+            Read the original email to check for any other requests — Nava may only show one request here.
+          </p>
+        </>
       ) : null}
     </section>
   );
@@ -490,12 +507,17 @@ export function NavaPane({
   const nonActionableMailSource =
     sourceClassification.kind === 'direct' ? null : sourceClassification;
   const isNonActionableMailSource = nonActionableMailSource !== null;
-  const selfSentPreStayBySubject = isSelfSentPreStayInformationMail({
+  const selfPreStayBodyText = canonicalSourceBodyText({
+    textBody: activeEmail?.bodyText,
+    htmlBody: activeEmail?.bodyHtml,
+  });
+  const selfSentPreStay = selfSentPreStayCandidate({
     fromAddress: activeEmail?.senderEmail,
     mailboxAddress: activeConnection?.email,
     subject: activeEmail?.subject,
+    bodyText: selfPreStayBodyText,
   });
-  const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStayBySubject;
+  const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStay;
   useEffect(() => {
     let alive = true;
     const selectedEpoch = configEpoch.current.value;
@@ -733,7 +755,7 @@ export function NavaPane({
     editVersion: amendWorkItem.editVersion, hasDraft: amendWorkItem.available,
     flush: amendWorkItem.flush, reload: storedWork.reloadRefreshedAmend });
   const isExistingStayInformation =
-    selfSentPreStayBySubject ||
+    selfSentPreStay ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
   const contactEditorKey = `${contactCorrectionKey}|${
@@ -1566,13 +1588,23 @@ export function NavaPane({
   const needsYou = useNeedsYou(trpcClient);
   const selectedReadKind = storedWork.pane.state === 'ready' ? storedWork.pane.kind : null;
   const existingStayConfirmationNumbers =
-    storedWork.pane.state === 'ready' ? (storedWork.pane.confirmationNumbers ?? []) : [];
+    storedWork.pane.state === 'ready' && (storedWork.pane.confirmationNumbers ?? []).length > 0
+      ? storedWork.pane.confirmationNumbers ?? []
+      : selfSentPreStayBodyConfirmationNumbers(`${activeEmail?.subject ?? ''}\n${selfPreStayBodyText}`);
   const savedStays = storedWork.pane.state === 'ready' ? storedWork.pane.savedStays : undefined;
   const separateAsk = storedWork.pane.state === 'ready'
     ? storedWork.pane.separateAsk ?? null
     : null;
+  // Without a stored read that explicitly verified no other ask, the card never reads as "no action": a missing or
+  // non-self-prestay extraction verdict leaves the current mail for staff to review.
+  const separateAskReview =
+    isExistingStayInformation &&
+    !separateAsk &&
+    !(storedWork.pane.state === 'ready' &&
+      storedWork.pane.existingStayInformation === true &&
+      storedWork.pane.separateAskReview === false);
   const classifiedReadAs = isExistingStayInformation
-    ? separateAsk ? 'other_to_do' : 'not_for_nava'
+    ? separateAsk || separateAskReview ? 'other_to_do' : 'not_for_nava'
     : readAsForAnalysis(quoteSession.analysis, {
         kind: selectedReadKind,
         treatAs: quoteSession.treatAs,
@@ -2525,7 +2557,7 @@ export function NavaPane({
             {isExistingStayInformation ? (
               <div className="flex flex-col gap-3.5">
                 {shownScreen === 'tool' ? (
-                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} separateAsk={separateAsk} />
+                  <ExistingStayInformationCard confirmationNumbers={existingStayConfirmationNumbers} separateAsk={separateAsk} needsReview={separateAskReview} />
                 ) : null}
               </div>
             ) : nonActionableMailSource ? (

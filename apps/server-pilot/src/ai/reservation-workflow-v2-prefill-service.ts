@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
@@ -18,6 +18,7 @@ import { createAzureExtractionAdapter } from './extraction/extract.js';
 import { prefillSimpleSynthesisEnabled } from './extraction/config.js';
 import type { ModelAdapter, ModelInvokeResult } from './bedrock/adapter.js';
 import { loadSyncedQuoteSelectionFromMailbox } from './quote-workflow-synced-selection.js';
+import { attachmentEvidenceUnknown, fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import { runReservationArrivalChecks } from './reservation-workflow-v2-arrival-checks.js';
 
 /** Failure classes safe for production logs; any unlisted name collapses to 'other'. */
@@ -159,11 +160,21 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
       includeVisionImages: true, trackVisionImages: true, signal: operationSignal });
     operationSignal.throwIfAborted();
     if (!selection) return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: claimed.claim, failed: true, jobFence });
+    const [sourceMessage] = await scoped.db.select({ sourceProvenance: message.sourceProvenance })
+      .from(message).where(and(eq(message.id, input.source.messageId),
+        eq(message.transportId, scoped.transportId))).limit(1);
+    const [fileAttachment] = await scoped.db.select({ id: attachment.id })
+      .from(attachment).where(and(eq(attachment.messageId, input.source.messageId),
+        eq(attachment.isInline, false))).limit(1);
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
+    const { missing, missingCurrent, attachmentEvidenceUnknown: contextAttachmentEvidenceUnknown } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     const azureAdapter = createAzureExtractionAdapter(modelEnv);
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
-      signal: operationSignal,
+      attachmentEvidenceUnknown: attachmentEvidenceUnknown(sourceMessage?.sourceProvenance),
+      contextAttachmentEvidenceUnknown,
+      hasPersistedNonInlineAttachment: fileAttachmentPresence(fileAttachment != null, sourceMessage?.sourceProvenance) === true,
+      signal: operationSignal, currentAttachmentGaps: missingCurrent.length, contextAttachmentGaps: missing.length,
       adapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'extract',
         modelEnv.EXTRACTION_REASONING_EFFORT, jobFence?.runId),
       synthesisAdapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'synthesis',
@@ -178,7 +189,6 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
         activeClaim = checkpoint.claim;
         return true;
       } });
-    const { missing } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     if (missing.length) {
       generated.status = 'partial';
       generated.errors = [...(generated.errors ?? []).slice(0, 99), { stage: 'lookup', code: 'missing_attachment',
@@ -191,6 +201,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     return finishReservationWorkflowV2Prefill(scoped, { ...input, claim: activeClaim, failed, jobFence,
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
+        ...(generated.disposition ? { disposition: generated.disposition } : {}),
         proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch (error) {

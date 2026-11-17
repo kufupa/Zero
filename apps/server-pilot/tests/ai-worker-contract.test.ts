@@ -642,11 +642,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
       await withWorkerDb(async (db) => {
         const threadId = randomUUID();
         const messageId = randomUUID();
-        const fromAddress = 'reservations@legacyhotels.co.za';
-        const subject = 'FW: Expedia Partner Central - New reservation';
-        const textBody =
-          'Forwarded message:\nFrom: Expedia Partner Central <notice@m.expediapartnercentral.com>\nSubject: New reservation';
-        const mailSourceDecision = classifyMailSource({ fromAddress, subject, bodyText: textBody });
+        const fromAddress = 'Expedia Partner Central <notice@m.expediapartnercentral.com>';
+        const subject = 'Expedia Partner Central - New reservation';
+        const textBody = 'A new reservation was created in Expedia Partner Central.';
+        const mailSourceDecision = classifyMailSource({ fromAddress, subject, bodyText: textBody, hasAttachments: false });
         expect(mailSourceDecision.kind).toBe('channel');
 
         await db.insert(mailThread).values({
@@ -715,7 +714,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('ai worker db contract', () =>
           mailSourceDecision: {
             kind: 'channel',
             source: 'Expedia Partner Central',
-            reason: 'forwarded_sender:m.expediapartnercentral.com',
+            reason: 'sender_domain:m.expediapartnercentral.com',
           },
           deterministicMailSourceRoute: true,
           triageRationale: expect.stringContaining('Expedia Partner Central'),

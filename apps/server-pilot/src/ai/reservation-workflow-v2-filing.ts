@@ -19,7 +19,7 @@ import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft,
   type ReservationWorkflowV2PrepareInput, type ReservationWorkflowV2ExecuteInput,
   type ReservationWorkflowV2ReconcileInput, type ReservationWorkflowV2Source } from './reservation-workflow-v2-contract.js';
 import { appendReservationWorkflowV2Observation, getReservationWorkflowV2Draft,
-  recordReservationWorkflowV2Result, reservationWorkflowV2DraftOf,
+  recordReservationWorkflowV2Result, reservationWorkflowV2DraftOf, withReservationWorkflowV2Draft,
   type ReservationWorkflowV2Context } from './reservation-workflow-v2-state.js';
 import { canonicalJson } from './draft-approval.js';
 import { sameGuestName } from './guest-name-match.js';
@@ -936,7 +936,7 @@ async function authorizeCurrentFiling(tx: WorkTransaction, ctx: ReservationWorkf
     observationRefs: [attempt.ref], updatedAt: new Date().toISOString(), summary: 'HMS upload claimed; outcome pending reconciliation' };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft,
     observations: [...draft.observations, attempt], operationResults: [...draft.operationResults, result] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, next),
     updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,
@@ -976,7 +976,7 @@ async function persistNeverDispatchedFiling(tx: WorkTransaction, ctx: Reservatio
   const result = { ...prior, status: 'failed' as const, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== prior.id), result] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, next),
     updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,
@@ -1377,7 +1377,7 @@ async function recordFilingOperationInTransaction(tx: WorkTransaction, ctx: Rese
     observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations,
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== result.id), result] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, next),
     updatedAt: new Date() }).where(eq(workItem.id, item.id));
   await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,
@@ -1586,7 +1586,7 @@ export async function recordReservationWorkflowV2AttachRecovery(tx: WorkTransact
     summary: `Filed ${recovery.sourceDocumentName ?? recovery.documentName}; independent fresh Documents listing verified` };
   const next = reservationWorkflowV2DraftSchema.parse({ ...draft, observations: [...draft.observations, observation],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== result.id), result] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>), reservationWorkflowV2: next },
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, next),
     updatedAt: new Date() }).where(eq(workItem.id, item.id));
   await tx.insert(workEvent).values({ workItemId: item.id, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${result.id}`,

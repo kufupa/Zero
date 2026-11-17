@@ -299,6 +299,8 @@ export type StoredWork =
       staffManual?: boolean;
       existingStayInformation?: boolean;
       separateAsk?: string | null;
+      /** True when the stored read could not verify there is no other ask; the pane asks staff to review the mail. */
+      separateAskReview?: boolean;
       confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;
@@ -342,6 +344,10 @@ export type TranslationRetryResult = { status: string; translation?: StoredTrans
 export type NeedsYouRow = {
   id: string;
   kind: string;
+  /** Every distinct V2 request kind on the item, in draft order. Absent on legacy (non-V2) rows that keep their kind. */
+  actions?: ('quote' | 'create' | 'amend' | 'cancel' | 'services' | 'filing' | 'other')[];
+  /** A row with no surviving ask, such as a self-sent pre-stay notice: it is for staff review and offers no action. */
+  reviewOnly?: boolean;
   status: 'needs_you' | 'review' | 'done' | 'dismissed';
   chip: 'needs_you' | 'queued' | 'in_hms' | 'review';
   threadId: string | null;

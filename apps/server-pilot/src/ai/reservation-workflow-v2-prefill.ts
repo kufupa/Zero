@@ -11,8 +11,9 @@ import { maskCardNumbers } from './card-mask.js';
 import { classifyMailSource } from './mail-source.js';
 import { buildReservationWorkflowV2MailQuery, selectReservationWorkflowV2MailCandidates } from './reservation-workflow-v2-mail-context.js';
 import { selectReservationWorkflowV2Guidance, type WorkflowGuidanceCatalog, type WorkflowGuidanceProjection, type WorkflowGuidanceReceipt } from './reservation-workflow-v2-memory.js';
-import { currentAuthoredMessageText, groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { currentAuthoredMessageText, groundedSeparateAsk, selfSentPreStayCandidate } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
+import { isPdfAttachment } from './quote-attachment-review.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
   EXTRACTION_MAX_IMAGES,
@@ -48,6 +49,7 @@ import {
   reservationWorkflowV2ModelOutputSchema,
   reservationWorkflowV2ProposalSchema,
   reservationWorkflowV2EvidenceSchema,
+  type ReservationWorkflowV2Disposition,
   type ReservationWorkflowV2Draft,
   type ReservationWorkflowV2Evidence,
   type ReservationWorkflowV2Extraction,
@@ -96,26 +98,41 @@ const SOURCE_INTENT_RULES = `Canceling only the last/final day or night of an ex
 
 const OMIT_UNKNOWN_CLAIM = Symbol('omit-uncited-unknown-claim');
 function omitUncitedUnknownClaims(value: unknown): unknown {
-  const normalize = (item: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
+  const normalize = (item: unknown, isRoot = false): unknown | typeof OMIT_UNKNOWN_CLAIM => {
     if (Array.isArray(item)) return item.flatMap((child) => {
       const normalized = normalize(child);
       return normalized === OMIT_UNKNOWN_CLAIM ? [] : [normalized];
     });
     if (!item || typeof item !== 'object') return item;
     const row = item as Record<string, unknown>;
-    if (typeof row.raw === 'string' && Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0 &&
+    if (!isRoot && typeof row.raw === 'string' && Array.isArray(row.sourceRefs) && row.sourceRefs.length === 0 &&
         (row.value === null || !Object.hasOwn(row, 'value'))) {
       return OMIT_UNKNOWN_CLAIM;
     }
     const output: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(row)) {
+      if (isRoot && (key === 'issues' || key === 'disposition')) {
+        output[key] = child;
+        continue;
+      }
+      if (isRoot && key === 'requests') {
+        output[key] = Array.isArray(child) ? child.map((reqRow) => {
+          if (!isRecord(reqRow)) return reqRow;
+          const reqOut: Record<string, unknown> = {};
+          for (const [reqKey, reqVal] of Object.entries(reqRow)) {
+            const normalized = normalize(reqVal);
+            if (normalized !== OMIT_UNKNOWN_CLAIM) reqOut[reqKey] = normalized;
+          }
+          return reqOut;
+        }) : child;
+        continue;
+      }
       const normalized = normalize(child);
       if (normalized !== OMIT_UNKNOWN_CLAIM) output[key] = normalized;
     }
     return output;
   };
-  const normalized = normalize(value);
-  return normalized === OMIT_UNKNOWN_CLAIM ? undefined : normalized;
+  return normalize(value, true);
 }
 
 /** Repair a mistyped citation only when the quoted claim occurs in exactly one admitted source. */
@@ -150,8 +167,21 @@ function recoverExtractionFacts(value: unknown, input: {
   const known = new Set(input.evidence.map((row) => row.ref));
   const current = new Set(input.evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const issues: ReservationWorkflowV2Extraction['issues'] = [];
+  const cited = (entry: unknown): string[] => {
+    if (Array.isArray(entry)) return entry.flatMap(cited);
+    if (!isRecord(entry)) return [];
+    return [...(Array.isArray(entry.sourceRefs) ? entry.sourceRefs.filter((ref): ref is string =>
+      typeof ref === 'string' && known.has(ref)) : []), ...Object.entries(entry)
+      .filter(([key]) => key !== 'sourceRefs').flatMap(([, child]) => cited(child))];
+  };
   const requests = extractedRequests.flatMap((item, index) => {
-    if (!isRecord(item)) return [];
+    // Every discarded request fact stays unresolved for staff review; nothing
+    // malformed may be dropped silently into a confident no-action read.
+    if (!isRecord(item)) {
+      issues.push({ explanation: 'A malformed request entry could not be read and was withheld for staff review.', sourceRefs: [] });
+      return [];
+    }
+    let withheldClaims = 0;
     const omitInvalidCitation = (entry: unknown): unknown | typeof OMIT_UNKNOWN_CLAIM => {
       if (Array.isArray(entry)) return entry.flatMap((child) => {
         const kept = omitInvalidCitation(child);
@@ -159,29 +189,34 @@ function recoverExtractionFacts(value: unknown, input: {
       });
       if (!isRecord(entry)) return entry;
       if (typeof entry.raw === 'string' && Object.hasOwn(entry, 'value') && Array.isArray(entry.sourceRefs) &&
-          entry.sourceRefs.some((ref) => typeof ref !== 'string' || !known.has(ref))) return OMIT_UNKNOWN_CLAIM;
+          entry.sourceRefs.some((ref) => typeof ref !== 'string' || !known.has(ref))) {
+        withheldClaims += 1;
+        return OMIT_UNKNOWN_CLAIM;
+      }
       return Object.fromEntries(Object.entries(entry).flatMap(([key, child]) => {
         const kept = omitInvalidCitation(child);
         return kept === OMIT_UNKNOWN_CLAIM ? [] : [[key, kept]];
       }));
     };
     const clean = omitInvalidCitation(item);
-    if (!isRecord(clean)) return [];
+    if (!isRecord(clean)) {
+      issues.push({ explanation: 'A request entry was withheld because its only evidence could not be verified.', sourceRefs: [...new Set(cited(item))].slice(0, 20) });
+      return [];
+    }
     const request = structuredClone(clean);
+    const docFactsBefore = (Array.isArray(request.documentRefs) ? request.documentRefs.length : 0) +
+      (Array.isArray(request.documentHints) ? request.documentHints.length : 0);
     if (Array.isArray(request.documentRefs)) request.documentRefs = request.documentRefs.filter((ref) => typeof ref === 'string' && known.has(ref));
     if (Array.isArray(request.documentHints)) request.documentHints = request.documentHints.filter((hint) => isRecord(hint) &&
       typeof hint.documentRef === 'string' && known.has(hint.documentRef) && Array.isArray(hint.sourceRefs) &&
       hint.sourceRefs.every((ref) => typeof ref === 'string' && known.has(ref)));
+    const withheldDocFacts = docFactsBefore - (Array.isArray(request.documentRefs) ? request.documentRefs.length : 0) -
+      (Array.isArray(request.documentHints) ? request.documentHints.length : 0);
     request.id = stableId(input.source.messageId, 'extracted_request', String(index),
       typeof request.kind === 'string' ? request.kind : 'invalid');
-    const cited = (entry: unknown): string[] => {
-      if (Array.isArray(entry)) return entry.flatMap(cited);
-      if (!isRecord(entry)) return [];
-      return [...(Array.isArray(entry.sourceRefs) ? entry.sourceRefs.filter((ref): ref is string =>
-        typeof ref === 'string' && known.has(ref)) : []), ...Object.entries(entry)
-        .filter(([key]) => key !== 'sourceRefs').flatMap(([, child]) => cited(child))];
-    };
     const refs = [...new Set(cited(request))].slice(0, 20);
+    if (withheldClaims + withheldDocFacts) issues.push({
+      explanation: 'Some cited facts could not be verified against the admitted evidence and were withheld.', sourceRefs: refs });
     if (!Object.hasOwn(item, 'requestText') && extractedRequests.length === 1 && refs.some((ref) => current.has(ref))) {
       const message = input.evidence.find((row) => row.relation === 'current_message');
       const raw = input.body.trim().slice(0, 2000);
@@ -194,6 +229,7 @@ function recoverExtractionFacts(value: unknown, input: {
     // request text are never replaced with a guessed/default workflow.
     const arrays = new Set(['dates', 'occupancy', 'guests', 'parties', 'confirmationHints',
       'roomTypeHints', 'rateHints', 'mealPlanHints', 'serviceHints', 'documentRefs', 'documentHints']);
+    let requestWithheld = false;
     for (let remaining = 32; remaining > 0; remaining--) {
       const parsed = requestSchema.safeParse(request);
       if (parsed.success) return [parsed.data];
@@ -223,16 +259,30 @@ function recoverExtractionFacts(value: unknown, input: {
         removed = true;
       }
       issues.push({ explanation: `Extraction field ${issue.path.join('.').slice(0, 160) || 'request'} failed validation; only its affected fact${removed ? '' : ' request'} was withheld.`, sourceRefs: refs });
-      if (!removed) break;
+      if (!removed) { requestWithheld = true; break; }
     }
+    if (!requestWithheld) issues.push({ explanation:
+      'A malformed request could not be fully validated; it was withheld for staff review.', sourceRefs: refs });
     return [];
   });
   const issueSchema = reservationWorkflowV2ExtractionSchema.shape.issues.removeDefault().element;
+  if (value.issues !== undefined && !Array.isArray(value.issues)) {
+    issues.push({ explanation: 'The extraction issues list could not be read and was withheld for staff review.', sourceRefs: [] });
+  }
   const suppliedIssues = Array.isArray(value.issues) ? value.issues.flatMap((row) => {
     const parsed = issueSchema.safeParse(row);
-    return parsed.success ? [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }] : [];
+    if (parsed.success) return [{ ...parsed.data, sourceRefs: parsed.data.sourceRefs.filter((ref) => known.has(ref)) }];
+    issues.push({ explanation: 'A malformed issue entry could not be read and was withheld for staff review.', sourceRefs: [] });
+    return [];
   }) : [];
-  return { requests, issues: [...suppliedIssues, ...issues].slice(0, 200) };
+  const dispositionSchema = reservationWorkflowV2ExtractionSchema.shape.disposition.unwrap();
+  const parsedDisposition = dispositionSchema.safeParse(value.disposition);
+  const disposition = parsedDisposition.success
+    ? { ...parsedDisposition.data, sourceRefs: parsedDisposition.data.sourceRefs.filter((ref) => known.has(ref)) }
+    : undefined;
+  if (!parsedDisposition.success && value.disposition !== undefined) issues.push({
+    explanation: 'The intake decision could not be read and was disregarded; the email stays open for staff review.', sourceRefs: [] });
+  return { requests, issues: [...suppliedIssues, ...issues].slice(0, 200), ...(disposition ? { disposition } : {}) };
 }
 
 /** Validate proposal entities independently; malformed siblings retain source fallback below. */
@@ -611,6 +661,12 @@ function sourceText(selection: SyncedQuoteSelection): string {
   return maskCardNumbers(`From: ${selection.fromAddress ?? 'unknown'}\nParticipants: ${participants.join(', ')}\nSubject: ${selection.subject}\n\n${selection.currentBodyText ?? selection.bodyText}`);
 }
 
+function htmlAuthoredProjectionDiffersFromBody(selection: SyncedQuoteSelection): boolean {
+  if (typeof selection.currentBodyText !== 'string') return false;
+  const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim();
+  return normalizeWs(selection.currentBodyText) !== normalizeWs(selection.bodyText);
+}
+
 function extractionRefs(extraction: ReservationWorkflowV2Extraction): string[] {
   const refs: string[] = [];
   const claim = (value: { sourceRefs: string[] } | undefined) => { if (value) refs.push(...value.sourceRefs); };
@@ -651,6 +707,7 @@ export type ReservationWorkflowV2ReadResult = {
 export type ReservationWorkflowV2PrefillResult = Omit<ReservationWorkflowV2Seed, 'extraction'> & {
   generationId: string;
   extraction: ReservationWorkflowV2Extraction | null;
+  disposition?: ReservationWorkflowV2Disposition;
   skippedReason?: 'channel' | 'system' | 'self_prestay' | 'spam' | 'invalid_source';
   sourceBound: boolean;
 };
@@ -1142,18 +1199,53 @@ export function sourceEvidence(input: {
   return out.slice(0, 500);
 }
 
+/**
+ * True only when every relevant current non-inline attachment has accounted contents.
+ * Metadata-only rows, unread or unsupported bytes and read failures never count as read;
+ * a no-text artifact counts only when the vision audit read it in full.
+ */
 function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source; selection: SyncedQuoteSelection;
-  evidence: ReservationWorkflowV2Evidence[] }): boolean {
+  evidence: ReservationWorkflowV2Evidence[];
+  attachmentReads: Awaited<ReturnType<typeof prepareExtractionVisionImages>>['attachmentReads'] }): boolean {
   const { source, selection, evidence } = input;
+  if (htmlAuthoredProjectionDiffersFromBody(selection)) return false;
   if (!evidence.some(row => row.ref === evidenceRef(source, 'message', source.messageId) &&
       row.relation === 'current_message' && row.text === sourceText(selection))) return false;
-  return [...selection.attachments, ...(selection.threadAttachments ?? [])].every(attachment => {
-    if (attachment.messageId && attachment.messageId !== source.messageId) return true;
+  const audit = new Map(input.attachmentReads.map((row) => [row.id, row.status]));
+  const admitted = [...selection.attachments, ...(selection.threadAttachments ?? [])];
+  if (!Array.isArray(selection.persistedNonInlineAttachmentIds)) return false;
+  const admittedIds = new Set(admitted.map((attachment) => attachment.id));
+  if (selection.persistedNonInlineAttachmentIds.some((id) => !admittedIds.has(id))) return false;
+  return admitted.every(attachment => {
+    if (attachment.isInline) return true;
+    // Unprocessed, unread, unsupported or partially masked bytes are never complete.
+    if (attachment.readFailure || !attachment.bytesPresent) return false;
+    if (isPdfAttachment(attachment)) {
+      // PDF vision audit 'read' cannot prove every source page when the renderer returns only an image array
+      // without a trustworthy original source page count, exact per-page admitted coverage, and no cap/error.
+      // Keep both text-extracted and scanned PDFs reviewable until that independent page-coverage proof exists.
+      return false;
+    }
     const attachmentText = attachment.text?.trim();
-    const isPdf = !attachment.isInline && (/\.pdf$/i.test(attachment.filename) || attachment.mimeType?.toLowerCase() === 'application/pdf');
-    if (!attachmentText && !isPdf) return true;
-    const admitted = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) && row.relation === 'attachment');
-    return Boolean(admitted && (!attachmentText || admitted.text === maskCardNumbers(attachmentText)));
+    if (attachmentText) {
+      const isPrior = Boolean(attachment.messageId && attachment.messageId !== source.messageId);
+      const admittedRow = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) &&
+        (isPrior ? (row.relation === 'prior_thread' || row.relation === 'attachment') : row.relation === 'attachment'));
+      if (!admittedRow || admittedRow.text !== maskCardNumbers(attachmentText)) return false;
+      // Non-empty extracted text does not prove full coverage for visually rich or unknown formats (e.g. PDF with
+      // scanned pages, DOCX with embedded screenshots). Only plain text and XLSX (which rejects drawings/charts)
+      // are text-complete without full-document vision proof.
+      const mime = (attachment.mimeType ?? '').split(';')[0].trim().toLowerCase();
+      const filename = attachment.filename?.trim() ?? '';
+      const ext = /\.([a-z0-9]+)$/i.exec(filename)?.[1]?.toLowerCase() ?? '';
+      const isPlainText = mime === 'text/plain' && (!ext || ext === 'txt');
+      const isXlsx = mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' && (!ext || ext === 'xlsx');
+      if (!isPlainText && !isXlsx) {
+        return audit.get(attachment.id) === 'read';
+      }
+      return true;
+    }
+    return audit.get(attachment.id) === 'read';
   });
 }
 
@@ -1286,7 +1378,7 @@ function cancelExceptionEvidence(input: {
 function buildFallbackProposal(input: {
   extraction: ReservationWorkflowV2Extraction | null; source: ReservationWorkflowV2Source;
   evidence: ReservationWorkflowV2Evidence[]; reason: string; evidenceComplete?: boolean;
-  currentAuthoredText?: string;
+  currentAuthoredText?: string; noInventedRequest?: boolean;
 }): ReservationWorkflowV2Proposal {
   const knownRefs = new Set(input.evidence.map((item) => item.ref));
   const currentRefs = new Set(input.evidence.filter((item) => item.relation !== 'prior_thread').map((item) => item.ref));
@@ -1398,17 +1490,14 @@ function buildFallbackProposal(input: {
     if (request.kind === 'filing') return { ...base, kind: 'filing' as const, body: { targets: null } };
     return { ...base, kind: 'other' as const, body: { requestedText: request.requestText.raw.slice(0, 2_000), supported: false as const } };
   });
-  if (!projected.length && currentRef) projected.push({ id: stableId(input.source.messageId, 'request', 'fallback'), requestText: 'Review this selected message and identify any reservation work.',
-    sourceRefs: [currentRef], serviceRefs: [], documentRefs: [], kind: 'other', body: { requestedText: 'Review the source message; prefill extraction was unavailable.', supported: false } });
   const valid = reservationWorkflowV2ProposalSchema.safeParse({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
     content: { requests: projected, services: [], documents: [] }, annotations: [],
     issues: [issue('/', 'prefill_partial', input.reason, currentRef ? [currentRef] : [])], sourceClaims,
     lookupResultRefs: [], });
   if (valid.success) return valid.data;
-  // The fallback is deliberately only an unsupported, source-linked editable item if projection itself is malformed.
+  // The fallback is deliberately an empty, issue-bearing envelope if projection itself is malformed.
   const fallback = reservationWorkflowV2ProposalSchema.parse({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
-    content: { requests: currentRef ? [{ id: stableId(input.source.messageId, 'fallback'), requestText: 'Review the selected source message.',
-      sourceRefs: [currentRef], serviceRefs: [], documentRefs: [], kind: 'other', body: { requestedText: 'Prefill projection failed; staff review required.', supported: false } }] : [], services: [], documents: [] },
+    content: { requests: [], services: [], documents: [] },
     annotations: [], issues: [issue('/', 'prefill_partial', input.reason, currentRef ? [currentRef] : [])], sourceClaims: [], lookupResultRefs: [] });
   return fallback;
 }
@@ -1485,6 +1574,57 @@ function currentCandidateExtraction(extraction: ReservationWorkflowV2Extraction,
 function currentRequestExtraction(extraction: ReservationWorkflowV2Extraction,
   currentRefs: Set<string>): ReservationWorkflowV2Extraction {
   return { ...extraction, requests: extraction.requests.filter((request) => currentClaim(request.requestText, currentRefs)) };
+}
+
+/**
+ * Host check of the first pass's declared disposition. Only an explicit, current-source-cited
+ * no_action on a fully read, request-free, error-free and issue-free source stands; extracted
+ * requests always stay actionable, unresolved extraction issues veto no_action, and everything
+ * else remains reviewable.
+ */
+function adjudicateExtractionDisposition(input: {
+  extraction: ReservationWorkflowV2Extraction;
+  currentRequestCount: number;
+  currentRefs: Set<string>;
+  sourceReadComplete: boolean;
+  errors: ReservationWorkflowV2Draft['errors'];
+  generationId: string;
+  sourceHash: string;
+}): ReservationWorkflowV2Disposition {
+  const binding = { generationId: input.generationId, sourceHash: input.sourceHash };
+  const model = input.extraction.disposition ?? null;
+  const evidenceRefs = (model?.sourceRefs ?? []).filter((ref) => input.currentRefs.has(ref)).slice(0, 20);
+  const reason = (model?.reason ?? '').trim().slice(0, 1000);
+  const modelDecision = model?.decision ?? null;
+  // An unresolved extraction issue (for example a malformed ask whose facts had to be withheld)
+  // means the read is not clean: it can never confirm that nothing was asked of staff.
+  const issueCount = input.extraction.issues.length;
+  if (modelDecision === 'no_action' && !input.currentRequestCount && evidenceRefs.length &&
+      input.sourceReadComplete && !input.errors.length && !issueCount) {
+    return { decision: 'no_action', modelDecision,
+      reason: reason || 'No staff task was found in this email.', evidenceRefs, ...binding };
+  }
+  if (input.currentRequestCount) {
+    return { decision: 'actionable', modelDecision,
+      reason: (modelDecision === 'no_action'
+        ? 'Requests were also extracted; they remain actionable.' : reason) || 'Current requests were found.',
+      evidenceRefs, ...binding };
+  }
+  const issueRefs = input.extraction.issues.flatMap((issue) => issue.sourceRefs)
+    .filter((ref) => input.currentRefs.has(ref));
+  const why = issueCount
+    ? `The extraction reported ${issueCount === 1 ? 'an unresolved issue' : `${issueCount} unresolved issues`}; a staff decision is still needed.`
+    : !model ? 'No intake decision was recorded.'
+    : modelDecision === 'no_action'
+      ? !evidenceRefs.length ? 'The no-action decision lacks current-source evidence.'
+        : !input.sourceReadComplete ? 'The no-action decision could not be confirmed: the source was not fully read.'
+        : input.errors.length ? 'The no-action decision could not be confirmed: the read had errors.'
+        : 'The no-action decision could not be confirmed.'
+    : modelDecision === 'actionable' ? 'No current request was extracted to act on.'
+    : reason;
+  return { decision: 'uncertain', modelDecision,
+    reason: (why || 'This email still needs a staff decision.').slice(0, 1000),
+    evidenceRefs: [...new Set([...evidenceRefs, ...issueRefs])].slice(0, 20), ...binding };
 }
 
 function citedInteger(claim: { value: unknown } | undefined): number | null | undefined {
@@ -3602,12 +3742,25 @@ function projectCurrentExtraction(input: {
     evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody };
   const pdfs = currentPdfEvidence(input);
   appendExtractionSourceClaims(proposal, input.extraction, knownRefs);
+  const uncitedIssueExplanation =
+    'Nava could not extract all details from the current email; review the current email for any uncaptured requests.';
   for (const issue of input.extraction.issues) {
     const evidenceRefs = [...new Set(issue.sourceRefs.filter((ref) => knownRefs.has(ref)))].slice(0, 100);
-    if (evidenceRefs.length && proposal.issues.length < 1000 && !proposal.issues.some((row) =>
-      row.kind === 'extraction_issue' && row.explanation === issue.explanation &&
+    const explanation = evidenceRefs.length ? issue.explanation : uncitedIssueExplanation;
+    if (proposal.issues.length < 1000 && !proposal.issues.some((row) =>
+      row.path === '/' && row.kind === 'extraction_issue' && row.explanation === explanation &&
       row.evidenceRefs.length === evidenceRefs.length && evidenceRefs.every((ref) => row.evidenceRefs.includes(ref)))) {
-      proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation: issue.explanation, evidenceRefs });
+      proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation, evidenceRefs });
+    }
+  }
+  if (htmlAuthoredProjectionDiffersFromBody(input.selection) && proposal.issues.length < 1000) {
+    const currentMessageRef = evidenceRef(input.source, 'message', input.source.messageId);
+    const evidenceRefs = knownRefs.has(currentMessageRef) ? [currentMessageRef] : [];
+    const explanation =
+      'Quoted or reply-formatted sections were excluded from the HTML email projection; review the full email for any uncaptured requests.';
+    if (!proposal.issues.some((row) =>
+      row.path === '/' && row.kind === 'extraction_issue' && row.explanation === explanation)) {
+      proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation, evidenceRefs });
     }
   }
 
@@ -6424,16 +6577,17 @@ function validateReviewRequirementRefs(
 
 /** Shared by manual initialization and the prefill runner, before attachment/model/native work. */
 export function classifyReservationWorkflowV2Source(input: { fromAddress?: string | null; subject?: string | null;
-  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean }) {
-  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject, bodyText: input.bodyText });
-  const confirmationNumbers = `${input.subject ?? ''}\n${input.bodyText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
-  const selfPreStay = isSelfSentPreStayInformationMail({ fromAddress: input.fromAddress,
-    mailboxAddress: input.mailboxAddress, subject: input.subject, confirmationNumbers });
+  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean; hasAttachments?: boolean }) {
+  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject,
+    bodyText: input.bodyText, hasAttachments: input.hasAttachments });
+  const selfPreStay = selfSentPreStayCandidate({ fromAddress: input.fromAddress,
+    mailboxAddress: input.mailboxAddress, subject: input.subject, bodyText: input.bodyText });
   const skippedReason = input.isSpam ? 'spam' as const : !selfPreStay && classification.kind === 'channel' ? 'channel' as const :
     !selfPreStay && classification.kind === 'system' ? 'system' as const : undefined;
   return { classification, selfPreStay, skippedReason };
 }
 
+const DISPOSITION_EXTRACTION_RULES = `You may also emit a top-level disposition for the current message: {"decision":"actionable"|"no_action"|"uncertain","reason":"short plain reason staff can read","sourceRefs":[admitted evidence refs from the current message or its attachments]}. Choose no_action only when the current message asks staff for nothing at all: for example general marketing or newsletters, internal reports or handovers with no request, or a genuinely canned automated notice (such as a travel-agent system notification that only reports something already done and asks for nothing). A person's own ask, including a person asking to cancel or change, is always actionable; so is any supplied document that needs filing, and any separate current request. When the message might contain an ask you cannot confidently classify, choose uncertain. Always cite the current-message or current-attachment refs that ground the decision; never cite only prior-thread refs for a decision about the current message. A no_action decision with no extracted requests is only accepted when the source was fully read; when in doubt choose uncertain.`;
 const ANCILLARY_EXTRACTION_RULES = `For an explicitly requested ancillary service or allowance, such as a meal or transfer, preserve the exact request, including any stated amount or limit, as a source-cited serviceHints claim. Do this even when the same wording also describes a meal plan. Do not turn a bare meal plan description, existing voucher detail, invoice or account-document request into a new service.`;
 const ANCILLARY_SYNTHESIS_RULES = `For a source-cited ancillary service requested alongside Create or Amend, keep a linked entry in content.services and the owning request's serviceRefs; preserve the requested wording and any stated amount or limit. A reservation note alone is not a service entry. Put a stated amount in requestedMoney with sourceRefs and unresolved scope when its basis is unclear, not in native unitPrice. Do not infer an item, target, quantity or price basis. When these are unclear, leave code and itemCandidateRef null, targets empty, quantityRequest scope unresolved and native price fields unset. Do not convert bare meal plan, past voucher details or invoice/document requests into new services.`;
 
@@ -6537,20 +6691,38 @@ export async function runReservationWorkflowV2Prefill(input: {
   selection: SyncedQuoteSelection;
   mailboxAddress?: string | null;
   isSpam?: boolean;
+  /** Set when the source's attachment enumeration is incomplete (e.g. sync optionalMissing gaps). */
+  attachmentEvidenceUnknown?: boolean;
+  /** Set when any admitted causal thread message has unknown attachment enumeration. */
+  contextAttachmentEvidenceUnknown?: boolean;
+  /** Set when a persisted non-inline attachment row exists for the source, even if the synced selection omits it. */
+  hasPersistedNonInlineAttachment?: boolean;
   readCandidate?: (candidate: ReservationWorkflowV2CandidateRead) => Promise<ReservationWorkflowV2ReadResult | null>;
   lookupFixtures?: Record<string, ReservationWorkflowV2ReadResult | null | undefined>;
   workflowGuidance?: WorkflowGuidanceCatalog | null;
   workflowGuidanceExcludedFamilies?: readonly string[];
   onWorkflowGuidance?: (receipt: WorkflowGuidanceReceipt) => void;
   onValidatedExtraction?: (generationId: string, extraction: ReservationWorkflowV2Extraction) => Promise<boolean>;
+  /** Provider-reported missing attachment parts on the current message; any gap makes the read incomplete. */
+  currentAttachmentGaps?: number;
+  /** Provider-reported missing attachment parts across all admitted causal thread messages. */
+  contextAttachmentGaps?: number;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }): Promise<ReservationWorkflowV2PrefillResult> {
   const propertyCode = propertyCodeSchema.parse(input.propertyCode);
   const generationId = randomUUID();
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
+  // Classification consumes the full canonical body (quoted forward headers
+  // included); currentBodyText stays the authored-only extraction input.
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
-    bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
+    bodyText: input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam,
+    hasAttachments: input.hasPersistedNonInlineAttachment === true ||
+        input.selection.attachments.some((row) => row.isInline !== true)
+      ? true
+      : input.attachmentEvidenceUnknown === true
+        ? undefined
+        : false });
   const { classification, selfPreStay } = admission;
   const skippedReason = !sourceBound ? 'invalid_source' as const : admission.skippedReason;
   if (skippedReason) {
@@ -6574,12 +6746,35 @@ export async function runReservationWorkflowV2Prefill(input: {
     enabled: extractionVisionEnabled(input.env ?? process.env), signal: input.signal,
   });
   const evidence = sourceEvidence({ source: input.source, selection: input.selection, vision });
-  const textCoverageComplete = completeCurrentSourceText({ source: input.source, selection: input.selection, evidence });
+  const textCoverageComplete = !(input.currentAttachmentGaps ?? 0) &&
+    !(input.contextAttachmentGaps ?? 0) &&
+    input.attachmentEvidenceUnknown !== true &&
+    input.contextAttachmentEvidenceUnknown !== true &&
+    completeCurrentSourceText({ source: input.source, selection: input.selection, evidence,
+      attachmentReads: vision.attachmentReads });
+  const fullCausalAttachmentCoverage = textCoverageComplete && Array.isArray(input.selection.persistedNonInlineAttachmentIds)
+    ? {
+        version: 1 as const,
+        complete: true as const,
+        adjudicatedBy: 'host' as const,
+        persistedNonInlineAttachmentCount: input.selection.persistedNonInlineAttachmentIds.length,
+        admittedNonInlineAttachmentCount: admittedAttachments.filter((attachment) => !attachment.isInline).length,
+      }
+    : undefined;
+  const sourceBodyCoverage = textCoverageComplete
+    ? {
+        version: 1 as const,
+        complete: true as const,
+        adjudicatedBy: 'host' as const,
+      }
+    : undefined;
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });
   const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
     generationId, propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
     status: vision.attachmentReads.some((row) => row.status !== 'read') ? 'partial' : 'complete',
     result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads, textCoverageComplete,
+      ...(fullCausalAttachmentCoverage ? { fullCausalAttachmentCoverage } : {}),
+      ...(sourceBodyCoverage ? { sourceBodyCoverage } : {}),
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];
@@ -6594,12 +6789,22 @@ export async function runReservationWorkflowV2Prefill(input: {
     'generationId' | 'extraction' | 'sourceBound' | 'observations' | 'fieldReviewRequirements'> & { errors: NonNullable<ReservationWorkflowV2Draft['errors']> } = {
     generationId, extraction: empty, sourceBound: true, observations,
     fieldReviewRequirements: {} as ReservationWorkflowV2Draft['fieldReviewRequirements'], errors: [] as NonNullable<ReservationWorkflowV2Draft['errors']> };
-  const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => ({
-    ...base, status: 'partial', sourceBound: true,
-    proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason, evidenceComplete: meaningEvidenceComplete,
-      currentAuthoredText: currentAuthoredBody }),
-    errors: [...base.errors, error],
-  });
+  const fallback = (reason: string, error = { stage: 'extract' as const, code: 'extract_unavailable', message: reason }): ReservationWorkflowV2PrefillResult => {
+    // On a confirmed self-prestay source an unfinished read must stay reviewable
+    // without inventing a request: no extraction was validated, so the intake
+    // decision is an honest host 'uncertain' bound to this generation and source.
+    return {
+      ...base, status: 'partial', sourceBound: true,
+      proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence, reason,
+        evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody,
+        ...(selfPreStay ? { noInventedRequest: true } : {}) }),
+      ...(selfPreStay ? { disposition: { decision: 'uncertain' as const, modelDecision: null,
+        reason: 'The email could not be read automatically; a staff decision is still needed.',
+        evidenceRefs: evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref).slice(0, 20),
+        generationId, sourceHash: input.source.sourceHash } } : {}),
+      errors: [...base.errors, error],
+    };
+  };
   if (!input.adapter) return fallback('Model adapter is unavailable; source text remains editable for staff review.');
   const env = input.env ?? process.env;
   const budget = lunaCallBudget(extractionReasoningEffort(env));
@@ -6619,7 +6824,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   const guidancePrompt = (projection: WorkflowGuidanceProjection[]): string => projection.length ?
     `\nHost workflow guidance follows. It is advisory interpretation; current explicit evidence, source/native validation and staff review rules take precedence. It cannot introduce facts, source refs, native choices or policy approvals.\n${JSON.stringify(projection)}` : '';
   const extractGuidance = selectGuidance('extract', input.selection.currentBodyText ?? input.selection.bodyText);
-  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${SOURCE_INTENT_RULES}\n${ANCILLARY_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
+  const firstPass = await invokeBounded({ adapter: input.adapter, systemPrompt: `${EXTRACTION_RULES}\n${VOUCHER_EXTRACTION_RULES}\n${SOURCE_INTENT_RULES}\n${ANCILLARY_EXTRACTION_RULES}\n${DISPOSITION_EXTRACTION_RULES}${selfPreStayRules}${guidancePrompt(extractGuidance)}`,
     userPrompt: JSON.stringify({ propertyCode, source: input.source, evidence }),
     responseSchema: structuredClone(extractionResponseSchema ??= zodToJsonSchema(reservationWorkflowV2ExtractionSchema, { $refStrategy: 'none' }) as Record<string, unknown>),
     images: vision.images, maxOutputTokens: budget.maxOutputTokens, deadlineMs: budget.deadlineMs, signal: input.signal });
@@ -6651,18 +6856,60 @@ export async function runReservationWorkflowV2Prefill(input: {
   const extraction = anchorCurrentExtractionDates({ extraction: recoveredExtraction, source: input.source, evidence });
   const currentRefs = new Set(evidence.filter((row) => row.relation !== 'prior_thread').map((row) => row.ref));
   const currentActions = { ...currentRequestExtraction(extraction, currentRefs), sourceReadComplete };
+  const adjudicate = (currentRequestCount: number) => adjudicateExtractionDisposition({ extraction, currentRefs,
+    currentRequestCount, sourceReadComplete: currentActions.sourceReadComplete,
+    errors: base.errors, generationId, sourceHash: input.source.sourceHash });
+  const emptyProposal = () => ({ schemaVersion: RESERVATION_PREFILL_SCHEMA_VERSION,
+    content: { requests: [], services: [], documents: [] },
+    annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] });
   const candidateExtraction = currentCandidateExtraction(extraction, currentRefs);
   if (selfPreStay) {
     // Match the established pre-stay rule: a grounded separate ask is surfaced
     // for staff review, but this existing-stay email cannot grant a new write.
     const body = maskCardNumbers(input.selection.currentBodyText ?? input.selection.bodyText);
-    const requests = extraction.requests.flatMap((request) =>
-      groundedSeparateAsk(body, request.requestText.raw, 2000) ? [{ ...request, kind: 'other' as const }] : []);
-    if (!requests.length) return { ...base, extraction, status: 'prefill_failed',
-      proposal: buildFallbackProposal({ extraction: null, source: input.source, evidence,
-        reason: 'Self-sent pre-stay mail has no separate current request.', evidenceComplete: meaningEvidenceComplete,
-        currentAuthoredText: currentAuthoredBody }),
-      errors: base.errors, skippedReason: 'self_prestay' };
+    // A separate ask can also live only in a current attachment: it stays when its
+    // excerpt verifies against cited, admitted current attachment text. Quoted
+    // history stays out, and a current-sourced ask that cannot be verbatim-verified
+    // is kept for staff review rather than silently dropped.
+    const currentAttachmentText = new Map(evidence.filter((row) =>
+      row.relation === 'attachment' && row.kind === 'attachment_text').map((row) => [row.ref, row.text]));
+    const groundedAsks = extraction.requests.flatMap((request) => {
+      const raw = request.requestText.raw;
+      if (groundedSeparateAsk(body, raw, 2000)) return [{ request, verified: true }];
+      if (!currentClaim(request.requestText, currentRefs)) return [];
+      const verified = request.requestText.sourceRefs.some((ref) => {
+        const text = currentAttachmentText.get(ref);
+        return text ? Boolean(groundedSeparateAsk(text, raw, 2000)) : false;
+      });
+      return [{ request, verified }];
+    });
+    const requests = groundedAsks.map((row) => ({ ...row.request, kind: 'other' as const }));
+    if (!requests.length) {
+      // A confirmed, cited no-action on a fully read source is a clear no-action state, not a failed prefill.
+      const disposition = adjudicate(currentActions.requests.length);
+      if (disposition.decision === 'no_action') {
+        // The seeded extraction must checkpoint before returning so the state
+        // finisher accepts this generation's binding.
+        if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
+          throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
+        }
+        return { ...base, extraction, disposition, status: 'ready', proposal: emptyProposal(), errors: base.errors };
+      }
+      // Any non-confirmed self-prestay stays a durable, reviewable draft: the
+      // checkpointed extraction issues and adjudicated disposition are what
+      // staff need to decide. With nothing grounded the proposal keeps zero
+      // requests — an invented 'other' would mislabel the row as actionable
+      // work instead of Needs review, and Create stays impossible.
+      if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
+        throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
+      }
+      const proposal = buildFallbackProposal({ extraction: null, source: input.source, evidence, noInventedRequest: true,
+        evidenceComplete: meaningEvidenceComplete, currentAuthoredText: currentAuthoredBody,
+        reason: 'This pre-stay email could not be confirmed as no action; unresolved details need staff review.' });
+      for (const issue of extraction.issues) addProjectionIssue(proposal, '/', 'unresolved_extraction_issue',
+        issue.explanation, issue.sourceRefs);
+      return { ...base, extraction, disposition, status: 'partial', proposal, errors: base.errors };
+    }
     const separate = { ...extraction, requests };
     if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, separate))) {
       throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
@@ -6671,13 +6918,25 @@ export async function runReservationWorkflowV2Prefill(input: {
       reason: 'Review the separate request. This pre-stay confirmation refers to an existing booking.', evidenceComplete: meaningEvidenceComplete,
       currentAuthoredText: currentAuthoredBody }),
       extraction: separate, source: input.source, selection: input.selection, evidence, attachmentIdentityByRef, observations, nativeCatalog, propertyCode }).proposal;
-    return { ...base, extraction: separate, status: 'partial',
+    for (const { request } of groundedAsks.filter((row) => !row.verified)) {
+      addProjectionIssue(proposal, `/requests/${request.id}`, 'separate_ask_unverified',
+        'Nava could not confirm this request word-for-word in the current email or its attachments; it was kept for staff review.',
+        request.requestText.sourceRefs.filter((ref) => currentRefs.has(ref)));
+    }
+    return { ...base, extraction: separate, disposition: adjudicate(requests.length), status: 'partial',
       proposal,
       errors: base.errors };
   }
   base.extraction = extraction;
   if (input.onValidatedExtraction && !(await input.onValidatedExtraction(generationId, extraction))) {
     throw new Error('Validated extraction checkpoint was rejected; prefill claim or source changed.');
+  }
+  const disposition = adjudicate(currentActions.requests.length);
+  // An evidenced no-action never starts candidate reads, synthesis or native checks.
+  if (disposition.decision === 'no_action') {
+    return { ...base, extraction, disposition, status: 'ready',
+      proposal: emptyProposal(),
+      errors: base.errors };
   }
   const completePlan = buildReservationWorkflowV2CandidateReadPlan({ extraction: candidateExtraction,
     propertyCode, source: input.source });
@@ -6955,7 +7214,7 @@ export async function runReservationWorkflowV2Prefill(input: {
       sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
     const historicalLeads = rankHistoricalRoomLeads({ proposal, leads: nativeLeads, observations: finalObservations,
       extractionIdByProposalRequestId: fallbackProjection.extractionIdByProposalRequestId });
-    return { ...base, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+    return { ...base, disposition, status: 'partial', observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
       proposal, fieldReviewRequirements: { ...autopick.requirements, ...amendNotes.requirements, ...inferredQuoteQuantityRequirements(proposal) },
       errors: [...readErrors, { stage: 'synthesis', ...error }] };
   }
@@ -6965,7 +7224,7 @@ export async function runReservationWorkflowV2Prefill(input: {
     sourceThreadMessageIds: (input.selection.threadMessages ?? []).flatMap((row) => row.messageId ? [row.messageId] : []) });
   const historicalLeads = rankHistoricalRoomLeads({ proposal: finalProposal!, leads: nativeLeads, observations: finalObservations,
     extractionIdByProposalRequestId: boundProjection?.extractionIdByProposalRequestId ?? new Map() });
-  return { ...base, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
+  return { ...base, disposition, observations: [...finalObservations, ...historicalLeads].slice(0, MAX_DRAFT_OBSERVATIONS),
     status: readErrors.length || finalObservations.some((row) => row.status !== 'complete') ||
       Boolean(extractionProjection?.addedRequests || extractionProjection?.addedIssues) ? 'partial' : 'ready',
     proposal: finalProposal!, fieldReviewRequirements: { ...finalReviewRequirements, ...inferredQuoteQuantityRequirements(finalProposal!) }, errors: readErrors };
@@ -6989,7 +7248,7 @@ export async function ensureReservationWorkflowV2Prefill(input: {
   const admitted = await validateReservationWorkflowV2Source(input.context, input.source);
   if (admitted.status !== 'ok') return { status: 'skipped', reason: `Canonical source rejected before model/native reads (${admitted.status}).` };
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress,
-    subject: input.selection.subject, bodyText: input.selection.currentBodyText ?? input.selection.bodyText,
+    subject: input.selection.subject, bodyText: input.selection.bodyText,
     mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
   if (admission.skippedReason) return { status: 'skipped', reason: `Known ${admission.skippedReason} source is excluded.` };
   const initialized = await initializeReservationWorkflowV2Draft(input.context, input.source);
@@ -7013,8 +7272,12 @@ export async function ensureReservationWorkflowV2Prefill(input: {
       (generated.errors ?? []).some((error) => error.stage === 'extract' ||
         error.stage === 'synthesis' && ['model_timeout', 'model_error'].includes(error.code));
     return finishReservationWorkflowV2Prefill(input.context, { ...item, claim: activeClaim, failed,
+      ...(generated.skippedReason && generated.extraction?.issues?.length ? { failure: { stage: 'extract' as const,
+        code: 'unresolved_extraction_issues',
+        message: 'Nava could not read every part of this email with confidence; it needs staff review.' } } : {}),
       seed: generated.sourceBound && !generated.skippedReason ? { generationId: generated.generationId,
         status: generated.status, ...(generated.extraction ? { extraction: generated.extraction } : {}),
+        ...(generated.disposition ? { disposition: generated.disposition } : {}),
         proposal: generated.proposal, observations: generated.observations,
         fieldReviewRequirements: generated.fieldReviewRequirements, errors: generated.errors } : undefined });
   } catch {

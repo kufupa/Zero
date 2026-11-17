@@ -3806,6 +3806,8 @@ describe('NavaPane contact and translation on both surfaces', () => {
       ...stored,
       kind: 'other',
       existingStayInformation: true,
+      // An adjudicated no-ask read: only then does the card claim no action.
+      separateAskReview: false,
       confirmationNumbers: ['57291630-1'],
       analysis: {
         ...stored.analysis,

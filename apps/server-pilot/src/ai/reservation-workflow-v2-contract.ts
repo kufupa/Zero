@@ -116,10 +116,20 @@ const prefillRequestFactsSchema = z.object({
     sourceRefs: z.array(refSchema).min(1).max(20) }).strict()).max(200).default([]),
 }).strict();
 
+/** Evidence-only judgment the first pass may declare about the current message. */
+export const reservationWorkflowV2DispositionDecisionSchema = z.enum(['actionable', 'no_action', 'uncertain']);
+export type ReservationWorkflowV2DispositionDecision = z.infer<typeof reservationWorkflowV2DispositionDecisionSchema>;
+const extractionDispositionSchema = z.object({
+  decision: reservationWorkflowV2DispositionDecisionSchema,
+  reason: z.string().max(1000),
+  sourceRefs: z.array(refSchema).max(20),
+}).strict();
+
 /** Typed first pass. Host derives lookups from these cited facts; the model does not author arbitrary queries. */
 export const reservationWorkflowV2ExtractionSchema = z.object({
   requests: z.array(prefillRequestFactsSchema).max(200).default([]),
   issues: z.array(z.object({ explanation: z.string().max(1000), sourceRefs: z.array(refSchema).max(20) }).strict()).max(200).default([]),
+  disposition: extractionDispositionSchema.optional(),
 }).strict();
 export type ReservationWorkflowV2Extraction = z.infer<typeof reservationWorkflowV2ExtractionSchema>;
 export const reservationWorkflowV2PrefillInputSchema = z.object({
@@ -448,6 +458,70 @@ export const reservationWorkflowV2FieldOverrideSchema = z.object({
 }).strict();
 export type ReservationWorkflowV2FieldOverride = z.infer<typeof reservationWorkflowV2FieldOverrideSchema>;
 
+/** Host-adjudicated intake decision bound to the exact generation and source hash that produced it. Absent means uncertain. */
+export const reservationWorkflowV2DispositionSchema = z.object({
+  decision: reservationWorkflowV2DispositionDecisionSchema,
+  /** The first pass's raw declaration, before host checks; null when it declared none. */
+  modelDecision: reservationWorkflowV2DispositionDecisionSchema.nullable(),
+  reason: z.string().max(1000),
+  evidenceRefs: z.array(refSchema).max(20),
+  /** The adjudicating run's generation. A decision from any other generation never applies. */
+  generationId: z.string().uuid(),
+  /** The adjudicated source hash. A decision under any other source hash never applies. */
+  sourceHash: z.string().min(1).max(256),
+}).strict();
+export type ReservationWorkflowV2Disposition = z.infer<typeof reservationWorkflowV2DispositionSchema>;
+
+/**
+ * Persisted intake record kept beside the draft on WorkItem.state. It lives outside the strictly parsed
+ * draft so an older build can still read the draft; binding fields make a stale record inert instead.
+ */
+export const reservationWorkflowV2IntakeSchema = z.object({
+  contractVersion: z.literal(RESERVATION_WORKFLOW_V2_VERSION),
+  /** Attachment-evidence hash when the decision was adjudicated; checked when the draft carries one. */
+  evidenceHash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  disposition: reservationWorkflowV2DispositionSchema,
+}).strict();
+export type ReservationWorkflowV2Intake = z.infer<typeof reservationWorkflowV2IntakeSchema>;
+
+/** True only when `obs_source` carries a host-adjudicated v1 full-causal-attachment-coverage proof backed by complete inventory. */
+export function hasFullCausalAttachmentCoverageProof(
+  draft: { observations: ReadonlyArray<{ ref: string; coverage: { complete: boolean }; result?: Record<string, unknown> }> },
+): boolean {
+  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
+  if (!sourceObs || sourceObs.coverage.complete !== true || sourceObs.result?.textCoverageComplete !== true) return false;
+  const proof = sourceObs.result?.fullCausalAttachmentCoverage;
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return false;
+  const record = proof as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    record.complete === true &&
+    record.adjudicatedBy === 'host' &&
+    typeof record.persistedNonInlineAttachmentCount === 'number' &&
+    Number.isInteger(record.persistedNonInlineAttachmentCount) &&
+    record.persistedNonInlineAttachmentCount >= 0 &&
+    typeof record.admittedNonInlineAttachmentCount === 'number' &&
+    Number.isInteger(record.admittedNonInlineAttachmentCount) &&
+    record.admittedNonInlineAttachmentCount >= record.persistedNonInlineAttachmentCount
+  );
+}
+
+/** True only when `obs_source` carries a host-adjudicated v1 source-body coverage proof. */
+export function hasSourceBodyCoverageProof(
+  draft: { observations: ReadonlyArray<{ ref: string; coverage: { complete: boolean }; result?: Record<string, unknown> }> },
+): boolean {
+  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
+  if (!sourceObs || sourceObs.coverage.complete !== true || sourceObs.result?.textCoverageComplete !== true) return false;
+  const proof = sourceObs.result?.sourceBodyCoverage;
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return false;
+  const record = proof as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    record.complete === true &&
+    record.adjudicatedBy === 'host'
+  );
+}
+
 /** Single canonical state JSONB value stored on WorkItem; extraction/prefill never writes into pane-owned overrides. */
 export const reservationWorkflowV2DraftSchema = z.object({
   contractVersion: z.literal(RESERVATION_WORKFLOW_V2_VERSION),
@@ -461,6 +535,7 @@ export const reservationWorkflowV2DraftSchema = z.object({
   status: z.enum(['ready', 'partial', 'prefill_failed']),
   extraction: reservationWorkflowV2ExtractionSchema.optional(),
   extractionGenerationId: z.string().uuid().optional(),
+  disposition: reservationWorkflowV2DispositionSchema.optional(),
   proposal: storedProposalSchema,
   observations: z.array(reservationWorkflowV2ObservationSchema).max(5000),
   fieldReviewRequirements: z.record(fieldReviewRequirementSchema),

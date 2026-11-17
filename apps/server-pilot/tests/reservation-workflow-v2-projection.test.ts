@@ -762,8 +762,8 @@ describe('reservation workflow host projection', () => {
     expect(request.body.groups[0]!.occupancy).toEqual({
       scope: 'unresolved',
       adults: null,
-      childCount: 0,
-      childAges: [],
+      childCount: null,
+      childAges: null,
     });
   });
 

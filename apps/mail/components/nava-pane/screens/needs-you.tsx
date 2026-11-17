@@ -44,6 +44,24 @@ const CHIP_CLASS: Record<NavaWorkState, string> = {
   review: 'bg-[#eaf4ee] text-[#1a4332]',
 };
 
+/** Staff wording for each V2 request kind; matches the reservation pane's action-tab vocabulary. */
+const V2_ACTION_LABEL: Record<NonNullable<NeedsYouRow['actions']>[number], string> = {
+  quote: 'Quote',
+  create: 'New booking',
+  amend: 'Amendment',
+  cancel: 'Cancellation',
+  services: 'Add-Ons',
+  filing: 'Payment',
+  other: 'Other to do',
+};
+
+/** The row's action line: every distinct V2 ask, 'Needs review' on a review-only row, or the kind's label. */
+function rowActionLabel(row: NeedsYouRow): string {
+  if (row.reviewOnly) return 'Needs review';
+  if (!row.actions?.length) return NAVA_READ_AS_LABEL[readAsForKind(row.kind)];
+  return [...new Set(row.actions.map((action) => V2_ACTION_LABEL[action]))].join(' + ');
+}
+
 type NeedsYouViewState = {
   scope: MailCacheScope;
   ownerKey: string;
@@ -363,7 +381,7 @@ function NeedsYouRowView({
     <li className="flex flex-col gap-1.5 rounded-[3px] border border-[#e2e8f0] bg-white p-2.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10.5px] font-bold uppercase tracking-[0.4px] text-[#475569]">
-          {NAVA_READ_AS_LABEL[readAsForKind(row.kind)]}
+          {row.reviewOnly ? 'Needs review' : rowActionLabel(row)}
         </span>
         <span
           data-chip={finished ? 'finished' : row.chip}

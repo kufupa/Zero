@@ -27,8 +27,14 @@ export type ReservationSourceContext = {
   receivedAt?: string;
   sourceText?: string;
   selfPreStay?: boolean;
+  /** Deterministic excluded sender/host; the pane shows a no-action card instead of a draft. */
+  skippedSource?: ReservationSkippedSource | null;
+  /** True only when an excluded-source email has an existing V2 draft with an uncertain/in-flight/needs_reconcile HMS operation. */
+  sourceRecoveryOnly?: boolean;
   attachments: ReservationAttachmentView[];
 };
+
+export type ReservationSkippedSource = { kind: 'channel' | 'system' | 'spam'; source: string | null };
 
 export type ReservationAttachmentView = {
   sourceRef: string;

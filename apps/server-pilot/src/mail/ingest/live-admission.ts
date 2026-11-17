@@ -22,9 +22,14 @@ import {
   inboundExtractionEnabled,
 } from '../../ai/extraction/inbound-run.js';
 import { isAiWriteGateEnabled, isInboundTriageClassifierEnabled, isLegacyInboundTriagePipelineEnabled } from '../../env.js';
-import { classifyMailSource, type MailSourceClassification } from '../../ai/mail-source.js';
-import { isSelfSentPreStaySubject } from '../../ai/existing-stay-information.js';
+import {
+  canonicalSourceBodyText,
+  classifyMailSource,
+  type MailSourceClassification,
+} from '../../ai/mail-source.js';
+import { selfSentPreStayCandidate } from '../../ai/existing-stay-information.js';
 import { THREAD_CONTEXT_MAX_BYTES } from '../../ai/thread-context.js';
+import { fileAttachmentPresence } from './attachment-evidence.js';
 import { lockCanonicalMailbox } from './canonical-identity.js';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { getSenderPreference } from '../sender-preference.js';
@@ -87,9 +92,9 @@ export type NativeAdmissionEvidence = {
 /** Admit self-sent pre-stay candidates so extraction can verify body-only confirmations. */
 export function admissionMailSource(
   source: MailSourceClassification,
-  mail: { fromAddress: string; subject: string | null; mailboxAddress: string | null },
+  mail: { fromAddress: string; subject: string | null; mailboxAddress: string | null; bodyText?: string | null },
 ): MailSourceClassification {
-  return source.kind !== 'direct' && isSelfSentPreStaySubject(mail)
+  return source.kind !== 'direct' && selfSentPreStayCandidate(mail)
     ? { kind: 'direct', source: null, reason: 'self_sent_pre_stay_candidate' }
     : source;
 }
@@ -321,7 +326,7 @@ export async function admitLiveMessage(
     htmlBody: sql<string | null>`left(${message.htmlBody},16384)`,
   };
   const [trigger] = await db
-    .select(boundedColumns)
+    .select({ ...boundedColumns, sourceProvenance: message.sourceProvenance })
     .from(message)
     .where(
       and(eq(message.id, input.canonicalMessageId), eq(message.transportId, input.transportId)),
@@ -331,12 +336,22 @@ export async function admitLiveMessage(
   if (!trigger) throw new Error('Live admission trigger unavailable');
   if (trigger.attention === 'AMBIGUOUS_IDENTITY') return { admitted: false, receiptId: '' };
   const isCollector = resolvePropertyTransport(input.transportId).kind === 'collector';
+  const [fileAttachment] =
+    trigger.direction === 'inbound'
+      ? await db
+          .select({ id: attachment.id })
+          .from(attachment)
+          .where(and(eq(attachment.messageId, trigger.id), eq(attachment.isInline, false)))
+          .limit(1)
+      : [null];
+  const triggerBody = canonicalSourceBodyText({ textBody: trigger.textBody, htmlBody: trigger.htmlBody });
   let mailSourceDecision =
     trigger.direction === 'inbound'
       ? classifyMailSource({
           fromAddress: trigger.fromAddress,
           subject: trigger.subject,
-          bodyText: trigger.textBody ?? trigger.htmlBody,
+          bodyText: triggerBody,
+          hasAttachments: fileAttachmentPresence(fileAttachment != null, trigger.sourceProvenance),
         })
       : null;
   if (mailSourceDecision && mailSourceDecision.kind !== 'direct') {
@@ -345,6 +360,7 @@ export async function admitLiveMessage(
     mailSourceDecision = admissionMailSource(mailSourceDecision, {
       fromAddress: trigger.fromAddress,
       subject: trigger.subject,
+      bodyText: triggerBody,
       mailboxAddress: mailbox?.email ?? null,
     });
   }

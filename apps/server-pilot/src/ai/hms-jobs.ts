@@ -29,7 +29,7 @@ import {
 import { aiAgentRun } from '../db/schema/hitl.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
-import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
+import { canonicalSourceBodyText, classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import {
   isOwnedHotelHost,
   lookupLearnedSenderHistory,
@@ -2614,7 +2614,7 @@ export async function prefetchPartyForExtraction(
   const sourceClassification = classifyMailSource({
     fromAddress: source.fromAddress,
     subject: source.subject,
-    bodyText: source.textBody ?? source.htmlBody,
+    bodyText: canonicalSourceBodyText({ textBody: source.textBody, htmlBody: source.htmlBody }),
   });
   if (sourceClassification.kind !== 'direct') return skip('channel_or_ota');
   const from = normalizeEmailAddress(source.fromAddress);
@@ -2859,7 +2859,7 @@ export async function evaluateQuoteReadyForMessage(
   const sourceClassification = classifyMailSource({
     fromAddress: source.fromAddress,
     subject: source.subject,
-    bodyText: source.textBody ?? source.htmlBody,
+    bodyText: canonicalSourceBodyText({ textBody: source.textBody, htmlBody: source.htmlBody }),
   });
   if (sourceClassification.kind !== 'direct') return empty('channel_or_ota', source);
   if (await threadIsAutomatedChannel(db, source)) return empty('channel_or_ota', source);
@@ -3794,7 +3794,7 @@ function directExternalSenderHost(row: SenderHistorySourceMessage): string | nul
     classifyMailSource({
       fromAddress: row.fromAddress,
       subject: row.subject,
-      bodyText: row.textBody ?? row.htmlBody,
+      bodyText: canonicalSourceBodyText({ textBody: row.textBody, htmlBody: row.htmlBody }),
     }).kind !== 'direct'
   ) {
     return null;

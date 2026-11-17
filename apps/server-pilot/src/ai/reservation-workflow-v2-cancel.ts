@@ -47,6 +47,7 @@ import {
   recordReservationWorkflowV2Result,
   reservationWorkflowV2DraftOf,
   RESERVATION_WORKFLOW_V2_STATE_KEY,
+  withReservationWorkflowV2Draft,
   type ReservationNativeCheckBatch,
   type ReservationWorkflowV2Context,
 } from './reservation-workflow-v2-state.js';
@@ -1092,8 +1093,8 @@ async function assertCurrentCancel(tx: Tx, ctx: ReservationWorkflowV2CancelConte
       summary: 'Native cancellation claimed; outcome pending reconciliation' };
     const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
       observations: [...draft.observations, attempt], operationResults: [...draft.operationResults, result] });
-    await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-      [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+    await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
+      updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
       fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${result.id}`,
       value: { id: result.id, requestId: result.requestId, allocationId: result.allocationId,
@@ -1127,8 +1128,8 @@ async function persistCancelResolution(tx: Tx, ctx: ReservationWorkflowV2CancelC
     updatedAt: new Date().toISOString(), summary: summary.slice(0, 2000) };
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations,
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== operation.id), operation] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `reservationWorkflowV2:operationResults:${operation.id}`,
     value: { id: operation.id, requestId: operation.requestId, allocationId: operation.allocationId,
@@ -1161,8 +1162,8 @@ async function persistCancelNotDispatched(tx: Tx, ctx: ReservationWorkflowV2Canc
   const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft,
     observations: [...draft.observations, failure],
     operationResults: [...draft.operationResults.filter((entry) => entry.id !== failed.id), failed] });
-  await tx.update(workItem).set({ state: { ...(item.state as Record<string, unknown>),
-    [RESERVATION_WORKFLOW_V2_STATE_KEY]: nextDraft }, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+  await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state as Record<string, unknown>, nextDraft),
+    updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
   await tx.insert(workEvent).values({ workItemId: input.workItemId, actorKind: 'system', type: 'write.evidence',
     fieldPath: `${RESERVATION_WORKFLOW_V2_STATE_KEY}:operationResults:${failed.id}`,
     value: { id: failed.id, requestId: failed.requestId, allocationId: failed.allocationId,

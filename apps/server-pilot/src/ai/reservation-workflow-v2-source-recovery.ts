@@ -1,10 +1,131 @@
 import { createHash } from 'node:crypto';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft } from './reservation-workflow-v2-contract.js';
+import type { DB } from '../db/client.js';
+import { aiWorkflowRun } from '../db/schema/mail.js';
+import { workEvent } from '../db/schema/work.js';
+import { hmsPreparationSchema, hmsWriteGrantV2Schema } from '../hms/hms-preparation.js';
+import { hmsAllocationOperationId } from './hms-approval.js';
+import {
+  reservationWorkflowV2DraftSchema,
+  type ReservationWorkflowV2Draft,
+} from './reservation-workflow-v2-contract.js';
 import { extractionRequestForProposal } from './reservation-workflow-v2-source-match.js';
 import { combineBookerPhones } from './reservation-workflow-v2-booker-contact.js';
 
 const roomCandidateSchema = z.object({ code: z.string().regex(/^[A-Z0-9]{1,12}$/), label: z.string().min(1) });
+
+/**
+ * Returns true when an existing V2 draft has an uncertain (`unknown`), in-flight,
+ * or terminal-without-result (`needs_reconcile`) HMS operation/dispatch.
+ */
+export async function hasRecoverableHmsOperation(
+  db: DB,
+  input: { workItemId: string; draft: ReservationWorkflowV2Draft | null },
+): Promise<boolean> {
+  if (!input.draft) return false;
+  if (input.draft.operationResults.some(op => op.status === 'unknown')) return true;
+
+  const GRANT_LIMIT = 200;
+  const grantEvents = await db
+    .select({ value: workEvent.value })
+    .from(workEvent)
+    .where(and(
+      eq(workEvent.workItemId, input.workItemId),
+      eq(workEvent.type, 'approval.granted'),
+    ))
+    .orderBy(desc(workEvent.at), desc(workEvent.id))
+    .limit(GRANT_LIMIT);
+
+  if (grantEvents.length === GRANT_LIMIT) return true;
+
+  const grants = grantEvents.flatMap(event => {
+    const parsed = hmsWriteGrantV2Schema.safeParse(event.value);
+    if (!parsed.success) return [];
+    const g = parsed.data;
+    if (
+      g.workItemId !== input.workItemId ||
+      g.propertyCode !== input.draft!.propertyCode ||
+      g.sourceMessageId !== input.draft!.source.messageId ||
+      g.threadId !== input.draft!.source.threadId
+    ) {
+      return [];
+    }
+    return [g];
+  });
+
+  if (grants.length > 0) {
+    const preparedRefs = [...new Set(grants.map(g => g.preparedRef))];
+    const preparedEvents = await db
+      .select({ value: workEvent.value })
+      .from(workEvent)
+      .where(and(
+        eq(workEvent.workItemId, input.workItemId),
+        eq(workEvent.type, 'hms.prepared'),
+        inArray(sql`${workEvent.value}->>'preparedRef'`, preparedRefs),
+      ));
+
+    const foundPreparedRefs = new Set<string>();
+    const createPreparedAllocations = new Map<string, string[]>();
+    for (const event of preparedEvents) {
+      const parsed = hmsPreparationSchema.safeParse(event.value);
+      if (!parsed.success) continue;
+      const p = parsed.data;
+      if (
+        p.workItemId !== input.workItemId ||
+        p.scope.propertyCode !== input.draft.propertyCode ||
+        p.source.sourceMessageId !== input.draft.source.messageId ||
+        p.source.threadId !== input.draft.source.threadId
+      ) {
+        continue;
+      }
+      foundPreparedRefs.add(p.preparedRef);
+      if (p.operation === 'create' && p.allocations?.length) {
+        createPreparedAllocations.set(
+          p.preparedRef,
+          p.allocations.map(a => a.allocationId),
+        );
+      }
+    }
+
+    const keys = grants.map(g => `hms-write:${g.grantId}`);
+    const runs = await db
+      .select({ idempotencyKey: aiWorkflowRun.idempotencyKey, state: aiWorkflowRun.state })
+      .from(aiWorkflowRun)
+      .where(inArray(aiWorkflowRun.idempotencyKey, keys));
+
+    for (const grant of grants) {
+      const run = runs.find(r => r.idempotencyKey === `hms-write:${grant.grantId}`);
+      const finished = !run || ['dead_letter', 'superseded', 'succeeded'].includes(run.state);
+      if (!finished) return true;
+      if (grant.operation === 'create' && !foundPreparedRefs.has(grant.preparedRef)) {
+        return true;
+      }
+      const allocationIds = createPreparedAllocations.get(grant.preparedRef);
+      const operationIds = allocationIds?.length
+        ? allocationIds.map(allocationId => hmsAllocationOperationId(grant.grantId, allocationId))
+        : [grant.grantId];
+      const allClosed = operationIds.every(opId =>
+        input.draft!.operationResults.some(
+          op => op.id === opId && (op.status === 'succeeded' || op.status === 'failed'),
+        ),
+      );
+      if (!allClosed) return true;
+    }
+  }
+
+  const [inFlightHms] = await db
+    .select({ id: aiWorkflowRun.id })
+    .from(aiWorkflowRun)
+    .where(and(
+      eq(aiWorkflowRun.executorLane, 'hms'),
+      inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
+      sql`(${aiWorkflowRun.workItemId} = ${input.workItemId} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${input.workItemId}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${input.workItemId}::text)))`,
+    ))
+    .limit(1);
+
+  return Boolean(inFlightHms);
+}
 
 /** Recover source-backed suggestions; booking recovery never changes a native action. */
 export function recoverReservationWorkflowV2SourceFields(input: ReservationWorkflowV2Draft): { draft: ReservationWorkflowV2Draft; paths: string[] } | null {

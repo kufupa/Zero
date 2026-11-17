@@ -1,10 +1,12 @@
 import { normalizeEmailAddress } from './never-spam.js';
 import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
+import { maskCardNumbers } from './card-mask.js';
 import { load } from 'cheerio';
 
 const PRE_STAY_SUBJECT = /\bpre[\s-]?(?:stay|arrival)\b/i;
 const SUBJECT_CONFIRMATION_NUMBER =
   /\b(?:confirmation|conf(?:irmation)?\.?)\s*(?:number|no\.?|#)?\s*[:#]?\s*\d+(?:-\d+)*\b/i;
+const BODY_CONFIRMATION_NUMBER = /\b\d{6,10}-\d{1,4}\b/;
 
 /** Owner rule: a self-sent pre-stay confirmation describes an existing stay, never a new booking. */
 export function isSelfSentPreStaySubject(input: {
@@ -32,6 +34,35 @@ export function isSelfSentPreStayInformationMail(input: {
     SUBJECT_CONFIRMATION_NUMBER.test(input.subject ?? '') ||
     input.confirmationNumbers?.some((number) => number.trim().length > 0) === true
   );
+}
+
+/**
+ * One self-prestay candidate gate for live admission, V2 arrival, the pane and
+ * the legacy Create fence: the hotel's own mailbox, a pre-stay subject and a
+ * confirmation number in the subject, the current body or the stored
+ * extraction. A missing mailbox or confirmation is never evidence, so the
+ * exemption simply does not apply.
+ */
+export function selfSentPreStayCandidate(input: {
+  fromAddress?: string | null;
+  mailboxAddress?: string | null;
+  subject?: string | null;
+  bodyText?: string | null;
+  confirmationNumbers?: readonly string[];
+}): boolean {
+  if (!isSelfSentPreStaySubject(input)) return false;
+  return (
+    SUBJECT_CONFIRMATION_NUMBER.test(input.subject ?? '') ||
+    BODY_CONFIRMATION_NUMBER.test(`${input.subject ?? ''}\n${input.bodyText ?? ''}`) ||
+    input.confirmationNumbers?.some((number) => number.trim().length > 0) === true
+  );
+}
+
+const BODY_CONFIRMATION_NUMBER_GLOBAL = new RegExp(BODY_CONFIRMATION_NUMBER.source, 'g');
+
+/** Every confirmation-shaped token the body scan accepts, for display when extraction stored none. */
+export function selfSentPreStayBodyConfirmationNumbers(text: string | null | undefined): string[] {
+  return text?.match(BODY_CONFIRMATION_NUMBER_GLOBAL) ?? [];
 }
 
 /** For HTML-only self-mail, give extraction and validation the same current-message text. */
@@ -72,4 +103,31 @@ export function groundedSeparateAsk(body: string | null | undefined, value: unkn
   const excerpt = value.trim();
   if (!excerpt || excerpt.length > maxCharacters) return null;
   return currentAuthoredMessageText(body).includes(excerpt) ? excerpt : null;
+}
+
+export type SelfSentPreStayAskVerdict =
+  | { status: 'ask'; excerpt: string }
+  | { status: 'review' };
+
+/**
+ * The stored read's verdict for one self-prestay candidate, on the same subject,
+ * current body and extraction confirmation numbers every gate already uses:
+ * a grounded separate current ask, or review. Zero grounded asks never proves
+ * "no ask" from model silence alone — only a grounded ask or staff review is
+ * returned. Returns null when the mail is not a self-prestay candidate.
+ */
+export function selfSentPreStayAskVerdict(input: {
+  fromAddress?: string | null;
+  mailboxAddress?: string | null;
+  subject?: string | null;
+  textBody?: string | null;
+  htmlBody?: string | null;
+  confirmationNumbers?: readonly string[];
+  payload?: { needsAction?: boolean | null; separateAsk?: unknown } | null;
+}): SelfSentPreStayAskVerdict | null {
+  const bodyText = preStaySourceText(input.textBody, input.htmlBody);
+  if (!selfSentPreStayCandidate({ ...input, bodyText })) return null;
+  const excerpt = groundedSeparateAsk(maskCardNumbers(bodyText), input.payload?.separateAsk);
+  if (excerpt) return { status: 'ask', excerpt };
+  return { status: 'review' };
 }
