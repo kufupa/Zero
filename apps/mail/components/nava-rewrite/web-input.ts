@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { IGetThreadResponse } from '@zero/server/driver/types';
+import { htmlToPlainText } from '../../../server-pilot/src/mail/inbound-reaction-parser';
 import { threadInputSchema, type ThreadInput } from './wire';
 
 const addressSchema = z.object({ name: z.string().optional(), email: z.string() });
@@ -22,6 +23,13 @@ type WebInputResult =
   | { status: 'unavailable'; reason: string };
 
 const unavailable = (reason: string): WebInputResult => ({ status: 'unavailable', reason });
+
+export function webMessageBody(body: string, processedHtml: string): { text: string; html: string | null } {
+  if (body === processedHtml && /<[a-z][\s\S]*>/i.test(body)) {
+    return { text: htmlToPlainText(body), html: processedHtml };
+  }
+  return { text: body, html: null };
+}
 
 // mail.get invents a display name from the local part when no name was supplied.
 function address(value: WebAddress): { name: string | null; email: string } {
@@ -62,9 +70,6 @@ export function webThreadInput({
     if (!message.direction) return unavailable('Message direction is missing. Reload the thread after mailbox sync.');
     if (message.attachments === undefined) return unavailable('Attachment information is missing. Reload the thread after mailbox sync.');
     if (message.attachments.length > 0) return unavailable('Attachments need an authorized Nava attachment bridge before this thread can be opened.');
-    if (!message.body.trim() || message.body === message.processedHtml) {
-      return unavailable('Plain-text message content is unavailable. Sync a plain-text body before opening this thread.');
-    }
     if (!message.receivedOn || Number.isNaN(Date.parse(message.receivedOn))) {
       return unavailable('A message timestamp is missing. Reload the thread after mailbox sync.');
     }
@@ -77,12 +82,15 @@ export function webThreadInput({
     source: 'webmail', source_thread_id: data.conversationId,
     mailbox_id: connectionId, selected_message_id: selectedMessageId,
     property_code: null, mode: 'live',
-    messages: data.messages.map((message) => ({
-      id: message.id, rfc_message_id: message.messageId ?? null, direction: message.direction,
-      from: address(message.sender), to: message.to.map(address), cc: (message.cc ?? []).map(address),
-      received_at: message.receivedOn, subject: message.subject,
-      body_text: message.body, body_html: null, attachments: [],
-    })),
+    messages: data.messages.map((message) => {
+      const body = webMessageBody(message.body, message.processedHtml);
+      return {
+        id: message.id, rfc_message_id: message.messageId ?? null, direction: message.direction,
+        from: address(message.sender), to: message.to.map(address), cc: (message.cc ?? []).map(address),
+        received_at: message.receivedOn, subject: message.subject,
+        body_text: body.text, body_html: body.html, attachments: [],
+      };
+    }),
   });
   return result.success
     ? { status: 'ready', input: result.data }

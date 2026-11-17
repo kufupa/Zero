@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { NavaApi } from './api';
-import { NavaApiError } from './api';
+import { matchesManualLabtest, NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
 import { Workflow, workflowPrimaryAction } from './workflow';
@@ -16,7 +16,6 @@ export type NavaControllerProps = {
   // Host may supply these only after verifying endpoint support and staff identity.
   stageWorkflows?: readonly WorkflowName[];
   reconcileSupported?: boolean;
-  staffGoAuthorized?: boolean;
   onAuthenticationRequired?: () => void | Promise<void>;
 };
 
@@ -107,11 +106,12 @@ export function NavaController(props: NavaControllerProps) {
 
 type ThreadControllerProps = Omit<NavaControllerProps, 'input' | 'email'> & { input: ThreadInput; email: SelectedEmail; cache: Cache };
 
-function ThreadController({ input, email, api, cache, stageWorkflows = [], reconcileSupported = false, staffGoAuthorized = false, onAuthenticationRequired }: ThreadControllerProps) {
+function ThreadController({ input, email, api, cache, stageWorkflows = [], reconcileSupported = false, onAuthenticationRequired }: ThreadControllerProps) {
   const [snapshot, setSnapshot] = useState<ThreadSnapshot | null>(null);
   const snapshotRef = useRef<ThreadSnapshot | null>(null);
   const inputKey = JSON.stringify(input);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const [manualLabtest, setManualLabtest] = useState<ThreadSnapshot | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [streamMessage, setStreamMessage] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState(cache.selectedId);
@@ -168,15 +168,18 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  function applySnapshot(next: ThreadSnapshot, authoritative = true) {
+  function applySnapshot(next: ThreadSnapshot, authoritative = true, stageObservedFor?: string) {
     const previous = snapshotRef.current;
     if (previous && previous.id !== next.id) return;
     if (previous && next.event_sequence < previous.event_sequence) return;
     const proposals = next.proposals.map(proposal => {
       const old = previous?.proposals.find(item => item.id === proposal.id);
       const pendingSequence = cache.stagePending[proposal.id];
-      if (pendingSequence !== undefined && next.event_sequence > pendingSequence && proposal.phase !== 'ready') delete cache.stagePending[proposal.id];
-      const staleStage = pendingSequence !== undefined && (next.event_sequence <= pendingSequence || proposal.phase === 'ready');
+      const observedStage = authoritative && pendingSequence !== undefined && next.event_sequence > pendingSequence &&
+        (!old || proposal.revision >= old.revision) &&
+        (proposal.phase === 'staging' || stageObservedFor === proposal.id);
+      if (observedStage) delete cache.stagePending[proposal.id];
+      const staleStage = pendingSequence !== undefined && !observedStage;
       const latest = old && (old.revision > proposal.revision || staleStage && old.phase === 'staging') ? old : proposal;
       const operation = cache.operationStarts[latest.id];
       if (!operation || operation.phase !== latest.phase) {
@@ -217,6 +220,21 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     applySnapshot({ ...current, proposals: current.proposals.map(item => item.id === proposal.id ? proposal : item) }, false);
   }
 
+  async function recoverStage(threadId: string, proposalId: string, sequence: number, signal: AbortSignal) {
+    while (!signal.aborted && cache.stagePending[proposalId] === sequence) {
+      await delay(signal, 2000);
+      if (signal.aborted || cache.stagePending[proposalId] !== sequence) return;
+      try {
+        const latest = await api.getThread(threadId, { signal });
+        if (signal.aborted || cache.stagePending[proposalId] !== sequence) return;
+        applySnapshot(latest, true, proposalId);
+        if (cache.stagePending[proposalId] === undefined) setStreamMessage(null);
+      } catch (error) {
+        if (signal.aborted || expireAuthentication(error, signal)) return;
+      }
+    }
+  }
+
   useEffect(() => {
     mounted.current = true;
     if (authenticationExpiredRef.current) return () => { mounted.current = false; };
@@ -246,7 +264,9 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
               const next = await api.getThread(thread.id, { signal });
               if (signal.aborted) return;
               if (next.event_sequence < event.sequence) throw new Error('Snapshot is behind the event stream.');
-              applySnapshot(next);
+              const stageEvent = (event.kind === 'stage_queued' || event.kind === 'stage_finished') && event.proposal_id &&
+                event.sequence > (cache.stagePending[event.proposal_id] ?? Number.POSITIVE_INFINITY) ? event.proposal_id : undefined;
+              applySnapshot(next, true, stageEvent);
               cursor = Math.max(event.sequence, next.event_sequence);
               setStreamMessage(null);
             }
@@ -290,6 +310,29 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     const timer = window.setTimeout(() => { void saveDraft(proposal.id); }, 450);
     return () => window.clearTimeout(timer);
   }, [snapshot, version, busy, authenticationExpired]);
+
+  useEffect(() => {
+    setManualLabtest(null);
+    if (!snapshot || snapshot.session?.mode !== 'labtest') return;
+    const controller = new AbortController();
+    void api.getManualLabtest(input, { signal: controller.signal }).then(confirmed => {
+      if (!controller.signal.aborted) setManualLabtest(confirmed);
+    }).catch(() => {
+      if (!controller.signal.aborted) setManualLabtest(null);
+    });
+    return () => controller.abort();
+  }, [api, inputKey, snapshot]);
+
+  function manualLabtestReady(thread: ThreadSnapshot | null, proposal: Proposal): boolean {
+    const session = thread?.session;
+    if (!thread || !session || session.mode !== 'labtest' || thread.selected_message_id !== input.selected_message_id ||
+        proposal.thread_id !== thread.id || proposal.session_id !== session.id || proposal.workflow !== 'create' ||
+        proposal.phase !== 'waiting_go' || proposal.stage?.revision !== proposal.revision) return false;
+    return matchesManualLabtest(manualLabtest, {
+      threadId: thread.id, sessionId: session.id, proposalId: proposal.id,
+      revision: proposal.revision, selectedMessageId: input.selected_message_id,
+    });
+  }
 
   async function saveDraft(proposalId: string) {
     const proposal = snapshotRef.current?.proposals.find(item => item.id === proposalId);
@@ -408,7 +451,8 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     if (kind !== 'reconcile' && (cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length)) return;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase) return;
-    if (kind === 'go' && (proposal.phase !== 'waiting_go' || proposal.stage?.revision !== proposal.revision || cache.goLocks[proposal.id] || !staffGoAuthorized || !capabilities?.auth_ready || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_save'))) return;
+    const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
+    if (kind === 'go' && (!manualLabtestReady(snapshotRef.current, current) || cache.goLocks[proposal.id] || cache.issues[proposal.id] || !capabilities?.auth_ready || !capabilities.workflow_capabilities?.create?.go_labtest || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_save'))) return;
     if (kind === 'stage' && (!stageWorkflows.includes(proposal.workflow) || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_prepare'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
     let idempotencyKey: string | undefined;
@@ -433,13 +477,15 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
       if (kind === 'stage') {
         const accepted = await api.stage(request);
         if (!signal.aborted) {
-          cache.stagePending[proposal.id] = snapshotRef.current?.event_sequence ?? 0;
+          cache.stagePending[proposal.id] = sequenceBeforeOperation;
           cache.operationStarts[proposal.id] = { phase: 'staging', at: Date.now() };
           applyProposal({ ...proposal, phase: accepted.phase });
         }
       } else if (kind === 'go') {
         if (!idempotencyKey) throw new NavaApiError('Cannot start Save safely.', 'unavailable');
-        const accepted = await api.go({ ...request, idempotencyKey });
+        const thread = snapshotRef.current;
+        if (!thread?.session) throw new NavaApiError('Could not verify this Labtest.', 'unavailable');
+        const accepted = await api.go({ ...request, idempotencyKey, source: input, threadId: thread.id, sessionId: thread.session.id });
         if (!signal.aborted) {
           cache.goLocks[proposal.id] = 'accepted';
           cache.operationStarts[proposal.id] = { phase: 'saving', at: Date.now() };
@@ -450,11 +496,15 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
         if (!signal.aborted) cache.goLocks[proposal.id] = 'uncertain';
       }
       if (!signal.aborted && snapshotRef.current) {
+        const threadId = snapshotRef.current.id;
         try {
-          const latest = await api.getThread(snapshotRef.current.id, { signal });
-          if (!signal.aborted) applySnapshot(latest);
+          const latest = await api.getThread(threadId, { signal });
+          if (!signal.aborted) applySnapshot(latest, true, kind === 'stage' ? proposal.id : undefined);
         } catch (error) {
           if (!signal.aborted && !expireAuthentication(error, signal)) setStreamMessage('Could not refresh Nava. Reconnecting to check the latest status.');
+        }
+        if (kind === 'stage' && !signal.aborted && cache.stagePending[proposal.id] === sequenceBeforeOperation) {
+          void recoverStage(threadId, proposal.id, sequenceBeforeOperation, signal);
         }
       }
     } catch (error) {
@@ -484,7 +534,7 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
   const lock = proposal ? cache.goLocks[proposal.id] : undefined;
   const isUncertain = Boolean(proposal && (lock === 'uncertain' || lock === 'reconciling' || proposal.phase === 'uncertain' || proposal.error?.outcome === 'uncertain'));
   const canStage = Boolean(proposal && stageWorkflows.includes(proposal.workflow) && supports(capabilities, 'workflows', proposal.workflow) && supports(capabilities, 'tools', 'hms_prepare'));
-  const canGo = Boolean(proposal && staffGoAuthorized && capabilities?.auth_ready && supports(capabilities, 'workflows', proposal.workflow) && supports(capabilities, 'tools', 'hms_save') && !lock);
+  const canGo = Boolean(proposal && manualLabtestReady(snapshot, proposal) && capabilities?.auth_ready && capabilities.workflow_capabilities?.create?.go_labtest && supports(capabilities, 'workflows', proposal.workflow) && supports(capabilities, 'tools', 'hms_save') && !lock);
   const primary = proposal && isUncertain
     ? reconcileSupported ? { label: 'Check Infor', disabled: busy, onClick: () => { void operation('reconcile', proposal); } } : undefined
     : proposal && proposal.phase === 'waiting_go' && proposal.stage?.revision === proposal.revision

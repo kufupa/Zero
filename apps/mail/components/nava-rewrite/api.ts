@@ -9,17 +9,20 @@ import type {
 
 export type RequestOptions = { signal?: AbortSignal };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
+export type ManualLabtestSource = Pick<ThreadInput, 'source' | 'mailbox_id' | 'source_thread_id' | 'selected_message_id'>;
+export type ManualLabtestBinding = { threadId: string; sessionId: string; proposalId: string; revision: number; selectedMessageId: string };
 export type NavaApi = {
   upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<ThreadSnapshot>;
   getThread: (id: string, options?: RequestOptions) => Promise<ThreadSnapshot>;
   getCapabilities: (options?: RequestOptions) => Promise<Capabilities>;
+  getManualLabtest: (source: ManualLabtestSource, options?: RequestOptions) => Promise<ThreadSnapshot | null>;
   events: (id: string, afterSequence: number, options?: RequestOptions) => AsyncGenerator<NavaEvent>;
   patchProposal: (request: RevisionRequest & { changes: Change[] }) => Promise<Proposal>;
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
-  go: (request: RevisionRequest & { idempotencyKey: string }) => Promise<AcceptedGo>;
+  go: (request: RevisionRequest & { idempotencyKey: string; source: ManualLabtestSource; threadId: string; sessionId: string }) => Promise<AcceptedGo>;
   reconcile: (request: RevisionRequest) => Promise<void>;
   sendContext: (request: RequestOptions & { threadId: string; text: string; proposalId?: string }) => Promise<void>;
   getArtifact: (id: string, options?: RequestOptions) => Promise<Response>;
@@ -46,9 +49,15 @@ export type NavaApiConfig = {
   // Supplied by authenticated host; no bootstrap/service token belongs in the pane.
   fetch: HostFetch;
   baseUrl?: string;
-  // Enable only after the backend-verifiable staff principal bridge is proven.
-  staffGoEnabled?: boolean;
 };
+
+export function matchesManualLabtest(snapshot: ThreadSnapshot | null, binding: ManualLabtestBinding): boolean {
+  if (!snapshot || snapshot.id !== binding.threadId || snapshot.selected_message_id !== binding.selectedMessageId ||
+      snapshot.session?.id !== binding.sessionId || snapshot.session.mode !== 'labtest') return false;
+  return snapshot.proposals.some(proposal => proposal.id === binding.proposalId && proposal.thread_id === binding.threadId &&
+    proposal.session_id === binding.sessionId && proposal.workflow === 'create' && proposal.revision === binding.revision &&
+    proposal.phase === 'waiting_go' && proposal.stage?.revision === binding.revision);
+}
 
 export function createNavaApi(config: NavaApiConfig): NavaApi {
   const base = `${(config.baseUrl ?? '').replace(/\/+$/, '')}/api/nava/v1`;
@@ -90,6 +99,19 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
   });
   const revisionBody = (request: RevisionRequest) => body({ expected_revision: request.expectedRevision }, request.signal);
   const proposalPath = (id: string) => `/proposals/${pathId(id)}`;
+
+  async function getManualLabtest(source: ManualLabtestSource, options?: RequestOptions): Promise<ThreadSnapshot | null> {
+    const query = new URLSearchParams({
+      source: source.source, mailbox_id: source.mailbox_id,
+      source_thread_id: source.source_thread_id, selected_message_id: source.selected_message_id,
+    });
+    try {
+      return await json(`/labtest/create?${query}`, threadSnapshotSchema, { signal: options?.signal });
+    } catch (error) {
+      if (error instanceof NavaApiError && error.status === 404) return null;
+      throw error;
+    }
+  }
 
   async function* events(threadId: string, afterSequence: number, options?: RequestOptions): AsyncGenerator<NavaEvent> {
     const response = await request(`/threads/${pathId(threadId)}/events?after_sequence=${encodeURIComponent(afterSequence)}`, {
@@ -145,6 +167,7 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
     },
     getThread: (id, options) => json(`/threads/${pathId(id)}`, threadSnapshotSchema, { signal: options?.signal }),
     getCapabilities: options => json('/capabilities', capabilitiesSchema, { signal: options?.signal }),
+    getManualLabtest,
     events,
     patchProposal: ({ proposalId, expectedRevision, changes, signal }) => json(proposalPath(proposalId), proposalSchema, {
       ...body({ expected_revision: expectedRevision, changes }, signal), method: 'PATCH',
@@ -164,9 +187,19 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
       return parsed.data;
     },
     stage: request => json(`${proposalPath(request.proposalId)}/stage`, acceptedStageSchema, revisionBody(request)),
-    go: request => {
-      if (!config.staffGoEnabled) throw new NavaApiError('Staff authorization is not ready.', 'unavailable');
+    go: async request => {
       if (!request.idempotencyKey.trim()) throw new NavaApiError('Go requires an idempotency key.', 'unavailable');
+      let manual: ThreadSnapshot | null;
+      try {
+        manual = await getManualLabtest(request.source, { signal: request.signal });
+      } catch (error) {
+        if (error instanceof NavaApiError && error.status === 401) throw error;
+        throw new NavaApiError('Could not verify this Labtest.', 'unavailable');
+      }
+      if (!matchesManualLabtest(manual, {
+        threadId: request.threadId, sessionId: request.sessionId, proposalId: request.proposalId,
+        revision: request.expectedRevision, selectedMessageId: request.source.selected_message_id,
+      })) throw new NavaApiError('This Labtest is not ready for Go.', 'unavailable');
       return json(`${proposalPath(request.proposalId)}/go`, acceptedGoSchema, body({
         expected_revision: request.expectedRevision, idempotency_key: request.idempotencyKey,
       }, request.signal), true);

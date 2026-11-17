@@ -12,6 +12,8 @@ const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: 'GET', path: new RegExp(`^/api/nava/v1/threads/${resourceId}/staff-edits$`) },
   { method: 'POST', path: new RegExp(`^/api/nava/v1/threads/${resourceId}/messages$`) },
   { method: 'GET', path: /^\/api\/nava\/v1\/capabilities$/ },
+  { method: 'GET', path: /^\/api\/nava\/v1\/labtest\/create$/ },
+  { method: 'GET', path: /^\/api\/nava\/v1\/eligibility$/ },
   { method: 'PATCH', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}$`) },
   { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|stage|go|reconcile)$`) },
   { method: 'GET', path: new RegExp(`^/api/nava/v1/artifacts/${resourceId}$`) },
@@ -22,6 +24,10 @@ function error(status: number, code: string, message: string): Response {
     status,
     headers: { 'Cache-Control': 'no-store' },
   });
+}
+
+function eligibility(eligible: boolean): Response {
+  return Response.json({ eligible }, { headers: { 'Cache-Control': 'private, no-store' } });
 }
 
 function configuredAgentOrigin(value: string | undefined): string | null {
@@ -113,7 +119,11 @@ export function createNavaRewriteGateway(auth: Auth) {
 
     const agentOrigin = configuredAgentOrigin(process.env.NAVA_AGENT_BASE_URL);
     const secret = process.env.NAVA_STAFF_JWT_SECRET;
-    if (!agentOrigin || !secret || Buffer.byteLength(secret) < 32) {
+    const cohortUserId = process.env.NAVA_REWRITE_COHORT_USER_ID;
+    const cohortMailboxId = process.env.NAVA_REWRITE_COHORT_MAILBOX_ID;
+    const isEligibility = request.method === 'GET' && url.pathname === '/api/nava/v1/eligibility';
+    if (!agentOrigin || !secret || Buffer.byteLength(secret) < 32 || !cohortUserId || !cohortMailboxId) {
+      if (isEligibility) return eligibility(false);
       return error(503, 'gateway_unavailable', 'Gateway is not configured');
     }
     if (request.method !== 'GET') {
@@ -129,16 +139,39 @@ export function createNavaRewriteGateway(auth: Auth) {
       const cookie = request.headers.get('cookie');
       if (cookie) sessionHeaders.set('cookie', cookie);
       const session = await auth.api.getSession({ headers: sessionHeaders });
-      if (!session?.user?.id) return error(401, 'unauthorized', 'Authentication required');
+      if (!session?.user?.id) return isEligibility ? eligibility(false) : error(401, 'unauthorized', 'Authentication required');
+      if (session.user.id !== cohortUserId) return isEligibility ? eligibility(false) : error(403, 'forbidden', 'Rewrite is not available');
 
       const grants = await getDb()
         .select({ transportId: mailboxAccess.transportId })
         .from(mailboxAccess)
         .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
         .where(eq(mailboxAccess.userId, session.user.id));
-      if (!grants.length) return error(403, 'forbidden', 'Mailbox access required');
+      if (!grants.some((grant) => grant.transportId === cohortMailboxId)) {
+        return isEligibility ? eligibility(false) : error(403, 'forbidden', 'Mailbox access required');
+      }
 
-      const staff = staffToken(session.user.id, grants.map((grant) => grant.transportId), secret);
+      const staff = staffToken(session.user.id, [cohortMailboxId], secret);
+      if (isEligibility) {
+        const mailboxes = url.searchParams.getAll('mailbox_id');
+        if (mailboxes.length !== 1 || mailboxes[0] !== cohortMailboxId) return eligibility(false);
+        const response = await fetch(`${agentOrigin}/api/nava/v1/capabilities`, {
+          headers: { Authorization: `Bearer ${staff.token}` },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) {
+          await response.body?.cancel();
+          return eligibility(false);
+        }
+        const capabilities: unknown = await response.json();
+        return eligibility(typeof capabilities === 'object' && capabilities !== null &&
+          'workflows' in capabilities && Array.isArray(capabilities.workflows) && capabilities.workflows.includes('create') &&
+          'tools' in capabilities && Array.isArray(capabilities.tools) && capabilities.tools.includes('hms_prepare') &&
+          'model' in capabilities && typeof capabilities.model === 'string' &&
+          'environment_type' in capabilities && typeof capabilities.environment_type === 'string' &&
+          'auth_ready' in capabilities && capabilities.auth_ready === true);
+      }
       const headers = new Headers({
         Authorization: `Bearer ${staff.token}`,
         'Accept-Encoding': 'identity',
@@ -188,6 +221,7 @@ export function createNavaRewriteGateway(auth: Auth) {
         headers: responseHeaders,
       });
     } catch {
+      if (isEligibility) return eligibility(false);
       return error(502, 'gateway_error', 'Gateway request failed');
     }
   };

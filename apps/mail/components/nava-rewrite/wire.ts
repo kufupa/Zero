@@ -78,6 +78,9 @@ export const threadSnapshotSchema = z.object({
 export const capabilitiesSchema = z.object({
   workflows: jsonSchema, tools: jsonSchema, model: z.string(),
   environment_type: z.string(), auth_ready: z.boolean(),
+  workflow_capabilities: z.object({
+    create: z.object({ stage: z.boolean(), go_labtest: z.boolean() }).optional(),
+  }).optional(),
 });
 export const eventSchema = z.object({
   sequence: z.number().int().nonnegative(), event_id: id, kind: z.string(), at: z.string(),
