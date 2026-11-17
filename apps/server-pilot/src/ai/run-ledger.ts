@@ -671,6 +671,16 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const threadRun = alias(aiWorkflowRun, 'earlier_thread_run');
   const emailOrder = sql`CASE ${aiWorkflowRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
   const threadEmailOrder = sql`CASE ${threadRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
+  const staffOrder = (run: typeof aiWorkflowRun) => sql`CASE WHEN ${run.priority} >= 2
+    OR ${run.runKind} = 'candidate_draft' OR ${run.readRequest}->>'kind' = 'quote_pdf'
+    OR ${run.metrics}->'failedReadRetry' IS NOT NULL THEN 1 ELSE 0 END`;
+  const enabled = (run: typeof aiWorkflowRun) => and(
+    process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' ? undefined : ne(run.runKind, 'reservation_prefill'),
+    process.env.INBOUND_EXTRACTION === 'on' ? undefined : ne(run.runKind, 'inbound_extraction'),
+    process.env.LEGACY_INBOUND_TRIAGE_PIPELINE === 'on' ? undefined
+      : or(ne(run.runKind, 'inbound_triage'), like(run.idempotencyKey, 'external-sent-baseline:%')),
+    env.HMS_LANE_PAUSED || env.HMS_DRAFT_ENRICHMENT_MODE === 'off' ? ne(run.executorLane, 'hms') : undefined,
+  );
   const sameHmsSlot = or(
     eq(higherTierRun.transportId, aiWorkflowRun.transportId),
     ...ACTIVE_HMS_TRANSPORT_GROUPS.map((transportIds) =>
@@ -724,6 +734,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const claimable = and(
     eq(aiWorkflowRun.executorLane, input.lane),
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
+    // Disabled email jobs stay parked until their workflow is enabled again.
+    ...(input.lane === 'default' ? [enabled(aiWorkflowRun)] : []),
     ...scope,
     devGate,
     // Email jobs and candidate drafts each run in thread order; pane HMS jobs keep staff priority.
@@ -733,12 +745,22 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         ne(threadRun.id, aiWorkflowRun.id),
         or(and(inArray(aiWorkflowRun.runKind, ORDERED_EMAIL_RUNS), inArray(threadRun.runKind, ORDERED_EMAIL_RUNS)),
           and(eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(threadRun.runKind, 'candidate_draft'))),
-        inArray(threadRun.state, NONTERMINAL_AI_RUN_STATES),
-        or(and(inArray(threadRun.state, ['claimed', 'running']), gt(threadRun.updatedAt, staleBefore)),
-          lt(threadRun.createdAt, aiWorkflowRun.createdAt),
-          and(eq(threadRun.createdAt, aiWorkflowRun.createdAt),
-            or(sql`${threadEmailOrder} < ${emailOrder}`,
-              and(sql`${threadEmailOrder} = ${emailOrder}`, lt(threadRun.id, aiWorkflowRun.id))))),
+        or(
+          // An in-flight sibling can still write, even if its flag has since changed.
+          and(inArray(threadRun.state, ['claimed', 'running']), gt(threadRun.updatedAt, staleBefore)),
+          and(enabled(threadRun),
+            or(and(inArray(threadRun.state, ['queued', 'retry_wait']),
+              or(sql`${threadRun.nextRunAt} IS NULL`, lte(threadRun.nextRunAt, now))),
+              and(inArray(threadRun.state, ['claimed', 'running']), lte(threadRun.updatedAt, staleBefore))),
+            or(sql`${threadRun.deadlineAt} IS NULL`, gt(threadRun.deadlineAt, now),
+              and(eq(threadRun.runKind, 'reservation_prefill'), inArray(threadRun.state, ['claimed', 'running']))),
+            or(sql`${staffOrder(threadRun)} > ${staffOrder(aiWorkflowRun)}`,
+              and(sql`${staffOrder(threadRun)} = ${staffOrder(aiWorkflowRun)}`,
+                or(lt(threadRun.createdAt, aiWorkflowRun.createdAt),
+                  and(eq(threadRun.createdAt, aiWorkflowRun.createdAt),
+                    or(sql`${threadEmailOrder} < ${emailOrder}`,
+                      and(sql`${threadEmailOrder} = ${emailOrder}`, lt(threadRun.id, aiWorkflowRun.id)))))))),
+        ),
       )))),
     // Skip a full mailbox here so unrelated work remains claimable.
     or(ne(aiWorkflowRun.runKind, 'reservation_prefill'), sql`(
@@ -766,6 +788,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         // staff_quote shares HMS_JOB_PRIORITY_USER with party/find; jump those reads on this serial lane.
         // hms_write is a separate claim (runKind filter) and keeps HMS_WRITE_PRIORITY.
         .orderBy(
+          ...(input.lane === 'default' ? [desc(staffOrder(aiWorkflowRun))] : []),
           ...(input.lane === 'default' && input.preferDeferredWork
             ? [desc(sql`CASE
                 WHEN ${aiWorkflowRun.priority} >= 2 OR (${aiWorkflowRun.priority} = 1 AND ${aiWorkflowRun.runKind} <> 'reservation_prefill') THEN 2
@@ -812,6 +835,22 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         // A sibling held by another transaction must be reconciled before this job starts.
         const [remaining] = await tx.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(staleSiblings).limit(1);
         if (remaining) { skipped.push(candidate.id); continue; }
+
+        // A parked older job must not overwrite a newer completed result on resumption.
+        const newerRun = alias(aiWorkflowRun, 'newer_thread_run');
+        const [newer] = await tx.select({ id: newerRun.id }).from(newerRun)
+          .innerJoin(aiWorkflowRun, eq(aiWorkflowRun.id, candidate.id)).where(and(
+            eq(newerRun.transportId, aiWorkflowRun.transportId), eq(newerRun.threadId, aiWorkflowRun.threadId),
+            eq(newerRun.runKind, aiWorkflowRun.runKind), eq(newerRun.state, 'succeeded'),
+            or(gt(newerRun.createdAt, aiWorkflowRun.createdAt),
+              and(eq(newerRun.createdAt, aiWorkflowRun.createdAt), gt(newerRun.id, aiWorkflowRun.id))),
+          )).limit(1);
+        if (newer) {
+          await tx.update(aiWorkflowRun).set({ state: 'superseded', claimOwner: null, claimToken: null,
+            finishedAt: now, updatedAt: now, lastError: 'newer same-thread run succeeded',
+            metrics: { ...candidate.metrics, supersededBy: newer.id } }).where(eq(aiWorkflowRun.id, candidate.id));
+          continue;
+        }
       }
 
       const request =
