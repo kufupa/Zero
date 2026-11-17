@@ -729,10 +729,31 @@ function isFinancialServiceSender(fromRaw?: string): boolean {
   );
 }
 
+function isUnansweredLeadPlatformReminder(
+  input: TriageRefineInput,
+  modelResult: Pick<WorkflowTriageOutput, 'isSpam'>,
+): boolean {
+  if (modelResult.isSpam !== false) {
+    return false;
+  }
+  const authoredBody = currentAuthoredMessageText(input.body);
+  const hasUnansweredLeadSignal =
+    /\b(?:you\s+(?:still\s+)?have|your\s+hotel\s+has)\s+(?:\d+\s+)?unanswered\s+(?:requests?|leads?)\b/i.test(
+      authoredBody,
+    ) ||
+    /\b(?:view|review|respond\s+to)\s+(?:(?:the|your)\s+)?unanswered\s+(?:requests?|leads?)\b/i.test(
+      authoredBody,
+    ) ||
+    /\bno\s+one\s+from\s+your\s+hotel\s+has\s+responded\b/i.test(authoredBody);
+  const hasActionRequest = /\b(?:view|review|respond)\b/i.test(authoredBody);
+  return hasUnansweredLeadSignal && hasActionRequest;
+}
+
 function isProtectedFromWorkflowForceSpam(
   input: TriageRefineInput,
   neverSpamFrom: boolean,
   notSpam: boolean,
+  modelResult: Pick<WorkflowTriageOutput, 'isSpam'>,
 ): boolean {
   const from = normalizeEmailAddress(input.from ?? '');
   const subject = (input.subject ?? '').trim();
@@ -746,7 +767,8 @@ function isProtectedFromWorkflowForceSpam(
     notSpam ||
     isOtaGuestCommunication ||
     hotelConversationNotSpam(input) ||
-    isFinancialServiceSender(input.from)
+    isFinancialServiceSender(input.from) ||
+    isUnansweredLeadPlatformReminder(input, modelResult)
   );
 }
 
@@ -1271,7 +1293,7 @@ function refineWorkflowTriageOutput(
       rationale: `${next.rationale} FortiMail quarantine digest is spam.`,
     };
   } else if (
-    !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam) &&
+    !isProtectedFromWorkflowForceSpam(input, neverSpamFrom, notSpam, next) &&
     shouldForceWorkflowPromoSpam(input, haystack) &&
     !isRoutineSystemMail(input, haystack) &&
     (next.primaryFolder === 'bookings' || next.primaryFolder === 'unknown-review')
