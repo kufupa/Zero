@@ -700,6 +700,9 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     knownChildAgesChanged || (typeof baseChanges.guaranteeType === 'string' && typeof current.guaranteeCode === 'string' &&
       baseChanges.guaranteeType !== current.guaranteeCode);
   if (rateValue === 'retain' && (pricingChanged || knownCallbackChanged)) {
+    if (typeof baseChanges.guaranteeType === 'string') {
+      return { outcome: 'unsupported', issue: 'amend_guarantee_change_finish_in_hms', fields: ['guaranteeType'] };
+    }
     return { outcome: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
   }
   const target = { confirmation: current.confirmation, nativeStayId: current.reservationStayId,
@@ -1173,6 +1176,25 @@ function callbackRequested(compiled: CompiledAmend) {
       !sameChildAges(compiled.target.childAges, compiled.selected.childAges)));
 }
 
+/**
+ * Guarantee, Organization, Primary Booking Agency, A/R Account and child-age changes fire saved-stay
+ * callbacks that HMS may keep before Save, and HMS only shows the repriced total after them. Until a
+ * no-persistence preview exists, Nava must not fire them before staff have seen HMS's price and pressed Go.
+ */
+function callbackPriceBeforeWriteAvailable(): boolean { return false; }
+const CALLBACK_FINISH_IN_HMS = 'amend_callback_change_finish_in_hms';
+function callbackFields(plan: { guarantee: unknown; parties: Array<Record<string, unknown>>; children: unknown }) {
+  return [...(plan.guarantee ? ['guaranteeType'] : []), ...plan.parties.map(party => String(party.kind)),
+    ...(plan.children ? ['childAges'] : [])];
+}
+function compiledCallbackFields(compiled: CompiledAmend) {
+  return [...(typeof compiled.baseChanges.guaranteeType === 'string' &&
+      compiled.baseChanges.guaranteeType !== compiled.selected.guaranteeCode ? ['guaranteeType'] : []),
+    ...partyOrder.filter(field => Object.hasOwn(compiled.baseChanges, field)),
+    ...(Object.hasOwn(compiled.baseChanges, 'children') && (compiled.target.children !== compiled.selected.children ||
+      !sameChildAges(compiled.target.childAges, compiled.selected.childAges)) ? ['childAges'] : [])];
+}
+
 function portablePartyImage(value: unknown): Record<string, unknown> | null {
   const image = record(value), data = record(image?.data), values = record(image?.values);
   if (!data || !values) return null;
@@ -1342,6 +1364,8 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
         return { observation, price: ordinaryPrice, plan: null, semanticDigest, noop: true };
       }
       if (compiled.rateHandling === 'retain') return { issue: 'retained_rate_not_supported_for_priced_amendment', retainCallback: true };
+      // Fail closed before any persistent callback can be authorized: the staged price above excludes them.
+      if (!callbackPriceBeforeWriteAvailable()) return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: callbackFields(plan) };
       if (!mealPlanVerified(draft, compiled, staged)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, staged) };
       const planDigest = sha256(plan);
       const recoveryBaseline = { ...stagedBaseline, beforeChildAges: beforeAges,
@@ -1357,6 +1381,9 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) {
       if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      if ('finishInHmsFields' in prepared && Array.isArray(prepared.finishInHmsFields)) {
+        return { status: 'unsupported', issue: prepared.issue, fields: prepared.finishInHmsFields };
+      }
       if ('retainCallback' in prepared && prepared.retainCallback === true) {
         const observation: ReservationWorkflowV2Observation = { ref: randomUUID(), generationId: draft.generationId,
           kind: 'rate_availability', status: 'complete', observedAt: new Date().toISOString(), propertyCode: draft.propertyCode,
@@ -1466,6 +1493,9 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   const unresolved = loaded.draft.operationResults.find(item => item.workflow === 'amend' && item.requestId === compiled.requestId &&
     item.allocationId === compiled.hintId && item.status === 'unknown');
   if (unresolved) return { status: 'needs_reconcile', operationId: unresolved.id };
+  if (typeof compiled.baseChanges.guaranteeType === 'string') {
+    return { status: 'unsupported', issue: 'amend_guarantee_change_finish_in_hms', fields: ['guaranteeType'] };
+  }
   if (callbackRequested(compiled)) return prepareCallbackAmend(ctx, input, loaded.draft, compiled);
   const locked = targetWriteLock(ctx, compiled.selected);
   if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
@@ -1555,6 +1585,10 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
             key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
           canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+      // A stale stay lookup can hide a live guarantee change; its Go-time callback is not in this staged price.
+      if (typeof changes.guaranteeType === 'string' && changes.guaranteeType !== recoveryBaseline.beforeGuaranteeCode) {
+        return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: ['guaranteeType'] };
+      }
       if (!mealPlanVerified(loaded.draft!, compiled, native)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(loaded.draft!, compiled, native) };
       const preserved = afterPreserved;
       const semanticDigest = sha256({ baseDigest: compiled.baseDigest, selectedRef: compiled.selectedRef,
@@ -1565,6 +1599,9 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
     }, { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch?.signal });
     if ('issue' in prepared) {
       if ('mealObservation' in prepared && prepared.mealObservation) return recordMealMismatch(ctx, input, compiled, prepared.mealObservation);
+      if ('finishInHmsFields' in prepared && Array.isArray(prepared.finishInHmsFields)) {
+        return { status: 'unsupported', issue: prepared.issue, fields: prepared.finishInHmsFields };
+      }
       return { status: 'failed', issue: prepared.issue };
     }
     const recorded = await recordObservation(ctx, input, prepared.observation, 'prepared',
@@ -2236,6 +2273,9 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     }
     return pendingReview;
   }
+  if (typeof compiled.baseChanges.guaranteeType === 'string') {
+    return { status: 'unsupported', issue: 'amend_guarantee_change_finish_in_hms', fields: ['guaranteeType'] };
+  }
   const candidate = preparedObservation(loaded.draft, compiled);
   if (compiled.rateHandling === 'retain' && callbackRequested(compiled)) {
     const finding = loaded.draft.observations.findLast(observation => observation.kind === 'rate_availability' &&
@@ -2253,6 +2293,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
     }
   }
   if (callbackRequested(compiled) && record(candidate?.result)?.callbackNoop !== true) {
+    // Also covers callback previews recorded before this guard shipped.
+    if (!callbackPriceBeforeWriteAvailable()) {
+      return { status: 'unsupported', issue: CALLBACK_FINISH_IN_HMS, fields: compiledCallbackFields(compiled) };
+    }
     return executeCallbackFirst(ctx, input, loaded.draft, compiled);
   }
   if (!ctx.user.sessionId || !ctx.user.sessionProfile) {
@@ -2271,6 +2315,10 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       !mealPlanVerified(loaded.draft, compiled, preparedResult) ||
       typeof preparedResult.nativeDigest !== 'string' || !/^[a-f0-9]{64}$/.test(preparedResult.nativeDigest)) {
     return { status: 'needs_prepare', issue: 'prepared_amend_or_price_is_stale' };
+  }
+  if (typeof nativeChanges.guaranteeType === 'string' &&
+      nativeChanges.guaranteeType !== record(preparedResult.recoveryBaseline)?.beforeGuaranteeCode) {
+    return { status: 'unsupported', issue: CALLBACK_FINISH_IN_HMS, fields: ['guaranteeType'] };
   }
   if (amendMode(ctx) === 'off') return { status: 'refused', issue: 'amend_save_unavailable' };
   const locked = targetWriteLock(ctx, compiled.selected);

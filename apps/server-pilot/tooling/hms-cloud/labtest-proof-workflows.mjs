@@ -20,6 +20,41 @@ const decimal = value => {
   const match = String(value ?? '').match(/^(\d+)(?:\.(\d+))?$/);
   return match ? `${match[1].replace(/^0+(?=\d)/, '')}.${(match[2] ?? '').replace(/0+$/, '')}` : null;
 };
+const isoDay = value => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
+  Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
+const AMEND_STAY_KEYS = ['arrival', 'departure', 'roomType', 'adults'];
+const AMEND_COMBINED_KEYS = [...AMEND_STAY_KEYS, 'retainRates', 'cmsSend', 'cmsMessageId', 'cmsRecipient'];
+const combinedAmendChanges = changes => changes && typeof changes === 'object' && !Array.isArray(changes) &&
+  AMEND_STAY_KEYS.some(key => Object.hasOwn(changes, key));
+// The owned stay starts at the immutable create preimage; a verified amendment
+// moves only the business fields its fresh readback bound.
+function labtestExpectedStay(journal) {
+  const stay = journal.effectiveRequest?.stay, room = journal.effectiveRequest?.room;
+  return { arrival: stay?.arrival, departure: stay?.departure, roomType: room?.roomType, adults: stay?.adults };
+}
+// The approved combined amendment: dates, room and adults must all change while
+// every other business field stays preserved. Anything weaker is refused before staging.
+function requestedCombinedAmend(journal) {
+  const request = journal.proofRequest?.amend;
+  if (request === undefined) return null;
+  const stay = journal.effectiveRequest?.stay, room = journal.effectiveRequest?.room;
+  const keys = request && typeof request === 'object' && !Array.isArray(request) ? Object.keys(request) : [];
+  check(keys.every(key => AMEND_STAY_KEYS.includes(key)) && keys.includes('roomType') && keys.includes('adults') &&
+    (keys.includes('arrival') || keys.includes('departure')) && stay && room, 'AMEND_REQUEST_INVALID');
+  const arrival = request.arrival ?? stay.arrival, departure = request.departure ?? stay.departure;
+  check(isoDay(arrival) && isoDay(departure) && arrival >= '2027-01-01' && arrival < departure &&
+    /^[A-Z0-9]{1,12}$/.test(request.roomType ?? '') && Number.isInteger(request.adults) &&
+    request.adults >= 1 && request.adults <= 16 &&
+    (arrival !== stay.arrival || departure !== stay.departure) && request.roomType !== room.roomType &&
+    request.adults !== stay.adults, 'AMEND_COMBINED_CHANGE_REQUIRED');
+  return { arrival, departure, roomType: request.roomType, adults: request.adults };
+}
+// A repriced amendment requires the native average as well as the total.
+const validAmendPrice = prices => prices?.version === 2 && /^[A-Z]{3}$/.test(prices.currency ?? '') &&
+  /^(?:0|[1-9]\d{0,13})$/.test(prices.totalCents ?? '') && /^(?:0|[1-9]\d{0,13})$/.test(prices.averageCents ?? '');
+function verifiedAmendPrice(prices, issue) {
+  check(validAmendPrice(prices), issue);
+}
 
 function nativeAddOnPreview(result) {
   const item = result?.outcome === 'prepared' && result.items?.length === 1 ? result.items[0]
@@ -51,7 +86,7 @@ async function writePrivate(path, bytes) {
   try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
 }
 
-function ownedNative(record, journal, adults = journal.effectiveRequest.stay.adults) {
+function ownedNative(record, journal, expected = labtestExpectedStay(journal)) {
   const own = journal.created, request = journal.effectiveRequest, native = record?.nativePreimage;
   const fields = record?.details?.fields;
   const field = name => {
@@ -63,9 +98,9 @@ function ownedNative(record, journal, adults = journal.effectiveRequest.stay.adu
     native.propertyCode === journal.propertyCode && native.confirmation === own.confirmation &&
     native.reservationStayId === own.nativeStayId && native.guestId === own.guestId &&
     native.firstName === 'Proof' && native.lastName === 'Labtest' && native.status === 'Reserved' &&
-    native.arrival >= '2027-01-01' && native.arrival === request.stay.arrival && native.departure === request.stay.departure &&
-    native.roomType === request.room.roomType && native.ratePlan === request.room.ratePlan &&
-    native.adults === adults && native.children === request.stay.childAges.length &&
+    native.arrival >= '2027-01-01' && native.arrival === expected.arrival && native.departure === expected.departure &&
+    native.roomType === expected.roomType && native.ratePlan === request.room.ratePlan &&
+    native.adults === expected.adults && native.children === request.stay.childAges.length &&
     native.guaranteeCode === request.guaranteeType &&
     (native.children === 0 || Array.isArray(native.childAges) &&
       equal([...native.childAges].sort((a, b) => a - b), [...request.stay.childAges].sort((a, b) => a - b))) &&
@@ -76,16 +111,22 @@ function ownedNative(record, journal, adults = journal.effectiveRequest.stay.adu
 export async function runLabtestWorkflow({ workflow, journal, property, transportId, options, root, journalDir,
   checkHold, markPossible, record }) {
   const own = journal.created, propertyCode = property.propertyCode;
-  let expectedAdults = journal.effectiveRequest.stay.adults;
+  let expectedStay = labtestExpectedStay(journal);
+  const priorAmend = journal.workflowProofs?.amend;
+  if (combinedAmendChanges(priorAmend?.changes)) {
+    const readback = verifyLabtestWorkflowProof(journal, 'amend', priorAmend);
+    expectedStay = { arrival: readback.arrival, departure: readback.departure,
+      roomType: readback.roomType, adults: readback.adults };
+  }
   const scope = { ...options, propertyCode, transportId, startScreen: 'OSRESS' };
   const readOwned = () => withCloudReadSession(async page => {
     await checkHold(options.signal);
-    await readShallow(page, own.confirmation, { guestName: 'Proof Labtest', arrivalDate: journal.effectiveRequest.stay.arrival });
+    await readShallow(page, own.confirmation, { guestName: 'Proof Labtest', arrivalDate: expectedStay.arrival });
     const result = await readRecord(page, own.confirmation, { nativePropertyCode: propertyCode });
-    ownedNative(result, journal, expectedAdults);
+    ownedNative(result, journal, expectedStay);
     return result;
   }, { ...scope, prepareContext: context => installSavedStayReadGuard(context, { propertyCode, confirmation: own.confirmation }) });
-  const initial = await readOwned(), selected = ownedNative(initial, journal);
+  const initial = await readOwned(), selected = ownedNative(initial, journal, expectedStay);
   const startedAt = observed();
   const proof = { workflow, propertyCode, confirmation: own.confirmation, nativeStayId: own.nativeStayId,
     guestId: own.guestId, startedAt, prepared: null, result: null, dispatches: [] };
@@ -147,15 +188,19 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
     };
     check(selected.guaranteeCode === 'NGI', 'AMEND_LAB_GUARANTEE_UNSUPPORTED');
     const occupancy = workflow === 'amend_adults';
+    const requested = occupancy ? null : requestedCombinedAmend(journal);
     if (occupancy) {
       verifyLabtestWorkflowProof(journal, 'amend', journal.workflowProofs?.amend);
-      check(propertyCode === 'HRCEN' && selected.ratePlan === 'CMPRO' && selected.adults === 1 &&
+      check(!combinedAmendChanges(journal.workflowProofs?.amend?.changes) &&
+        propertyCode === 'HRCEN' && selected.ratePlan === 'CMPRO' && selected.adults === 1 &&
         selected.children === 0, 'AMEND_OCCUPANCY_LAB_ONLY');
     }
     const changes = { ...(occupancy ? { adults: 2, retainRates: 'no' }
+      : requested ? { arrival: requested.arrival, departure: requested.departure, roomType: requested.roomType,
+        adults: requested.adults, retainRates: 'no' }
       : { bookerContact: `Labtest amend ${randomUUID().slice(0, 8)}`, retainRates: 'yes' }),
       cmsSend: false, cmsMessageId: field('udfchar09'), cmsRecipient: field('udfchar13') };
-    if (!occupancy) check(field('udfchar06') !== changes.bookerContact, 'AMEND_CHANGE_REQUIRED');
+    if (!occupancy && !requested) check(field('udfchar06') !== changes.bookerContact, 'AMEND_CHANGE_REQUIRED');
     else proof.beforeBookerContact = field('udfchar06');
     proof.changes = changes;
     proof.preimage = selected;
@@ -171,10 +216,17 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
       proof.prepared.preserved?.cmsSend === false, 'AMEND_PREPARE_UNVERIFIED');
     if (occupancy) check(proof.prepared.approvedPrices?.currency === 'ZAR' &&
       proof.prepared.approvedPrices.totalCents === '0', 'AMEND_OCCUPANCY_PRICE_UNVERIFIED');
+    else if (requested) verifiedAmendPrice(proof.prepared.approvedPrices, 'AMEND_PRICE_UNVERIFIED');
     await readOwned();
     const operationDigest = hash({ propertyCode, confirmation: own.confirmation, nativeStayId: own.nativeStayId,
       changes, nativeDigest: proof.prepared.nativeDigest, approvedPrices: proof.prepared.approvedPrices,
       preserved: proof.prepared.preserved });
+    if (validAmendPrice(proof.prepared.approvedPrices)) {
+      const { currency, totalCents, averageCents } = proof.prepared.approvedPrices;
+      proof.preCommitPrice = { propertyCode, currency, totalCents, averageCents };
+      process.stdout.write(`${JSON.stringify({ amendPreCommitPrice: proof.preCommitPrice })}\n`);
+      await checkpoint();
+    }
     proof.result = await commitCloudPaneAmend({ ...input, nativeDigest: proof.prepared.nativeDigest,
       approvedPrices: proof.prepared.approvedPrices, preserved: proof.prepared.preserved }, {
       operationDigest,
@@ -187,7 +239,7 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
         return proof.beforeEvidence;
       },
       authorizeFirst: async step => {
-        check(step.operationDigest === operationDigest && step.phase === (occupancy ? 'amend.availability' : 'amend.save') &&
+        check(step.operationDigest === operationDigest && step.phase === (occupancy || requested ? 'amend.availability' : 'amend.save') &&
           /^[a-f0-9]{64}$/.test(step.requestDigest ?? '') && proof.beforeEvidence && !proof.dispatches.length &&
           cloudWriterCurrent(step.writer), 'AMEND_DISPATCH_UNVERIFIED');
         await claim({ phase: step.phase, requestDigest: step.requestDigest });
@@ -201,7 +253,9 @@ export async function runLabtestWorkflow({ workflow, journal, property, transpor
       proof.result.dispatchCallbacksDrained === true && proof.result.businessFieldsMatched === true &&
       proof.dispatches.length === 1 && cloudWriterQuiesced(proof.dispatches[0].writer), 'AMEND_SAVE_UNVERIFIED');
     proof.readback = proof.result.readback;
-    if (occupancy) expectedAdults = changes.adults;
+    if (occupancy || requested) expectedStay = { arrival: changes.arrival ?? selected.arrival,
+      departure: changes.departure ?? selected.departure, roomType: changes.roomType ?? selected.roomType,
+      adults: changes.adults ?? selected.adults };
   } else if (workflow === 'attach') {
     const { prepareCloudPaneAttach, runCloudPaneAttach } = await import('./pane-attach-session.mjs');
     const bytes = labtestPdf(propertyCode, journal.sha), pdfSha256 = sha256(bytes);
@@ -336,28 +390,54 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
     if (workflow === 'amend' || workflow === 'amend_adults') {
       const selected = journal.effectiveRequest;
       const occupancy = workflow === 'amend_adults';
+      const requested = occupancy ? null : requestedCombinedAmend(journal);
       check(result?.outcome === 'amended' && result.writerSessionClosed === true &&
         result.dispatchCallbacksDrained === true && result.businessFieldsMatched === true &&
-        proof.dispatches.length === 1 && proof.dispatches[0].phase === (occupancy ? 'amend.availability' : 'amend.save') &&
+        proof.dispatches.length === 1 && proof.dispatches[0].phase === (occupancy || requested ? 'amend.availability' : 'amend.save') &&
         /^[a-f0-9]{64}$/.test(proof.dispatches[0].requestDigest ?? '') &&
         /^[a-f0-9]{64}$/.test(proof.beforeEvidence?.sha256 ?? '') &&
         /^[a-f0-9-]{36}$/i.test(proof.beforeEvidence?.eventId ?? '') &&
         readback.firstName === 'Proof' && readback.lastName === 'Labtest' &&
-        readback.arrival === selected.stay.arrival && readback.departure === selected.stay.departure &&
-        readback.roomType === selected.room.roomType && readback.ratePlan === selected.room.ratePlan &&
-        readback.adults === (occupancy ? 2 : selected.stay.adults) && readback.children === selected.stay.childAges.length &&
+        readback.ratePlan === selected.room.ratePlan &&
+        readback.children === selected.stay.childAges.length &&
         Array.isArray(readback.childAges) && equal([...readback.childAges].sort((a, b) => a - b),
           [...selected.stay.childAges].sort((a, b) => a - b)) &&
         readback.guaranteeType === selected.guaranteeType && readback.reservationNote === own.note &&
-        (occupancy ? journal.propertyCode === 'HRCEN' && selected.room.ratePlan === 'CMPRO' &&
+        readback.cmsSend === false &&
+        readback.cmsMessageId === proof.prepared.preserved?.cmsMessageId &&
+        readback.cmsRecipient === proof.prepared.preserved?.cmsRecipient &&
+        (occupancy ? readback.arrival === selected.stay.arrival && readback.departure === selected.stay.departure &&
+          readback.roomType === selected.room.roomType && readback.adults === 2 &&
+          journal.propertyCode === 'HRCEN' && selected.room.ratePlan === 'CMPRO' &&
           selected.stay.adults === 1 && proof.changes?.adults === 2 && proof.changes.retainRates === 'no' &&
           proof.prepared.approvedPrices?.currency === 'ZAR' && proof.prepared.approvedPrices.totalCents === '0' &&
           readback.bookerContact === proof.beforeBookerContact &&
           proof.beforeBookerContact === journal.workflowProofs?.amend?.changes?.bookerContact
-          : typeof proof.changes?.bookerContact === 'string' && /^Labtest amend [a-f0-9]{8}$/.test(proof.changes.bookerContact) &&
-          readback.bookerContact === proof.changes.bookerContact) && readback.cmsSend === false &&
-        readback.cmsMessageId === proof.prepared.preserved?.cmsMessageId &&
-        readback.cmsRecipient === proof.prepared.preserved?.cmsRecipient, 'AMEND_PROOF_INVALID');
+          : requested ? readback.arrival === requested.arrival && readback.departure === requested.departure &&
+          readback.roomType === requested.roomType && readback.adults === requested.adults &&
+          proof.changes?.arrival === requested.arrival && proof.changes.departure === requested.departure &&
+          proof.changes.roomType === requested.roomType && proof.changes.adults === requested.adults &&
+          proof.changes.retainRates === 'no' && proof.changes.cmsSend === false &&
+          typeof proof.changes.cmsMessageId === 'string' && typeof proof.changes.cmsRecipient === 'string' &&
+          Object.keys(proof.changes).every(key => AMEND_COMBINED_KEYS.includes(key)) &&
+          typeof proof.beforeBookerContact === 'string' && readback.bookerContact === proof.beforeBookerContact &&
+          proof.preimage?.arrival === selected.stay.arrival && proof.preimage.departure === selected.stay.departure &&
+          proof.preimage.roomType === selected.room.roomType && proof.preimage.adults === selected.stay.adults &&
+          proof.prepared.preserved?.cmsSend === false &&
+          proof.prepared.approvedPrices?.version === 2 &&
+          /^[A-Z]{3}$/.test(proof.prepared.approvedPrices.currency ?? '') &&
+          /^(?:0|[1-9]\d{0,13})$/.test(proof.prepared.approvedPrices.totalCents ?? '') &&
+          /^(?:0|[1-9]\d{0,13})$/.test(proof.prepared.approvedPrices.averageCents ?? '') &&
+          equal(proof.preCommitPrice, { propertyCode: journal.propertyCode,
+            currency: proof.prepared.approvedPrices.currency, totalCents: proof.prepared.approvedPrices.totalCents,
+            averageCents: proof.prepared.approvedPrices.averageCents }) &&
+          readback.price?.currency === proof.prepared.approvedPrices.currency &&
+          readback.price?.totalCents === proof.prepared.approvedPrices.totalCents &&
+          readback.price?.averageCents === proof.prepared.approvedPrices.averageCents
+          : readback.arrival === selected.stay.arrival && readback.departure === selected.stay.departure &&
+          readback.roomType === selected.room.roomType && readback.adults === selected.stay.adults &&
+          typeof proof.changes?.bookerContact === 'string' && /^Labtest amend [a-f0-9]{8}$/.test(proof.changes.bookerContact) &&
+          readback.bookerContact === proof.changes.bookerContact), 'AMEND_PROOF_INVALID');
     } else if (workflow === 'attach') {
       check(result?.outcome === 'confirmed' && result.uploadSent === true && result.listed === true &&
         result.writerSessionClosed === true && result.dispatchCallbacksDrained === true &&
@@ -386,9 +466,14 @@ export function verifyLabtestWorkflowProof(journal, workflow, proof) {
 }
 
 // Create evidence stays immutable; only a verified amendment can change the cleanup expectation.
+export function labtestProofStayExpected(journal) {
+  const amend = journal.workflowProofs?.amend, occupancy = journal.workflowProofs?.amend_adults;
+  if (!amend && !occupancy) return labtestExpectedStay(journal);
+  const readback = verifyLabtestWorkflowProof(journal, 'amend', amend);
+  const expected = { arrival: readback.arrival, departure: readback.departure,
+    roomType: readback.roomType, adults: readback.adults };
+  return occupancy ? { ...expected, adults: verifyLabtestWorkflowProof(journal, 'amend_adults', occupancy).adults } : expected;
+}
 export function labtestProofStayAdults(journal) {
-  const occupancy = journal.workflowProofs?.amend_adults;
-  if (!occupancy) return journal.effectiveRequest.stay.adults;
-  verifyLabtestWorkflowProof(journal, 'amend', journal.workflowProofs?.amend);
-  return verifyLabtestWorkflowProof(journal, 'amend_adults', occupancy).adults;
+  return labtestProofStayExpected(journal).adults;
 }

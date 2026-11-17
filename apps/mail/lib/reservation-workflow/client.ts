@@ -545,6 +545,7 @@ export function inputFieldLabel(value: string): string {
     bookingAgency_selection_required: 'select the Primary Booking Agency in Infor', organization_selection_required: 'select the Organization in Infor',
     arrival: 'arrival date', departure: 'departure date', quantity: 'quantity', roomCodes: 'room type',
     roomType: 'room type', ratePlan: 'rate plan', rateHandling: 'rate handling', mealPlan: 'meal plan', requestedMealPlan: 'Meal Plan request', guaranteeType: 'guarantee',
+    organization: 'Organization', bookingAgency: 'Primary Booking Agency', arAccount: 'A/R Account',
     sourceOfBusiness: 'source of business', marketSegment: 'market segment', firstName: 'guest first name', lastName: 'guest last name',
     guestOptIn: 'Terms and Conditions', unitPrice: 'unit price', currency: 'currency', requestedRooms: 'number of rooms',
     requestedTotals: 'requested occupancy totals', nativeSelectionRef: 'confirmed Infor selection',
@@ -642,6 +643,12 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'amend_room_count_requires_separate_reservations') return 'Choose the rooms to add or cancel as separate reservations';
   if (issue === 'amend_track_target_selection_required') return 'Find and select each saved stay in Infor before loading Track choices';
   if (issue === 'retained_rate_not_supported_for_priced_amendment') return 'Choose Reprice in Infor, or split these changes in Infor to keep the current rate';
+  if (issue === 'amend_guarantee_change_finish_in_hms') {
+    return 'Change the guarantee in Infor HMS. Remove it here to amend the other details with Nava';
+  }
+  if (issue === 'amend_callback_change_finish_in_hms') {
+    return 'Nava cannot show the Infor price for this change before it saves yet. Make this change in Infor HMS: open the stay, change it, check the new total, then Save. Or remove it here to amend the rest with Nava';
+  }
   if (issue === 'amend_applied_price_requires_second_go') return 'Details may already have changed in Infor. Review the new price before saving';
   if (issue === 'native_meal_plan_mismatch_or_unknown') return 'Infor could not match the requested Meal Plan. Choose a matching Rate Plan or update the request';
   if (issue === 'native_quote_no_matching_rate') {

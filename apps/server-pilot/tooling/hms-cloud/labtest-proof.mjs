@@ -264,7 +264,10 @@ async function main() {
     quantity: z.union([text(30), z.number().positive()]),
     unitPrice: z.union([text(30), z.number().nonnegative()]).optional(),
     frequency: text(100).optional(), pricingControl: text(100).optional(), folio: text(100).optional(),
-    comment: z.string().max(200).optional() }).strict()).length(1).optional() }).strict().parse(proof);
+    comment: z.string().max(200).optional() }).strict()).length(1).optional(),
+    amend: z.object({ arrival: date.optional(), departure: date.optional(), roomType: code,
+      adults: z.number().int().min(1).max(16) }).strict().refine(value =>
+        value.arrival !== undefined || value.departure !== undefined).optional() }).strict().parse(proof);
   const parsed = requestSchema.safeParse(createInput);
   assert(parsed.success, 'REQUEST_INVALID');
   const request = parsed.data;
@@ -494,15 +497,15 @@ async function main() {
       const { cancellationNativePreimage } = await load('tooling/hms-cloud/pane-cancel-session.mjs');
       const { verifySingleCancellationScope } = await load('tooling/hms-cloud/cancel-association-scope.mjs');
       const { openLabtestCancellation, confirmLabtestCancellation } = await load('tooling/hms-cloud/guest-stay-cancel.mjs');
-      const { labtestProofStayAdults } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
+      const { labtestProofStayExpected } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
       const own = journal.created, effective = requestSchema.parse(journal.effectiveRequest);
-      const expectedAdults = labtestProofStayAdults(journal);
+      const stayExpected = labtestProofStayExpected(journal), expectedAdults = stayExpected.adults;
       assert(effective.room.ratePlan === (args.cancelScenario === 'zero' ? 'CMPRO' : 'BAR'), 'CANCEL_SCENARIO_RATE_MISMATCH');
       assert(own?.freshReadbackVerified === true && /^\d+-\d+$/.test(own.confirmation ?? '') && /^\d+$/.test(own.nativeStayId ?? '') &&
         own.note === effective.note && own.guestId === effective.guest.profileId, 'CANCEL_TARGET_INVALID');
       const lookup = async page => {
         await checkHold();
-        await readShallow(page, own.confirmation, { guestName: 'Proof Labtest', arrivalDate: effective.stay.arrival });
+        await readShallow(page, own.confirmation, { guestName: 'Proof Labtest', arrivalDate: stayExpected.arrival });
         return readRecord(page, own.confirmation, { nativePropertyCode: args.propertyCode });
       };
       const initial = await cloud.withCloudCredentialLease(args.propertyCode, lease => cloud.withCloudReadSession(lookup,
@@ -510,8 +513,9 @@ async function main() {
           prepareContext: context => installSavedStayReadGuard(context, { propertyCode: args.propertyCode, confirmation: own.confirmation }) }));
       const expected = cancellationNativePreimage(initial, { propertyCode: args.propertyCode, allowRealGuest: false });
       assert(expected && expected.allowRealGuest === false && expected.cmsSend === false && expected.firstName === 'Proof' &&
-        expected.lastName === 'Labtest' && expected.arrival === effective.stay.arrival && expected.departure === effective.stay.departure &&
-        expected.confirmation === own.confirmation && expected.nativeStayId === own.nativeStayId &&
+        expected.lastName === 'Labtest' && expected.arrival === stayExpected.arrival && expected.departure === stayExpected.departure &&
+        expected.roomType === stayExpected.roomType && expected.confirmation === own.confirmation &&
+        expected.nativeStayId === own.nativeStayId &&
         expected.guestId === own.guestId && expected.note === own.note &&
         initial.nativePreimage?.adults === expectedAdults, 'CANCEL_PREIMAGE_INVALID');
       // Zero children proves an empty age list even when Record View omits childages, as in Create readback.
