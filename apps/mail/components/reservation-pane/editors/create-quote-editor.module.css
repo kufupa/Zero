@@ -73,6 +73,9 @@
 .compactQuote .quoteLine:has(.quoteReview > *) input { grid-column: 2; }
 .quoteReview { grid-column: 3; }
 .quoteReview:empty { display: none; }
+.roomSuggestions { grid-column: 1 / -1; display:flex; flex-wrap:wrap; align-items:center; gap:5px; }
+.roomSuggestions small { flex-basis:100%; }
+.roomSuggestions button { text-align:left; }
 
 @container (max-width: 340px) {
   .compactCreate .dateFields { grid-template-columns:minmax(0,1fr) 54px; }

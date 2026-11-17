@@ -1,4 +1,5 @@
 import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Draft, type ReservationWorkflowV2Source } from '../../../server-pilot/src/ai/reservation-workflow-v2-contract.js';
+import { quoteCompositionStatus } from '../../../server-pilot/src/ai/reservation-workflow-v2-quote-readiness.js';
 import { effectiveAt, record, requestPath, type RowChange } from './views';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import {
@@ -9,6 +10,7 @@ import {
 import { NAVA_FAILURE_REPORT_CONTEXT_KEY } from '../workstation/mutations-in-flight';
 import type {
   ReservationCommandContext,
+  QuoteWaitControls,
   ReservationGuestProfileOptionField,
   ReservationServiceInput,
   ReservationEditCommand,
@@ -58,7 +60,7 @@ export type ReservationWorkflowV2TrpcClient = {
   workItems?: { recordActions?: RecordActionsMutation };
   reservationWorkflowV2: {
     ensure: MutationProcedure<{ internetMessageId?: string | null; source: ReservationWorkflowV2Source; propertySwitch?: PropertySwitch; mode?: 'initialize' | 'prefill' }>;
-    prefill: MutationProcedure<ItemInput>;
+    prefill: MutationProcedure<ItemInput & { background?: boolean }>;
     addAction: MutationProcedure<ItemInput & { kind: 'create' | 'quote' | 'amend' | 'cancel' | 'services' | 'filing' }>;
     changeRows: MutationProcedure<ItemInput & RowChange>;
     selectNative: MutationProcedure<ItemInput & { requestId: string; fieldPath: string; observationRef: string }>;
@@ -70,12 +72,12 @@ export type ReservationWorkflowV2TrpcClient = {
     review: MutationProcedure<ItemInput & { fieldPath: string; decision: 'accepted' | 'flagged'; note?: string | null }>;
     undo: MutationProcedure<ItemInput>;
     redo: MutationProcedure<ItemInput>;
-    lookup: MutationProcedure<ItemInput & { requestId?: string; nativeFieldPath?: string }>;
+    lookup: MutationProcedure<ItemInput & { requestId?: string; nativeFieldPath?: string; background?: boolean }>;
     guestProfileOptions: MutationProcedure<ItemInput & { requestId: string; allocationId: string; field: ReservationGuestProfileOptionField }>;
     prepareGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean }>;
     createGuestProfile: MutationProcedure<ItemInput & { requestId: string; allocationId: string; confirmDuplicateName?: boolean;
       go: true; prepareRef: string; preparedRef: string; idempotencyKey: string }>;
-    prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string }>;
+    prepare: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; background?: boolean }>;
     execute: MutationProcedure<ItemInput & { requestId: string; allocationId?: string; go: true; idempotencyKey: string; preparedRef?: string }>;
     revokeUnsentFiling: MutationProcedure<ItemInput & { requestId: string; preparedRef: string }>;
     reconcile: MutationProcedure<ItemInput & { operationId: string }>;
@@ -223,6 +225,7 @@ function decodeDraft(result: unknown): ReservationWorkflowV2Session {
         ...(isString(value.reviewedPrepareRef) ? { reviewedPrepareRef: value.reviewedPrepareRef } : {}) }];
     }) : [];
   return { draft: draft as unknown as ReservationWorkflowV2Draft, revision, revisionHead, seq, preparationViews, workflowDispatches, workflowPreparations,
+    ...((result.backgroundChecks === 'queued' || result.backgroundChecks === 'running' || result.backgroundChecks === 'failed') ? { backgroundChecks: result.backgroundChecks } : {}),
     ...(result.sourceChanged === true ? { sourceChanged: true } : {}) };
 }
 
@@ -590,6 +593,7 @@ function inputFieldLabels(values: unknown): string {
 
 function operationNotice(result: unknown, success: string[]): string | undefined {
   if (!isRecord(result)) return 'The reservation service returned an unreadable native-tool result.';
+  if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Use the action button below to continue.';
   if (success.includes(String(result.status))) return undefined;
   const failure = knownFailureCopy(result.failureClass ?? result.issue ?? result.status,
     result.status === 'unknown' || result.status === 'needs_reconcile');
@@ -598,7 +602,7 @@ function operationNotice(result: unknown, success: string[]): string | undefined
   const issue = nativeIssueText(result.issue);
   const fields = inputFieldLabels(result.fields);
   const totals = Array.isArray(result.details) ? result.details.flatMap(item => isRecord(item) && typeof item.expected === 'number' ? [`${inputFieldLabel(String(item.path))}: requested ${item.expected}${typeof item.actual === 'number' ? `, allocated ${item.actual}` : ', complete the room allocations'}`] : []).join('; ') : '';
-  return `${issue ? `Infor check: ${status} — ${issue}.` : `Infor check: ${status}.`}${fields ? ` Review: ${fields}.` : ''}${totals ? ` ${totals}.` : ''}`;
+  return `${issue ? `Action: ${status} — ${issue}.` : `Action: ${status}.`}${fields ? ` Review: ${fields}.` : ''}${totals ? ` ${totals}.` : ''}`;
 }
 
 function nativeIssueText(issue: unknown): string | null {
@@ -656,12 +660,14 @@ function nativeIssueText(issue: unknown): string | null {
   }
   if (issue === 'native_quote_requested_unavailable') return 'The requested offer is unavailable. Review available alternatives';
   if (issue === 'native_quote_insufficient_inventory') return 'Infor found too few rooms for this request. Review the shortage and alternatives';
+  if (issue === 'quote_option_joint_inventory_unavailable') return 'Combined availability for overlapping room groups is insufficient or could not be verified. Review the room groups in Infor and update them or contact support';
+  if (issue === 'quote_output_no_longer_current') return 'This quote is no longer current. Generate it again after reviewing its details';
   if (issue === 'native_quote_restricted_nights') return 'The requested stay has closed or restricted nights. Review available alternatives';
   if (issue === 'native_quote_price_unavailable') return 'Infor could not complete the price check. Review the recorded result or run the check again';
   if (issue === 'amend_automatic_recovery_unavailable_operator_must_verify_writer_closed') {
     return 'The save outcome is uncertain. Contact Nava support before making another change to this stay.';
   }
-  return 'Infor could not complete this action. Review the highlighted inputs and recorded result; contact Nava support if it remains blocked';
+  return 'Nava problem, not yours. Contact Nava support';
 }
 
 function serviceOperationNotice(result: unknown, success: string[]): string | undefined {
@@ -677,13 +683,12 @@ function serviceOperationNotice(result: unknown, success: string[]): string | un
 }
 
 function quoteLookupNotice(result: unknown): string | undefined {
-  if (!isRecord(result) || !Array.isArray(result.quotes)) return undefined;
-  const issues = result.quotes.flatMap((value) => {
-    if (!isRecord(value) || value.status === 'priced') return [];
-    const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
-    const issue = nativeIssueText(value.issue);
-    const fields = inputFieldLabels(value.fields);
-    return [`Quote check: ${status}${issue ? ` — ${issue}` : ''}${fields ? `; review ${fields}` : ''}.`];
+  if (!isRecord(result)) return quoteOperationNotice(result, [], 'Quote check');
+  if (!Array.isArray(result.quotes)) return quoteOperationNotice(result, ['ok'], 'Quote check');
+  const issues = result.quotes.flatMap(value => {
+    if (isRecord(value) && value.outcomeClass === 'needs_input' && Array.isArray(value.partyCandidates)) return [];
+    const notice = quoteOperationNotice(value, ['priced'], 'Quote check');
+    return notice ? [notice] : [];
   });
   return issues.length ? issues.join(' ') : undefined;
 }
@@ -750,42 +755,40 @@ function amendLookupNotice(result: unknown): string | undefined {
 }
 
 function quoteOperationNotice(result: unknown, success: string[], action: string): string | undefined {
-  if (!isRecord(result)) return `${action}: Infor returned an unreadable response.`;
+  if (!isRecord(result)) return `${action}: Nava problem, not yours. Contact Nava support.`;
+  if (result.issue === 'warmup_queue_disabled') return 'Automatic checks are paused. Use the action button below to continue.';
   if (success.includes(String(result.status))) return undefined;
-  const messages: Record<string, string> = {
-    quote_inputs_incomplete: 'Complete the quote details before checking Infor',
-    quote_requires_staff_acceptance: 'Review the quote details before continuing',
-    quote_native_scope_unsupported: 'Handle the requested details separately before continuing',
-  };
-  const issue = isString(result.issue) ? messages[result.issue] ?? nativeIssueText(result.issue)
-    : result.status === 'needs_reconcile' || result.status === 'unknown'
-      ? 'The result is uncertain. Check the recorded result before trying again' : null;
-  const labels: Record<string, string> = {
-    arrival: 'arrival date', departure: 'departure date', quantity: 'number of rooms', mealPlan: 'meal plan', requestedMealPlan: 'Meal Plan request',
-    scope: 'occupancy scope', occupancy: 'number of children and their ages', adults: 'adults',
-    childCount: 'number of children', childAges: 'children’s ages', roomCodes: 'room type', ratePlan: 'rate plan',
-    salesStrategy: 'sales strategy', email: 'recipient email', attention: 'contact name', telephone: 'contact number',
-    artifacts: 'quote outputs', provisionalBookingRequested: 'quote-only choice', requestedMoney: 'extra charges',
-    bookingAgency_selection_required: 'Primary Booking Agency', organization_selection_required: 'Organization',
-    lunch_extra_price_required: 'lunch extra requested amount',
-    allowance_requires_supported_staff_choice: 'Handle as for this extra',
-    native_meal_plan_code_required: 'Rate Plan (sets Meal Plan)', native_board_code_required: 'Rate Plan (sets Meal Plan)',
-    group_required: 'Add a room group',
-    duplicate_group_id: 'Remove a duplicate room group',
-    native_quote_group_limit: 'Remove a room group (max 8)',
-    native_group_id_limit: 'Remove this room group (ID too long)',
-  };
-  const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map((field) => {
-    const [path, reason] = field.split(':');
-    const group = /\/groups\/(\d+)(?:\/|$)/u.exec(path ?? '');
-    const key = path?.split('/').at(-1) ?? '';
-    const label = reason === 'separate_quote_runs_required' ? 'separate date ranges'
-      : reason === 'date_range_invalid' ? 'date range'
-        : /^(?:organization|bookingAgency)_(?:selection_required|candidate_unverified|requires_staff_acceptance|name_unresolved|unknown_staff_value)$/u.test(key)
-          ? inputFieldLabel(key) : labels[reason ?? ''] ?? (key === 'groups' ? 'room groups' : labels[key]) ?? 'quote details';
-    return group ? `room group ${Number(group[1]) + 1}: ${label}` : label;
-  }))] : [];
-  return `${action}: ${issue ?? 'Infor could not complete this step. Review the quote and recorded result'}${fields.length ? `. Review: ${fields.join(', ')}` : ''}.`;
+  if (result.status === 'unknown' || result.status === 'needs_reconcile') {
+    return `${action}: The result is uncertain. Check the recorded result before trying again.`;
+  }
+  const busy = result.outcomeClass === 'hms_busy' ||
+    [result.failureClass, result.issue, result.status].some(value =>
+      value === 'HMS_LOCK_BUSY' || value === 'STAFF_QUOTE_ACTIVE' || value === 'refused_lock_busy');
+  if (busy) return `${action}: Infor is in use. Wait for the current action to finish, then try again.`;
+  if (result.outcomeClass === 'hms_answered_no') {
+    // Only server-proven HMS answers may use native-result wording.
+    const knownAnswers = new Set(['native_quote_no_matching_rate', 'native_quote_requested_unavailable',
+      'native_quote_insufficient_inventory', 'native_quote_restricted_nights']);
+    const issue = isString(result.staffMessage) && result.staffMessage.trim() ? result.staffMessage.trim()
+      : isString(result.issue) && knownAnswers.has(result.issue) ? nativeIssueText(result.issue)
+        : 'Infor answered. Review the recorded result';
+    return `${action}: ${issue?.replace(/[.]+$/u, '')}.`;
+  }
+  if (result.status === 'needs_prepare') return `${action}: Check the current quote in Infor before generating the reply.`;
+  if (result.outcomeClass === 'needs_input' ||
+      (result.outcomeClass !== 'system_fault' && ['needs_input', 'needs_review'].includes(String(result.status)) &&
+        !String(result.issue).startsWith('native_quote_'))) {
+    const readiness = Array.isArray(result.readiness) ? result.readiness.flatMap(item =>
+      isRecord(item) && isString(item.message) && item.message.trim() ? [item.message.trim()] : []) : [];
+    const fields = Array.isArray(result.fields) ? [...new Set(result.fields.filter(isString).map(field => {
+      const group = /\/groups\/(\d+)(?:\/|:|$)/u.exec(field);
+      const label = inputFieldLabel(field);
+      return group ? `room group ${Number(group[1]) + 1}: ${label}` : label;
+    }))].join(', ') : '';
+    const items = readiness.length ? [...new Set(readiness)].map(item => item.replace(/[.]+$/u, '')).join('; ') : fields;
+    return `${action}: Complete the following before checking${items ? `: ${items}` : '. Review the quote details'}.`;
+  }
+  return `${action}: Nava problem, not yours. Contact Nava support.`;
 }
 
 function serviceOwnerForPath(snapshot: ReservationPaneSnapshot, path: string): string | null {
@@ -883,15 +886,42 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     if (!isRecord(result) || result.status !== 'stale_revision') return;
     throw new ReservationWorkflowStaleRevisionError(await load(input, source));
   };
+  const quoteBusy = (result: unknown): boolean => {
+    if (!isRecord(result)) return false;
+    if (result.outcomeClass === 'hms_busy' || result.issue === 'HMS_LOCK_BUSY' || result.issue === 'STAFF_QUOTE_ACTIVE') return true;
+    return Array.isArray(result.quotes) && result.quotes.some(quoteBusy);
+  };
+  const quoteReadWithWait = async <I extends ItemInput>(procedure: MutationProcedure<I>, initial: I,
+    source: ReservationSourceContext, controls: QuoteWaitControls): Promise<unknown> => {
+    let input = initial;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        const result = await procedure.mutate(input, mailboxOptions(source)).catch(() =>
+          ({ status: 'failed', outcomeClass: 'system_fault' }));
+        await refreshAfterStale(input, source, result);
+        if (('background' in initial && initial.background === true) || !quoteBusy(result) || attempt >= 3 || controls.shouldContinueQuoteWait?.() === false) return result;
+        controls.onQuoteWait?.(true);
+        await new Promise<void>(resolve => setTimeout(resolve, 2000));
+        if (controls.shouldContinueQuoteWait?.() === false) return result;
+        const latest = await load(input, source);
+        if (latest.session.revision !== initial.expectedRevision) throw new ReservationWorkflowStaleRevisionError(latest);
+        input = Object.assign({}, input, { expectedSeq: latest.session.seq });
+      }
+    } finally { controls.onQuoteWait?.(false); }
+  };
   const refreshAfter = async <I extends ItemInput & Record<string, unknown>>(
-    procedure: MutationProcedure<I>, input: I, source: ReservationSourceContext,
+    procedure: MutationProcedure<I>, input: I, source: ReservationSourceContext, requireExactResult = false,
   ): Promise<ReservationPaneSnapshot> => {
     const raw = await procedure.mutate(input, mailboxOptions(source));
     await refreshAfterStale(input, source, raw);
     const result = okResult(raw);
-    return load({ workItemId: input.workItemId, source: input.source,
+    const snapshot = await load({ workItemId: input.workItemId, source: input.source,
       expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
       expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
+    if (requireExactResult && (typeof result.revision !== 'number' || typeof result.seq !== 'number' ||
+        snapshot.session.revision !== result.revision || snapshot.session.seq !== result.seq))
+      throw new ReservationWorkflowStaleRevisionError(snapshot);
+    return snapshot;
   };
   const splitQuoteDates = async (command: ReservationCommandContext & { requestId?: string; nativeFieldPath?: string }) => {
     const request = command.snapshot.session.draft.proposal.content.requests.find(row => row.id === command.requestId);
@@ -899,7 +929,8 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     const body = record(effectiveAt(command.snapshot, `${requestPath(request.id)}/body`));
     const groups = Array.isArray(body.groups) ? body.groups.map(record) : [];
     if (groups.some(group => !group.arrival || !group.departure) ||
-      new Set(groups.map(group => `${group.arrival}:${group.departure}`)).size < 2)
+      new Set(groups.map(group => `${group.arrival}:${group.departure}`)).size < 2 &&
+      quoteCompositionStatus(command.snapshot.session.draft, request) !== 'scenarios')
       return { snapshot: command.snapshot, requestIds: [] as string[] };
     const previousIds = new Set(command.snapshot.session.draft.proposal.content.requests.map(row => row.id));
     const snapshot = await refreshAfter(api.changeRows, { ...itemInput(command), kind: 'split_quote_dates' as const,
@@ -958,7 +989,7 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         throw error;
       }
     },
-    prefill(command) { return refreshAfter(api.prefill, itemInput(command), command.source); },
+    prefill(command) { return refreshAfter(api.prefill, { ...itemInput(command), ...(command.background ? { background: true } : {}) }, command.source); },
     addAction(command) { return refreshAfter(api.addAction, { ...itemInput(command), kind: command.kind }, command.source); },
     async changeRows(command) {
       const { source, snapshot, ...change } = command;
@@ -987,13 +1018,13 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       okResult(raw);
       return load(input, command.source);
     },
-    reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source); },
+    reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source, command.requireExactResult); },
     get(command) { return load(itemInput(command), command.source, command.backgroundPoll); },
     reconcileSource(command) { return refreshAfter(api.reconcileSource, { ...itemInput(command), confirmed: true }, command.source); },
     async edit(command: ReservationEditCommand) {
       const input = { ...itemInput(command), fieldPath: command.fieldPath,
         value: { state: command.state, ...(command.state === 'set' ? { value: command.value } : {}), updatedAt: new Date().toISOString() } };
-      return refreshAfter(api.edit, input, command.source);
+      return refreshAfter(api.edit, input, command.source, command.requireExactResult);
     },
     async review(command: ReservationReviewCommand) {
       if (!requestOwnsPath(command.snapshot, command.fieldPath)) throw new Error('The field is not part of a source-bound reservation request.');
@@ -1007,18 +1038,22 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       if (split.requestIds.length) {
         let snapshot = split.snapshot;
         const notices: string[] = [];
+        let busyReply: Record<string, unknown> | undefined;
         for (const requestId of split.requestIds) {
-          const input = { ...itemInput({ ...command, snapshot }), requestId };
-          const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
+          const input = { ...itemInput({ ...command, snapshot }), requestId, ...(command.background ? { background: true } : {}) };
+          const raw = await quoteReadWithWait(api.lookup, input, command.source, command);
           await refreshAfterStale(input, command.source, raw);
-          const result = okResult(raw), notice = quoteLookupNotice(result);
+          const notice = command.background && isRecord(raw) && raw.status === 'queued' ? undefined : quoteLookupNotice(raw);
           if (notice) notices.push(notice);
+          if (isRecord(raw) && quoteBusy(raw)) busyReply = raw;
           snapshot = await load(input, command.source);
         }
-        return { ...snapshot, ...(notices.length ? { serviceNotice: [...new Set(notices)].join(' ') } : {}) };
+        return { ...snapshot, ...(notices.length ? { serviceNotice: [...new Set(notices)].join(' ') } : {}),
+          ...(busyReply ? { workflowReply: busyReply } : {}) };
       }
       const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}),
-        ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}) };
+        ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}),
+        ...(command.background ? { background: true } : {}) };
       const quoteParty = Boolean(command.nativeFieldPath && /\/body\/parties\/(?:organization|bookingAgency)$/.test(command.nativeFieldPath) &&
         command.snapshot.requests.some(request => request.id === command.requestId && request.kind === 'quote'));
       if (quoteParty) {
@@ -1035,10 +1070,13 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
               : 'Infor could not search for this profile. Try again.';
         return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), workflowReply: reply };
       }
-      const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
+      const isQuote = !command.nativeFieldPath && command.snapshot.requests.some(request =>
+        (!command.requestId || request.id === command.requestId) && request.kind === 'quote');
+      const raw = isQuote ? await quoteReadWithWait(api.lookup, input, command.source, command)
+        : await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
-      const result = okResult(raw);
-      const notice = operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? amendLookupNotice(result) ??
+      const result = (isQuote || command.background) && isRecord(raw) ? raw : okResult(raw);
+      const notice = command.background && isRecord(result) && result.status === 'queued' ? undefined : isQuote ? quoteLookupNotice(result) : operationNotice(result, ['ok']) ?? quoteLookupNotice(result) ?? amendLookupNotice(result) ??
         cancelLookupNotice(result) ?? filingLookupNotice(result);
       return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
@@ -1086,12 +1124,16 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         const notices: string[] = [];
         for (const requestId of split.requestIds) {
           let input = { ...itemInput({ ...command, snapshot }), requestId };
-          const lookup = await api.lookup.mutate(input, mailboxOptions(command.source));
+          const lookup = await quoteReadWithWait(api.lookup, input, command.source, command);
           await refreshAfterStale(input, command.source, lookup);
-          okResult(lookup);
+          const lookupNotice = quoteLookupNotice(lookup);
           snapshot = await load(input, command.source);
+          const shortageMayPrepare = isRecord(lookup) && Array.isArray(lookup.quotes) && lookup.quotes.length > 0 &&
+            lookup.quotes.every(row => isRecord(row) && (row.status === 'priced' ||
+              row.outcomeClass === 'hms_answered_no' && row.issue === 'native_quote_insufficient_inventory'));
+          if (lookupNotice && !shortageMayPrepare) { notices.push(lookupNotice); continue; }
           input = { ...itemInput({ ...command, snapshot }), requestId };
-          const result = await api.prepare.mutate(input, mailboxOptions(command.source));
+          const result = await quoteReadWithWait(api.prepare, input, command.source, command);
           await refreshAfterStale(input, command.source, result);
           const notice = quoteOperationNotice(result, ['prepared'], 'Quote price preparation');
           if (notice) notices.push(notice);
@@ -1100,12 +1142,14 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         return { ...snapshot, ...(notices.length ? { serviceNotice: [...new Set(notices)].join(' ') } : {}) };
       }
       const input = { ...itemInput(command), requestId: command.requestId,
-        ...(command.allocationId ? { allocationId: command.allocationId } : {}) };
-      const result = await api.prepare.mutate(input, mailboxOptions(command.source));
+        ...(command.allocationId ? { allocationId: command.allocationId } : {}),
+        ...(command.background ? { background: true } : {}) };
+      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
+      const result = isQuote ? await quoteReadWithWait(api.prepare, input, command.source, command)
+        : await api.prepare.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, result);
       const snapshot = await load(input, command.source);
-      const isQuote = command.snapshot.requests.some((request) => request.id === command.requestId && request.kind === 'quote');
-      const notice = isQuote ? quoteOperationNotice(result, ['prepared'], 'Quote price preparation') : operationNotice(result, ['prepared']);
+      const notice = command.background && isRecord(result) && result.status === 'queued' ? undefined : isQuote ? quoteOperationNotice(result, ['prepared'], 'Quote price preparation') : operationNotice(result, ['prepared']);
       return { ...snapshot, ...(notice ? { serviceNotice: notice } : {}), ...(isRecord(result) ? { workflowReply: result } : {}) };
     },
     async execute(command) {
@@ -1128,7 +1172,10 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const input = { ...itemInput(command), requestId: command.requestId,
         ...(command.allocationId ? { allocationId: command.allocationId } : {}),
         go: true as const, idempotencyKey: command.idempotencyKey, ...(receipt && !isQuote ? { preparedRef: receipt.preparedRef } : {}) };
-      const result = await api.execute.mutate(input, mailboxOptions(command.source));
+      const result = await api.execute.mutate(input, mailboxOptions(command.source)).catch((error: unknown) => {
+        if (!isQuote) throw error;
+        return { status: 'needs_reconcile', operationId: command.idempotencyKey };
+      });
       await refreshAfterStale(input, command.source, result);
       const queued = !isQuote && isRecord(result) && result.status === 'queued' &&
         result.preparedRef === receipt?.preparedRef && result.expectedRevision === input.expectedRevision &&

@@ -1,7 +1,8 @@
 // Read and bind the complete native state before a staff-approved amendment.
 import { cloudWriterCurrent, cloudWriterIdentity, withCloudCredentialLease, withCloudWriterSession } from './cloud-session.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
-import { readShallow, readRecord } from './hms-readers.mjs';
+import { readConfirmationFromStay360 as readShallow } from './stay360-confirmation.mjs';
+import { readRecordViewFromStay360 as readRecord } from './stay360-record-view.mjs';
 import { cleanLabtestRecord, currentLabtestRecord, snapshotLabtestRecord,
   unchangedLabtestBusinessParties } from './labtest-record.mjs';
 import { previewSavedChildrenForComposition, readSavedChildAgesForComposition, savedChildOccupancy, sameChildAgeMultiset, stageSavedChildrenForComposition } from './guest-stay-amend-children.mjs';

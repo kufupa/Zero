@@ -11,6 +11,7 @@ import {
   type ReservationistPartyRead,
 } from './reservationist-business-services.js';
 import { createExistingOwnerNativeQuoteReader } from './reservationist-evaluation-composition.js';
+import { currentCloudCredentialLease, currentCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { PartyRateFailure } from './party-rate-failure.js';
 import {
   bindHmsMailboxProperty,
@@ -544,9 +545,15 @@ export function getInstalledStaffQuoteServices(
       { mode: 0o600, flag: 'wx' },
     );
     const script =
-      "import {writeFileSync} from 'node:fs';const {lookupParty}=await import(process.argv[2]);const result=await lookupParty({requestPath:process.argv[3]});writeFileSync(process.argv[1],JSON.stringify(result),{mode:0o600,flag:'wx'});process.exit(0);";
+      "import {writeFileSync} from 'node:fs';const {lookupParty}=await import(process.argv[2]);const {withCloudCredentialPriority}=await import(process.argv[4]);const result=await withCloudCredentialPriority(process.env.NAVA_HMS_CHILD_PRIORITY,()=>lookupParty({requestPath:process.argv[3]}));writeFileSync(process.argv[1],JSON.stringify(result),{mode:0o600,flag:'wx'});process.exit(0);";
     try {
-      await run(
+      const credentialLease = currentCloudCredentialLease(configuration.owner.propertyCode);
+      if (credentialLease) {
+        const native = await import(new URL('../../tooling/hms-cloud/party-lookup.mjs', import.meta.url).href);
+        const result = await native.lookupParty({ requestPath, transportId: options.transportId, credentialLease,
+          signal: AbortSignal.any([signal, credentialLease.signal, AbortSignal.timeout(300000)]) });
+        await writeFile(resultPath, JSON.stringify(result), { mode: 0o600, flag: 'wx' });
+      } else await run(
         process.execPath,
         [
           '--input-type=module',
@@ -555,12 +562,13 @@ export function getInstalledStaffQuoteServices(
           resultPath,
           join(repo, 'apps/server-pilot/tooling/hms-cloud/party-lookup.mjs'),
           requestPath,
+          join(repo, 'apps/server-pilot/tooling/hms-cloud/cloud-session.mjs'),
         ],
         {
           signal,
           timeout: 300000,
           maxBuffer: 1024 * 1024,
-          env: options.childEnv ?? process.env,
+          env: { ...(options.childEnv ?? process.env), NAVA_HMS_CHILD_PRIORITY: currentCloudCredentialPriority() },
         },
       );
     } catch {

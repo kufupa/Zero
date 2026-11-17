@@ -2,8 +2,12 @@ import type { ReservationWorkflowV2Draft, ReservationWorkflowV2ItemInput } from 
 import { TRPCError } from '@trpc/server';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { withCloudCredentialLease, withCloudCredentialPriority, withCloudCredentialRun } from '../../../tooling/hms-cloud/cloud-session.mjs';
+import { reservationActionCredentialReadOnly, withReservationActionCursor, withReservationActionLane } from '../../ai/reservation-workflow-v2-action-lane.js';
+import { enqueueReservationWarmup, type ReservationWarmupRequest } from '../../ai/reservation-workflow-v2-warmup.js';
+import type { AiRunFence } from '../../ai/run-ledger.js';
 import { getDb } from '../../db/client.js';
-import { aiWorkflowRun, attachment, mailThread, message } from '../../db/schema/mail.js';
+import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from '../../db/schema/mail.js';
 import { outlookSyncObservation, outlookSyncSource } from '../../db/schema/outlook-sync.js';
 import { workEvent, workItem } from '../../db/schema/work.js';
 import { MESSAGE_ARRIVED_AT } from '../../ai/message-arrival-time.js';
@@ -169,6 +173,12 @@ import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { logReservationWorkflowFailure } from '../reservation-workflow-v2-diagnostics.js';
 
+type NativeAdmission = { kind: 'admitted' } | { kind: 'hms_busy' } | { kind: 'system_fault' };
+function nativeAdmissionReply(admission: NativeAdmission) {
+  return admission.kind === 'admitted' ? null : { status: 'failed' as const,
+    outcomeClass: admission.kind, issue: admission.kind === 'hms_busy' ? 'HMS_LOCK_BUSY' : 'native_admission_failed' };
+}
+
 const EXCLUDED_SOURCE_RECOVERY_ENDPOINTS = new Set([
   'resolveSource',
   'get',
@@ -177,7 +187,8 @@ const EXCLUDED_SOURCE_RECOVERY_ENDPOINTS = new Set([
   'reconcileServices',
 ]);
 
-export const reservationWorkflowV2Procedure = mailboxProcedure.use(async ({ ctx, path, getRawInput, next }) => {
+function reservationWorkflowV2Procedure<T extends z.ZodType>(schema: T) {
+return mailboxProcedure.input(schema).use(async ({ ctx, path, type, input, signal, getRawInput, next }) => {
   const startedAt = Date.now();
   const rawInput = await getRawInput();
   const endpoint = path.split('.').pop() ?? path;
@@ -192,7 +203,38 @@ export const reservationWorkflowV2Procedure = mailboxProcedure.use(async ({ ctx,
       );
     }
   }
-  const result = await next();
+  const action = reservationWorkflowV2ItemInputSchema.passthrough().safeParse(input);
+  const method = path.split('.').at(-1);
+  const nativeMethods = new Set(['lookup', 'prepare', 'guestProfileOptions', 'prepareGuestProfile',
+    'lookupServices', 'prepareServices', 'verifyNativeLead', 'reconcile', 'reconcileServices']);
+  const backgroundEnqueue = action.success && action.data.background === true &&
+    (method === 'lookup' || method === 'prepare');
+  const nextFor = (admission: NativeAdmission = { kind: 'admitted' }) => next({ ctx: { reservationNativeAdmission: admission } });
+  const invoke = async () => {
+    if (type !== 'mutation' || !action.success || backgroundEnqueue || method === 'prefill') return nextFor();
+    const recovery = method === 'reconcileSource' || method === 'reconcile' || method === 'reconcileServices';
+    const validation = await getReservationWorkflowV2Draft(context(ctx.sessionUser.id,
+      ctx.activeTransportId, action.data.propertySwitch, action.data.source), action.data,
+      { allowSourceChanged: recovery });
+    if (validation.status !== 'ok') throw new TRPCError({ code: 'PRECONDITION_FAILED',
+      message: 'This email draft is no longer available. Reopen it and try again.' });
+    const cursor = { workItemId: action.data.workItemId, source: action.data.source,
+      expectedRevision: action.data.expectedRevision, expectedSeq: action.data.expectedSeq,
+      transportId: ctx.activeTransportId };
+    const serial = () => withReservationActionLane(cursor, () => nextFor(), { acquisitionSignal: signal });
+    if (!method || !nativeMethods.has(method)) return serial();
+    const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, action.data.source, action.data.propertySwitch);
+    const requestId = typeof action.data.requestId === 'string' ? action.data.requestId : undefined;
+    const workflow = validation.draft.proposal.content.requests.find((request) => request.id === requestId)?.kind;
+    try {
+      return await withCloudCredentialPriority('staff', () => withCloudCredentialLease(scoped.property.propertyCode,
+        lease => withReservationActionLane({ ...cursor, signal: lease.signal }, () => nextFor(), { acquisitionSignal: signal, native: true }),
+        { signal, priority: 'staff', readOnly: reservationActionCredentialReadOnly(method, workflow, action.data.nativeFieldPath) }));
+    } catch (failure) {
+      return nextFor({ kind: failure instanceof Error && failure.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' ? 'hms_busy' : 'system_fault' });
+    }
+  };
+  const result = await invoke();
   try {
     await logReservationWorkflowFailure({ path, rawInput,
       ...(result.ok ? { result: result.data } : { error: result.error }),
@@ -204,6 +246,7 @@ export const reservationWorkflowV2Procedure = mailboxProcedure.use(async ({ ctx,
   }
   return result;
 });
+}
 
 function context(userId: string, transportId: string, propertySwitch?: PropertySwitch,
   source?: { propertyId?: 'HRCEN' | 'HRDAV' | 'HRDAVS' }) {
@@ -430,8 +473,127 @@ const servicesInput = reservationWorkflowV2PrepareInputSchema.extend({
 }).strict().refine((value) => Boolean(value.allocationId) !== Boolean(value.targetRef), 'Choose exactly one target.');
 
 /** Source, state and tools share the authenticated mailbox; clients cannot select another hotel. */
+async function runPaneLookup(scoped: Awaited<ReturnType<typeof nativeContext>>, input: z.infer<typeof reservationWorkflowV2LookupInputSchema>) {
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (input.nativeFieldPath && workflow.kind === 'quote' && /\/body\/parties\/(?:organization|bookingAgency)$/.test(input.nativeFieldPath))
+      return reservationWorkflowV2QuoteLookup(scoped, input);
+    if (input.nativeFieldPath) return reservationWorkflowV2NativeChoices(scoped, input);
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
+    if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);
+    if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);
+    if (workflow.kind === 'cancel') return reservationWorkflowV2CancelLookup(scoped, input);
+    if (workflow.kind === 'amend') return reservationWorkflowV2AmendLookup(scoped, input);
+    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+}
+
+async function runPanePrepare(scoped: Awaited<ReturnType<typeof nativeContext>>, input: z.infer<typeof reservationWorkflowV2PrepareInputSchema>) {
+    const workflow = await nativeWorkflow(scoped, input, input.requestId);
+    if (workflow.result) return workflow.result;
+    if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
+    const snapshot = await nativeIssueSnapshot(scoped, input);
+    if (workflow.kind === 'create') {
+      const existing = await reservationWorkflowV2CreatePreparation(scoped, input);
+      if (existing) {
+        const prepared = await issuePreparedV2(scoped, input, existing, snapshot);
+        return { status: 'prepared' as const, requestId: input.requestId, allocationId: input.allocationId,
+          preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
+      }
+      const result = await reservationWorkflowV2Prepare(scoped, input);
+      if (result.status !== 'prepared' || typeof result.observationRef !== 'string') return result;
+      const native = await reservationWorkflowV2CreatePreparation(scoped, input, result.observationRef);
+      if (!native) return { ...result, issue: 'batch_preparations_incomplete' };
+      const prepared = await issuePreparedV2(scoped, input, native, snapshot);
+      return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
+    }
+    if (workflow.kind === 'amend' || workflow.kind === 'cancel') {
+      // A staff review binds an existing preview; retain it instead of replacing the reviewed observation.
+      const existing = workflow.kind === 'amend' ? await reservationWorkflowV2AmendPreparation(scoped, input)
+        : await reservationWorkflowV2CancelPreparation(scoped, input);
+      if (existing) {
+        const prepared = await issuePreparedV2(scoped, input, existing, snapshot);
+        return { status: 'prepared' as const, requestId: input.requestId, allocationId: input.allocationId,
+          preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
+      }
+      const result = workflow.kind === 'amend' ? await reservationWorkflowV2AmendPrepare(scoped, input)
+        : await reservationWorkflowV2CancelPrepare(scoped, input);
+      if (result.status !== 'prepared') return result;
+      const native = workflow.kind === 'amend' ? await reservationWorkflowV2AmendPreparation(scoped, input)
+        : await reservationWorkflowV2CancelPreparation(scoped, input);
+      if (!native) return result; // Cancellation waits for its explicit financial review.
+      const prepared = await issuePreparedV2(scoped, input, native, snapshot);
+      return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
+    }
+    if (workflow.kind === 'filing') {
+      const result = await reservationWorkflowV2FilingPrepare(scoped, input);
+      if (result.status !== 'prepared') return result;
+      const native = await reservationWorkflowV2FilingPreparation(scoped, input);
+      if (!native) return { status: 'needs_prepare', issue: 'filing_preparation_changed' };
+      const prepared = await issuePreparedV2(scoped, input, native, snapshot);
+      return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
+    }
+    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+}
+
+/** Called only with a claimed, private HMS job; an admitted action finishes before its lane is released. */
+export async function runReservationWorkflowV2Warmup(input: {
+  transportId: string; request: ReservationWarmupRequest; fence: AiRunFence; signal?: AbortSignal;
+}) {
+  const { request } = input;
+  const scoped = await nativeContext({ id: request.session.actorUserId, sessionId: request.session.sessionId,
+    sessionProfile: request.session.sessionProfile }, input.transportId, request.input.source, request.input.propertySwitch);
+  return withCloudCredentialRun(input.fence, () => withCloudCredentialPriority('background', () => withCloudCredentialLease(scoped.property.propertyCode,
+    lease => withReservationActionLane({ ...request.input, transportId: input.transportId, signal: lease.signal, jobFence: input.fence }, async () => {
+      const current = await getReservationWorkflowV2Draft({ db: scoped.db, userId: scoped.user.id,
+        transportId: input.transportId, propertyCode: scoped.property.propertyCode }, request.input);
+      if (current.status !== 'ok') return current;
+      const [transport] = await scoped.db.select({ email: mailboxTransport.email }).from(mailboxTransport)
+        .where(eq(mailboxTransport.id, input.transportId)).limit(1);
+      if (!transport) return { status: 'failed' as const, issue: 'mailbox_transport_missing' };
+      if (await excludedSourceReason({ db: scoped.db, transportId: input.transportId }, transport.email, request.input.source))
+        return { status: 'superseded' as const };
+      const action = current.draft.proposal.content.requests.find(row => row.id === request.input.requestId);
+      let createAllowed = true;
+      if (current.draft.proposal.content.requests.some(row => row.kind === 'create')) {
+        try {
+          await requireCreateSource(context(scoped.user.id, input.transportId, request.input.propertySwitch,
+            request.input.source), request.input.source, transport.email);
+        } catch (error) {
+          if (!(error instanceof TRPCError) || error.code !== 'FORBIDDEN') throw error;
+          createAllowed = false;
+        }
+      }
+      if (!createAllowed && action?.kind === 'create') return { status: 'superseded' as const };
+      if (current.sourceChanged || current.draft.generationId !== request.generationId ||
+          !action || !['quote', 'create', 'filing'].includes(action.kind)) {
+        if (!current.sourceChanged) {
+          const requests = action ? [action] : current.draft.proposal.content.requests;
+          for (const candidate of requests.filter(row => ['quote', 'create', 'filing'].includes(row.kind) && (row.kind !== 'create' || createAllowed))) {
+            const { allocationId: _allocation, ...base } = request.input;
+            const allocations = request.action === 'prepare' && candidate.kind === 'create'
+              ? candidate.body.allocations.filter(row => !request.input.allocationId || row.id === request.input.allocationId).map(row => row.id) : [];
+            const currentAllocations = request.action === 'prepare' && candidate.kind === 'create' && !allocations.length
+              ? candidate.body.allocations.map(row => row.id) : allocations;
+            for (const allocationId of currentAllocations.length ? currentAllocations : [undefined]) {
+              const queued = await enqueueReservationWarmup(scoped.db, input.transportId, { ...request,
+                generationId: current.draft.generationId, input: { ...base, requestId: candidate.id,
+                  ...(allocationId ? { allocationId } : {}), expectedRevision: current.revision, expectedSeq: current.seq } });
+              if (queued.status === 'stale_revision' || queued.status === 'unsupported') return queued;
+              if (!['queued', 'ok', 'superseded'].includes(queued.status))
+                return { status: 'failed' as const, issue: 'reservation_warmup_enqueue_failed' };
+            }
+          }
+        }
+        return { status: 'superseded' as const };
+      }
+      const latest = { ...request.input, expectedRevision: current.revision, expectedSeq: current.seq };
+      return withReservationActionCursor({ ...latest, transportId: input.transportId, jobFence: input.fence },
+        () => request.action === 'lookup' ? runPaneLookup(scoped, latest) : runPanePrepare(scoped, latest));
+    }, { native: true }), { readOnly: true, priority: 'background', signal: input.signal })));
+}
+
 export const reservationWorkflowV2Router = router({
-  resolveSource: reservationWorkflowV2Procedure.input(sourceInput).query(async ({ input, ctx }) => {
+  resolveSource: reservationWorkflowV2Procedure(sourceInput).query(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch);
     const internetMessageId = canonicalMessageId(input.internetMessageId);
     const diagnostic = { userId: ctx.sessionUser.id, sessionId: ctx.sessionUser.sessionId,
@@ -512,7 +674,7 @@ export const reservationWorkflowV2Router = router({
       source: { propertyId: scoped.propertyCode, threadId: selected.threadId, messageId: selected.id,
         sourceHash, arrivedAt: selected.arrivedAt.toISOString() } };
   }),
-  ensure: reservationWorkflowV2Procedure.input(reservationWorkflowV2EnsureInputSchema).mutation(async ({ input, ctx }) => {
+  ensure: reservationWorkflowV2Procedure(reservationWorkflowV2EnsureInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     const [source] = await scoped.db.select({ id: message.id, threadId: message.threadId, fromAddress: message.fromAddress,
       subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody,
@@ -568,7 +730,7 @@ export const reservationWorkflowV2Router = router({
     return withPreparation(job ? markReservationWorkflowV2Queued(scoped, { ...item, jobRunId: job.id })
       : scoped.propertyCode === 'HRDAV' ? prefillDraft(scoped, item, ctx.transportEmail, false) : Promise.resolve(initialized), scoped.propertyCode);
   }),
-  prefill: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
+  prefill: reservationWorkflowV2Procedure(reservationWorkflowV2ItemInputSchema.extend({ background: z.boolean().optional() }).strict()).mutation(({ input: { background, ...input }, ctx }) => withCloudCredentialPriority(background ? 'background' : 'staff', async () => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     if (!['HRCEN', 'HRDAV'].includes(scoped.propertyCode) || !reservationArrivalEnabled()) return withPreparation(prefillDraft(scoped, input, ctx.transportEmail, true), scoped.propertyCode);
@@ -577,14 +739,14 @@ export const reservationWorkflowV2Router = router({
         current.draft.prefill?.status === 'complete' || current.draft.prefill?.status === 'superseded')
       return withPreparation(Promise.resolve(current), scoped.propertyCode);
     const job = await enqueueReservationArrival(scoped.db, { transportId: scoped.transportId,
-      messageId: input.source.messageId, requestedByPane: true });
+      messageId: input.source.messageId, requestedByPane: true, staffRequested: background !== true });
     if (!job) return withPreparation(scoped.propertyCode === 'HRDAV'
       ? prefillDraft(scoped, input, ctx.transportEmail, true) : Promise.resolve(current), scoped.propertyCode);
     if (['dead_letter', 'succeeded', 'retry_wait'].includes(job.state))
-      return withPreparation(retryReservationWorkflowV2Arrival(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);
+      return withPreparation(retryReservationWorkflowV2Arrival(scoped, { ...input, jobRunId: job.id, staffRequested: background !== true }), scoped.propertyCode);
     return withPreparation(markReservationWorkflowV2Queued(scoped, { ...input, jobRunId: job.id }), scoped.propertyCode);
-  }),
-  get: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema).query(async ({ input, ctx }) => {
+  })),
+  get: reservationWorkflowV2Procedure(reservationWorkflowV2ItemInputSchema).query(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     const excluded = (await excludedSourceReason(scoped, ctx.transportEmail, input.source)) !== null;
     const result = excluded
@@ -604,6 +766,17 @@ export const reservationWorkflowV2Router = router({
     if (!('draft' in result) || !result.draft || result.status !== 'ok' ||
         !ctx.sessionUser.sessionId || !ctx.sessionUser.sessionProfile) return result;
     const draft = result.draft;
+    const warmups = await scoped.db.select({ state: aiWorkflowRun.state, finishedAt: aiWorkflowRun.finishedAt,
+      requestId: sql<string>`${aiWorkflowRun.readRequest}->'input'->>'requestId'` }).from(aiWorkflowRun).where(and(
+      eq(aiWorkflowRun.transportId, scoped.transportId), eq(aiWorkflowRun.workItemId, draft.workItemId),
+      eq(aiWorkflowRun.triggerMessageId, input.source.messageId), eq(aiWorkflowRun.runKind, 'read_tool'),
+      sql`${aiWorkflowRun.readRequest}->>'kind' = 'reservation_warmup'`,
+      sql`${aiWorkflowRun.readRequest}->>'generationId' = ${draft.generationId}`));
+    const backgroundChecks = warmups.some(row => row.state === 'running' || row.state === 'claimed') ? 'running' as const
+      : warmups.some(row => row.state === 'queued' || row.state === 'retry_wait') ? 'queued' as const
+        : warmups.some(row => row.state === 'dead_letter' && draft.proposal.content.requests.some(request => request.id === row.requestId) &&
+          !draft.observations.some(observation => observation.criteria.requestId === row.requestId && row.finishedAt &&
+            Date.parse(observation.observedAt) >= row.finishedAt.getTime())) ? 'failed' as const : undefined;
     const sourceChanged = 'sourceChanged' in result && result.sourceChanged === true;
     const [item] = await scoped.db.select({ state: workItem.state }).from(workItem).where(and(
       eq(workItem.id, input.workItemId), eq(workItem.transportId, scoped.transportId))).limit(1);
@@ -696,7 +869,7 @@ export const reservationWorkflowV2Router = router({
         ...('prepareRef' in captured.input ? { prepareRef: captured.input.prepareRef } : {}),
         preparedRef: saved.preparedRef, expectedRevision: saved.revision, generationId: saved.generationId }];
     });
-    return { ...result, workflowPreparations, workflowDispatches, preparationViews: result.preparationViews.map(view => {
+    return { ...result, ...(backgroundChecks ? { backgroundChecks } : {}), workflowPreparations, workflowDispatches, preparationViews: result.preparationViews.map(view => {
       const pending = grants.flatMap(grant => {
         const saved = allPreparations.find(entry => entry.preparedRef === grant.preparedRef);
         if (saved?.operation !== 'create' || saved.workflowContext?.endpoint !== 'execute' ||
@@ -718,7 +891,7 @@ export const reservationWorkflowV2Router = router({
         expectedRevision: saved.revision, generationId: saved.generationId } : view;
     }) };
   }),
-  revokeUnsentFiling: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema.extend({
+  revokeUnsentFiling: reservationWorkflowV2Procedure(reservationWorkflowV2ItemInputSchema.extend({
     requestId: z.string().min(1), preparedRef: z.string().uuid(),
   }).strict()).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
@@ -731,34 +904,36 @@ export const reservationWorkflowV2Router = router({
       requestId: input.requestId, preparedRef: input.preparedRef });
     return { status };
   }),
-  reconcileSource: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema.extend({ confirmed: z.literal(true) })).mutation(async ({ input, ctx }) => {
+  reconcileSource: reservationWorkflowV2Procedure(reservationWorkflowV2ItemInputSchema.extend({ confirmed: z.literal(true) })).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(reconcileReservationWorkflowV2Source(scoped, input), scoped.propertyCode);
   }),
-  edit: reservationWorkflowV2Procedure.input(reservationWorkflowV2EditInputSchema).mutation(async ({ input, ctx }) => {
+  edit: reservationWorkflowV2Procedure(reservationWorkflowV2EditInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(editReservationWorkflowV2Draft(scoped, { ...input, value: input.value }), scoped.propertyCode);
   }),
-  addAction: reservationWorkflowV2Procedure.input(reservationWorkflowV2AddActionInputSchema).mutation(async ({ input, ctx }) => {
+  addAction: reservationWorkflowV2Procedure(reservationWorkflowV2AddActionInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     if (input.kind === 'create') await requireCreateSource(scoped, input.source, ctx.transportEmail);
     return withPreparation(addReservationWorkflowV2Action(scoped, input), scoped.propertyCode);
   }),
-  changeRows: reservationWorkflowV2Procedure.input(reservationWorkflowV2ChangeRowsInputSchema).mutation(async ({ input, ctx }) => {
+  changeRows: reservationWorkflowV2Procedure(reservationWorkflowV2ChangeRowsInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(changeReservationWorkflowV2Rows(scoped, input), scoped.propertyCode);
   }),
-  selectNative: reservationWorkflowV2Procedure.input(reservationWorkflowV2SelectNativeInputSchema).mutation(async ({ input, ctx }) => {
+  selectNative: reservationWorkflowV2Procedure(reservationWorkflowV2SelectNativeInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(selectReservationWorkflowV2Native(scoped, input), scoped.propertyCode);
   }),
-  verifyNativeLead: reservationWorkflowV2Procedure.input(reservationWorkflowV2SelectNativeInputSchema).mutation(async ({ input, ctx, signal }) => {
+  verifyNativeLead: reservationWorkflowV2Procedure(reservationWorkflowV2SelectNativeInputSchema).mutation(async ({ input, ctx, signal }) => {
     const native = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = { db: native.db, transportId: native.transport.id, userId: native.user.id,
       propertyCode: native.property.propertyCode };
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
@@ -766,57 +941,63 @@ export const reservationWorkflowV2Router = router({
     return withPreparation(reservationWorkflowV2VerifyLead(scoped, input,
       signal ? AbortSignal.any([signal, timeout]) : timeout), scoped.propertyCode);
   }),
-  reviewScope: reservationWorkflowV2Procedure.input(reservationWorkflowV2ReviewScopeInputSchema).mutation(async ({ input, ctx }) => {
+  reviewScope: reservationWorkflowV2Procedure(reservationWorkflowV2ReviewScopeInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(reviewReservationWorkflowV2Scope(scoped, input), scoped.propertyCode);
   }),
-  review: reservationWorkflowV2Procedure.input(reservationWorkflowV2ReviewInputSchema).mutation(async ({ input, ctx }) => {
+  review: reservationWorkflowV2Procedure(reservationWorkflowV2ReviewInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(reviewReservationWorkflowV2Draft(scoped, input), scoped.propertyCode);
   }),
-  undo: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
+  undo: reservationWorkflowV2Procedure(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'undo' }), scoped.propertyCode);
   }),
-  redo: reservationWorkflowV2Procedure.input(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
+  redo: reservationWorkflowV2Procedure(reservationWorkflowV2ItemInputSchema).mutation(async ({ input, ctx }) => {
     const scoped = context(ctx.sessionUser.id, ctx.activeTransportId, input.propertySwitch, input.source);
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(moveReservationWorkflowV2History(scoped, { ...input, direction: 'redo' }), scoped.propertyCode);
   }),
-  configureFiling: reservationWorkflowV2Procedure.input(configureFilingInput).mutation(async ({ input, ctx }) => {
+  configureFiling: reservationWorkflowV2Procedure(configureFilingInput).mutation(async ({ input, ctx }) => {
     const native = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     const scoped = { db: native.db, transportId: native.transport.id, userId: native.user.id,
       propertyCode: native.property.propertyCode };
     await assertNotExcludedSource(scoped, ctx.transportEmail, input.source);
     return withPreparation(configureReservationWorkflowV2Filing(scoped, input), scoped.propertyCode);
   }),
-  lookup: reservationWorkflowV2Procedure.input(reservationWorkflowV2LookupInputSchema).mutation(async ({ input, ctx }) => {
+  lookup: reservationWorkflowV2Procedure(reservationWorkflowV2LookupInputSchema.extend({ background: z.boolean().optional() }).strict()).mutation(async ({ input: { background, ...input }, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
-    const workflow = await nativeWorkflow(scoped, input, input.requestId);
-    if (workflow.result) return workflow.result;
-    if (input.nativeFieldPath && workflow.kind === 'quote' && /\/body\/parties\/(?:organization|bookingAgency)$/.test(input.nativeFieldPath))
-      return reservationWorkflowV2QuoteLookup(scoped, input);
-    if (input.nativeFieldPath) return reservationWorkflowV2NativeChoices(scoped, input);
-    if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
-    if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);
-    if (workflow.kind === 'create') return reservationWorkflowV2Lookup(scoped, input);
-    if (workflow.kind === 'cancel') return reservationWorkflowV2CancelLookup(scoped, input);
-    if (workflow.kind === 'amend') return reservationWorkflowV2AmendLookup(scoped, input);
-    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+    if (background) {
+      if (input.nativeFieldPath) return { status: 'unsupported' as const, issue: 'warmup_field_not_supported' };
+      if (!input.requestId || !scoped.user.sessionId || !scoped.user.sessionProfile) return { status: 'unsupported' as const, issue: 'warmup_session_required' };
+      const current = await getReservationWorkflowV2Draft({ db: scoped.db, transportId: scoped.transport.id,
+        userId: scoped.user.id, propertyCode: scoped.property.propertyCode }, input);
+      if (current.status !== 'ok') return current;
+      return enqueueReservationWarmup(scoped.db, scoped.transport.id, { kind: 'reservation_warmup', action: 'lookup',
+        input: reservationWorkflowV2PrepareInputSchema.parse({ ...input, requestId: input.requestId }), generationId: current.draft.generationId,
+        session: { actorUserId: scoped.user.id, sessionId: scoped.user.sessionId, sessionProfile: scoped.user.sessionProfile } });
+    }
+    return runPaneLookup(scoped, input);
   }),
-  guestProfileOptions: reservationWorkflowV2Procedure.input(reservationWorkflowV2GuestPrepareInputSchema.extend({
+  guestProfileOptions: reservationWorkflowV2Procedure(reservationWorkflowV2GuestPrepareInputSchema.extend({
     field: z.enum(['title', 'phoneType', 'emailType']),
   }).strict()).mutation(async ({ input, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
     if (workflow.kind !== 'create') return { status: 'unsupported' as const, issue: 'create_request_required' };
     return reservationWorkflowV2GuestOptions(scoped, input);
   }),
-  prepareGuestProfile: reservationWorkflowV2Procedure.input(reservationWorkflowV2GuestPrepareInputSchema).mutation(async ({ input, ctx }) => {
+  prepareGuestProfile: reservationWorkflowV2Procedure(reservationWorkflowV2GuestPrepareInputSchema).mutation(async ({ input, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     await assertNotExcludedSource({ db: scoped.db, transportId: scoped.transport.id }, ctx.transportEmail, input.source);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
@@ -830,7 +1011,7 @@ export const reservationWorkflowV2Router = router({
     const prepared = await issuePreparedV2(scoped, input, native, snapshot);
     return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
   }),
-  createGuestProfile: reservationWorkflowV2Procedure.input(reservationWorkflowV2GuestCreateInputSchema.extend({
+  createGuestProfile: reservationWorkflowV2Procedure(reservationWorkflowV2GuestCreateInputSchema.extend({
     preparedRef: z.string().uuid().optional() }).strict()).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     await assertNotExcludedSource({ db: scoped.db, transportId: scoped.transport.id }, ctx.transportEmail, input.source);
@@ -838,56 +1019,23 @@ export const reservationWorkflowV2Router = router({
     const { preparedRef, go: _go, idempotencyKey: _key, ...captured } = input;
     return queuePreparedV2(scoped, preparedRef, 'createGuestProfile', captured);
   }),
-  prepare: reservationWorkflowV2Procedure.input(reservationWorkflowV2PrepareInputSchema).mutation(async ({ input, ctx }) => {
+  prepare: reservationWorkflowV2Procedure(reservationWorkflowV2PrepareInputSchema.extend({ background: z.boolean().optional() }).strict()).mutation(async ({ input: { background, ...input }, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
+    if (background) {
+      if (!input.requestId || !scoped.user.sessionId || !scoped.user.sessionProfile) return { status: 'unsupported' as const, issue: 'warmup_session_required' };
+      const current = await getReservationWorkflowV2Draft({ db: scoped.db, transportId: scoped.transport.id,
+        userId: scoped.user.id, propertyCode: scoped.property.propertyCode }, input);
+      if (current.status !== 'ok') return current;
+      return enqueueReservationWarmup(scoped.db, scoped.transport.id, { kind: 'reservation_warmup', action: 'prepare',
+        input: { ...input, requestId: input.requestId }, generationId: current.draft.generationId,
+        session: { actorUserId: scoped.user.id, sessionId: scoped.user.sessionId, sessionProfile: scoped.user.sessionProfile } });
+    }
     await assertNotExcludedSource({ db: scoped.db, transportId: scoped.transport.id }, ctx.transportEmail, input.source);
-    const workflow = await nativeWorkflow(scoped, input, input.requestId);
-    if (workflow.result) return workflow.result;
-    if (workflow.kind === 'quote') return reservationWorkflowV2QuotePrepare(scoped, input);
-    const snapshot = await nativeIssueSnapshot(scoped, input);
-    if (workflow.kind === 'create') {
-      const existing = await reservationWorkflowV2CreatePreparation(scoped, input);
-      if (existing) {
-        const prepared = await issuePreparedV2(scoped, input, existing, snapshot);
-        return { status: 'prepared' as const, requestId: input.requestId, allocationId: input.allocationId,
-          preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
-      }
-      const result = await reservationWorkflowV2Prepare(scoped, input);
-      if (result.status !== 'prepared' || typeof result.observationRef !== 'string') return result;
-      const native = await reservationWorkflowV2CreatePreparation(scoped, input, result.observationRef);
-      if (!native) return { ...result, issue: 'batch_preparations_incomplete' };
-      const prepared = await issuePreparedV2(scoped, input, native, snapshot);
-      return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
-    }
-    if (workflow.kind === 'amend' || workflow.kind === 'cancel') {
-      // A staff review binds an existing preview; retain it instead of replacing the reviewed observation.
-      const existing = workflow.kind === 'amend' ? await reservationWorkflowV2AmendPreparation(scoped, input)
-        : await reservationWorkflowV2CancelPreparation(scoped, input);
-      if (existing) {
-        const prepared = await issuePreparedV2(scoped, input, existing, snapshot);
-        return { status: 'prepared' as const, requestId: input.requestId, allocationId: input.allocationId,
-          preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
-      }
-      const result = workflow.kind === 'amend' ? await reservationWorkflowV2AmendPrepare(scoped, input)
-        : await reservationWorkflowV2CancelPrepare(scoped, input);
-      if (result.status !== 'prepared') return result;
-      const native = workflow.kind === 'amend' ? await reservationWorkflowV2AmendPreparation(scoped, input)
-        : await reservationWorkflowV2CancelPreparation(scoped, input);
-      if (!native) return result; // Cancellation waits for its explicit financial review.
-      const prepared = await issuePreparedV2(scoped, input, native, snapshot);
-      return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
-    }
-    if (workflow.kind === 'filing') {
-      const result = await reservationWorkflowV2FilingPrepare(scoped, input);
-      if (result.status !== 'prepared') return result;
-      const native = await reservationWorkflowV2FilingPreparation(scoped, input);
-      if (!native) return { status: 'needs_prepare', issue: 'filing_preparation_changed' };
-      const prepared = await issuePreparedV2(scoped, input, native, snapshot);
-      return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
-    }
-    return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
+    return runPanePrepare(scoped, input);
   }),
-  execute: reservationWorkflowV2Procedure.input(reservationWorkflowV2ExecuteInputSchema.extend({
+  execute: reservationWorkflowV2Procedure(reservationWorkflowV2ExecuteInputSchema.extend({
     preparedRef: z.string().uuid().optional() }).strict()).mutation(async ({ input, ctx }) => {
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     await assertNotExcludedSource({ db: scoped.db, transportId: scoped.transport.id }, ctx.transportEmail, input.source);
@@ -902,7 +1050,9 @@ export const reservationWorkflowV2Router = router({
     const { go: _go, idempotencyKey: _key, ...captured } = nativeInput;
     return queuePreparedV2(scoped, preparedRef, 'execute', captured);
   }),
-  lookupServices: reservationWorkflowV2Procedure.input(servicesInput).mutation(async ({ input, ctx }) => {
+  lookupServices: reservationWorkflowV2Procedure(servicesInput).mutation(async ({ input, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     const marked = await markReservationWorkflowV2NativeActivity({ db: scoped.db, userId: scoped.user.id,
       transportId: scoped.transport.id, propertyCode: scoped.property.propertyCode }, input);
@@ -911,7 +1061,9 @@ export const reservationWorkflowV2Router = router({
     if (!input.allocationId) return { status: 'unsupported' as const, issue: 'service_target_required' };
     return reservationWorkflowV2LookupServices(scoped, { ...input, allocationId: input.allocationId });
   }),
-  prepareServices: reservationWorkflowV2Procedure.input(servicesInput).mutation(async ({ input, ctx }) => {
+  prepareServices: reservationWorkflowV2Procedure(servicesInput).mutation(async ({ input, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     await assertNotExcludedSource({ db: scoped.db, transportId: scoped.transport.id }, ctx.transportEmail, input.source);
     const marked = await markReservationWorkflowV2NativeActivity({ db: scoped.db, userId: scoped.user.id,
@@ -952,7 +1104,9 @@ export const reservationWorkflowV2Router = router({
     const prepared = await issuePreparedV2(scoped, input, native, snapshot);
     return { ...result, preparedRef: prepared.preparedRef, expectedRevision: prepared.revision, generationId: prepared.generationId };
   }),
-  reconcile: reservationWorkflowV2Procedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
+  reconcile: reservationWorkflowV2Procedure(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     const recovery = await recoveryWorkflow(scoped, input);
     if (recovery.state === 'error') return recovery.result;
@@ -969,7 +1123,7 @@ export const reservationWorkflowV2Router = router({
     if (workflow.kind === 'amend') return reservationWorkflowV2AmendReconcile(recoveryScoped, recoveryInput);
     return { status: 'unsupported', issue: 'workflow_connection_not_ready' };
   }),
-  executeServices: reservationWorkflowV2Procedure.input(z.union([
+  executeServices: reservationWorkflowV2Procedure(z.union([
     reservationWorkflowV2ServicesExecuteInputSchema.extend({ preparedRef: z.string().uuid().optional() }).strict(),
     reservationWorkflowV2SavedServicesExecuteInputSchema.extend({ preparedRef: z.string().uuid().optional() }).strict(),
   ])).mutation(async ({ input, ctx }) => {
@@ -981,7 +1135,9 @@ export const reservationWorkflowV2Router = router({
     const { preparedRef, go: _go, idempotencyKey: _key, ...captured } = input;
     return queuePreparedV2(scoped, preparedRef, 'targetRef' in captured ? 'executeSavedServices' : 'executeServices', captured);
   }),
-  reconcileServices: reservationWorkflowV2Procedure.input(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
+  reconcileServices: reservationWorkflowV2Procedure(reservationWorkflowV2ReconcileInputSchema).mutation(async ({ input, ctx }) => {
+    const refused = nativeAdmissionReply(ctx.reservationNativeAdmission);
+    if (refused) return refused;
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     const recovery = await recoveryWorkflow(scoped, input);
     if (recovery.state === 'error') return recovery.result;

@@ -12,8 +12,16 @@ const failures = {
     next: 'Contact Nava support before continuing.',
   },
   STAFF_QUOTE_ACTIVE: {
-    happened: 'Infor is busy with another quote.',
-    next: 'Wait for that quote to finish before trying again.',
+    happened: 'Infor is in use.',
+    next: 'Wait for the current action to finish, then try again.',
+  },
+  HMS_LOCK_BUSY: {
+    happened: 'Infor is in use.',
+    next: 'Wait for the current action to finish, then try again.',
+  },
+  refused_lock_busy: {
+    happened: 'Infor is in use.',
+    next: 'Wait for the current action to finish, then try again.',
   },
   HMS_CREDENTIAL_LEASE_CONTENDED: {
     happened: 'Infor is busy.',

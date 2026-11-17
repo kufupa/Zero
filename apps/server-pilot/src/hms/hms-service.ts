@@ -1,3 +1,4 @@
+import { currentCloudCredentialPriority, withCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { message } from '../db/schema/mail.js';
@@ -38,7 +39,8 @@ async function executeVerifiedRun(db: DB, go: VerifiedStaffGo, request: { runId:
 export async function executeHmsWorkerRun(input: { db: DB; fence: AiRunFence; signal?: AbortSignal }) {
   input.signal?.throwIfAborted();
   const go = await input.db.transaction((tx) => verifyStaffGoForRun(tx, input.fence));
-  return executeVerifiedRun(input.db, go, { runId: input.fence.runId, fence: input.fence, signal: input.signal });
+  return withCloudCredentialPriority(currentCloudCredentialPriority('staff'), () =>
+    executeVerifiedRun(input.db, go, { runId: input.fence.runId, fence: input.fence, signal: input.signal }));
 }
 
 export type HmsReadQuery = ReadRequest;

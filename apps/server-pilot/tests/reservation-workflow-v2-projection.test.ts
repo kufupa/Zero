@@ -117,6 +117,105 @@ function allocatedCreate(ref: string, shared: Record<string, unknown> = {}) {
 
 describe('reservation workflow host projection', () => {
   it.each([
+    ['distinct hints', ['standard room', 'deluxe room'], false],
+    ['overlapping hints', ['standard room', 'standard room'], true],
+  ] as const)('keeps dated room and meal options once for %s', async (_label, hints, ambiguous) => {
+    const body = 'Please quote 1 standard room 2027-01-10 to 2027-01-12 and 1 deluxe room 2027-01-13 to 2027-01-15, room only or bed and breakfast, with parking for the standard room.';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: hints.map(hint => claim(hint, hint, ref)),
+      mealPlanHints: [claim('room only', 'room_only', ref), claim('bed and breakfast', 'bb', ref)],
+      serviceHints: [claim('parking', 'parking', ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref), roomCount: claim('1 standard room', 1, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref), roomCount: claim('1 deluxe room', 1, ref) },
+      ] }], issues: [] }), ref => ({ proposal: { schemaVersion: 'reservation-prefill.v0.2', content: { requests: [{
+        id: 'quote_request', kind: 'quote', requestText: body, sourceRefs: [ref], serviceRefs: ['parking'], documentRefs: [],
+        body: { groups: [
+          ['standard-bb', '2027-01-10', '2027-01-12', 'standard room', 'bb'],
+          ['standard-ro', '2027-01-10', '2027-01-12', 'standard room', 'room_only'],
+          ['deluxe-bb', '2027-01-13', '2027-01-15', 'deluxe room', 'bb'],
+          ['deluxe-ro', '2027-01-13', '2027-01-15', 'deluxe room', 'room_only'],
+        ].map(([id, arrival, departure, requestedRoomDescription, requestedMealPlan]) => ({ id, arrival, departure,
+          requestedRoomDescription, requestedMealPlan, quantity: 1, mealPlan: null, roomCodes: [], ratePlan: null,
+          occupancy: { scope: 'per_room', adults: 1, childCount: 0, childAges: [] }, priceObservationRefs: [] })),
+        parties: { organization: null, bookingAgency: null }, salesStrategy: null,
+        client: { attention: null, email: null, telephone: null }, requestedMoney: [], notes: null,
+        outputIntent: { artifacts: ['email_quote', 'pdf_quote', 'xlsx_quote'], evidenceRefs: [ref] }, provisionalBookingRequested: false },
+      }], services: [{ id: 'parking', ownerRequestId: 'quote_request', operation: 'add', requestedText: 'parking',
+        code: null, itemCandidateRef: null, sharedFields: {}, requestedMoney: [],
+        targets: [{ target: { kind: 'quote_group', requestId: 'quote_request', groupId: 'standard-bb' }, fields: {},
+          savedRowCandidateRef: null, previewObservationRef: null }],
+        quantityRequest: { value: null, scope: 'unresolved', sourceRefs: [ref] }, sourceRefs: [ref] }], documents: [] },
+      annotations: [], issues: [], sourceClaims: [], lookupResultRefs: [] }, reviewRequirements: {} }), body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    expect(request.body.groups.map(group => [group.arrival, group.departure, group.requestedRoomDescription, group.requestedMealPlan]))
+      .toEqual([
+        ['2027-01-10', '2027-01-12', 'standard room', 'bb'],
+        ['2027-01-10', '2027-01-12', 'standard room', 'room_only'],
+        ['2027-01-13', '2027-01-15', 'deluxe room', 'bb'],
+        ['2027-01-13', '2027-01-15', 'deluxe room', 'room_only'],
+      ]);
+    expect(request.body.quoteComposition?.kind).toBe('unresolved');
+    expect(request.serviceRefs).toContain('parking');
+    expect(result.proposal.content.services.find(service => service.id === 'parking')?.targets[0]?.target)
+      .toEqual({ kind: 'quote_group', requestId: 'quote_request', groupId: 'standard-bb' });
+    if (ambiguous) {
+      expect(request.body.groups.every(group => group.sourceAssociationUnresolved)).toBe(true);
+      expect(result.proposal.issues.some(issue => issue.kind === 'quote_room_scope_ambiguous')).toBe(true);
+    }
+  });
+  it.each([
+    ['twin room', 'queen room'],
+    ['1 twin room', '1 queen room'],
+  ])('keeps unbound room hints for staff review without adding phantom groups: %s / %s', async (firstHint, secondHint) => {
+    const body = `Please quote ${firstHint} and ${secondHint} on 2027-01-10 to 2027-01-12 and 2027-01-13 to 2027-01-15.`;
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: [claim(firstHint, firstHint, ref), claim(secondHint, secondHint, ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref), roomCount: claim('1', 1, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref), roomCount: claim('1', 1, ref) },
+      ] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    expect(request.body.groups).toHaveLength(2);
+    expect(request.body.groups.every(group => group.sourceAssociationUnresolved)).toBe(true);
+    const notices = result.proposal.issues.filter(issue => issue.kind === 'quote_room_scope_ambiguous');
+    expect(notices).toHaveLength(2);
+    expect(notices.some(issue => issue.explanation.includes(firstHint))).toBe(true);
+    expect(notices.some(issue => issue.explanation.includes(secondHint))).toBe(true);
+  });
+
+  it('distinguishes numeric room names when binding hints to dated groups', async () => {
+    const body = 'Please quote 1 2 Bedroom Suite 2027-01-10 to 2027-01-12 and 1 1 Bedroom Suite 2027-01-13 to 2027-01-15.';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: [claim('2 Bedroom Suite', '2 Bedroom Suite', ref), claim('1 Bedroom Suite', '1 Bedroom Suite', ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref), roomCount: claim('1 2 Bedroom Suite', 1, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref), roomCount: claim('1 1 Bedroom Suite', 1, ref) },
+      ] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    expect(request.body.groups.find(row => row.arrival === '2027-01-10')?.requestedRoomDescription).toBe('2 Bedroom Suite');
+    expect(request.body.groups.find(row => row.arrival === '2027-01-13')?.requestedRoomDescription).toBe('1 Bedroom Suite');
+  });
+
+  it.each(['5 smoking rooms', '5 king rooms'])('does not attach a room hint from a partial word or ungrounded count: %s', async (firstCount) => {
+    const body = 'Please quote 5 smoking rooms 2027-01-10 to 2027-01-12 and 1 king room 2027-01-13 to 2027-01-15.';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: [claim('king', 'king', ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref),
+          roomCount: claim(firstCount, 5, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref),
+          roomCount: claim('1 king room', 1, ref) },
+      ] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    const first = request.body.groups.find(row => row.arrival === '2027-01-10');
+    const second = request.body.groups.find(row => row.arrival === '2027-01-13');
+    expect(first?.requestedRoomDescription).toBeNull();
+    expect(first?.sourceAssociationUnresolved).toBe(true);
+    expect(second?.requestedRoomDescription).toBe('king');
+  });
+
+  it.each([
     ['matched guest', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-12' }] }, true],
     ['wrong guest', { outcome: 'ok', rows: [{ firstName: 'Other', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-12' }] }, false],
     ['wrong dates', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-13' }] }, false],
@@ -764,6 +863,20 @@ describe('reservation workflow host projection', () => {
       adults: null,
       childCount: null,
       childAges: null,
+    });
+  });
+
+  it('leaves unspecified guest counts for staff to enter', async () => {
+    const result = await project((sourceRef) => ({
+      requests: [{ ...quoteFixture(sourceRef), dates: [{
+        arrival: claim('14 November', '2026-11-14', sourceRef),
+        departure: claim('16 November', '2026-11-16', sourceRef),
+      }] }], issues: [],
+    }), undefined, 'Please quote 14 to 16 November.');
+    const request = result.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('expected quote');
+    expect(request.body.groups[0]!.occupancy).toEqual({
+      scope: 'unresolved', adults: null, childCount: null, childAges: null,
     });
   });
 

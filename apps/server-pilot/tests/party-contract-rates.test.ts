@@ -390,7 +390,7 @@ describe('contract rates from the picked company or agency', () => {
     const { revision, fellBack, note } = await quoteWith(agency360, [BAR], { incompleteParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
-      "Nava couldn't confirm contract rates for 360 degrees Travel — this quote uses our best available rate. Check HMS before sending.",
+      "Nava couldn't confirm contract rates for 360 degrees Travel. Check the selected rate in HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
@@ -706,7 +706,7 @@ describe('a party-rate failure falls back to public rates, and only a typed fail
     expect(outcome.fellBack).toBe(true);
     expect(outcome.result.groups[0]!.rateCode).toBe('BARRO');
     expect(outcome.note).toBe(partyRateFallbackNote(['Woolworths']));
-    expect(outcome.note).toBe("HMS couldn't apply the contract rate for Woolworths, so these are public rates. Check in HMS.");
+    expect(outcome.note).toBe("HMS couldn't apply the contract rate for Woolworths. Check the selected rate in HMS before sending.");
     // A plain Error is not a party-rate failure, so it is not swallowed by the fallback.
     await expect(
       quoteWithPartyFallback({
@@ -810,6 +810,9 @@ describe('a public-only party read is no contract only when its search covered e
   });
 
   it('both reasons are party-rate failures, so the public retry runs', () => {
+    expect(partyReadingOf([group([{ ...row('unknown'), conditions: [
+      { kind: 'required', field: 'rateContext', status: 'unknown' },
+    ] }])], withContext)).toBe('incomplete');
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_NO_CONTRACT_CODE))).toBe(true);
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(true);
     expect(isPartyRateFailure(new Error(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(false);
@@ -921,7 +924,7 @@ describe('a picked party is read once for every room type, and priced for the ro
     const { revision, fellBack, note } = await quoteWith(woolworths, rates, { roomCodes: ['STQN'], incompleteParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
-      "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
+      "Nava couldn't confirm contract rates for Woolworths. Check the selected rate in HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
@@ -950,7 +953,7 @@ describe('a picked party is read once for every room type, and priced for the ro
     const { revision, fellBack, note } = await quoteWith(woolworths, rates, { roomCodes: ['STQN'], truncatedParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
-      "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
+      "Nava couldn't confirm contract rates for Woolworths. Check the selected rate in HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });

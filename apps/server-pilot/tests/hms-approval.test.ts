@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { appRouter } from '../src/trpc/router.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { aiWorkflowRun, mailboxTransport, message } from '../src/db/schema/mail.js';
+import { remoteSession, user } from '../src/db/schema/auth.js';
+import { aiWorkflowRun, mailboxAccess, mailboxTransport, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import {
   HMS_WRITE_EVIDENCE_PREFIX,
@@ -22,6 +23,8 @@ import {
   sweepLostHmsWriteLeases,
 } from '../src/ai/hms-approval.js';
 import { canonicalJson } from '../src/ai/draft-approval.js';
+import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { hmsWriteGrantV2Schema } from '../src/hms/hms-preparation.js';
 import { queueUserHmsJob, readHmsJobView } from '../src/ai/hms-jobs.js';
 import {
   claimNextAiRun,
@@ -58,6 +61,7 @@ const PNG_BYTES = Buffer.concat([
   Buffer.from('after-save-proof'),
 ]);
 const USER = 'user-ropperman';
+const SESSION = 'approval-test-session';
 // claimNextAiRun validates the whole process env. These values are synthetic and restored after the suite.
 const SYNTHETIC_ENV: Record<string, string> = {
   PORT: '3000',
@@ -93,7 +97,7 @@ function sha256(data: string | Buffer): string {
 // Each n is one inbound thread with one work item. A work item is unique per (thread, kind, source message).
 async function seedItem(
   db: DB,
-  opts: { n?: number; snapshotAt?: Date | null; hms?: unknown; form?: Record<string, unknown>; transportId?: string } = {},
+  opts: { n?: number; snapshotAt?: Date | null; hms?: unknown; form?: Record<string, unknown>; transportId?: string; authenticated?: boolean } = {},
 ): Promise<string> {
   const n = opts.n ?? 1;
   const transportId = opts.transportId ?? TRANSPORT_ID;
@@ -101,6 +105,12 @@ async function seedItem(
   if (transportId === DAVINCI_TRANSPORT_ID) {
     await db.insert(mailboxTransport).values({ id: transportId, email: transportEmail,
       ownerHeaderValue: transportEmail, mailboxType: 'personal', sendFromConfig: { aliases: [] } }).onConflictDoNothing();
+  }
+  if (opts.authenticated) {
+    await db.insert(user).values({ id: USER, name: 'Test staff', email: 'approval-test@example.invalid', emailVerified: true }).onConflictDoNothing();
+    await db.insert(remoteSession).values({ id: SESSION, userId: USER, token: 'approval-test-token',
+      expiresAt: new Date(Date.now() + 24 * 60 * MINUTE) }).onConflictDoNothing();
+    await db.insert(mailboxAccess).values({ id: `access-${transportId}`, userId: USER, transportId, role: 'owner' }).onConflictDoNothing();
   }
   await seedInboxThread(db, {
     threadId: `thread-${n}`,
@@ -132,12 +142,13 @@ async function seedItem(
 function approve(
   db: DB,
   workItemId: string,
-  extra: { now?: Date; rereadHmsState?: () => Promise<unknown>; transportId?: string } = {},
+  extra: { now?: Date; rereadHmsState?: () => Promise<unknown>; transportId?: string; authenticated?: boolean } = {},
 ) {
   return approveHmsWrite({
     db,
     transportId: extra.transportId ?? TRANSPORT_ID,
     actorUserId: USER,
+    ...(extra.authenticated ? { sessionId: SESSION, sessionProfile: 'remote' as const } : {}),
     workItemId,
     now: extra.now ?? NOW,
     rereadHmsState: extra.rereadHmsState,
@@ -180,25 +191,39 @@ function callerFor(transportId: string) {
 afterEach(() => {
   __setDbForTests(null);
   resetS3Storage();
+  vi.unstubAllEnvs();
 });
 
 describe('HMS write approvals', () => {
   it('approve writes a server-made grant bound to the form, the HMS digest and its own event id, and queues one hms_write run', async () => {
+    vi.stubEnv('PANE_CLOUD_CREATE_DISPATCH', 'on');
+    vi.stubEnv('PANE_WRITE_CREATE', 'lab');
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedItem(db);
-      const grant = await approve(db, workItemId);
+      const workItemId = await seedItem(db, { authenticated: true });
+      const grant = await approve(db, workItemId, { authenticated: true });
       const event = await grantRow(db, grant.grantId);
+      const [sourceMessage] = await db.select().from(message).where(eq(message.id, 'msg-1')).limit(1);
       expect(event).toMatchObject({
         type: 'approval.granted',
         actorKind: 'user',
         actorUserId: USER,
         workItemId,
       });
-      expect(event.value).toEqual({
+      expect(hmsWriteGrantV2Schema.parse(event.value)).toMatchObject({
+        version: 2,
         grantId: grant.grantId,
         workItemId,
         transportId: TRANSPORT_ID,
         actorUserId: USER,
+        sessionId: SESSION,
+        sessionProfile: 'remote',
+        preparedRef: grant.preparedRef,
+        threadId: 'thread-1',
+        sourceMessageId: 'msg-1',
+        sourceHash: staffQuoteSourceHash(sourceMessage!),
+        propertyCode: 'HRCEN',
+        operation: 'create',
+        businessDigest: formDigest(FORM),
         formDigest: formDigest(FORM),
         hmsBeforeDigest: hmsStateDigest(HMS_BEFORE),
         hmsReadAt: NOW.toISOString(),
@@ -277,9 +302,11 @@ describe('HMS write approvals', () => {
   });
 
   it('an edit after approval needs re-approval: the old grant is refused, and a fresh grant gets a new hash', async () => {
+    vi.stubEnv('PANE_CLOUD_CREATE_DISPATCH', 'on');
+    vi.stubEnv('PANE_WRITE_CREATE', 'lab');
     await withIngestionDb(async ({ db }) => {
-      const workItemId = await seedItem(db);
-      const first = await approve(db, workItemId);
+      const workItemId = await seedItem(db, { authenticated: true });
+      const first = await approve(db, workItemId, { authenticated: true });
       const firstRun = await claimWrite(db);
       await db
         .update(workItem)
@@ -306,7 +333,7 @@ describe('HMS write approvals', () => {
         db,
       );
       // Unchanged state approved again: new grant id, new payload hash, new run.
-      const second = await approve(db, workItemId);
+      const second = await approve(db, workItemId, { authenticated: true });
       expect(second.grantId).not.toBe(first.grantId);
       const [a, b] = await Promise.all([grantRow(db, first.grantId), grantRow(db, second.grantId)]);
       expect(b!.payloadHash).not.toBe(a!.payloadHash);

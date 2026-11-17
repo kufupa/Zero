@@ -2,7 +2,8 @@
 import { withCloudReadSession } from './cloud-session.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { installSavedStayReadGuard } from './saved-stay-read-guard.mjs';
-import { readShallow, readRecord } from './hms-readers.mjs';
+import { readConfirmationFromStay360 as readShallow } from './stay360-confirmation.mjs';
+import { readRecordViewFromStay360 as readRecord } from './stay360-record-view.mjs';
 import { lookupFailure } from './stay360-lookup-cli.mjs';
 import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs';
 

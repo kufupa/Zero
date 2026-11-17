@@ -19,7 +19,7 @@ vi.mock('../src/hms/property-read-lock.js', async (original) => ({
 }));
 vi.mock('../src/ai/staff-quote-installation.js', async (original) => ({
   ...await original<typeof import('../src/ai/staff-quote-installation.js')>(),
-  readInstalledStaffQuoteConfiguration: () => { if (!state.quoteConfigAvailable) throw new Error('quote_configuration_unavailable'); return { tenantId: 'tenant', owner: { propertyCode: 'HRCEN' } }; },
+  readInstalledStaffQuoteConfiguration: () => { if (!state.quoteConfigAvailable) throw new Error('quote_configuration_unavailable'); return { tenantId: 'THECENTURION_PRD', owner: { propertyCode: 'HRCEN' } }; },
   getInstalledStaffQuoteServices: (options: { authorizeContext: (ctx: unknown) => Promise<boolean> }) => ({
     resolveQuoteTask: async (ctx: unknown) => {
       if (!state.locked || !await options.authorizeContext(ctx)) throw new Error('quote_not_authorized');
@@ -33,7 +33,7 @@ afterEach(() => { vi.unstubAllEnvs(); state.locked = false; state.quoteReads = 0
 function input(text: string, artifacts: unknown[] = []): ReservationistRuntimeInput {
   const at = new Date(Date.now() - 1000).toISOString();
   return { version: 1, requestId: 'message', propertyCode: 'HRCEN',
-    authorizationScope: { ownerRef: 'transport', threadId: 'thread' }, trigger: { id: 'message', at },
+    authorizationScope: { ownerRef: 'transport-centurion', threadId: 'thread' }, trigger: { id: 'message', at },
     messages: [{ id: 'message', at, direction: 'inbound', text }], authorizedArtifacts: artifacts,
     requiredTaskKinds: [], requiredAskSpans: [],
     clock: { causalAt: at, sourceAt: new Date().toISOString(), sourceMode: 'current_read', deadlineAt: Date.now() + 60000 },
@@ -42,7 +42,7 @@ function input(text: string, artifacts: unknown[] = []): ReservationistRuntimeIn
 const response = (tasks: unknown[] = []) => ({ modelId: 'gpt-6-luna', output: { facts: [], tasks, unresolvedAsks: [] },
   usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2, latencyMs: 1, estimatedCostUsd: 0, rateTableVersion: 'test' } });
 function context(value: ReservationistRuntimeInput, admissions: unknown[] = []) {
-  return { db: {} as never, transportId: 'transport', threadId: 'thread', requestedByUserId: 'staff', generationId: 'generation',
+  return { db: {} as never, transportId: 'transport-centurion', threadId: 'thread', requestedByUserId: 'staff', generationId: 'generation',
     admissions: admissions as never, input: value, signal: new AbortController().signal, fence: {} as never, revalidateSources: async () => true };
 }
 
@@ -80,11 +80,11 @@ it('masks PDF text through real admission before model input and leaves visuals 
   const body = Buffer.from('%PDF-1.4 synthetic private bytes 4111111111111111');
   const hash = createHash('sha256').update(body).digest('hex');
   const value = input('Thank you.', [{ attachmentId: 'pdf', sourceHash: hash }]);
-  const metadata = { attachmentId: 'pdf', messageId: 'message', threadId: 'thread', ownerRef: 'transport',
+  const metadata = { attachmentId: 'pdf', messageId: 'message', threadId: 'thread', ownerRef: 'transport-centurion',
     messageAt: value.trigger.at, mimeType: 'application/pdf', sizeBytes: body.length, sourceHash: hash, disclosure: 'guest' as const };
   const locator = { messageId: 'message', s3Key: 'attachments/message/pdf', mimeType: 'application/pdf', sizeBytes: body.length };
   const admission = await admitReservationistAttachment({ metadata,
-    scope: { ownerRef: 'transport', threadId: 'thread', requestAt: value.trigger.at },
+    scope: { ownerRef: 'transport-centurion', threadId: 'thread', requestAt: value.trigger.at },
     read: { attachmentId: 'pdf', authorizedAttachmentIds: new Set(['pdf']), signal: new AbortController().signal,
       expectedLocator: locator, resolveLocator: async () => locator, revalidate: async () => true,
       s3: { headObject: async () => ({ sizeBytes: body.length, contentType: 'application/pdf' }),
@@ -122,7 +122,7 @@ it('runs the installed quote service only while the property lock and source gra
 
 it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a reserved stay (%s)', async (status) => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
-  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'THECENTURION_PRD');
   state.quoteConfigAvailable = false;
   const text = 'Please cancel reservation 12345678.';
   const value = input(text), hash = createHash('sha256').update(text).digest('hex');
@@ -179,14 +179,14 @@ it.each(['Reserved', 'Cancelled'] as const)('prepares cancellation only for a re
   else expect(result.packets).toEqual([]);
   expect(state.cancellationCalls).toEqual(['read', 'read', 'prepareCancellation']);
   expect(readConfirmations).toEqual(['12345678', '12345678-1']);
-  expect(sessionSignals).toHaveLength(1);
+  expect(sessionSignals).toHaveLength(2);
   expect(sessionSignals[0]).toBeInstanceOf(AbortSignal);
   expect(state.locked).toBe(false);
 });
 
 it('does not retry a bare reference when the complete base search has multiple records', async () => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
-  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'THECENTURION_PRD');
   state.quoteConfigAvailable = false;
   const text = 'Please cancel reservation 12345678.';
   const value = input(text), hash = createHash('sha256').update(text).digest('hex');
@@ -218,7 +218,7 @@ it('does not retry a bare reference when the complete base search has multiple r
 
 it('does not read a reservation reference outside the current cancellation clause', async () => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
-  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'THECENTURION_PRD');
   const authored = 'Please cancel my reservation.';
   let sessions = 0;
   for (const { text, taskQuote } of [
@@ -248,7 +248,7 @@ it('does not read a reservation reference outside the current cancellation claus
 
 it('waits for an aborted cancellation session to finish before releasing the property lock', async () => {
   vi.stubEnv('DATABASE_URL', 'synthetic-only');
-  vi.stubEnv('PANE_STAY_TENANT_ID', 'tenant');
+  vi.stubEnv('PANE_STAY_TENANT_ID', 'THECENTURION_PRD');
   const text = 'Please cancel reservation ABC123.';
   const value = input(text), hash = createHash('sha256').update(text).digest('hex');
   const start = text.indexOf('ABC123');
