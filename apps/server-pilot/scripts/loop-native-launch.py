@@ -62,7 +62,7 @@ def main():
         env.pop('NODE_CHANNEL_FD', None)
         env.pop('NODE_CHANNEL_SERIALIZATION_MODE', None)
         env.update(PATH=str(nodebin) + ':/home/ubuntu/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin',
-                   LOOP_PILOT_ROOT=str(pilot), LOOP_ISOLATED_DATABASE_URL=isolated)
+                   LOOP_PILOT_ROOT=str(pilot), LOOP_ISOLATED_DATABASE_URL=isolated, NAVA_HMS_CHILD_PRIORITY='background')
         migrate = """import postgres from 'postgres';
 import {drizzle} from 'drizzle-orm/postgres-js';
 import {migrate} from 'drizzle-orm/postgres-js/migrator';

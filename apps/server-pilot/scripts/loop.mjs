@@ -253,13 +253,15 @@ export async function native(payload, directory) {
   const result = JSON.parse(await readFile(join(directory, 'native.json'), 'utf8'));
   return { ...result, runtimeSha: info.runtimeSha, files: (info.files ?? []).filter(file => file.name !== 'native.json').map(file => join(directory, file.name)) };
   } catch (error) {
-    if (error instanceof Error && /^HMS command (Failed|Cancelled|TimedOut):/.test(error.message)) remoteFinished = true;
+    if (error instanceof Error && /^HMS command Failed:.*LOOP_ERROR /s.test(error.message)) remoteFinished = true;
     throw error;
   } finally {
-    await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
-    await exec('aws', ['s3', 'rm', `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/`, '--recursive',
-      '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
-    if (remoteFinished) await sendSsm([`sudo -u ubuntu rm -rf ${remote}`], 60).catch(() => {});
+    if (remoteFinished) {
+      await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+      await exec('aws', ['s3', 'rm', `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/`, '--recursive',
+        '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+      await sendSsm([`sudo -u ubuntu rm -rf ${remote}`], 60).catch(() => {});
+    }
     await rm(temp, { recursive: true, force: true });
   }
 }
@@ -373,6 +375,8 @@ async function prepareEmail(entry, options, outputDir) {
     const prepared = stages.filter(stage => stage.name === 'prepare');
     const artifacts = stages.filter(stage => stage.name === 'artifacts');
     const failed = stages.find(stage => ['failed', 'partial'].includes(stage.result?.status) || stage.result?.quotes?.some(quote => quote.status === 'failed'));
+    const failedLookup = stages.flatMap(stage => stage.result?.lookups ?? []).find(lookup =>
+      lookup.status === 'failed' || lookup.outcome === 'execution_failure' || /(?:_failed|_error)$/.test(lookup.issue ?? ''));
     const triageNeedsStaff = result.triage?.output?.abstainReason || result.triage?.output?.humanAction === 'review_required' || result.triage?.output?.automationState === 'unknown';
     const incomplete = stages.find(stage => !['ok', 'priced', 'prepared', 'succeeded'].includes(stage.result?.status));
     const complete = prepared.length > 0 && prepared.every(stage => stage.result?.status === 'prepared') &&
@@ -382,10 +386,12 @@ async function prepareEmail(entry, options, outputDir) {
       (stage.result?.unavailableInventory ? ['cover.json'] : ['cover.json', 'quote.pdf', 'quote.xlsx'])
         .every(file => files.has(`${stage.requestId}.${file}`)));
     const simulated = result.hms.assumptions?.length > 0;
-    result.status = failed || complete && !hasArtifacts || result.triage?.error ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length && !triageNeedsStaff && !simulated ? 'PASS' : 'NEEDS-STAFF';
+    result.status = failed || failedLookup || complete && !hasArtifacts || result.triage?.error ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length && !triageNeedsStaff && !simulated ? 'PASS' : 'NEEDS-STAFF';
     result.reason = failed?.result?.issue ?? failed?.result?.quotes?.find(quote => quote.status === 'failed')?.issue ??
       (failed?.result?.failures?.join('; ') || undefined) ??
+      (failedLookup ? failedLookup.issue ?? failedLookup.outcome ?? 'Native lookup failed' : undefined) ??
       result.triage?.error ??
+      (complete && !hasArtifacts ? 'Cover email, PDF or XLSX unavailable' : undefined) ??
       (complete ? prefill.errors.map(error => error.message).join('; ') || (triageNeedsStaff ? 'Triage requires staff review' : simulated ? 'Illustrative replay choices require staff review' : prefill.status === 'ready' ? '' : 'Prefill needs review') :
         incomplete?.result?.issue ?? 'Staff selection or review required');
     if (incomplete?.result?.fields?.length) result.reason += `: ${incomplete.result.fields.join(', ')}`;
@@ -447,11 +453,11 @@ async function main() {
     return found;
   };
   const hmsSummary = row => (row.hms?.stages ?? []).map(stage => {
-    const result = stage.result, detail = result?.quotes?.[0] ?? result, quote = detail?.quote;
+    const result = stage.result, detail = result?.quotes?.[0] ?? result?.lookups?.find(row => row.issue || row.status === 'ready') ?? result, quote = detail?.quote;
     const price = quote?.totalMinor != null ? ` ${quote.currency ?? ''} ${(quote.totalMinor / 100).toFixed(2)}` :
       result?.ratePlanAvailability ? ` ${JSON.stringify(result.ratePlanAvailability)}` : result?.price ? ` ${JSON.stringify(result.price)}` : '';
-    const fee = result?.feeState ? ` fee:${result.feeState}${result.penaltyText ? ` ${result.penaltyText}` : ''}` : '';
-    const document = result?.documentName ? ` ${result.documentName}${result.target?.confirmation ? ` ${result.target.confirmation}` : ''}` : '';
+    const fee = detail?.feeState ? ` fee:${detail.feeState}${detail.penaltyText ? ` ${detail.penaltyText}` : ''}` : '';
+    const document = detail?.documentName ? ` ${detail.documentName}${detail.target?.confirmation ? ` ${detail.target.confirmation}` : ''}` : '';
     return `${stage.name}:${detail?.status ?? 'unknown'}${detail?.issue ? ` (${detail.issue})` : ''}${price}${fee}${document}`;
   }).join('; ');
   console.table(results.map(row => {

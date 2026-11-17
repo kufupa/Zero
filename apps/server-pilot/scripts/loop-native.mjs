@@ -245,8 +245,9 @@ try {
       await refresh();
       const discovery = quote.compileReservationWorkflowV2Quote(current.draft, request, false);
       const priced = lookedUp.quotes?.find(row => row.requestId === request.id && row.status === 'priced');
-      if (discovery.status === 'ok' && discovery.input.salesStrategy === 'BAR' && priced) {
+      if (discovery.status === 'ok' && priced) {
         for (const [index, group] of discovery.input.groups.entries()) {
+          if (discovery.input.salesStrategy !== 'BAR') continue;
           const offers = (priced.quote?.rateOptions ?? []).filter(row => row.groupId === group.id && row.roomCode &&
             row.rateCode === 'BAR' && row.contract === false && row.matchesRequest === true &&
             row.mealPlan === group.mealPlan && (!group.rateCode || group.rateCode === row.rateCode) &&
@@ -258,11 +259,6 @@ try {
           for (const [field, value] of [['roomCodes', [offer.roomCode]], ['ratePlan', offer.rateCode], ['mealPlan', offer.mealPlan]])
             await editQuote(`groups/${index}/${field}`, value, 'Illustrative matching BAR offer from HMS');
         }
-        await refresh();
-        const compiled = quote.compileReservationWorkflowV2Quote(current.draft, request, true);
-        if (compiled.issue === 'quote_requires_staff_acceptance') {
-          for (const path of compiled.fields.filter(field => field.startsWith('/') && !field.includes(':'))) await reviewQuote(path);
-        }
       }
     }
     const targets = request.kind === 'create' ? request.body.allocations ?? [] :
@@ -271,6 +267,11 @@ try {
       const result = await stage('prepare', request.id, async () => prepare({ ...ctx, signal: AbortSignal.timeout(70_000) }, { ...await refresh(), requestId: request.id,
         ...(target ? { allocationId: target.id } : {}) }), stages);
       if (request.kind === 'quote' && result.status === 'prepared') {
+        await refresh();
+        const compiled = quote.compileReservationWorkflowV2Quote(current.draft, request, true, Boolean(result.unavailableInventory));
+        if (compiled.issue === 'quote_requires_staff_acceptance') {
+          for (const path of compiled.fields.filter(field => field.startsWith('/') && !field.includes(':'))) await reviewQuote(path);
+        }
         await refresh();
         const observation = current.draft.observations.find(row => row.ref === result.observationRef);
         if (observation?.result?.extrasReviewItems?.length) await reviewQuote(quotePath('').replace(/\/$/, ''));
