@@ -41,6 +41,24 @@ async function savedRead(property: string, confirmation: string, context: ToolCo
   );
 }
 
+async function verifyObservedDeparture(result: Record<string, unknown>, requested: string): Promise<'match' | 'mismatch' | 'unverified'> {
+  const record = obj(result.record) ? result.record : {};
+  const details = obj(record.details) ? record.details : {};
+  const fields: unknown[] = Array.isArray(details.fields) ? details.fields : [];
+  const departures = fields.filter(field => obj(field) && field.name === 'departuredate');
+  if (departures.length !== 1 || !obj(departures[0]) || !str(departures[0].value)) return 'unverified';
+  const { hmsDateToIso } = await native('cancel-stay-rules.mjs');
+  const actual: unknown = hmsDateToIso(departures[0].value);
+  return typeof actual !== 'string' ? 'unverified' : actual === requested ? 'match' : 'mismatch';
+}
+
+async function departureRefusal(result: Record<string, unknown>, requested: string | undefined): Promise<ToolResult | null> {
+  if (!requested) return null;
+  const comparison = await verifyObservedDeparture(result, requested);
+  return comparison === 'match' ? null : fail(comparison === 'mismatch' ? 'CONFIRMATION_HINT_MISMATCH' : 'CONFIRMATION_HINT_UNVERIFIED',
+    comparison === 'mismatch' ? 'The native departure differs from the requested date.' : 'Infor did not return one readable departure date.');
+}
+
 export async function searchReservations(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
       !keys(input.criteria, ['reservation_id', 'guest_name', 'arrival_date', 'departure_date'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
@@ -49,13 +67,15 @@ export async function searchReservations(input: unknown, context: ToolContext): 
       (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
   if (!id && !name) return fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
   if (id && !/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
-  if (id && departure) return fail('UNSUPPORTED_CRITERIA', 'Confirmation search cannot verify departure date.');
   if (!id && name && (name.includes(' ') || name.includes(','))) return fail('UNSUPPORTED_CRITERIA', 'Surname search requires the surname alone.');
   const property = input.property_code;
   return execute(context, async () => {
     if (id) {
-      const result: Record<string, unknown> = await savedRead(property, id, context, 'shallow', { guestName: name, arrivalDate: arrival });
-      if (result.outcome === 'ok') return ok({ outcome: 'candidates', candidates: [{ reservation_id: id, native: result.shallow }], completeness: result.completeness });
+      const result: Record<string, unknown> = await savedRead(property, id, context, departure ? 'record' : 'shallow', { guestName: name, arrivalDate: arrival });
+      if (result.outcome === 'ok') {
+        const refusal = await departureRefusal(result, departure);
+        return refusal ?? ok({ outcome: 'candidates', candidates: [{ reservation_id: id, native: result.shallow }], completeness: result.completeness });
+      }
       if (result.outcome === 'read_failed' && ['AMBIGUOUS_CONFIRMATION', 'CONFIRMATION_HINT_UNVERIFIED', 'CONFIRMATION_HINT_MISMATCH', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND'].includes(String(result.issue))) {
         return ok({ outcome: result.issue === 'CONFIRMATION_NOT_FOUND' ? 'not_found_in_searched_range' : 'ambiguous_or_incomplete', native: result });
       }
@@ -136,7 +156,6 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
       coverage: { completeness: native.completeness ?? null, records: native.records ?? null, candidates_truncated: matches.length > 25 },
       observed_fields: {}, display_rows: [] });
   }
-  if (lookup.departure_date) return fail('UNSUPPORTED_CRITERIA', 'Confirmation search cannot verify departure date.');
   const reservationId = lookup.reservation_id;
   if (!/^(?:\d+-\d+|\d{6,10})$/.test(reservationId)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   return execute(context, async () => {
@@ -146,6 +165,8 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
       return { ok: false, data: { outcome: 'not_uniquely_read', coverage: result.completeness ?? null },
         error: { code: str(result.issue) && /^[A-Z][A-Z0-9_]{2,100}$/.test(result.issue) ? result.issue : 'HMS_READ_INCOMPLETE', message: 'Infor did not uniquely read the requested stay.', retryable: false, outcome: 'known' } };
     }
+    const refusal = await departureRefusal(result, lookup.departure_date);
+    if (refusal) return refusal;
     const record = obj(result.record) ? result.record : {};
     const details = obj(record.details) ? record.details : {};
     const fields = Array.isArray(details.fields) ? details.fields : [];
