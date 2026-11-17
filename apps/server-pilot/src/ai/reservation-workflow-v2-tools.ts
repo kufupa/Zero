@@ -1009,7 +1009,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     }, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
   } catch (error) {
     return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null,
-      ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
   if (!sessionResult || sessionResult.sessionSafe !== true || !Array.isArray(sessionResult.observations) ||
       !Array.isArray(sessionResult.lookups)) {
@@ -1035,7 +1035,7 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
     }
   } catch (error) {
     return { status: 'failed', issue: 'native_catalogue_session_not_clean', requestId: input.requestId ?? null,
-      ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
   const observations = nativeObservations.filter((item): item is ReservationWorkflowV2Observation => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
@@ -1110,7 +1110,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
       screenshot: prepareShot };
   } catch (error) {
     return { status: 'failed', issue: 'native_create_prepare_failed',
-      ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
 }
 

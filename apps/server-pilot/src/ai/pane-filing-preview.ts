@@ -30,7 +30,7 @@ export type PreviewInput = {
 type PreviewResult =
   | { status: 'ready'; confirmation: string; arrival: string; documentName: string;
       documentSource: { sha256: string; snapshotDigest: string }; revisionSeq: number }
-  | { status: 'refused'; reason: string; failureCode?: 'AUTHENTICATED_SHELL_TIMEOUT' };
+  | { status: 'refused'; reason: string; hmsLoginOutage?: true };
 
 /** Recheck the selected message, work item and current mailbox access around the remote reads. */
 async function currentFilingSource(db: DB, input: PreviewInput): Promise<{ threadId: string; revisionSeq: number } | null> {
@@ -106,7 +106,7 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
       found.stay.confirmation !== input.confirmation || found.stay.arrival !== input.arrival ||
       !found.stay.lastName || normalizeName(found.stay.lastName) !== normalizeName(input.lastName)) {
     return { status: 'refused', reason: 'booking_unavailable',
-      ...(classifyHmsLoginOutage(found) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' as const } : {}) };
+      ...(classifyHmsLoginOutage(found) ? { hmsLoginOutage: true as const } : {}) };
   }
 
   if (!await originAllowed()) return { status: 'refused', reason: 'property_unavailable' };

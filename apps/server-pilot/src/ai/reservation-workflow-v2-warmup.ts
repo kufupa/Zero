@@ -65,6 +65,7 @@ function busy(value: unknown): boolean {
 function loginOutage(value: unknown, depth = 0): boolean {
   if (depth > 4 || !value || typeof value !== 'object') return false;
   if (Array.isArray(value)) return value.some(child => loginOutage(child, depth + 1));
+  if ('hmsLoginOutage' in value && value.hmsLoginOutage === true) return true;
   if (classifyHmsLoginOutage(value)) return true;
   if ('failureCode' in value || 'failurePhase' in value) {
     if (classifyHmsLoginOutage({ code: 'failureCode' in value ? value.failureCode : undefined,
