@@ -518,7 +518,8 @@ export async function openLabtestCancellation(page, expected = {}, { timeoutMs =
     const outcome = preChargeStarted && !reasonReady ? 'fee_accepted_unconfirmed' : fee ? 'fee_dialog_pending' :
       reasonReady ? 'reason_ready' : !policyReady && policy ? 'policy_requires_review' :
         dialogOpenDispatched && dialogs.length ? 'unexpected_dialog' : dialogOpenDispatched ? 'uncertain' : 'not_dispatched';
-    if (observeFeeBeforeReason) return { outcome, openRequestDispatched: dialogOpenDispatched,
+    if (observeFeeBeforeReason) return { outcome, requestDispatched: false, cancellationSaveDispatched: false,
+      openRequestDispatched: dialogOpenDispatched,
       httpStatus: response?.status() || null, reasonOptionCount: reasons?.length ?? 0,
       testReasonAvailable: (reasons ?? []).filter((item) => item.value === 'TEST' && item.display === 'Test Reservations').length === 1,
       reasons: (reasons ?? []).filter((item) => item.value === 'TEST' && item.display === 'Test Reservations'),
@@ -1040,7 +1041,7 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
   } catch (error) {
     armed = false;
     if (observeFeeBeforeReason) {
-      feeStageObservation = await cancellationFeeStageEvidence(frame) ?? feeStageObservation;
+      feeStageObservation = await cancellationFeeStageEvidence(opened.frame) ?? feeStageObservation;
       return { outcome: chargeText ? 'fee_dialog_pending' : dispatched ? 'uncertain' : 'not_dispatched',
         issue: issue(error), requestDispatched: false, nativeDialogObserved: Boolean(nativeDialog),
         nativeDialogType: nativeDialog?.type ?? null,
