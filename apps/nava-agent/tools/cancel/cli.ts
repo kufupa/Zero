@@ -31,16 +31,6 @@ async function main() {
   const input: unknown = JSON.parse(await readFile(inputPath, 'utf8'));
   const mode: ToolContext['mode'] = command === 'prepare-live' ? 'live' : 'labtest';
   const base: ToolContext = { sessionId: `cli-${randomUUID()}`, mode, signal: AbortSignal.timeout(85_000) };
-  // Operator must configure this process with the actual native admission DB on its existing box.
-  if (process.env.NAVA_HMS_SHARED_ADMISSION !== '1') {
-    const result = command === 'save-labtest'
-      ? await save(input, { ...base, markDispatched: async () => { throw new Error('HMS_SHARED_LEASE_REQUIRED'); } })
-      : await prepare(input, base);
-    process.stdout.write(`${JSON.stringify({ ok: result.ok, error: result.error })}\n`);
-    process.exitCode = result.ok ? 0 : 1;
-    return;
-  }
-  if (!process.env.DATABASE_URL) throw new Error('HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED');
   if (typeof input !== 'object' || input === null || !('booking' in input) ||
       typeof input.booking !== 'object' || input.booking === null || !('property_code' in input.booking) ||
       typeof input.booking.property_code !== 'string') throw new Error('INVALID_CANCEL_INPUT');
@@ -60,6 +50,16 @@ async function main() {
       if (!(cause instanceof Error && 'code' in cause && cause.code === 'ENOENT')) throw cause;
     }
   }
+  // Operator must configure this process with the actual native admission DB on its existing box.
+  if (process.env.NAVA_HMS_SHARED_ADMISSION !== '1') {
+    const result = command === 'save-labtest'
+      ? await save(input, { ...base, markDispatched: async () => { throw new Error('HMS_SHARED_LEASE_REQUIRED'); } })
+      : await prepare(input, base);
+    process.stdout.write(`${JSON.stringify({ ok: result.ok, error: result.error })}\n`);
+    process.exitCode = result.ok ? 0 : 1;
+    return;
+  }
+  if (!process.env.DATABASE_URL) throw new Error('HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED');
   const cloudUrl = new URL('../../../server-pilot/tooling/hms-cloud/cloud-session.mjs', import.meta.url);
   const cloud = await import(cloudUrl.href);
   let markerInvoked = false;
