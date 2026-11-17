@@ -178,6 +178,19 @@ describe('reservation workflow v2 Quote compiler staff edits', () => {
     first.body.quoteFamily = { ...family, label: 'First', composition };
     second.body.quoteFamily = { ...family, label: 'Second', composition };
     expect(compiledFields(false)).not.toContain(guard);
+    const optionGuard = `${secondPath}:quote_option_party_choice_required`;
+    expect(compiledFields(false)).not.toContain(optionGuard); // A different native party is a valid option choice.
+    delete value.fieldOverrides[secondPath];
+    expect(compiledFields(false)).toContain(optionGuard);
+    expect(compiledFields(true)).toContain(optionGuard);
+    value.fieldOverrides[secondPath] = { state: 'set', value: 'second-candidate', updatedAt: now };
+    value.observations.at(-1)!.generationId = 'old-generation';
+    expect(compiledFields(false)).toContain(optionGuard);
+    value.fieldOverrides[secondPath] = { state: 'none', updatedAt: now };
+    expect(compiledFields(false)).not.toContain(optionGuard); // Staff explicitly chose the typed name.
+    delete value.fieldOverrides[firstPath];
+    delete value.fieldOverrides[secondPath];
+    expect(compiledFields(false)).not.toContain(optionGuard); // Typed-only families remain usable.
   });
 
   it('splits alternative dates and meals without losing groups, extras or confirmed counts', async () => {

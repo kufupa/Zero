@@ -453,19 +453,29 @@ export function compileQuoteCore(
     if (selected.issue) issues.push(selected.issue);
     selected.reviewPaths.forEach((item) => reviewPaths.add(item));
   }
-  const familyOption = request.body.quoteFamily && quoteFamilyOptions(draft, request.id)
-    ?.find(option => option.members.some(member => member.requestId === request.id));
+  const familyOptions = request.body.quoteFamily && quoteFamilyOptions(draft, request.id);
+  const familyOption = familyOptions?.find(option => option.members.some(member => member.requestId === request.id));
   for (const [role, selected] of [['organization', company], ['bookingAgency', agency]] as const) {
     if (!selected.name || !familyOption) continue;
+    const current = selectedParty(draft, request, role, false);
     const conflicting = familyOption.members.some(member => {
       if (member.requestId === request.id) return false;
       const sibling = draft.proposal.content.requests.find(row => row.kind === 'quote' && row.id === member.requestId);
       if (!sibling || sibling.kind !== 'quote') return false;
       const other = selectedParty(draft, sibling, role, false);
       return other.party && other.name && sameName(other.name, selected.name) &&
-        other.party.nativeId !== selected.party?.nativeId;
+        other.party.nativeId !== current.party?.nativeId;
     });
     if (conflicting) issues.push(`${path('parties', role, 'nativeSelectionRef')}:quote_family_party_selection_required`);
+    if (current.party || draft.fieldOverrides[path('parties', role, 'nativeSelectionRef')]?.state === 'none') continue;
+    const selectedInOtherOption = familyOptions?.filter(option => option.id !== familyOption.id).some(option =>
+      option.members.some(member => {
+        const sibling = draft.proposal.content.requests.find(row => row.kind === 'quote' && row.id === member.requestId);
+        if (!sibling || sibling.kind !== 'quote') return false;
+        const other = selectedParty(draft, sibling, role, false);
+        return other.party && other.name && sameName(other.name, selected.name);
+      }));
+    if (selectedInOtherOption) issues.push(`${path('parties', role, 'nativeSelectionRef')}:quote_option_party_choice_required`);
   }
   const strategyPath = path('salesStrategy');
   const strategyResult = resolved(strategyPath, request.body.salesStrategy);
@@ -704,6 +714,7 @@ const messages: Record<string, string> = {
   room_group_association_unresolved: 'Confirm whether this room group is separate or remove it.',
   quote_relationship_unresolved: 'Choose whether room groups belong together or are separate quote options.',
   quote_family_party_selection_required: 'Select the same Infor company or agency for this part of the quote, or use the typed name for every date.',
+  quote_option_party_choice_required: 'Choose an Infor company or agency for this option, or choose Use typed name.',
   separate_quote_options_required: 'Separate the quote options before pricing.',
   valid_date_required: 'Enter a valid date.', date_range_invalid: 'Departure must be after arrival.',
   valid_room_count_required: 'Enter a room count from 1 to 100.', per_room_scenario_required: 'Choose occupancy per room.',
