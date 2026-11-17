@@ -231,7 +231,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     ? { provenance: 'ai', ...reviewControl, onChange: (checked: boolean) => onReview(spec.path, checked) }
     : { provenance: 'ai', kind: 'marker' };
   const guestProfile = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/guest_profile_id$/.test(spec.path);
-  const hint = guestProfile ? 'Run Prepare to load verified Infor profiles, then select one below.'
+  const hint = guestProfile ? 'Clear the selected profile before changing the guest name or email. Run Prepare to load verified Infor profiles.'
     : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
   const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile, error: spec.error, hint, review };
   let control: ReactNode;
@@ -326,6 +326,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
 
   return <div>
     {control ?? <PaneMessage>{label}: value cannot be displayed or edited in this view. Check the source.</PaneMessage>}
+    {guestProfile && typeof shown === 'string' && shown.trim() !== '' && <button type="button" disabled={locked || !spec.editable} onClick={() => onEdit(spec.path, '')}>Clear selected profile</button>}
     <FieldEvidence spec={spec} label={label} />
   </div>;
 }
