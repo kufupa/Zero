@@ -1043,6 +1043,22 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}),
         ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}),
         ...(command.background ? { background: true } : {}) };
+      const quoteParty = Boolean(command.nativeFieldPath && /\/body\/parties\/(?:organization|bookingAgency)$/.test(command.nativeFieldPath) &&
+        command.snapshot.requests.some(request => request.id === command.requestId && request.kind === 'quote'));
+      if (quoteParty) {
+        let result: unknown;
+        try { result = await api.lookup.mutate(input, mailboxOptions(command.source)); }
+        catch { throw new Error('Infor could not search for this profile. Try again.'); }
+        await refreshAfterStale(input, command.source, result);
+        const reply = isRecord(result) ? result : {};
+        const notice = reply.status === 'ok' ? undefined
+          : reply.outcomeClass === 'hms_busy' || reply.issue === 'HMS_LOCK_BUSY' || reply.issue === 'STAFF_QUOTE_ACTIVE'
+            ? 'Infor is in use. Wait for the current action to finish, then search again.'
+            : reply.issue === 'native_party_search_incomplete'
+              ? 'Infor did not finish the profile search. Search again.'
+              : 'Infor could not search for this profile. Try again.';
+        return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), workflowReply: reply };
+      }
       const isQuote = !command.nativeFieldPath && command.snapshot.requests.some(request =>
         (!command.requestId || request.id === command.requestId) && request.kind === 'quote');
       const raw = isQuote ? await quoteReadWithWait(api.lookup, input, command.source, command)
