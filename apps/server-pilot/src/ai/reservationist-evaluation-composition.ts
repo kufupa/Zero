@@ -251,12 +251,12 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   const capture=await fetchQuote({request:wire,propertyCode:owner.propertyCode,transportId:owner.transportId,outputDir:output,signal});
   signal.throwIfAborted();const evidence=capture.evidenceDirectory;
   if(!inside(evidence)||!resolve(evidence).startsWith(`${output}/`))throw new Error('native_quote_capture_unavailable');
+  options.onEvidenceDirectory?.(evidence);
   const bytes=await readFile(join(evidence,'result.json'));if(bytes.length>20*1024*1024)throw new Error('native_quote_capture_oversized');const source=JSON.parse(bytes.toString()) as NativeSummaryCapture;
   if(source.outcome==='execution_failure')throwSavedExecutionFailure(source as {phase?:unknown;error?:unknown});
   const summaryPartial=isReservationistAuditedSummaryPartial(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
   if(source.schemaVersion!==2||source.propertyCode!==request.propertyCode||source.requested.propertyCode!==request.propertyCode||source.audit?.status!=='complete'||quoteDigest(source.requested)!==quoteDigest(normalized.request)||source.evidenceDirectory!==evidence||!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.now()||!Array.isArray(source.groups)||quoteDigest(options.owner)!==ownerHash||!await nativeReadCapabilityAvailable({propertyCode:owner.propertyCode,transportId:owner.transportId,capability:'quote'}))throw new Error('native_quote_capture_scope_or_completeness_invalid');
   const toolHash=cloudQuoteDependencyDigest();if(toolHash!==toolHashBefore||capture.toolVersion!==`cloud-quote-v2:${toolHash}`)throw new Error('native_quote_tool_changed');
-  options.onEvidenceDirectory?.(evidence);
   const quoteSource:QuoteSourceRecord={ref:`native-quote:${createHash('sha256').update(bytes).digest('hex')}`,sha256:createHash('sha256').update(bytes).digest('hex'),toolVersion:`cloud-quote-v2:${toolHash}`,observedAt:source.observedAt,request:structuredClone(source.requested),result:{outcome:source.outcome,propertyCode:source.requested.propertyCode,groups:source.groups,searchCompleteness:source.searchCompleteness}};
   // Carry only validated summary evidence across refusals; this remains diagnostic, never quote admission.
   const withSummary=(error:Error)=>{if((normalized.request as {details?:string}).details==='summary')Object.defineProperty(error,'quoteSummarySource',{value:quoteSource});return error;};
