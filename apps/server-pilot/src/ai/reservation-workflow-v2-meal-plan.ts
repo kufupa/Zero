@@ -17,7 +17,7 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const lunchDeclined = /\blunch\s+(?:(?:is|was|will|would|should|must|may|can|could)\s+(?:be\s+)?)?(?:not|never)\s+(?:be\s+)?(?:required|needed|necessary|wanted|requested|included|provided)\b|\b(?:not|never)\s+(?:require|need|want|request|include|provide|have)\s+lunch\b/u.test(normalized);
   const lunchRequested = /\blunch\b/u.test(normalized) && !exclusions.has('lunch') && !allMealsExcluded && !lunchDeclined;
   if (/\b(?:no|not|never|without|excluding|exclude|except|skip(?:ped|ping)?)\b/u.test(positive)) return { mealPlan: null, lunchRequested };
-  if (/\b(?:breakfast|dinner|bb|b b|dbb)\s+or\s+(?:breakfast|dinner|bb|b b|dbb)\b/u.test(normalized))
+  if (/\b(?:breakfast|lunch|dinner|bb|b b|dbb)\b[^;]*\bor\b[^;]*\b(?:breakfast|lunch|dinner|bb|b b|dbb)\b/u.test(normalized))
     return { mealPlan: null, lunchRequested };
   const board = normalized.replace(/\b(?:lunch|with|plus|including)\b/gu, '').replace(/\s+/gu, ' ').trim();
   const breakfast = /\b(?:breakfast|bb|b b|dbb)\b/u.test(board), dinner = /\b(?:dinner|dbb)\b/u.test(board);
