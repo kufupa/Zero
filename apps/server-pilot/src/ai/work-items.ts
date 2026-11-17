@@ -2972,7 +2972,13 @@ export async function listWorkItems(
             if (payload.needsAction === true) {
               return { ...row, kind: 'other_actionable', chip, actions: ['other'], reviewOnly: true };
             }
-            return null;
+            if (
+              payload.needsAction === false
+              && (payload.actionConfidence === 'high' || payload.actionConfidence === 'medium')
+            ) {
+              return null;
+            }
+            return { ...row, kind: 'other_actionable', chip, actions: [], reviewOnly: true };
           }
           if (!NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])) {
             return null;

@@ -35,6 +35,7 @@ const SYNC_PROVENANCE_KEYS = [
   'observationId',
   'sourceId',
   'sourceObservationId',
+  'canonicalContentVersion',
 ] as const;
 
 /** Canonical merged gap list written across linked observations. */
