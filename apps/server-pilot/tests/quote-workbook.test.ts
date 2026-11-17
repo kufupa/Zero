@@ -292,7 +292,7 @@ describe('quote workbook line rows', () => {
       'Lunch allowance',
       'Office transfer',
       'Shuttle',
-      'Parking',
+      'Parking (once)',
     ]);
     expect(lines.reduce((sum, line) => sum + line.totalMinor, 0)).toBe(totalMinor);
     const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);

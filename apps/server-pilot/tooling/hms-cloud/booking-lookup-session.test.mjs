@@ -44,6 +44,8 @@ test('target browser quarantine clears under the credential lease only after its
     let held = false, credentialReads = 0;
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async (sql) => {
+        if (sql.includes('advisory_lock_shared')) return [{ acquired: true }];
+        if (sql.includes('advisory_unlock_shared')) return [{ released: true }];
         if (/pg_(?:try_)?advisory_lock/.test(sql)) { held = true; return [{ acquired: true }]; }
         if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
         return [{ pid: 42 }];
@@ -136,6 +138,8 @@ test('owned writer cleanup separates close API errors from physical exit and lea
     syncBuiltinESMExports();
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async sql => {
+        if (sql.includes('advisory_lock_shared')) return [{ acquired: true }];
+        if (sql.includes('advisory_unlock_shared')) return [{ released: true }];
         if (/pg_(?:try_)?advisory_lock/.test(sql)) { held = true; return [{ acquired: true }]; }
         if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
         return [{ pid: 42 }];
@@ -262,6 +266,8 @@ test('fresh credential versions and evidence key metadata are checked under the 
     const key = Buffer.alloc(32, 83), encodedKey = key.toString('base64');
     mock.module('postgres', { defaultExport: () => ({
       reserve: async () => ({ unsafe: async (sql) => {
+        if (sql.includes('advisory_lock_shared')) return [{ acquired: true }];
+        if (sql.includes('advisory_unlock_shared')) return [{ released: true }];
         if (/pg_(?:try_)?advisory_lock/.test(sql)) { held = true; return [{ acquired: true }]; }
         if (sql.includes('pg_advisory_unlock')) { held = false; return [{ released: true }]; }
         return [{ pid: 42 }];

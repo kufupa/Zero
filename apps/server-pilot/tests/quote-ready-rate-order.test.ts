@@ -29,7 +29,7 @@ function stayRow(id: string, arrival: string, departure: string, board: 'dbb' | 
         rooms: 1,
         adultsPerRoom: 2,
         childAges: [],
-        board,
+        mealPlan: board,
       },
     ],
   };
@@ -71,9 +71,9 @@ function pick(input: {
     actorUserId: 'staff-actor-1',
     mailKind: 'quote',
     parties: input.agencyNativeId
-      ? { agency: { kind: 'agency', nativeId: input.agencyNativeId, name: 'ignored' } }
+      ? { bookingAgency: { kind: 'bookingAgency', nativeId: input.agencyNativeId, name: 'ignored' } }
       : input.companyNativeId
-        ? { company: { kind: 'company', nativeId: input.companyNativeId, name: 'ignored' } }
+        ? { organization: { kind: 'organization', nativeId: input.companyNativeId, name: 'ignored' } }
         : undefined,
   });
   if (!built) throw new Error('staff_rate_pick_invalid');
@@ -124,7 +124,7 @@ describe('quote-ready rate order from staff pick history', () => {
     }
 
     const dbbPlan = plan([stayRow('stay-dbb', '2026-10-20', '2026-10-23', 'dbb')]);
-    expect(dbbPlan.inputs[0]?.groups[0]?.board).toBe('dinner_bb');
+    expect(dbbPlan.inputs[0]?.groups[0]?.mealPlan).toBe('dinner_bb');
     const dbbJobs = quoteShopJobsForPlan(dbbPlan, strategies);
     expect(dbbJobs).toHaveLength(9);
     expect(dbbJobs.map((job) => job.input.salesStrategy)).toEqual(strategies.map((strategy) => strategy.requestValue));
@@ -179,7 +179,7 @@ describe('quote-ready rate order from staff pick history', () => {
       transportId: property.mailboxTransportId,
       actorUserId: 'staff-actor-1',
       mailKind: 'quote',
-      parties: { agency: { kind: 'agency', nativeId: 'agency-17', name: 'not-stored@example.test' } },
+      parties: { bookingAgency: { kind: 'bookingAgency', nativeId: 'agency-17', name: 'not-stored@example.test' } },
     });
     expect(logged).toMatchObject({
       strategy: 'GOV',

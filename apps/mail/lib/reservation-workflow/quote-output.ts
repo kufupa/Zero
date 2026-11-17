@@ -1,5 +1,7 @@
 import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from './types';
 import { effectiveAt, requestPath, valueAt } from './views';
+import { quoteFamilyOptions, type QuoteFamilyOption } from '../../../server-pilot/src/ai/reservation-workflow-v2-quote-family';
+import { compileQuote, currentQuoteAvailabilityObservation, quoteOverridesMatch } from '../../../server-pilot/src/ai/reservation-workflow-v2-quote-readiness';
 
 export type QuoteOutputArtifact = {
   kind: 'pdf_quote' | 'xlsx_quote'; fileName: string; mimeType: string;
@@ -11,6 +13,11 @@ export type QuoteOutput = {
   artifacts: QuoteOutputArtifact[]; failures: string[]; issues: string[]; stale: boolean; inventoryDecline: boolean;
 };
 export type QuoteOutputResult = { status: 'saved' | 'created' | 'cancelled' | 'error' | 'unknown'; message: string };
+export function completeQuotePackage(output: QuoteOutput): boolean {
+  return Boolean(output.cover) && output.issues.length === 0 && output.failures.length === 0 &&
+    (output.inventoryDecline || (output.artifacts.some(item => item.kind === 'pdf_quote') &&
+      output.artifacts.some(item => item.kind === 'xlsx_quote')));
+}
 const rec = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
 
@@ -166,6 +173,20 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
     hasCurrentUnavailableInventoryProof(snapshot, source, requestId, observation, configuration);
   if (result.unavailableInventory !== undefined && !inventoryDecline)
     issues.push('The unavailability reply no longer matches a complete current Infor result. Refresh the search before using it.');
+  if (result.unavailableInventory === undefined) {
+    const priceRef = typeof result.preparedObservationRef === 'string' ? result.preparedObservationRef : '';
+    const price = draft.observations.find((item) => item.ref === priceRef);
+    const priceCriteria = rec(price?.criteria), priceResult = rec(price?.result);
+    const expiry = Date.parse(typeof priceResult.freshUntil === 'string' ? priceResult.freshUntil : '');
+    if (!price || !observation.sourceRefs.includes(priceRef) || price.kind !== 'rate_availability' ||
+        price.status !== 'complete' || !price.coverage.complete || price.generationId !== draft.generationId ||
+        price.propertyCode !== draft.propertyCode || price.sourceMessageId !== source.messageId ||
+        priceCriteria.workflow !== 'quote' || priceCriteria.requestId !== requestId ||
+        priceCriteria.sourceHash !== source.sourceHash || priceCriteria.inputDigest !== rec(observation.criteria).inputDigest ||
+        !Number.isFinite(expiry) || expiry <= Date.now()) {
+      issues.push('The Infor price is no longer current. Generate the quote again.');
+    }
+  }
   const textOnly = Array.isArray(result.artifacts) && raw.length === 0 && outputKinds.length === 1 && outputKinds[0] === 'email_quote' &&
     Array.isArray(result.outputKinds) && result.outputKinds.length === 1 && result.outputKinds[0] === 'email_quote' &&
     operation.status === 'succeeded' && observation.status === 'complete' && observation.coverage.complete &&
@@ -175,8 +196,6 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   if (result.sourceHash !== source.sourceHash) issues.push('The generated output no longer matches this email.');
   if (raw.length > 32 || new Set(artifacts.map((item) => item.kind)).size !== artifacts.length) issues.push('The generated attachments are ambiguous.');
   if (artifacts.some((item) => !outputKinds.includes(item.kind))) issues.push('A generated attachment was not requested. Generate the quote again.');
-  // An independently generated cover is still useful when one or both document builders fail. Keep
-  // that unsent draft actionable and let staff decide whether to continue without those files.
   if (!artifacts.length && !textOnly && failures.length === 0 && !inventoryDecline) issues.push('No quotation file was generated. Generate the quote again.');
   if (!inventoryDecline && outputKinds.includes('pdf_quote') && !artifacts.some((item) => item.kind === 'pdf_quote') && !failures.some((failure) => failure.startsWith('pdf_'))) issues.push('The PDF is missing. Generate the quote again.');
   if (!inventoryDecline && outputKinds.includes('xlsx_quote') && !artifacts.some((item) => item.kind === 'xlsx_quote') && !failures.some((failure) => failure.startsWith('xlsx_'))) issues.push('The Excel file is missing. Generate the quote again.');
@@ -184,6 +203,89 @@ export function getQuoteOutput(source: ReservationSourceContext, snapshot: Reser
   if (stale) issues.push('The quote changed after these files were generated. Generate the quote again.');
   return { requestId, operationId: operation.id, observationRef: observation.ref, cover: parsedCover,
     artifacts, failures, issues, stale, inventoryDecline };
+}
+
+/** Reject incomplete or inconsistent families before pricing or delivering any option. */
+export function quoteFamilyMembers(snapshot: ReservationPaneSnapshot | null, requestId: string): Array<{ requestId: string; label: string }> | null {
+  const draft = snapshot?.session.draft;
+  if (!draft || !quoteFamilyOptions(draft, requestId)) return null;
+  const requests = draft.proposal.content.requests;
+  const request = requests?.find(row => row.id === requestId && row.kind === 'quote');
+  if (!request || request.kind !== 'quote') return null;
+  const family = request.body.quoteFamily;
+  if (!family) return [{ requestId, label: 'Quote' }];
+  return family.members;
+}
+
+/** The option receipt must still bind every current prepared date run. */
+function currentOptionReceipt(snapshot: ReservationPaneSnapshot, option: QuoteFamilyOption,
+  options: QuoteFamilyOption[], output: QuoteOutput): boolean {
+  if (output.inventoryDecline) return option.members.length === 1;
+  const draft = snapshot.session.draft;
+  const document = draft.observations.find(row => row.ref === output.observationRef && row.kind === 'document');
+  const payload = rec(document?.result), receipt = rec(payload.optionReceipt);
+  if (!payload.optionReceipt) return option.members.length === 1;
+  if (option.members.length > 1 && receipt.inventoryValidation !== 'joint-inventory/v1') return false;
+  const entries = Array.isArray(receipt.members) ? receipt.members.map(rec) : [];
+  const leader = draft.proposal.content.requests.find(row => row.id === option.members[0]?.requestId && row.kind === 'quote');
+  const familyId = leader?.kind === 'quote' ? leader.body.quoteFamily?.id ?? null : null;
+  if (!document || receipt.familyId !== familyId || receipt.optionId !== option.id || JSON.stringify(receipt.familyOptions) !== JSON.stringify(options) ||
+      entries.length !== option.members.length || typeof receipt.totalMinor !== 'number' ||
+      !Number.isSafeInteger(receipt.totalMinor) || typeof receipt.currency !== 'string') return false;
+  let total = 0;
+  for (const [index, member] of option.members.entries()) {
+    const request = draft.proposal.content.requests.find(row => row.id === member.requestId && row.kind === 'quote');
+    if (!request || request.kind !== 'quote') return false;
+    const compiled = compileQuote(draft, request, true);
+    if (compiled.status !== 'ok') return false;
+    const price = currentQuoteAvailabilityObservation(draft, member.requestId, compiled.inputDigest);
+    const result = rec(price?.result), criteria = rec(price?.criteria), entry = entries[index]!;
+    const prepared = [...draft.operationResults].reverse().find(row => row.workflow === 'quote' &&
+      row.requestId === member.requestId && row.generationId === draft.generationId && row.status === 'prepared');
+    if (!price || price.status !== 'complete' || !price.coverage.complete || !prepared?.observationRefs.includes(price.ref) ||
+        !document.sourceRefs.includes(price.ref) || entry.requestId !== member.requestId ||
+        entry.preparedObservationRef !== price.ref || entry.inputDigest !== compiled.inputDigest ||
+        criteria.sourceHash !== draft.source.sourceHash || criteria.inputDigest !== compiled.inputDigest ||
+        entry.revisionRef !== rec(result.revision).id || entry.nativeInputDigest !== (result.nativeInputDigest ?? null) ||
+        entry.workflowRunId !== (result.workflowRunId ?? null) || entry.freshUntil !== result.freshUntil ||
+        !Number.isFinite(Date.parse(String(result.freshUntil))) || Date.parse(String(result.freshUntil)) <= Date.now() ||
+        !quoteOverridesMatch(draft, member.requestId, result.inputOverrides) ||
+        typeof result.totalMinor !== 'number' || !Number.isSafeInteger(result.totalMinor) || result.currency !== receipt.currency) return false;
+    total += result.totalMinor;
+  }
+  const rawArtifacts = Array.isArray(payload.artifacts) ? payload.artifacts.map(rec) : [];
+  return Number.isSafeInteger(total) && total === receipt.totalMinor && rawArtifacts.every(artifact =>
+    artifact.totalMinor === total && artifact.currency === receipt.currency);
+}
+
+/** Every complete option is validated before one unsent draft is assembled. */
+export function getQuotePackageOutput(source: ReservationSourceContext, snapshot: ReservationPaneSnapshot | null,
+  requestId: string, configuration?: PropertyConfiguration | null): QuoteOutput | null {
+  if (!snapshot) return null;
+  const options = quoteFamilyOptions(snapshot.session.draft, requestId);
+  if (!options) return null;
+  if (options.length === 1 && options[0]!.members.length === 1) return getQuoteOutput(source, snapshot, requestId, configuration);
+  const outputs = options.map(option => getQuoteOutput(source, snapshot, option.members[0]!.requestId, configuration));
+  if (outputs.some(output => !output || !completeQuotePackage(output))) return null;
+  const complete = outputs.filter((output): output is QuoteOutput => output !== null);
+  if (complete.some((output, index) => !currentOptionReceipt(snapshot, options[index]!, options, output))) return null;
+  const recipient = complete[0]?.cover?.to.trim();
+  if (!recipient || complete.some(output => output.cover?.to.trim().toLowerCase() !== recipient.toLowerCase())) return null;
+  if (complete.length === 1) return { ...complete[0]!, requestId };
+  const artifacts = complete.flatMap((output, index) => output.artifacts.map(item => {
+    const prefix = `Option ${index + 1} - `;
+    const dot = item.fileName.lastIndexOf('.');
+    const extension = dot > 0 ? item.fileName.slice(dot) : '';
+    const name = dot > 0 ? item.fileName.slice(0, dot) : item.fileName;
+    return { ...item, fileName: `${prefix}${name.slice(0, 255 - prefix.length - extension.length)}${extension}` };
+  }));
+  if (new Set(artifacts.map(item => item.fileName.toLowerCase())).size !== artifacts.length) return null;
+  return { requestId, operationId: JSON.stringify(complete.map(output => output.operationId)),
+    observationRef: JSON.stringify(complete.map(output => output.observationRef)),
+    cover: { to: recipient, subject: complete[0]!.cover!.subject,
+      body: ['Please find the separately priced options below.', ...complete.map((output, index) =>
+        `${options[index]!.label}\n\n${output.cover!.body}`)].join('\n\n') },
+    artifacts, failures: [], issues: [], stale: false, inventoryDecline: complete.every(output => output.inventoryDecline) };
 }
 
 export function quoteCoverHtml(body: string): string {

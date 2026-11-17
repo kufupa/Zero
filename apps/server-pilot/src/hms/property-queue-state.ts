@@ -212,7 +212,7 @@ export async function readPropertyLockHolder(db: DB, lockKey: string): Promise<L
  * True while a staff-requested quote is queued or in flight.
  * Prepared userless quotes do not block background work.
  */
-export async function staffQuoteInFlight(db: DB): Promise<boolean> {
+export async function staffQuoteInFlight(db: DB, excludeGenerationId?: string): Promise<boolean> {
   const [row] = await db
     .select({ id: aiDraftGeneration.id })
     .from(aiDraftGeneration)
@@ -220,6 +220,7 @@ export async function staffQuoteInFlight(db: DB): Promise<boolean> {
       and(
         eq(aiDraftGeneration.model, STAFF_QUOTE_GENERATION_MODEL),
         eq(aiDraftGeneration.status, 'running'),
+        excludeGenerationId ? ne(aiDraftGeneration.id, excludeGenerationId) : undefined,
         sql`${aiDraftGeneration.createdAt} > clock_timestamp() - interval '20 minutes'`,
       ),
     )

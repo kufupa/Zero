@@ -450,10 +450,16 @@ it('evaluates accepted-offer validity at acceptance and current inventory at its
  expect(assessQuoteAcceptance({revision:r,acceptedAt:'2026-10-04T10:00:00Z',scopeDigest:r.scopeDigest,sentProof,inventoryEvidence})).toMatchObject({status:'availability_unproven'});
 });
 
-it('uses a source-scoped room pool for one selected group when native building is explicitly null',async()=>{
+it('uses a verified profile pool for one selected group when native building is explicitly null',async()=>{
  const s=source();s.result.groups[0].options[0].room.buildingCode=null;
  const r=await resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:s.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],resolveSource:async()=>s,resolvePolicy:async()=>policy,admission:admission([s])});
- expect(r.totalMinor).toBe(220002);expect(r.groups[0].poolId).toContain('source-1');
+ expect(r.totalMinor).toBe(220002);expect(r.groups[0].poolId).toBe('HRCEN:profile:STQN');
+});
+it('keeps a source-scoped pool for a single selection when the room profile does not hold',async()=>{
+ const s=source();s.result.groups[0].options[0].room.buildingCode=null;
+ s.result.groups[0].options.push({...structuredClone(s.result.groups[0].options[0]),id:'HRCEN:PENT:BAR',room:{...s.result.groups[0].options[0].room,code:'PENT'},matchStatus:'alternative'});
+ const r=await resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:s.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],resolveSource:async()=>s,resolvePolicy:async()=>policy,admission:admission([s])});
+ expect(r.groups[0].poolId).toContain('source-1');
 });
 it('refuses independent unknown-building pools across selected groups when the room profile does not hold',async()=>{
  const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;a.result.groups[0].options.push({...structuredClone(a.result.groups[0].options[0]),id:'HRCEN:PENT:BAR',room:{...a.result.groups[0].options[0].room,code:'PENT',buildingCode:null},matchStatus:'alternative'});b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;

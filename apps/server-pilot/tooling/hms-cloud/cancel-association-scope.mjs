@@ -1,5 +1,5 @@
 // Verify the complete native Associated Reservations response for one saved stay.
-import { openStay360RecordTab } from './hms-readers.mjs';
+import { openStay360RecordTab } from './stay360-record-tabs.mjs';
 import { installPageRequestFence } from './page-request-fence.mjs';
 
 const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';

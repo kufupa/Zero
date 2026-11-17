@@ -1839,12 +1839,31 @@ function createHmsRuntimeInternal(
     let lastReceipt: import('./browser-artifacts.js').HmsBrowserArtifactReceiptV1 | null =
       null;
 
-    const release = await acquireSessionLock(input.signal);
-    activeSessions += 1;
     const operationSignal = input.signal;
     let credentialLease: import('../../tooling/hms-cloud/cloud-session.mjs').CloudCredentialLease | null = null;
+    let credentialBorrowRelease: (() => void) | undefined;
     let credentialReleaseOnce: Promise<void> | null = null;
-    let credentialLeaseAcquisitionPending = false;
+    // Credential precedes even the process semaphore: a property callback must
+    // never wait behind a session that is itself waiting for that credential.
+    if (nativePlaywrightBrowserFactories.has(options.browserFactory) ||
+        getPropertyRegistration(targetPropertyCode)?.group === 'davinci') {
+      const cloud = await import('../../tooling/hms-cloud/cloud-session.mjs');
+      credentialLease = cloud.currentCloudCredentialLease(targetPropertyCode) ?? null;
+      if (credentialLease) credentialBorrowRelease = cloud.borrowCloudCredentialLease(targetPropertyCode, credentialLease);
+      else credentialLease = await cloud.acquireCloudCredentialLease(targetPropertyCode, { signal: operationSignal, readOnly: true });
+      input.signal = AbortSignal.any([operationSignal, credentialLease.signal]);
+      if ('deadlineMs' in operationSignal && typeof operationSignal.deadlineMs === 'number') {
+        Object.defineProperty(input.signal, 'deadlineMs', { value: operationSignal.deadlineMs });
+      }
+    }
+    let release: () => void;
+    try { release = await acquireSessionLock(input.signal); }
+    catch (error) {
+      if (credentialBorrowRelease) credentialBorrowRelease();
+      else await credentialLease?.release();
+      throw error;
+    }
+    activeSessions += 1;
 
     let authContext: HmsBrowserContext | null = null;
     let authCloseOnce: Promise<void> | null = null;
@@ -1894,7 +1913,6 @@ function createHmsRuntimeInternal(
         authClosePending ||
         authContextCreationPending ||
         proofContextCreationPending ||
-        credentialLeaseAcquisitionPending ||
         context ||
         proofClosePending
       ) {
@@ -1903,7 +1921,7 @@ function createHmsRuntimeInternal(
       if (credentialLease) {
         if (!credentialReleaseOnce) {
           const lease = credentialLease;
-          credentialReleaseOnce = Promise.resolve().then(() => lease.release()).then(releaseOnce);
+          credentialReleaseOnce = Promise.resolve().then(() => credentialBorrowRelease ? credentialBorrowRelease() : lease.release()).then(releaseOnce);
           void credentialReleaseOnce.catch((error: unknown) => {
             activeTeardownError ??= error;
             poisonAuthCleanup();
@@ -2893,21 +2911,8 @@ function createHmsRuntimeInternal(
       await revalidateSessionAuthorization();
       assertNotAborted(input.signal);
       assertDeadline(input.signal);
-      if (getPropertyRegistration(targetPropertyCode)?.group === 'davinci') {
-        const { acquireCloudCredentialLease } = await import('../../tooling/hms-cloud/cloud-session.mjs');
-        assertNotAborted(input.signal);
-        credentialLeaseAcquisitionPending = true;
-        try {
-          credentialLease = await acquireCloudCredentialLease(targetPropertyCode, { signal: input.signal });
-        } finally {
-          credentialLeaseAcquisitionPending = false;
-          await releaseIfSafe();
-        }
+      if (credentialLease) {
         credentialLease.signal.addEventListener('abort', closeOnAbort, { once: true });
-        input.signal = AbortSignal.any([operationSignal, credentialLease.signal]);
-        if ('deadlineMs' in operationSignal && typeof operationSignal.deadlineMs === 'number') {
-          Object.defineProperty(input.signal, 'deadlineMs', { value: operationSignal.deadlineMs });
-        }
         if (input.signal.aborted) closeOnAbort();
         assertNotAborted(input.signal);
         assertDeadline(input.signal);
@@ -3535,8 +3540,10 @@ export function createHmsLiveProofRuntime(
 }
 
 /** Required Playwright factory — production composition must use this (or equivalent). */
+const nativePlaywrightBrowserFactories = new WeakSet<BrowserFactory>();
+
 export function createPlaywrightBrowserFactory(): BrowserFactory {
-  return async ({ executablePath, signal, tracesDir }) => {
+  const factory: BrowserFactory = async ({ executablePath, signal, tracesDir }) => {
     assertNotAborted(signal ?? new AbortController().signal);
     const pw = await import('playwright');
     const browser = await pw.chromium.launch({
@@ -3637,6 +3644,8 @@ export function createPlaywrightBrowserFactory(): BrowserFactory {
       },
     };
   };
+  nativePlaywrightBrowserFactories.add(factory);
+  return factory;
 }
 
 /** Optional real Playwright factory — only when playwright is installed. */
