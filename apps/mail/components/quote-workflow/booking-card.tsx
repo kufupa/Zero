@@ -2443,7 +2443,6 @@ export function BookingCards({
         const boundCompany = parties?.organization?.nativeId ? parties.organization :
           !partyFieldEdited?.organization ? binding?.value.organization ?? undefined : undefined;
         const matchingGuests = (guestCandidates[key] ?? []).filter((candidate) =>
-          (!choice.firstName.trim() || candidate.firstName.trim().toLowerCase() === choice.firstName.trim().toLowerCase()) &&
           candidate.lastName.trim().toLowerCase() === choice.lastName.trim().toLowerCase());
         const searchDraft = workItemPane?.rateDraft;
         const searchStayId = workItemPane?.refs[room.groupId]?.stayId ?? group?.stayId;
@@ -2550,6 +2549,9 @@ export function BookingCards({
                     </option>
                   ))}
                 </select>
+                {matchingGuests.some((guest) => guest.firstName.trim().toLowerCase() !== choice.firstName.trim().toLowerCase()) ? (
+                  <span className="font-normal">Names may differ. Check the guest before choosing; the profile name will be used.</span>
+                ) : null}
               </label>
             ) : null}
             {selectedGuestName.trim() && guestSplit.ambiguous ? (

@@ -193,7 +193,10 @@ async function selectGuest(runTool, guest, commit, requireExplicitGuestSelection
     same(item.lastName, guest.search.lastName) && (!guest.search.firstName || same(item.firstName, guest.search.firstName)) &&
     (!guest.search.email || (found.correlation?.verifiedFields?.includes('emailaddress') && same(item.email, guest.search.email))));
   if (matches.length !== 1 || (field !== 'profileId' && found.coverage?.possiblyTruncated)) {
-    stop('needs_input', matches.length || found.coverage?.possiblyTruncated ? 'guest_ambiguous' : 'guest_not_found',
+    const sameSurname = field !== 'profileId' && all.some((item) => same(item.lastName, guest.search.lastName));
+    const issue = matches.length || found.coverage?.possiblyTruncated ? 'guest_ambiguous'
+      : sameSurname ? 'guest_choice_required' : 'guest_not_found';
+    stop('needs_input', issue,
       { guestSearchOutcome: found.outcome, guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
   }
   if (!commit && requireExplicitGuestSelection && field !== 'profileId') {
