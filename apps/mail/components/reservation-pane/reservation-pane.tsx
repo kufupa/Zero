@@ -202,13 +202,16 @@ export function ReservationPane(props: ReservationPaneProps) {
     .replace(/\b(?:no|without)\s+(?:(?:guest|hotel|overnight)\s+)?(?:rooms?|accommodation|lodging|stays?)\b/gi, '');
   const hasRoomInputs = quoteGroups.some(group => {
     const occupancy = record(group.occupancy);
-    return Boolean(text(group.departure) || Number(group.quantity) > 0 || Number(occupancy.adults) > 0 ||
+    return Boolean(Number(group.quantity) > 0 || Number(occupancy.adults) > 0 ||
       Number(occupancy.childCount) > 0 || (Array.isArray(group.roomCodes) && group.roomCodes.length) ||
       text(group.ratePlan) || roomWords.test(withoutVenueRooms(text(group.requestedRoomDescription))));
   });
+  const roomDetailsEdited = request?.kind === 'quote' && Object.entries(snapshot?.session.draft.fieldOverrides ?? {}).some(([path, edit]) =>
+    edit.state === 'set' && path.startsWith(`${requestPath(request.id)}/body/groups/`) &&
+    /\/(?:departure|quantity|occupancy|roomCodes|ratePlan)(?:\/|$)/.test(path));
   const venueKey = `${source.messageId}:${source.sourceHash}:${request?.id ?? ''}`;
   const venueOnly = request?.kind === 'quote' && venueWords.test(quoteText) && !roomWords.test(lodgingText) &&
-    !hasRoomInputs && venueRoomEntry !== venueKey;
+    !hasRoomInputs && !roomDetailsEdited && venueRoomEntry !== venueKey;
   const ids = request?.kind === 'create' ? (Array.isArray(body.allocations) ? body.allocations.map(row => text(record(row).id)) : [])
     : request?.kind === 'amend' || request?.kind === 'cancel' ? (Array.isArray(record(body.targets).include) ? (record(body.targets).include as unknown[]).map(row => text(record(row).id)) : []) : [];
   const digestFor = (current: ReservationPaneSnapshot | null) => {
