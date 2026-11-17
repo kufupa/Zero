@@ -69,6 +69,8 @@ export type SyncedQuoteSelection = {
   bodyText: string;
   /** HTML-only source with quoted history removed for grounding current requests. */
   currentBodyText?: string;
+  /** Trusted authored HTML for review cues; null means no HTML, undefined means unknown. */
+  authoredHtmlBodyText?: string | null;
   /** Selected message receipt time; anchors year inference. */
   receivedAt?: string;
   /** Selected message's best stored time for finding its closest thread neighbours when receivedAt is missing. */
@@ -836,6 +838,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     subject: row.subject ?? '',
     bodyText: row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? ''),
     ...(!row.textBody?.trim() && row.htmlBody ? { currentBodyText: preStaySourceText(null, row.htmlBody) } : {}),
+    // Stored HTML is sanitized and may have lost quote markers. It cannot corroborate current text.
+    authoredHtmlBodyText: row.htmlBody?.trim() ? undefined : null,
     receivedAt: row.receivedAt?.toISOString(),
     threadReferenceAt: (
       row.direction === 'outbound'
