@@ -96,7 +96,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (value === null && (field === 'agency_id' || field === 'agency_name')) continue;
+    if (value === null && ['agency_id', 'agency_name', 'guest_profile_id', 'source_of_business', 'track'].includes(field)) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');
@@ -117,7 +117,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   // A chosen native ID and name can coexist in the proposal; the native request
   // selects by ID and verifies the supplied name separately.
   if ('profileId' in request.guest && 'search' in request.guest) {
-    if (!expectedGuest || booking.fields.guest_email !== undefined) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name; email lookup cannot be combined.');
+    if (!expectedGuest || booking.fields.guest_email != null) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name; email lookup cannot be combined.');
     delete request.guest.search;
   }
   return { request, unknown, ...(expectedGuest ? { expectedGuest } : {}) };

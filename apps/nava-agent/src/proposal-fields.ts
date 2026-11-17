@@ -64,12 +64,17 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
-    for(const [key,label,required] of [['guarantee_type','Guarantee type',true],['agency_name','Booking agency',false],['agency_id','Booking agency ID',false]] as const) {
+    for(const [key,label,required,control] of [
+      ['room_type','Room type',true,'combobox'], ['rate_plan','Rate plan',true,'combobox'],
+      ['source_of_business','Booking source',true,'combobox'], ['track','Track',true,'combobox'],
+      ['guarantee_type','Guarantee type',true,'text'], ['guest_profile_id','Guest profile ID',false,'text'],
+      ['agency_name','Booking agency',false,'text'], ['agency_id','Booking agency ID',false,'text'],
+    ] as const) {
       const path=`/bookings/${index}/fields/${key}`;
       const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
       if(!Object.hasOwn(fields,key)) fields[key]=null;
-      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required,control:'text'};
-      else fieldSpecs.push({path,label,editable:true,required,control:'text',provenance:'unknown',error:null,options:[],evidence:[]});
+      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required,control};
+      else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
     }
     return {...booking,fields};
   });
