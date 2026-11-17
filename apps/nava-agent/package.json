@@ -1,0 +1,28 @@
+{
+  "name": "@zero/nava-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "worker": "tsx src/worker.ts",
+    "migrate": "tsx src/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "import-train": "tsx src/import-train.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.9.0",
+    "@hono/node-server": "1.19.9",
+    "hono": "4.10.8",
+    "postgres": "3.4.5",
+    "tsx": "4.20.5",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.11",
+    "typescript": "5.8.3"
+  }
+}
