@@ -754,6 +754,12 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             or(and(inArray(threadRun.state, ['queued', 'retry_wait']),
               or(sql`${threadRun.nextRunAt} IS NULL`, lte(threadRun.nextRunAt, now))),
               and(inArray(threadRun.state, ['claimed', 'running']), lte(threadRun.updatedAt, staleBefore))),
+            or(ne(threadRun.runKind, 'reservation_prefill'), sql`(
+              ${db.select({ count: sql<number>`count(*)` }).from(busyArrival).where(and(
+                eq(busyArrival.runKind, 'reservation_prefill'), eq(busyArrival.transportId, threadRun.transportId),
+                ne(busyArrival.id, threadRun.id), inArray(busyArrival.state, ['claimed', 'running']),
+                gt(busyArrival.updatedAt, staleBefore)))}
+              ) < ${env.RESERVATION_PREFILL_CONCURRENCY}`),
             or(sql`${threadRun.deadlineAt} IS NULL`, gt(threadRun.deadlineAt, now),
               and(eq(threadRun.runKind, 'reservation_prefill'), inArray(threadRun.state, ['claimed', 'running']))),
             or(sql`${staffOrder(threadRun)} > ${staffOrder(aiWorkflowRun)}`,
