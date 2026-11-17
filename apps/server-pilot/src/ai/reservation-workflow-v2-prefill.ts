@@ -6761,12 +6761,20 @@ export async function runReservationWorkflowV2Prefill(input: {
         admittedNonInlineAttachmentCount: admittedAttachments.filter((attachment) => !attachment.isInline).length,
       }
     : undefined;
+  const sourceBodyCoverage = textCoverageComplete
+    ? {
+        version: 1 as const,
+        complete: true as const,
+        adjudicatedBy: 'host' as const,
+      }
+    : undefined;
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });
   const observations: ReservationWorkflowV2Observation[] = [seedObservation({ ref: 'obs_source',
     generationId, propertyCode, source: input.source, sourceRefs: evidence.map((row) => row.ref),
     status: vision.attachmentReads.some((row) => row.status !== 'read') ? 'partial' : 'complete',
     result: { evidenceRefs: evidence.map((row) => row.ref), visionAttachmentReads: vision.attachmentReads, textCoverageComplete,
       ...(fullCausalAttachmentCoverage ? { fullCausalAttachmentCoverage } : {}),
+      ...(sourceBodyCoverage ? { sourceBodyCoverage } : {}),
       maxImages: EXTRACTION_MAX_IMAGES, maxPdfPages: EXTRACTION_MAX_PDF_PAGES },
     complete: !vision.attachmentReads.some((row) => row.status !== 'read'),
   })];

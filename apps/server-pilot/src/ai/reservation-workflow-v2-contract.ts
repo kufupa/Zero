@@ -506,6 +506,22 @@ export function hasFullCausalAttachmentCoverageProof(
   );
 }
 
+/** True only when `obs_source` carries a host-adjudicated v1 source-body coverage proof. */
+export function hasSourceBodyCoverageProof(
+  draft: { observations: ReadonlyArray<{ ref: string; coverage: { complete: boolean }; result?: Record<string, unknown> }> },
+): boolean {
+  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
+  if (!sourceObs || sourceObs.coverage.complete !== true || sourceObs.result?.textCoverageComplete !== true) return false;
+  const proof = sourceObs.result?.sourceBodyCoverage;
+  if (!proof || typeof proof !== 'object' || Array.isArray(proof)) return false;
+  const record = proof as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    record.complete === true &&
+    record.adjudicatedBy === 'host'
+  );
+}
+
 /** Single canonical state JSONB value stored on WorkItem; extraction/prefill never writes into pane-owned overrides. */
 export const reservationWorkflowV2DraftSchema = z.object({
   contractVersion: z.literal(RESERVATION_WORKFLOW_V2_VERSION),

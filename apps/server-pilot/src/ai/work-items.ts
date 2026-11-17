@@ -96,6 +96,7 @@ import { reservationArrivalEvidenceBatch } from './reservation-workflow-v2-evide
 import {
   reservationWorkflowV2DraftSchema,
   hasFullCausalAttachmentCoverageProof,
+  hasSourceBodyCoverageProof,
   reservationWorkflowV2IntakeSchema,
   type ReservationWorkflowV2Draft,
   type ReservationWorkflowV2Intake,
@@ -2787,7 +2788,8 @@ function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationW
       draft.extraction.issues?.length ||
       draft.proposal.issues?.length ||
       draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0 ||
-      draft.errors.length > 0 || !hasFullCausalAttachmentCoverageProof(draft)) return null;
+      draft.errors.length > 0 || !hasFullCausalAttachmentCoverageProof(draft) ||
+      !hasSourceBodyCoverageProof(draft)) return null;
   return intake.data;
 }
 

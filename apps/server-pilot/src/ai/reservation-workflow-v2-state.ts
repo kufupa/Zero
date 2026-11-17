@@ -25,6 +25,7 @@ import {
   RESERVATION_PREFILL_SCHEMA_VERSION,
   RESERVATION_WORKFLOW_V2_VERSION,
   hasFullCausalAttachmentCoverageProof,
+  hasSourceBodyCoverageProof,
   reservationWorkflowV2DraftSchema,
   reservationWorkflowV2ExtractionSchema,
   reservationWorkflowV2FieldOverrideSchema,
@@ -154,7 +155,8 @@ function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boole
     !draft.extraction?.issues?.length &&
     !draft.proposal.issues?.length &&
     draft.errors.length === 0 &&
-    hasFullCausalAttachmentCoverageProof(draft);
+    hasFullCausalAttachmentCoverageProof(draft) &&
+    hasSourceBodyCoverageProof(draft);
 }
 
 /** The intake decision applies only while it still binds to this exact draft. */
