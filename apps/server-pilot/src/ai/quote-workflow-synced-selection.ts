@@ -28,7 +28,7 @@ import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
 import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
-import { authoredHtmlForReview, preStaySourceText } from './existing-stay-information.js';
+import { preStaySourceText } from './existing-stay-information.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -69,7 +69,7 @@ export type SyncedQuoteSelection = {
   bodyText: string;
   /** HTML-only source with quoted history removed for grounding current requests. */
   currentBodyText?: string;
-  /** Authored HTML text for corroborating UI cues; null means there is no HTML part. */
+  /** Trusted authored HTML for review cues; null means no HTML, undefined means unknown. */
   authoredHtmlBodyText?: string | null;
   /** Selected message receipt time; anchors year inference. */
   receivedAt?: string;
@@ -836,7 +836,8 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     subject: row.subject ?? '',
     bodyText: row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? ''),
     ...(!row.textBody?.trim() && row.htmlBody ? { currentBodyText: preStaySourceText(null, row.htmlBody) } : {}),
-    authoredHtmlBodyText: row.htmlBody?.trim() ? authoredHtmlForReview(row.htmlBody) : null,
+    // Stored HTML is sanitized and may have lost quote markers. It cannot corroborate current text.
+    authoredHtmlBodyText: row.htmlBody?.trim() ? undefined : null,
     receivedAt: row.receivedAt?.toISOString(),
     threadReferenceAt: (
       row.direction === 'outbound'
