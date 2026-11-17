@@ -5,7 +5,7 @@ export function normalizeRequestedMealPlan(value: unknown): {
   const phrase = typeof value === 'string' ? value.trim().toLowerCase().replace(
     /\b(?:don|doesn|didn|won|wouldn|shouldn|isn|aren|wasn|weren|hasn|haven|hadn|can|couldn|mustn)['’]t\b/gu, 'not')
     .replace(/\bsupper\b/gu, 'dinner')
-    .replace(/\b(?:not|never)\s+skip(?:ped|ping)?\s+(?:(?:any|the)\s+)?(breakfast|lunch|dinner|meals?)\b/gu, '$1') : '';
+    .replace(/\b(?:not|never)\s+skip(?:ped|ping)?\s+(?:(?:any|the)\s+)?(breakfast|lunch|dinner|meals?)\b/gu, 'including $1') : '';
   const exclusions = new Set<string>();
   const positive = phrase.replace(/[,+\s&/_-]+/gu, ' ').replace(
     /\b(?:no(?:\s+(?:need|requirement|request)(?:\s+for)?)?|without|excluding|exclude|skip(?:ped|ping)?|(?:not|never)(?:\s+(?:including|need|require|want|request|include|provide|have))?)\s+(?:(?:any|the)\s+)?(?:breakfast|lunch|dinner|meals?)(?:\s+(?:(?:and|or)\s+)?(?:breakfast|lunch|dinner|meals?))*/gu,
