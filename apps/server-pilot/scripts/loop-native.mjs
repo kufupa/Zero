@@ -55,8 +55,18 @@ try {
   if (input.messages.some(row => {
     if (row.threadId !== input.source.threadId) return false;
     const liveRow = current.messages.find(message => message.id === row.id);
-    return !liveRow || ['subject', 'textBody', 'htmlBody'].some((key, index) =>
-      (row[key] ?? '') !== (liveRow[['subject', 'text_body', 'html_body'][index]] ?? ''));
+    if (!liveRow || ['subject', 'textBody', 'htmlBody'].some((key, index) =>
+      (row[key] ?? '') !== (liveRow[['subject', 'text_body', 'html_body'][index]] ?? ''))) return true;
+    if (input.selectionOnly) return false;
+    const equal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    const stamp = value => value == null ? null : new Date(value).toISOString();
+    return row.businessDirection !== liveRow.direction || row.historyOnly !== liveRow.history_only ||
+      !equal(row.sourceProvenance, liveRow.source_provenance) || !equal(row.from?.[0], liveRow.from_address) ||
+      !equal(row.to, liveRow.to_addresses) || !equal(row.cc, liveRow.cc_addresses) || !equal(row.bcc, liveRow.bcc_addresses) ||
+      !equal(row.ownerHeaderValue, liveRow.owner_header_value) || !equal(row.messageId, liveRow.message_id_header) ||
+      !equal(row.inReplyTo, liveRow.in_reply_to) || !equal(row.references, liveRow.references) ||
+      stamp(row.receivedAt) !== stamp(liveRow.received_at) || stamp(row.sentAt) !== stamp(liveRow.sent_at) ||
+      stamp(row.createdAt) !== stamp(liveRow.created_at);
   }))
     throw Error('live_thread_changed');
   snapshot.subject = selected.subject; snapshot.textBody = selected.text_body; snapshot.htmlBody = selected.html_body;
@@ -109,11 +119,13 @@ try {
       const attachments = attachmentSnapshot(attachmentRows.map(row => row.attachment));
       if (JSON.stringify(attachments) !== JSON.stringify(attachmentSnapshot(current.attachments))) throw Error('live_attachments_changed');
       const threadRows = await db.select({ id: mail.message.id, subject: mail.message.subject, textBody: mail.message.textBody,
-        htmlBody: mail.message.htmlBody }).from(mail.message).where(eq(mail.message.threadId, input.source.threadId));
+        htmlBody: mail.message.htmlBody, sourceProvenance: mail.message.sourceProvenance, historyOnly: mail.message.historyOnly })
+        .from(mail.message).where(eq(mail.message.threadId, input.source.threadId));
       if (threadRows.length !== current.messages.length || threadRows.some(row => {
         const prior = current.messages.find(message => message.id === row.id);
         return !prior || (row.subject ?? '') !== (prior.subject ?? '') ||
-          (row.textBody ?? '') !== (prior.text_body ?? '') || (row.htmlBody ?? '') !== (prior.html_body ?? '');
+          (row.textBody ?? '') !== (prior.text_body ?? '') || (row.htmlBody ?? '') !== (prior.html_body ?? '') ||
+          row.historyOnly !== prior.history_only || JSON.stringify(row.sourceProvenance ?? null) !== JSON.stringify(prior.source_provenance ?? null);
       })) throw Error('live_thread_changed');
       const selection = await loadSyncedQuoteSelectionFromMailbox({ db, transportId: input.transport.id, messageId: input.source.messageId,
         includeThreadState: true, sourceCutoffOnly: true, includeVisionImages: true, trackVisionImages: true, signal: AbortSignal.timeout(60_000) });
