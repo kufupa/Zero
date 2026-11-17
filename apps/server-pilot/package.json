@@ -49,6 +49,7 @@
     "@aws-sdk/s3-request-presigner": "^3.1077.0",
     "@hono/node-server": "^1.14.1",
     "@mastra/core": "1.70.0",
+    "@noble/hashes": "2.3.0",
     "@mastra/libsql": "1.23.2",
     "@office-kit/xlsx": "0.25.0",
     "@smithy/signature-v4": "5.6.2",

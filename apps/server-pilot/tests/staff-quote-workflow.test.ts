@@ -301,7 +301,7 @@ describe('staff-approved quotation beneath native guards', () => {
     },
   );
 
-  it('a dinner row added after the charge scope was saved joins the priced dinner charge', async () => {
+  it('a dinner row added after the charge scope was saved needs staff confirmation', async () => {
     const source = input();
     const group = source.groups[0]!;
     source.groups = [
@@ -324,8 +324,9 @@ describe('staff-approved quotation beneath native guards', () => {
       dinnerFallbackGroupIds: retry.groupIds,
     });
 
-    expect(proposal.dinnerAddOnRequired).toBe(false);
-    expect(proposal.facts?.extras[0]).toMatchObject({ groupIds: ['first', 'added'] });
+    expect(proposal.dinnerAddOnRequired).toBe(true);
+    expect(proposal.extrasReviewItems).toContain('Dinner allowance — confirm charge groups');
+    expect(proposal.facts?.extras[0]).toMatchObject({ groupIds: ['first'] });
   });
 
   it('prices configured dinner only for mixed-stay groups retried from dinner board', async () => {

@@ -134,30 +134,34 @@ function staleDraft(): ReservationWorkflowV2Draft {
 }
 
 describe('reservation workflow v2 source recovery', () => {
-  it('heals null Quote children without replacing staff occupancy or rate choices', () => {
-    const recovered = recoverReservationWorkflowV2SourceFields(staleDraft());
-    expect(recovered).not.toBeNull();
+  it('clears a policy guess copied into a parent edit without changing staff choices', () => {
+    const draft = staleDraft();
+    const request = draft.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('quote fixture missing');
+    request.body.groups[0]!.occupancy = { scope: 'per_room', adults: 1, childCount: 0, childAges: [] };
+    draft.proposal.annotations = ['adults', 'childCount', 'childAges'].map(field => ({
+      path: `${occupancyPath}/${field}`, basis: 'policy', evidenceRefs: [],
+    }));
+    draft.fieldOverrides[occupancyPath] = { state: 'set', value: { scope: 'per_room', adults: 3, childCount: 0, childAges: [] }, updatedAt: now };
+    const recovered = recoverReservationWorkflowV2SourceFields(draft);
     expect(recovered?.draft.fieldOverrides[occupancyPath]?.value).toEqual({
-      scope: 'per_room',
-      adults: 3,
-      childCount: 0,
-      childAges: [],
+      scope: 'per_room', adults: 3, childCount: null, childAges: null,
     });
     expect(recovered?.draft.fieldOverrides[`${requestRoot}/groups/0/ratePlan`]?.value).toBe('CORP');
   });
 
-  it('heals safe source-backed fields after a partial failed prefill', () => {
+  it('does not invent Quote children or replace staff occupancy and rate choices', () => {
+    const recovered = recoverReservationWorkflowV2SourceFields(staleDraft());
+    expect(recovered).toBeNull();
+  });
+
+  it('does not invent children after a partial failed prefill', () => {
     const draft = staleDraft();
     draft.status = 'partial';
     draft.prefill = { ...draft.prefill!, status: 'failed' };
 
     const recovered = recoverReservationWorkflowV2SourceFields(draft);
 
-    expect(recovered?.draft.fieldOverrides[occupancyPath]?.value).toEqual({
-      scope: 'per_room',
-      adults: 3,
-      childCount: 0,
-      childAges: [],
-    });
+    expect(recovered).toBeNull();
   });
 });

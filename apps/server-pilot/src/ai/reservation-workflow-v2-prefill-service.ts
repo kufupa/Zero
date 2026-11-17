@@ -1,7 +1,9 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
+import { hmsCredentialAdmission } from '../db/schema/hms-credential-admission.js';
 import { aiWorkflowRun, attachment, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { resolvePropertyTransport } from '../../tooling/hms-cloud/property-registry.mjs';
+import { currentCloudCredentialPriority, withCloudCredentialPriority } from '../../tooling/hms-cloud/cloud-session.mjs';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
@@ -125,7 +127,7 @@ function observedPrefillAdapter(adapter: ModelAdapter | null, sourceMessageId: s
             ...(result.provenance?.usageSource === 'reported'
               ? { inputTokens: result.usage.inputTokens, outputTokens: result.usage.outputTokens } : {}),
             adapterLatencyMs: result.usage.latencyMs } : {}),
-          ...(failure ?? {}) }));
+          ...failure }));
       };
       const aborted = () => report(readErrorProp(input.signal?.reason, 'name') === 'TimeoutError' ? 'timeout' : 'aborted',
         undefined, classifyModelCallError(input.signal?.reason));
@@ -169,7 +171,7 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
     const { missing, missingCurrent, attachmentEvidenceUnknown: contextAttachmentEvidenceUnknown } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     const azureAdapter = createAzureExtractionAdapter(modelEnv);
-    const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
+    const generated = await withCloudCredentialPriority(currentCloudCredentialPriority('background'), () => runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
       attachmentEvidenceUnknown: attachmentEvidenceUnknown(sourceMessage?.sourceProvenance),
       contextAttachmentEvidenceUnknown,
@@ -188,11 +190,15 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
         if (!checkpoint.claim) return false;
         activeClaim = checkpoint.claim;
         return true;
-      } });
-    if (missing.length) {
+      },
+      ...(jobFence ? { onCandidateReadsSettled: async () => {
+        if (!await retireGenerationAdmission(scoped.db, jobFence)) throw new Error('Prefill credential admission is still active or its claim changed.');
+      } } : {}) }));
+    const { missing: latestMissing } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
+    if (latestMissing.length) {
       generated.status = 'partial';
       generated.errors = [...(generated.errors ?? []).slice(0, 99), { stage: 'lookup', code: 'missing_attachment',
-        message: `Some attachments could not be copied: ${missing.map((entry) => entry.fileName || entry.role).join(', ')}`.slice(0, 1000) }];
+        message: `Some attachments could not be copied: ${latestMissing.map((entry) => entry.fileName || entry.role).join(', ')}`.slice(0, 1000) }];
     }
     operationSignal.throwIfAborted();
     const failed = !generated.sourceBound || (generated.skippedReason !== undefined && generated.skippedReason !== 'self_prestay') ||
@@ -214,6 +220,49 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
   }
 }
 
+async function retireGenerationAdmission(db: DB, fence: ReservationPrefillJobFence): Promise<boolean> {
+  return db.transaction(async tx => {
+    const [owned] = await tx.update(aiWorkflowRun).set({
+      metrics: sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) || '{"credentialPending":false}'::jsonb`,
+    }).where(and(eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+      eq(aiWorkflowRun.claimToken, fence.claimToken), eq(aiWorkflowRun.state, 'running'),
+      eq(aiWorkflowRun.runKind, 'reservation_prefill'), sql`${aiWorkflowRun.deadlineAt} > clock_timestamp()`,
+      sql`coalesce(${aiWorkflowRun.metrics}->>'phase', 'generation') = 'generation'`,
+      sql`NOT EXISTS (SELECT 1 FROM hms_credential_admission admission JOIN pg_stat_activity backend
+        ON backend.pid = admission.owner_pid AND backend.backend_start = admission.owner_started_at
+        WHERE admission.run_id = ${fence.runId})`,
+      sql`NOT EXISTS (SELECT 1 FROM work_item item WHERE item.id = ${aiWorkflowRun.workItemId}
+        AND item.state->'reservationWorkflowV2'->'prefill'->>'jobRunId' = ${fence.runId}
+        AND item.state->'reservationWorkflowV2'->'prefill'->>'phase' = 'native_checks'
+        AND item.state->'reservationWorkflowV2'->'prefill'->>'status' = 'running')`)).returning({ id: aiWorkflowRun.id });
+    if (!owned) return false;
+    await tx.delete(hmsCredentialAdmission).where(eq(hmsCredentialAdmission.operationKey, `run:${owned.id}`));
+    return true;
+  });
+}
+
+
+async function setArrivalPhase(db: DB, fence: AiRunFence, phase: 'generation' | 'native_checks', workItemId?: string) {
+  return db.transaction(async tx => {
+    const now = new Date();
+    const phaseMetrics = phase === 'native_checks'
+      ? sql`jsonb_build_object('phase', 'native_checks', 'credentialReadyAt', coalesce(${aiWorkflowRun.metrics}->>'credentialReadyAt', ${now.toISOString()}::text))`
+      : sql`jsonb_build_object('phase', 'generation', 'credentialPending', false)`;
+    const [owned] = await tx.update(aiWorkflowRun).set({
+      ...(workItemId ? { workItemId } : {}),
+      metrics: phase === 'generation'
+        ? sql`(coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) - 'credentialReadyAt') || ${phaseMetrics}`
+        : sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) || ${phaseMetrics}`, updatedAt: now,
+    }).where(and(eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
+      eq(aiWorkflowRun.claimToken, fence.claimToken), eq(aiWorkflowRun.state, 'running'),
+      sql`${aiWorkflowRun.deadlineAt} > clock_timestamp()`)).returning({ id: aiWorkflowRun.id });
+    if (!owned) return false;
+    if (phase === 'native_checks') await tx.insert(hmsCredentialAdmission)
+      .values({ operationKey: `run:${owned.id}`, runId: owned.id }).onConflictDoNothing();
+    else await tx.delete(hmsCredentialAdmission).where(eq(hmsCredentialAdmission.operationKey, `run:${owned.id}`));
+    return true;
+  });
+}
 
 /** Worker scope comes only from a claimed ledger row and the canonical server mailbox. */
 export async function executeReservationArrival(input: {
@@ -261,14 +310,14 @@ export async function executeReservationArrival(input: {
   }
   const resumingChecks = initialized.draft.prefill?.jobRunId === run.id &&
     initialized.draft.prefill.status === 'running' && initialized.draft.prefill.phase === 'native_checks';
-  await db.update(aiWorkflowRun).set({ workItemId: initialized.draft.workItemId,
-    metrics: { ...run.metrics, phase: resumingChecks ? 'native_checks' : 'generation' }, updatedAt: new Date() }).where(and(
-      eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
-      eq(aiWorkflowRun.claimToken, fence.claimToken), eq(aiWorkflowRun.state, 'running')));
+  if (!await setArrivalPhase(db, fence, resumingChecks ? 'native_checks' : 'generation', initialized.draft.workItemId))
+    return 'dead_letter';
   const item = { workItemId: initialized.draft.workItemId, source,
     expectedRevision: initialized.revision, expectedSeq: initialized.seq };
   const generationSignal = AbortSignal.any([signal, AbortSignal.timeout(9 * 60_000)]);
-  let result = resumingChecks ? initialized : await prefillDraft(scoped, item, row.mailboxAddress, true, fence, generationSignal, signal);
+  const credentialPriority = run.metrics?.staffPrefillRequested === true ? 'staff' : 'background';
+  let result = resumingChecks ? initialized : await withCloudCredentialPriority(credentialPriority,
+    () => prefillDraft(scoped, item, row.mailboxAddress, true, fence, generationSignal, signal));
   if (result.status !== 'ok') {
     await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: `draft rejected: ${result.status}`,
       failureClass: 'POLICY_BLOCK' }, db);
@@ -291,13 +340,12 @@ export async function executeReservationArrival(input: {
   }
   if (result.draft.prefill?.status === 'running' && result.draft.prefill.phase === 'native_checks' &&
       result.draft.prefill.jobRunId === run.id) {
-    await db.update(aiWorkflowRun).set({ metrics: { ...run.metrics, phase: 'native_checks' }, updatedAt: new Date() }).where(and(
-      eq(aiWorkflowRun.id, fence.runId), eq(aiWorkflowRun.claimOwner, fence.claimOwner),
-      eq(aiWorkflowRun.claimToken, fence.claimToken), eq(aiWorkflowRun.state, 'running')));
+    if (!await setArrivalPhase(db, fence, 'native_checks')) return 'dead_letter';
     const checkItem = { ...item, expectedRevision: result.revision, expectedSeq: result.seq };
-    await runReservationArrivalChecks({ scoped, item: checkItem, draft: result.draft, fence,
+    const checkDraft = result.draft;
+    await withCloudCredentialPriority(credentialPriority, () => runReservationArrivalChecks({ scoped, item: checkItem, draft: checkDraft, fence,
       deadlineAt: fence.deadlineAt, signal,
-      ...(typeof run.metrics?.interruptedHeartbeatAt === 'string' ? { recoveryHeartbeat: run.metrics.interruptedHeartbeatAt } : {}) });
+      ...(typeof run.metrics?.interruptedHeartbeatAt === 'string' ? { recoveryHeartbeat: run.metrics.interruptedHeartbeatAt } : {}) }));
     const fresh = await getReservationWorkflowV2Draft(scoped, checkItem);
     if (fresh.status !== 'ok' || (fresh.draft.prefill?.status === 'running' && fresh.draft.prefill.phase === 'native_checks')) {
       await markAiRunDeadLetter({ ...fence, expectedStates: ['running'], lastError: 'reservation native checks incomplete',

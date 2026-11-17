@@ -7,6 +7,8 @@
  */
 import { createHash } from 'node:crypto';
 import postgres from 'postgres';
+import { getPropertyRegistration } from '../../tooling/hms-cloud/property-registry.mjs';
+import { withCloudCredentialLease } from '../../tooling/hms-cloud/cloud-session.mjs';
 
 export interface PropertyReadConnection {
   query<T = unknown>(statement: string): Promise<T>;
@@ -337,12 +339,36 @@ export type PropertyReadLock = ReturnType<typeof createPropertyReadLock>;
  * connection mid-login and surfaced as PROPERTY_READ_LOCK_LOST before
  * toolStartedAt (Codex 2026-09-11 live proof attempts).
  */
+/** All native sessions enter the credential queue before holding a property or target lock. */
+async function withCredentialBeforeLock<T>(
+  input: { tenantId: string; propertyCode: string; databaseUrl: string },
+  options: PropertyReadLockAcquisitionOptions,
+  operation: (bounds: PropertyReadLockAcquisitionOptions) => Promise<T>,
+): Promise<T> {
+  const property = getPropertyRegistration(input.propertyCode);
+  // Unregistered fixture scopes keep the generic lock adapter; native scopes use the shared lane.
+  if (!property || property.expectedTenant !== input.tenantId) return operation(options);
+  assertAcquisitionActive(options);
+  try {
+    return await withCloudCredentialLease(input.propertyCode, async (lease) => {
+      const signal = options.signal ? AbortSignal.any([options.signal, lease.signal]) : lease.signal;
+      return operation({ ...options, signal });
+    }, { signal: options.signal, deadlineAt: acquisitionDeadlineAt(options), readOnly: true,
+      databaseUrl: input.databaseUrl });
+  } catch (cause) {
+    if (cause instanceof Error && cause.message === 'HMS_CREDENTIAL_LEASE_CONTENDED') {
+      throw lockError(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE));
+    }
+    throw cause;
+  }
+}
+
 export function createPostgresPropertyReadLock(input: {
   tenantId: string;
   propertyCode: string;
   databaseUrl: string;
 }) {
-  return createPropertyReadLock({
+  const lock = createPropertyReadLock({
     tenantId: input.tenantId,
     propertyCode: input.propertyCode,
     connectionFactory: async () => {
@@ -360,6 +386,12 @@ export function createPostgresPropertyReadLock(input: {
       } satisfies PropertyReadConnection;
     },
   });
+  return {
+    key: lock.key,
+    withLock: <T>(callback: (connection: PropertyReadConnection) => Promise<T>,
+      options: PropertyReadLockAcquisitionOptions = {}) =>
+      withCredentialBeforeLock(input, options, (bounds) => lock.withLock(callback, bounds)),
+  };
 }
 
 const targetAliasOwnership = Symbol('hms-target-alias-ownership');
@@ -396,7 +428,7 @@ export function createPostgresTargetAliasLock(input: {
   const keys = [...new Set(aliases.map((alias) => createHash('sha256')
     .update('zero/hms-target-lock/v2\0').update(input.tenantId).update('\0')
     .update(input.propertyCode).update('\0').update(alias).digest().readBigInt64BE(0).toString()))].sort();
-  return {
+  const lock = {
     aliases,
     async withLock<T>(
       callback: (connection: PropertyReadConnection, signal: AbortSignal, held: HeldTargetAliasLock) => Promise<T>,
@@ -470,5 +502,11 @@ export function createPostgresTargetAliasLock(input: {
       if (failed) throw failure;
       return result as T;
     },
+  };
+  return {
+    aliases,
+    withLock: <T>(callback: (connection: PropertyReadConnection, signal: AbortSignal,
+      held: HeldTargetAliasLock) => Promise<T>, options: PropertyReadLockAcquisitionOptions = {}) =>
+      withCredentialBeforeLock(input, options, (bounds) => lock.withLock(callback, bounds)),
   };
 }

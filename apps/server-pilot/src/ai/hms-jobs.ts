@@ -1,4 +1,5 @@
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
+import { reservationWarmupRequestSchema, executeReservationWarmup } from './reservation-workflow-v2-warmup.js';
 /**
  * Pane HMS lookups as persisted jobs.
  *
@@ -39,6 +40,8 @@ import {
   type RecordSenderPartyInput,
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import { hmsJobQueueEnabled, withCloudCredentialPriority, withCloudCredentialRun } from '../../tooling/hms-cloud/cloud-session.mjs';
+export { hmsJobQueueEnabled } from '../../tooling/hms-cloud/cloud-session.mjs';
 import {
   CENTURION_HMS_READ_TARGET,
   hmsReadAuditMetrics,
@@ -165,14 +168,6 @@ import {
   decidePropertyReadJob,
   noteLoginOutage,
 } from '../hms/property-outage.js';
-
-/**
- * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
- * synchronously in the web process as before, no job is queued or prefetched, and no worker claims hms jobs.
- */
-export function hmsJobQueueEnabled(env: NodeJS.Dict<string> = process.env): boolean {
-  return env.HMS_JOB_QUEUE === 'on';
-}
 
 /** Default-off quote preparation. It can enqueue only when the persisted HMS queue is enabled. */
 export function quotePreparationEnabled(env: NodeJS.Dict<string> = process.env): boolean {
@@ -3403,7 +3398,6 @@ async function requeueRun(
   return 'retry_wait';
 }
 
-const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
 const PREPARED_QUOTE_ATTACH_FAILED = 'staff quote attach failed';
 const PREPARED_QUOTE_ATTACH_MAX_ATTEMPTS = 2;
 
@@ -3894,8 +3888,21 @@ export async function executeHmsJob(input: {
   signal?: AbortSignal;
   db?: DB;
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
+  return withCloudCredentialRun(input.fence, () => withCloudCredentialPriority(input.run.priority < HMS_JOB_PRIORITY_USER ? 'background' : 'staff',
+    () => executeHmsJobWithPriority(input)));
+}
+
+async function executeHmsJobWithPriority(input: {
+  run: AiWorkflowRun;
+  fence: AiRunFence;
+  signal?: AbortSignal;
+  db?: DB;
+}): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
   const db = input.db ?? getDb();
   const { run, fence } = input;
+  const warmup = reservationWarmupRequestSchema.safeParse(run.readRequest);
+  if (warmup.success) return executeReservationWarmup({ db, run, fence,
+    signal: input.signal, request: warmup.data });
   const mark: Mark = {
     runId: run.id,
     claimOwner: fence.claimOwner,
@@ -4016,12 +4023,6 @@ export async function executeHmsJob(input: {
     metrics.prefetchBatchSize > 0
       ? metrics.prefetchBatchSize
       : 1;
-  const recordedAdmissionAt = metrics.prefetchBatchAdmittedAt ?? metrics.prefetchAdmittedAt;
-  const parsedAdmissionAt =
-    typeof recordedAdmissionAt === 'string' ? Date.parse(recordedAdmissionAt) : Number.NaN;
-  let preparedQuoteLockWaitStart = Number.isFinite(parsedAdmissionAt)
-    ? new Date(parsedAdmissionAt)
-    : run.createdAt;
   if (systemPreparedQuote && metrics.prefetchDeferred === true) {
     const admitted = await db.transaction(async (tx) => {
       await tx.execute(
@@ -4135,7 +4136,6 @@ export async function executeHmsJob(input: {
       return { status: 'admit' as const, admittedAt: occupied.admittedAt };
     });
     if (admitted.status !== 'admit') return admitted.status;
-    preparedQuoteLockWaitStart = admitted.admittedAt;
   }
   if (
     systemPreparedQuote &&
@@ -4232,15 +4232,12 @@ export async function executeHmsJob(input: {
       return 'succeeded';
     } catch (error) {
       if (systemPreparedQuote && preparedQuoteYielded(error)) {
-        await markAiRunDeadLetter(
-          {
-            ...mark,
-            lastError: 'prepared_quote_yielded_to_staff_quote',
-            failureClass: 'STAFF_QUOTE_ACTIVE',
-          },
-          db,
-        );
-        return 'dead_letter';
+        return requeueRun(db, mark, {
+          attempts: run.attempts,
+          delayMs: JOB_YIELD_MS,
+          failureClass: 'STAFF_QUOTE_ACTIVE',
+          lastError: preparedQuoteYieldLastError(run, 'staff quote in flight'),
+        });
       }
       if (
         input.signal?.aborted &&
@@ -4258,14 +4255,6 @@ export async function executeHmsJob(input: {
         });
       }
       if (isPropertyReadLockDeadline(error)) {
-        // A prepared quote waits out a busy lock for a while, then gives up so staff never stay pinned to it.
-        if (systemPreparedQuote && Date.now() - preparedQuoteLockWaitStart.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
-          await markAiRunDeadLetter(
-            { ...mark, lastError: 'prepared_quote_lock_busy', failureClass: 'HMS_LOCK_BUSY' },
-            db,
-          );
-          return 'dead_letter';
-        }
         if (systemPreparedQuote) {
           return requeueRun(db, mark, {
             attempts: run.attempts,
@@ -4277,13 +4266,21 @@ export async function executeHmsJob(input: {
         return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
       }
       if (staffQuoteLockBusy(error)) {
+        if (systemPreparedQuote) {
+          return requeueRun(db, mark, {
+            attempts: run.attempts,
+            delayMs: JOB_YIELD_MS,
+            failureClass: 'HMS_LOCK_BUSY',
+            lastError: preparedQuoteYieldLastError(run, 'party verification lock busy'),
+          });
+        }
         return retryOrFail(
           db,
           run,
           mark,
           'HMS_LOCK_BUSY',
           'party verification lock busy',
-          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+          JOB_MAX_ATTEMPTS,
         );
       }
       const parkedLogin = await parkLoginOutageFailure(

@@ -4,6 +4,7 @@ import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js'
 import { createOutlookSyncNativeHandler } from './http/outlook-sync-native.js';
 import { seedLiveAdmissionBaseline } from './mail/ingest/live-admission.js';
 import { runQuoteFollowupSweep } from './ai/quote-followup.js';
+import { closeReservationActionLanes } from './ai/reservation-workflow-v2-action-lane.js';
 import { createOutlookNativeHandler } from './http/outlook-native.js';
 import { fetchRequestHandler } from '@trpc/server/adapters/fetch';
 import { createEmlDownloadHandler } from './http/eml-download.js';
@@ -183,9 +184,10 @@ function shutdown(signal: string) {
   clearInterval(quoteFollowupTimer);
   server.close(() => {
     void Promise.allSettled([Promise.resolve().then(stopOutlookSyncDrain), background.drain()])
-      .then(([sync]) => {
+      .then(async ([sync]) => {
         if (sync.status === 'rejected') throw sync.reason;
-        return closeDb();
+        await closeReservationActionLanes();
+        await closeDb();
       })
       .then(() => {
         console.log(`shutdown complete pid=${process.pid}`);

@@ -1,12 +1,12 @@
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 
-/** HMS flags no negotiated row for the picked party. The quote retries at public rates, as before party rates. */
+/** HMS flags no negotiated row for the picked party. The quote retries without the party context. */
 export const PARTY_NO_CONTRACT_CODE = 'business_party_no_contract_rate';
-/** HMS did not show every calendar page or matching row, so no contract can be ruled out. The quote is public and says so. */
+/** HMS did not show every calendar page or matching row, so no contract can be ruled out. */
 export const PARTY_SEARCH_INCOMPLETE_CODE = 'business_party_search_incomplete';
 
 /**
- * The codes a picked party can cause when HMS will not price its rate. Only these fall back to public rates, and only a
+ * The codes a picked party can cause when HMS will not price its rate. Only these retry without party context, and only a
  * typed error carries them. A plain Error is never judged by its code or its message.
  */
 export const PARTY_RATE_FAILURE_CODES: ReadonlySet<string> = new Set([
@@ -61,7 +61,7 @@ export function partySearchCovered(group: { completeness?: { search?: unknown };
 }
 
 /**
- * What a capture's groups say about a picked party's contract, for a party read that offers public rows and no flagged row.
+ * What a capture's groups say about a picked party's contract, without admitting any unverified rate.
  * no_contract only when every group's search covered its dates and rooms with no coverage issue. incomplete when any group
  * did not, because a missing calendar page can hide a flagged row, or when PARTY_RATES_NOT_CHECKED is present (the party
  * was requested but never verified, so public BAR is not proof of no contract). null for anything else, including a flagged row.
@@ -71,9 +71,14 @@ export function partyReadingOf(groups: unknown, rateContext: unknown): 'no_contr
   const list = groups as Array<{
     completeness?: { search?: unknown };
     issues?: Array<{ code?: unknown }>;
-    options?: Array<{ rateScope?: unknown }>;
+    options?: Array<{ rateScope?: unknown; conditions?: Array<{ kind?: unknown; field?: unknown; status?: unknown }> }>;
   }>;
   const rows = list.flatMap((group) => group.options ?? []);
+  if (!rows.some((row) => row.rateScope === 'public' || row.rateScope === 'contextual') &&
+      rows.some((row) => row.rateScope === 'unknown' && Array.isArray(row.conditions) &&
+        row.conditions.some((condition) => condition.kind === 'required' && condition.field === 'rateContext' && condition.status === 'unknown'))) {
+    return 'incomplete';
+  }
   if (!rows.some((row) => row.rateScope === 'public') || rows.some((row) => row.rateScope === 'contextual')) return null;
   if (list.some((group) => (group.issues ?? []).some((issue) => issue.code === 'PARTY_RATES_NOT_CHECKED'))) {
     return 'incomplete';

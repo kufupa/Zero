@@ -1,3 +1,4 @@
+import { assertReservationActionFence, lockReservationActionClaim, RESERVATION_ACTION_FENCE_KEY } from './reservation-workflow-v2-action-lane.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
@@ -193,6 +194,7 @@ export function hmsStateDigest(hmsState: unknown): string {
 function formOf(state: Record<string, unknown>): Record<string, unknown> {
   const form: Record<string, unknown> = { ...state };
   delete form[HMS_SNAPSHOT_KEY];
+  delete form[RESERVATION_ACTION_FENCE_KEY];
   delete form.reservationistHandledRequests;
   delete form.cloudCancelPreview;
   for (const key of ['cloudCreatePreviews', 'cloudCreateBatch', 'cloudCreatePastBatches', 'cloudCreateBatchHolds', 'stayPreviews']) delete form[key];
@@ -774,6 +776,8 @@ export async function prepareNativeHmsWrite(input: {
 }): Promise<PreparedSummary> {
   if (input.native.workflowContext && input.native.workflowContext.input.workItemId !== input.workItemId) throw new HmsApprovalError('state_changed');
   const prepared = await input.db.transaction(async (tx) => {
+    await lockReservationActionClaim(tx, input.workItemId);
+    await assertReservationActionFence(tx, input.workItemId);
     const [item] = await tx.select().from(workItem).where(and(eq(workItem.id, input.workItemId),
       eq(workItem.transportId, input.transportId))).limit(1).for('update');
     if (!item || item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
@@ -800,6 +804,8 @@ export async function prepareHmsWrite(input: {
   const db = input.db ?? getDb();
   return db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    await lockReservationActionClaim(tx, input.workItemId);
+    await assertReservationActionFence(tx, input.workItemId);
     const [item] = await tx.select().from(workItem).where(and(eq(workItem.id, input.workItemId),
       eq(workItem.transportId, input.transportId))).limit(1).for('update');
     if (!item) throw new HmsApprovalError('not_found');
@@ -851,6 +857,8 @@ export async function approveHmsWrite(input: {
   const env = input.env ?? process.env;
   return db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    await lockReservationActionClaim(tx, input.workItemId);
+    await assertReservationActionFence(tx, input.workItemId);
     const existingPreparation = input.preparedRef ? await loadHmsPreparation(tx, input.preparedRef, input.workItemId) : undefined;
     if (existingPreparation && canonicalJson(existingPreparation.scope) !== canonicalJson(scope)) throw new HmsApprovalError('state_changed');
     let cancelSourceBound = false;
@@ -1026,6 +1034,8 @@ export async function resolveHmsNeedsCheck(input: {
   if (note.length > RESOLVE_NOTE_MAX) throw new HmsApprovalError('note_required');
   return db.transaction(async (tx) => {
     await lockHmsSelectedMailbox(tx as DB, input);
+    await lockReservationActionClaim(tx, input.workItemId);
+    await assertReservationActionFence(tx, input.workItemId);
     const [item] = await tx
       .select({ id: workItem.id, state: workItem.state,
         sourceMessageId: workItem.sourceMessageId, threadId: workItem.threadId })

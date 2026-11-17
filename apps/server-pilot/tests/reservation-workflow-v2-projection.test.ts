@@ -767,6 +767,20 @@ describe('reservation workflow host projection', () => {
     });
   });
 
+  it('leaves unspecified guest counts for staff to enter', async () => {
+    const result = await project((sourceRef) => ({
+      requests: [{ ...quoteFixture(sourceRef), dates: [{
+        arrival: claim('14 November', '2026-11-14', sourceRef),
+        departure: claim('16 November', '2026-11-16', sourceRef),
+      }] }], issues: [],
+    }), undefined, 'Please quote 14 to 16 November.');
+    const request = result.proposal.content.requests[0]!;
+    if (request.kind !== 'quote') throw new Error('expected quote');
+    expect(request.body.groups[0]!.occupancy).toEqual({
+      scope: 'unresolved', adults: null, childCount: null, childAges: null,
+    });
+  });
+
   it('preserves distinct request-wide board alternatives as separate quote groups', async () => {
     const result = await project((sourceRef) => ({
       requests: [
