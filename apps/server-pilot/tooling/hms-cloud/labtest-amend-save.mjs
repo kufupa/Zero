@@ -24,6 +24,16 @@ export function isNativeCardEntryInitialization(request) {
   } catch { return false; }
 }
 
+function isNativeSaveToolbarImage(request) {
+  try {
+    const url = new URL(request.url());
+    return request.method() === 'GET' && request.resourceType() === 'image' &&
+      url.origin === 'https://hmsweb.hms.eu1.inforcloudsuite.com' && !url.username && !url.password &&
+      !url.search && !url.hash && url.pathname === '/web/resources/inforhms/images/toolbar/save.svg' &&
+      request.postData() === null;
+  } catch { return false; }
+}
+
 /** Native hdr_getTaxRelatedValues reads the verified stay's tax parameters. */
 export function isNativeTaxValuesRead(request, frame, expected) {
   try {
@@ -467,6 +477,8 @@ export async function runLabtestAmendSave(page, {
         // It remains aborted. It cannot count as an unapproved HMS business write.
         if (isNativeCardEntryInitialization(request)) { blockedCardEntry += 1; return; }
         if (isNativeTaxValuesRead(request, prepared.frame, prepared.taxMetadataReadValues)) { blockedTaxValues += 1; return; }
+        // The toolbar image remains aborted; its filename is not a Save request.
+        if (isNativeSaveToolbarImage(request)) return;
         blocked += 1;
         inStage = false;
         childStageGate?.close();
