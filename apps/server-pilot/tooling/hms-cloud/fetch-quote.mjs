@@ -21,6 +21,7 @@ const [requestPolicy, tracePrivacy, traceDisk] = await Promise.all([
 const { rejectDuplicateJsonBodyKeys } = requestPolicy;
 const { collectHmsStorageStateSecretValues, sanitizePlaywrightTraceFile } = tracePrivacy;
 const { canWritePlaywrightTraceAtUsage, readDiskUsedPercent } = traceDisk;
+const QUOTE_AUDIT_FINALIZE_TIMEOUT_MS = 10_000;
 
 export async function createAudit(directory, {video=false,trace='failure',secrets=[],diskUsage=readDiskUsedPercent}={}) {
   await mkdir(directory,{recursive:true,mode:0o700});
@@ -119,7 +120,7 @@ export async function createAudit(directory, {video=false,trace='failure',secret
       return structuredClone({...report,status:'pending',
         trace:stableTraceStatuses.includes(report.trace.status)?report.trace:{status:'pending'}});
     },
-    async finish() {
+    async finish({signal}={}) {
       if(finished) return report;
       finished=true;
       // A login screen can arrive after the caller's last checkpoint and make
@@ -150,10 +151,14 @@ export async function createAudit(directory, {video=false,trace='failure',secret
               report.trace.status=disk.usedPercent===null?'refused_disk_usage_unavailable':'refused_disk_limit';
           } else {
             try {
+              event('trace_storage_started');
               await collectStorage();
+              event('trace_export_started');
               await context.tracing.stop({path:rawPath});
+              event('trace_sanitize_started');
               await chmod(rawPath,0o600);
-              const receipt=await sanitizePlaywrightTraceFile(rawPath,join(directory,'trace.zip'),[...secretValues]);
+              const privacySignal=signal??AbortSignal.timeout(QUOTE_AUDIT_FINALIZE_TIMEOUT_MS);
+              const receipt=await sanitizePlaywrightTraceFile(rawPath,join(directory,'trace.zip'),[...secretValues],{signal:privacySignal});
               report.trace={status:'complete',...await artifact('trace.zip'),sanitizerVersion:receipt.sanitizerVersion};
             } catch {
               report.trace.status='failed';fail('TRACE_CAPTURE_FAILED');
@@ -1241,6 +1246,8 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const audit = await createAudit(directory, { video });
   const started = Date.now(), clock = createPhaseClock();
+  const auditTimeout = new AbortController();
+  const sessionSignal = signal ? AbortSignal.any([signal,auditTimeout.signal]) : auditTimeout.signal;
   let phase = 'input', result, auditReport;
   const event = next => { phase = next; const entry = audit.event(next); if (logEvents) process.stderr.write(JSON.stringify(entry) + '\n'); };
   try {
@@ -1259,7 +1266,7 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
         origin: property.origin, propertyCode, detailsScope, rejectDuplicateJsonBodyKeys
       }) || isReviewedRoomInformationRequest(nativeRequest, { origin: property.origin, propertyCode, detailsScope });
       event('login');
-      result = await withCloudReadSession(async (page, identity) => {
+      result = await withCloudReadSession(async (page, identity, session) => {
         if (identity.propertyCode !== property.propertyCode || identity.tenantId !== property.expectedTenant ||
             identity.origin !== property.origin || identity.landingPropertyCode !== property.landingPropertyCode) {
           throw new Error('CLOUD_QUOTE_IDENTITY_MISMATCH');
@@ -1276,8 +1283,12 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
           await verifyCloudProperty(page, { propertyCode, tenantId: property.expectedTenant });
           event(`result_${next.outcome}`);
           return { ...next, propertyCode };
-        } finally { auditReport = await clock.time('traceFinish', () => audit.finish()); }
-      }, { propertyCode, transportId, signal, credentialLease, readRequestPolicy, prepareContext: installReadOnlyGuard });
+        } finally {
+          const timer = setTimeout(() => auditTimeout.abort(new Error('QUOTE_AUDIT_FINALIZATION_TIMEOUT')), QUOTE_AUDIT_FINALIZE_TIMEOUT_MS);
+          try { auditReport = await clock.time('traceFinish', () => audit.finish({signal:session.signal})); }
+          finally { clearTimeout(timer); }
+        }
+      }, { propertyCode, transportId, signal: sessionSignal, credentialLease, readRequestPolicy, prepareContext: installReadOnlyGuard });
     }
   } catch (error) { result = executionFailure(error, phase); }
   if (!auditReport) auditReport = await audit.finish().catch(() => ({ status: 'incomplete', errors: ['AUDIT_FINALIZATION_FAILED'] }));
