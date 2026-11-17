@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { threadInput, type ThreadInput } from './schema.js';
 
-const id = z.string().trim().min(1);
+const id = z.string().min(1).refine(value => value.trim().length > 0);
 const person = z.object({ email: z.string().min(1), name: z.string().nullish() });
 const attachment = z.object({
   attachmentId: id, filename: z.string(), mimeType: z.string(), size: z.number().int().nonnegative(),
