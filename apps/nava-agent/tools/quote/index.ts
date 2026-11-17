@@ -71,6 +71,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
         if(group.rooms.some(room=>room.native_result===null)) group.status='incomplete';
       }
       display_rows.push(...quoteDisplayRows(native,searchIndex,request.quote_id,displayIdentities));
+      if(context.signal?.aborted) {failure={code:'ABORTED',message:'Quote was cancelled; retained captures are incomplete.',retryable:false,outcome:'known'};break;}
       if(!complete || displayIdentities.some(identity=>!identity) || batch.identities.some(identity=>groups[identity.group_id].status!=='complete')) failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote incomplete; inspect retained captures and group status.',retryable:native.outcome==='execution_failure',outcome:'known'};
     } catch {
       for(const identity of batch.identities) groups[identity.group_id].status=context.signal?.aborted?'aborted':'search_failed';
