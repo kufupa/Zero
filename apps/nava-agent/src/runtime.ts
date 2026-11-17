@@ -8,6 +8,7 @@ import { tools, type ThreadInput } from './schema.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
+import { attachmentCheckPath, attachmentsUnconfirmed } from './attachment-gate.js';
 
 export type RuntimeProvider = 'bedrock' | 'cma';
 export function runtimeProvider(): RuntimeProvider {
@@ -153,7 +154,10 @@ export async function snapshot(threadId:string) {
     if (!thread) return null;
     const messages=await tx`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${threadId} ORDER BY received_at,id`;
     const [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE thread_id=${threadId}`;
-    const proposals=await tx`SELECT * FROM nava_agent.proposal WHERE thread_id=${threadId} ORDER BY created_at`;
+    const proposals=await tx`SELECT p.*,(SELECT e.after = 'true'::jsonb FROM nava_agent.staff_edit e
+      WHERE e.proposal_id=p.id AND e.revision=p.revision AND e.kind='edit' AND e.path=${attachmentCheckPath}
+      ORDER BY e.sequence DESC LIMIT 1) AS staff_attachments_checked
+      FROM nava_agent.proposal p WHERE p.thread_id=${threadId} ORDER BY p.created_at`;
     const [sequence]=session ? await tx`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${session.id}` : [{n:'0'}];
     const sourceMessageId=thread.selection_key.startsWith('prepare:') ? thread.selected_message_id : null;
     return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire(proposal,sourceMessageId)),event_sequence:Number(sequence.n)};
@@ -172,15 +176,16 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
   } : null;
   const rawError=p.execution?.error ?? p.execution?.go?.completion?.toolResult?.error;
   const uncertain=p.phase==='uncertain' || rawError?.outcome==='uncertain';
+  const attachmentsBlocked=!uncertain && rawError?.code===attachmentsUnconfirmed.code;
   const prepare=p.workflow==='create' && !uncertain && p.phase!=='error' ? prepareRejection.safeParse(p.execution?.error?.prepare) : null;
   const error=rawError || uncertain ? {
     code:typeof rawError?.code==='string' && /^[A-Z_0-9]+$/.test(rawError.code)?rawError.code:'HMS_OPERATION_FAILED',
     outcome:uncertain?'uncertain':'known',
-    message:uncertain?'HMS Save outcome is unconfirmed.':p.phase==='error'?'HMS Save did not complete.':prepare?.success?describePrepareRejection(prepare.data):'HMS Prepare did not complete.',
-    recovery:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
+    message:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'HMS Save outcome is unconfirmed.':p.phase==='error'?'HMS Save did not complete.':prepare?.success?describePrepareRejection(prepare.data):'HMS Prepare did not complete.',
+    recovery:attachmentsBlocked?attachmentsUnconfirmed.message:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
+  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;

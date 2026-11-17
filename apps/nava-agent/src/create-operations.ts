@@ -5,6 +5,7 @@ import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { proposalDraft } from './schema.js';
 import { createPilotRequested, hmsSaveEnabled } from './hms-mode.js';
 import { describePrepareRejection, readPrepareRejection } from './prepare-feedback.js';
+import { attachmentsUnconfirmed, staffAttachmentsChecked } from './attachment-gate.js';
 import type { LeaseFence, RegistryContext, ToolRegistry, ToolResult } from './tool-registry.js';
 
 export const manualLabtestTarget = z.object({
@@ -51,6 +52,9 @@ export function createPilotOperations(): ProposalOperations | undefined {
       if (request.mode === 'labtest' && !isSeededLabtest(p.config?.manual_create_labtest, input.booking.fields)) return {ok:false,code:'FORBIDDEN'};
       if (request.operation === 'stage') {
         if (!['idle','waiting_go'].includes(p.status)) return {ok:false,code:'INVALID_PHASE'};
+        if (process.env.NAVA_CREATE_PREPARE_ONLY==='1' && !await staffAttachmentsChecked(tx,p.id,p.revision)) {
+          return {ok:false,code:attachmentsUnconfirmed.code};
+        }
         const stage = queuedStage.parse({job_id:uid('stage'),revision:request.expectedRevision,actor:request.actor,previous_phase:p.phase,state:'queued'});
         await tx`UPDATE nava_agent.proposal SET phase='staging',stage=${json(stage)},execution=COALESCE(execution,'{}'::jsonb)-'error',updated_at=now() WHERE id=${request.proposalId}`;
         await writeEvent(tx,p.session_id,'stage_queued',{proposal_id:request.proposalId,...stage});
@@ -80,7 +84,8 @@ export async function runCreateStage(lease: LeaseFence, registry: ToolRegistry, 
   if (!p) return false;
   const job = queuedStage.parse(p.stage);
   const input = createInput(p.current);
-  const answer = input ? await registry.run('hms_prepare',input,{...context,toolUseId:job.job_id}) : null;
+  const answer = input ? await registry.run('hms_prepare',input,{...context,toolUseId:job.job_id,
+    staffStage:{proposalId:p.id,revision:job.revision,jobId:job.job_id,workerId:lease.workerId,epoch:lease.epoch}}) : null;
   const result: ToolResult | null = answer?.kind === 'result' ? answer.result : null;
   const price = nativePrice.safeParse(result?.data);
   const rate = price.success ? price.data.native.ratePlanAvailability : null;
@@ -93,8 +98,10 @@ export async function runCreateStage(lease: LeaseFence, registry: ToolRegistry, 
   const stage = result?.ok ? {state:'prepared',revision:job.revision,summary:['HMS Prepare complete. Nothing saved.'],
     native_result:rate ?? null,display_rows:displayRows} : null;
   const prepare = readPrepareRejection(result?.data, result?.error?.code);
-  const error = result?.ok ? null : {code:result?.error?.code ?? 'CREATE_PREPARE_FAILED',message:describePrepareRejection(prepare),prepare,
-    outcome:'known',recovery:'Review the booking fields and run Prepare again.'};
+  const attachmentsBlocked = result?.error?.code===attachmentsUnconfirmed.code;
+  const error = result?.ok ? null : {code:result?.error?.code ?? 'CREATE_PREPARE_FAILED',
+    message:attachmentsBlocked ? attachmentsUnconfirmed.message : describePrepareRejection(prepare),prepare,
+    outcome:'known',recovery:attachmentsBlocked ? attachmentsUnconfirmed.message : 'Review the booking fields and run Prepare again.'};
   await sql.begin(async tx => {
     const [owner] = await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;

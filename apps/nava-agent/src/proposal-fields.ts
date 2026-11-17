@@ -34,7 +34,33 @@ const missingQuotePaths: Record<string, string> = {
   '/meal_plan': '/actions/0/details/groups/0/board',
 };
 
+export function validChildAges(count: unknown, ages: unknown): boolean {
+  return typeof count==='number' && Number.isInteger(count) && count>=0 && Array.isArray(ages) && ages.length===count
+    && ages.every((age:unknown)=>typeof age==='number' && Number.isInteger(age) && age>=0 && age<=17);
+}
+
+function createChildFields(draft: ProposalDraft): ProposalDraft {
+  const fieldSpecs=[...draft.field_specs];
+  const bookings=draft.bookings.map((booking,index)=>{
+    const fields={...booking.fields};
+    const root=`/bookings/${index}/fields`;
+    if(!Object.hasOwn(fields,'child_count')) fields.child_count=fields.children ?? (Array.isArray(fields.child_ages) ? fields.child_ages.length : 0);
+    if(!Object.hasOwn(fields,'child_ages')) fields.child_ages=[];
+    delete fields.children;
+    for(const [key,label,control] of [['child_count','Children','number'],['child_ages','Child ages','text']] as const) {
+      const path=`${root}/${key}`;
+      const paths=[path,path.slice(1),...(key==='child_count'?[`${root}/children`,`${root}/children`.slice(1)]:[])];
+      const existing=fieldSpecs.findIndex(spec=>paths.includes(spec.path));
+      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
+      else fieldSpecs.push({path,label,control,editable:true,provenance:'default',required:false,error:null,options:[],evidence:[]});
+    }
+    return {...booking,fields};
+  });
+  return {...draft,bookings,field_specs:fieldSpecs};
+}
+
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
+  if(draft.workflow==='create') draft=createChildFields(draft);
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
     id: 'quote-input', type: 'quote', booking_ids: [],

@@ -2,13 +2,15 @@ import { z } from 'zod';
 import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
-import { editablePointer, pointerParts } from './proposal-fields.js';
+import { editablePointer, pointerParts, validChildAges } from './proposal-fields.js';
+import { attachmentCheckPath, staffAttachmentsChecked } from './attachment-gate.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
   if(x.op!=='remove' && !Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'value required'});
   if(x.op==='remove' && Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'remove has no value'});
 });
-export const editInput=z.object({expected_revision:z.number().int().min(1),changes:z.array(change).min(1)}).strict();
+export const editInput=z.object({expected_revision:z.number().int().min(1),changes:z.array(change),staff_attachments_checked:z.boolean().optional()}).strict()
+  .refine(input=>input.changes.length>0 || input.staff_attachments_checked!==undefined,{message:'Nothing to edit'});
 type Change=z.infer<typeof change>;
 type Container=Record<string,unknown>|unknown[];
 function quoteIdentities(draft:z.infer<typeof proposalDraft>) {
@@ -60,6 +62,17 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     }
     const valid=proposalDraft.parse(draft), revision=p.revision+1;
     if(JSON.stringify(quoteIdentities(valid))!==identities) throw new Error('INVALID_PATH');
+    if(p.workflow==='create') for(const change of input.changes) {
+      const match=/^\/bookings\/(\d+)\/fields\/child_(?:count|ages)(?:\/|$)/.exec(change.path);
+      const fields=match && valid.bookings[Number(match[1])]?.fields;
+      if(fields && !validChildAges(fields.child_count,fields.child_ages)) throw new Error('INVALID_CHILD_AGES');
+    }
+    if(input.staff_attachments_checked!==undefined) {
+      if(p.workflow!=='create') throw new Error('INVALID_PATH');
+      const before=await staffAttachmentsChecked(tx,p.id,p.revision);
+      const after=input.staff_attachments_checked;
+      changes.push({change:{op:'replace',path:attachmentCheckPath,value:after},before,before_present:true,after,after_present:true});
+    }
     const [last]=await tx`SELECT COALESCE(max(sequence),0)::int AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
     let sequence=last.n;
     await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,updated_at=now() WHERE id=${id}`;
@@ -70,6 +83,6 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,edit_id:editId,revision,path:item.change.path,before:item.before,after:item.after,before_present:item.before_present,after_present:item.after_present,who:actor,at:saved.at})})`;
     }
     const [updated]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id}`;
-    return proposalWire(updated);
+    return {...proposalWire(updated),staff_attachments_checked:input.staff_attachments_checked===true};
   });
 }

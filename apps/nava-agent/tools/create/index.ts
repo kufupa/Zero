@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { prepareInput, saveInput, type CreateInput } from './schema.js';
 import { hmsSaveEnabled } from '../../src/hms-mode.js';
+import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
-export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; staffStage?:StaffStage };
 type SaveContext = ToolContext & { markDispatched(details: unknown): Promise<void> };
 type ToolResult = { ok: boolean; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } | null };
 
@@ -142,6 +143,9 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (context.signal?.aborted) return fail('ABORTED', 'Operation aborted.');
   const parsed = prepareInput.safeParse(input);
   if (!parsed.success) return fail('INVALID_INPUT', 'Create input does not match the booking and action contract.');
+  if (process.env.NAVA_CREATE_PREPARE_ONLY==='1' && !await confirmedQueuedCreate(context.staffStage,context.sessionId,parsed.data)) {
+    return fail(attachmentsUnconfirmed.code, attachmentsUnconfirmed.message);
+  }
   const built = buildRequest(parsed.data);
   if ('ok' in built) return built;
   const { request, expectedGuest } = built;

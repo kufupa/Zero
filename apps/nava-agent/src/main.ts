@@ -12,9 +12,10 @@ import { authReady, verifiedAuth, importThread, model, snapshot, startPending, d
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
 import { hmsSaveEnabled } from './hms-mode.js';
+import { attachmentsUnconfirmed } from './attachment-gate.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
-type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE';
+type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code;
 type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
@@ -174,6 +175,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
     if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is disabled in this pilot.',details:null}},403);
     if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid quote fields',details:null}},400);
+    if(code===attachmentsUnconfirmed.code) return c.json({error:{...attachmentsUnconfirmed,details:null}},409);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE'||code==='INVALID_PHASE'||code==='IDEMPOTENCY_CONFLICT') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     return c.json({error:{code,message:'This operation is not supported.',details:null}},501);
   }
@@ -194,6 +196,7 @@ app.patch('/proposals/:id',async c=>{
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     if(error instanceof ZodError) return c.json({error:{code:'INVALID_INPUT',message:'Invalid field value',details:null}},400);
+    if(code==='INVALID_CHILD_AGES') return c.json({error:{code,message:'Enter an age from 0 to 17 for each child.',details:null}},400);
     if(code==='INVALID_PATH') return c.json({error:{code,message:'Field is not editable',details:null}},400);
     return c.json({error:{code:'EDIT_FAILED',message:'Edit could not be saved',details:null}},503);
   }

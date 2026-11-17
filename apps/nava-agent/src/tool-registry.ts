@@ -7,10 +7,11 @@ import { json, sql, uid } from './db.js';
 import { schemas, tools, type ProposalDraft } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
 import { hmsSaveEnabled } from './hms-mode.js';
+import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from './attachment-gate.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
-export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal; skillConfig?:SkillConfig };
+export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal; skillConfig?:SkillConfig; staffStage?:StaffStage };
 export type ToolResult = { ok: boolean; data: unknown; error: {code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'} | null };
 export type ToolDefinition = { name:string; description:string; input_schema:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:boolean} };
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
@@ -233,6 +234,10 @@ export class ToolRegistry {
     if(name==='hms_prepare') {
       const request=prepareInput.safeParse(input);
       if(!request.success) return {kind:'result',result:failureObject('INVALID_INPUT','Invalid prepare request.')};
+      if(process.env.NAVA_CREATE_PREPARE_ONLY==='1' && (request.data.workflow!=='create'
+          || !await confirmedQueuedCreate(context.staffStage,context.sessionId,request.data))) {
+        return {kind:'result',result:failureObject(attachmentsUnconfirmed.code,attachmentsUnconfirmed.message)};
+      }
       const handler=this.mutations.get(request.data.workflow);
       if(!handler) return {kind:'result',result:failureObject('UNAVAILABLE','Workflow prepare is unavailable.')};
       const property=request.data.booking.property_code;
