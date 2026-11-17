@@ -382,7 +382,7 @@ async function prepareEmail(entry, options, outputDir) {
     const failedLookup = stages.flatMap(stage => stage.result?.lookups ?? []).find(lookup =>
       lookup.status === 'failed' || ['failed', 'execution_failure'].includes(lookup.outcome) ||
       ['CANCELLATION_PREFLIGHT_UNAVAILABLE', 'native_cancel_target_unavailable'].includes(lookup.issue) ||
-      /(?:_failed|_error)$/.test(lookup.issue ?? ''));
+      /(?:_failed|_error)$/i.test(lookup.issue ?? ''));
     const triageNeedsStaff = result.triage?.output?.abstainReason || result.triage?.output?.humanAction === 'review_required' || result.triage?.output?.automationState === 'unknown';
     const incomplete = stages.find(stage => !['ok', 'priced', 'prepared', 'succeeded'].includes(stage.result?.status));
     const complete = prepared.length > 0 && prepared.every(stage => stage.result?.status === 'prepared') &&
