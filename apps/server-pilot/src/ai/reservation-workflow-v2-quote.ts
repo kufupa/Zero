@@ -691,7 +691,7 @@ async function priceQuote(
         ? 'native_quote_price_expired' : 'native_quote_business_fields_did_not_match_request',
     observationRef: observation.ref };
   }
-  return { status: 'priced' as const, observationRef: observation.ref, observation,
+  return { status: 'priced' as const, hmsReadCompleted: true, observationRef: observation.ref, observation,
     quote: pricePayload(observation), revision: saved.revision, seq: saved.seq };
 }
 
@@ -952,12 +952,13 @@ export async function reservationWorkflowV2QuotePrepare(
       'Current HMS quote price and availability prepared; no reservation or email created');
     const saved = await persistResult(ctx, input, loaded.draft.generationId, result);
     return saved.status === 'ok' ? { status: 'prepared', requestId: request.id, operationId: result.id,
-      quote: pricePayload(observation), observationRef: observation.ref } : saved;
+      hmsReadCompleted: true, quote: pricePayload(observation), observationRef: observation.ref } : saved;
   } catch (error) {
     const cause = staffQuoteCauseSummary(error);
     const busy = cause.code === 'HMS_LOCK_BUSY' || cause.code === 'STAFF_QUOTE_ACTIVE';
     if (!busy) console.warn('quote_prepare_failed', { workItemId: input.workItemId, requestId: request.id, code: cause.code, phase: cause.phase ?? 'unknown' });
-    return { status: 'failed', issue: busy ? cause.code : 'native_quote_prepare_failed', outcomeClass: busy ? 'hms_busy' : 'system_fault' };
+    return { status: 'failed', issue: busy ? cause.code : 'native_quote_prepare_failed', outcomeClass: busy ? 'hms_busy' : 'system_fault',
+      ...(classifyHmsLoginOutage(error) ? { hmsLoginOutage: true } : {}) };
   }
 }
 

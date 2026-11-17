@@ -125,9 +125,9 @@ export async function executeReservationWarmup(input: {
           row && typeof row === 'object' && row.issue === 'filing_stay_lookup_failed') ||
         'quotes' in result && Array.isArray(result.quotes) && result.quotes.some(row => row && typeof row === 'object' && row.status === 'failed'))
       throw new Error('reservation warmup native check failed');
-    if (result.status === 'prepared' || result.status === 'ok' &&
+    if ('hmsReadCompleted' in result && result.hmsReadCompleted === true || result.status === 'ok' &&
         ('catalogues' in result || 'quotes' in result && Array.isArray(result.quotes) && result.quotes.some(row =>
-          row && typeof row === 'object' && row.status === 'priced') ||
+          row && typeof row === 'object' && row.hmsReadCompleted === true) ||
           'lookups' in result && Array.isArray(result.lookups) && result.lookups.some(row =>
             row && typeof row === 'object' && row.status === 'candidate'))) clearPropertyOutage(propertyCode);
     const completed = await markAiRunSucceeded({ ...mark, metrics: { ...run.metrics,
