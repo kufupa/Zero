@@ -6452,6 +6452,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   isSpam?: boolean;
   /** Set when the source's attachment enumeration is incomplete (e.g. sync optionalMissing gaps). */
   attachmentEvidenceUnknown?: boolean;
+  /** Set when any admitted causal thread message has unknown attachment enumeration. */
+  contextAttachmentEvidenceUnknown?: boolean;
   /** Set when a persisted non-inline attachment row exists for the source, even if the synced selection omits it. */
   hasPersistedNonInlineAttachment?: boolean;
   readCandidate?: (candidate: ReservationWorkflowV2CandidateRead) => Promise<ReservationWorkflowV2ReadResult | null>;
@@ -6462,6 +6464,8 @@ export async function runReservationWorkflowV2Prefill(input: {
   onValidatedExtraction?: (generationId: string, extraction: ReservationWorkflowV2Extraction) => Promise<boolean>;
   /** Provider-reported missing attachment parts on the current message; any gap makes the read incomplete. */
   currentAttachmentGaps?: number;
+  /** Provider-reported missing attachment parts across all admitted causal thread messages. */
+  contextAttachmentGaps?: number;
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
 }): Promise<ReservationWorkflowV2PrefillResult> {
@@ -6502,7 +6506,9 @@ export async function runReservationWorkflowV2Prefill(input: {
   });
   const evidence = sourceEvidence({ source: input.source, selection: input.selection, vision });
   const textCoverageComplete = !(input.currentAttachmentGaps ?? 0) &&
+    !(input.contextAttachmentGaps ?? 0) &&
     input.attachmentEvidenceUnknown !== true &&
+    input.contextAttachmentEvidenceUnknown !== true &&
     completeCurrentSourceText({ source: input.source, selection: input.selection, evidence,
       attachmentReads: vision.attachmentReads });
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });

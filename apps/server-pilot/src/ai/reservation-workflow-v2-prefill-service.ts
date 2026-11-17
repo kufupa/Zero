@@ -167,13 +167,14 @@ export async function prefillDraft(scoped: ReservationWorkflowV2Context, input: 
       .from(attachment).where(and(eq(attachment.messageId, input.source.messageId),
         eq(attachment.isInline, false))).limit(1);
     const modelEnv = { ...process.env, EXTRACTION_REASONING_EFFORT: process.env.EXTRACTION_REASONING_EFFORT?.trim() || 'high' };
-    const { missing, missingCurrent } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
+    const { missing, missingCurrent, attachmentEvidenceUnknown: contextAttachmentEvidenceUnknown } = await reservationArrivalEvidence(scoped.db, input.source.messageId);
     const azureAdapter = createAzureExtractionAdapter(modelEnv);
     const generated = await runReservationWorkflowV2Prefill({ db: scoped.db, transportId: scoped.transportId,
       propertyCode: scoped.propertyCode, source: input.source, selection, mailboxAddress, env: modelEnv,
       attachmentEvidenceUnknown: attachmentEvidenceUnknown(sourceMessage?.sourceProvenance),
+      contextAttachmentEvidenceUnknown,
       hasPersistedNonInlineAttachment: fileAttachmentPresence(fileAttachment != null, sourceMessage?.sourceProvenance) === true,
-      signal: operationSignal, currentAttachmentGaps: missingCurrent.length,
+      signal: operationSignal, currentAttachmentGaps: missingCurrent.length, contextAttachmentGaps: missing.length,
       adapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'extract',
         modelEnv.EXTRACTION_REASONING_EFFORT, jobFence?.runId),
       synthesisAdapter: observedPrefillAdapter(azureAdapter, input.source.messageId, 'synthesis',

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
-import { effectiveOptionalMissing } from '../mail/ingest/attachment-evidence.js';
+import { attachmentEvidenceUnknown, effectiveOptionalMissing } from '../mail/ingest/attachment-evidence.js';
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { orderThreadContext } from './quote-workflow-synced-selection.js';
 
@@ -14,11 +14,26 @@ const EVIDENCE_FIELDS = { id: message.id, threadId: message.threadId, transportI
   arrivedAt: MESSAGE_ARRIVED_AT, provenance: message.sourceProvenance };
 
 type MissingEntry = { role: string; fileName: string | null };
-export type ReservationArrivalEvidence = { hash: string; missing: MissingEntry[]; missingCurrent: MissingEntry[] };
+export type ReservationArrivalEvidence = {
+  hash: string;
+  missing: MissingEntry[];
+  missingCurrent: MissingEntry[];
+  attachmentEvidenceUnknown: boolean;
+};
 
-function evidenceDigest(prior: ReturnType<typeof orderThreadContext>, sortedAttachments: string[], sortedMissing: string[]): string {
-  return createHash('sha256').update(JSON.stringify(['reservation-arrival-evidence/2', prior,
-    sortedAttachments, sortedMissing])).digest('hex');
+function evidenceDigest(
+  prior: ReturnType<typeof orderThreadContext>,
+  sortedAttachments: string[],
+  sortedMissing: string[],
+  contextAttachmentEvidenceUnknown: boolean,
+): string {
+  return createHash('sha256').update(JSON.stringify([
+    'reservation-arrival-evidence/2',
+    prior,
+    sortedAttachments,
+    sortedMissing,
+    ...(contextAttachmentEvidenceUnknown ? ['attachment-evidence-unknown'] : []),
+  ])).digest('hex');
 }
 
 /** Bind the same causal thread evidence used by prefill, without loading attachment bytes. */
@@ -33,16 +48,23 @@ export async function reservationArrivalEvidence(db: WorkTx, messageId: string):
     mimeType: attachment.mimeType, bytes: attachment.sizeBytes, sha256: attachment.sha256,
     contentId: attachment.contentId, inline: attachment.isInline }).from(attachment)
     .where(inArray(attachment.messageId, [...admitted]));
-  const missingWithParent = thread.filter((row) => admitted.has(row.id)).flatMap((row) =>
+  const admittedThreadRows = thread.filter((row) => admitted.has(row.id));
+  const missingWithParent = admittedThreadRows.flatMap((row) =>
     effectiveOptionalMissing(row.provenance)
       .map((item): { messageId: string; role: string; fileName: string | null } =>
         ({ messageId: row.id, ...item })));
+  const contextAttachmentEvidenceUnknown = admittedThreadRows.some((row) => attachmentEvidenceUnknown(row.provenance));
   const missing = missingWithParent.map(({ role, fileName }) => ({ role, fileName }));
   const missingCurrent = missingWithParent.filter((row) => row.messageId === messageId)
     .map(({ role, fileName }) => ({ role, fileName }));
   const sortedAttachments = attachments.map((row) => JSON.stringify(row)).sort();
   const sortedMissing = missingWithParent.map((row) => JSON.stringify(row)).sort();
-  return { hash: evidenceDigest(prior, sortedAttachments, sortedMissing), missing, missingCurrent };
+  return {
+    hash: evidenceDigest(prior, sortedAttachments, sortedMissing, contextAttachmentEvidenceUnknown),
+    missing,
+    missingCurrent,
+    attachmentEvidenceUnknown: contextAttachmentEvidenceUnknown,
+  };
 }
 
 /**
@@ -93,17 +115,24 @@ export async function reservationArrivalEvidenceBatch(db: WorkTx, messageIds: re
     const prior = priors.get(source.id)!;
     const admitted = admittedBySource.get(source.id)!;
     const thread = byThread.get(`${source.transportId}/${source.threadId}`) ?? [];
-    const missingWithParent = thread.filter((row) => admitted.has(row.id)).flatMap((row) =>
+    const admittedThreadRows = thread.filter((row) => admitted.has(row.id));
+    const missingWithParent = admittedThreadRows.flatMap((row) =>
       effectiveOptionalMissing(row.provenance)
         .map((item): { messageId: string; role: string; fileName: string | null } =>
           ({ messageId: row.id, ...item })));
+    const contextAttachmentEvidenceUnknown = admittedThreadRows.some((row) => attachmentEvidenceUnknown(row.provenance));
     const missing = missingWithParent.map(({ role, fileName }) => ({ role, fileName }));
     const missingCurrent = missingWithParent.filter((row) => row.messageId === source.id)
       .map(({ role, fileName }) => ({ role, fileName }));
     const sortedAttachments = attachments.filter((row) => admitted.has(row.messageId))
       .map((row) => JSON.stringify(row)).sort();
     const sortedMissing = missingWithParent.map((row) => JSON.stringify(row)).sort();
-    results.set(source.id, { hash: evidenceDigest(prior, sortedAttachments, sortedMissing), missing, missingCurrent });
+    results.set(source.id, {
+      hash: evidenceDigest(prior, sortedAttachments, sortedMissing, contextAttachmentEvidenceUnknown),
+      missing,
+      missingCurrent,
+      attachmentEvidenceUnknown: contextAttachmentEvidenceUnknown,
+    });
   }
   return results;
 }

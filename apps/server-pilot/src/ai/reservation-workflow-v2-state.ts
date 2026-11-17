@@ -285,16 +285,21 @@ async function buildResult(db: WorkTx, ctx: Context, item: ItemRow, source: Rese
   if (!liveSource) return { status: 'invalid_source' };
   // Drafts without a recorded attachment baseline need an explicit review too:
   // there is no safe way to tell whether their current attachments were repaired.
+  const liveEvidence = await reservationArrivalEvidence(db, source.messageId);
   const sourceChanged = draft.source.sourceHash !== checkedSource.sourceHash ||
-    draft.prefill?.evidenceHash !== (await reservationArrivalEvidence(db, source.messageId)).hash;
+    draft.prefill?.evidenceHash !== liveEvidence.hash;
   if (sourceChanged && !allowSourceChanged && !recovery) return { status: 'invalid_source' };
   // The intake decision binds only to the generation, source and evidence it was
   // adjudicated on. Once any of them change it is parked until a fresh extraction
   // adjudicates again: a changed-source draft never surfaces a stale no-action.
   // Also block no_action when live provenance has unknown attachment enumeration
-  // (e.g., pre-fix drafts with textCoverageComplete=true and matching evidenceHash).
+  // or gaps in the admitted causal context (e.g., pre-fix drafts with
+  // textCoverageComplete=true and matching evidenceHash).
   const noActionBlockedByUnknownAttachments =
-    draft.disposition?.decision === 'no_action' && attachmentEvidenceUnknown(liveSource.sourceProvenance);
+    draft.disposition?.decision === 'no_action' &&
+    (attachmentEvidenceUnknown(liveSource.sourceProvenance) ||
+      liveEvidence.attachmentEvidenceUnknown ||
+      liveEvidence.missing.length > 0);
   const bound = sourceChanged || noActionBlockedByUnknownAttachments ? { ...draft, disposition: undefined } : draft;
   return { status: 'ok', draft: { ...bound, revision: item.revision }, revision: item.revision,
     revisionHead: item.revisionHead, seq: item.revisionSeq, ...(sourceChanged ? { sourceChanged: true } : {}) };

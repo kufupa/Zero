@@ -2991,7 +2991,8 @@ export async function listWorkItems(
             live.threadHistoryOnly === false && live.threadTrashedAt === null && live.threadSpamAt === null &&
             live.sourceProvenance?.attention == null &&
             !attachmentEvidenceUnknown(live.sourceProvenance) &&
-            !(liveEvidence?.missingCurrent.length) &&
+            liveEvidence?.attachmentEvidenceUnknown === false &&
+            !(liveEvidence?.missing.length) &&
             live.arrivedAt instanceof Date && live.arrivedAt.toISOString() === draft.source.arrivedAt &&
             staffQuoteSourceHash(live) === draft.source.sourceHash &&
             liveEvidence?.hash === intake.evidenceHash) {
