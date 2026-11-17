@@ -26,7 +26,6 @@ export type WorkflowProps = {
 
 export type WorkflowFooterProps = Pick<WorkflowProps, 'proposal' | 'drafts' | 'busy'> & {
   onStage?: () => void;
-  onGo?: () => void;
   onReconcile?: () => void;
 };
 
@@ -321,6 +320,7 @@ export function Workflow(props: WorkflowProps) {
         <ul>{proposal.stage.summary.map((item, index) => <li key={index}>{item}</li>)}</ul>
       </div>}
       {proposal.stage.display_rows.length > 0 ? <NativeRows rows={proposal.stage.display_rows} proposal={proposal} /> : <p>No Infor details were provided for this check.</p>}
+      {proposal.workflow === 'create' && stageCurrent && <p>Saving is not switched on yet</p>}
     </PaneSection>}
     {proposal.result && <PaneSection title="Infor result">
       {proposal.result.confirmation && <p>Confirmation: {proposal.result.confirmation}</p>}
@@ -335,13 +335,13 @@ export function Workflow(props: WorkflowProps) {
   </>;
 }
 
-export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onGo, onReconcile }: WorkflowFooterProps) {
+export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onReconcile }: WorkflowFooterProps) {
   const dirty = Object.keys(drafts).length > 0;
   if (uncertain(proposal)) return onReconcile ? { label: 'Check Infor', disabled: busy, onClick: onReconcile } : undefined;
   const mutableWorkflow = proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
   const stageCurrent = proposal.stage?.revision === proposal.revision;
-  if (proposal.phase === 'waiting_go' && stageCurrent) return onGo ? { label: 'Go', disabled: dirty || busy, onClick: onGo } : undefined;
-  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: 'Check in Infor', disabled: dirty || busy, onClick: onStage };
+  if (proposal.phase === 'waiting_go' && stageCurrent) return undefined;
+  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }

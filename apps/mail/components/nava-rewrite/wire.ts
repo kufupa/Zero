@@ -79,7 +79,7 @@ export const capabilitiesSchema = z.object({
   workflows: jsonSchema, tools: jsonSchema, model: z.string(),
   environment_type: z.string(), auth_ready: z.boolean(),
   workflow_capabilities: z.object({
-    create: z.object({ stage: z.boolean(), go_labtest: z.boolean() }).optional(),
+    create: z.object({ stage: z.boolean() }).optional(),
   }).optional(),
 });
 export const eventSchema = z.object({
@@ -88,7 +88,6 @@ export const eventSchema = z.object({
 });
 export const acceptedStageSchema = z.object({ proposal_id: id, revision, phase: z.literal('staging') });
 export const acceptedQuoteSchema = z.object({ job_id: id, proposal_id: id, revision, quote_id: id, phase: z.literal('staging') });
-export const acceptedGoSchema = z.object({ proposal_id: id, revision, phase: z.literal('saving') });
 export const apiErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string(), details: jsonSchema }) });
 
 export type Workflow = z.infer<typeof workflowSchema>;
@@ -104,7 +103,6 @@ export type Capabilities = z.infer<typeof capabilitiesSchema>;
 export type NavaEvent = z.infer<typeof eventSchema>;
 export type AcceptedStage = z.infer<typeof acceptedStageSchema>;
 export type AcceptedQuote = z.infer<typeof acceptedQuoteSchema>;
-export type AcceptedGo = z.infer<typeof acceptedGoSchema>;
 export type Change =
   | { op: 'add' | 'replace'; path: string; value: Json }
   | { op: 'remove'; path: string };
