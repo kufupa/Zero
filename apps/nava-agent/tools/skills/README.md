@@ -1,0 +1,7 @@
+# skill_read
+
+Linux/Node 22: caller supplies absolute trusted root and session-persisted `SkillPin`. Run `pinSkills(root)` at session creation, persist its result, then pass `{ root, pin }` as `context.skillConfig` to `tools[0].run`. The model supplies only `skill_name` and optional `path`. Root must be the same trusted deployment tree for the session; never derive it from tool input or a model-controlled pin. Pin failures prevent session creation. All six skills must contain `SKILL.md` and `references/`; the root must contain `references/`.
+
+Read paths resolve relative to the named skill. Only its `SKILL.md`, its `references/`, and sibling `../references/` Markdown files are readable. Pin contains sorted file hashes and a digest over the complete manifest; each read checks both the manifest digest and file digest. Files added after pinning are unavailable. Symlinks are rejected and Linux `/proc/self/fd` directory traversal keeps each open under the trusted root. Persist pins immutably with the session; caller owns authorization, trusted root selection, and session binding.
+
+Direct CLI: `tsx tools/skills/cli.ts pin /absolute/skills/root > /private/pin.json`; `tsx tools/skills/cli.ts read /absolute/skills/root /private/pin.json quote ../references/common.md`. Exit 1 indicates refusal or failure.
