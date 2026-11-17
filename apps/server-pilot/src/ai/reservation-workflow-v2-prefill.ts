@@ -1195,6 +1195,12 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
     if (attachment.isInline) return true;
     // Unprocessed, unread, unsupported or partially masked bytes are never complete.
     if (attachment.readFailure || !attachment.bytesPresent) return false;
+    if (isPdfAttachment(attachment)) {
+      // PDF vision audit 'read' cannot prove every source page when the renderer returns only an image array
+      // without a trustworthy original source page count, exact per-page admitted coverage, and no cap/error.
+      // Keep both text-extracted and scanned PDFs reviewable until that independent page-coverage proof exists.
+      return false;
+    }
     const attachmentText = attachment.text?.trim();
     if (attachmentText) {
       const isPrior = Boolean(attachment.messageId && attachment.messageId !== source.messageId);
@@ -1207,7 +1213,7 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
       const mime = (attachment.mimeType ?? '').split(';')[0].trim().toLowerCase();
       const isPlainText = mime === 'text/plain' || ((mime === '' || mime === 'application/octet-stream') && /\.txt$/i.test(attachment.filename));
       const isXlsx = mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || /\.xlsx$/i.test(attachment.filename);
-      if (isPdfAttachment(attachment) || (!isPlainText && !isXlsx)) {
+      if (!isPlainText && !isXlsx) {
         return audit.get(attachment.id) === 'read';
       }
       return true;
