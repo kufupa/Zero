@@ -279,6 +279,7 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
         return { outcome: 'preview_ok', expected, feeDialogPending: true,
           dialogOpenRequestDispatched: opened.dialogOpenRequestDispatched, cancellationSaveDispatched: false,
           chargeApproved: false, chargeDispatched: false,
+          nativeDialogObserved: Boolean(opened.nativeDialog),
           reasons: opened.reasons ?? [], penaltyText: opened.penaltyText,
           policyFacts: opened.policyFacts ?? [], requestDispatched: false };
       }
@@ -316,6 +317,7 @@ async function runCloudPaneCancelWithLease(input, { openSession = withCloudWrite
             return { outcome: 'preview_ok', expected, feeDialogPending: true,
               dialogOpenRequestDispatched: opened.dialogOpenRequestDispatched, cancellationSaveDispatched: false,
               chargeApproved: false, chargeDispatched: false, reasons: opened.reasons ?? [],
+              nativeDialogObserved: Boolean(staged.nativeDialog),
               penaltyText: staged.penaltyText ?? opened.penaltyText ?? null,
               policyFacts: opened.policyFacts ?? [], requestDispatched: false };
           }
