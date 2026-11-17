@@ -466,11 +466,14 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
             ...effectiveTree(draft, `${root}/body/requestedMoney/${index}`, claim) as typeof claim,
             staffAllowanceType: valueAt(draft, `${root}/body/requestedMoney/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType,
           }));
-          if (moneyRows.some(claim => claim.scope === 'unresolved' || claim.scope === 'per_target' &&
-              (!claim.targetRefs.length || claim.targetRefs.some(ref => !groups.some(group => group.id === ref))))) return null;
+          const isSeparatedMoney = (requestId: string, claim: typeof moneyRows[number]) =>
+            claim.staffAllowanceType === 'unsupported' && proposal.content.requests.some(other =>
+              other.kind === 'other' && separatedQuoteMoneyLinked(other.body.separatedFrom, requestId, claim.id));
+          if (moneyRows.some(claim => !isSeparatedMoney(request.id, claim) && (claim.scope === 'unresolved' || claim.scope === 'per_target' &&
+              (!claim.targetRefs.length || claim.targetRefs.some(ref => !groups.some(group => group.id === ref)))))) return null;
           // A per-person once-off amount cannot be repeated across date runs
           // without knowing whether those runs include the same people.
-          if (moneyRows.some(claim => claim.unit === 'per_person' && scenarios.some(scenario =>
+          if (moneyRows.some(claim => !isSeparatedMoney(request.id, claim) && claim.unit === 'per_person' && scenarios.some(scenario =>
               dateBuckets.filter(bucket => bucket.scenarioId === scenario.id &&
                 (claim.scope !== 'per_target' || bucket.rows.some(row => claim.targetRefs.includes(row.id)))).length > 1))) return null;
           // A prior date in the same option may already own a once-per-person
@@ -482,8 +485,11 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               const sibling = proposal.content.requests.find(row => row.id === member.requestId && row.kind === 'quote');
               if (!sibling || sibling.kind !== 'quote') return true;
               const siblingRoot = `${ptr('proposal', 'content', 'requests', sibling.id)}/body/requestedMoney`;
-              return sibling.body.requestedMoney.some((claim, index) =>
-                (effectiveTree(draft, `${siblingRoot}/${index}`, claim) as typeof claim).unit === 'per_person');
+              return sibling.body.requestedMoney.some((claim, index) => {
+                const effective = { ...effectiveTree(draft, `${siblingRoot}/${index}`, claim) as typeof claim,
+                  staffAllowanceType: valueAt(draft, `${siblingRoot}/${index}/staffAllowanceType`) as typeof claim.staffAllowanceType };
+                return effective.unit === 'per_person' && !isSeparatedMoney(sibling.id, effective);
+              });
             })) return null;
           }
           const splitMoney = (rows: typeof groups, bucketIndex: number) => moneyRows.flatMap(claim => {
@@ -493,7 +499,7 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               other.kind === 'other' && separatedQuoteMoneyLinked(other.body.separatedFrom, request.id, claim.id)) : undefined;
             if (separated?.kind === 'other') {
               const coverage = separated.body.separatedFrom?.allowance?.groupIds;
-              if (!coverage) return bucketIndex === firstInScenario ? [{ ...claim }] : [];
+              if (!coverage?.length) return bucketIndex === firstInScenario ? [{ ...claim }] : [];
               const targetRefs = rows.filter(row => coverage.includes(row.id)).map(row => row.id);
               return targetRefs.length ? [{ ...claim, scope: 'per_target' as const, targetRefs }] : [];
             }
