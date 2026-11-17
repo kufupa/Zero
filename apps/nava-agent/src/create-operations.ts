@@ -6,7 +6,7 @@ import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow } from './schema.js';
 import { createPilotRequested, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 import { stageFeedback } from './prepare-feedback.js';
-import { attachmentsUnconfirmed, requiresStaffAttachmentCheck, selectedStageSource, stageSource, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentsUnconfirmed, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedStageSource, stageSource, staffAttachmentsChecked } from './attachment-gate.js';
 import { installedStaffTools, type LeaseFence, type RegistryContext, type StaffNativeInput, type ToolRegistry, type ToolResult } from './tool-registry.js';
 
 export const manualLabtestTarget = z.object({
@@ -90,7 +90,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
       },
     } : {}),
     async submit(tx, request) {
-      const [p] = await tx`SELECT p.*,s.config,s.status,s.mode FROM nava_agent.proposal p
+      const [p] = await tx`SELECT p.*,s.config,s.status,s.mode,s.pending_tool_use_id FROM nava_agent.proposal p
         JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id WHERE p.id=${request.proposalId}`;
       if (!p) return {ok:false,code:'NOT_FOUND'};
       if(staffPrepareOnly()) {
@@ -98,7 +98,9 @@ export function createPilotOperations(): ProposalOperations | undefined {
         const source=await selectedStageSource(tx,p.session_id);
         if(!source.success || source.data.mailbox_id!==request.mailboxId) return {ok:false,code:'FORBIDDEN'};
         const draft=proposalDraft.safeParse(p.current);
-        if(!draft.success || p.workflow!==request.workflow || !stageInput(draft.data,request.workflow,source.data.property_code,request.quoteId)) return {ok:false,code:'INVALID_INPUT'};
+        const input=draft.success && p.workflow===request.workflow ? stageInput(draft.data,request.workflow,source.data.property_code,request.quoteId) : null;
+        if(!input) return {ok:false,code:'INVALID_INPUT'};
+        if(input.workflow==='create' && !hasBoundCreateGuest(input.booking,p.execution)) return {ok:false,code:invalidGuestSelection.code};
         const key=request.idempotencyKey===null?null:createHash('sha256').update(request.idempotencyKey).digest('hex');
         if(key) {
           const [prior]=await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${p.session_id} AND kind='stage_queued'
@@ -109,7 +111,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
             return {ok:true,phase:'staging',jobId:prior.payload.job_id,replayed:true};
           }
         }
-        if(p.status!=='idle' || p.phase!=='ready') return {ok:false,code:'INVALID_PHASE'};
+        if(p.status!=='idle' || p.pending_tool_use_id!==null || p.phase!=='ready') return {ok:false,code:'INVALID_PHASE'};
         if(requiresStaffAttachmentCheck(request.workflow) && !await staffAttachmentsChecked(tx,p.id,p.revision)) {
           return {ok:false,code:attachmentsUnconfirmed.code};
         }
@@ -157,7 +159,7 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   const binding={proposalId:p.id,revision:job.revision,jobId:job.job_id,workerId:lease.workerId,epoch:lease.epoch};
   let result:ToolResult|null=null;
   if(staffPrepareOnly() && draft.success && input && job.source && job.workflow) {
-    result=await registry.runStaffStage(input,draft.data,{...binding,workflow:job.workflow,source:job.source},context);
+    result=await registry.runStaffStage(input,draft.data,{...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id},context);
   } else if(legacy) {
     const answer=await registry.run('hms_prepare',legacy,{...context,toolUseId:job.job_id,staffStage:binding});
     if(answer.kind==='result') result=answer.result;

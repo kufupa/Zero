@@ -4,7 +4,8 @@ import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields } from './proposal-fields.js';
-import { attachmentCheckPath, requiresStaffAttachmentCheck, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedCreateGuest, staffAttachmentsChecked } from './attachment-gate.js';
+import { staffPrepareOnly } from './hms-mode.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
   if(x.op!=='remove' && !Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'value required'});
@@ -56,7 +57,6 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     const draft=p.phase==='ready' ? withCreateNativeFields(stored) : stored;
     const identities=JSON.stringify(quoteIdentities(draft));
     const quoteActions=p.workflow==='quote'?structuredClone(draft.actions):null;
-    const priorProfiles=p.workflow==='create'?draft.bookings.map(booking=>booking.fields.guest_profile_id):[];
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {
       const spec=draft.field_specs.find(f=>f.path===item.path);
@@ -71,17 +71,20 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       valid.native_result=null;
       if(!input.changes.some(change=>change.path==='/reply_draft')) valid.reply_draft=null;
     }
-    if(p.workflow==='create') {
+    const bindCreateGuest=p.workflow==='create' && staffPrepareOnly();
+    let guestSelection:ReturnType<typeof selectedCreateGuest>=null;
+    if(bindCreateGuest) {
       const candidates=nativeGuestCandidates.safeParse(p.stage?.revision===p.revision?p.stage.native_result?.guest_candidates:null);
-      for(const [index,{fields}] of valid.bookings.entries()) {
-        const {guest_profile_id:profile,first_name:first,last_name:last}=fields;
-        if(profile==null || priorProfiles[index]===profile) continue;
-        if(typeof profile!=='string' || !profile.trim() || typeof first!=='string' || !first.trim()
-          || typeof last!=='string' || !last.trim() || fields.guest_email!=null) throw new Error('INVALID_GUEST_SELECTION');
-        if(candidates.success && candidates.data.items.length && !candidates.data.items.some(candidate=>
-          candidate.native_id===profile && candidate.first_name===first && candidate.last_name===last)) {
-          throw new Error('INVALID_GUEST_SELECTION');
+      const selectsGuest=input.changes.some(change=>change.path==='/bookings/0/fields/guest_profile_id' && change.op!=='remove');
+      for(const booking of valid.bookings) {
+        if(booking.fields.guest_profile_id==null) continue;
+        const selected=selectedCreateGuest(booking);
+        if(!selected || valid.bookings.length!==1) throw new Error(invalidGuestSelection.code);
+        if(!hasBoundCreateGuest(booking,p.execution) && !(selectsGuest && candidates.success && candidates.data.items.some(candidate=>
+          candidate.native_id===selected.native_id && candidate.first_name===selected.first_name && candidate.last_name===selected.last_name))) {
+          throw new Error(invalidGuestSelection.code);
         }
+        guestSelection=selected;
       }
     }
     if(p.workflow==='create') for(const change of input.changes) {
@@ -97,8 +100,17 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     }
     const [last]=await tx`SELECT COALESCE(max(sequence),0)::int AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
     let sequence=last.n;
+    const stageError=p.execution?.error?.operation==='staff_stage';
+    const execution=bindCreateGuest || stageError ? {...z.record(z.unknown()).safeParse(p.execution).data} : undefined;
+    if(execution) {
+      if(stageError) delete execution.error;
+      if(bindCreateGuest) {
+        if(guestSelection) execution.staff_guest_selection=guestSelection;
+        else delete execution.staff_guest_selection;
+      }
+    }
     await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,
-      execution=CASE WHEN execution->'error'->>'operation'='staff_stage' THEN execution-'error' ELSE execution END,
+      execution=CASE WHEN ${execution!==undefined} THEN ${json(execution??null)} ELSE execution END,
       updated_at=now() WHERE id=${id}`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+p.session_id},0))`;
     for(const item of changes) {
