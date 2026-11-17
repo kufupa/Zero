@@ -202,7 +202,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, show
 
   const agesPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_ages') : undefined;
   const countPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_count') : undefined;
-  const agesSpec = agesPath && proposal.field_specs.find(item => item.path === agesPath);
+  const agesSpec = agesPath ? proposal.field_specs.find(item => item.path === agesPath) : undefined;
   if (agesPath && spec.path === agesPath && countPath) {
     const resolvedCount = resolvePointer(proposal, countPath);
     const countValue = Object.prototype.hasOwnProperty.call(drafts, countPath) ? drafts[countPath] : resolvedCount.kind === 'value' ? resolvedCount.value : undefined;
