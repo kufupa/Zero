@@ -65,7 +65,12 @@ export const proposalSchema = z.object({
   id, thread_id: id, session_id: id, revision, phase: phaseSchema,
   created_at: z.string(), updated_at: z.string(), display_rows: z.array(nativeDisplayRowSchema),
   staff_attachments_checked: z.boolean().default(false),
-  stage: z.object({ revision, summary: z.array(z.string()), native_result: jsonSchema, display_rows: z.array(nativeDisplayRowSchema) }).nullable(),
+  stage: z.object({
+    revision, job_id: id.optional(), summary: z.array(z.string()), native_result: jsonSchema,
+    display_rows: z.array(nativeDisplayRowSchema), coverage: jsonSchema.optional(),
+    observed_fields: jsonSchema.optional(), cancellation_fee: jsonSchema.optional(),
+    artifacts: z.array(artifactSchema).optional(),
+  }).nullable(),
   result: z.object({
     confirmation: z.string().nullable(), reservation_id: z.string().nullable(),
     readback: jsonSchema, display_rows: z.array(nativeDisplayRowSchema), artifacts: z.array(artifactSchema),
@@ -80,15 +85,15 @@ export const threadSnapshotSchema = z.object({
 export const capabilitiesSchema = z.object({
   workflows: jsonSchema, tools: jsonSchema, model: z.string(),
   environment_type: z.string(), auth_ready: z.boolean(),
-  workflow_capabilities: z.object({
-    create: z.object({ stage: z.boolean() }).optional(),
-  }).optional(),
+  workflow_capabilities: z.record(z.string(), z.object({
+    stage: z.boolean().optional(), quote: z.boolean().optional(),
+  })).optional(),
 });
 export const eventSchema = z.object({
   sequence: z.number().int().nonnegative(), event_id: id, kind: z.string(), at: z.string(),
   session_id: id, proposal_id: z.string().nullable(), payload: jsonSchema,
 });
-export const acceptedStageSchema = z.object({ proposal_id: id, revision, phase: z.literal('staging') });
+export const acceptedStageSchema = z.object({ proposal_id: id, revision, phase: z.literal('staging'), job_id: id.optional() });
 export const acceptedQuoteSchema = z.object({ job_id: id, proposal_id: id, revision, quote_id: id, phase: z.literal('staging') });
 export const apiErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string(), details: jsonSchema }) });
 

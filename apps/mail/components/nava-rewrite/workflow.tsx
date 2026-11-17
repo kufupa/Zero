@@ -11,6 +11,7 @@ import quoteStyles from './quote.module.css';
 
 export type DraftValue = string | boolean | string[];
 type ReviewControl = { checked: boolean; actionLabel: string; disabled?: boolean };
+export type GuestCandidate = { nativeId: string; firstName: string; lastName: string };
 
 export type WorkflowProps = {
   proposal: Proposal;
@@ -22,10 +23,13 @@ export type WorkflowProps = {
   reviews?: Readonly<Record<string, ReviewControl>>;
   onReview?: (path: string, checked: boolean) => void;
   onOpenArtifact?: (artifactId: string) => void;
+  onQuote?: (quoteId: string) => void;
+  onSelectGuest?: (candidate: GuestCandidate) => void;
   attachmentsChecked: boolean;
   attachmentsAttention: boolean;
   attachmentsBusy: boolean;
   attachmentMessages: ThreadInput['messages'];
+  selectedMessageId: string;
   onAttachmentsCheckedChange: (checked: boolean) => void;
 };
 
@@ -182,7 +186,29 @@ function ageInputs(value: unknown): string[] {
   return value.map(age => typeof age === 'string' || typeof age === 'number' ? String(age) : '');
 }
 
-function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, showContext = true }: WorkflowProps & { spec: FieldSpec; locked: boolean; showContext?: boolean }) {
+function currentNativeResult(proposal: Proposal, drafts: WorkflowProps['drafts']) {
+  const stage = proposal.stage;
+  if (!stage || stage.revision !== proposal.revision || proposal.phase === 'staging' || Object.keys(drafts).length > 0) return undefined;
+  const value = stage.native_result;
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
+}
+
+function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) {
+  const choices = currentNativeResult(proposal, drafts)?.rate_choices;
+  if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status === 'unavailable' || !Array.isArray(choices.items)) return [];
+  return choices.items.flatMap(item => item && typeof item === 'object' && !Array.isArray(item) && typeof item.value === 'string' && item.value && typeof item.label === 'string'
+    ? [{ value: item.value, label: item.label, meaning: typeof item.meaning === 'string' ? item.meaning : null }] : []);
+}
+
+function FieldEvidence({ spec, label }: { spec: FieldSpec; label: string }) {
+  if (!spec.evidence.some(item => item.quote)) return null;
+  return <details>
+    <summary>Source for {label}</summary>
+    {spec.evidence.map((item, index) => item.quote && <p key={index} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.quote}</p>)}
+  </details>;
+}
+
+function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, attachmentMessages, selectedMessageId, showContext = true }: WorkflowProps & { spec: FieldSpec; locked: boolean; showContext?: boolean }) {
   const context = showContext ? fieldContext(proposal, spec.path) : undefined;
   const label = context ? `${spec.label} · ${context}` : spec.label;
   const resolved = resolvePointer(proposal, spec.path);
@@ -196,9 +222,29 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, show
   const review: PaneFieldProps['review'] = !aiFilled ? undefined : reviewControl && onReview
     ? { provenance: 'ai', ...reviewControl, onChange: (checked: boolean) => onReview(spec.path, checked) }
     : { provenance: 'ai', kind: 'marker' };
-  const hint = resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
-  const common = { label, required: spec.required, disabled: locked || !spec.editable, error: spec.error, hint, review };
+  const guestProfile = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/guest_profile_id$/.test(spec.path);
+  const hint = guestProfile ? 'Run Prepare to load verified Infor profiles, then select one below.'
+    : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
+  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile, error: spec.error, hint, review };
   let control: ReactNode;
+
+  const filingField = proposal.workflow === 'filing' && /^(\/actions\/(?:0|[1-9]\d*)\/details\/)attachment_id$/.exec(spec.path);
+  if (filingField) {
+    const messageId = resolvePointer(proposal, `${filingField[1]}message_id`);
+    const selected = attachmentMessages.find(message => message.id === selectedMessageId && message.direction === 'inbound');
+    if (messageId.kind !== 'value' || messageId.value !== selectedMessageId || !selected) {
+      control = <PaneMessage tone="error">The selected email is unavailable for document selection. Reopen the request.</PaneMessage>;
+    } else if (shown === null || shown === undefined || typeof shown === 'string') {
+      const options = selected.attachments.filter(attachment => attachment.mime_type.toLowerCase() === 'application/pdf')
+        .map(attachment => ({ value: attachment.id, label: attachment.name, meaning: `${attachment.size} bytes` }));
+      control = <PaneField {...common} label="PDF from selected email" control="select" value={shown ?? ''} options={options}
+        disabled={common.disabled || options.length === 0} hint={options.length === 0 ? 'No PDF is available in the selected email.' : undefined}
+        error={spec.error || (shown && !options.some(option => option.value === shown) ? 'Choose an available PDF from the selected email.' : undefined)}
+        onChange={next => { if (next) onEdit(spec.path, next); }} />;
+    }
+    return <div>{control ?? <PaneMessage>PDF selection is unavailable. Reopen the request.</PaneMessage>}<FieldEvidence spec={spec} label={label} /></div>;
+  }
+  if (proposal.workflow === 'filing' && /^\/actions\/(?:0|[1-9]\d*)\/details\/message_id$/.test(spec.path)) return null;
 
   const agesPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_ages') : undefined;
   const countPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_count') : undefined;
@@ -257,11 +303,13 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, show
     }
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
-    if (spec.control === 'select' || spec.control === 'combobox') {
-      const rateCode = proposal.workflow === 'create' && /^\/bookings\/(0|[1-9]\d*)\/fields\/rate_plan$/.test(spec.path);
-      control = rateCode && spec.options.length === 0
+    const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id)$/.test(spec.path);
+    const rates = proposal.workflow === 'create' && proposal.bookings.length === 1 && spec.path === '/bookings/0/fields/rate_plan' ? nativeRateOptions(proposal, drafts) : [];
+    const options = nativeCode ? rates : spec.options;
+    if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0) {
+      control = nativeCode && options.length === 0
         ? <PaneField {...common} control="text" value={text} onChange={next => onEdit(spec.path, next)} />
-        : <PaneField {...common} control={rateCode ? 'combobox' : spec.control} value={text} options={spec.options} onChange={next => onEdit(spec.path, next)} />;
+        : <PaneField {...common} hint={rates.length ? 'Choices from the last Infor check; coverage may be incomplete.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
     } else {
       const date = spec.control === 'date' && text && !isDateValue(text) ? 'text' : spec.control;
       control = <PaneField {...common} control={date} value={text} onChange={next => onEdit(spec.path, next)} />;
@@ -270,10 +318,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, show
 
   return <div>
     {control ?? <PaneMessage>{label}: value cannot be displayed or edited in this view. Check the source.</PaneMessage>}
-    {spec.evidence.some(item => item.quote) && <details>
-      <summary>Source for {label}</summary>
-      {spec.evidence.map((item, index) => item.quote && <p key={index} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.quote}</p>)}
-    </details>}
+    <FieldEvidence spec={spec} label={label} />
   </div>;
 }
 
@@ -326,6 +371,47 @@ function QuoteRequests({ proposal }: { proposal: Proposal }) {
   </details>;
 }
 
+function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
+  if (!onQuote) return null;
+  const quotes = proposal.actions.filter(action => action.type === 'quote');
+  return <PaneSection title="Check availability and rates">
+    {quotes.map((action, index) => {
+      const details = action.details;
+      const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : undefined;
+      return <button key={action.id} type="button" disabled={busy || Object.keys(drafts).length > 0 || !quoteId || !['ready', 'waiting_go'].includes(proposal.phase)}
+        onClick={() => { if (quoteId) onQuote(quoteId); }}>
+        {quotes.length > 1 ? `Check quote ${index + 1} in Infor` : 'Check quote in Infor'}
+      </button>;
+    })}
+    {quotes.length === 0 && <p>Quote details are unavailable.</p>}
+  </PaneSection>;
+}
+
+function GuestChoices({ proposal, drafts, busy, onSelectGuest }: WorkflowProps) {
+  if (proposal.workflow !== 'create' || proposal.bookings.length !== 1 || !onSelectGuest) return null;
+  const choices = currentNativeResult(proposal, drafts)?.guest_candidates;
+  if (!choices || typeof choices !== 'object' || Array.isArray(choices)) return null;
+  if (choices.status === 'unavailable') return <PaneMessage>Guest profile choices are unavailable. Check the profile in Infor.</PaneMessage>;
+  if (!Array.isArray(choices.items)) return null;
+  const candidates = choices.items.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.native_id !== 'string' || !/^\d+$/.test(item.native_id) ||
+      typeof item.first_name !== 'string' || !item.first_name.trim() || typeof item.last_name !== 'string' || !item.last_name.trim()) return [];
+    return [{ nativeId: item.native_id, firstName: item.first_name, lastName: item.last_name,
+      location: [item.city, item.country].filter((part): part is string => typeof part === 'string' && part.length > 0).join(', ') }];
+  });
+  const coverage = choices.coverage;
+  const complete = coverage && typeof coverage === 'object' && !Array.isArray(coverage) && coverage.complete === true && coverage.possibly_truncated === false && coverage.truncated === false;
+  return <PaneSection title="Choose a guest profile">
+    {!complete && <p>Search coverage may be incomplete. Check the profile details in Infor.</p>}
+    {candidates.length > 0 ? <PaneField label="Guest profile" control="select" value="" disabled={busy} placeholder="Choose a profile"
+      options={candidates.map(candidate => ({ value: candidate.nativeId, label: `${candidate.firstName} ${candidate.lastName}`, meaning: candidate.location || null }))}
+      onChange={value => {
+        const matches = candidates.filter(candidate => candidate.nativeId === value);
+        if (matches.length === 1 && matches[0]) onSelectGuest(matches[0]);
+      }} /> : <p>No guest profiles were returned.</p>}
+  </PaneSection>;
+}
+
 function useLongWait(proposal: Proposal, operationStartedAt: number | undefined) {
   const [longWait, setLongWait] = useState(false);
   useEffect(() => {
@@ -360,7 +446,9 @@ export function Workflow(props: WorkflowProps) {
   const phaseMessage = proposal.phase === 'prefilling' ? proposal.workflow === 'quote' ? 'Nava is preparing the quote.' : 'Nava is reading the email.'
     : proposal.phase === 'staging' ? 'Checking in Infor…'
     : proposal.phase === 'saving' ? 'Waiting for Infor and readback…' : null;
-  const stageCurrent = proposal.stage?.revision === proposal.revision && Object.keys(props.drafts).length === 0;
+  const stageCurrent = proposal.stage?.revision === proposal.revision && proposal.phase !== 'staging' && Object.keys(props.drafts).length === 0;
+  const rateChoices = proposal.workflow === 'create' ? currentNativeResult(proposal, props.drafts)?.rate_choices : undefined;
+  const rateChoicesUnavailable = Boolean(rateChoices && typeof rateChoices === 'object' && !Array.isArray(rateChoices) && rateChoices.status === 'unavailable');
   const dispositionMessage = {
     propose: null, needs_info: 'More information is needed.', decline: 'Marked for decline.',
     skip: 'No action needed.', staff_review: 'Needs review.',
@@ -391,22 +479,28 @@ export function Workflow(props: WorkflowProps) {
     {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
     {proposal.workflow !== 'quote' && proposal.field_specs.length > 0 && <PaneSection title="Details">
       {proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}
+      {proposal.workflow === 'filing' && !proposal.field_specs.some(spec => /^\/actions\/(?:0|[1-9]\d*)\/details\/attachment_id$/.test(spec.path) && spec.editable) && <PaneMessage>PDF selection is unavailable for this request. Handle it using your usual process.</PaneMessage>}
     </PaneSection>}
+    {rateChoicesUnavailable && <PaneMessage>Infor rate choices are unavailable for these stay details. Verify the rate code in Infor.</PaneMessage>}
+    <GuestChoices {...props} />
     {proposal.workflow === 'quote' && <QuoteRequests proposal={proposal} />}
-    {proposal.display_rows.length > 0 && <PaneSection title="Infor details">
-      {proposal.workflow === 'quote' && <p className={quoteStyles.resultNote}>Changing quote details does not update these results.</p>}
+    {proposal.workflow === 'quote' && <QuoteChecks {...props} />}
+    {proposal.workflow !== 'quote' && proposal.display_rows.length > 0 && <PaneSection title="Infor details">
       <NativeRows rows={proposal.display_rows} proposal={proposal} />
     </PaneSection>}
-    {proposal.stage && <PaneSection title={stageCurrent ? 'Checked details' : 'Earlier check'}>
-      {!stageCurrent && <p>Details have changed since this check.</p>}
+    {proposal.stage && !stageCurrent && <PaneMessage>{proposal.phase === 'staging' ? 'A new check is in progress; earlier results are hidden.' : 'Details have changed since the last check. Check again for current Infor results.'}</PaneMessage>}
+    {proposal.stage && stageCurrent && <PaneSection title="Checked details">
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
         <ul>{proposal.stage.summary.map((item, index) => <li key={index}>{item}</li>)}</ul>
       </div>}
       {proposal.stage.display_rows.length > 0 ? <NativeRows rows={proposal.stage.display_rows} proposal={proposal} /> : <p>No Infor details were provided for this check.</p>}
-      {proposal.workflow === 'create' && stageCurrent && <p>Saving is not switched on yet</p>}
+      {proposal.workflow === 'quote' && proposal.stage.artifacts?.map(artifact => <p key={artifact.id}>
+        {props.onOpenArtifact ? <button type="button" onClick={() => props.onOpenArtifact?.(artifact.id)}>{artifact.name}</button> : artifact.name}
+      </p>)}
+      {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <p>This check did not save changes in Infor.</p>}
     </PaneSection>}
-    {proposal.result && <PaneSection title="Infor result">
+    {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
       {proposal.result.confirmation && <p>Confirmation: {proposal.result.confirmation}</p>}
       {proposal.result.reservation_id && <p>Reservation: {proposal.result.reservation_id}</p>}
       {proposal.result.display_rows.length > 0 && <NativeRows rows={proposal.result.display_rows} proposal={proposal} />}
@@ -415,17 +509,18 @@ export function Workflow(props: WorkflowProps) {
         : artifact.name}</p>)}
     </PaneSection>}
     {proposal.phase === 'done' && !proposal.result && <PaneMessage>No readback was provided. Refresh this proposal.</PaneMessage>}
-    {proposal.reply_draft !== null && <PaneSection title="Reply draft"><p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{proposal.reply_draft}</p></PaneSection>}
+    {proposal.reply_draft !== null && (proposal.workflow !== 'quote' || proposal.revision === 1 && Object.keys(props.drafts).length === 0) && <PaneSection title={proposal.workflow === 'quote' ? 'Initial reply draft' : 'Reply draft'}>
+      {proposal.workflow === 'quote' && <p>This draft may contain outdated rates. Check current prices in Infor before using it.</p>}
+      <p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{proposal.reply_draft}</p>
+    </PaneSection>}
   </>;
 }
 
 export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onReconcile }: WorkflowFooterProps) {
   const dirty = Object.keys(drafts).length > 0;
   if (uncertain(proposal)) return onReconcile ? { label: 'Check Infor', disabled: busy, onClick: onReconcile } : undefined;
-  const mutableWorkflow = proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
+  const mutableWorkflow = proposal.workflow === 'triage' || proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
-  const stageCurrent = proposal.stage?.revision === proposal.revision;
-  if (proposal.phase === 'waiting_go' && stageCurrent) return undefined;
-  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
+  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }
