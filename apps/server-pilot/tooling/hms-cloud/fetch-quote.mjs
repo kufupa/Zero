@@ -487,7 +487,10 @@ async function setToggle(page,name,value) {
 
 async function applyCurrency(page,currency) {
   const input=page.locator('input[name="currency"]:visible');
-  if (!currency) {await input.fill('');await input.press('Tab');await setToggle(page,'convertcurrency',false);return;}
+  if (!currency) {
+    if (!await resetFieldIsEmpty(input)) {await input.fill('');await input.press('Tab');}
+    await setToggle(page,'convertcurrency',false);return;
+  }
   await input.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger').click();
   const configured=await input.evaluate(e=>Ext.getCmp(e.id.replace(/-inputEl$/,'')).getStore().getRange().map(r=>({code:r.data.value,label:r.data.display})));
   const entry=configured.find(c=>c.code===currency);
@@ -519,8 +522,9 @@ export async function resetPublicControls(page) {
     // Later changes may alter earlier fields, so verify the final form state.
     for (const field of [...fields,'currency']) {
       step=`verify_${field}`;
-      if (!await resetFieldIsEmpty(page.locator(`input[name="${field}"]`)))
-        throw new Error('PUBLIC_RESET_FIELD_NOT_EMPTY');
+      const state=await resetFieldEmptyState(page.locator(`input[name="${field}"]`));
+      if (!state.displayEmpty||!state.nativeEmpty)
+        throw Object.assign(new Error('PUBLIC_RESET_FIELD_NOT_EMPTY'),{quoteResetState:state});
     }
     for (const field of ['convertcurrency','includemultirateoptions']) {
       step=`verify_${field}`;
@@ -537,11 +541,17 @@ export async function resetPublicControls(page) {
 }
 
 async function resetFieldIsEmpty(input) {
+  const state=await resetFieldEmptyState(input);
+  return state.displayEmpty&&state.nativeEmpty;
+}
+
+async function resetFieldEmptyState(input) {
   return input.evaluate(e=>{
     const field=Ext.getCmp(e.id.replace(/-inputEl$/,''));
     if (!field || typeof field.getValue!=='function') throw new Error('PUBLIC_RESET_FIELD_UNREADABLE');
     const empty=value=>value===null||value===''||(Array.isArray(value)&&value.length===0);
-    return empty(e.value)&&empty(field.getValue());
+    const value=field.getValue();
+    return {displayEmpty:empty(e.value),nativeEmpty:empty(value),nativeType:value===null?'null':Array.isArray(value)?'array':typeof value};
   });
 }
 
@@ -1356,7 +1366,12 @@ export function executionFailure(error,phase,secret) {
   return resultEnvelope({
     outcome:'execution_failure',
     phase,
-    error:{name:error.name,message},
+    error:{name:error.name,message,
+      ...(/^(?:dismiss_calendar|expand_criteria|currency|sales_strategy|restricted_visibility|(?:clear|verify)_(?:groupname|organization|travelagency|roomtypes|rateplans|currency|convertcurrency|includemultirateoptions|sales_strategy))$/.test(error?.quoteResetStep??'')
+        ? {resetStep:error.quoteResetStep} : {}),
+      ...(typeof error?.quoteResetState?.displayEmpty==='boolean'&&typeof error?.quoteResetState?.nativeEmpty==='boolean'&&
+        /^(?:null|array|string|number|boolean|object|undefined)$/.test(error.quoteResetState.nativeType)
+        ? {resetState:{displayEmpty:error.quoteResetState.displayEmpty,nativeEmpty:error.quoteResetState.nativeEmpty,nativeType:error.quoteResetState.nativeType}} : {})},
     issues:[issue('EXECUTION_FAILURE',phase??'run',message,'Retry after restoring the authenticated Hotel Availability session.')],
     allocation:{status:'unknown',reason:'Execution failed before a selected allocation could be checked.',pools:[]},
   });
