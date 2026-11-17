@@ -77,8 +77,8 @@ function OutlookRewriteSelection({ bridge, owner, email, storeId, mailboxId }: {
         }
         const thread = await trpcClient.mail.get.query({ id: match.source.threadId, mergeLinked: true }, options);
         if (!live) return;
-        if (thread.messages.some(message => !message.body.trim() ||
-            message.body === message.processedHtml && /<[a-z][\s\S]*>/i.test(message.body))) {
+        if (thread.messages.some(message => message.id === match.source.messageId && (!message.body.trim() ||
+            message.body === message.processedHtml && /<[a-z][\s\S]*>/i.test(message.body)))) {
           setSource({ status: 'fallback' });
           return;
         }
