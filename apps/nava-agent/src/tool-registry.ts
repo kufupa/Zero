@@ -7,7 +7,7 @@ import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
-import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
+import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -174,6 +174,14 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let staffDraft=proposalDraft.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
+        if(staffPrepareOnly() && staffDraft.workflow==='create') {
+          staffDraft={...staffDraft,
+            bookings:staffDraft.bookings.map(booking=>Object.hasOwn(booking.fields,'guest_profile_id') ?
+              {...booking,fields:{...booking.fields,guest_profile_id:null}} : booking),
+            field_specs:staffDraft.field_specs.map(field=>/^\/?bookings\/\d+\/fields\/guest_profile_id$/.test(field.path) ?
+              {...field,provenance:'unknown',options:[],evidence:[]} : field),
+          };
+        }
         if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
           const filing=await loadFilingModule();
           const source=await selectedStageSource(tx,session.id);
@@ -281,14 +289,16 @@ export class ToolRegistry {
 
   async runStaffStage(input:StaffNativeInput, draft:ProposalDraft, job:StaffJobBinding, context:Omit<RegistryContext,'toolUseId'>):Promise<ToolResult> {
     if (!staffPrepareOnly() || context.mode!=='live' || context.propertyCode!==job.source.property_code
-        || input.workflow!==job.workflow || draft.workflow!==job.workflow) return failureObject('STAFF_JOB_CHANGED','Staff native job is no longer in scope.');
+        || input.workflow!==job.workflow || draft.workflow!==job.workflow
+        || (input.workflow==='quote' && input.request.quote_id!==job.quoteId)) return failureObject('STAFF_JOB_CHANGED','Staff native job is no longer in scope.');
     const handler=this.staffHandlers.get(job.workflow);
     if(!handler) return failureObject('UNAVAILABLE','Workflow is unavailable.');
     const filing=job.workflow==='filing'?await filingPortFactory():undefined;
     if(job.workflow==='filing' && !filing) return failureObject('ATTACHMENT_SOURCE_UNAVAILABLE','The selected attachment source is unavailable.');
     return this.nativeResult(()=>this.deps.native.withRead(job.source.property_code,context.signal,async credentialLease=>{
       const denied=await confirmedQueuedStaffStage(job,context.sessionId,draft);
-      if(denied) return failureObject(denied,denied===attachmentsUnconfirmed.code?attachmentsUnconfirmed.message:'The selected source or proposal revision changed.');
+      if(denied) return failureObject(denied,denied===attachmentsUnconfirmed.code?attachmentsUnconfirmed.message
+        :denied===invalidGuestSelection.code?invalidGuestSelection.message:'The selected source or proposal revision changed.');
       credentialLease.signal.throwIfAborted();
       const staffStage={...job,mailboxId:job.source.mailbox_id,sourceMessageId:job.source.source_message_id,sourceThreadId:job.source.source_thread_id};
       const trusted={...context,propertyCode:job.source.property_code,credentialLease,signal:credentialLease.signal,staffStage};
