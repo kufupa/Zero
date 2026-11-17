@@ -821,10 +821,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             : part === '$3::boolean' ? sql`${process.env.HMS_DEV_GATE === 'off' || !inStaffHours}::boolean`
               : part === '$4::timestamptz' ? sql`${now.toISOString()}::timestamptz`
                 : part === '$5::boolean' ? consumer : sql.raw(part)), sql``);
+        // Ignore ticket holders the worker cannot claim yet (for example, a full mailbox or an earlier thread run).
+        // Once a runnable prefill owns a live admission, the credential queue already suspends these idle tickets.
         const defaultPrefill = input.lane === 'default' ? sql`AND run.executor_lane = 'default'
           AND run.run_kind = 'reservation_prefill'
           AND (run.state IN ('queued', 'retry_wait') OR
             (run.state IN ('claimed', 'running') AND run.updated_at <= ${staleBefore.toISOString()}::timestamptz))
+          AND run.id IN (${db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(claimable)})
           ${scopedParts.length ? sql`AND ${sql.join(scopedParts, sql` AND `)}` : sql``}` : sql``;
         const rows = await tx.execute(sql`SELECT admission.run_id FROM hms_credential_admission admission
           LEFT JOIN ai_workflow_run run ON run.id = admission.run_id
