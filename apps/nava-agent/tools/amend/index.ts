@@ -64,7 +64,7 @@ const prepared = z.object({
   preserved: z.object({ cmsSend: z.boolean() }),
 });
 
-type Property = { propertyCode: string; origin: string; active: boolean };
+type Property = { propertyCode: string; origin: string; active: boolean; mailboxTransportId: string; transportIds: string[] };
 type ReadTool = (input: {
   tool: 'read'; confirmation: string; arrivalDate?: string; includeNativePreimage: true;
 }) => Promise<unknown>;
@@ -127,15 +127,19 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const registry: { getPropertyRegistration(code: string): Property | undefined } =
       await import(nativePath('property-registry'));
     const property = registry.getPropertyRegistration(booking.property_code);
-    if (!property?.active) return refuse('AMEND_PROPERTY_UNSUPPORTED', 'Property has no active native adapter.');
+    if (!property?.active || typeof property.mailboxTransportId !== 'string' ||
+        !Array.isArray(property.transportIds) || !property.transportIds.includes(property.mailboxTransportId)) {
+      return refuse('AMEND_PROPERTY_UNSUPPORTED', 'Property has no active native adapter.');
+    }
     const reader: { withSavedStayAgentSession(
       run: (session: { runTool: ReadTool }) => Promise<unknown>,
-      options: { readOnly: true; readOnlyConfirmation: string; propertyCode: string; signal: AbortSignal; credentialLease: unknown },
+      options: { readOnly: true; readOnlyConfirmation: string; propertyCode: string; transportId: string; signal: AbortSignal; credentialLease: unknown },
     ): Promise<unknown> } = await import(nativePath('saved-stay-agent-session'));
     phase = 'target_read';
     const raw = await reader.withSavedStayAgentSession(({ runTool }) => runTool({
       tool: 'read', confirmation, arrivalDate: expectedArrival?.data, includeNativePreimage: true,
-    }), { readOnly: true, readOnlyConfirmation: confirmation, propertyCode: property.propertyCode, signal, credentialLease: context.credentialLease });
+    }), { readOnly: true, readOnlyConfirmation: confirmation, propertyCode: property.propertyCode,
+      transportId: property.mailboxTransportId, signal, credentialLease: context.credentialLease });
     signal.throwIfAborted();
     if (nativeStatus.safeParse(raw).data?.outcome !== 'ok') {
       return nativeRefusal(raw, 'AMEND_TARGET_UNVERIFIED', 'HMS did not resolve one exact stay. Verify the confirmation and current arrival.');
@@ -191,7 +195,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     phase = 'native_prepare';
     const native: { prepareCloudPaneAmend(input: {
       target: Property; selected: NativeStay; confirmation: string; arrival: string; changes: Record<string, unknown>;
-      discoveryOnly: true; allowRealGuest: true; signal: AbortSignal; credentialLease: unknown;
+      discoveryOnly: true; allowRealGuest: true; transportId: string; signal: AbortSignal; credentialLease: unknown;
     }, dependencies: { current: (...args: unknown[]) => Promise<unknown>;
       stageGuest: (context: unknown, fields: Record<string, unknown>) => Promise<unknown> }): Promise<unknown> } = await import(nativePath('pane-amend-session'));
     const recordModule: { currentLabtestRecord(...args: unknown[]): Promise<unknown> } = await import(nativePath('labtest-record'));
@@ -204,7 +208,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     };
     const response = await native.prepareCloudPaneAmend({
       target: property, selected, confirmation: selected.confirmation, arrival: selected.arrival,
-      changes, discoveryOnly: true, allowRealGuest: true, signal, credentialLease: context.credentialLease,
+      changes, discoveryOnly: true, allowRealGuest: true, transportId: property.mailboxTransportId, signal, credentialLease: context.credentialLease,
     }, {
       current: async (...args) => {
         const current = await recordModule.currentLabtestRecord(...args);
@@ -232,7 +236,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const rereadRaw = await reader.withSavedStayAgentSession(({ runTool }) => runTool({
       tool: 'read', confirmation: selected.confirmation, arrivalDate: selected.arrival, includeNativePreimage: true,
     }), { readOnly: true, readOnlyConfirmation: selected.confirmation, propertyCode: property.propertyCode,
-      signal, credentialLease: context.credentialLease });
+      transportId: property.mailboxTransportId, signal, credentialLease: context.credentialLease });
     signal.throwIfAborted();
     const reread = freshRead.safeParse(rereadRaw);
     if (nativeStatus.safeParse(rereadRaw).data?.outcome !== 'ok' || !reread.success ||
