@@ -59,21 +59,25 @@ function createChildFields(draft: ProposalDraft): ProposalDraft {
   return {...draft,bookings,field_specs:fieldSpecs};
 }
 
-export function withCreateGuaranteeField(draft: ProposalDraft): ProposalDraft {
+export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='create' || draft.disposition!=='propose') return draft;
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
-    const path=`/bookings/${index}/fields/guarantee_type`;
-    const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
-    if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required:true,control:'text'};
-    else fieldSpecs.push({path,label:'Guarantee type',editable:true,required:true,control:'text',provenance:'unknown',error:null,options:[],evidence:[]});
-    return Object.hasOwn(booking.fields,'guarantee_type') ? booking : {...booking,fields:{...booking.fields,guarantee_type:null}};
+    const fields={...booking.fields};
+    for(const [key,label,required] of [['guarantee_type','Guarantee type',true],['agency_name','Booking agency',false],['agency_id','Booking agency ID',false]] as const) {
+      const path=`/bookings/${index}/fields/${key}`;
+      const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
+      if(!Object.hasOwn(fields,key)) fields[key]=null;
+      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required,control:'text'};
+      else fieldSpecs.push({path,label,editable:true,required,control:'text',provenance:'unknown',error:null,options:[],evidence:[]});
+    }
+    return {...booking,fields};
   });
   return {...draft,bookings,field_specs:fieldSpecs};
 }
 
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
-  if(draft.workflow==='create') draft=withCreateGuaranteeField(createChildFields(draft));
+  if(draft.workflow==='create') draft=withCreateNativeFields(createChildFields(draft));
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
     id: 'quote-input', type: 'quote', booking_ids: [],

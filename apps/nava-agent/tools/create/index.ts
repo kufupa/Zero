@@ -96,6 +96,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
+    if (value === null && (field === 'agency_id' || field === 'agency_name')) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');

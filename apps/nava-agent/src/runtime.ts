@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { sql, uid, json, event } from './db.js';
 import { proposalDraft, tools, type ThreadInput } from './schema.js';
-import { withCreateGuaranteeField } from './proposal-fields.js';
+import { withCreateNativeFields } from './proposal-fields.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
@@ -166,7 +166,7 @@ export async function snapshot(threadId:string) {
 }
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
   const draft=p.phase==='ready' && p.workflow==='create' ? proposalDraft.safeParse(p.current) : null;
-  const current=draft?.success ? withCreateGuaranteeField(draft.data) : p.current;
+  const current=draft?.success ? withCreateNativeFields(draft.data) : p.current;
   const stage=p.stage && p.stage.state!=='queued' ? {
     revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
     display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],...(p.stage.cancellation_fee!==undefined ? {cancellation_fee:p.stage.cancellation_fee} : {}),
