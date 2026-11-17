@@ -1210,6 +1210,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
 export function cloudQuoteDependencyDigest() {
   const root = fileURLToPath(new URL('../../', import.meta.url));
   const pending = [fileURLToPath(import.meta.url), ...['../../src/hms/request-policy.ts', '../../src/hms/trace-privacy.ts',
+    '../../src/hms/trace-privacy-worker.ts',
     '../../src/ops/playwright-quote-purge.ts'].map(path => fileURLToPath(new URL(path, import.meta.url))), ...PROPERTY_REGISTRY.properties.filter(property => property.active && property.profileFile)
     .map(property => fileURLToPath(new URL(`./${property.profileFile}`, import.meta.url)))], sources = new Map();
   const find = path => [path, path.replace(/\.js$/, '.ts'), path.replace(/\.js$/, '.tsx')].find(candidate => {
