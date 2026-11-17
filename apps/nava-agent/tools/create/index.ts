@@ -94,7 +94,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    const path = fieldPaths[field];
+    const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');
     if (assigned.has(key)) return fail('DUPLICATE_CREATE_FIELD', `Multiple fields map to ${key}.`);
@@ -174,6 +174,9 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   if ('ok' in built) return built;
   const { request, expectedGuest, unknown } = built;
   if (unknown.length) return fail('UNSUPPORTED_CREATE_FIELDS', 'Unsupported fields cannot be saved.', 'known', { fields: unknown });
+  if (Object.hasOwn(parsed.data.booking.fields, 'guest_email')) {
+    return fail('GUEST_EMAIL_SAVE_UNSUPPORTED', 'The requested guest email cannot yet be bound across the fresh create stage.');
+  }
   if (request.propertyCode !== 'HRCEN' || expectedGuest?.firstName !== labGuest.firstName || expectedGuest.lastName !== labGuest.lastName ||
       typeof request.stay.arrival !== 'string' || request.stay.arrival < '2027-01-01' ||
       !object(request.cms) || request.cms.send !== false) {
