@@ -267,7 +267,10 @@ export class RuntimeLoop implements AgentRuntime {
         throw error;
       }
       const assistant: RuntimeMessage = { role: 'assistant', content: response.content };
-      await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: 'success', latency_ms: Date.now() - started, stop_reason: response.stop_reason, assistant_version: state.version + 1, assistant, ...response.usage });
+      const hitOutputLimit = response.stop_reason === 'max_tokens';
+      await this.event(sessionId, 'model_call', { attempt_id: attemptId, status: hitOutputLimit ? 'error' : 'success',
+        ...(hitOutputLimit ? { error_code: 'MODEL_MAX_TOKENS' } : {}), latency_ms: Date.now() - started,
+        stop_reason: response.stop_reason, assistant_version: state.version + 1, assistant, ...response.usage });
       await this.deps.append(sessionId, assistant);
       fresh = { version: state.version + 1, reason: response.stop_reason };
     }

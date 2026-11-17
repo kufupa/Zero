@@ -46,7 +46,7 @@ export class BedrockRuntime implements AgentRuntime {
   private readonly loop: RuntimeLoop;
 
   constructor(deps: RuntimeDeps, options: { system?: string; maxSteps?: number; maxTokens?: number } = {}) {
-    const maxTokens = options.maxTokens ?? 4096;
+    const maxTokens = options.maxTokens ?? 16384;
     if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 32768) throw new Error('INVALID_MAX_TOKENS');
     const client = new AnthropicBedrock({
       awsRegion: REGION,
