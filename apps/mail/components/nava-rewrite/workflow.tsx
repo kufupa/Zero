@@ -169,16 +169,23 @@ function fieldContext(proposal: Proposal, path: string) {
   return undefined;
 }
 
-function childFieldPath(path: string, field: 'child_count' | 'child_ages') {
-  const match = /^(\/bookings\/(?:0|[1-9]\d*)\/fields\/)child_(?:count|ages)$/.exec(path);
-  return match ? `${match[1]}${field}` : undefined;
+function childFieldPath(path: string, field: 'child_count' | 'child_ages', workflow: Proposal['workflow']) {
+  if (workflow === 'create') {
+    const match = /^(\/bookings\/(?:0|[1-9]\d*)\/fields\/)child_(?:count|ages)$/.exec(path);
+    return match ? `${match[1]}${field}` : undefined;
+  }
+  if (workflow === 'quote') {
+    const match = /^(\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*)\/)(?:children|child_ages)$/.exec(path);
+    return match ? `${match[1]}${field === 'child_count' ? 'children' : 'child_ages'}` : undefined;
+  }
+  return undefined;
 }
 
-function childCount(value: unknown): number | undefined {
+function childCount(value: unknown, workflow: Proposal['workflow']): number | undefined {
   if (typeof value !== 'number' && typeof value !== 'string') return undefined;
   if (typeof value === 'string' && !/^\d+$/.test(value)) return undefined;
   const count = Number(value);
-  return Number.isInteger(count) && count >= 0 && count <= 16 ? count : undefined;
+  return Number.isSafeInteger(count) && count >= 0 && (workflow !== 'create' || count <= 16) ? count : undefined;
 }
 
 function ageInputs(value: unknown): string[] {
@@ -217,7 +224,8 @@ function FieldEvidence({ spec, label }: { spec: FieldSpec; label: string }) {
 }
 
 function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, attachmentMessages, selectedMessageId, showContext = true }: WorkflowProps & { spec: FieldSpec; locked: boolean; showContext?: boolean }) {
-  const context = showContext ? fieldContext(proposal, spec.path) : undefined;
+  const roomMatch = proposal.workflow === 'quote' ? /^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(0|[1-9]\d*)\//.exec(spec.path) : null;
+  const context = roomMatch ? `Room ${Number(roomMatch[1]) + 1}` : showContext ? fieldContext(proposal, spec.path) : undefined;
   const label = context ? `${spec.label} · ${context}` : spec.label;
   const resolved = resolvePointer(proposal, spec.path);
   if (resolved.kind === 'invalid') return <PaneMessage tone="error">{label}: this value is unavailable. Refresh the proposal.</PaneMessage>;
@@ -254,49 +262,55 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   }
   if (proposal.workflow === 'filing' && /^\/actions\/(?:0|[1-9]\d*)\/details\/message_id$/.test(spec.path)) return null;
 
-  const agesPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_ages') : undefined;
-  const countPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_count') : undefined;
+  const agesPath = childFieldPath(spec.path, 'child_ages', proposal.workflow);
+  const countPath = childFieldPath(spec.path, 'child_count', proposal.workflow);
   const agesSpec = agesPath ? proposal.field_specs.find(item => item.path === agesPath) : undefined;
   if (agesPath && spec.path === agesPath && countPath) {
     const resolvedCount = resolvePointer(proposal, countPath);
     const countValue = Object.prototype.hasOwnProperty.call(drafts, countPath) ? drafts[countPath] : resolvedCount.kind === 'value' ? resolvedCount.value : undefined;
-    const count = childCount(countValue);
+    const count = childCount(countValue, proposal.workflow);
     const ages = ageInputs(shown);
-    control = count === undefined ? <PaneMessage>{label}: enter a child count from 0 to 16 first.</PaneMessage> : <>
+    const ageMax = proposal.workflow === 'quote' ? 99 : 17;
+    const visibleCount = count === undefined ? 0 : proposal.workflow === 'quote' ? Math.min(count, Math.max(ages.length + 1, 32)) : count;
+    control = count === undefined ? <PaneMessage>{label}: {proposal.workflow === 'quote' ? 'enter a non-negative whole number of children first.' : 'enter a child count from 0 to 16 first.'}</PaneMessage> : <>
       {count === 0 && !Array.isArray(shown) && <PaneMessage>
         Confirm there are no children.
         <button type="button" disabled={locked || !spec.editable} onClick={() => onEdit(spec.path, [])}>Confirm no children</button>
       </PaneMessage>}
-      {Array.from({ length: count }, (_, index) => {
+      {Array.from({ length: visibleCount }, (_, index) => {
         const age = ages[index] ?? '';
-        const valid = /^\d+$/.test(age) && Number(age) <= 17;
+        const valid = /^\d+$/.test(age) && Number(age) <= ageMax;
         return <PaneField key={index} label={`Child ${index + 1} age${context ? ` · ${context}` : ''}`} control="number"
-          value={age} min="0" max="17" step="1" required disabled={locked || !spec.editable}
-          error={valid ? undefined : 'Enter an age from 0 to 17.'}
+          value={age} min="0" max={String(ageMax)} step="1" required disabled={locked || !spec.editable}
+          error={valid ? undefined : `Enter an age from 0 to ${ageMax}.`}
           review={aiFilled && index < ages.length ? { provenance: 'ai', kind: 'marker' } : undefined}
           onChange={next => {
-            const updated = Array.from({ length: Math.max(count, ages.length) }, (_, i) => ages[i] ?? '');
+            const updated = Array.from({ length: Math.max(visibleCount, ages.length) }, (_, i) => ages[i] ?? '');
             updated[index] = next;
             onEdit(spec.path, updated);
           }} />;
       })}
+      {visibleCount < count && <p>Enter these ages to show the remaining children.</p>}
       {ages.length > count && <PaneMessage tone="error">
         There are more saved ages than children. Confirm which ages to keep.
         <button type="button" disabled={locked || !spec.editable} onClick={() => onEdit(spec.path, ages.slice(0, count))}>Keep the first {count} {count === 1 ? 'age' : 'ages'}</button>
       </PaneMessage>}
     </>;
-  } else if (countPath && spec.path === countPath && agesPath && spec.control === 'number') {
-    const count = childCount(shown);
+  } else if (countPath && spec.path === countPath && agesPath && (proposal.workflow === 'quote' || spec.control === 'number')) {
+    const count = childCount(shown, proposal.workflow);
     const resolvedAges = resolvePointer(proposal, agesPath);
     const ages = ageInputs(Object.prototype.hasOwnProperty.call(drafts, agesPath) ? drafts[agesPath] : resolvedAges.kind === 'value' ? resolvedAges.value : undefined);
     if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string') {
       control = <PaneField {...common} disabled={common.disabled || !agesSpec?.editable} control="number" value={shown === null || shown === undefined ? '' : String(shown)}
-        min="0" max="16" step="1" error={spec.error || (shown !== null && shown !== undefined && count === undefined ? 'Enter a child count from 0 to 16.' : undefined)}
+        min="0" max={proposal.workflow === 'create' ? '16' : undefined} step="1" error={spec.error || (shown !== null && shown !== undefined && count === undefined ? proposal.workflow === 'quote' ? 'Enter a non-negative whole number of children.' : 'Enter a child count from 0 to 16.' : undefined)}
         hint={!agesSpec?.editable ? 'Child ages are unavailable to edit. Refresh the proposal.' : hint}
         onChange={next => {
           onEdit(spec.path, next);
-          const nextCount = childCount(next);
-          if (nextCount !== undefined) onEdit(agesPath, Array.from({ length: nextCount }, (_, i) => ages[i] ?? ''));
+          const nextCount = childCount(next, proposal.workflow);
+          if (nextCount !== undefined) {
+            const length = proposal.workflow === 'quote' ? Math.min(nextCount, Math.max(ages.length, 32)) : nextCount;
+            onEdit(agesPath, Array.from({ length }, (_, i) => ages[i] ?? ''));
+          }
         }} />;
     }
   } else if (spec.control === 'checkbox') {
@@ -380,6 +394,23 @@ function QuoteRequests({ proposal }: { proposal: Proposal }) {
   </details>;
 }
 
+export function validQuoteChildren(proposal: Proposal, quoteId: string): boolean {
+  const actions = proposal.actions.filter(action => {
+    const details = action.details;
+    return action.type === 'quote' && details && typeof details === 'object' && !Array.isArray(details) && details.quote_id === quoteId;
+  });
+  if (actions.length !== 1) return false;
+  const details = actions[0]?.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details) || !Array.isArray(details.groups) || details.groups.length === 0) return false;
+  return details.groups.every(group => {
+    if (!group || typeof group !== 'object' || Array.isArray(group) || !Array.isArray(group.rooms) || group.rooms.length === 0) return false;
+    return group.rooms.every(room => room && typeof room === 'object' && !Array.isArray(room) &&
+      typeof room.children === 'number' && Number.isSafeInteger(room.children) && room.children >= 0 &&
+      Array.isArray(room.child_ages) && room.child_ages.length === room.children &&
+      room.child_ages.every(age => typeof age === 'number' && Number.isInteger(age) && age >= 0 && age <= 99));
+  });
+}
+
 function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
   if (!onQuote) return null;
   const quotes = proposal.actions.filter(action => action.type === 'quote');
@@ -387,10 +418,13 @@ function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
     {quotes.map((action, index) => {
       const details = action.details;
       const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : undefined;
-      return <button key={action.id} type="button" disabled={busy || Object.keys(drafts).length > 0 || !quoteId || !['ready', 'waiting_go'].includes(proposal.phase)}
+      return <div key={action.id}>
+        <button type="button" disabled={busy || Object.keys(drafts).length > 0 || !quoteId || !validQuoteChildren(proposal, quoteId) || !['ready', 'waiting_go'].includes(proposal.phase)}
         onClick={() => { if (quoteId) onQuote(quoteId); }}>
         {quotes.length > 1 ? `Check quote ${index + 1} in Infor` : 'Check quote in Infor'}
-      </button>;
+        </button>
+        {(!quoteId || !validQuoteChildren(proposal, quoteId)) && <p>Complete the room details and enter an age for each child before checking.</p>}
+      </div>;
     })}
     {quotes.length === 0 && <p>Quote details are unavailable.</p>}
   </PaneSection>;
