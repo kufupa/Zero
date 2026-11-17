@@ -1,7 +1,7 @@
 import { quoteInput, quoteSchema, type QuoteInput } from './schema.js';
 import { quoteDisplayRows, type DisplayRow } from './display.js';
 
-export type ToolContext = {sessionId:string; mode:'live'|'labtest'|'historical'; signal?:AbortSignal};
+export type ToolContext = {sessionId:string; mode:'live'|'labtest'|'historical'; signal?:AbortSignal; credentialLease?:unknown};
 export type ToolResult = {ok:boolean; data:unknown; error:{code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'}|null};
 type Identity = {group_id:string;room_id:string;native_id:string};
 type Batch = {arrival_date:string;departure_date:string;identities:Identity[];rooms:QuoteInput['groups'][number]['rooms']};
@@ -50,7 +50,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
     const searchIndex=searches.length;
     try {
       const {fetchQuote}=await import('./native/tooling/hms-cloud/fetch-quote.mjs');
-      const native=await fetchQuote({propertyCode:request.property_code,signal:context.signal,request:{schemaVersion:2,propertyCode:request.property_code,arrivalDate:batch.arrival_date,departureDate:batch.departure_date,
+      const native=await fetchQuote({propertyCode:request.property_code,signal:context.signal,credentialLease:context.credentialLease,request:{schemaVersion:2,propertyCode:request.property_code,arrivalDate:batch.arrival_date,departureDate:batch.departure_date,
         rooms:batch.rooms.map((room,index)=>({id:batch.identities[index].native_id,quantity:room.quantity,adults:room.adults,children:room.children,childAges:room.child_ages,...(room.required?{required:room.required}:{}),...(room.preferred?{preferred:room.preferred}:{})})),
         search:{includeRestricted:request.search?.include_restricted ?? false,includeAlternatives:request.search?.include_alternatives ?? true,...(request.search?.sales_strategy?{salesStrategy:request.search.sales_strategy}:{})},
         ...(request.details?{details:request.details}:{}),...(request.max_options_per_group?{maxOptionsPerGroup:request.max_options_per_group}:{})}});
@@ -80,6 +80,32 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
     }
   }
   return failure ? {ok:false,data,error:failure} : {ok:true,data,error:null};
+}
+
+/** Return only quote facts the model needs; persist the original result independently before using this view. */
+export function quoteModelView(result:ToolResult):ToolResult {
+  const bounded=(value:unknown)=>typeof value==='string'?value.slice(0,160):null;
+  const data=record(result.data);
+  const quotes=Object.entries(record(data.quotes)).map(([quoteId,value])=>{
+    const quote=record(value);
+    return {quote_id:quoteId,property_code:quote.property_code,groups:Object.values(record(quote.groups)).map(value=>{
+      const group=record(value);
+      return {group_id:group.group_id,arrival_date:group.arrival_date,departure_date:group.departure_date,status:group.status,
+        rooms:array(group.rooms).map(value=>{
+          const room=record(value), native=record(room.native_result), options=array(native.options);
+          return {room_id:room.room_id,outcome:native.outcome,option_count:options.length,options:options.slice(0,4).map(value=>{
+            const option=record(value), room=record(option.room), rate=record(option.rate), meal=record(option.mealPlan);
+            return {room:{code:bounded(room.code),meaning:bounded(room.label)},rate:{code:bounded(rate.code),meaning:bounded(rate.label)},
+              meal:bounded(meal.label??meal.code??option.mealPlan),availability:option.availability,eligibility:option.eligibility,
+              match:option.matchStatus,nightly:array(option.nightly).slice(0,30).map(value=>{
+                const night=record(value), price=record(night.price);
+                return [night.date,price.amount,price.currency,night.inventory,night.restricted];
+              })};
+          })};
+        })};
+    })};
+  });
+  return {...result,data:{quotes,nightly_fields:['date','amount','currency','inventory','restricted']}};
 }
 
 export const tools = [{name:'hms_quote',description:'Read native availability and nightly prices for one quote and its ordered date groups; does not book.',input_schema:quoteSchema,run:quote}];
