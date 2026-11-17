@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { NavaApi } from './api';
-import { matchesManualLabtest, NavaApiError } from './api';
+import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
 import { Workflow, workflowPrimaryAction } from './workflow';
@@ -22,8 +22,8 @@ export type NavaControllerProps = {
 type Draft = { value: DraftValue; version: number; base: { exists: boolean; value?: unknown } };
 type Drafts = Record<string, Record<string, Draft>>;
 type Issue = { kind: 'conflict' | 'error'; message: string };
-type GoLock = 'sending' | 'accepted' | 'uncertain' | 'reconciling';
-type ActiveOperation = { kind: 'stage' | 'go' | 'reconcile' | 'refresh'; proposalId: string; signal: AbortSignal };
+type GoLock = 'accepted' | 'uncertain' | 'reconciling';
+type ActiveOperation = { kind: 'stage' | 'reconcile' | 'refresh'; proposalId: string; signal: AbortSignal };
 type Cache = {
   drafts: Drafts;
   issues: Record<string, Issue>;
@@ -111,7 +111,6 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
   const snapshotRef = useRef<ThreadSnapshot | null>(null);
   const inputKey = JSON.stringify(input);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
-  const [manualLabtest, setManualLabtest] = useState<ThreadSnapshot | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [streamMessage, setStreamMessage] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState(cache.selectedId);
@@ -134,10 +133,6 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
     const operation = operationRef.current;
     if (operation?.signal === signal) {
-      if (operation.kind === 'go' && cache.goLocks[operation.proposalId] === 'sending') {
-        cache.goLocks[operation.proposalId] = 'uncertain';
-        cache.goUncertainAfter[operation.proposalId] = snapshotRef.current?.event_sequence ?? 0;
-      }
       if (operation.kind === 'reconcile' && cache.goLocks[operation.proposalId] === 'reconciling') cache.goLocks[operation.proposalId] = 'uncertain';
       operationRef.current = null;
     }
@@ -311,29 +306,6 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     return () => window.clearTimeout(timer);
   }, [snapshot, version, busy, authenticationExpired]);
 
-  useEffect(() => {
-    setManualLabtest(null);
-    if (!snapshot || snapshot.session?.mode !== 'labtest') return;
-    const controller = new AbortController();
-    void api.getManualLabtest(input, { signal: controller.signal }).then(confirmed => {
-      if (!controller.signal.aborted) setManualLabtest(confirmed);
-    }).catch(() => {
-      if (!controller.signal.aborted) setManualLabtest(null);
-    });
-    return () => controller.abort();
-  }, [api, inputKey, snapshot]);
-
-  function manualLabtestReady(thread: ThreadSnapshot | null, proposal: Proposal): boolean {
-    const session = thread?.session;
-    if (!thread || !session || session.mode !== 'labtest' || thread.selected_message_id !== input.selected_message_id ||
-        proposal.thread_id !== thread.id || proposal.session_id !== session.id || proposal.workflow !== 'create' ||
-        proposal.phase !== 'waiting_go' || proposal.stage?.revision !== proposal.revision) return false;
-    return matchesManualLabtest(manualLabtest, {
-      threadId: thread.id, sessionId: session.id, proposalId: proposal.id,
-      revision: proposal.revision, selectedMessageId: input.selected_message_id,
-    });
-  }
-
   async function saveDraft(proposalId: string) {
     const proposal = snapshotRef.current?.proposals.find(item => item.id === proposalId);
     const drafts = cache.drafts[proposalId];
@@ -445,31 +417,19 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  async function operation(kind: 'stage' | 'go' | 'reconcile', proposal: Proposal) {
+  async function operation(kind: 'stage' | 'reconcile', proposal: Proposal) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
     if (kind !== 'reconcile' && (cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length)) return;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
-    if (kind === 'go' && (!manualLabtestReady(snapshotRef.current, current) || cache.goLocks[proposal.id] || cache.issues[proposal.id] || !capabilities?.auth_ready || !capabilities.workflow_capabilities?.create?.go_labtest || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_save'))) return;
     if (kind === 'stage' && (!stageWorkflows.includes(proposal.workflow) || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_prepare'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
-    let idempotencyKey: string | undefined;
-    if (kind === 'go') {
-      try {
-        idempotencyKey = crypto.randomUUID();
-        window.sessionStorage.setItem(goStorageKey(proposal.id), idempotencyKey);
-      } catch {
-        setMessage('Cannot safely start Save in this browser. Keep this proposal open and contact support.');
-        return;
-      }
-    }
     const currentOperation = { kind, proposalId: proposal.id, signal };
     operationRef.current = currentOperation;
     setMessage(null);
     setBusy(true);
-    if (kind === 'go') cache.goLocks[proposal.id] = 'sending';
     if (kind === 'reconcile') cache.goLocks[proposal.id] = 'reconciling';
     refreshVersion();
     const request = { proposalId: proposal.id, expectedRevision: proposal.revision, signal };
@@ -479,16 +439,6 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
         if (!signal.aborted) {
           cache.stagePending[proposal.id] = sequenceBeforeOperation;
           cache.operationStarts[proposal.id] = { phase: 'staging', at: Date.now() };
-          applyProposal({ ...proposal, phase: accepted.phase });
-        }
-      } else if (kind === 'go') {
-        if (!idempotencyKey) throw new NavaApiError('Cannot start Save safely.', 'unavailable');
-        const thread = snapshotRef.current;
-        if (!thread?.session) throw new NavaApiError('Could not verify this Labtest.', 'unavailable');
-        const accepted = await api.go({ ...request, idempotencyKey, source: input, threadId: thread.id, sessionId: thread.session.id });
-        if (!signal.aborted) {
-          cache.goLocks[proposal.id] = 'accepted';
-          cache.operationStarts[proposal.id] = { phase: 'saving', at: Date.now() };
           applyProposal({ ...proposal, phase: accepted.phase });
         }
       } else {
@@ -510,18 +460,8 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     } catch (error) {
       if (signal.aborted) return;
       if (expireAuthentication(error, signal)) return;
-      if (kind === 'go') {
-        const definitelyRejected = error instanceof NavaApiError && error.outcome === 'known' && (
-          error.kind === 'unavailable' || error.kind === 'http' && error.status !== null && error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 409
-        );
-        if (!definitelyRejected) {
-          cache.goLocks[proposal.id] = 'uncertain';
-          cache.goUncertainAfter[proposal.id] = snapshotRef.current?.event_sequence ?? 0;
-        } else { delete cache.goLocks[proposal.id]; delete cache.goUncertainAfter[proposal.id]; clearPendingGo(proposal.id); }
-      } else if (kind === 'reconcile') cache.goLocks[proposal.id] = 'uncertain';
-      setMessage(kind === 'go' && cache.goLocks[proposal.id] === 'uncertain'
-        ? 'The Save outcome is unknown. Check Infor before any further Save.'
-        : `Could not ${kind === 'stage' ? 'check in Infor' : kind === 'go' ? 'start Save' : 'check the Save outcome'}. Try again.`);
+      if (kind === 'reconcile') cache.goLocks[proposal.id] = 'uncertain';
+      setMessage(`Could not ${kind === 'stage' ? 'check in Infor' : 'check the Save outcome'}. Try again.`);
     } finally {
       if (operationRef.current === currentOperation) operationRef.current = null;
       if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
@@ -534,11 +474,10 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
   const lock = proposal ? cache.goLocks[proposal.id] : undefined;
   const isUncertain = Boolean(proposal && (lock === 'uncertain' || lock === 'reconciling' || proposal.phase === 'uncertain' || proposal.error?.outcome === 'uncertain'));
   const canStage = Boolean(proposal && stageWorkflows.includes(proposal.workflow) && supports(capabilities, 'workflows', proposal.workflow) && supports(capabilities, 'tools', 'hms_prepare'));
-  const canGo = Boolean(proposal && manualLabtestReady(snapshot, proposal) && capabilities?.auth_ready && capabilities.workflow_capabilities?.create?.go_labtest && supports(capabilities, 'workflows', proposal.workflow) && supports(capabilities, 'tools', 'hms_save') && !lock);
   const primary = proposal && isUncertain
     ? reconcileSupported ? { label: 'Check Infor', disabled: busy, onClick: () => { void operation('reconcile', proposal); } } : undefined
-    : proposal && proposal.phase === 'waiting_go' && proposal.stage?.revision === proposal.revision
-      ? { label: 'Go', disabled: !canGo || busy || Boolean(issue) || Object.keys(drafts).length > 0 || cache.stagePending[proposal.id] !== undefined, onClick: () => { void operation('go', proposal); } }
+    : proposal && proposal.workflow === 'create' && proposal.stage?.revision === proposal.revision
+      ? undefined
     : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined,
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
@@ -560,7 +499,6 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     {snapshot && !proposal && <PaneMessage>Nava is reading this email. Actions will appear here when available.</PaneMessage>}
     {proposal && <>
       {isUncertain && <PaneMessage tone="error">The Save outcome is unknown. Check Infor before any further Save.</PaneMessage>}
-      {proposal.phase === 'waiting_go' && !isUncertain && !canGo && <PaneMessage>Go is unavailable until staff authorization and workflow support are verified.</PaneMessage>}
       {issue && <PaneMessage tone="error">{issue.message}
         <ul>{Object.keys(drafts).map(path => {
           const field = proposal.field_specs.find(spec => spec.path === path);

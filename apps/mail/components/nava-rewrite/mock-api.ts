@@ -88,7 +88,6 @@ export function createMockNavaApi(fixture: {
       return structuredClone(snapshot);
     },
     getCapabilities: async options => { checkAbort(options?.signal); return structuredClone(capabilities); },
-    getManualLabtest: async (_source, options) => { checkAbort(options?.signal); return null; },
     events: async function* () { throw new NavaApiError('No fixture event stream.', 'unavailable'); },
     patchProposal: async ({ proposalId, expectedRevision, changes, signal }) => {
       checkAbort(signal);
@@ -115,7 +114,6 @@ export function createMockNavaApi(fixture: {
     redo: unavailable,
     quote: unavailable,
     stage: unavailable,
-    go: unavailable,
     reconcile: unavailable,
     sendContext: unavailable,
     getArtifact: unavailable,
