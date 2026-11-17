@@ -256,7 +256,8 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
         credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey, requireExplicitGuestSelection: true,
         allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
       });
-      const needsRate = result.outcome === 'needs_input' && (!request.room.ratePlan || object(result.ratePlanIssue) ||
+      const needsRate = result.outcome === 'needs_input' && !!result.applied && !!result.appliedVerification && !built.unknown.length &&
+        (!request.room.ratePlan || object(result.ratePlanIssue) ||
         (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate'))));
       const rateChoices = needsRate ? await scopedRateChoices(request,lease,transportId) : {status:'unavailable',items:[],coverage:null};
       return {result,rateChoices};
