@@ -5,8 +5,9 @@ import type { BoundThreadSnapshot, NavaApi } from './api';
 import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
-import { Workflow, workflowPrimaryAction } from './workflow';
+import { Workflow, validQuoteChildren, workflowPrimaryAction } from './workflow';
 import type { DraftValue, GuestCandidate } from './workflow';
+import { jsonSchema } from './wire';
 import type { Capabilities, Change, FieldSpec, Json, Proposal, ThreadInput, Workflow as WorkflowName } from './wire';
 
 export type NavaControllerProps = {
@@ -60,17 +61,21 @@ function pointer(root: unknown, path: string): { exists: boolean; value?: unknow
 
 function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName): { ok: true; value: Json } | { ok: false; message: string } {
   if (Array.isArray(draft)) {
-    if (!/^\/bookings\/(?:0|[1-9]\d*)\/fields\/child_ages$/.test(spec.path) ||
-        draft.some(age => !/^\d+$/.test(age) || Number(age) > 17)) {
-      return { ok: false, message: 'Enter an age from 0 to 17 for each child.' };
+    const createAges = workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/child_ages$/.test(spec.path);
+    const quoteAges = workflow === 'quote' && /^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*)\/child_ages$/.test(spec.path);
+    const maxAge = quoteAges ? 99 : 17;
+    if ((!createAges && !quoteAges) ||
+        draft.some(age => !/^\d+$/.test(age) || Number(age) > maxAge)) {
+      return { ok: false, message: `Enter an age from 0 to ${maxAge} for each child.` };
     }
     return { ok: true, value: draft.map(Number) };
   }
-  if (spec.control === 'checkbox') return typeof draft === 'boolean'
+  const quoteChildCount = workflow === 'quote' && /^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*)\/children$/.test(spec.path);
+  if (spec.control === 'checkbox' && !quoteChildCount) return typeof draft === 'boolean'
     ? { ok: true, value: draft } : { ok: false, message: `${spec.label}: choose yes or no.` };
   if (typeof draft !== 'string') return { ok: false, message: `${spec.label}: check this value.` };
   if (workflow === 'create' && spec.path === '/bookings/0/fields/guest_profile_id' && draft === '') return { ok: true, value: null };
-  if (spec.control === 'number') {
+  if (spec.control === 'number' || quoteChildCount) {
     if (!draft.trim()) return { ok: true, value: null };
     const value = Number(draft);
     return Number.isFinite(value) ? { ok: true, value } : { ok: false, message: `${spec.label}: enter a valid number.` };
@@ -83,9 +88,9 @@ function sameValue(a: unknown, b: unknown): boolean {
   return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((value, index) => sameValue(value, b[index]));
 }
 
-function validChildren(count: unknown, ages: unknown): boolean {
-  return typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 16 &&
-    Array.isArray(ages) && ages.length === count && ages.every(age => typeof age === 'number' && Number.isInteger(age) && age >= 0 && age <= 17);
+function validChildren(count: unknown, ages: unknown, quote = false): boolean {
+  return typeof count === 'number' && Number.isInteger(count) && count >= 0 && (quote || count <= 16) &&
+    Array.isArray(ages) && ages.length === count && ages.every(age => typeof age === 'number' && Number.isInteger(age) && age >= 0 && age <= (quote ? 99 : 17));
 }
 
 function validSavedChildren(proposal: Proposal): boolean {
@@ -386,19 +391,24 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       if (!parsed.ok) { cache.issues[proposalId] = { kind: 'error', message: parsed.message }; refreshVersion(); return; }
       changes.push({ op: pointer(proposal, path).exists ? 'replace' : 'add', path, value: parsed.value });
     }
-    const childPrefixes = new Set(entries.flatMap(([path]) => {
-      const match = /^(\/bookings\/(?:0|[1-9]\d*)\/fields)\/child_(?:count|ages)$/.exec(path);
-      return match ? [match[1]] : [];
-    }));
-    for (const prefix of childPrefixes) {
-      const countPath = `${prefix}/child_count`;
+    const childPairs = new Map<string, string>();
+    for (const [path] of entries) {
+      const create = proposal.workflow === 'create' && /^(\/bookings\/(?:0|[1-9]\d*)\/fields)\/child_(?:count|ages)$/.exec(path);
+      const quote = proposal.workflow === 'quote' && /^(\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*))\/(?:children|child_ages)$/.exec(path);
+      if (create) childPairs.set(create[1], 'child_count');
+      if (quote) childPairs.set(quote[1], 'children');
+    }
+    for (const [prefix, countField] of childPairs) {
+      const countPath = `${prefix}/${countField}`;
       const agesPath = `${prefix}/child_ages`;
       const countChange = changes.find(change => change.path === countPath);
       const agesChange = changes.find(change => change.path === agesPath);
       const count = countChange && countChange.op !== 'remove' ? countChange.value : pointer(proposal, countPath).value;
       const ages = agesChange && agesChange.op !== 'remove' ? agesChange.value : pointer(proposal, agesPath).value;
-      if (!validChildren(count, ages)) {
-        cache.issues[proposalId] = { kind: 'error', message: 'Enter a child count from 0 to 16 and an age from 0 to 17 for each child.' };
+      if (!validChildren(count, ages, proposal.workflow === 'quote')) {
+        cache.issues[proposalId] = { kind: 'error', message: proposal.workflow === 'quote'
+          ? 'Enter a child count and an age from 0 to 99 for each child.'
+          : 'Enter a child count from 0 to 16 and an age from 0 to 17 for each child.' };
         refreshVersion(); return;
       }
       for (const path of [countPath, agesPath]) {
@@ -409,13 +419,12 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
           cache.issues[proposalId] = { kind: 'error', message: 'Child count and ages must both be editable. Refresh the proposal.' };
           refreshVersion(); return;
         }
-        // Existing booking fields are validated JSON from the proposal schema.
-        const saved = path === countPath ? proposal.bookings[Number(prefix.split('/')[2])]?.fields.child_count : proposal.bookings[Number(prefix.split('/')[2])]?.fields.child_ages;
-        if (saved === undefined) {
+        const saved = jsonSchema.safeParse(value.value);
+        if (!saved.success) {
           cache.issues[proposalId] = { kind: 'error', message: 'Child count and ages must both be available. Refresh the proposal.' };
           refreshVersion(); return;
         }
-        changes.push({ op: 'replace', path, value: saved });
+        changes.push({ op: 'replace', path, value: saved.data });
       }
     }
     if (!changes.length) return;
@@ -555,7 +564,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     if (!signal || signal.aborted || authenticationExpiredRef.current) return;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposalId);
     if (!current || current.revision !== revision || cache.selectedId !== proposalId || Object.keys(cache.drafts[proposalId] ?? {}).length ||
-        current.phase === 'staging' || cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit) return;
+        current.phase === 'staging' || cache.issues[proposalId] || cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit) return;
     const stageJobId = current.stage?.revision === revision ? current.stage.job_id : undefined;
     const stageArtifact = current.stage?.revision === revision ? current.stage.artifacts?.find(item => item.id === artifactId) : undefined;
     const artifact = stageArtifact ?? current.result?.artifacts.find(item => item.id === artifactId);
@@ -566,7 +575,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       if (signal.aborted) return;
       const latest = snapshotRef.current?.proposals.find(item => item.id === proposalId);
       if (!latest || latest.revision !== revision || latest.phase === 'staging' || cache.selectedId !== proposalId || Object.keys(cache.drafts[proposalId] ?? {}).length ||
-          cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit ||
+          cache.issues[proposalId] || cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit ||
           (stageArtifact ? latest.stage?.revision !== revision || latest.stage.job_id !== stageJobId || !latest.stage.artifacts?.some(item => item.id === artifactId)
             : !latest.result?.artifacts.some(item => item.id === artifactId))) return;
       const url = URL.createObjectURL(blob);
@@ -584,7 +593,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     const signal = controllerRef.current?.signal;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit ||
-        !current || current.revision !== proposal.revision || cache.goLocks[proposal.id] ||
+        !current || current.revision !== proposal.revision || cache.goLocks[proposal.id] || cache.issues[proposal.id] ||
         cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length) return;
     const active: ActiveOperation = { kind: 'attachments', proposalId: proposal.id, signal };
     operationRef.current = active;
@@ -619,13 +628,13 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
     if (kind !== 'reconcile' && (cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length)) return;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
-    if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase) return;
-    if (kind !== 'reconcile' && (cache.issues[current.id] || cache.goLocks[current.id] || !['ready', 'waiting_go'].includes(current.phase))) return;
+    if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase || cache.issues[current.id]) return;
+    if (kind !== 'reconcile' && (cache.goLocks[current.id] || !['ready', 'waiting_go'].includes(current.phase))) return;
     if (kind === 'stage' && needsAttachmentReview(current.workflow) &&
         (!current.staff_attachments_checked || cache.attachmentNeedsRecheck[current.id] || !validSavedChildren(current))) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
-    if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
+    if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || !validQuoteChildren(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
     const attemptKey = kind === 'quote' ? JSON.stringify([proposal.id, proposal.revision, quoteId]) : null;
     let idempotencyKey = attemptKey ? cache.quoteAttempts[attemptKey] : undefined;
@@ -687,7 +696,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const canStage = Boolean(proposal && proposal.workflow !== 'quote' && advertised(capabilities, proposal.workflow, 'stage'));
   const canQuote = Boolean(proposal && proposal.workflow === 'quote' && advertised(capabilities, proposal.workflow, 'quote'));
   const primary = proposal && isUncertain
-    ? reconcileSupported ? { label: 'Check Infor', disabled: busy, onClick: () => { void operation('reconcile', proposal); } } : undefined
+    ? reconcileSupported ? { label: 'Check Infor', disabled: busy || Boolean(issue), onClick: () => { void operation('reconcile', proposal); } } : undefined
     : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined ||
         (needsAttachmentReview(proposal.workflow) && (!proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]))) || !validSavedChildren(proposal),
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
@@ -722,11 +731,11 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         <button type="button" disabled={busy || authenticationExpired} onClick={() => { delete cache.issues[proposal.id]; delete cache.drafts[proposal.id]; refreshVersion(); }}>Discard my edits</button>
       </PaneMessage>}
       {Object.keys(drafts).length > 0 && !issue && <PaneMessage>Edits are waiting to be saved.</PaneMessage>}
-      <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={id => { void openArtifact(proposal.id, proposal.revision, id); }}
-        onSelectGuest={proposal.workflow === 'create' ? candidate => { void selectGuest(proposal, candidate); } : undefined}
-        onQuote={canQuote && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
+      <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || issue?.kind === 'conflict' || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={!issue ? id => { void openArtifact(proposal.id, proposal.revision, id); } : undefined}
+        onSelectGuest={proposal.workflow === 'create' && !issue ? candidate => { void selectGuest(proposal, candidate); } : undefined}
+        onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         attachmentsChecked={proposal.staff_attachments_checked && !cache.attachmentNeedsRecheck[proposal.id]} attachmentsAttention={(snapshot?.messages ?? []).some(item => item.attachment_status !== 'complete')}
-        attachmentMessages={snapshot?.messages ?? []} selectedMessageId={input.selected_message_id} attachmentsBusy={busy || authenticationExpired || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || Object.keys(drafts).length > 0}
+        attachmentMessages={snapshot?.messages ?? []} selectedMessageId={input.selected_message_id} attachmentsBusy={busy || authenticationExpired || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || Object.keys(drafts).length > 0}
         onAttachmentsCheckedChange={checked => { void setAttachmentsChecked(proposal, checked); }} />
     </>}
   </NavaPane>;
