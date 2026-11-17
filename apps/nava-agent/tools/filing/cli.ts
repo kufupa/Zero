@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { prepare, type ToolContext, type TrustedAttachment } from './index.js';
+import { inspect, prepare, type ToolContext, type ToolResult, type TrustedAttachment } from './index.js';
 
 // The only bytes this CLI can supply are generated in memory for Labtest.
 function fixturePdf(): Buffer {
@@ -26,8 +26,8 @@ function fixturePdf(): Buffer {
 
 async function main(): Promise<void> {
   const flags = new Set(process.argv.slice(2));
-  if ([...flags].some(flag => !['--labtest', '--fixture', '--shared-admission'].includes(flag)) ||
-      (flags.has('--fixture') && !flags.has('--labtest'))) throw new Error('INVALID_CLI_OPTIONS');
+  if ([...flags].some(flag => !['--labtest', '--fixture', '--shared-admission', '--inspect'].includes(flag)) ||
+      (flags.has('--fixture') && (!flags.has('--labtest') || flags.has('--inspect')))) throw new Error('INVALID_CLI_OPTIONS');
   const input: unknown = JSON.parse(readFileSync(0, 'utf8'));
   const context: ToolContext = { sessionId: 'filing-cli', mode: flags.has('--labtest') ? 'labtest' : 'live' };
   if (flags.has('--fixture')) {
@@ -36,7 +36,8 @@ async function main(): Promise<void> {
       ? { ...ref, name: 'nava-labtest.pdf', mimeType: 'application/pdf', bytes: fixturePdf() } satisfies TrustedAttachment
       : null;
   }
-  let result;
+  const run = flags.has('--inspect') ? inspect : prepare;
+  let result: ToolResult;
   if (flags.has('--shared-admission')) {
     // Operator must supply the existing shared admission DB in this process's native environment.
     const moduleUrl = new URL('../../../server-pilot/tooling/hms-cloud/cloud-session.mjs', import.meta.url);
@@ -46,17 +47,21 @@ async function main(): Promise<void> {
       ? input.booking.property_code : undefined;
     if (typeof property !== 'string') throw new Error('PROPERTY_REQUIRED');
     result = await cloud.withCloudCredentialLease(property, (lease: unknown) =>
-      prepare(input, { ...context, hmsCredentialLease: lease }), { readOnly: true });
+      run(input, { ...context, hmsCredentialLease: lease }), { readOnly: true });
   } else {
-    result = await prepare(input, context);
+    result = await run(input, context);
   }
   // Real guest identity, attachment names and native captures never go to shared stdout.
-  process.stdout.write(`${JSON.stringify({ ok: result.ok, outcome: result.ok ? 'prepared' : 'refused',
-    error: result.error })}\n`);
+  const data = result.data && typeof result.data === 'object' && 'documents' in result.data && Array.isArray(result.data.documents)
+    ? { loaded_documents: result.data.documents.length, full_coverage_verified: false } : {};
+  process.stdout.write(`${JSON.stringify({ ok: result.ok, outcome: result.ok ? (flags.has('--inspect') ? 'documents_read' : 'prepared') : 'refused',
+    ...data, error: result.error })}\n`);
   if (!result.ok) process.exitCode = 1;
 }
 
-main().catch(() => {
-  process.stdout.write('{"ok":false,"outcome":"refused","error":{"code":"CLI_FAILED","message":"Filing CLI could not run.","retryable":false,"outcome":"known"}}\n');
+main().catch((error: unknown) => {
+  const code = error instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(error.message) ? error.message : 'CLI_FAILED';
+  process.stdout.write(`${JSON.stringify({ ok: false, outcome: 'refused', error:
+    { code, message: 'Filing CLI could not run.', retryable: false, outcome: 'known' } })}\n`);
   process.exitCode = 1;
 });

@@ -42,3 +42,13 @@ export const filingPrepareSchema: {
   required: ['workflow', 'booking', 'action'],
   additionalProperties: false,
 };
+
+/** The listing has its own schema so staff can inspect a stay without PDF bytes. */
+export const filingDocumentsSchema: {
+  type: 'object'; properties: Record<string, unknown>; required?: string[]; additionalProperties?: boolean;
+} = {
+  type: 'object',
+  properties: { booking: filingPrepareSchema.properties.booking },
+  required: ['booking'],
+  additionalProperties: false,
+};
