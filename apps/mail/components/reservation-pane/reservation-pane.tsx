@@ -652,14 +652,27 @@ export function ReservationPane(props: ReservationPaneProps) {
         : !recoveryOnly && <button type="button" disabled={busy || preview || Boolean(pendingDispatch)} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
     </div>}
     {recoveryOnly && snapshot && (() => {
-      const hasUnknownOp = snapshot.operationResults.some(row => row.status === 'unknown');
-      const manualDispatches = (snapshot.session.workflowDispatches ?? []).filter(d =>
-        d.status === 'needs_reconcile' || (d.status === 'failed' && !snapshot.operationResults.some(op => op.requestId === d.requestId && (op.status === 'succeeded' || op.status === 'unknown'))));
-      if (hasUnknownOp || manualDispatches.length === 0) return null;
-      const confirmations = [...new Set(snapshot.operationResults.map(op => text(op.confirmation)).filter(Boolean))];
+      const manualDispatches = (snapshot.session.workflowDispatches ?? []).filter(d => {
+        if (d.status !== 'needs_reconcile' && d.status !== 'failed') return false;
+        const matchedOp = snapshot.operationResults.find(op =>
+          op.requestId === d.requestId &&
+          (d.allocationId ? op.allocationId === d.allocationId : !op.allocationId) &&
+          (d.serviceId ? op.serviceId === d.serviceId : !op.serviceId));
+        return !matchedOp || (matchedOp.status !== 'succeeded' && matchedOp.status !== 'unknown');
+      });
+      if (manualDispatches.length === 0) return null;
       return <div className={styles.notice} role="status">
         <strong>Check outcome directly in Infor.</strong>
-        <p>This dispatch ended without a durable operation record, so automatic outcome check cannot run. {confirmations.length > 0 ? `Check Infor for confirmation ${confirmations.join(', ')}.` : 'Check Infor using the guest/booking details in the original email.'} This item remains unresolved here.</p>
+        {manualDispatches.map((d, i) => {
+          const matchedOp = snapshot.operationResults.find(op =>
+            op.requestId === d.requestId &&
+            (d.allocationId ? op.allocationId === d.allocationId : !op.allocationId) &&
+            (d.serviceId ? op.serviceId === d.serviceId : !op.serviceId));
+          const confirmation = matchedOp ? text(matchedOp.confirmation) : '';
+          return <p key={`${d.requestId ?? ''}-${d.allocationId ?? ''}-${d.serviceId ?? ''}-${i}`}>
+            This dispatch ended without a durable operation record, so automatic outcome check cannot run. {confirmation ? `Check Infor for confirmation ${confirmation}.` : 'Check Infor using the guest/booking details in the original email.'} This item remains unresolved here.
+          </p>;
+        })}
       </div>;
     })()}
       {currentAttention && <div className={styles.notice} role="alert">
