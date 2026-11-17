@@ -1,9 +1,12 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
+import { z } from 'zod';
+import { readPaneFilingAttachment } from './ai/pane-filing-source.js';
 import { getDb } from './db/client.js';
 import { mailboxAccess, mailboxTransport } from './db/schema/mail.js';
 import { resolvePilotTrustedOrigins, type Auth } from './lib/auth.js';
-import { isCenturionOutlookImport } from './mail/nava-outlook-import.js';
+import { canonicalCenturionOutlookImport, isCenturionFilingSource } from './mail/nava-outlook-import.js';
+import { getS3Storage } from './storage/s3.js';
 
 const resourceId = '([^/]+)';
 const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
@@ -17,6 +20,7 @@ const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: 'PATCH', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}$`) },
   { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|stage|reconcile)$`) },
   { method: 'GET', path: new RegExp(`^/api/nava/v1/artifacts/${resourceId}$`) },
+  { method: 'POST', path: /^\/api\/nava\/v1\/internal\/filing-pdf$/ },
 ];
 
 function error(status: number, code: string, message: string): Response {
@@ -30,14 +34,33 @@ function eligibility(eligible: boolean): Response {
   return Response.json({ eligible }, { headers: { 'Cache-Control': 'private, no-store' } });
 }
 
-async function readImportBody(body: ReadableStream<Uint8Array>): Promise<string | null> {
+function hasEligibleCapability(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || !('workflows' in value) || !Array.isArray(value.workflows) ||
+      !('tools' in value) || !Array.isArray(value.tools) || value.tools.includes('hms_save') ||
+      !('workflow_capabilities' in value) || typeof value.workflow_capabilities !== 'object' || value.workflow_capabilities === null ||
+      !('model' in value) || typeof value.model !== 'string' ||
+      !('environment_type' in value) || typeof value.environment_type !== 'string' ||
+      !('auth_ready' in value) || value.auth_ready !== true) return false;
+  const capabilities = value.workflow_capabilities;
+  const workflows = value.workflows;
+  return ['triage', 'quote', 'create', 'amend', 'cancel', 'filing'].some(workflow => {
+    if (!workflows.includes(workflow) || !(workflow in capabilities)) return false;
+    const capability = Object.entries(capabilities).find(([key]) => key === workflow)?.[1];
+    if (typeof capability !== 'object' || capability === null) return false;
+    return workflow === 'quote'
+      ? 'quote' in capability && capability.quote === true
+      : 'stage' in capability && capability.stage === true;
+  });
+}
+
+async function readImportBody(body: ReadableStream<Uint8Array>): Promise<Buffer | null> {
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
     for (;;) {
       const chunk = await reader.read();
-      if (chunk.done) return Buffer.concat(chunks).toString('utf8');
+      if (chunk.done) return Buffer.concat(chunks);
       size += chunk.value.length;
       if (size > 2 * 1024 * 1024) { await reader.cancel(); return null; }
       chunks.push(chunk.value);
@@ -45,6 +68,48 @@ async function readImportBody(body: ReadableStream<Uint8Array>): Promise<string 
   } finally {
     reader.releaseLock();
   }
+}
+
+const filingPdfRequest = z.object({
+  actor: z.string().min(1).max(256), mailbox_id: z.string().min(1).max(256),
+  source_thread_id: z.string().min(1).max(256), message_id: z.string().min(1).max(256),
+  attachment_id: z.string().min(1).max(256), exp: z.number().int(),
+}).strict();
+
+async function readFilingPdf(request: Request, secret: string, cohortUserId: string, cohortMailboxId: string): Promise<Response> {
+  if (!request.body) return error(400, 'invalid_input', 'Filing source is required');
+  const raw = await readImportBody(request.body);
+  if (raw === null) return error(413, 'invalid_input', 'Filing request is too large');
+  const signature = request.headers.get('x-nava-filing-signature');
+  if (!signature || !/^[a-f0-9]{64}$/.test(signature)) return error(403, 'forbidden', 'Filing source unavailable');
+  const expected = createHmac('sha256', secret).update('nava-filing-pdf-v1\n').update(raw).digest();
+  if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) return error(403, 'forbidden', 'Filing source unavailable');
+  let payload: unknown;
+  try { payload = JSON.parse(raw.toString('utf8')); } catch { return error(400, 'invalid_input', 'Invalid filing request'); }
+  const parsed = filingPdfRequest.safeParse(payload);
+  if (!parsed.success) return error(400, 'invalid_input', 'Invalid filing request');
+  const input = parsed.data;
+  const fresh = () => input.exp > Math.floor(Date.now() / 1000) && input.exp <= Math.floor(Date.now() / 1000) + 60;
+  if (!fresh() || input.actor !== cohortUserId || input.mailbox_id !== cohortMailboxId) return error(403, 'forbidden', 'Filing source unavailable');
+  const db = getDb();
+  const checkAuthority = async () => {
+    if (!fresh() || process.env.NAVA_REWRITE_COHORT_USER_ID !== input.actor ||
+        process.env.NAVA_REWRITE_COHORT_MAILBOX_ID !== input.mailbox_id) return false;
+    const grants = await db.select({ transportId: mailboxAccess.transportId }).from(mailboxAccess)
+      .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
+      .where(eq(mailboxAccess.userId, input.actor));
+    return grants.some(grant => grant.transportId === input.mailbox_id) && await isCenturionFilingSource({
+      mailboxId: input.mailbox_id, conversationId: input.source_thread_id,
+      messageId: input.message_id, attachmentId: input.attachment_id,
+    });
+  };
+  const source = await readPaneFilingAttachment({ db, s3: getS3Storage(), transportId: input.mailbox_id,
+    messageId: input.message_id, attachmentId: input.attachment_id,
+    signal: AbortSignal.any([request.signal, AbortSignal.timeout(60_000)]), checkAuthority });
+  if (!source) return error(404, 'not_found', 'Filing source unavailable');
+  return new Response(Uint8Array.from(source.bytes), { headers: {
+    'Content-Type': 'application/pdf', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+  } });
 }
 
 function configuredAgentOrigin(value: string | undefined): string | null {
@@ -143,6 +208,10 @@ export function createNavaRewriteGateway(auth: Auth) {
       if (isEligibility) return eligibility(false);
       return error(503, 'gateway_unavailable', 'Gateway is not configured');
     }
+    if (request.method === 'POST' && url.pathname === '/api/nava/v1/internal/filing-pdf') {
+      try { return await readFilingPdf(request, secret, cohortUserId, cohortMailboxId); }
+      catch { return error(502, 'gateway_error', 'Filing source unavailable'); }
+    }
     if (request.method !== 'GET') {
       const origin = request.headers.get('origin');
       if (!origin || !resolvePilotTrustedOrigins().includes(origin)) {
@@ -182,12 +251,7 @@ export function createNavaRewriteGateway(auth: Auth) {
           return eligibility(false);
         }
         const capabilities: unknown = await response.json();
-        return eligibility(typeof capabilities === 'object' && capabilities !== null &&
-          'workflows' in capabilities && Array.isArray(capabilities.workflows) && capabilities.workflows.includes('create') &&
-          'tools' in capabilities && Array.isArray(capabilities.tools) && capabilities.tools.includes('hms_prepare') && !capabilities.tools.includes('hms_save') &&
-          'model' in capabilities && typeof capabilities.model === 'string' &&
-          'environment_type' in capabilities && typeof capabilities.environment_type === 'string' &&
-          'auth_ready' in capabilities && capabilities.auth_ready === true);
+        return eligibility(hasEligibleCapability(capabilities));
       }
       const headers = new Headers({
         Authorization: `Bearer ${staff.token}`,
@@ -209,12 +273,15 @@ export function createNavaRewriteGateway(auth: Auth) {
         const body = await readImportBody(request.body);
         if (body === null) return error(413, 'invalid_input', 'Outlook thread is too large');
         let payload: unknown;
-        try { payload = JSON.parse(body); }
+        try { payload = JSON.parse(body.toString('utf8')); }
         catch { return error(400, 'invalid_input', 'Invalid Outlook thread'); }
-        if (!await isCenturionOutlookImport(payload, cohortMailboxId)) {
+        const canonical = await canonicalCenturionOutlookImport(payload, cohortMailboxId);
+        if (!canonical) {
           return error(403, 'source_not_eligible', 'This Outlook email is not an eligible Centurion source');
         }
-        init.body = body;
+        const canonicalBody = JSON.stringify(canonical);
+        headers.set('idempotency-key', createHash('sha256').update(canonicalBody).digest('hex'));
+        init.body = canonicalBody;
       } else if (request.method !== 'GET' && request.body) {
         init.body = request.body;
         init.duplex = 'half';
