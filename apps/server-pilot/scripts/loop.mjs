@@ -476,7 +476,8 @@ async function main() {
     source: brief(fields.length ? JSON.stringify(fields.map(({ path, raw }) => [path, raw])) : row.source.body, 600),
     choices: brief(JSON.stringify(row.hms?.assumptions ?? []), 600),
     hms: brief(hmsSummary(row)), status: row.status, reason: brief(row.reason),
-    seconds: JSON.stringify({ ...row.timings, native: row.hms?.stages?.map(stage => [stage.name, stage.seconds]) ?? [] }) };
+    seconds: JSON.stringify({ ...row.timings, native: [...(row.extracted?.lookups ?? []), ...(row.hms?.stages ?? [])]
+      .map(stage => [stage.name, stage.seconds]) }) };
   }));
   console.log(`Corpus latest: ${dataset.latest}; JSON: ${output}`);
   if (results.some(row => row.status === 'FAIL')) process.exitCode = 1;
