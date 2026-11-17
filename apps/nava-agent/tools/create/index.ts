@@ -182,7 +182,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const cloudTargetKey = api.createCloudTargetKey(expectedGuest, arrival, request.propertyCode);
     if (!cloudTargetKey) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
     const run = (lease: Lease) => loadNativeResult(api, { ...request, mode: 'prepare' }, {
-      credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey,
+      credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey, requireExplicitGuestSelection: true,
       allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
     });
     const result = context.credentialLease ? await run(context.credentialLease) :
