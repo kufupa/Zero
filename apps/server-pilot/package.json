@@ -13,6 +13,7 @@
     "./outlook-sync-contracts": "./src/outlook-sync/contracts.ts"
   },
   "scripts": {
+    "loop": "node --import tsx scripts/loop.mjs",
     "dev": "tsx watch src/main.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
