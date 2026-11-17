@@ -499,7 +499,8 @@ export function changeReservationWorkflowV2Rows(ctx: ReservationWorkflowV2Contex
               other.kind === 'other' && separatedQuoteMoneyLinked(other.body.separatedFrom, request.id, claim.id)) : undefined;
             if (separated?.kind === 'other') {
               const coverage = separated.body.separatedFrom?.allowance?.groupIds;
-              if (!coverage?.length) return bucketIndex === firstInScenario ? [{ ...claim }] : [];
+              if (!coverage?.some(groupId => groups.some(group => group.id === groupId)))
+                return bucketIndex === 0 ? [{ ...claim }] : [];
               const targetRefs = rows.filter(row => coverage.includes(row.id)).map(row => row.id);
               return targetRefs.length ? [{ ...claim, scope: 'per_target' as const, targetRefs }] : [];
             }
