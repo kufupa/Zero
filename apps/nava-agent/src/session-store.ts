@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { sql, uid, json } from './db.js';
 
 const block = z.object({type: z.string()}).passthrough();
-const messageSchema = z.object({role: z.enum(['user', 'assistant']), content: z.array(block)}).strict();
+const messageSchema = z.object({role: z.enum(['user', 'assistant']), content: z.array(block), stop_reason: z.string().nullable().optional()}).strict();
 export type RuntimeMessage = z.infer<typeof messageSchema>;
 export type Lease = {sessionId: string; workerId: string; epoch: string};
 export type Go = {executionId: string; revision: number; idempotencyKey: string; actor: string; toolUseId: string; snapshot: unknown; dispatch: 'pending' | 'dispatched'; details: unknown};
