@@ -910,14 +910,18 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
     } finally { controls.onQuoteWait?.(false); }
   };
   const refreshAfter = async <I extends ItemInput & Record<string, unknown>>(
-    procedure: MutationProcedure<I>, input: I, source: ReservationSourceContext,
+    procedure: MutationProcedure<I>, input: I, source: ReservationSourceContext, requireExactResult = false,
   ): Promise<ReservationPaneSnapshot> => {
     const raw = await procedure.mutate(input, mailboxOptions(source));
     await refreshAfterStale(input, source, raw);
     const result = okResult(raw);
-    return load({ workItemId: input.workItemId, source: input.source,
+    const snapshot = await load({ workItemId: input.workItemId, source: input.source,
       expectedRevision: typeof result.revision === 'number' ? result.revision : input.expectedRevision,
       expectedSeq: typeof result.seq === 'number' ? result.seq : input.expectedSeq }, source);
+    if (requireExactResult && (typeof result.revision !== 'number' || typeof result.seq !== 'number' ||
+        snapshot.session.revision !== result.revision || snapshot.session.seq !== result.seq))
+      throw new ReservationWorkflowStaleRevisionError(snapshot);
+    return snapshot;
   };
   const splitQuoteDates = async (command: ReservationCommandContext & { requestId?: string; nativeFieldPath?: string }) => {
     const request = command.snapshot.session.draft.proposal.content.requests.find(row => row.id === command.requestId);
@@ -1014,13 +1018,13 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       okResult(raw);
       return load(input, command.source);
     },
-    reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source); },
+    reviewScope(command) { return refreshAfter(api.reviewScope, { ...itemInput(command), requestId: command.requestId, scope: command.scope, ids: command.ids }, command.source, command.requireExactResult); },
     get(command) { return load(itemInput(command), command.source, command.backgroundPoll); },
     reconcileSource(command) { return refreshAfter(api.reconcileSource, { ...itemInput(command), confirmed: true }, command.source); },
     async edit(command: ReservationEditCommand) {
       const input = { ...itemInput(command), fieldPath: command.fieldPath,
         value: { state: command.state, ...(command.state === 'set' ? { value: command.value } : {}), updatedAt: new Date().toISOString() } };
-      return refreshAfter(api.edit, input, command.source);
+      return refreshAfter(api.edit, input, command.source, command.requireExactResult);
     },
     async review(command: ReservationReviewCommand) {
       if (!requestOwnsPath(command.snapshot, command.fieldPath)) throw new Error('The field is not part of a source-bound reservation request.');

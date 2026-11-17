@@ -228,7 +228,7 @@ return mailboxProcedure.input(schema).use(async ({ ctx, path, type, input, signa
     const workflow = validation.draft.proposal.content.requests.find((request) => request.id === requestId)?.kind;
     try {
       return await withCloudCredentialPriority('staff', () => withCloudCredentialLease(scoped.property.propertyCode,
-        lease => withReservationActionLane({ ...cursor, signal: lease.signal }, () => nextFor(), { acquisitionSignal: signal }),
+        lease => withReservationActionLane({ ...cursor, signal: lease.signal }, () => nextFor(), { acquisitionSignal: signal, native: true }),
         { signal, priority: 'staff', readOnly: reservationActionCredentialReadOnly(method, workflow, action.data.nativeFieldPath) }));
     } catch (failure) {
       return nextFor({ kind: failure instanceof Error && failure.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' ? 'hms_busy' : 'system_fault' });
@@ -589,7 +589,7 @@ export async function runReservationWorkflowV2Warmup(input: {
       const latest = { ...request.input, expectedRevision: current.revision, expectedSeq: current.seq };
       return withReservationActionCursor({ ...latest, transportId: input.transportId, jobFence: input.fence },
         () => request.action === 'lookup' ? runPaneLookup(scoped, latest) : runPanePrepare(scoped, latest));
-    }), { readOnly: true, priority: 'background', signal: input.signal })));
+    }, { native: true }), { readOnly: true, priority: 'background', signal: input.signal })));
 }
 
 export const reservationWorkflowV2Router = router({

@@ -155,6 +155,7 @@ export type ReservationEditCommand = ReservationCommandContext & {
   fieldPath: string;
   state: ReservationFieldOverride['state'];
   value?: unknown;
+  requireExactResult?: boolean;
 };
 
 export type ReservationReviewCommand = ReservationCommandContext & {
@@ -171,7 +172,7 @@ export interface ReservationWorkflowClient {
   changeRows(input: ReservationCommandContext & RowChange): Promise<ReservationPaneSnapshot>;
   selectNative(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
   verifyNativeLead(input: ReservationCommandContext & { requestId: string; fieldPath: string; observationRef: string }): Promise<ReservationPaneSnapshot>;
-  reviewScope(input: ReservationCommandContext & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[] }): Promise<ReservationPaneSnapshot>;
+  reviewScope(input: ReservationCommandContext & { requestId: string; scope: 'request' | 'allocations' | 'targets' | 'services' | 'documents'; ids: string[]; requireExactResult?: boolean }): Promise<ReservationPaneSnapshot>;
   get(input: ReservationCommandContext & { backgroundPoll?: boolean }): Promise<ReservationPaneSnapshot>;
   reconcileSource(input: ReservationCommandContext): Promise<ReservationPaneSnapshot>;
   edit(input: ReservationEditCommand): Promise<ReservationPaneSnapshot>;

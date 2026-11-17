@@ -586,20 +586,23 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
         const options = quoteFamilyOptions(current.session.draft, requestId);
         if (!members?.length || !options?.length) throw new Error('The quote options changed. Review them before continuing.');
         const family = JSON.stringify(options);
-        const ensureCurrent = () => {
+        const sameVersion = (left: ReservationPaneSnapshot | null, right: ReservationPaneSnapshot) =>
+          left?.session.seq === right.session.seq && left?.session.revision === right.session.revision;
+        const ensureCurrent = (next?: ReservationPaneSnapshot) => {
           const selected = (entry.snapshot?.requests.find(row => row.id === activeAction.current) ?? entry.snapshot?.requests[0])?.id;
           if (!mounted.current || active.current.key !== sourceKey(context.source) || active.current.epoch !== context.source.selectionEpoch ||
               entry.owner !== owner || entry.sourceKey !== sourceKey(context.source) || selected !== requestId || entry.conflict ||
-              entry.pending.size || liveInputs.current.uncommitted.size || entry.snapshot?.session.sourceChanged ||
-              entry.snapshot?.session.seq !== current.session.seq || entry.snapshot?.session.revision !== current.session.revision ||
+              entry.pending.size || liveInputs.current.uncommitted.size || entry.snapshot?.session.sourceChanged || next?.session.sourceChanged ||
+              !(sameVersion(entry.snapshot, current) || next && sameVersion(entry.snapshot, next)) ||
               JSON.stringify(quoteFamilyOptions(current.session.draft, requestId)) !== family)
             throw new Error('The email or quote changed. Review it before continuing.');
         };
-        const step = async (action: () => Promise<ReservationPaneSnapshot>) => {
+        const step = async (action: () => Promise<ReservationPaneSnapshot>, mutation = false) => {
           ensureCurrent();
           const next = await action();
-          ensureCurrent();
+          ensureCurrent(next);
           if (!snapshotMatchesSource(next, context.source) || next.session.sourceChanged ||
+              !mutation && !sameVersion(next, current) ||
               next.session.draft.generationId !== current.session.draft.generationId ||
               JSON.stringify(quoteFamilyOptions(next.session.draft, requestId)) !== family)
             throw new Error('The email or quote changed. Review it before continuing.');
@@ -618,13 +621,13 @@ export function useReservationWorkbench({ source, activeProperty, configuration,
           if (!Array.isArray(requested) || requested.length !== packageKinds.length ||
               packageKinds.some(kind => !requested.includes(kind))) {
             await step(() => client.edit({ source: context.source, snapshot: current, requestId: member.requestId,
-              fieldPath, state: 'set', value: packageKinds }));
+              fieldPath, state: 'set', value: packageKinds, requireExactResult: true }), true);
           }
         }
         // Review all inputs before preparing or generating any family member: later
         // review mutations would otherwise make earlier generated documents stale.
         for (const member of members) await step(() => client.reviewScope({ source: context.source, snapshot: current,
-          requestId: member.requestId, scope: 'request', ids: [member.requestId] }));
+          requestId: member.requestId, scope: 'request', ids: [member.requestId], requireExactResult: true }), true);
         for (const member of members) {
           const draft = current.session.draft;
           const child = draft.proposal.content.requests.find(row => row.id === member.requestId && row.kind === 'quote');

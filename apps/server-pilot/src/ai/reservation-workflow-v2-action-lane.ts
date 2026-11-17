@@ -41,16 +41,17 @@ export async function closeReservationActionLanes(): Promise<void> {
   if (failure?.status === 'rejected') throw failure.reason;
 }
 
-function lanePool(url: string) {
-  let pool = lanePools.get(url);
+function lanePool(url: string, native: boolean) {
+  const poolKey = JSON.stringify([url, native]);
+  let pool = lanePools.get(poolKey);
   if (!pool) {
     const active = new Set<AbortController>();
     const client = postgres(url, { max: 3, idle_timeout: 0, max_lifetime: 0, connect_timeout: 10, ssl: getPostgresSslOptions(url),
       onclose: () => { for (const loss of active) loss.abort(Object.assign(new Error('Nava problem, not yours. Contact Nava support.'), { code: 'RESERVATION_ACTION_LOCK_LOST' })); } });
     pool = { client, active };
-    lanePools.set(url, pool);
+    lanePools.set(poolKey, pool);
   }
-  return pool;
+  return { pool, poolKey };
 }
 
 export function currentReservationActionCursor(workItemId: string): ActionCursor | undefined {
@@ -102,7 +103,7 @@ async function within<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T
 
 /** Native callers must acquire their credential before entering this draft lane. */
 export async function withReservationActionLane<T>(cursor: ActionCursor, operation: () => Promise<T>, options: {
-  signal?: AbortSignal; acquisitionSignal?: AbortSignal; deadlineAt?: number; databaseUrl?: string;
+  signal?: AbortSignal; acquisitionSignal?: AbortSignal; deadlineAt?: number; databaseUrl?: string; native?: boolean;
 } = {}): Promise<T> {
   const inherited = currentReservationActionCursor(cursor.workItemId);
   if (inherited?.transportId === cursor.transportId) return operation();
@@ -110,7 +111,7 @@ export async function withReservationActionLane<T>(cursor: ActionCursor, operati
   if (!url) throw new Error('reservation_action_database_required');
   const loss = new AbortController();
   let closing = false;
-  const pool = lanePool(url);
+  const { pool, poolKey } = lanePool(url, options.native === true);
   pool.active.add(loss);
   let connection: Awaited<ReturnType<typeof pool.client.reserve>> | undefined;
   const timeout = AbortSignal.timeout(Math.min(75_000, Math.max(1, (options.deadlineAt ?? Date.now() + 75_000) - Date.now())));
@@ -129,22 +130,26 @@ export async function withReservationActionLane<T>(cursor: ActionCursor, operati
       if (acquired && rows[0]?.released !== true) throw new Error('reservation_action_lock_release_failed');
     } catch (failure) {
       await pool.client.end({ timeout: 5 });
-      if (lanePools.get(url) === pool) lanePools.delete(url);
+      if (lanePools.get(poolKey) === pool) lanePools.delete(poolKey);
       throw failure;
     } finally { connection.release(); }
   };
   try {
-    const reservation = pool.client.reserve();
-    try { connection = await within(() => reservation, acquisition); }
-    catch (failure) { void reservation.then(late => late.release(), () => {}); throw failure; }
-    const reserved = connection;
+    while (!acquired) {
+      const reservation = pool.client.reserve();
+      try { connection = await within(() => reservation, acquisition); }
+      catch (failure) { void reservation.then(late => late.release(), () => {}); throw failure; }
+      const rows = await within(() => connection!.unsafe('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired', [key]), acquisition);
+      acquired = rows[0]?.acquired === true;
+      if (!acquired) {
+        connection.release();
+        connection = undefined;
+        await delay(25, undefined, { signal: acquisition });
+      }
+    }
+    const reserved = connection!;
     const [backend] = await within(() => reserved.unsafe('SELECT pg_backend_pid() AS pid'), acquisition);
     const pid = backend?.pid;
-    while (!acquired) {
-      const rows = await within(() => reserved.unsafe('SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired', [key]), acquisition);
-      acquired = rows[0]?.acquired === true;
-      if (!acquired) await delay(25, undefined, { signal: acquisition });
-    }
     const laneToken = randomUUID();
     await within(() => reserved.unsafe(`UPDATE work_item
       SET state = jsonb_set(coalesce(state, '{}'::jsonb), ARRAY[$1::text], to_jsonb($2::text), true)
