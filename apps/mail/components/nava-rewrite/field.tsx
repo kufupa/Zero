@@ -78,7 +78,7 @@ export function PaneField(props: PaneFieldProps) {
         <input {...common} type="text" list={`${id}-options`} value={props.value} placeholder={props.placeholder} onChange={event => props.onChange(event.target.value)} />
         <datalist id={`${id}-options`}>{props.options.map(option => <option key={option.value} value={option.value} label={choiceLabel(option)} />)}</datalist>
       </>
-      : <input {...common} type={props.control} value={props.value} placeholder={props.placeholder} min={props.min} max={props.max} step={props.step} onChange={event => props.onChange(event.target.value)} />}
+      : <input {...common} type={props.control} value={props.value} placeholder={props.placeholder} min={'min' in props ? props.min : undefined} max={'max' in props ? props.max : undefined} step={'step' in props ? props.step : undefined} onChange={event => props.onChange(event.target.value)} />}
     {props.hint && <small id={hintId}>{props.hint}</small>}
     {props.error && <small id={errorId} className={styles.fieldError}>{props.error}</small>}
   </div>;
