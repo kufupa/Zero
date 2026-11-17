@@ -310,6 +310,12 @@ if [ "$(id -un)" != "ubuntu" ]; then
   exit 2
 fi
 
+if [ "$#" -eq 2 ] && [ "$1" = --m1-only ] && [ "$2" = --activate-nava-gateway ]; then
+  source "$SCRIPT_DIR/nava-gateway-env.sh"
+  nava_gateway_activate
+  exit $?
+fi
+
 case "${1:-}" in
   --validate)
     validate_remote_env_files
