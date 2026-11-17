@@ -29,7 +29,8 @@ const option = z.object({
     inventory: z.number().int().nonnegative(), restricted: z.literal(false), rateAvailable: z.literal(true) }).passthrough()).min(1),
 }).passthrough();
 const capturedRoom = z.object({ room_id: id, native_result: z.object({
-  request: z.object({ quantity: z.number().int().positive(), adults: z.number().int().positive(), children: z.number().int().nonnegative(), childAges: z.array(z.number().int().nonnegative()) }).passthrough(),
+  request: z.object({ quantity: z.number().int().positive(), adults: z.number().int().positive(), children: z.number().int().nonnegative(), childAges: z.array(z.number().int().nonnegative()),
+    required: z.object({roomCodes:z.array(id).optional(),rateCodes:z.array(id).optional()}).passthrough().optional() }).passthrough(),
   options: z.array(z.unknown()),
 }).passthrough() }).passthrough();
 const capturedGroup = z.object({ group_id: id, arrival_date: date, departure_date: date, status: z.literal('complete'),
