@@ -54,6 +54,20 @@ export function preStaySourceText(textBody: string | null | undefined, htmlBody:
   return htmlToPlainText(document.root().html() ?? '');
 }
 
+/** Corroborate review cues only when HTML quote containers can be excluded. */
+export function authoredHtmlForReview(htmlBody: string): string {
+  const document = load(htmlBody, null, false);
+  document('.yahoo_quoted, #yahoo_quoted, .protonmail_quote, #protonmail_quote').remove();
+  const unknownQuoteMarker = document('[class], [id], [type]').toArray().some((node) => {
+    const element = document(node);
+    if (element.closest('blockquote, .gmail_quote, #divRplyFwdMsg, .OutlookMessageHeader').length) return false;
+    const marker = `${element.attr('class') ?? ''} ${element.attr('id') ?? ''}`;
+    return /quote|cite|forward|reply|rply|history/iu.test(marker) || element.attr('type')?.toLowerCase() === 'cite';
+  });
+  if (unknownQuoteMarker) return '';
+  return currentAuthoredMessageText(preStaySourceText(null, document.root().html() ?? ''));
+}
+
 /** Text authored in this message, excluding quoted or forwarded history. */
 export function currentAuthoredMessageText(body: string | null | undefined): string {
   if (!body) return '';

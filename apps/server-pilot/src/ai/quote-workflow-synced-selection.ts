@@ -28,7 +28,7 @@ import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from
 import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 import { QUOTE_ATTACHMENT_TEXT_MAX_CHARS } from './quote-workflow-limits.js';
 import { htmlToPlainText } from '../mail/inbound-reaction-parser.js';
-import { preStaySourceText } from './existing-stay-information.js';
+import { authoredHtmlForReview, preStaySourceText } from './existing-stay-information.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -836,7 +836,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     subject: row.subject ?? '',
     bodyText: row.textBody?.trim() ? row.textBody : htmlToPlainText(row.htmlBody ?? ''),
     ...(!row.textBody?.trim() && row.htmlBody ? { currentBodyText: preStaySourceText(null, row.htmlBody) } : {}),
-    authoredHtmlBodyText: row.htmlBody?.trim() ? preStaySourceText(null, row.htmlBody) : null,
+    authoredHtmlBodyText: row.htmlBody?.trim() ? authoredHtmlForReview(row.htmlBody) : null,
     receivedAt: row.receivedAt?.toISOString(),
     threadReferenceAt: (
       row.direction === 'outbound'
