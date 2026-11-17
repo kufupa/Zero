@@ -81,13 +81,30 @@ function NativeValue({ row }: { row: NativeDisplayRow }) {
   }
 }
 
+function stayLabel(proposal: Proposal, bookingId: string) {
+  const index = proposal.bookings.findIndex(booking => booking.id === bookingId);
+  const booking = proposal.bookings[index];
+  if (!booking) return 'Stay details unavailable';
+  return [`Stay ${index + 1}`, booking.property_code, booking.reservation_id && `Reservation ${booking.reservation_id}`].filter(Boolean).join(' · ');
+}
+
+function ActionContext({ proposal }: { proposal: Proposal }) {
+  if (proposal.actions.length === 0 && proposal.bookings.length === 0) return null;
+  return <PaneSection title="Actions and stays">
+    {proposal.actions.length > 0 && <ol className={styles.actionList}>{proposal.actions.map((action, index) => <li key={action.id}>
+      <strong>Action {index + 1}{action.type && ` · ${action.type}`}</strong>
+      {action.booking_ids.length > 0 ? <ul>{action.booking_ids.map((id, bookingIndex) => <li key={`${id}-${bookingIndex}`}>{stayLabel(proposal, id)}</li>)}</ul> : <p>No stay linked to this action.</p>}
+    </li>)}</ol>}
+    {proposal.bookings.length > 0 && <div className={styles.stayList}>
+      <strong>Stays</strong>
+      <ul>{proposal.bookings.map(booking => <li key={booking.id}>{stayLabel(proposal, booking.id)}</li>)}</ul>
+    </div>}
+  </PaneSection>;
+}
+
 function NativeRows({ rows, proposal }: { rows: NativeDisplayRow[]; proposal: Proposal }) {
   return <dl className={styles.nativeRows}>{rows.map(row => {
-    const index = row.booking_id === null ? -1 : proposal.bookings.findIndex(booking => booking.id === row.booking_id);
-    const booking = index < 0 ? undefined : proposal.bookings[index];
-    const context = row.booking_id === null ? null : booking
-      ? `Stay ${index + 1}${booking.reservation_id ? ` · ${booking.reservation_id}` : ''}`
-      : 'Stay reference unavailable';
+    const context = row.booking_id === null ? null : stayLabel(proposal, row.booking_id);
     return <div className={styles.nativeRow} key={row.id}>
       <dt>{row.label}{context && <span>{context}</span>}</dt>
       <dd><NativeValue row={row} /></dd>
@@ -95,9 +112,21 @@ function NativeRows({ rows, proposal }: { rows: NativeDisplayRow[]; proposal: Pr
   })}</dl>;
 }
 
+function fieldContext(proposal: Proposal, path: string) {
+  const match = /^\/(bookings|actions)\/(0|[1-9]\d*)\//.exec(path);
+  if (!match) return undefined;
+  const index = Number(match[2]);
+  if (!Number.isSafeInteger(index)) return undefined;
+  if (match[1] === 'bookings' && proposal.bookings[index]) return `Stay ${index + 1}`;
+  if (match[1] === 'actions' && proposal.actions[index]) return `Action ${index + 1}`;
+  return undefined;
+}
+
 function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked }: WorkflowProps & { spec: FieldSpec; locked: boolean }) {
+  const context = fieldContext(proposal, spec.path);
+  const label = context ? `${spec.label} · ${context}` : spec.label;
   const resolved = resolvePointer(proposal, spec.path);
-  if (resolved.kind === 'invalid') return <PaneMessage tone="error">{spec.label}: this value is unavailable. Refresh the proposal.</PaneMessage>;
+  if (resolved.kind === 'invalid') return <PaneMessage tone="error">{label}: this value is unavailable. Refresh the proposal.</PaneMessage>;
   const value = resolved.kind === 'value' ? resolved.value : null;
   const hasDraft = Object.prototype.hasOwnProperty.call(drafts, spec.path);
   const draft = hasDraft ? drafts[spec.path] : undefined;
@@ -108,7 +137,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked }: Wo
     ? { provenance: 'ai', ...reviewControl, onChange: (checked: boolean) => onReview(spec.path, checked) }
     : { provenance: 'ai', kind: 'marker' };
   const hint = resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
-  const common = { label: spec.label, required: spec.required, disabled: locked || !spec.editable, error: spec.error, hint, review };
+  const common = { label, required: spec.required, disabled: locked || !spec.editable, error: spec.error, hint, review };
   let control: ReactNode;
 
   if (spec.control === 'checkbox') {
@@ -132,9 +161,9 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked }: Wo
   }
 
   return <div>
-    {control ?? <PaneMessage>{spec.label}: value cannot be displayed or edited in this view. Check the source.</PaneMessage>}
+    {control ?? <PaneMessage>{label}: value cannot be displayed or edited in this view. Check the source.</PaneMessage>}
     {spec.evidence.some(item => item.quote) && <details>
-      <summary>Source for {spec.label}</summary>
+      <summary>Source for {label}</summary>
       {spec.evidence.map((item, index) => item.quote && <p key={index} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.quote}</p>)}
     </details>}
   </div>;
@@ -187,10 +216,17 @@ export function Workflow(props: WorkflowProps) {
     {proposal.reason && <PaneMessage>{proposal.reason}</PaneMessage>}
     {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{proposal.missing.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
     {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
-    {proposal.field_specs.length > 0 && <PaneSection title="Details">{proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}</PaneSection>}
+    <ActionContext proposal={proposal} />
+    {proposal.field_specs.length > 0 && <PaneSection title="Details">
+      {proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}
+    </PaneSection>}
     {proposal.display_rows.length > 0 && <PaneSection title="Infor details"><NativeRows rows={proposal.display_rows} proposal={proposal} /></PaneSection>}
     {proposal.stage && <PaneSection title={stageCurrent ? 'Checked details' : 'Earlier check'}>
       {!stageCurrent && <p>Details have changed since this check.</p>}
+      {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
+        <strong>Check notes</strong>
+        <ul>{proposal.stage.summary.map((item, index) => <li key={index}>{item}</li>)}</ul>
+      </div>}
       {proposal.stage.display_rows.length > 0 ? <NativeRows rows={proposal.stage.display_rows} proposal={proposal} /> : <p>No Infor details were provided for this check.</p>}
     </PaneSection>}
     {proposal.result && <PaneSection title="Infor result">

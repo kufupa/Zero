@@ -85,6 +85,12 @@
 .content { min-width: 0; padding: 0 13px 14px; }
 .section { min-width: 0; margin: 0 0 18px; }
 .section h2 { margin: 15px 0 9px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.actionList { margin: 0; padding: 0; list-style: none; }
+.actionList > li { padding: 7px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.actionList ul, .stayList ul, .stageSummary ul { margin: 4px 0; padding-left: 18px; }
+.actionList p { margin: 4px 0 0; color: var(--muted); }
+.stayList { margin-top: 9px; overflow-wrap: anywhere; }
+.stageSummary { overflow-wrap: anywhere; white-space: pre-wrap; }
 .nativeRows { margin: 0; }
 .nativeRow { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 5px 10px; padding: 7px 0; border-bottom: 1px solid var(--border); }
 .nativeRow dt { color: var(--muted); overflow-wrap: anywhere; }
