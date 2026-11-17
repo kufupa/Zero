@@ -32,7 +32,7 @@ const bookingSchema = z.object({
 });
 const actionSchema = z.object({ id, type: z.string(), booking_ids: z.array(id), details: jsonSchema });
 export const fieldSpecSchema = z.object({
-  path: z.string(), label: z.string(), provenance: z.enum(['ai', 'staff', 'hms', 'unknown']),
+  path: z.string(), label: z.string(), provenance: z.enum(['ai', 'staff', 'hms', 'default', 'unknown']),
   editable: z.boolean(), required: z.boolean(), error: z.string().nullable(),
   control: z.enum(['text', 'number', 'date', 'checkbox', 'select', 'combobox', 'textarea']),
   options: z.array(z.object({ value: z.string(), label: z.string(), meaning: z.string().nullable() })),
