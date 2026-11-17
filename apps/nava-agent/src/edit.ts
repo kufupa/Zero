@@ -35,9 +35,10 @@ function apply(root:unknown, change:Change) {
 export async function editProposal(id:string, mailboxIds:string[], actor:string, input:z.infer<typeof editInput>) {
   return sql.begin(async tx=>{
     const [p]=await tx`SELECT p.*,t.mailbox_id FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${id} FOR UPDATE OF p`;
-    if(!p || !mailboxIds.includes(p.mailbox_id)) throw new Error('NOT_FOUND');
+    if(!p) throw new Error('NOT_FOUND');
+    if(!mailboxIds.includes(p.mailbox_id)) throw new Error('FORBIDDEN');
     if(p.revision!==input.expected_revision) throw new Error('STALE_REVISION');
-    if(p.phase!=='ready') throw new Error('NOT_EDITABLE');
+    if(p.phase!=='ready' && p.phase!=='waiting_go') throw new Error('NOT_EDITABLE');
     const draft=proposalDraft.parse(structuredClone(p.current));
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {

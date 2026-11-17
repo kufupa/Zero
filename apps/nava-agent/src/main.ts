@@ -1,14 +1,37 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type postgres from 'postgres';
 import { authenticate, hasMailbox, type Principal } from './auth.js';
 import { editInput, editProposal } from './edit.js';
 import { ZodError } from 'zod';
 import { event, sql } from './db.js';
 import { authReady, verifiedAuth, importThread, model, snapshot, startPending, deliverPending } from './runtime.js';
-import { threadInput } from './schema.js';
+import { goInput, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 
-if (!process.env.DATABASE_URL || !process.env.NAVA_API_TOKEN) throw new Error('DATABASE_URL and NAVA_API_TOKEN required');
+type Operation = 'stage'|'go'|'reconcile';
+type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE';
+type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null};
+
+// Called under a locked proposal row. Only enqueue/claim durable work in this
+// transaction; a separate claimGo transaction would deadlock on the same row.
+// Never perform native I/O here. Go must pin the revision and
+// staff-final audit, enforce idempotency and pending Save, and use the native
+// Labtest checks and durable dispatch marker before any later Save.
+export interface ProposalOperations {
+  capabilities: Partial<Record<Workflow, {stage:boolean;go_labtest:boolean;reconcile:boolean}>>;
+  submit(tx:postgres.TransactionSql, request:OperationRequest):Promise<
+    {ok:true;phase:'staging'|'saving'|'uncertain'} |
+    {ok:false;code:OperationFailure}
+  >;
+}
+class OperationError extends Error {
+  constructor(readonly code:OperationFailure|'REAL_GUEST_GO_UNAVAILABLE'|'HISTORICAL_UNAVAILABLE') { super(code); }
+}
+const workflows:Workflow[]=['triage','quote','create','amend','cancel','filing'];
+export function createApp(operations?:ProposalOperations) {
 const app=new Hono<{Variables:{principal:Principal}}>().basePath('/api/nava/v1');
 app.use('*',async(c,next)=>{
   const principal=authenticate(c.req.header('Authorization'));
@@ -20,7 +43,14 @@ async function authorizedThread(id:string,principal:Principal) {
   const [thread]=await sql`SELECT mailbox_id FROM nava_agent.mail_thread WHERE id=${id}`;
   return !!thread && hasMailbox(principal,thread.mailbox_id);
 }
-app.get('/capabilities',async c=>c.json({workflows:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft'],model,environment_type:'self_hosted',auth_ready:await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:!!process.env.NAVA_STAFF_JWT_SECRET}));
+app.get('/capabilities',async c=>{
+  const staff=!!process.env.NAVA_STAFF_JWT_SECRET;
+  const workflow_capabilities=Object.fromEntries(workflows.map(workflow=>{
+    const supported=operations?.capabilities[workflow];
+    return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:false,save:false,go_labtest:staff && !!supported?.go_labtest,save_labtest:staff && !!supported?.go_labtest,reconcile:staff && !!supported?.reconcile,quote:false,undo:false,redo:false}];
+  }));
+  return c.json({workflows:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft'],model,environment_type:'self_hosted',auth_ready:await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? null});
+});
 app.post('/threads',async c=>{
   if (!c.req.header('Idempotency-Key')) return c.json({error:{code:'IDEMPOTENCY_REQUIRED',message:'Idempotency-Key required',details:null}},400);
   const parsed=threadInput.safeParse(await c.req.json().catch(()=>null));
@@ -34,7 +64,7 @@ app.get('/threads/:id',async c=>{if(!await authorizedThread(c.req.param('id'),c.
 app.get('/threads/:id/events',async c=>{
   if(!await authorizedThread(c.req.param('id'),c.get('principal'))) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
   const thread=await snapshot(c.req.param('id')); if (!thread || !thread.session) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
-  const start=Number(c.req.query('after_sequence') ?? 0); if (!Number.isSafeInteger(start) || start<0) return c.json({error:{code:'INVALID_CURSOR',message:'Invalid sequence',details:null}},400);
+  const start=Number(c.req.query('after_sequence') ?? c.req.header('Last-Event-ID') ?? 0); if (!Number.isSafeInteger(start) || start<0) return c.json({error:{code:'INVALID_CURSOR',message:'Invalid sequence',details:null}},400);
   const session=thread.session.id;
   return streamSSE(c,async stream=>{let after=start; while(!stream.aborted) {const rows=await sql`SELECT sequence::text,id,managed_event_id,kind,payload,at FROM nava_agent.agent_event WHERE session_id=${session} AND sequence>${after} ORDER BY sequence LIMIT 200`; for(const row of rows){after=Number(row.sequence); await stream.writeSSE({id:String(after),event:'event',data:JSON.stringify({sequence:after,event_id:row.managed_event_id ?? row.id,kind:row.kind,at:row.at,session_id:session,proposal_id:row.payload?.proposal_id ?? null,payload:row.payload})});} if(!rows.length) await stream.sleep(1000); }});
 });
@@ -48,7 +78,45 @@ app.post('/threads/:id/messages',async c=>{
   await event(s.id,'context_pending',{text:body.text,proposal_id:body.proposal_id ?? null,who:principal.kind==='staff'?principal.id:null,delivered:false});
   void (s.managed_session_id?deliverPending(s.id):startPending(s.id)).catch(()=>{}); return c.json({accepted:true},202);
 });
-for (const route of ['/proposals/:id/undo','/proposals/:id/redo','/proposals/:id/stage','/proposals/:id/go','/proposals/:id/reconcile']) app.post(route,c=>c.json({error:{code:'UNAVAILABLE',message:'This operation is not supported.',details:null}},501));
+for (const operation of ['stage','go','reconcile','undo','redo','quote'] as const) app.post(`/proposals/:id/${operation}`,async c=>{
+  const principal=c.get('principal');
+  if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
+  const input=(operation==='go'?goInput:operation==='quote'?requoteInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
+  if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid operation input',details:input.error.flatten()}},400);
+  try {
+    const result=await sql.begin(async tx=>{
+      const [p]=await tx`SELECT p.id,p.revision,p.workflow,p.phase,t.mailbox_id,t.mode FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${c.req.param('id')} FOR UPDATE OF p`;
+      if(!p) throw new OperationError('NOT_FOUND');
+      if(!principal.mailboxes.includes(p.mailbox_id)) throw new OperationError('FORBIDDEN');
+      if(p.revision!==input.data.expected_revision) throw new OperationError('STALE_REVISION');
+      if(operation==='undo' || operation==='redo' || operation==='quote') throw new OperationError('UNAVAILABLE');
+      if(p.mode==='historical') throw new OperationError('HISTORICAL_UNAVAILABLE');
+      if(p.mode!=='live' && p.mode!=='labtest') throw new OperationError('UNAVAILABLE');
+      if(operation==='go' && p.mode==='live') throw new OperationError('REAL_GUEST_GO_UNAVAILABLE');
+      const workflow=proposalDraft.shape.workflow.safeParse(p.workflow);
+      if(!workflow.success) throw new OperationError('UNAVAILABLE');
+      const capability=operations?.capabilities[workflow.data];
+      if(!operations || !(operation==='go'?capability?.go_labtest:capability?.[operation])) throw new OperationError('UNAVAILABLE');
+      if((operation==='stage' && p.phase!=='ready' && p.phase!=='waiting_go') ||
+         (operation==='go' && p.phase!=='waiting_go' && p.phase!=='saving') ||
+         (operation==='reconcile' && p.phase!=='uncertain')) throw new OperationError('INVALID_PHASE');
+      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey:'idempotency_key' in input.data?input.data.idempotency_key:null});
+      if(!accepted.ok) throw new OperationError(accepted.code);
+      const expectedPhase=operation==='stage'?'staging':operation==='go'?'saving':'uncertain';
+      if(accepted.phase!==expectedPhase) throw new OperationError('UNAVAILABLE');
+      const [updated]=await tx`SELECT phase,revision FROM nava_agent.proposal WHERE id=${p.id}`;
+      if(!updated || updated.phase!==expectedPhase || updated.revision!==input.data.expected_revision) throw new OperationError('UNAVAILABLE');
+      return {proposal_id:p.id,revision:p.revision,phase:accepted.phase};
+    });
+    return c.json(result,202);
+  } catch(error) {
+    const code=error instanceof OperationError?error.code:'UNAVAILABLE';
+    if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
+    if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
+    if(code==='STALE_REVISION'||code==='NOT_EDITABLE'||code==='INVALID_PHASE'||code==='IDEMPOTENCY_CONFLICT') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
+    return c.json({error:{code,message:'This operation is not supported.',details:null}},501);
+  }
+});
 app.patch('/proposals/:id',async c=>{
   const principal=c.get('principal');
   if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
@@ -58,6 +126,7 @@ app.patch('/proposals/:id',async c=>{
   catch(error) {
     const code=error instanceof Error?error.message:'EDIT_FAILED';
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
+    if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     if(error instanceof ZodError) return c.json({error:{code:'INVALID_INPUT',message:'Invalid field value',details:null}},400);
     if(code==='INVALID_PATH') return c.json({error:{code,message:'Field is not editable',details:null}},400);
@@ -75,4 +144,9 @@ app.get('/threads/:id/staff-edits',async c=>{
   }
   return c.body(records.map(record=>JSON.stringify(record)).join('\n')+(records.length?'\n':''),200,{'Content-Type':'application/x-ndjson'});
 });
-serve({fetch:app.fetch,hostname:process.env.NAVA_HOST ?? '127.0.0.1',port:Number(process.env.NAVA_PORT ?? 3107)});
+return app;
+}
+if (process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
+  if (!process.env.DATABASE_URL || !process.env.NAVA_API_TOKEN) throw new Error('DATABASE_URL and NAVA_API_TOKEN required');
+  serve({fetch:createApp().fetch,hostname:process.env.NAVA_HOST ?? '127.0.0.1',port:Number(process.env.NAVA_PORT ?? 3107)});
+}
