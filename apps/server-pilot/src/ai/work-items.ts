@@ -95,7 +95,7 @@ import {
   reservationWorkflowV2DraftSchema,
   type ReservationWorkflowV2Draft,
 } from './reservation-workflow-v2-contract.js';
-import { classifyMailSource } from './mail-source.js';
+import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
 import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import type { CloudCreateHoldProjection } from './pane-cloud-preview.js';
 
@@ -2926,6 +2926,7 @@ export async function listWorkItems(
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
         const sourceText = preStaySourceText(sourceBody, sourceHtml);
+        const sourceBodyText = canonicalSourceBodyText({ textBody: sourceBody, htmlBody: sourceHtml });
         // The same self-prestay evidence the ensure/prefill door uses: a confirmation number may live only in
         // the body, so a missing or empty extraction must not turn real pre-stay mail into a channel/system hide.
         const sourceConfirmationNumbers = `${row.subject ?? ''}\n${sourceText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
@@ -2956,13 +2957,13 @@ export async function listWorkItems(
           // its separate asks stay reviewable). The stored extraction's `origin` is optional model output with no
           // binding to this source or generation, so it never hides a V2 draft: anything uncertain stays reviewable.
           if (!preStayAsk && classifyMailSource({ fromAddress: row.sender,
-              subject: row.subject, bodyText: sourceText, hasAttachments }).kind !== 'direct') return null;
+              subject: row.subject, bodyText: sourceBodyText, hasAttachments }).kind !== 'direct') return null;
           const admission = needsYouV2Admission(reservationWorkflowV2DraftOf(state ?? {}), preStayAsk !== null);
           return { ...row, kind: admission.kind, chip, actions: admission.actions,
             ...(admission.reviewOnly ? { reviewOnly: true } : {}) };
         }
         if (!preStayAsk) {
-          if (classifyMailSource({ fromAddress: row.sender, subject: row.subject, bodyText: sourceText, hasAttachments }).kind !== 'direct') {
+          if (classifyMailSource({ fromAddress: row.sender, subject: row.subject, bodyText: sourceBodyText, hasAttachments }).kind !== 'direct') {
             return null;
           }
           if (row.kind === 'other') {
