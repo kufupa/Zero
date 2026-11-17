@@ -15,6 +15,7 @@ os.umask(0o077)
 run = Path(sys.argv[1]).resolve()
 pilot = Path('/home/ubuntu/repos/zero/apps/server-pilot')
 nodebin = Path('/home/ubuntu/.nvm/versions/node/v22.23.1/bin')
+cleanup_complete = False
 def trusted_pg_bin(directory):
     try:
         for path in [directory, *directory.parents]:
@@ -41,6 +42,7 @@ def call(args, **kwargs):
         raise RuntimeError(f"{Path(args[0]).name} exited {error.returncode}") from error
 
 def main():
+    global cleanup_complete
     pg = run / 'pg'
     request = json.loads((run / 'input.json').read_text())
     source_only = request.get('selectionOnly') or (request.get('candidate') or {}).get('kind') == 'mail_candidate'
@@ -112,6 +114,7 @@ try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { awa
     finally:
         if started:
             call([str(pgbin / 'pg_ctl'), '-D', str(pg), '-m', 'fast', '-w', 'stop'], timeout=40)
+        cleanup_complete = True
         shutil.rmtree(pg, ignore_errors=True)
 
 try:
@@ -119,11 +122,12 @@ try:
         fcntl.flock(lock, fcntl.LOCK_SH)
         main()
 except Exception as error:
-    print('LOOP_ERROR ' + (str(error) if isinstance(error, RuntimeError) else type(error).__name__), file=sys.stderr)
+    marker = 'LOOP_ERROR ' if cleanup_complete else 'LOOP_UNCERTAIN '
+    print(marker + (str(error) if isinstance(error, RuntimeError) else type(error).__name__), file=sys.stderr)
     sys.exit(1)
 finally:
     try:
-        if json.loads((run / 'input.json').read_text()).get('fastTransfer') is True:
+        if cleanup_complete and json.loads((run / 'input.json').read_text()).get('fastTransfer') is True:
             shutil.rmtree(run, ignore_errors=True)
     except (OSError, ValueError):
         pass

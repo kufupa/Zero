@@ -121,8 +121,14 @@ export async function sendSsm(commands, timeout = 600) {
   const params = JSON.stringify({ commands, executionTimeout: [String(timeout)] });
   const instance = process.env.LOOP_HMS_INSTANCE_ID ?? 'i-008f737974a9ba9b3';
   const base = ['--region', 'af-south-1'];
-  const sent = await exec('aws', ['ssm', 'send-command', ...base, '--instance-ids', instance, '--document-name', 'AWS-RunShellScript',
-    '--parameters', params, '--query', 'Command.CommandId', '--output', 'text'], { maxBuffer: 2_000_000 });
+  let sent;
+  try {
+    sent = await exec('aws', ['ssm', 'send-command', ...base, '--instance-ids', instance, '--document-name', 'AWS-RunShellScript',
+      '--parameters', params, '--query', 'Command.CommandId', '--output', 'text'], { maxBuffer: 2_000_000 });
+  } catch (error) {
+    if (/AccessDeniedException|ValidationException/.test(String(error?.stderr ?? ''))) error.ssmRejected = true;
+    throw error;
+  }
   const commandId = sent.stdout.trim();
   const deadline = Date.now() + (timeout + 60) * 1000;
   while (true) {
@@ -233,7 +239,7 @@ export async function native(payload, directory) {
   const pack = gzipSync(Buffer.from(JSON.stringify({ runner: runner.toString('base64'), launcher: launcher.toString('base64'), input: { ...payload, fastTransfer: true } })));
   const temp = await mkdtemp(join(tmpdir(), 'nava-loop-input-'));
   const uri = `s3://${transferBucket}/ops-dumps/loop-input/${id}.gz`;
-  let remoteFinished = false, info;
+  let remoteFinished = false, inputFinished = false, setupFailed = false, info;
   try {
   const local = join(temp, 'payload.gz');
   await writeFile(local, pack, { mode: 0o600 });
@@ -256,10 +262,13 @@ export async function native(payload, directory) {
   const result = JSON.parse(await readFile(join(directory, 'native.json'), 'utf8'));
   return { ...result, runtimeSha: info.runtimeSha, files: (info.files ?? []).filter(file => file.name !== 'native.json').map(file => join(directory, file.name)) };
   } catch (error) {
+    if (error?.ssmRejected || error instanceof Error && error.message.startsWith('HMS command Failed:')) inputFinished = true;
     if (error instanceof Error && /^HMS command Failed:.*LOOP_ERROR /s.test(error.message)) remoteFinished = true;
+    else if (error instanceof Error && error.message.startsWith('HMS command Failed:')) setupFailed = true;
     throw error;
   } finally {
-    await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+    if (remoteFinished || inputFinished) await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+    if (setupFailed) await sendSsm([`if [ ! -e ${remote}/launcher.py ]; then sudo -u ubuntu rm -rf ${remote}; fi`], 60).catch(() => {});
     if (remoteFinished) {
       await exec('aws', ['s3', 'rm', `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/`, '--recursive',
         '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
