@@ -238,6 +238,16 @@ try {
       if (request.body.salesStrategy == null) await editQuote('salesStrategy', 'BAR', 'Illustrative public-rate search');
       if (request.body.provisionalBookingRequested == null)
         await editQuote('provisionalBookingRequested', false, 'Quote-only replay; no booking is made');
+      for (const [index, group] of request.body.groups.entries()) {
+        if (group.quantity == null) await editQuote(`groups/${index}/quantity`, 1, 'Illustrative one-room scenario; extracted count is missing');
+        if (group.quantity == null || group.quantity === 1) {
+          if (group.occupancy.scope == null || group.occupancy.scope === 'unknown')
+            await editQuote(`groups/${index}/occupancy/scope`, 'per_room', 'Illustrative single-room occupancy');
+          if (group.occupancy.adults == null) await editQuote(`groups/${index}/occupancy/adults`, 1, 'Illustrative one-adult occupancy');
+          if (group.occupancy.childCount == null && !group.occupancy.childAges?.length)
+            await editQuote(`groups/${index}/occupancy/childCount`, 0, 'Illustrative scenario without children');
+        }
+      }
     }
     const lookedUp = await stage('lookup', request.id, async () => lookup({ ...ctx, signal: AbortSignal.timeout(70_000) },
       { ...await refresh(), requestId: request.id }), stages);

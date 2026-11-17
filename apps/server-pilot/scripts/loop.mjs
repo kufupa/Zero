@@ -465,6 +465,7 @@ async function main() {
     return { id: row.id, subject: brief(row.subject, 65),
     extracted: brief(fields.length ? JSON.stringify(fields.map(({ path, value }) => [path, value])) : JSON.stringify(row.triage?.output ?? []), 600),
     source: brief(fields.length ? JSON.stringify(fields.map(({ path, raw }) => [path, raw])) : row.source.body, 600),
+    choices: brief(JSON.stringify(row.hms?.assumptions ?? []), 600),
     hms: brief(hmsSummary(row)), status: row.status, reason: brief(row.reason),
     seconds: JSON.stringify({ ...row.timings, native: row.hms?.stages?.map(stage => [stage.name, stage.seconds]) ?? [] }) };
   }));
