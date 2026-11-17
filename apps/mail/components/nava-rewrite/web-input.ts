@@ -9,6 +9,7 @@ const messageSchema = z.object({
   sender: addressSchema, to: z.array(addressSchema), cc: z.array(addressSchema).nullable(),
   receivedOn: z.string(), subject: z.string(), body: z.string(), processedHtml: z.string(),
   attachments: z.array(z.unknown()).optional(),
+  attachmentStatus: z.enum(['complete', 'unknown', 'has_unread']).optional(),
 });
 const webThreadSchema = z.object({
   id: z.string(), transportId: z.string(), conversationId: z.string(),
@@ -67,8 +68,6 @@ export function webThreadInput({
     }
     messageIds.add(message.id);
     if (!message.direction) return unavailable('Message direction is missing. Reload the thread after mailbox sync.');
-    if (message.attachments === undefined) return unavailable('Attachment information is missing. Reload the thread after mailbox sync.');
-    if (message.attachments.length > 0) return unavailable('Attachments need an authorized Nava attachment bridge before this thread can be opened.');
     if (!message.receivedOn || Number.isNaN(Date.parse(message.receivedOn))) {
       return unavailable('A message timestamp is missing. Reload the thread after mailbox sync.');
     }
@@ -87,7 +86,7 @@ export function webThreadInput({
         id: message.id, rfc_message_id: message.messageId ?? null, direction: message.direction,
         from: address(message.sender), to: message.to.map(address), cc: (message.cc ?? []).map(address),
         received_at: message.receivedOn, subject: message.subject,
-        body_text: body.text, body_html: body.html, attachments: [],
+        body_text: body.text, body_html: body.html, attachment_status: message.attachmentStatus ?? 'unknown', attachments: [],
       };
     }),
   });
