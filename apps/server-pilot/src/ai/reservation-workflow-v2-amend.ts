@@ -776,6 +776,9 @@ function nativeModule() {
   }>;
 }
 
+const nativeAmendFailure = (result: Record<string, unknown>, fallback: string) =>
+  result.outcome === 'refused' && result.issue === 'RATE_NOT_AVAILABLE' ? 'RATE_NOT_AVAILABLE' : fallback;
+
 async function persistAmendShot(ctx: ReservationWorkflowV2AmendContext, workItemId: string,
   runId: string, sourcePath: string, name: 'before.png' | 'saved.png') {
   const stage = await mkdtemp(join(tmpdir(), 'reservation-v2-amend-shot-'));
@@ -1249,7 +1252,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
       if (discovery.outcome !== 'prepared' || !baseline || !preserved || typeof baseline.beforeNote !== 'string' ||
           typeof baseline.beforeGuaranteeCode !== 'string' || typeof baseline.beforeGuaranteeDisplay !== 'string' ||
           (typeof compiled.baseChanges.guaranteeType === 'string' && typeof baseline.requestedGuaranteeDisplay !== 'string')) {
-        return { issue: 'native_amend_baseline_unavailable' };
+        return { issue: nativeAmendFailure(discovery, 'native_amend_baseline_unavailable') };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const observation = draft.observations.find(item => item.ref === compiled.selectedRef);
@@ -1279,7 +1282,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             key !== 'bookerContact' || Object.hasOwn(preserved, key)))) !== canonicalJson(preserved) ||
           stagedBaseline.beforeNote !== baseline.beforeNote || stagedBaseline.beforeGuaranteeCode !== baseline.beforeGuaranteeCode ||
           canonicalJson(stagedBaseline.beforeParties) !== canonicalJson(baseline.beforeParties)) {
-        return { issue: 'native_amend_prepare_unverified' };
+        return { issue: nativeAmendFailure(staged, 'native_amend_prepare_unverified') };
       }
       const nextAges = childrenChanged && Array.isArray(compiled.target.childAges) ? compiled.target.childAges as number[] : null;
       if (childrenChanged) {
@@ -1360,7 +1363,7 @@ async function prepareCallbackAmend(ctx: ReadContext, input: ReservationWorkflow
             (Object.hasOwn(ordinaryChanges, 'taCommission') && (typeof ordinaryBaseline.beforeCommission !== 'number' ||
               !Number.isFinite(ordinaryBaseline.beforeCommission) || !record(ordinaryPreserved.bookingAgency)?.nativeId)) ||
             (Object.hasOwn(ordinaryChanges, 'guestOptIn') && typeof ordinaryBaseline.beforeGuestOptIn !== 'boolean')) {
-          return { issue: 'native_amend_prepare_unverified' };
+          return { issue: nativeAmendFailure(ordinary, 'native_amend_prepare_unverified') };
         }
         if (!mealPlanVerified(draft, compiled, ordinary)) return { issue: 'native_meal_plan_mismatch_or_unknown', mealObservation: mealMismatchObservation(draft, compiled, ordinary) };
         const recoveryBaseline = { ...ordinaryBaseline, beforeChildAges: beforeAges };
@@ -1539,8 +1542,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
         allowRealGuest: true, cloudTargetKey: dispatchKey, signal: ctx.nativeBatch?.signal ?? AbortSignal.timeout(8 * 60_000) });
       const discoveryBaseline = record(discovery.recoveryBaseline);
       if (discovery.outcome !== 'prepared' || !record(discovery.preserved) || !discoveryBaseline) {
-        return { issue: discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
-          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable' };
+        return { issue: nativeAmendFailure(discovery, discovery.issue === 'BILLING_REFERENCE_REQUIRES_VERIFIED_AR'
+          ? 'billing_reference_requires_verified_ar' : 'native_amend_baseline_unavailable') };
       }
       if (Object.hasOwn(compiled.baseChanges, 'reservationNote')) {
         const selectedObservation = loaded.draft!.observations.find(item => item.ref === compiled.selectedRef);
@@ -1592,7 +1595,8 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
           !(recoveryBaseline.beforeSavedRates === null || record(recoveryBaseline.beforeSavedRates)) ||
           canonicalJson(Object.fromEntries(Object.entries(afterPreserved).filter(([key]) =>
             key !== 'bookerContact' || Object.hasOwn(discoveryPreserved, key)))) !== canonicalJson(discoveryPreserved) ||
-          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return { issue: 'native_amend_prepare_unverified' };
+          canonicalJson(recoveryBaseline) !== canonicalJson(discoveryBaseline)) return {
+        issue: nativeAmendFailure(native, 'native_amend_prepare_unverified') };
       // A stale stay lookup can hide a live guarantee change; its Go-time callback is not in this staged price.
       if (typeof changes.guaranteeType === 'string' && changes.guaranteeType !== recoveryBaseline.beforeGuaranteeCode) {
         return { issue: CALLBACK_FINISH_IN_HMS, finishInHmsFields: ['guaranteeType'] };

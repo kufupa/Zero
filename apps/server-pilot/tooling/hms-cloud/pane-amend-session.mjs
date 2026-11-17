@@ -968,7 +968,13 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       (request, proceed) => prepareOnly ? proceed() : dispatch.availability(request, proceed),
     validate: async (bounded, prepared, staged, response) => {
       const body = parseNativePricingJson(await bounded(response.text()));
-      if (body?.pageData?.success === false) return { ok: false, issue: 'AVAILABILITY_UNVERIFIED' };
+      if (body?.pageData?.success === false) {
+        const data = body.pageData;
+        const unavailable = Array.isArray(data.messages) && data.messages.length === 1 &&
+          data.messages[0]?.type === 'error' && data.messages[0]?.msg === 'Rate is not available.' &&
+          !body.error && !body.errors && !data.error && !data.errors;
+        return { ok: false, issue: unavailable ? 'RATE_NOT_AVAILABLE' : 'AVAILABILITY_UNVERIFIED' };
+      }
       await settleAmendAvailability(prepared.frame, body, bounded);
       const refreshed = await bounded(snapshot(prepared.frame));
       await syncRecord(prepared.frame, refreshed, bounded);
