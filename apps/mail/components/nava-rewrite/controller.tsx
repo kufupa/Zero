@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import type { BoundProposal, BoundThreadSnapshot, NavaApi } from './api';
+import type { BoundThreadSnapshot, NavaApi } from './api';
 import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
@@ -240,7 +240,7 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  function applyProposal(proposal: BoundProposal) {
+  function applyProposal(proposal: Proposal) {
     const current = snapshotRef.current;
     if (!current) return;
     const previous = current.proposals.find(item => item.id === proposal.id);
@@ -485,11 +485,11 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  async function setAttachmentsChecked(proposal: BoundProposal, checked: boolean) {
+  async function setAttachmentsChecked(proposal: Proposal, checked: boolean) {
     const signal = controllerRef.current?.signal;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit ||
-        !current || current.revision !== proposal.revision || !current.attachment_coverage_complete || cache.goLocks[proposal.id] ||
+        !current || current.revision !== proposal.revision || cache.goLocks[proposal.id] ||
         cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length) return;
     const active: ActiveOperation = { kind: 'attachments', proposalId: proposal.id, signal };
     operationRef.current = active;
@@ -519,13 +519,13 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     }
   }
 
-  async function operation(kind: 'stage' | 'reconcile', proposal: BoundProposal) {
+  async function operation(kind: 'stage' | 'reconcile', proposal: Proposal) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
     if (kind !== 'reconcile' && (cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length)) return;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase) return;
-    if (kind === 'stage' && (!current.attachment_coverage_complete || !current.staff_attachments_checked || cache.attachmentNeedsRecheck[current.id] || !validSavedChildren(current))) return;
+    if (kind === 'stage' && (!current.staff_attachments_checked || cache.attachmentNeedsRecheck[current.id] || !validSavedChildren(current))) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (!stageWorkflows.includes(proposal.workflow) || !supports(capabilities, 'workflows', proposal.workflow) || !supports(capabilities, 'tools', 'hms_prepare'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
@@ -581,7 +581,7 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
     ? reconcileSupported ? { label: 'Check Infor', disabled: busy, onClick: () => { void operation('reconcile', proposal); } } : undefined
     : proposal && proposal.workflow === 'create' && proposal.stage?.revision === proposal.revision
       ? undefined
-    : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || !proposal.attachment_coverage_complete || !proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]) || !validSavedChildren(proposal),
+    : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || !proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]) || !validSavedChildren(proposal),
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
 
@@ -616,8 +616,7 @@ function ThreadController({ input, email, api, cache, stageWorkflows = [], recon
       {Object.keys(drafts).length > 0 && !issue && <PaneMessage>Edits are waiting to be saved.</PaneMessage>}
       <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={id => { void openArtifact(id); }}
         attachmentsChecked={proposal.staff_attachments_checked && !cache.attachmentNeedsRecheck[proposal.id]} attachmentsAttention={input.messages.some(item => item.attachment_status !== 'complete')}
-        attachmentCoverageComplete={proposal.attachment_coverage_complete}
-        attachmentMessages={input.messages} attachmentsBusy={busy || authenticationExpired || Boolean(lock) || !proposal.attachment_coverage_complete || cache.stagePending[proposal.id] !== undefined || Object.keys(drafts).length > 0}
+        attachmentMessages={input.messages} attachmentsBusy={busy || authenticationExpired || Boolean(lock) || cache.stagePending[proposal.id] !== undefined || Object.keys(drafts).length > 0}
         onAttachmentsCheckedChange={checked => { void setAttachmentsChecked(proposal, checked); }} />
     </>}
   </NavaPane>;

@@ -65,7 +65,6 @@ export const proposalSchema = z.object({
   id, thread_id: id, session_id: id, revision, phase: phaseSchema,
   created_at: z.string(), updated_at: z.string(), display_rows: z.array(nativeDisplayRowSchema),
   staff_attachments_checked: z.boolean().default(false),
-  attachment_coverage_complete: z.boolean().default(false),
   stage: z.object({ revision, summary: z.array(z.string()), native_result: jsonSchema, display_rows: z.array(nativeDisplayRowSchema) }).nullable(),
   result: z.object({
     confirmation: z.string().nullable(), reservation_id: z.string().nullable(),
