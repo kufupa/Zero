@@ -446,6 +446,30 @@ function safeHeaderRead(url, body, propertyCode) {
   return blank || Boolean(fields.get('confirmationnumber') && fields.get('propertycode'));
 }
 
+function isSharedNewStayCallback(request, path, propertyCode) {
+  try {
+    const url = new URL(request.url());
+    if (request.method() !== 'POST' || url.search || url.hash ||
+        !/^application\/x-www-form-urlencoded(?:;|$)/i.test(request.headers()['content-type'] || '')) return false;
+    const body = new URLSearchParams(request.postData() || ''), keys = [...body.keys()];
+    const exact = (key, value) => keys.filter(name => name.toLowerCase() === key.toLowerCase()).length === 1 && body.get(key) === value;
+    if (!exact('ONLY_DATA_REQUIRED', 'true')) return false;
+    if (/\.validatechildagedetails$/i.test(path)) {
+      if (keys.filter(name => name.toLowerCase() === 'params').length !== 1 || !body.has('params')) return false;
+      const raw = body.get('params');
+      rejectDuplicateAvailabilityJsonKeys(raw);
+      const params = JSON.parse(raw), names = Object.keys(params);
+      if (names.some((name, index) => names.findIndex(other => other.toLowerCase() === name.toLowerCase()) !== index)) return false;
+      return params.propertyCode === propertyCode && params.reservationStayId === '' &&
+        names.filter(name => /^(?:confirmationnumber|reservationid|recordid)$/i.test(name)).every(name => params[name] === '');
+    }
+    if (!exact('PKID', `@[EMPTY]#@[EMPTY]#${propertyCode}#`) || !exact('propertycode', propertyCode) ||
+        !['confirmationnumber', 'recordid', 'reservationid'].every(key => exact(key, ''))) return false;
+    if (keys.some(name => name.toLowerCase() === 'reservationstayid') && !exact('reservationstayid', '')) return false;
+    return !/\.changeguaranteemethod$/i.test(path) || (exact('status', 'New') && exact('reservationstayid', ''));
+  } catch { return false; }
+}
+
 export async function installCloudReadGuard(context, property, state) {
   if (typeof context.routeWebSocket !== 'function') throw new Error('HMS_SOCKET_GUARD_UNAVAILABLE');
   await context.routeWebSocket('**/*', (socket) => socket.close());
@@ -462,7 +486,9 @@ export async function installCloudReadGuard(context, property, state) {
       try { if (request.frame().page() !== state.ownedPage) return route.abort(); }
       catch { return route.abort(); }
       // A shared lease may stage forms, but can never dispatch a persistent action.
-      if (state.shared && (/(?:save|delete|upload|checkin|checkout|postcharge|sendemail|payments|validatechildagedetails|changeguaranteemethod|changeorganization|changetravelagency|araccountchange)/i.test(path) ||
+      if (state.shared && (/(?:save|delete|upload|checkin|checkout|postcharge|sendemail|payments)/i.test(path) ||
+          (/(?:validatechildagedetails|changeguaranteemethod|changeorganization|changetravelagency|araccountchange)/i.test(path) &&
+            !isSharedNewStayCallback(request, path, property.propertyCode)) ||
           hasWriteIntent(request.url()) || hasWriteIntent(body))) return route.abort();
       return route.fallback();
     }
