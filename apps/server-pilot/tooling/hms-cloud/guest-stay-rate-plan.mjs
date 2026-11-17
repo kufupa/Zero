@@ -292,7 +292,7 @@ function fieldValue(fields, name) {
 function validateAvailabilityResponse(response) {
   if (response.status() !== 200) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
   return response.text().then(body => {
-    const data = parseResponse(body);
+    const data = parseResponse(body, true);
     return data;
   });
 }
@@ -303,7 +303,7 @@ function observedPrice(value) {
 }
 
 // Normalize the vendor's data-only object literal without executing it.
-function parseResponse(body) {
+function parseResponse(body, availability = false) {
   if (typeof body !== 'string' || !body.trim() || /^\s*</.test(body)) throw new Error('HMS_RESPONSE_UNVERIFIED');
   let badEscape = false;
   const strings = body.replace(/("(?:\\.|[^"\\])*")|'((?:\\.|[^'\\])*)'/gs, (all,double,single) => {
@@ -322,6 +322,9 @@ function parseResponse(body) {
   let payload;
   try { payload = JSON.parse(json); } catch { throw new Error('HMS_RESPONSE_UNVERIFIED'); }
   const data = payload?.pageData;
+  if (availability && data?.success === false && Array.isArray(data.messages) && data.messages.length === 1 &&
+      data.messages[0]?.type === 'error' && data.messages[0]?.msg === 'Rate is not available.' &&
+      !payload.error && !payload.errors && !data.error && !data.errors) throw new Error('RATE_NOT_AVAILABLE');
   const content = value => Array.isArray(value) ? value.length > 0 : value != null && value !== false && value !== '';
   if (!data || [payload,data].some(part => part && ((Object.hasOwn(part,'success') && part.success !== true) ||
       content(part.error) || content(part.errors))) || content(data.messages)) throw new Error('HMS_RESPONSE_UNVERIFIED');
