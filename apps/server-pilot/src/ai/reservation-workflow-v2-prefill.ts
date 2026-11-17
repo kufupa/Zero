@@ -661,6 +661,12 @@ function sourceText(selection: SyncedQuoteSelection): string {
   return maskCardNumbers(`From: ${selection.fromAddress ?? 'unknown'}\nParticipants: ${participants.join(', ')}\nSubject: ${selection.subject}\n\n${selection.currentBodyText ?? selection.bodyText}`);
 }
 
+function htmlAuthoredProjectionDiffersFromBody(selection: SyncedQuoteSelection): boolean {
+  if (typeof selection.currentBodyText !== 'string') return false;
+  const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim();
+  return normalizeWs(selection.currentBodyText) !== normalizeWs(selection.bodyText);
+}
+
 function extractionRefs(extraction: ReservationWorkflowV2Extraction): string[] {
   const refs: string[] = [];
   const claim = (value: { sourceRefs: string[] } | undefined) => { if (value) refs.push(...value.sourceRefs); };
@@ -1202,6 +1208,7 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
   evidence: ReservationWorkflowV2Evidence[];
   attachmentReads: Awaited<ReturnType<typeof prepareExtractionVisionImages>>['attachmentReads'] }): boolean {
   const { source, selection, evidence } = input;
+  if (htmlAuthoredProjectionDiffersFromBody(selection)) return false;
   if (!evidence.some(row => row.ref === evidenceRef(source, 'message', source.messageId) &&
       row.relation === 'current_message' && row.text === sourceText(selection))) return false;
   const audit = new Map(input.attachmentReads.map((row) => [row.id, row.status]));
@@ -3743,6 +3750,16 @@ function projectCurrentExtraction(input: {
     if (proposal.issues.length < 1000 && !proposal.issues.some((row) =>
       row.path === '/' && row.kind === 'extraction_issue' && row.explanation === explanation &&
       row.evidenceRefs.length === evidenceRefs.length && evidenceRefs.every((ref) => row.evidenceRefs.includes(ref)))) {
+      proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation, evidenceRefs });
+    }
+  }
+  if (htmlAuthoredProjectionDiffersFromBody(input.selection) && proposal.issues.length < 1000) {
+    const currentMessageRef = evidenceRef(input.source, 'message', input.source.messageId);
+    const evidenceRefs = knownRefs.has(currentMessageRef) ? [currentMessageRef] : [];
+    const explanation =
+      'Quoted or reply-formatted sections were excluded from the HTML email projection; review the full email for any uncaptured requests.';
+    if (!proposal.issues.some((row) =>
+      row.path === '/' && row.kind === 'extraction_issue' && row.explanation === explanation)) {
       proposal.issues.push({ path: '/', kind: 'extraction_issue', explanation, evidenceRefs });
     }
   }
