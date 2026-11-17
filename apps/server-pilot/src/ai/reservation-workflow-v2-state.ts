@@ -908,7 +908,12 @@ export async function reconcileReservationWorkflowV2Source(ctx: Context, input: 
       !current.draft.operationResults.length && !Object.keys(current.draft.fieldOverrides).length &&
       !Object.keys(current.draft.staffReviews).length &&
       !(await hasPrefillRetryActivity(tx, item.id, current.draft.generationId, item.revisionSeq)));
-    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, source: input.source,
+    const proposal = { ...current.draft.proposal,
+      content: { ...current.draft.proposal.content,
+        requests: current.draft.proposal.content.requests.map((request) => request.kind === 'amend' && request.body.sourceCues?.length
+          ? { ...request, body: { ...request.body, sourceCues: [] } } : request) },
+      issues: current.draft.proposal.issues.filter((issue) => issue.kind !== 'source_note_for_review') };
+    const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft, proposal, source: input.source,
       generationId: randomUUID(), revision: item.revision + 1,
       prefill: retryEmpty ? { status: 'failed', attemptId: null, attemptCount: 0, startedAt: null,
         finishedAt: new Date().toISOString(), evidenceHash: evidence.hash }
