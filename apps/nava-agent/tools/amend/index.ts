@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { day, patch, prepareEnvelope, prepareManifest } from './schema.js';
 
 type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; credentialLease?: unknown };
@@ -107,6 +108,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   }
   const requested = delta.data;
   if (!Object.keys(requested).length) return refuse('AMEND_CHANGE_REQUIRED', 'Supply at least one requested change.');
+  if (typeof booking.current_state?.first_name !== 'string' || !booking.current_state.first_name.trim() ||
+      typeof booking.current_state?.last_name !== 'string' || !booking.current_state.last_name.trim() ||
+      typeof booking.current_state?.arrival_date !== 'string') {
+    return refuse('AMEND_IDENTITY_REQUIRED', 'Supply the verified current guest name and arrival before preparing.');
+  }
   const hint = booking.current_state?.arrival_date;
   const expectedArrival = hint == null ? null : day.safeParse(hint);
   if (expectedArrival?.success === false) return refuse('AMEND_INPUT_INVALID', 'Current arrival, if supplied, must be an ISO calendar date.');
@@ -168,6 +174,9 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     };
     const changedKeys = patch.keyof().options.filter(key => requested[key] !== undefined && before[key] !== requested[key]);
     if (!changedKeys.length) return refuse('AMEND_UNCHANGED', 'Requested fields already match HMS.');
+    if (changedKeys.some(key => Object.hasOwn(recordFields, key) && before[key] === null)) {
+      return refuse('AMEND_PREIMAGE_UNVERIFIED', 'The current value of a requested field was not observed.');
+    }
     if ((requested.arrival_date ?? selected.arrival) >= (requested.departure_date ?? selected.departure)) {
       return refuse('AMEND_DATES_INVALID', 'Departure must follow arrival.');
     }
@@ -219,6 +228,29 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (staged.data.preserved.cmsSend) {
       return refuse('AMEND_CMS_PRESERVATION_UNSUPPORTED', 'Current CMS send setting cannot be preserved by this preview.');
     }
+    phase = 'target_read';
+    const rereadRaw = await reader.withSavedStayAgentSession(({ runTool }) => runTool({
+      tool: 'read', confirmation: selected.confirmation, arrivalDate: selected.arrival, includeNativePreimage: true,
+    }), { readOnly: true, readOnlyConfirmation: selected.confirmation, propertyCode: property.propertyCode,
+      signal, credentialLease: context.credentialLease });
+    signal.throwIfAborted();
+    const reread = freshRead.safeParse(rereadRaw);
+    if (nativeStatus.safeParse(rereadRaw).data?.outcome !== 'ok' || !reread.success ||
+        reread.data.shallow.confirmation !== selected.confirmation ||
+        !isDeepStrictEqual(reread.data.record.nativePreimage, selected)) {
+      return refuse('AMEND_READBACK_UNVERIFIED', 'The original stay could not be confirmed unchanged after the unsaved preview.');
+    }
+    const afterFields = reread.data.record.details.fields;
+    const afterCms = afterFields.filter(field => field.name === 'udfchkbox04');
+    if (afterCms.length !== 1 || afterCms[0]?.type !== 'checkbox' || afterCms[0].value !== false ||
+        changedKeys.some(key => {
+          if (!Object.hasOwn(recordFields, key)) return false;
+          const native = recordFields[key as keyof typeof recordFields];
+          const fields = afterFields.filter(field => field.name === native);
+          return fields.length !== 1 || (key === 'reservation_note' ? fields[0]?.rawValue : fields[0]?.value) !== before[key];
+        })) {
+      return refuse('AMEND_READBACK_UNVERIFIED', 'The original stay or CMS state could not be confirmed unchanged after the unsaved preview.');
+    }
     const price = staged.data.approvedPrices;
     const options = price.options.slice(0, 20);
     const displayRows = [
@@ -245,6 +277,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       confirmation: selected.confirmation, reservation_id: selected.confirmation, native_stay_id: selected.reservationStayId,
       current_state: { ...before, children: selected.children, child_ages: selected.childAges },
       fields: requested, changed_fields: changedKeys,
+      original_stay_unchanged: true,
       cms_send: false, current_cms_send: staged.data.preserved.cmsSend,
       native_digest: staged.data.nativeDigest,
       availability: { status: needsAvailability ? 'native_check_passed' : 'not_checked' },
