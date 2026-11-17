@@ -1186,15 +1186,21 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
   if (!evidence.some(row => row.ref === evidenceRef(source, 'message', source.messageId) &&
       row.relation === 'current_message' && row.text === sourceText(selection))) return false;
   const audit = new Map(input.attachmentReads.map((row) => [row.id, row.status]));
-  return [...selection.attachments, ...(selection.threadAttachments ?? [])].every(attachment => {
+  const admitted = [...selection.attachments, ...(selection.threadAttachments ?? [])];
+  if (selection.persistedNonInlineAttachmentIds) {
+    const admittedIds = new Set(admitted.map((attachment) => attachment.id));
+    if (selection.persistedNonInlineAttachmentIds.some((id) => !admittedIds.has(id))) return false;
+  }
+  return admitted.every(attachment => {
     if (attachment.isInline) return true;
-    if (attachment.messageId && attachment.messageId !== source.messageId) return true;
     // Unprocessed, unread, unsupported or partially masked bytes are never complete.
     if (attachment.readFailure || !attachment.bytesPresent) return false;
     const attachmentText = attachment.text?.trim();
     if (attachmentText) {
-      const admitted = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) && row.relation === 'attachment');
-      return Boolean(admitted && admitted.text === maskCardNumbers(attachmentText));
+      const isPrior = Boolean(attachment.messageId && attachment.messageId !== source.messageId);
+      const admittedRow = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) &&
+        (isPrior ? (row.relation === 'prior_thread' || row.relation === 'attachment') : row.relation === 'attachment'));
+      return Boolean(admittedRow && admittedRow.text === maskCardNumbers(attachmentText));
     }
     return audit.get(attachment.id) === 'read';
   });
