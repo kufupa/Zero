@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { prepareInput, saveInput, type CreateInput } from './schema.js';
+import { hmsSaveEnabled } from '../../src/hms-mode.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal };
 type SaveContext = ToolContext & { markDispatched(details: unknown): Promise<void> };
@@ -166,6 +167,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
 }
 
 export async function save(input: unknown, context: SaveContext): Promise<ToolResult> {
+  if (!hmsSaveEnabled()) return fail('SAVE_DISABLED', 'Only unsaved Prepare is available.');
   if (context.mode !== 'labtest') return fail('LABTEST_ONLY', 'Create Save is available only in Labtest mode.');
   if (context.signal?.aborted) return fail('ABORTED', 'Operation aborted.');
   const parsed = saveInput.safeParse(input);

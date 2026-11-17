@@ -1,4 +1,5 @@
 import { prepareSchema, toolName } from './schema.js';
+import { hmsSaveEnabled } from '../../src/hms-mode.js';
 
 export type ToolContext = {
   sessionId: string;
@@ -148,6 +149,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
 }
 
 export async function save(input: unknown, context: SaveContext): Promise<ToolResult> {
+  if (!hmsSaveEnabled()) return error('SAVE_DISABLED', 'Only unsaved Prepare is available.');
   const target = parse(input);
   if (!target || !object(input) || !text(input.executionId) || input.executionId.length > 200) {
     return error('INVALID_CANCEL_INPUT', 'A cancellation target and execution ID are required.');

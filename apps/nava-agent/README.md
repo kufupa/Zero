@@ -31,6 +31,7 @@ Provision a separate, service-account-owned `0600` dotenv file outside the relea
 | `NAVA_API_TOKEN` | Server-only service token; never in browser. |
 | `NAVA_STAFF_JWT_SECRET` | Server-only host/backend signing secret; staff bridge must be integrated and verified before real-guest Go. |
 | `NAVA_HOST`, `NAVA_PORT` | Isolated API bind address and free port. |
+| `NAVA_CREATE_PREPARE_ONLY=1` | Staff Create Stage only. Go, Labtest seed and native Save stay off. Leave `NAVA_HMS_SAVE_ENABLED` unset in this deployment. |
 | `NAVA_HMS_SLOTS`, `HMS_CREDENTIAL_SESSION_CAP` | Worker concurrency and native admission cap; never exceed actual cap. |
 | `NAVA_SKILLS_DIR`, `NAVA_WORK_DIR` | Absolute paths to integrated skills and private writable work directory. |
 | `AWS_REGION`, `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE` | Bedrock region `eu-west-1` and local AWS default credential-chain paths; resolve native region issue above first. |

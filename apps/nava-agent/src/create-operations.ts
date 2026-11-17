@@ -3,6 +3,7 @@ import type { ProposalOperations } from './main.js';
 import { sql, json, uid } from './db.js';
 import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { proposalDraft } from './schema.js';
+import { createPilotRequested, hmsSaveEnabled } from './hms-mode.js';
 import type { LeaseFence, RegistryContext, ToolRegistry, ToolResult } from './tool-registry.js';
 
 export const manualLabtestTarget = z.object({
@@ -10,7 +11,7 @@ export const manualLabtestTarget = z.object({
 }).strict().refine(target => target.arrival_date >= '2027-01-01' && target.departure_date > target.arrival_date);
 
 export function createPilotEnabled() {
-  return process.env.NAVA_CREATE_PILOT === '1' && process.env.NAVA_QUOTE_SKELETON !== '1'
+  return createPilotRequested() && process.env.NAVA_QUOTE_SKELETON !== '1'
     && (process.env.NAVA_AGENT_RUNTIME ?? 'bedrock') === 'bedrock'
     && process.env.HMS_CREDENTIAL_SESSION_CAP === '2' && !!process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
 }
@@ -39,7 +40,7 @@ const queuedStage = z.object({
 export function createPilotOperations(): ProposalOperations | undefined {
   if (!createPilotEnabled()) return;
   return {
-    capabilities:{create:{stage:true,go_labtest:true,reconcile:false}},
+    capabilities:{create:{stage:true,go_labtest:hmsSaveEnabled(),reconcile:false}},
     async submit(tx, request) {
       const [p] = await tx`SELECT p.*,s.config,s.status,s.mode FROM nava_agent.proposal p
         JOIN nava_agent.agent_session s ON s.id=p.session_id WHERE p.id=${request.proposalId}`;
@@ -54,7 +55,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
         await writeEvent(tx,p.session_id,'stage_queued',{proposal_id:request.proposalId,...stage});
         return {ok:true,phase:'staging'};
       }
-      if (request.operation !== 'go' || request.mode !== 'labtest' || !request.idempotencyKey) return {ok:false,code:'UNAVAILABLE'};
+      if (request.operation !== 'go' || !hmsSaveEnabled() || request.mode !== 'labtest' || !request.idempotencyKey) return {ok:false,code:'UNAVAILABLE'};
       if (p.stage?.state !== 'prepared' || p.stage.revision !== request.expectedRevision) return {ok:false,code:'INVALID_PHASE'};
       try {
         await claimGoInTransaction(tx,{proposalId:p.id,expectedRevision:request.expectedRevision,actor:request.actor,idempotencyKey:request.idempotencyKey});

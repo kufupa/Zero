@@ -12,10 +12,9 @@ const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: 'GET', path: new RegExp(`^/api/nava/v1/threads/${resourceId}/staff-edits$`) },
   { method: 'POST', path: new RegExp(`^/api/nava/v1/threads/${resourceId}/messages$`) },
   { method: 'GET', path: /^\/api\/nava\/v1\/capabilities$/ },
-  { method: 'GET', path: /^\/api\/nava\/v1\/labtest\/create$/ },
   { method: 'GET', path: /^\/api\/nava\/v1\/eligibility$/ },
   { method: 'PATCH', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}$`) },
-  { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|stage|go|reconcile)$`) },
+  { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|stage|reconcile)$`) },
   { method: 'GET', path: new RegExp(`^/api/nava/v1/artifacts/${resourceId}$`) },
 ];
 
@@ -167,7 +166,7 @@ export function createNavaRewriteGateway(auth: Auth) {
         const capabilities: unknown = await response.json();
         return eligibility(typeof capabilities === 'object' && capabilities !== null &&
           'workflows' in capabilities && Array.isArray(capabilities.workflows) && capabilities.workflows.includes('create') &&
-          'tools' in capabilities && Array.isArray(capabilities.tools) && capabilities.tools.includes('hms_prepare') &&
+          'tools' in capabilities && Array.isArray(capabilities.tools) && capabilities.tools.includes('hms_prepare') && !capabilities.tools.includes('hms_save') &&
           'model' in capabilities && typeof capabilities.model === 'string' &&
           'environment_type' in capabilities && typeof capabilities.environment_type === 'string' &&
           'auth_ready' in capabilities && capabilities.auth_ready === true);

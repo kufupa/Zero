@@ -1,6 +1,7 @@
 import type postgres from 'postgres';
 import { z } from 'zod';
 import { sql, uid, json } from './db.js';
+import { hmsSaveEnabled } from './hms-mode.js';
 
 const block = z.object({type: z.string()}).passthrough();
 const messageSchema = z.object({role: z.enum(['user', 'assistant']), content: z.array(block), stop_reason: z.string().nullable().optional()}).strict();
@@ -171,6 +172,7 @@ export async function claimGo(input: GoClaim): Promise<Go> {
   return sql.begin(tx => claimGoInTransaction(tx, input));
 }
 export async function claimGoInTransaction(tx: Tx, input: GoClaim): Promise<Go> {
+  if (!hmsSaveEnabled()) throw new Error('SAVE_DISABLED');
   const {proposalId, expectedRevision, idempotencyKey, actor} = input;
   required(proposalId, 'PROPOSAL_ID'); required(idempotencyKey, 'IDEMPOTENCY_KEY'); required(actor, 'ACTOR');
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new Error('INVALID_REVISION');
@@ -198,6 +200,7 @@ export async function claimGoInTransaction(tx: Tx, input: GoClaim): Promise<Go> 
     return go;
 }
 export async function markDispatched(lease: Lease, proposalId: string, executionId: string, details: unknown): Promise<void> {
+  if (!hmsSaveEnabled()) throw new Error('SAVE_DISABLED');
   required(proposalId, 'PROPOSAL_ID'); required(executionId, 'EXECUTION_ID');
   await sql.begin(async tx => {
     const session = await lockLease(tx, lease);

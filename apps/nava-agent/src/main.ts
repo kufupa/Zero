@@ -11,6 +11,7 @@ import { event, sql } from './db.js';
 import { authReady, verifiedAuth, importThread, model, snapshot, startPending, deliverPending } from './runtime.js';
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
+import { hmsSaveEnabled } from './hms-mode.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
 type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE';
@@ -51,13 +52,14 @@ app.get('/capabilities',async c=>{
   const staff=!!process.env.NAVA_STAFF_JWT_SECRET;
   const workflow_capabilities=Object.fromEntries(workflows.map(workflow=>{
     const supported=operations?.capabilities[workflow];
-    return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:false,save:false,go_labtest:staff && !!supported?.go_labtest,save_labtest:staff && !!supported?.go_labtest,reconcile:staff && !!supported?.reconcile,quote:staff && workflow==='quote' && !!supported?.quote,undo:false,redo:false}];
+    const labtestSave=staff && hmsSaveEnabled() && !!supported?.go_labtest;
+    return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:false,save:false,go_labtest:labtestSave,save_labtest:labtestSave,reconcile:staff && !!supported?.reconcile,quote:staff && workflow==='quote' && !!supported?.quote,undo:false,redo:false}];
   }));
   const create=!!operations?.capabilities.create?.stage;
-  return c.json({workflows:create?['triage','create']:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare','hms_save']:[])],model,environment_type:'self_hosted',auth_ready:create?c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
+  return c.json({workflows:create?['triage','create']:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && operations?.capabilities.create?.go_labtest?['hms_save']:[])],model,environment_type:'self_hosted',auth_ready:create?c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
 });
 async function findManualLabtest(source:z.infer<typeof labtestSource>) {
-  if(!operations?.capabilities.create?.go_labtest) return null;
+  if(!hmsSaveEnabled() || !operations?.capabilities.create?.go_labtest) return null;
   const [thread]=await sql`SELECT t.id FROM nava_agent.mail_thread t JOIN nava_agent.agent_session s ON s.thread_id=t.id
     WHERE t.source=${source.source} AND t.mailbox_id=${source.mailbox_id} AND t.source_thread_id=${source.source_thread_id}
     AND t.selected_message_id=${source.selected_message_id} AND t.mode='labtest' AND s.config ? 'manual_create_labtest'`;
@@ -73,6 +75,7 @@ app.get('/labtest/create',async c=>{
 });
 app.post('/labtest/create/seed',async c=>{
   if(c.get('principal').kind!=='service') return c.json(threadError(403),403);
+  if(!hmsSaveEnabled()) return c.json({error:{code:'SAVE_DISABLED',message:'Only unsaved Prepare is available.',details:null}},403);
   if(!operations?.capabilities.create?.go_labtest) return c.json({error:{code:'UNAVAILABLE',message:'Create pilot not enabled',details:null}},501);
   const input=labtestSeed.safeParse(await c.req.json().catch(()=>null)), key=c.req.header('Idempotency-Key');
   if(!input.success || !key || input.data.thread.messages.find(message=>message.id===input.data.thread.selected_message_id)?.direction!=='inbound') {
@@ -119,6 +122,7 @@ app.post('/threads/:id/messages',async c=>{
 for (const operation of ['stage','go','reconcile','undo','redo','quote'] as const) app.post(`/proposals/:id/${operation}`,async c=>{
   const principal=c.get('principal');
   if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
+  if(operation==='go' && !hmsSaveEnabled()) return c.json({error:{code:'SAVE_DISABLED',message:'Only unsaved Prepare is available.',details:null}},403);
   const input=(operation==='go'?goInput:operation==='quote'?requoteInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
   if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid operation input',details:input.error.flatten()}},400);
   try {

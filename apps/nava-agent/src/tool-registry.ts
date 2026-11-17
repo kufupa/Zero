@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { schemas, tools, type ProposalDraft } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
+import { hmsSaveEnabled } from './hms-mode.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -203,7 +204,7 @@ export class ToolRegistry {
   }
 
   hasSkillPack():boolean { return !!this.pinSkills; }
-  supportsSave(workflow:string):boolean { return typeof this.mutations.get(workflow)?.save==='function'; }
+  supportsSave(workflow:string):boolean { return hmsSaveEnabled() && typeof this.mutations.get(workflow)?.save==='function'; }
 
   async pinSkillTree(root:string):Promise<SkillConfig|null> {
     return this.pinSkills ? {root,pin:await this.pinSkills(root)} : null;
@@ -212,13 +213,17 @@ export class ToolRegistry {
   definitions():ToolDefinition[] {
     const merged=new Map<string,ToolDefinition>(tools.map(({name,description,input_schema})=>[name,{name,description,input_schema}]));
     for(const {name,description,input_schema} of this.packTools.values()) merged.set(name,{name,description,input_schema});
-    if(this.mutations.size) { merged.set(prepareDefinition.name,prepareDefinition); merged.set(saveDefinition.name,saveDefinition); }
+    if(this.mutations.size) {
+      merged.set(prepareDefinition.name,prepareDefinition);
+      if(hmsSaveEnabled()) merged.set(saveDefinition.name,saveDefinition);
+    }
     return [...merged.values()];
   }
 
   async run(name:string,input:unknown,context:RegistryContext):Promise<{kind:'result';result:ToolResult}|{kind:'pause';proposalId:string;revision:number}> {
     context.signal?.throwIfAborted();
     if(name==='hms_save') {
+      if(!hmsSaveEnabled()) return {kind:'result',result:failureObject('SAVE_DISABLED','Only unsaved Prepare is available.')};
       const request=saveInput.safeParse(input);
       if(!request.success) return {kind:'result',result:failureObject('INVALID_INPUT','Invalid Save request.')};
       return {kind:'pause',proposalId:request.data.proposal_id,revision:request.data.expected_revision};
@@ -257,6 +262,7 @@ export class ToolRegistry {
   }
 
   async save(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>}):Promise<ToolResult> {
+    if(!hmsSaveEnabled()) return failureObject('SAVE_DISABLED','Only unsaved Prepare is available.');
     if(context.mode!=='labtest') return failureObject('SAVE_UNAUTHORIZED','Native Save is only available for authorized Labtest sessions.');
     const pack=this.mutations.get(input.workflow),property=input.booking.property_code;
     if(!pack?.save || typeof property!=='string' || !property) return failureObject('UNAVAILABLE','A native writer or property is unavailable.');

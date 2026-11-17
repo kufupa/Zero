@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, readFile } from 'node:fs/promises';
 import { prepare, save, type ToolContext, type ToolResult } from './index.js';
+import { hmsSaveEnabled } from '../../src/hms-mode.js';
 
 async function validateJournal(directory: string): Promise<void> {
   const stat = await lstat(directory);
@@ -26,6 +27,11 @@ async function durableMarker(directory: string, executionId: string, details: un
 
 async function main() {
   const [command, inputPath, journalDir] = process.argv.slice(2);
+  if (command === 'save-labtest' && !hmsSaveEnabled()) {
+    process.stderr.write('SAVE_DISABLED\n');
+    process.exitCode = 1;
+    return;
+  }
   if (!['prepare-live', 'prepare-labtest', 'save-labtest'].includes(command ?? '') || !inputPath ||
       (command === 'save-labtest' && !journalDir)) throw new Error('USAGE');
   const input: unknown = JSON.parse(await readFile(inputPath, 'utf8'));

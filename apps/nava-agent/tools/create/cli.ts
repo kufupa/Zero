@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, readFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { prepare, save, type ToolContext } from './index.js';
+import { hmsSaveEnabled } from '../../src/hms-mode.js';
 
 async function journal(directory: string, executionId: string, details: unknown): Promise<void> {
   const root = resolve(directory);
@@ -26,6 +27,11 @@ async function journal(directory: string, executionId: string, details: unknown)
 
 async function main(): Promise<void> {
   const [operation, ...args] = process.argv.slice(2);
+  if (operation === 'save' && !hmsSaveEnabled()) {
+    process.stderr.write('SAVE_DISABLED\n');
+    process.exitCode = 1;
+    return;
+  }
   const options = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     if (!args[i]?.startsWith('--') || !args[i + 1] || options.has(args[i])) throw new Error('INVALID_ARGUMENTS');
