@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteEditor } from '../components/reservation-pane/editors/quote-editor';
 import { CreateEditor } from '../components/reservation-pane/editors/create-editor';
@@ -7,6 +7,31 @@ import { CreateEditor } from '../components/reservation-pane/editors/create-edit
 afterEach(cleanup);
 
 describe('Quote review context', () => {
+  it('reviews the default values when staff add a dinner extra', async () => {
+    const group = { id: 'group-1', arrival: '2027-01-01', departure: '2027-01-02', quantity: 1,
+      roomCodes: [], ratePlan: null, mealPlan: 'bb', requestedMealPlan: 'bb',
+      occupancy: { scope: 'per_room', adults: 1, childCount: 0, childAges: [] }, priceObservationRefs: [] };
+    const request: any = { id: 'request-1', kind: 'quote', body: { groups: [group], parties: {}, client: {},
+      requestedMoney: [], outputIntent: { artifacts: [] } } };
+    const draft: any = { generationId: 'generation', propertyCode: 'HRCEN', source: { messageId: 'message' },
+      proposal: { content: { requests: [request] }, sourceClaims: [], annotations: [], issues: [] }, fieldOverrides: {},
+      fieldReviewRequirements: {}, staffReviews: {}, observations: [], operationResults: [] };
+    const acceptServiceReview = vi.fn().mockResolvedValue(undefined);
+    const editor: any = { source: { messageId: 'message' }, configuration: null, request,
+      snapshot: { session: { draft, seq: 1 }, operationResults: [] }, view: { busy: false, preview: false },
+      commands: { edit: vi.fn(), stageEdit: vi.fn(), setUncommitted: vi.fn(), lookup: vi.fn(),
+        changeRows: vi.fn().mockResolvedValue(undefined), acceptServiceReview } };
+    const { rerender } = render(<QuoteEditor {...editor} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Add dinner' })); });
+    request.body.requestedMoney.push({ id: 'extra-1', staffAllowanceType: 'dinner', currency: 'ZAR',
+      unit: 'per_person_per_night', scope: 'overall', targetRefs: [] });
+    editor.snapshot.session.seq = 2;
+    rerender(<QuoteEditor {...editor} />);
+    await waitFor(() => expect(acceptServiceReview).toHaveBeenCalledTimes(5));
+    const base = '/proposal/content/requests/request-1/body/requestedMoney/0';
+    expect(acceptServiceReview.mock.calls.map(([path]) => path)).toEqual(
+      ['staffAllowanceType', 'currency', 'unit', 'scope', 'targetRefs'].map(key => `${base}/${key}`));
+  });
   it('shows the Create room request and warns without truncating a long booker name', () => {
     const request = { id: 'request-1', kind: 'create', body: { shared: { bookerName: 'N'.repeat(51),
       requestedRoomDescription: 'Quiet room' }, dateSections: [], allocations: [] } };

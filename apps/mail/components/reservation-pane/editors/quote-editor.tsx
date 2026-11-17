@@ -273,9 +273,47 @@ function OfferList({ editor, groupId, groupPath, observation }: { editor: Editor
   </div>;
 }
 
+const EXTRA_KINDS = [
+  { kind: 'lunch', label: 'Add lunch', heading: 'Lunch' },
+  { kind: 'airport_transfer', label: 'Add airport transfer', heading: 'Airport transfer' },
+  { kind: 'office_transfer', label: 'Add office transfer', heading: 'Office transfer' },
+  { kind: 'dinner', label: 'Add dinner', heading: 'Dinner' },
+] as const;
+const extraHeading = (kind: string) => EXTRA_KINDS.find((row) => row.kind === kind)?.heading
+  ?? (kind === 'unsupported' ? 'Separate other request' : 'Extra');
+const extraUnitDefault = (kind: string) => kind === 'airport_transfer' ? 'per_trip' : 'per_person_per_night';
+
 function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bodyPath: string; groups: Record<string, unknown>[]; rows: Record<string, unknown>[] }) {
   const applying = useRef(false);
   const [applyingExtra, setApplyingExtra] = useState(false);
+  const [pendingAdd, setPendingAdd] = useState<{ beforeIds: Set<string>; kind: string; generationId: string; seq: number } | null>(null);
+  const [reviewError, setReviewError] = useState(false);
+  useEffect(() => {
+    const pending = pendingAdd;
+    if (!pending) return;
+    const generationId = editor.snapshot.session.draft.generationId;
+    if (generationId !== pending.generationId || editor.snapshot.session.seq > pending.seq + 1) { setPendingAdd(null); return; }
+    if (editor.snapshot.session.seq !== pending.seq + 1 || ['queued', 'running'].includes(editor.snapshot.session.draft.prefill?.status ?? '')) return;
+    const added = rows.filter((row) => !pending.beforeIds.has(text(row.id)) && text(row.staffAllowanceType) === pending.kind);
+    if (added.length !== 1 || rows.length !== pending.beforeIds.size + 1) { setPendingAdd(null); return; }
+    const index = rows.findIndex((row) => text(row.id) === text(added[0]!.id));
+    if (index < 0) { setPendingAdd(null); return; }
+    setPendingAdd(null);
+    const base = `${bodyPath}/requestedMoney/${index}`;
+    const fields: [string, unknown][] = [
+      ['staffAllowanceType', pending.kind], ['currency', 'ZAR'], ['unit', extraUnitDefault(pending.kind)],
+      ['scope', 'overall'], ['targetRefs', []],
+    ];
+    void (async () => {
+      for (const [key, value] of fields) {
+        const fieldPath = `${base}/${key}`;
+        try {
+          if (JSON.stringify(added[0]?.[key]) !== JSON.stringify(value)) return;
+          await editor.commands.acceptServiceReview(fieldPath, 'Reviewed by staff', { path: base, value: added[0], generationId });
+        } catch { setReviewError(true); return; }
+      }
+    })();
+  }, [pendingAdd, rows, bodyPath, editor]);
   const applyExtra = (update: () => Promise<void>) => {
     if (applying.current) return;
     applying.current = true;
@@ -286,19 +324,21 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
       editor.commands.setUncommitted(pending, false);
       applying.current = false;
       setApplyingExtra(false);
-    }).catch(() => {});
+    }).catch(() => setReviewError(true));
   };
   return <Section title="Extras">
-    <p className={styles.note}>Add lunch and transfers as separate lines.</p>
-    <div className={styles.inlineButtons}>{[
-      { kind: 'lunch', label: 'Lunch' },
-      { kind: 'airport_transfer', label: 'Airport Transfer / Shuttle' },
-      { kind: 'office_transfer', label: 'Office Transfer' },
-      { kind: 'dinner', label: 'Dinner' },
-    ].map(extra => <button type="button" key={extra.kind} className={styles.linkButton} disabled={editor.view.busy || applyingExtra || rows.length >= 100}
+    <p className={styles.note}>Add each extra as a separate line.</p>
+    {reviewError && <p role="alert" className={styles.notice}>Review the extra and try again.</p>}
+    <div className={styles.inlineButtons}>{EXTRA_KINDS.map(extra => <button type="button" key={extra.kind} className={styles.secondaryButton} disabled={editor.view.busy || applyingExtra || rows.length >= 100}
       data-field-path={extra.kind === 'lunch' ? `${bodyPath}/requestedMoney` : undefined}
-      onClick={() => void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })}>+ {extra.label}</button>)}</div>
-    {rows.length > 0 && <p className={styles.note}>Extras are added on top of the Infor room rate. They never change it.</p>}
+      onClick={() => {
+        const pending = { beforeIds: new Set(rows.map((row) => text(row.id))), kind: extra.kind,
+          generationId: editor.snapshot.session.draft.generationId, seq: editor.snapshot.session.seq };
+        setReviewError(false);
+        void editor.commands.changeRows({ kind: 'add_quote_extra', requestId: editor.request.id, entityId: extra.kind })
+          .then(() => setPendingAdd(pending)).catch(() => { setPendingAdd(null); });
+      }}>{extra.label}</button>)}</div>
+    <p className={styles.note}>Customer amounts are separate from Infor room rates. They never replace a native rate.</p>
     {rows.map((row, index) => {
       const path = `${bodyPath}/requestedMoney/${index}`;
       const kindPath = `${path}/staffAllowanceType`;
@@ -308,18 +348,24 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
       const scope = text(valueAt(editor.snapshot, `${path}/scope`));
       const targets = valueAt(editor.snapshot, `${path}/targetRefs`);
       const selected = Array.isArray(targets) ? targets.map(text) : [];
+      const generationId = editor.snapshot.session.draft.generationId;
       const allIds = groups.map((group) => text(group.id));
       const applied = scope === 'overall' ? allIds : scope === 'per_target' ? selected : [];
       // One control replaces the old scope select: every group ticked means all room groups.
-      const setApplied = async (next: string[]) => {
+      const setApplied = async (next: string[], currentRow = row) => {
         const all = allIds.length > 0 && allIds.every((id) => next.includes(id));
-        editor.commands.stageEdit(`${path}/targetRefs`, all ? [] : next);
-        await editor.commands.edit(`${path}/scope`, all ? 'overall' : 'per_target');
+        const targetRefs = all ? [] : next, nextScope = all ? 'overall' : 'per_target';
+        editor.commands.stageEdit(`${path}/targetRefs`, targetRefs);
+        await editor.commands.edit(`${path}/scope`, nextScope);
+        const expected = { path, value: { ...currentRow, scope: nextScope, targetRefs }, generationId };
+        await editor.commands.acceptServiceReview(`${path}/scope`, 'Reviewed by staff', expected);
+        await editor.commands.acceptServiceReview(`${path}/targetRefs`, 'Reviewed by staff', expected);
       };
       return <div className={styles.roomCard} key={text(row.id) || index}>
-        <div className={styles.twoCol}><Field label="Amount" path={`${path}/amount`} editor={editor} review requireReview />
-          <Field label="Currency" path={`${path}/currency`} editor={editor} review requireReview /></div>
-        <Field label="Unit" path={`${path}/unit`} editor={editor} review requireReview options={[
+        <strong>{extraHeading(kind)}</strong>
+        <div className={styles.twoCol}><Field label="Amount (see unit)" path={`${path}/amount`} editor={editor} review requireReview />
+          <div className={styles.currencyField}><Field label="Currency" path={`${path}/currency`} editor={editor} review requireReview /></div></div>
+        <Field label="Unit (check basis)" path={`${path}/unit`} editor={editor} review requireReview options={[
           { value: 'per_person_per_night', label: 'Per person per night' },
           { value: 'per_room_per_night', label: 'Per room per night' },
           { value: 'per_person', label: 'Per person' },
@@ -336,8 +382,10 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
             } else if (['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(next)) {
               applyExtra(async () => {
                 await editor.commands.edit(kindPath, next);
+                const currentRow = { ...row, staffAllowanceType: next };
+                await editor.commands.acceptServiceReview(kindPath, 'Reviewed by staff', { path, value: currentRow, generationId });
                 // Only a single-group quote has an unambiguous default; with several groups staff tick the rooms.
-                if (allIds.length === 1 && scope !== 'overall' && scope !== 'per_target') await setApplied(allIds);
+                if (allIds.length === 1 && scope !== 'overall' && scope !== 'per_target') await setApplied(allIds, currentRow);
               });
             }
           }}>
@@ -576,8 +624,7 @@ export function QuoteEditor(editor: Editor) {
       {observation && <div className={styles.price}><strong>{quoteCurrent(editor, observation) ? 'Current Infor quote' : offersCurrent ? 'Current Infor availability' : 'Earlier Infor observation'}</strong>
         {money(result.totalMinor, result.currency) && <span>{money(result.totalMinor, result.currency)} total</span>}
         <small>{text(result.arrivalDate)} – {text(result.departureDate)}{observation.observedAt ? ` · observed ${new Date(observation.observedAt).toLocaleString()}` : ''}</small>
-        {rows.some((_, i) => !['dinner', 'lunch', 'airport_transfer', 'office_transfer'].includes(text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/staffAllowanceType`))) || !text(valueAt(snapshot, `${bodyPath}/requestedMoney/${i}/amount`)).trim()) &&
-          <small>Extras still to sort out are not in this total.</small>}</div>}
+        {rows.length > 0 && <small>Check whether this total includes the extras below.</small>}</div>}
     </Section>
     <MoneyRequests editor={editor} bodyPath={bodyPath} groups={groups} rows={rows} />
     <PreparedReview editor={editor} />

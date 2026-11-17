@@ -64,6 +64,9 @@ function setup(name: string, prepared = false, additive = false, differentOutput
       next.session.draft.fieldOverrides[fieldPath] = { state: 'set', value, updatedAt: '2026-11-16T00:00:00Z' };
       return next;
     }),
+    review: vi.fn(async ({ snapshot: before }: { snapshot: ReservationPaneSnapshot }) => {
+      const next = structuredClone(before); next.session.seq++; next.session.revision++; return next;
+    }),
     reviewScope: vi.fn(async ({ snapshot: before, requestId }: { snapshot: ReservationPaneSnapshot; requestId: string }) => {
       calls.push(`review:${requestId}`); const next = structuredClone(before); next.session.seq++; next.session.revision++; return next;
     }),
@@ -96,6 +99,7 @@ describe('generating quote options', () => {
     const base = '/proposal/content/requests/one/body/requestedMoney/0';
     fireEvent.click(screen.getByLabelText('Room group 2'));
     await waitFor(() => expect(vi.mocked(client.edit)).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(vi.mocked(client.review)).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(hook.result.current.readyForReply()).toBe(true));
     expect(vi.mocked(client.edit).mock.calls.map(([call]) => [call.fieldPath, call.value])).toEqual([
       [`${base}/targetRefs`, ['group-2']], [`${base}/scope`, 'per_target'],
@@ -105,9 +109,13 @@ describe('generating quote options', () => {
     expect((screen.getByLabelText('Room group 1') as HTMLInputElement).checked).toBe(false);
     fireEvent.click(screen.getByLabelText('Room group 1'));
     await waitFor(() => expect(vi.mocked(client.edit)).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(vi.mocked(client.review)).toHaveBeenCalledTimes(4));
     await waitFor(() => expect(hook.result.current.readyForReply()).toBe(true));
     expect(vi.mocked(client.edit).mock.calls.slice(2).map(([call]) => [call.fieldPath, call.value])).toEqual([
       [`${base}/targetRefs`, []], [`${base}/scope`, 'overall'],
+    ]);
+    expect(vi.mocked(client.review).mock.calls.map(([call]) => call.fieldPath)).toEqual([
+      `${base}/scope`, `${base}/targetRefs`, `${base}/scope`, `${base}/targetRefs`,
     ]);
   });
   it('reviews and prepares every option before generating any files', async () => {
