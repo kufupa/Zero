@@ -5758,7 +5758,7 @@ function composeAmendNotes(input: { proposal: ReservationWorkflowV2Proposal; ext
       if (!prefixes.some((prefix) => issue.path.startsWith(prefix))) continue;
       issue.explanation = issue.explanation.replace(
         /\b(?:is|was|has been)\s+(?:verbatim\s+)?(?:preserved|saved|added|copied|recorded|included|retained)(?:\s+verbatim)?\s+(?:in|to|within)\s+(?:the\s+)?reservation\s*note\b/giu,
-        'is available in the email for review');
+        'needs email review');
     }
   }
   return { proposal, observations, requirements };
