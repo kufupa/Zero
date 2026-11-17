@@ -61,9 +61,10 @@ export async function verifiedAuth() {
   return ready;
 }
 const content = (text:string) => [{type:'text' as const,text}];
-export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown) {
+type ImportOptions = {manualCreateLabtest:{arrival_date:string;departure_date:string}};
+export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown, options?:ImportOptions) {
   const keyHash=createHash('sha256').update(key).digest('hex');
-  const requestHash=createHash('sha256').update(JSON.stringify({input,sourceInput:sourceInput ?? null})).digest('hex');
+  const requestHash=createHash('sha256').update(JSON.stringify({input,sourceInput:sourceInput ?? null,...(options ? {options} : {})})).digest('hex');
   const selected = input.messages.find(message => message.id === input.selected_message_id);
   const ruleId = selected ? mailPrefilterRule(selected) : null;
   return sql.begin(async tx => {
@@ -94,7 +95,8 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
     let [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE thread_id=${thread.id}`;
     const createSession = !session;
     if (session && input.mode==='historical' && (session.config?.input_cutoff !== (input.input_cutoff ?? null) || session.config?.decision_id !== (input.decision_id ?? null))) throw new Error('HISTORICAL_CONTEXT_CONFLICT');
-    if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null})}) RETURNING *`;
+    if (options && (input.mode!=='labtest' || session || before)) throw new Error('LABTEST_SEED_CONFLICT');
+    if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null,...(options ? {manual_create_labtest:options.manualCreateLabtest} : {})})}) RETURNING *`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
     await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash})})`;
     if(sourceInput !== undefined) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'train_source',${json(sourceInput)})`;
@@ -147,7 +149,25 @@ export async function snapshot(threadId:string) {
   return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposalWire),event_sequence:Number(sequence.n)};
 }
 export function proposalWire(p:Record<string,any>) {
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage:p.stage,result:p.result,error:p.execution?.error ?? null};
+  const stage=p.stage && p.stage.state!=='queued' ? {
+    revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
+    display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],...(p.stage.cancellation_fee!==undefined ? {cancellation_fee:p.stage.cancellation_fee} : {}),
+  } : null;
+  const result=p.phase==='done' && p.result ? {
+    confirmation:typeof p.result.confirmation==='string'?p.result.confirmation:null,
+    reservation_id:typeof p.result.reservation_id==='string'?p.result.reservation_id:null,
+    readback:p.result.readback??null,display_rows:Array.isArray(p.result.display_rows)?p.result.display_rows:[],
+    artifacts:Array.isArray(p.result.artifacts)?p.result.artifacts:[],
+  } : null;
+  const rawError=p.execution?.error ?? p.execution?.go?.completion?.toolResult?.error;
+  const uncertain=p.phase==='uncertain' || rawError?.outcome==='uncertain';
+  const error=rawError || uncertain ? {
+    code:typeof rawError?.code==='string' && /^[A-Z_0-9]+$/.test(rawError.code)?rawError.code:'HMS_OPERATION_FAILED',
+    outcome:uncertain?'uncertain':'known',
+    message:uncertain?'HMS Save outcome is unconfirmed.':p.phase==='error'?'HMS Save did not complete.':'HMS Prepare did not complete.',
+    recovery:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
+  } : null;
+  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;

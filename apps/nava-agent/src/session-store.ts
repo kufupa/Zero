@@ -28,7 +28,7 @@ async function lockLease(tx: Tx, lease: Lease) {
   if (!row) throw new Error('LEASE_LOST');
   return row;
 }
-async function writeEvent(tx: Tx, sessionId: string, kind: string, payload: unknown) {
+export async function writeEvent(tx: Tx, sessionId: string, kind: string, payload: unknown) {
   await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:' + sessionId}, 0))`;
   await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${sessionId},${kind},${json(payload)})`;
 }
@@ -166,11 +166,14 @@ export async function finish(lease: Lease, reason: string): Promise<void> {
   });
 }
 
-export async function claimGo(input: {proposalId:string; expectedRevision:number; idempotencyKey:string; actor:string}): Promise<Go> {
+type GoClaim = {proposalId:string; expectedRevision:number; idempotencyKey:string; actor:string};
+export async function claimGo(input: GoClaim): Promise<Go> {
+  return sql.begin(tx => claimGoInTransaction(tx, input));
+}
+export async function claimGoInTransaction(tx: Tx, input: GoClaim): Promise<Go> {
   const {proposalId, expectedRevision, idempotencyKey, actor} = input;
   required(proposalId, 'PROPOSAL_ID'); required(idempotencyKey, 'IDEMPOTENCY_KEY'); required(actor, 'ACTOR');
   if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 1) throw new Error('INVALID_REVISION');
-  return sql.begin(async tx => {
     const [ref] = await tx`SELECT session_id FROM nava_agent.proposal WHERE id=${proposalId}`;
     if (!ref) throw new Error('PROPOSAL_NOT_FOUND');
     const [session] = await tx`SELECT * FROM nava_agent.agent_session WHERE id=${ref.session_id} FOR NO KEY UPDATE`;
@@ -193,7 +196,6 @@ export async function claimGo(input: {proposalId:string; expectedRevision:number
     await tx`UPDATE nava_agent.proposal SET phase='saving',execution=COALESCE(execution,'{}'::jsonb) || ${json({go})}::jsonb,updated_at=now() WHERE id=${proposalId}`;
     await writeEvent(tx, session.id, 'go_claimed', {proposal_id:proposalId,execution_id:go.executionId,revision:expectedRevision,actor});
     return go;
-  });
 }
 export async function markDispatched(lease: Lease, proposalId: string, executionId: string, details: unknown): Promise<void> {
   required(proposalId, 'PROPOSAL_ID'); required(executionId, 'EXECUTION_ID');

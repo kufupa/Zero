@@ -6,10 +6,11 @@ import { fileURLToPath } from 'node:url';
 import type postgres from 'postgres';
 import { authenticate, hasMailbox, type Principal } from './auth.js';
 import { editInput, editProposal } from './edit.js';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { event, sql } from './db.js';
 import { authReady, verifiedAuth, importThread, model, snapshot, startPending, deliverPending } from './runtime.js';
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
+import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
 type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE';
@@ -31,7 +32,9 @@ class OperationError extends Error {
   constructor(readonly code:OperationFailure|'REAL_GUEST_GO_UNAVAILABLE'|'HISTORICAL_UNAVAILABLE') { super(code); }
 }
 const workflows:Workflow[]=['triage','quote','create','amend','cancel','filing'];
-export function createApp(operations?:ProposalOperations) {
+const labtestSource = z.object({source: z.enum(['outlook','webmail','corpus','eval']), mailbox_id: z.string().min(1), source_thread_id: z.string().min(1), selected_message_id: z.string().min(1)});
+const labtestSeed = z.object({thread:threadInput, target:manualLabtestTarget}).strict();
+export function createApp(operations:ProposalOperations|undefined=createPilotOperations()) {
 const app=new Hono<{Variables:{principal:Principal}}>().basePath('/api/nava/v1');
 app.use('*',async(c,next)=>{
   const principal=authenticate(c.req.header('Authorization'));
@@ -50,7 +53,39 @@ app.get('/capabilities',async c=>{
     const supported=operations?.capabilities[workflow];
     return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:false,save:false,go_labtest:staff && !!supported?.go_labtest,save_labtest:staff && !!supported?.go_labtest,reconcile:staff && !!supported?.reconcile,quote:staff && workflow==='quote' && !!supported?.quote,undo:false,redo:false}];
   }));
-  return c.json({workflows:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft'],model,environment_type:'self_hosted',auth_ready:await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? null});
+  const create=!!operations?.capabilities.create?.stage;
+  return c.json({workflows:create?['triage','create']:['quote'],tools:['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare','hms_save']:[])],model,environment_type:'self_hosted',auth_ready:create?c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:await authReady(),configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
+});
+async function findManualLabtest(source:z.infer<typeof labtestSource>) {
+  if(!operations?.capabilities.create?.go_labtest) return null;
+  const [thread]=await sql`SELECT t.id FROM nava_agent.mail_thread t JOIN nava_agent.agent_session s ON s.thread_id=t.id
+    WHERE t.source=${source.source} AND t.mailbox_id=${source.mailbox_id} AND t.source_thread_id=${source.source_thread_id}
+    AND t.selected_message_id=${source.selected_message_id} AND t.mode='labtest' AND s.config ? 'manual_create_labtest'`;
+  return thread ? snapshot(thread.id) : null;
+}
+app.get('/labtest/create',async c=>{
+  const source=labtestSource.safeParse(c.req.query());
+  const principal=c.get('principal');
+  if(!source.success) return c.json({error:{code:'INVALID_INPUT',message:'Exact selected mail required',details:null}},400);
+  if(!hasMailbox(principal,source.data.mailbox_id)) return c.json(threadError(403),403);
+  const active=await findManualLabtest(source.data);
+  return active?c.json(active):c.json({error:{code:'NOT_FOUND',message:'No manual Labtest for selected mail',details:null}},404);
+});
+app.post('/labtest/create/seed',async c=>{
+  if(c.get('principal').kind!=='service') return c.json(threadError(403),403);
+  if(!operations?.capabilities.create?.go_labtest) return c.json({error:{code:'UNAVAILABLE',message:'Create pilot not enabled',details:null}},501);
+  const input=labtestSeed.safeParse(await c.req.json().catch(()=>null)), key=c.req.header('Idempotency-Key');
+  if(!input.success || !key || input.data.thread.messages.find(message=>message.id===input.data.thread.selected_message_id)?.direction!=='inbound') {
+    return c.json({error:{code:'INVALID_INPUT',message:'Labtest target, exact inbound and idempotency key required',details:null}},400);
+  }
+  try {
+    const seeded=await importThread({...input.data.thread,mode:'labtest',property_code:'HRCEN'},key,undefined,{manualCreateLabtest:input.data.target});
+    if(seeded.skipped) return c.json({error:{code:'SKIPPED',message:'Selected email was filtered',details:null}},409);
+    return c.json(await snapshot(seeded.id),seeded.created?201:200);
+  } catch (error) {
+    const conflict=error instanceof Error && ['LABTEST_SEED_CONFLICT','THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT'].includes(error.message);
+    return c.json({error:{code:conflict?'LABTEST_SEED_CONFLICT':'IMPORT_UNAVAILABLE',message:'Could not seed manual Labtest',details:null}},conflict?409:503);
+  }
 });
 app.post('/threads',async c=>{
   if (!c.req.header('Idempotency-Key')) return c.json({error:{code:'IDEMPOTENCY_REQUIRED',message:'Idempotency-Key required',details:null}},400);
@@ -58,7 +93,7 @@ app.post('/threads',async c=>{
   if (!parsed.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid thread',details:parsed.error.flatten()}},400);
   const principal=c.get('principal');
   if(!hasMailbox(principal,parsed.data.mailbox_id) || (principal.kind==='staff' && parsed.data.mode!=='live')) return c.json({error:{code:'FORBIDDEN',message:'Mailbox or mode unavailable',details:null}},403);
-  try { const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
+  try { if(principal.kind==='staff') {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
   catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; return c.json({error:{code:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'IMPORT_UNAVAILABLE',message:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'Unable to import thread',details:null}},['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?409:503); }
 });
 app.get('/threads/:id',async c=>{const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);const result=await snapshot(c.req.param('id')); return result?c.json(result):c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);});
@@ -132,6 +167,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
     const code=error instanceof OperationError?error.code:'UNAVAILABLE';
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
+    if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is disabled in this pilot.',details:null}},403);
     if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid quote fields',details:null}},400);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE'||code==='INVALID_PHASE'||code==='IDEMPOTENCY_CONFLICT') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     return c.json({error:{code,message:'This operation is not supported.',details:null}},501);

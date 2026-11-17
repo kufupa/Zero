@@ -10,6 +10,7 @@ import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableT
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
 import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
+import { createPilotEnabled, manualLabtestTarget, runCreateStage } from './create-operations.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -143,7 +144,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     const mode:Mode=session.mode;
     const pending=await pendingInput(sessionId,state.status==='running' && typeof session.config?.worker_delivery_id==='string' ? session.config.worker_delivery_id : undefined);
     const registry=new ToolRegistry({native:deps.native,emit:async(_id,kind,payload)=>{abort.signal.throwIfAborted();await deps.store.event(lease,kind,payload);}});
-    await discoverToolPacks(registry,undefined,process.env.NAVA_QUOTE_SKELETON==='1'?['quote','skills']:undefined);
+    await discoverToolPacks(registry,undefined,process.env.NAVA_QUOTE_SKELETON==='1'?['quote','skills']:process.env.NAVA_CREATE_PILOT==='1'?['create','skills']:undefined);
     let skillConfig:SkillConfig|undefined;
     if(registry.hasSkillPack()) {
       const existing=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().safeParse(session.config?.skill_config);
@@ -156,14 +157,16 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
         skillConfig=pin;
       }
     }
+    if(createPilotEnabled() && await runCreateStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
     let version=state.version;
     const checkSession=(id:string)=>{if(id!==sessionId)throw new Error('SESSION_MISMATCH');abort.signal.throwIfAborted();};
     const runtime=deps.runtime({
       load:async id=>{checkSession(id);state=await deps.store.load(id);version=state.version;return state;},
       append:async(id,message)=>{checkSession(id);const delivery=deliveryId(message,version,pending);version=await deps.store.append(lease,version,delivery,message);version=(await deps.store.load(id)).version;if(pending && delivery===`input:${pending.id}`)await markDelivered(lease,pending.id);},
       event:async(id,kind,payload)=>{checkSession(id);await deps.store.event(lease,kind,payload);},
-      tools:async id=>{checkSession(id);return registry.definitions();},
+      tools:async id=>{checkSession(id);return registry.definitions().filter(tool=>process.env.NAVA_CREATE_PILOT!=='1'||tool.name!=='hms_prepare');},
       runTool:async(id,toolUse)=>{
+        if(process.env.NAVA_CREATE_PILOT==='1' && toolUse.name==='hms_prepare') return {kind:'result',result:{ok:false,data:null,error:{code:'STAFF_PREPARE_REQUIRED',message:'Staff runs Prepare from the proposal.',retryable:false,outcome:'known'}}};
         checkSession(id); if(!await deps.store.refresh(lease,leaseMs)) throw new Error('LEASE_LOST'); const current=await deps.store.load(id);
         if(Object.hasOwn(current.toolOutcomes,toolUse.id)) return {kind:'result',result:current.toolOutcomes[toolUse.id]};
         const answer=await registry.run(toolUse.name,toolUse.input,{sessionId:id,mode,propertyCode:session.property_code,toolUseId:toolUse.id,fence:lease,signal:abort.signal,skillConfig});
@@ -210,7 +213,15 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
   const active=new Set<string>();
   const limit=configuredSlots().requested;
   while(!signal?.aborted) {
-    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now()) AND (EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false') OR s.status='running' OR (s.status='waiting_go' AND ${Boolean(deps.saveQueue)} AND (s.mode='labtest' OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL)))) ORDER BY s.updated_at LIMIT ${limit}`;
+    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now()) AND (
+      EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false')
+      OR s.status='running'
+      OR (${createPilotEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='staging' AND p.stage->>'state'='queued'))
+      OR (s.status='waiting_go' AND ${Boolean(deps.saveQueue)} AND (
+        (s.mode='labtest' AND ${process.env.NAVA_CREATE_PILOT!=='1'} AND NOT (s.config ? 'manual_create_labtest'))
+        OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL
+          AND (p.phase='saving' OR p.execution->'go'->'completion' IS NOT NULL))))
+      ) ORDER BY s.updated_at LIMIT ${limit}`;
     for(const row of rows) if(active.size<limit && !active.has(row.id)) {
       active.add(row.id);
       void runSession(row.id,deps).catch(error=>{const message=error instanceof Error?error.message:'';console.error(JSON.stringify({event:'worker_error',session_id:row.id,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));}).finally(()=>active.delete(row.id));
@@ -228,7 +239,7 @@ const knownFailure=(code:string,message:string):ToolResult=>({ok:false,data:null
 export function createSaveQueue(store:SessionStore):SaveQueue {
   return {
     async claimApprovedSave(lease,supportsSave) {
-      const [session]=await sql`SELECT s.mode,s.pending_tool_use_id,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${lease.sessionId} AND s.worker_id=${lease.workerId} AND s.lease_epoch=${lease.epoch}::bigint AND s.lease_until>clock_timestamp()`;
+      const [session]=await sql`SELECT s.mode,s.config,s.pending_tool_use_id,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${lease.sessionId} AND s.worker_id=${lease.workerId} AND s.lease_epoch=${lease.epoch}::bigint AND s.lease_until>clock_timestamp()`;
       if(!session) throw new Error('LEASE_LOST');
       if(!['live','labtest','historical'].includes(session.mode) || !session.pending_tool_use_id) return null;
       const state=await store.load(lease.sessionId);
@@ -238,6 +249,10 @@ export function createSaveQueue(store:SessionStore):SaveQueue {
       if(!input.success) throw new Error('SAVE_BINDING_MISMATCH');
       let [proposal]=await sql`SELECT p.id,p.revision,p.workflow,p.phase,p.execution FROM nava_agent.proposal p WHERE p.id=${input.data.proposal_id} AND p.session_id=${lease.sessionId}`;
       if(!proposal) return null;
+      const manual=manualLabtestTarget.safeParse(session.config?.manual_create_labtest).success;
+      const pilot=process.env.NAVA_CREATE_PILOT==='1';
+      if(pilot && (!createPilotEnabled() || !manual || session.mode!=='labtest' || proposal.workflow!=='create')) return null;
+      if((pilot || Object.hasOwn(session.config ?? {},'manual_create_labtest')) && !proposal.execution?.go) return null;
       if(!proposal.execution?.go && (!supportsSave(proposal.workflow) || session.mode!=='labtest')) return null;
       if(!proposal.execution?.go && session.mode==='labtest') {
         await store.claimGo({proposalId:proposal.id,expectedRevision:proposal.revision,idempotencyKey:`labtest:${session.pending_tool_use_id}`,actor:'labtest-auto'});
@@ -358,6 +373,10 @@ async function main():Promise<void> {
   const runtimeModule=await import(runtimePath);
   if(typeof runtimeModule.BedrockRuntime!=='function') throw new Error('BEDROCK_RUNTIME_UNAVAILABLE');
   const quoteOnly=process.env.NAVA_QUOTE_SKELETON==='1';
-  await runWorker({store,native,...(quoteOnly?{}:{saveQueue:createSaveQueue(store)}),runtime:deps=>new runtimeModule.BedrockRuntime(deps,{system:quoteOnly?'Read the selected email using mail_read_thread and load quote/SKILL.md and its references with skill_read. If dates, property and occupancy support a native search, call hms_quote before publishing, including when group review is still needed. Never fabricate missing input or prices. Publish a quote proposal with native_result null; the server attaches native capture. Read only: no Save or email send.':'Read the selected mail thread with mail_read_thread, then read triage/SKILL.md and the relevant workflow skill and references with skill_read. Use registered tools and native facts only; never invent prices or send email. Publish a proposal for staff, including missing information. Prepare a change before requesting hms_save; Save pauses for approval.'})});
+  const pilot=process.env.NAVA_CREATE_PILOT==='1';
+  const system=quoteOnly?'Read the selected email using mail_read_thread and load quote/SKILL.md and its references with skill_read. If dates, property and occupancy support a native search, call hms_quote before publishing, including when group review is still needed. Never fabricate missing input or prices. Publish a quote proposal with native_result null; the server attaches native capture. Read only: no Save or email send.'
+    :pilot?'Read the selected email using mail_read_thread and read triage/SKILL.md and create/SKILL.md for new bookings. Load shared tool rules with skill_read path references/tools-and-proposal.md. Create is the only supported native workflow in this pilot. Publish one grounded Create action and booking for one complete supported request, or needs_info/staff_review when unclear. Use first_name and last_name, empty Create action details, and editable pointers under /bookings/0/fields. Publish with native_result null. After publishing a complete Create, request hms_save with proposal_id and expected_revision to park; only staff runs Prepare, and only a manually approved Labtest can Save. Never send mail or invent missing input.'
+    :'Read the selected mail thread with mail_read_thread, then read triage/SKILL.md and the relevant workflow skill and references with skill_read. Use registered tools and native facts only; never invent prices or send email. Publish a proposal for staff, including missing information. Prepare a change before requesting hms_save; Save pauses for approval.';
+  await runWorker({store,native,...(quoteOnly || (pilot && !createPilotEnabled())?{}:{saveQueue:createSaveQueue(store)}),runtime:deps=>new runtimeModule.BedrockRuntime(deps,{system})});
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) await main();
