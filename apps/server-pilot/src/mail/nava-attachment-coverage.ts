@@ -4,6 +4,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
+import { syncObservationV1 } from '../outlook-sync/contracts.js';
 import { toParsedMessage } from '../trpc/wire-compat.js';
 import { loadConversationMetaForThread } from './conversation-group.js';
 
@@ -24,18 +25,34 @@ function sourceAddress(value: {name?:string;email:string}) {
 const lineageId=z.string().min(1).max(512).refine(id=>id===id.trim() && !/[\x00-\x1f\x7f]/.test(id));
 const semanticVersion=z.union([z.number(),z.string().regex(/^[1-9]\d*$/)]).refine(value=>Number.isSafeInteger(Number(value)) && Number(value)>0);
 const noFileInventory=z.object({
-  linkedOptionalMissing:z.array(z.never()),
+  linkedOptionalMissing:z.array(z.never()).optional(),
   linkedAttachmentScopes:z.array(z.object({
     sourceId:lineageId,sourceObservationId:lineageId,semanticVersion,enumerated:z.literal(true),
     missing:z.array(z.never()),persisted:z.array(z.never()),
   })).min(1),
+});
+const firstObservation=z.object({
+  sourceId:lineageId,sourceObservationId:lineageId,semanticVersion,canonicalContentVersion:semanticVersion,
+  optionalMissing:z.array(z.never()),evidence:syncObservationV1,
 });
 
 function inventoried(provenance: Record<string, unknown> | null): boolean {
   const parsed=noFileInventory.safeParse(provenance);
   if (!parsed.success) return false;
   const scopes=parsed.data.linkedAttachmentScopes;
-  return new Set(scopes.map(scope=>JSON.stringify([scope.sourceId,scope.sourceObservationId]))).size===scopes.length;
+  if (parsed.data.linkedOptionalMissing) {
+    return new Set(scopes.map(scope=>JSON.stringify([scope.sourceId,scope.sourceObservationId]))).size===scopes.length;
+  }
+  if (scopes.length!==1) return false;
+  const own=firstObservation.safeParse(provenance);
+  if (!own.success) return false;
+  const [scope]=scopes, {sourceId,sourceObservationId,semanticVersion,canonicalContentVersion,evidence}=own.data;
+  const version=Number(semanticVersion), roles=evidence.requiredArtifactRoles;
+  return scope.sourceId===sourceId && scope.sourceObservationId===sourceObservationId && Number(scope.semanticVersion)===version
+    && Number(canonicalContentVersion)===version && evidence.sourceObservationId===sourceObservationId && evidence.semanticVersion===version
+    && evidence.semanticReady && evidence.availability==='available' && evidence.direction!=='unknown'
+    && roles.includes('original-msg') && (roles.includes('body-text') || roles.includes('body-html'))
+    && !roles.some(role=>role.startsWith('attachment:')) && !evidence.optionalMissing?.length && !evidence.contentIdentity?.attachments.length;
 }
 
 export function validCoverageRequest(raw:string, auth:string|null, secret:string): string|null {
