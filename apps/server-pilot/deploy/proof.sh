@@ -7,7 +7,7 @@
 # cancel: cancels the stay left by `proof.sh create` for the same property and sha, fresh readback.
 # Each then installs `CANARY PASS <workflow> <property> <sha>` and its writers.json row
 # (deploy/install-canary-ledger.mjs) unless --no-ledger is given.
-# Run order: create, guest_profile_create, amend, attach, addons, optional amend_adults, cancel.
+# Run order: create, guest_profile_create, amend and attach in either order, addons, optional amend_adults, cancel.
 # Amend changes Booker Contact; amend_adults separately changes 1 -> 2 on HRCEN CMPRO with Check Availability.
 # amend_adults requires --no-ledger and a passing contact proof; its failure cannot revoke that proof.
 # Other follow-ups only target the stay this harness created. Each prepares unsaved, saves once,

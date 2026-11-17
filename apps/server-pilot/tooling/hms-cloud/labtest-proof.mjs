@@ -318,7 +318,13 @@ async function main() {
       const order = ['amend', 'attach', 'addons', 'amend_adults'];
       assert(!journal.workflowHolds?.[args.stage], 'JOURNAL_HELD');
       assert(!journal.workflowProofs?.[args.stage] && !(args.stage === 'guest_profile_create' ? [] : order.slice(order.indexOf(args.stage) + 1))
-        .some(workflow => journal.workflowProofs?.[workflow]), 'WORKFLOW_ALREADY_RUN_OR_OUT_OF_ORDER');
+        .some(workflow => !(args.stage === 'amend' && workflow === 'attach') && journal.workflowProofs?.[workflow]),
+      'WORKFLOW_ALREADY_RUN_OR_OUT_OF_ORDER');
+      if (args.stage === 'amend' && Object.hasOwn(journal.workflowProofs ?? {}, 'attach')) {
+        assert(!journal.workflowHolds?.attach, 'JOURNAL_HELD');
+        const { verifyLabtestWorkflowProof } = await load('tooling/hms-cloud/labtest-proof-workflows.mjs');
+        verifyLabtestWorkflowProof(journal, 'attach', journal.workflowProofs.attach);
+      }
     }
     const cloud = await load('tooling/hms-cloud/cloud-session.mjs');
     const credential = await load('tooling/hms-cloud/credential-version.mjs');
