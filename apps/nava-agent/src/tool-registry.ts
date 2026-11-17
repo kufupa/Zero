@@ -14,7 +14,7 @@ export type ToolDefinition = { name:string; description:string; input_schema:{ty
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>Promise<ToolResult>};
-export type NativeAdmission = {withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:()=>Promise<T>, scope?:'quote'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>};
+export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:()=>Promise<T>, scope?:'quote'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};

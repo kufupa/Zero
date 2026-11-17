@@ -104,7 +104,7 @@ export function createNativeAdmission():NativeAdmission {
       },{databaseUrl,readOnly,priority:'staff',signal});
     });
   }
-  return {withRead:(property,signal,work,scope)=>withLease(property,signal,true,work,scope),withSave:(property,signal,work)=>withLease(property,signal,false,work)};
+  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope)=>withLease(property,signal,true,work,scope),withSave:(property,signal,work)=>withLease(property,signal,false,work)};
 }
 
 async function pendingInput(sessionId:string,deliveryId?:string):Promise<PendingInput|null> {
@@ -178,7 +178,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       finish:async(id,reason)=>{checkSession(id);await deps.store.finish(lease,reason);},
     });
     if(state.pendingToolUseId) {
-      const save=await deps.saveQueue?.claimApprovedSave(lease,workflow=>registry.supportsSave(workflow));
+      const save=await deps.saveQueue?.claimApprovedSave(lease,workflow=>registry.supportsSave(workflow) && (deps.native.available?.() ?? true));
       if(save) {
         if(save.sessionId!==sessionId || save.toolUseId!==state.pendingToolUseId || save.mode!==mode || save.propertyCode!==session.property_code) throw new Error('SAVE_BINDING_MISMATCH');
         const outcome:ToolResult=save.completed ?? (save.dispatch==='dispatched' ? {ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before retry.',retryable:false,outcome:'uncertain'}} : save.preflightFailure ?? await registry.save(save,{sessionId,mode,signal:abort.signal,markDispatched:details=>deps.store.markDispatched(lease,save.proposalId,save.executionId,details)}));
