@@ -1,5 +1,5 @@
 /** @vitest-environment happy-dom */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteEditor } from '../components/reservation-pane/editors/quote-editor';
 import { CreateEditor } from '../components/reservation-pane/editors/create-editor';

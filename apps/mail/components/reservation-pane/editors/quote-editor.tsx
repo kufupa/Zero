@@ -351,7 +351,7 @@ function MoneyRequests({ editor, bodyPath, groups, rows }: { editor: Editor; bod
         </label>
         <fieldset className={styles.targetFields} data-field-path={`${path}/scope`}>
           <legend className={styles.countHeading}><span>Applies to</span>
-            <span className={styles.inlineButtons}><FieldReview editor={editor} path={`${path}/scope`} label="rooms for this extra" requireReview disabled={applyingExtra} />
+            <span className={styles.inlineButtons}><FieldReview editor={editor} path={`${path}/scope`} label="how this extra applies" requireReview disabled={applyingExtra} />
               <span data-field-path={`${path}/targetRefs`}><FieldReview editor={editor} path={`${path}/targetRefs`} label="rooms for this extra" requireReview disabled={applyingExtra} /></span></span></legend>
           {groups.map((group, groupIndex) => { const id = text(group.id); return <label key={id || groupIndex}>
             <input type="checkbox" disabled={editor.view.busy || applyingExtra} checked={applied.includes(id)}
