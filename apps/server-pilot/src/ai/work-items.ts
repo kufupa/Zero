@@ -2791,15 +2791,15 @@ function needsYouV2Admission(draft: ReservationWorkflowV2Draft | null, isPreStay
 }
 
 /**
- * Work items in this transport with the given statuses, the Needs-you list. On legacy kinds a stored origin of
- * `person` means human-written and `system_notice` means automated and excluded; a missing extraction or origin
- * counts as human-written. Canonical V2 drafts are admitted on their own door and are never hidden by that model
- * origin. Only quote, booking, amendment, cancellation and voucher_pop items are included, plus self-prestay mail whose
- * stored read left a separate ask grounded or could not prove none: an unread, stale or unverified pre-stay read stays
- * visible for review, only its own adjudicated no-ask verdict is dropped. Spam, trashed and deleted threads are left out.
- * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
- * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
- * NEEDS_YOU_CHIPS order, then the oldest mail first.
+ * Work items in this transport with the given statuses, the Needs-you list. On legacy kinds, deterministic source
+ * policy (`classifyMailSource`) decides whether a message is direct/reviewable or a skipped channel/system notice,
+ * rather than trusting model-derived `origin`. Canonical V2 drafts are admitted on their own door and are never
+ * hidden by model origin. Only quote, booking, amendment, cancellation and voucher_pop items are included, plus
+ * self-prestay mail whose stored read left a separate ask grounded or could not prove none: an unread, stale or
+ * unverified pre-stay read stays visible for review, only its own adjudicated no-ask verdict is dropped. Spam,
+ * trashed and deleted threads are left out. Queued and In HMS come from the item's latest run on the HMS lane only
+ * (KTD14), so a follow-up or extraction run never moves the chip. Otherwise a review item shows Review, and anything
+ * else needs her. Rows sort by chip in NEEDS_YOU_CHIPS order, then the oldest mail first.
  */
 export async function listWorkItems(
   db: DB,
@@ -2808,9 +2808,6 @@ export async function listWorkItems(
   if (input.statuses.length === 0 || input.limit <= 0) return [];
   // Every candidate page must see the same order and source data.
   return db.transaction(async (tx) => {
-    // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
-    // Coalesce keeps missing origin human-written.
-    const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
     const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
     const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
       .mapWith(Number);
@@ -2846,7 +2843,6 @@ export async function listWorkItems(
         receivedAt: message.receivedAt,
         confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
         extractionPayload: mailExtraction.payload,
-        origin: origin.as('origin'),
         sourceBody: message.textBody,
         sourceHtml: message.htmlBody,
         state: workItem.state,
@@ -2873,7 +2869,7 @@ export async function listWorkItems(
           inArray(workItem.status, [...input.statuses]),
           or(
             ...(preStayCandidate ? [preStayCandidate] : []),
-            and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
+            inArray(workItem.kind, [...NEEDS_YOU_KINDS]),
             and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
             // A canonical V2 draft is its own admission: every stored request kind reaches the queue.
             sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`,
@@ -2915,7 +2911,7 @@ export async function listWorkItems(
     return collectNeedsYouPages({
       limit: input.limit,
       fetchPage: fetchPageWithDrafts,
-      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, state, ...row }) => {
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, state, ...row }) => {
         const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
         const payload = parsedPayload.success ? parsedPayload.data : null;
         const sourceText = preStaySourceText(sourceBody, sourceHtml);
@@ -2955,7 +2951,7 @@ export async function listWorkItems(
           if (
             row.kind === 'other'
             || !NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])
-            || rowOrigin === 'system_notice'
+            || classifyMailSource({ fromAddress: row.sender, subject: row.subject, bodyText: sourceText }).kind !== 'direct'
           ) {
             return null;
           }
