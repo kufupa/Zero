@@ -39,7 +39,10 @@ export const fieldSpecSchema = z.object({
   evidence: z.array(z.object({ message_id: id, attachment_id: z.string().nullable(), quote: z.string().nullable() })),
 });
 const artifactSchema = z.object({ id, name: z.string(), mime_type: z.string(), url: z.string() });
-const nativeDisplayBase = { id, booking_id: z.string().nullable(), label: z.string(), native_path: z.string() };
+const nativeDisplayBase = {
+  id, booking_id: z.string().nullable(), label: z.string(), native_path: z.string(),
+  quote_id: id.optional(), group_id: id.optional(),
+};
 export const nativeDisplayRowSchema = z.discriminatedUnion('kind', [
   z.object({ ...nativeDisplayBase, kind: z.literal('text'), value: z.string().nullable() }),
   z.object({ ...nativeDisplayBase, kind: z.literal('code'), code: z.string().nullable(), meaning: z.string().nullable() }),
@@ -81,6 +84,7 @@ export const eventSchema = z.object({
   session_id: id, proposal_id: z.string().nullable(), payload: jsonSchema,
 });
 export const acceptedStageSchema = z.object({ proposal_id: id, revision, phase: z.literal('staging') });
+export const acceptedQuoteSchema = z.object({ job_id: id, proposal_id: id, revision, quote_id: id, phase: z.literal('staging') });
 export const acceptedGoSchema = z.object({ proposal_id: id, revision, phase: z.literal('saving') });
 export const apiErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string(), details: jsonSchema }) });
 
@@ -96,6 +100,7 @@ export type ThreadSnapshot = z.infer<typeof threadSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 export type NavaEvent = z.infer<typeof eventSchema>;
 export type AcceptedStage = z.infer<typeof acceptedStageSchema>;
+export type AcceptedQuote = z.infer<typeof acceptedQuoteSchema>;
 export type AcceptedGo = z.infer<typeof acceptedGoSchema>;
 export type Change =
   | { op: 'add' | 'replace'; path: string; value: Json }

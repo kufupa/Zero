@@ -1,0 +1,23 @@
+.choiceRow {
+  display: flex;
+  min-width: 0;
+}
+
+.choiceRow input {
+  flex: 1 1 0;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.choiceRow .choicePicker {
+  flex: 0 0 auto;
+  width: 34px;
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  padding: 0 6px;
+  font-size: 0;
+}
+
+.choiceRow option { font-size: 12px; }

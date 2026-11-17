@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import {
-  acceptedGoSchema, acceptedStageSchema, apiErrorSchema, capabilitiesSchema, eventSchema,
+  acceptedGoSchema, acceptedQuoteSchema, acceptedStageSchema, apiErrorSchema, capabilitiesSchema, eventSchema,
   proposalSchema, threadInputSchema, threadSnapshotSchema,
 } from './wire';
 import type {
-  AcceptedGo, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, ThreadInput, ThreadSnapshot,
+  AcceptedGo, AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, ThreadInput, ThreadSnapshot,
 } from './wire';
 
 export type RequestOptions = { signal?: AbortSignal };
@@ -17,6 +17,7 @@ export type NavaApi = {
   patchProposal: (request: RevisionRequest & { changes: Change[] }) => Promise<Proposal>;
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
+  quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
   go: (request: RevisionRequest & { idempotencyKey: string }) => Promise<AcceptedGo>;
   reconcile: (request: RevisionRequest) => Promise<void>;
@@ -92,7 +93,7 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
 
   async function* events(threadId: string, afterSequence: number, options?: RequestOptions): AsyncGenerator<NavaEvent> {
     const response = await request(`/threads/${pathId(threadId)}/events?after_sequence=${encodeURIComponent(afterSequence)}`, {
-      headers: { Accept: 'text/event-stream' }, signal: options?.signal,
+      headers: { Accept: 'text/event-stream', 'Last-Event-ID': String(afterSequence) }, signal: options?.signal,
     });
     if (!response.body) throw new NavaApiError('Nava event stream is unavailable.', 'invalid_response');
     const reader = response.body.getReader();
@@ -150,6 +151,18 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
     }),
     undo: request => json(`${proposalPath(request.proposalId)}/undo`, proposalSchema, revisionBody(request)),
     redo: request => json(`${proposalPath(request.proposalId)}/redo`, proposalSchema, revisionBody(request)),
+    quote: async ({ proposalId, expectedRevision, quoteId, idempotencyKey, signal }) => {
+      const response = await request(`${proposalPath(proposalId)}/quote`, body({
+        expected_revision: expectedRevision, quote_id: quoteId, idempotency_key: idempotencyKey,
+      }, signal));
+      const payload: unknown = await response.json().catch(() => null);
+      const parsed = acceptedQuoteSchema.safeParse(payload);
+      if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== proposalId ||
+          parsed.data.revision !== expectedRevision || parsed.data.quote_id !== quoteId) {
+        throw new NavaApiError('Nava returned an invalid quote response.', 'invalid_response', response.status);
+      }
+      return parsed.data;
+    },
     stage: request => json(`${proposalPath(request.proposalId)}/stage`, acceptedStageSchema, revisionBody(request)),
     go: request => {
       if (!config.staffGoEnabled) throw new NavaApiError('Staff authorization is not ready.', 'unavailable');

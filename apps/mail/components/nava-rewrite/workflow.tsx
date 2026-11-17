@@ -7,6 +7,7 @@ import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
 import type { FieldSpec, NativeDisplayRow, Proposal } from './wire';
 import styles from './pane.module.css';
+import quoteStyles from './quote.module.css';
 
 export type DraftValue = string | boolean;
 type ReviewControl = { checked: boolean; actionLabel: string; disabled?: boolean };
@@ -88,6 +89,37 @@ function stayLabel(proposal: Proposal, bookingId: string) {
   return [`Stay ${index + 1}`, booking.property_code, booking.reservation_id && `Reservation ${booking.reservation_id}`].filter(Boolean).join(' · ');
 }
 
+function quoteGroups(proposal: Proposal) {
+  const quotes = proposal.actions.filter(action => action.type === 'quote');
+  return proposal.actions.flatMap((action, actionIndex) => {
+    if (action.type !== 'quote') return [];
+    const details = action.details;
+    if (!details || typeof details !== 'object' || Array.isArray(details)) return [];
+    const quoteId = typeof details.quote_id === 'string' ? details.quote_id : undefined;
+    if (!Array.isArray(details.groups)) return [];
+    const quote = quotes.length > 1 ? `Quote ${quotes.indexOf(action) + 1}` : undefined;
+    return details.groups.map((group, groupIndex) => ({
+      key: `${actionIndex}/${groupIndex}`,
+      actionIndex,
+      groupIndex,
+      quoteId,
+      groupId: group && typeof group === 'object' && !Array.isArray(group) && typeof group.group_id === 'string' ? group.group_id : undefined,
+      label: [quote, `Room group ${groupIndex + 1}`].filter(Boolean).join(' · '),
+    }));
+  });
+}
+
+function quoteRowContext(proposal: Proposal, row: NativeDisplayRow) {
+  if (!row.quote_id && !row.group_id) return undefined;
+  const groups = quoteGroups(proposal).filter(group =>
+    (!row.quote_id || group.quoteId === row.quote_id) && (!row.group_id || group.groupId === row.group_id)
+  );
+  if (row.group_id) return groups.length === 1 ? groups[0]?.label : 'Room group unavailable';
+  if (!groups.length) return 'Quote details unavailable';
+  const quoteCount = proposal.actions.filter(action => action.type === 'quote').length;
+  return quoteCount > 1 ? groups[0]?.label.split(' · ')[0] : undefined;
+}
+
 function ActionContext({ proposal }: { proposal: Proposal }) {
   if (proposal.actions.length === 0 && proposal.bookings.length === 0) return null;
   return <PaneSection title="Actions and stays">
@@ -104,9 +136,10 @@ function ActionContext({ proposal }: { proposal: Proposal }) {
 
 function NativeRows({ rows, proposal }: { rows: NativeDisplayRow[]; proposal: Proposal }) {
   return <dl className={styles.nativeRows}>{rows.map(row => {
-    const context = row.booking_id === null ? null : stayLabel(proposal, row.booking_id);
+    const context = proposal.workflow === 'quote' ? quoteRowContext(proposal, row) : undefined;
+    const bookingContext = row.booking_id === null ? null : stayLabel(proposal, row.booking_id);
     return <div className={styles.nativeRow} key={row.id}>
-      <dt>{row.label}{context && <span>{context}</span>}</dt>
+      <dt>{row.label}{(context || bookingContext) && <span>{context || bookingContext}</span>}</dt>
       <dd><NativeValue row={row} /></dd>
     </div>;
   })}</dl>;
@@ -118,12 +151,18 @@ function fieldContext(proposal: Proposal, path: string) {
   const index = Number(match[2]);
   if (!Number.isSafeInteger(index)) return undefined;
   if (match[1] === 'bookings' && proposal.bookings[index]) return `Stay ${index + 1}`;
-  if (match[1] === 'actions' && proposal.actions[index]) return `Action ${index + 1}`;
+  if (match[1] === 'actions' && proposal.actions[index]) {
+    if (proposal.workflow !== 'quote') return `Action ${index + 1}`;
+    const action = proposal.actions[index];
+    const quotes = proposal.actions.filter(item => item.type === 'quote');
+    if (action.type === 'quote') return quotes.length > 1 ? `Quote ${quotes.indexOf(action) + 1}` : undefined;
+    return proposal.actions.length > 1 ? `Request ${index + 1}` : undefined;
+  }
   return undefined;
 }
 
-function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked }: WorkflowProps & { spec: FieldSpec; locked: boolean }) {
-  const context = fieldContext(proposal, spec.path);
+function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, showContext = true }: WorkflowProps & { spec: FieldSpec; locked: boolean; showContext?: boolean }) {
+  const context = showContext ? fieldContext(proposal, spec.path) : undefined;
   const label = context ? `${spec.label} · ${context}` : spec.label;
   const resolved = resolvePointer(proposal, spec.path);
   if (resolved.kind === 'invalid') return <PaneMessage tone="error">{label}: this value is unavailable. Refresh the proposal.</PaneMessage>;
@@ -169,6 +208,55 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked }: Wo
   </div>;
 }
 
+function QuoteFields(props: WorkflowProps & { locked: boolean }) {
+  const groups = quoteGroups(props.proposal);
+  const sections: { key: string; label?: string; fields: FieldSpec[] }[] = [];
+  const grouped = new Map<string, { key: string; label?: string; fields: FieldSpec[] }>();
+  for (const spec of props.proposal.field_specs) {
+    const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)(?:\/|$)/.exec(spec.path);
+    const group = match && groups.find(item => item.actionIndex === Number(match[1]) && item.groupIndex === Number(match[2]));
+    const legacyStay = /^\/bookings\/(0|[1-9]\d*)\//.exec(spec.path) && fieldContext(props.proposal, spec.path);
+    const key = group ? `group/${group.key}` : legacyStay ? `stay/${legacyStay}` : undefined;
+    if (!key) {
+      sections.push({ key: spec.path, fields: [spec] });
+      continue;
+    }
+    let section = grouped.get(key);
+    if (!section) {
+      section = { key, label: group?.label || legacyStay || undefined, fields: [] };
+      grouped.set(key, section);
+      sections.push(section);
+    }
+    section.fields.push(spec);
+  }
+
+  return <PaneSection title="Quote details">
+    {sections.map(section => section.label
+      ? <fieldset className={quoteStyles.stay} key={section.key}>
+        <legend>{section.label}</legend>
+        {section.fields.map(spec => <Field key={spec.path} {...props} spec={spec} showContext={false} />)}
+      </fieldset>
+      : <div key={section.key}>{section.fields.map(spec => <Field key={spec.path} {...props} spec={spec} />)}</div>)}
+  </PaneSection>;
+}
+
+function QuoteRequests({ proposal }: { proposal: Proposal }) {
+  if (proposal.actions.length <= 1) return null;
+  const quotes = proposal.actions.filter(action => action.type === 'quote');
+  const groups = quoteGroups(proposal);
+  return <details className={quoteStyles.requests}>
+    <summary>Requests in this email</summary>
+    <ol>{proposal.actions.map((action, index) => {
+      const count = groups.filter(group => group.actionIndex === index).length;
+      return <li key={action.id}>
+        <strong>{action.type === 'quote' ? quotes.length > 1 ? `Quote ${quotes.indexOf(action) + 1}` : 'Quote' : `Request ${index + 1}${action.type && ` · ${action.type.replace(/[_-]/g, ' ')}`}`}</strong>
+        {action.type === 'quote' && count > 0 && <p>{count} {count === 1 ? 'room group' : 'room groups'}</p>}
+        {action.booking_ids.length > 0 && <ul>{action.booking_ids.map((id, bookingIndex) => <li key={`${id}-${bookingIndex}`}>{stayLabel(proposal, id)}</li>)}</ul>}
+      </li>;
+    })}</ol>
+  </details>;
+}
+
 function useLongWait(proposal: Proposal, operationStartedAt: number | undefined) {
   const [longWait, setLongWait] = useState(false);
   useEffect(() => {
@@ -199,7 +287,7 @@ export function Workflow(props: WorkflowProps) {
   const { proposal } = props;
   const longWait = useLongWait(proposal, props.operationStartedAt);
   const locked = props.busy || uncertain(proposal) || ['prefilling', 'staging', 'saving', 'done'].includes(proposal.phase);
-  const phaseMessage = proposal.phase === 'prefilling' ? 'Nava is reading the email.'
+  const phaseMessage = proposal.phase === 'prefilling' ? proposal.workflow === 'quote' ? 'Nava is preparing the quote.' : 'Nava is reading the email.'
     : proposal.phase === 'staging' ? 'Checking in Infor…'
     : proposal.phase === 'saving' ? 'Waiting for Infor and readback…' : null;
   const stageCurrent = proposal.stage?.revision === proposal.revision && Object.keys(props.drafts).length === 0;
@@ -209,18 +297,23 @@ export function Workflow(props: WorkflowProps) {
   }[proposal.disposition];
 
   return <>
-    {phaseMessage && <PaneMessage><span role="status">{phaseMessage}{longWait && ' This is taking longer than expected. Please wait.'}</span></PaneMessage>}
+    {phaseMessage && <PaneMessage><span role="status">{phaseMessage}{longWait && (proposal.workflow === 'quote' && proposal.phase === 'prefilling' ? ' This is taking longer than expected. Nava is still working on the quote.' : ' This is taking longer than expected. Please wait.')}</span></PaneMessage>}
     {uncertain(proposal) && !proposal.error && <PaneMessage>Infor has not confirmed the outcome. Check Infor before trying again.</PaneMessage>}
     {proposal.error && <PaneMessage tone="error">{errorMessage(proposal)}</PaneMessage>}
     {dispositionMessage && <PaneMessage>{dispositionMessage}</PaneMessage>}
     {proposal.reason && <PaneMessage>{proposal.reason}</PaneMessage>}
     {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{proposal.missing.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
     {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
-    <ActionContext proposal={proposal} />
-    {proposal.field_specs.length > 0 && <PaneSection title="Details">
+    {proposal.workflow !== 'quote' && <ActionContext proposal={proposal} />}
+    {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
+    {proposal.workflow !== 'quote' && proposal.field_specs.length > 0 && <PaneSection title="Details">
       {proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}
     </PaneSection>}
-    {proposal.display_rows.length > 0 && <PaneSection title="Infor details"><NativeRows rows={proposal.display_rows} proposal={proposal} /></PaneSection>}
+    {proposal.workflow === 'quote' && <QuoteRequests proposal={proposal} />}
+    {proposal.display_rows.length > 0 && <PaneSection title="Infor details">
+      {proposal.workflow === 'quote' && <p className={quoteStyles.resultNote}>Changing quote details does not update these results.</p>}
+      <NativeRows rows={proposal.display_rows} proposal={proposal} />
+    </PaneSection>}
     {proposal.stage && <PaneSection title={stageCurrent ? 'Checked details' : 'Earlier check'}>
       {!stageCurrent && <p>Details have changed since this check.</p>}
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>

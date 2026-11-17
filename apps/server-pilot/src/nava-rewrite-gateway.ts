@@ -13,7 +13,7 @@ const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: 'POST', path: new RegExp(`^/api/nava/v1/threads/${resourceId}/messages$`) },
   { method: 'GET', path: /^\/api\/nava\/v1\/capabilities$/ },
   { method: 'PATCH', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}$`) },
-  { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|stage|go|reconcile)$`) },
+  { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|stage|go|reconcile)$`) },
   { method: 'GET', path: new RegExp(`^/api/nava/v1/artifacts/${resourceId}$`) },
 ];
 
