@@ -7,6 +7,7 @@ import { sql, uid, json, event } from './db.js';
 import { tools, type ThreadInput } from './schema.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
+import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
 
 export type RuntimeProvider = 'bedrock' | 'cma';
 export function runtimeProvider(): RuntimeProvider {
@@ -140,13 +141,15 @@ export async function deliverPending(sessionId:string) {
   });
 }
 export async function snapshot(threadId:string) {
-  const [thread]=await sql`SELECT * FROM nava_agent.mail_thread WHERE id=${threadId}`;
-  if (!thread) return null;
-  const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${threadId} ORDER BY received_at,id`;
-  const [session]=await sql`SELECT * FROM nava_agent.agent_session WHERE thread_id=${threadId}`;
-  const proposals=await sql`SELECT * FROM nava_agent.proposal WHERE thread_id=${threadId} ORDER BY created_at`;
-  const [sequence]=session ? await sql`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${session.id}` : [{n:'0'}];
-  return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposalWire),event_sequence:Number(sequence.n)};
+  return sql.begin('isolation level repeatable read read only',async tx=>{
+    const [thread]=await tx`SELECT * FROM nava_agent.mail_thread WHERE id=${threadId}`;
+    if (!thread) return null;
+    const messages=await tx`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${threadId} ORDER BY received_at,id`;
+    const [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE thread_id=${threadId}`;
+    const proposals=await tx`SELECT * FROM nava_agent.proposal WHERE thread_id=${threadId} ORDER BY created_at`;
+    const [sequence]=session ? await tx`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${session.id}` : [{n:'0'}];
+    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposalWire),event_sequence:Number(sequence.n)};
+  });
 }
 export function proposalWire(p:Record<string,any>) {
   const stage=p.stage && p.stage.state!=='queued' ? {
@@ -161,11 +164,13 @@ export function proposalWire(p:Record<string,any>) {
   } : null;
   const rawError=p.execution?.error ?? p.execution?.go?.completion?.toolResult?.error;
   const uncertain=p.phase==='uncertain' || rawError?.outcome==='uncertain';
+  const prepare=p.workflow==='create' && !uncertain && p.phase!=='error' ? prepareRejection.safeParse(p.execution?.error?.prepare) : null;
   const error=rawError || uncertain ? {
     code:typeof rawError?.code==='string' && /^[A-Z_0-9]+$/.test(rawError.code)?rawError.code:'HMS_OPERATION_FAILED',
     outcome:uncertain?'uncertain':'known',
-    message:uncertain?'HMS Save outcome is unconfirmed.':p.phase==='error'?'HMS Save did not complete.':'HMS Prepare did not complete.',
+    message:uncertain?'HMS Save outcome is unconfirmed.':p.phase==='error'?'HMS Save did not complete.':prepare?.success?describePrepareRejection(prepare.data):'HMS Prepare did not complete.',
     recovery:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
+    ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
   return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }

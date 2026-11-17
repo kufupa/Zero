@@ -4,6 +4,7 @@ import { sql, json, uid } from './db.js';
 import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { proposalDraft } from './schema.js';
 import { createPilotRequested, hmsSaveEnabled } from './hms-mode.js';
+import { describePrepareRejection, readPrepareRejection } from './prepare-feedback.js';
 import type { LeaseFence, RegistryContext, ToolRegistry, ToolResult } from './tool-registry.js';
 
 export const manualLabtestTarget = z.object({
@@ -91,7 +92,8 @@ export async function runCreateStage(lease: LeaseFence, registry: ToolRegistry, 
   }));
   const stage = result?.ok ? {state:'prepared',revision:job.revision,summary:['HMS Prepare complete. Nothing saved.'],
     native_result:rate ?? null,display_rows:displayRows} : null;
-  const error = result?.ok ? null : {code:result?.error?.code ?? 'CREATE_PREPARE_FAILED',message:'HMS Prepare did not complete.',
+  const prepare = readPrepareRejection(result?.data, result?.error?.code);
+  const error = result?.ok ? null : {code:result?.error?.code ?? 'CREATE_PREPARE_FAILED',message:describePrepareRejection(prepare),prepare,
     outcome:'known',recovery:'Review the booking fields and run Prepare again.'};
   await sql.begin(async tx => {
     const [owner] = await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
