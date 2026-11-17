@@ -226,12 +226,6 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   const reference = { sessionId: context.sessionId, ...request.ref };
   try {
     if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
-    const resolver = context.resolveAttachment;
-    const attachment = await bounded(context, signal => resolver(reference, { signal }));
-    context.signal?.throwIfAborted();
-    if (!matchesAttachment(reference, attachment)) return failure('ATTACHMENT_UNAVAILABLE', 'The selected session attachment is not an available PDF.');
-    const bytes = attachment.bytes;
-    const sha256 = createHash('sha256').update(bytes).digest('hex');
     const native = await nativeModules();
     const property = native.getPropertyRegistration(request.propertyCode);
     if (!property?.active) return failure('PROPERTY_UNAVAILABLE', 'The selected HMS property is unavailable.');
@@ -244,6 +238,12 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     }));
     const documents = { coverage: target.documents.coverage, capture_scope: target.documents.captureScope,
       documents: loaded, listed_documents: loaded.length };
+    const resolver = context.resolveAttachment;
+    const attachment = await bounded(context, signal => resolver(reference, { signal }));
+    context.signal?.throwIfAborted();
+    if (!matchesAttachment(reference, attachment)) return failure('ATTACHMENT_UNAVAILABLE', 'The selected session attachment is not an available PDF.');
+    const bytes = attachment.bytes;
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
     if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
     const staged = await native.prepareCloudPaneAttach({ target: { propertyCode: request.propertyCode },
       transportId: property.mailboxTransportId, credentialLease: context.credentialLease, signal: context.signal,
