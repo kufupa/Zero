@@ -39,7 +39,12 @@ try {
   const snapshot = input.messages.find(row => row.id === input.source.messageId);
   if (!selected || selected.direction !== 'inbound' || selected.history_only || !snapshot || ['subject', 'textBody', 'htmlBody'].some((key, index) =>
     (snapshot[key] ?? '') !== (selected[['subject', 'text_body', 'html_body'][index]] ?? ''))) throw Error('live_source_changed');
-  if (input.messages.some(row => row.threadId === input.source.threadId && !current.messages.some(liveRow => liveRow.id === row.id)))
+  if (input.messages.some(row => {
+    if (row.threadId !== input.source.threadId) return false;
+    const liveRow = current.messages.find(message => message.id === row.id);
+    return !liveRow || ['subject', 'textBody', 'htmlBody'].some((key, index) =>
+      (row[key] ?? '') !== (liveRow[['subject', 'text_body', 'html_body'][index]] ?? ''));
+  }))
     throw Error('live_thread_changed');
   snapshot.subject = selected.subject; snapshot.textBody = selected.text_body; snapshot.htmlBody = selected.html_body;
   const { staffQuoteSourceHash } = await load('src/ai/staff-quote-workflow.ts');

@@ -55,6 +55,11 @@ function argumentsFor(args) {
   return options;
 }
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+function errorReason(error, stage) {
+  const message = error instanceof Error ? error.message.replace(/\s+/g, ' ').trim() : '';
+  return message && !/password|secret|api.?key|token|bearer|authorization/i.test(message)
+    ? message.slice(0, 300) : `${stage} failed${error?.name && error.name !== 'Error' ? ` (${error.name})` : ''}`;
+}
 const addresses = list => (list ?? []).map(value => typeof value === 'string' ? value : value?.email).filter(value => typeof value === 'string' && value.trim());
 const body = row => canonicalSourceBodyText({ textBody: row.textBody, htmlBody: row.htmlBody });
 const instant = row => row.eventAt ?? row.receivedAt ?? row.sentAt ?? row.createdAt;
@@ -249,8 +254,8 @@ export async function native(payload, directory) {
     throw error;
   } finally {
     await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
-    for (const file of info?.files ?? []) if (file.uri === `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/${file.name}`)
-      await exec('aws', ['s3', 'rm', file.uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+    await exec('aws', ['s3', 'rm', `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/`, '--recursive',
+      '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
     if (remoteFinished) await sendSsm([`sudo -u ubuntu rm -rf ${remote}`], 60).catch(() => {});
     await rm(temp, { recursive: true, force: true });
   }
@@ -301,10 +306,15 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
       receivedAt: item.receivedAt ? new Date(item.receivedAt) : null, sentAt: item.sentAt ? new Date(item.sentAt) : null,
       to: addresses(item.to), cc: addresses(item.cc), bcc: addresses(item.bcc),
     }));
-    result.triage = await classifyWorkflowMailTriage({ transportId: 'transport-centurion', threadId: row.threadId,
-      triggerMessageId: row.id, mailboxAddress: loaded.mailboxAddress, subject: selected.subject,
-      from: selected.fromAddress, body: selected.bodyText, messages: triageMessages, asOf: source.arrivedAt,
-      modelId: 'gpt-6-luna', promptVersion: 'triage-v6' }, adapters.adapter);
+    try {
+      result.triage = await classifyWorkflowMailTriage({ transportId: 'transport-centurion', threadId: row.threadId,
+        triggerMessageId: row.id, mailboxAddress: loaded.mailboxAddress, subject: selected.subject,
+        from: selected.fromAddress, body: selected.bodyText, messages: triageMessages, asOf: source.arrivedAt,
+        modelId: 'gpt-6-luna', promptVersion: 'triage-v6' }, adapters.adapter);
+    } catch (error) {
+      if (options.workflow === 'triage') throw error;
+      result.triage = { error: errorReason(error, 'triage') };
+    }
     timings.triage = (performance.now() - at) / 1000;
     if (options.workflow === 'triage') {
       const classification = result.triage.output;
@@ -333,15 +343,13 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
     result.extracted = { ...prefill, lookups: prefillLookups };
     if (!prefill.proposal.content.requests.some(request => request.kind === options.workflow)) {
       const failure = prefill.errors.find(error => error.stage === 'extract' && !error.code.startsWith('guard_'));
-      result.status = failure ? 'FAIL' : 'NEEDS-STAFF';
-      result.reason = failure?.message ?? `No ${options.workflow} request extracted`; return { result };
+      result.status = failure || result.triage?.error ? 'FAIL' : 'NEEDS-STAFF';
+      result.reason = failure?.message ?? result.triage?.error ?? `No ${options.workflow} request extracted`; return { result };
     }
     return { result, source, prefill, thread };
   } catch (error) {
     timings[stageName] = (performance.now() - at) / 1000;
-    const message = error instanceof Error ? error.message : '';
-    result.reason = /^[A-Za-z0-9_ :.,/-]{1,200}$/.test(message) && !/password|secret|api.?key|token/i.test(message)
-      ? message : `${stageName} failed`;
+    result.reason = errorReason(error, stageName);
   }
   finally { timings.total = (performance.now() - started) / 1000; }
   return { result };
@@ -357,6 +365,7 @@ async function prepareEmail(entry, options, outputDir) {
     const prepared = stages.filter(stage => stage.name === 'prepare');
     const artifacts = stages.filter(stage => stage.name === 'artifacts');
     const failed = stages.find(stage => ['failed', 'partial'].includes(stage.result?.status) || stage.result?.quotes?.some(quote => quote.status === 'failed'));
+    const triageNeedsStaff = result.triage?.output?.abstainReason || result.triage?.output?.humanAction === 'review_required' || result.triage?.output?.automationState === 'unknown';
     const incomplete = stages.find(stage => !['ok', 'priced', 'prepared', 'succeeded'].includes(stage.result?.status));
     const complete = prepared.length > 0 && prepared.every(stage => stage.result?.status === 'prepared') &&
       (options.workflow !== 'quote' || artifacts.length === prepared.length && artifacts.every(stage => stage.result?.status === 'succeeded'));
@@ -364,10 +373,11 @@ async function prepareEmail(entry, options, outputDir) {
     const hasArtifacts = options.workflow !== 'quote' || artifacts.every(stage =>
       (stage.result?.unavailableInventory ? ['cover.json'] : ['cover.json', 'quote.pdf', 'quote.xlsx'])
         .every(file => files.has(`${stage.requestId}.${file}`)));
-    result.status = failed || complete && !hasArtifacts ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length ? 'PASS' : 'NEEDS-STAFF';
+    result.status = failed || complete && !hasArtifacts || result.triage?.error ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length && !triageNeedsStaff ? 'PASS' : 'NEEDS-STAFF';
     result.reason = failed?.result?.issue ?? failed?.result?.quotes?.find(quote => quote.status === 'failed')?.issue ??
       (failed?.result?.failures?.join('; ') || undefined) ??
-      (complete ? prefill.errors.map(error => error.message).join('; ') || (prefill.status === 'ready' ? '' : 'Prefill needs review') :
+      result.triage?.error ??
+      (complete ? prefill.errors.map(error => error.message).join('; ') || (triageNeedsStaff ? 'Triage requires staff review' : prefill.status === 'ready' ? '' : 'Prefill needs review') :
         incomplete?.result?.issue ?? 'Staff selection or review required');
     if (incomplete?.result?.fields?.length) result.reason += `: ${incomplete.result.fields.join(', ')}`;
     if (result.status === 'PASS' && artifacts.some(stage => stage.result?.unavailableInventory)) result.reason = 'HMS unavailable; unsent decline prepared';
