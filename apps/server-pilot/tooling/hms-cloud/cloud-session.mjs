@@ -1080,7 +1080,9 @@ export async function withCloudCredentialLease(propertyCode, operation, options 
   options.signal?.throwIfAborted();
   const inherited = currentCloudCredentialLease(propertyCode);
   if (inherited) {
-    await credentialLeases.get(inherited)?.assertRunLive?.();
+    const state = credentialLeases.get(inherited);
+    if (state.readOnly && options.readOnly !== true) throw new Error('HMS_CREDENTIAL_EXCLUSIVE_LEASE_REQUIRED');
+    await state.assertRunLive?.();
     const result = await operation(inherited);
     options.signal?.throwIfAborted();
     inherited.signal.throwIfAborted();

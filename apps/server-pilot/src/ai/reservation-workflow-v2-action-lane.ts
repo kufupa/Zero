@@ -12,6 +12,20 @@ import { aiWorkflowRun } from '../db/schema/mail.js';
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
 type ActionCursor = ReservationWorkflowV2ItemInput & { transportId: string; jobFence?: AiRunFence; signal?: AbortSignal; laneToken?: string };
+/** Only paths known to avoid target locks may borrow a shared credential. */
+export function reservationActionCredentialReadOnly(method: string, workflow: string | undefined, nativeFieldPath: unknown): boolean {
+  if (!workflow || !['quote', 'create', 'filing', 'cancel', 'amend'].includes(workflow)) return false;
+  switch (method) {
+    case 'lookup': return workflow !== 'amend' || typeof nativeFieldPath !== 'string';
+    case 'prepare': return workflow !== 'amend';
+    case 'guestProfileOptions':
+    case 'prepareGuestProfile':
+    case 'lookupServices':
+    case 'verifyNativeLead': return true;
+    default: return false;
+  }
+}
+
 export const RESERVATION_ACTION_FENCE_KEY = '__reservationActionLane';
 const actionScope = new AsyncLocalStorage<ActionCursor>();
 const lanePools = new Map<string, { client: ReturnType<typeof postgres>; active: Set<AbortController> }>();

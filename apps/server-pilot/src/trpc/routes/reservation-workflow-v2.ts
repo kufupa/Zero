@@ -3,7 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { withCloudCredentialLease, withCloudCredentialPriority, withCloudCredentialRun } from '../../../tooling/hms-cloud/cloud-session.mjs';
-import { withReservationActionCursor, withReservationActionLane } from '../../ai/reservation-workflow-v2-action-lane.js';
+import { reservationActionCredentialReadOnly, withReservationActionCursor, withReservationActionLane } from '../../ai/reservation-workflow-v2-action-lane.js';
 import { enqueueReservationWarmup, type ReservationWarmupRequest } from '../../ai/reservation-workflow-v2-warmup.js';
 import type { AiRunFence } from '../../ai/run-ledger.js';
 import { getDb } from '../../db/client.js';
@@ -224,10 +224,12 @@ return mailboxProcedure.input(schema).use(async ({ ctx, path, type, input, signa
     const serial = () => withReservationActionLane(cursor, () => nextFor(), { acquisitionSignal: signal });
     if (!method || !nativeMethods.has(method)) return serial();
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, action.data.source, action.data.propertySwitch);
+    const requestId = typeof action.data.requestId === 'string' ? action.data.requestId : undefined;
+    const workflow = validation.draft.proposal.content.requests.find((request) => request.id === requestId)?.kind;
     try {
       return await withCloudCredentialPriority('staff', () => withCloudCredentialLease(scoped.property.propertyCode,
         lease => withReservationActionLane({ ...cursor, signal: lease.signal }, () => nextFor(), { acquisitionSignal: signal }),
-        { signal, priority: 'staff', readOnly: true }));
+        { signal, priority: 'staff', readOnly: reservationActionCredentialReadOnly(method, workflow, action.data.nativeFieldPath) }));
     } catch (failure) {
       return nextFor({ kind: failure instanceof Error && failure.message === 'HMS_CREDENTIAL_LEASE_CONTENDED' ? 'hms_busy' : 'system_fault' });
     }

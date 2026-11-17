@@ -343,6 +343,7 @@ export type PropertyReadLock = ReturnType<typeof createPropertyReadLock>;
 async function withCredentialBeforeLock<T>(
   input: { tenantId: string; propertyCode: string; databaseUrl: string },
   options: PropertyReadLockAcquisitionOptions,
+  readOnly: boolean,
   operation: (bounds: PropertyReadLockAcquisitionOptions) => Promise<T>,
 ): Promise<T> {
   const property = getPropertyRegistration(input.propertyCode);
@@ -353,7 +354,7 @@ async function withCredentialBeforeLock<T>(
     return await withCloudCredentialLease(input.propertyCode, async (lease) => {
       const signal = options.signal ? AbortSignal.any([options.signal, lease.signal]) : lease.signal;
       return operation({ ...options, signal });
-    }, { signal: options.signal, deadlineAt: acquisitionDeadlineAt(options), readOnly: true,
+    }, { signal: options.signal, deadlineAt: acquisitionDeadlineAt(options), readOnly,
       databaseUrl: input.databaseUrl });
   } catch (cause) {
     if (cause instanceof Error && cause.message === 'HMS_CREDENTIAL_LEASE_CONTENDED') {
@@ -390,7 +391,7 @@ export function createPostgresPropertyReadLock(input: {
     key: lock.key,
     withLock: <T>(callback: (connection: PropertyReadConnection) => Promise<T>,
       options: PropertyReadLockAcquisitionOptions = {}) =>
-      withCredentialBeforeLock(input, options, (bounds) => lock.withLock(callback, bounds)),
+      withCredentialBeforeLock(input, options, true, (bounds) => lock.withLock(callback, bounds)),
   };
 }
 
@@ -507,6 +508,6 @@ export function createPostgresTargetAliasLock(input: {
     aliases,
     withLock: <T>(callback: (connection: PropertyReadConnection, signal: AbortSignal,
       held: HeldTargetAliasLock) => Promise<T>, options: PropertyReadLockAcquisitionOptions = {}) =>
-      withCredentialBeforeLock(input, options, (bounds) => lock.withLock(callback, bounds)),
+      withCredentialBeforeLock(input, options, false, (bounds) => lock.withLock(callback, bounds)),
   };
 }

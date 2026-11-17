@@ -6,6 +6,7 @@ import {
   type PropertyReadConnection,
 } from '../src/hms/property-read-lock.js';
 import { describe, expect, it, vi } from 'vitest';
+import { reservationActionCredentialReadOnly } from '../src/ai/reservation-workflow-v2-action-lane.js';
 
 function connection(): PropertyReadConnection {
   return {
@@ -247,3 +248,25 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
   });
   return { promise, resolve };
 }
+
+
+describe('reservation action credential admission', () => {
+  it.each([
+    ['prepare', 'quote', undefined, true],
+    ['prepare', 'create', undefined, true],
+    ['prepare', 'filing', undefined, true],
+    ['prepare', 'cancel', undefined, true],
+    ['prepare', 'amend', undefined, false],
+    ['lookup', 'amend', undefined, true],
+    ['lookup', 'amend', '/track', false],
+    ['lookupServices', 'create', undefined, true],
+    ['prepareServices', 'create', undefined, false],
+    ['reconcile', 'filing', undefined, false],
+    ['reconcileServices', 'create', undefined, false],
+    ['prepare', undefined, undefined, false],
+    ['prepare', 'unknown', undefined, false],
+    ['newNativeAction', 'quote', undefined, false],
+  ])('%s %s chooses the safe credential scope', (method, workflow, field, shared) => {
+    expect(reservationActionCredentialReadOnly(method, workflow, field)).toBe(shared);
+  });
+});
