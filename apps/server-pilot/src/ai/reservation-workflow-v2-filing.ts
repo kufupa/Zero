@@ -30,6 +30,7 @@ import { bindAttachDocumentForm, parseHmsWriteForm, prepareHmsWriteSnapshot,
 import { previewFiling } from './pane-filing-preview.js';
 import { readBoundFilingSource, lockBoundFilingSource, type BoundFilingForm } from './pane-filing-source.js';
 import { findStay, paneStayLookupEnabled } from './pane-stay-lookup.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { projectCloudStayFind, runCloudStayFind } from './hms-cloud-saved-stay-find.js';
 import { paneStayCloudTargetLock, paneStayPropertyLock } from './pane-stay-save.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
@@ -660,6 +661,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
     }
     // Explicit Lookup refreshes native state; old observations remain for receipt provenance.
     let candidate: ReservationWorkflowV2Observation | undefined;
+    let loginFailure = false;
     if (confirmation) {
       const lookupArrival = linkedProof?.arrival ?? hint.bookedArrival;
       const stayRequest = { confirmation, ...(lookupArrival ? { arrival: lookupArrival } : {}) };
@@ -669,8 +671,9 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
         return lock.withLock(async () => projectCloudStayFind(stayRequest,
           await runCloudStayFind({ request: stayRequest, target: target.target, transportId: ctx.transport.id, signal: ctx.nativeBatch!.signal }), ctx.property.propertyCode),
         { ...acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS), signal: ctx.nativeBatch!.signal });
-      })().catch(() => null) : await findStay(stayRequest, { target: target.target, transportId: ctx.transport.id,
-        lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(() => null);
+      })().catch(error => { loginFailure = classifyHmsLoginOutage(error); return null; }) : await findStay(stayRequest, { target: target.target, transportId: ctx.transport.id,
+        lock: () => paneStayPropertyLock(target.target), acquisition: acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS) }).catch(error => { loginFailure = classifyHmsLoginOutage(error); return null; });
+      loginFailure ||= classifyHmsLoginOutage(found);
       const stay = found?.stay;
       const complete = found?.outcome === 'found' && Boolean(stay?.confirmation === confirmation && stay.firstName && stay.lastName && stay.status &&
         stay.arrival && stay.departure && !found.arrivalMismatch &&
@@ -697,6 +700,7 @@ export async function reservationWorkflowV2FilingLookup(ctx: ReadContext,
         ? 'filing_stay_date_mismatch' : 'filing_stay_unverified';
     lookups.push({ status: candidate?.status === 'complete' ? 'candidate' : 'needs_input', requestId: request.id,
       ...(issue ? { issue } : {}), documentId: pair.document.id,
+      ...(loginFailure ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}),
       ...(linkedProof ? { createDependency: { status: 'succeeded', ...linkedProof } } : {}),
       targetCandidate: candidate ? { observationRef: candidate.ref, stay: record(record(candidate.result)?.stay) } : null });
   }
@@ -742,7 +746,8 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
     return { status: 'needs_input', issue: 'review_one_source_pdf_and_one_saved_stay' };
   }
   const preview = await runPreview(ctx, input, selection);
-  if (preview.status !== 'ready') return { status: preview.status, issue: preview.reason };
+  if (preview.status !== 'ready') return { status: preview.status, issue: preview.reason,
+    ...(preview.failureCode ? { failureCode: preview.failureCode } : {}) };
   const selected = await selectedSource(ctx, input.source);
   if (!selected) return { status: 'refused', issue: 'source_mail_changed' };
   const expectedStay = { firstName: selection.firstName, status: selection.status, departure: selection.departure };

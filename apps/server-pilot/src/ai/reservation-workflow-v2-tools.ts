@@ -51,6 +51,7 @@ import { acquisitionWithin, assertTargetAliasesHeld, createPostgresTargetAliasLo
   PANE_PROPERTY_LOCK_WAIT_MS, isPropertyReadLockDeadline, type HeldTargetAliasLock } from '../hms/property-read-lock.js';
 import { loadNativeRatePlans, propertyConfigurationForScope } from '../hms/rate-catalogue.js';
 import { propertySwitchSchema, resolvePropertyScope } from '../hms/property-registry.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { cloudCreatePolicyIssue } from './pane-create-cloud-input.js';
 import { paneStayCloudTargetLock, paneStayCreateTarget, paneStayPropertyLock } from './pane-stay-save.js';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
@@ -1006,8 +1007,9 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
       }
       return { lookups: perAllocation, observations: nativeObservations, catalogues, sessionSafe: true };
     }, { propertyCode: ctx.property.propertyCode, transportId: ctx.transport.id, signal: ctx.nativeBatch?.signal }));
-  } catch {
-    return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null };
+  } catch (error) {
+    return { status: 'failed', issue: 'native_create_lookup_failed', requestId: input.requestId ?? null,
+      ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
   }
   if (!sessionResult || sessionResult.sessionSafe !== true || !Array.isArray(sessionResult.observations) ||
       !Array.isArray(sessionResult.lookups)) {
@@ -1031,8 +1033,9 @@ export async function reservationWorkflowV2Lookup(ctx: ReadContext,
       for (const target of uniqueTargets) nativeObservations.push(
         createCatalogueObservation(loaded.draft!, target, catalogue, 'closed_unsaved'));
     }
-  } catch {
-    return { status: 'failed', issue: 'native_catalogue_session_not_clean', requestId: input.requestId ?? null };
+  } catch (error) {
+    return { status: 'failed', issue: 'native_catalogue_session_not_clean', requestId: input.requestId ?? null,
+      ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
   }
   const observations = nativeObservations.filter((item): item is ReservationWorkflowV2Observation => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
@@ -1105,8 +1108,9 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
       observationRef: observation.ref, requestDigest: native.requestBinding?.digest,
       ratePlanAvailability: price, applied: native.applied ?? {}, commitOnlyFields: native.commitOnlyFields ?? [],
       screenshot: prepareShot };
-  } catch {
-    return { status: 'failed', issue: 'native_create_prepare_failed' };
+  } catch (error) {
+    return { status: 'failed', issue: 'native_create_prepare_failed',
+      ...(classifyHmsLoginOutage(error) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' } : {}) };
   }
 }
 
