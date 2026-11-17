@@ -130,6 +130,7 @@ export async function park(lease: Lease, toolUseId: string): Promise<void> {
     if (row.pending_tool_use_id) throw new Error('ALREADY_PARKED');
     const tool = lastTool(z.array(messageSchema).parse(row.messages), toolUseId);
     if (!tool) throw new Error('TOOL_USE_NOT_FOUND');
+    if (tool.name === 'hms_save' && !hmsSaveEnabled()) throw new Error('SAVE_DISABLED');
     const [outcome] = await tx`SELECT id FROM nava_agent.agent_event WHERE session_id=${lease.sessionId} AND kind='tool_outcome' AND payload->>'tool_use_id'=${toolUseId}`;
     if (outcome) throw new Error('TOOL_ALREADY_RESOLVED');
     if (tool.name === 'hms_save') {

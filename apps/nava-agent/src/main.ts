@@ -62,7 +62,7 @@ async function findManualLabtest(source:z.infer<typeof labtestSource>) {
   if(!hmsSaveEnabled() || !operations?.capabilities.create?.go_labtest) return null;
   const [thread]=await sql`SELECT t.id FROM nava_agent.mail_thread t JOIN nava_agent.agent_session s ON s.thread_id=t.id
     WHERE t.source=${source.source} AND t.mailbox_id=${source.mailbox_id} AND t.source_thread_id=${source.source_thread_id}
-    AND t.selected_message_id=${source.selected_message_id} AND t.mode='labtest' AND s.config ? 'manual_create_labtest'`;
+    AND t.selected_message_id=${source.selected_message_id} AND t.mode='labtest' AND t.selection_key='' AND s.config ? 'manual_create_labtest'`;
   return thread ? snapshot(thread.id) : null;
 }
 app.get('/labtest/create',async c=>{
@@ -96,7 +96,7 @@ app.post('/threads',async c=>{
   if (!parsed.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid thread',details:parsed.error.flatten()}},400);
   const principal=c.get('principal');
   if(!hasMailbox(principal,parsed.data.mailbox_id) || (principal.kind==='staff' && parsed.data.mode!=='live')) return c.json({error:{code:'FORBIDDEN',message:'Mailbox or mode unavailable',details:null}},403);
-  try { if(principal.kind==='staff') {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
+  try { if(principal.kind==='staff') {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(process.env.NAVA_CREATE_PREPARE_ONLY==='1' && parsed.data.mode==='live' && current?.selected_message_id!==parsed.data.selected_message_id) throw new Error('IMPORT_SELECTION_MISMATCH'); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
   catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; return c.json({error:{code:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'IMPORT_UNAVAILABLE',message:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'Unable to import thread',details:null}},['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?409:503); }
 });
 app.get('/threads/:id',async c=>{const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);const result=await snapshot(c.req.param('id')); return result?c.json(result):c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);});
@@ -132,13 +132,14 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       if(!principal.mailboxes.includes(ref.mailbox_id)) throw new OperationError('FORBIDDEN');
       const [session]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${ref.session_id} FOR NO KEY UPDATE`;
       if(!session) throw new OperationError('NOT_FOUND');
-      const [p]=await tx`SELECT p.id,p.revision,p.workflow,p.phase,p.current,t.mailbox_id,t.mode FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${c.req.param('id')} AND p.session_id=${ref.session_id} FOR UPDATE OF p`;
+      const [p]=await tx`SELECT p.id,p.revision,p.workflow,p.phase,p.current,t.mailbox_id,t.mode,t.selection_key FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${c.req.param('id')} AND p.session_id=${ref.session_id} FOR UPDATE OF p`;
       if(!p) throw new OperationError('NOT_FOUND');
       if(!principal.mailboxes.includes(p.mailbox_id)) throw new OperationError('FORBIDDEN');
       if(p.revision!==input.data.expected_revision) throw new OperationError('STALE_REVISION');
       if(operation==='undo' || operation==='redo') throw new OperationError('UNAVAILABLE');
       if(p.mode==='historical') throw new OperationError('HISTORICAL_UNAVAILABLE');
       if(p.mode!=='live' && p.mode!=='labtest') throw new OperationError('UNAVAILABLE');
+      if(operation==='stage' && process.env.NAVA_CREATE_PREPARE_ONLY==='1' && p.mode==='live' && !p.selection_key.startsWith('prepare:')) throw new OperationError('UNAVAILABLE');
       if(operation==='go' && p.mode==='live') throw new OperationError('REAL_GUEST_GO_UNAVAILABLE');
       const workflow=proposalDraft.shape.workflow.safeParse(p.workflow);
       if(!workflow.success) throw new OperationError('UNAVAILABLE');
@@ -182,7 +183,11 @@ app.patch('/proposals/:id',async c=>{
   if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
   const input=editInput.safeParse(await c.req.json().catch(()=>null));
   if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid edit',details:input.error.flatten()}},400);
-  try { return c.json(await editProposal(c.req.param('id'),principal.mailboxes,principal.id,input.data)); }
+  try {
+    const updated=await editProposal(c.req.param('id'),principal.mailboxes,principal.id,input.data);
+    const [thread]=await sql`SELECT selected_message_id,selection_key FROM nava_agent.mail_thread WHERE id=${updated.thread_id}`;
+    return c.json({...updated,source_message_id:thread?.selection_key.startsWith('prepare:')?thread.selected_message_id:null});
+  }
   catch(error) {
     const code=error instanceof Error?error.message:'EDIT_FAILED';
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);

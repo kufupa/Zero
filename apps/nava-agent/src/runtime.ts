@@ -63,9 +63,16 @@ export async function verifiedAuth() {
 }
 const content = (text:string) => [{type:'text' as const,text}];
 type ImportOptions = {manualCreateLabtest:{arrival_date:string;departure_date:string}};
+function canonicalJson(value:unknown):string {
+  return JSON.stringify(value,(_key,item:unknown)=>item && typeof item==='object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)) : item);
+}
 export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown, options?:ImportOptions) {
-  const keyHash=createHash('sha256').update(key).digest('hex');
-  const requestHash=createHash('sha256').update(JSON.stringify({input,sourceInput:sourceInput ?? null,...(options ? {options} : {})})).digest('hex');
+  const prepareLive=process.env.NAVA_CREATE_PREPARE_ONLY==='1' && input.mode==='live';
+  const payload={input,sourceInput:sourceInput ?? null,...(options ? {options} : {})};
+  const requestHash=createHash('sha256').update(prepareLive?canonicalJson(payload):JSON.stringify(payload)).digest('hex');
+  const selectionKey=prepareLive?`prepare:${requestHash}`:'';
+  const keyHash=createHash('sha256').update(prepareLive?canonicalJson(['prepare',input.source,input.mailbox_id,input.source_thread_id,requestHash]):key).digest('hex');
   const selected = input.messages.find(message => message.id === input.selected_message_id);
   const ruleId = selected ? mailPrefilterRule(selected) : null;
   return sql.begin(async tx => {
@@ -73,11 +80,11 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
     const [prior]=await tx`SELECT COALESCE(e.thread_id,s.thread_id) AS thread_id,e.kind,e.payload FROM nava_agent.agent_event e LEFT JOIN nava_agent.agent_session s ON s.id=e.session_id WHERE e.kind IN ('import','mail_skipped') AND e.payload->>'key_hash'=${keyHash}`;
     if (prior) { if(prior.payload.request_hash!==requestHash) throw new Error('IDEMPOTENCY_CONFLICT'); return {id:prior.thread_id as string,created:false,skipped:prior.kind==='mail_skipped'}; }
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`${input.source}:${input.mailbox_id}:${input.source_thread_id}`},0))`;
-    const [before]=await tx`SELECT selected_message_id FROM nava_agent.mail_thread WHERE source=${input.source} AND mailbox_id=${input.mailbox_id} AND source_thread_id=${input.source_thread_id}`;
+    const [before]=await tx`SELECT selected_message_id FROM nava_agent.mail_thread WHERE source=${input.source} AND mailbox_id=${input.mailbox_id} AND source_thread_id=${input.source_thread_id} AND selection_key=${selectionKey}`;
     const threadId=uid('thread');
-    const [thread]=await tx`INSERT INTO nava_agent.mail_thread (id,source,mailbox_id,source_thread_id,selected_message_id,property_code,mode)
-      VALUES (${threadId},${input.source},${input.mailbox_id},${input.source_thread_id},${input.selected_message_id},${input.property_code},${input.mode})
-      ON CONFLICT (source,mailbox_id,source_thread_id) DO UPDATE SET
+    const [thread]=await tx`INSERT INTO nava_agent.mail_thread (id,source,mailbox_id,source_thread_id,selected_message_id,property_code,mode,selection_key)
+      VALUES (${threadId},${input.source},${input.mailbox_id},${input.source_thread_id},${input.selected_message_id},${input.property_code},${input.mode},${selectionKey})
+      ON CONFLICT (source,mailbox_id,source_thread_id,selection_key) DO UPDATE SET
         selected_message_id=CASE WHEN ${ruleId !== null} THEN mail_thread.selected_message_id ELSE EXCLUDED.selected_message_id END,
         property_code=CASE WHEN ${ruleId !== null} THEN mail_thread.property_code ELSE EXCLUDED.property_code END,
         updated_at=now()
@@ -148,10 +155,11 @@ export async function snapshot(threadId:string) {
     const [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE thread_id=${threadId}`;
     const proposals=await tx`SELECT * FROM nava_agent.proposal WHERE thread_id=${threadId} ORDER BY created_at`;
     const [sequence]=session ? await tx`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${session.id}` : [{n:'0'}];
-    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposalWire),event_sequence:Number(sequence.n)};
+    const sourceMessageId=thread.selection_key.startsWith('prepare:') ? thread.selected_message_id : null;
+    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire(proposal,sourceMessageId)),event_sequence:Number(sequence.n)};
   });
 }
-export function proposalWire(p:Record<string,any>) {
+export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
   const stage=p.stage && p.stage.state!=='queued' ? {
     revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
     display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],...(p.stage.cancellation_fee!==undefined ? {cancellation_fee:p.stage.cancellation_fee} : {}),
@@ -172,7 +180,7 @@ export function proposalWire(p:Record<string,any>) {
     recovery:uncertain?'Check HMS before attempting another Save.':p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
-  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
+  return {...p.current,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;
