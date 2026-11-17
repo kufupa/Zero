@@ -65,7 +65,9 @@ app.get('/threads/:id',async c=>{const denied=await threadDenial(c.req.param('id
 app.get('/threads/:id/events',async c=>{
   const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);
   const thread=await snapshot(c.req.param('id')); if (!thread || !thread.session) return c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);
-  const start=Number(c.req.query('after_sequence') ?? c.req.header('Last-Event-ID') ?? 0); if (!Number.isSafeInteger(start) || start<0) return c.json({error:{code:'INVALID_CURSOR',message:'Invalid sequence',details:null}},400);
+  const requested=Number(c.req.query('after_sequence') ?? 0), lastEvent=Number(c.req.header('Last-Event-ID') ?? 0);
+  if (![requested,lastEvent].every(value=>Number.isSafeInteger(value) && value>=0)) return c.json({error:{code:'INVALID_CURSOR',message:'Invalid sequence',details:null}},400);
+  const start=Math.max(requested,lastEvent);
   const session=thread.session.id;
   return streamSSE(c,async stream=>{let after=start; while(!stream.aborted) {const rows=await sql`SELECT sequence::text,id,managed_event_id,kind,payload,at FROM nava_agent.agent_event WHERE session_id=${session} AND sequence>${after} ORDER BY sequence LIMIT 200`; for(const row of rows){after=Number(row.sequence); await stream.writeSSE({id:String(after),event:'event',data:JSON.stringify({sequence:after,event_id:row.managed_event_id ?? row.id,kind:row.kind,at:row.at,session_id:session,proposal_id:row.payload?.proposal_id ?? null,payload:row.payload})});} if(!rows.length) await stream.sleep(1000); }});
 });
