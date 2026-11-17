@@ -208,18 +208,16 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
       let attempt = pending.current;
       const marker = readMarker(), saved = storedAttempt(marker), age = saved ? Date.now() - saved.startedAt : -1;
-      if (!attempt && saved && saved.fingerprint === fingerprint && age >= 0 && age < RETRY_WINDOW_MS &&
-          (saved.phase !== 'attaching' || saved.attachmentOperationIds.length === output.artifacts.length)) {
+      if (!attempt && saved?.phase === 'attaching' && saved.fingerprint === fingerprint && age >= 0 && age < RETRY_WINDOW_MS &&
+          saved.attachmentOperationIds.length === output.artifacts.length) {
         attempt = { key, fingerprint, startedAt: saved.startedAt, output, html, email, completed: 0,
           recipientOperationId: saved.recipientOperationId ?? createOperationId(),
           create: { operationId: saved.createOperationId, entryId: email.entryId, storeId: email.storeId,
             folderEntryId: email.folderEntryId, htmlBody: html, replyAll: false, openInComposer: false } };
-        if (saved.phase === 'attaching') {
-          attempt.location = saved.location;
-          attempt.attachments = output.artifacts.map((item, index) => ({ operationId: saved.attachmentOperationIds[index]!,
-            entryId: saved.location.entryId, storeId: saved.location.storeId, folderEntryId: saved.location.folderEntryId,
-            fileName: item.fileName, base64Data: item.bytesBase64 }));
-        }
+        attempt.location = saved.location;
+        attempt.attachments = output.artifacts.map((item, index) => ({ operationId: saved.attachmentOperationIds[index]!,
+          entryId: saved.location.entryId, storeId: saved.location.storeId, folderEntryId: saved.location.folderEntryId,
+          fileName: item.fileName, base64Data: item.bytesBase64 }));
         pending.current = attempt;
       }
       if ((attempt && (attempt.key !== key || attempt.fingerprint !== fingerprint ||
