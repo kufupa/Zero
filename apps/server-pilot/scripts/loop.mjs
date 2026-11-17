@@ -377,7 +377,9 @@ async function prepareEmail(entry, options, outputDir) {
     const artifacts = stages.filter(stage => stage.name === 'artifacts');
     const failed = stages.find(stage => ['failed', 'partial'].includes(stage.result?.status) || stage.result?.quotes?.some(quote => quote.status === 'failed'));
     const failedLookup = stages.flatMap(stage => stage.result?.lookups ?? []).find(lookup =>
-      lookup.status === 'failed' || lookup.outcome === 'execution_failure' || /(?:_failed|_error)$/.test(lookup.issue ?? ''));
+      lookup.status === 'failed' || ['failed', 'execution_failure'].includes(lookup.outcome) ||
+      ['CANCELLATION_PREFLIGHT_UNAVAILABLE', 'native_cancel_target_unavailable'].includes(lookup.issue) ||
+      /(?:_failed|_error)$/.test(lookup.issue ?? ''));
     const triageNeedsStaff = result.triage?.output?.abstainReason || result.triage?.output?.humanAction === 'review_required' || result.triage?.output?.automationState === 'unknown';
     const incomplete = stages.find(stage => !['ok', 'priced', 'prepared', 'succeeded'].includes(stage.result?.status));
     const complete = prepared.length > 0 && prepared.every(stage => stage.result?.status === 'prepared') &&
@@ -456,8 +458,10 @@ async function main() {
   };
   const hmsSummary = row => (row.hms?.stages ?? []).map(stage => {
     const result = stage.result, detail = result?.quotes?.[0] ?? result?.lookups?.find(row => row.issue || row.status === 'ready') ?? result, quote = detail?.quote;
+    const selectedRates = quote?.rateOptions?.filter(option => option.selected) ?? [];
     const price = quote?.totalMinor != null ? ` ${quote.currency ?? ''} ${(quote.totalMinor / 100).toFixed(2)}` :
-      result?.ratePlanAvailability ? ` ${JSON.stringify(result.ratePlanAvailability)}` : result?.price ? ` ${JSON.stringify(result.price)}` : '';
+      selectedRates.length ? ` HMS rates ${JSON.stringify(selectedRates.map(({ roomCode, rateCode, currency, perNightMinor }) =>
+        ({ roomCode, rateCode, currency, perNight: Number.isSafeInteger(perNightMinor) ? perNightMinor / 100 : null })))}` : result?.ratePlanAvailability ? ` ${JSON.stringify(result.ratePlanAvailability)}` : result?.price ? ` ${JSON.stringify(result.price)}` : '';
     const fee = detail?.feeState ? ` fee:${detail.feeState}${detail.penaltyText ? ` ${detail.penaltyText}` : ''}` : '';
     const document = detail?.documentName ? ` ${detail.documentName}${detail.target?.confirmation ? ` ${detail.target.confirmation}` : ''}` : '';
     return `${stage.name}:${detail?.status ?? 'unknown'}${detail?.issue ? ` (${detail.issue})` : ''}${price}${fee}${document}`;
