@@ -1666,32 +1666,15 @@ export async function planThreadWork(
     }) : null;
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
-    // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
-    const answered = lastHotel !== undefined && (lastGuest === undefined || lastHotel.at > lastGuest.at);
-    const replyChange: ThreadWorkChange | undefined =
-      lastHotel && answered && !item.hmsOpen && !outstanding
-        ? {
-            workItemId: item.id,
-            kind,
-            to: 'done' as const,
-            reason: HOTEL_REPLIED,
-            sentAt: new Date(lastHotel.at),
-            sentMessageId: lastHotel.m.id,
-          }
-        : undefined;
-    const closeOnReply =
-      replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
+    // Outbound/ownSent messages lack stored Auto-Submitted provenance, verified human authorship, or substantive-answer
+    // evidence, and outbound_send_queue.status='sent' is not recipient delivery proof. Never auto-close unfinished or
+    // unproven work merely because an outbound reply was sent; without verifiable current complete source+task
+    // evidence, reopen current-kind system/HOTEL_REPLIED closures on touched-thread refresh for staff review.
     // A prior pure-information read may have been automatically closed as staff-sent. A pre-stay the read could not
     // clear also reopens: it may still carry a current ask, so it is never auto-done on a missing verdict.
     if (preStayAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
-      if (closeOnReply && lastHotel) {
-        if (lastHotel.m.id !== item.sentMessageId) {
-          changes.push({ workItemId: item.id, kind, repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id } });
-        }
-      } else {
-        changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
-        open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      }
+      changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: null });
+      open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       continue;
     }
     if (item.status === 'dismissed') {
@@ -1701,7 +1684,8 @@ export async function planThreadWork(
       }
       continue;
     }
-    if (item.status === 'done' && outstanding && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+    if (item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === HOTEL_REPLIED) {
+      if (!currentKind) continue;
       changes.push({ workItemId: item.id, kind, to: 'needs_you', reason: REQUESTS_OUTSTANDING, previousSentMessageId: item.sentMessageId });
       open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       continue;
@@ -1709,11 +1693,9 @@ export async function planThreadWork(
     // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
     const domainOther = kind === 'other' && ownDomain(source);
     if (!untouched) {
-      if (item.status === 'needs_you' && closeOnReply) {
-        changes.push(closeOnReply);
-      } else if (item.status === 'needs_you') {
+      if (item.status === 'needs_you') {
         open.push({ id: item.id, kind, at, untouched: false, humanWritten });
-      } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime() && !answered) {
+      } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime()) {
         // A hotel reply closed it, then a person touched it: a later guest mail still reopens it. A person's close has no
         // reply link, so it stays.
         changes.push({
@@ -1731,17 +1713,13 @@ export async function planThreadWork(
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
-      } else if (closeOnReply) {
-        changes.push(closeOnReply);
       } else {
         open.push({ id: item.id, kind, at, untouched: true, humanWritten });
       }
     } else if (!domainOther) {
-      // Closed by a hotel reply: reopened by a later guest mail, or re-pointed at the hotel's latest answer. A done row the
-      // rules closed before the reply link existed has no link, so the hotel's latest answer stands in for it (the
-      // backfill links it). Touched rows are handled above, so this branch sees untouched rows only.
+      // Closed by a hotel reply: reopened by a later guest mail. Touched rows are handled above, so this branch sees untouched rows only.
       const linkedAt = item.sentAt ? item.sentAt.getTime() : lastHotel?.at;
-      if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt && !answered) {
+      if (lastGuest && linkedAt !== undefined && lastGuest.at > linkedAt) {
         changes.push({
           workItemId: item.id,
           kind,
@@ -1750,12 +1728,6 @@ export async function planThreadWork(
           previousSentMessageId: item.sentMessageId,
         });
         open.push({ id: item.id, kind, at, untouched: true, humanWritten });
-      } else if (lastHotel && answered && lastHotel.m.id !== item.sentMessageId) {
-        changes.push({
-          workItemId: item.id,
-          kind,
-          repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id },
-        });
       }
     }
   }
