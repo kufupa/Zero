@@ -307,8 +307,16 @@ export function nativeStructureIsSafe(currentState: PaneState, restoredState: Pa
       const values = record(row)[property];
       return Array.isArray(values) && values.some((entry) => record(record(entry).target ?? entry).requestId === id);
     };
+    const boundRequest = (content: Record<string, unknown>) => {
+      const request = rows(content, 'requests').find((row) => record(row).id === id);
+      if (result.workflow !== 'amend' || record(request).kind !== 'amend') return request;
+      // These host-owned review cues do not change the native amendment.
+      const body = record(record(request).body);
+      const { sourceCues: _sourceCues, ...nativeBody } = body;
+      return { ...record(request), body: nativeBody };
+    };
     const bound = (content: Record<string, unknown>) => ({
-      request: rows(content, 'requests').find((row) => record(row).id === id),
+      request: boundRequest(content),
       services: rows(content, 'services').filter((row) => record(row).ownerRequestId === id || references(row, 'targets')),
       documents: rows(content, 'documents').filter((row) => record(row).ownerRequestId === id || references(row, 'targetRefs')),
     });
