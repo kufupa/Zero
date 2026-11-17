@@ -719,9 +719,18 @@ function observedAmendPrice(snapshot, target, quote, { includeComponents = false
 }
 
 function observedAmendMealPlan(snapshot) {
-  const model = snapshot?.data?.mealplan, form = snapshot?.values?.mealplan;
-  return typeof model === 'string' && model === form && model.trim() && model.length <= 120 &&
-    !/[\p{Cc}]/u.test(model) ? model : null;
+  const data = snapshot?.data, values = snapshot?.values;
+  if (!data || !values || typeof data !== 'object' || typeof values !== 'object') return null;
+  const modelKeys = Object.keys(data).filter(name => name.toLowerCase() === 'mealplan');
+  const formKeys = Object.keys(values).filter(name => name.toLowerCase() === 'mealplan');
+  // Exact mealplan only: missing, case-variants, or duplicates stay unknown.
+  if (modelKeys.length !== 1 || formKeys.length !== 1 || modelKeys[0] !== 'mealplan' || formKeys[0] !== 'mealplan' ||
+      !Object.hasOwn(data, 'mealplan') || !Object.hasOwn(values, 'mealplan')) return null;
+  const model = data.mealplan, form = values.mealplan;
+  if (typeof model !== 'string' || model !== form || model.length > 120 || /[\p{Cc}]/u.test(model)) return null;
+  // Explicit blank is observed only when both native sides are exactly "".
+  if (model === '') return model;
+  return model.trim() ? model : null;
 }
 
 function assertAmendPriceFields(entries, approved) {

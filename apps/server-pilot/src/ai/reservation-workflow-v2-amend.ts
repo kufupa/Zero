@@ -876,12 +876,20 @@ const nativePartyBaselineSchema = z.object({ organization: nativePartySchema, ar
 
 function appliedMealPlan(native: Record<string, unknown> | null): string | null {
   const value = record(native?.applied)?.mealPlan;
-  return typeof value === 'string' && Boolean(value.trim()) && value.length <= 120 && !/[\p{Cc}]/u.test(value) ? value : null;
+  if (typeof value !== 'string' || value.length > 120 || /[\p{Cc}]/u.test(value)) return null;
+  // Keep exact native blank bound; whitespace-only stays unknown.
+  if (value === '') return value;
+  return value.trim() ? value : null;
 }
 
 function mealPlanVerified(draft: ReservationWorkflowV2Draft, compiled: CompiledAmend, native: Record<string, unknown>): boolean {
   const actual = appliedMealPlan(native), baseline = record(native.recoveryBaseline)?.beforeMealPlan;
   const requested = typeof compiled.baseChanges.requestedMealPlan === 'string' ? compiled.baseChanges.requestedMealPlan : null;
+  // Blank allowance only when both observed sides are exact "" and nothing was requested.
+  // Mixed blank/nonblank stays fail closed so Amend cannot clear an existing meal unrequested.
+  if (actual === '' || baseline === '') {
+    return actual === '' && baseline === '' && requested === null;
+  }
   return actual !== null && typeof baseline === 'string' && Boolean(baseline.trim()) &&
     reservationWorkflowV2MealPlanMatches(requested === 'dinner_bb' ? 'dinner_bed_breakfast' : requested, actual, draft.propertyCode);
 }
@@ -1756,7 +1764,7 @@ export function readbackMatches(readback: unknown, prepared: Record<string, unkn
       actual.roomType !== target.roomType || actual.ratePlan !== target.ratePlan || actual.adults !== target.adults ||
       actual.children !== target.children || actual.firstName !== target.firstName || actual.lastName !== target.lastName ||
       actual.cmsSend !== changes.cmsSend || !actualPrice || !approvedPrice ||
-      !appliedMealPlan(prepared) || actual.mealPlan !== appliedMealPlan(prepared) ||
+      appliedMealPlan(prepared) === null || actual.mealPlan !== appliedMealPlan(prepared) ||
       actualPrice.version !== approvedPrice.version || actualPrice.currency !== approvedPrice.currency ||
       actualPrice.totalCents !== approvedPrice.totalCents || actualPrice.averageCents !== approvedPrice.averageCents) return null;
   if (Array.isArray(target.childAges) && (!Array.isArray(actual.childAges) ||
