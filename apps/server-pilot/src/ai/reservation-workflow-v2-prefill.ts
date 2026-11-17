@@ -1201,9 +1201,15 @@ function completeCurrentSourceText(input: { source: ReservationWorkflowV2Source;
       const admittedRow = evidence.find(row => row.ref === evidenceRef(source, 'attachment_text', attachment.id) &&
         (isPrior ? (row.relation === 'prior_thread' || row.relation === 'attachment') : row.relation === 'attachment'));
       if (!admittedRow || admittedRow.text !== maskCardNumbers(attachmentText)) return false;
-      // Non-empty pdftotext output does not prove every page has embedded text (e.g. a text cover + scanned request page).
-      // Require proven full-document vision coverage for PDFs before allowing host fullCausalAttachmentCoverage.
-      if (isPdfAttachment(attachment)) return audit.get(attachment.id) === 'read';
+      // Non-empty extracted text does not prove full coverage for visually rich or unknown formats (e.g. PDF with
+      // scanned pages, DOCX with embedded screenshots). Only plain text and XLSX (which rejects drawings/charts)
+      // are text-complete without full-document vision proof.
+      const mime = (attachment.mimeType ?? '').split(';')[0].trim().toLowerCase();
+      const isPlainText = mime === 'text/plain' || ((mime === '' || mime === 'application/octet-stream') && /\.txt$/i.test(attachment.filename));
+      const isXlsx = mime === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || /\.xlsx$/i.test(attachment.filename);
+      if (isPdfAttachment(attachment) || (!isPlainText && !isXlsx)) {
+        return audit.get(attachment.id) === 'read';
+      }
       return true;
     }
     return audit.get(attachment.id) === 'read';
