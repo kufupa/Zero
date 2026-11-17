@@ -68,6 +68,8 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
       ['room_type','Room type',true,'combobox'], ['rate_plan','Rate plan',true,'combobox'],
       ['source_of_business','Booking source',true,'combobox'], ['track','Track',true,'combobox'],
       ['guarantee_type','Guarantee type',true,'text'], ['guest_profile_id','Guest profile ID',false,'text'],
+      ['first_name','Guest first name',true,'text'], ['last_name','Guest last name',true,'text'],
+      ['guest_email','Guest email',false,'text'],
       ['agency_name','Booking agency',false,'text'], ['agency_id','Booking agency ID',false,'text'],
     ] as const) {
       const path=`/bookings/${index}/fields/${key}`;
