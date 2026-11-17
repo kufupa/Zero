@@ -60,7 +60,7 @@ import {
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
-import { isSelfSentPreStaySubject, selfSentPreStayAskVerdict } from './existing-stay-information.js';
+import { isSelfSentPreStaySubject, preStaySourceText, selfSentPreStayAskVerdict } from './existing-stay-information.js';
 import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
