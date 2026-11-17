@@ -149,10 +149,13 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [policyPath, source, dest, ...args] = process.argv.slice(2);
 const { SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } = await import(pathToFileURL(policyPath).href);
-const flags = new Set([...SCOPED_RUNTIME_CONTROL_KEYS, 'PREFILL_SIMPLE_SYNTHESIS']);
+const workerLimits = ['AI_WORKER_CONCURRENCY', 'RESERVATION_PREFILL_CONCURRENCY', 'RESERVATION_PREFILL_STARTS_PER_HOUR'];
+const flags = new Set([...SCOPED_RUNTIME_CONTROL_KEYS, 'PREFILL_SIMPLE_SYNTHESIS', ...workerLimits]);
 function validateControl(key, value) {
   validateRuntimeControl(key, value);
   if (key === 'PREFILL_SIMPLE_SYNTHESIS' && value !== '' && !['off', 'on'].includes(value)) throw Error();
+  if (workerLimits.includes(key) && value !== '' && (!/^\d+$/.test(value) || Number(value) < 1 ||
+      Number(value) > (key === 'RESERVATION_PREFILL_STARTS_PER_HOUR' ? 10000 : 16))) throw Error();
 }
 try {
   const changes = new Map();

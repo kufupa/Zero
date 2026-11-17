@@ -4383,6 +4383,7 @@ export async function executeHmsJob(input: {
 
   const outcome: string = result.outcome;
   if (outcome === 'execution_failure') {
+    if (input.signal?.aborted) throw input.signal.reason;
     const parkedLogin = await parkLoginOutageFailure(db, mark, run, outagePropertyCode, result);
     if (parkedLogin) return parkedLogin;
   }
