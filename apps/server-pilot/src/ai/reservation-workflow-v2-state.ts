@@ -732,9 +732,11 @@ export async function checkpointReservationWorkflowV2Extraction(ctx: Context, in
     }
     const draft = reservationWorkflowV2DraftSchema.parse({ ...current.draft,
       extraction: extraction.data, extractionGenerationId: input.generationId });
-    await tx.update(workItem).set({ state: withReservationWorkflowV2Draft(item.state, draft),
+    const nextState = withReservationWorkflowV2Draft(item.state, draft);
+    const persistedDraft = reservationWorkflowV2DraftOf(nextState) ?? storedReservationWorkflowV2Draft(draft);
+    await tx.update(workItem).set({ state: nextState,
       updatedAt: new Date() }).where(eq(workItem.id, item.id));
-    return { result: { ...current, draft }, claim: { ...input.claim, snapshot: prefillSnapshot(draft) } };
+    return { result: { ...current, draft: persistedDraft }, claim: { ...input.claim, snapshot: prefillSnapshot(persistedDraft) } };
   });
 }
 
