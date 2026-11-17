@@ -109,8 +109,12 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
       }
     } else if (name==='proposal_publish') {
       const draft:ProposalDraft=schemas.proposal_publish.parse(input);
-      if(draft.workflow!=='quote' && draft.native_result!==null) response=failure('NATIVE_RESULT_MISMATCH','Only an independently captured native result may be published.');
+      const hasNeedsInfoAction = draft.actions.some(action => action.type === 'needs_info');
+      const needsInfoType = draft.disposition === 'needs_info' && ['quote','create','amend','cancel'].includes(draft.workflow) ? draft.workflow : null;
+      if (hasNeedsInfoAction && !needsInfoType) response=failure('INVALID_ACTION_TYPE','needs_info is a disposition, not an action. Put it in disposition; use the actual requested action type, or leave actions empty if unknown.');
+      else if(draft.workflow!=='quote' && draft.native_result!==null) response=failure('NATIVE_RESULT_MISMATCH','Only an independently captured native result may be published.');
       else response=await sql.begin(async tx=>{
+        if (needsInfoType) draft.actions = draft.actions.map(action => action.type === 'needs_info' ? {...action,type:needsInfoType} : action);
           if(fence) { const rows=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${session.id} AND worker_id=${fence.workerId} AND lease_epoch=${fence.epoch}::bigint AND lease_until>clock_timestamp() FOR UPDATE`; if(!rows.length) throw new Error('LEASE_LOST'); }
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:quote:'+session.id},0))`;
         await tx`SELECT pg_advisory_xact_lock(hashtextextended(${toolEvent},0))`;

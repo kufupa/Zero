@@ -33,6 +33,7 @@ export interface RuntimeDeps {
   runTool(sessionId: string, toolUse: ToolUse): Promise<{ kind: 'result'; result: unknown } | { kind: 'pause' }>;
   recordToolOutcome(sessionId: string, toolUseId: string, result: unknown): Promise<void>;
   assistantStopReason(sessionId: string, version: number, message: RuntimeMessage): Promise<string | null | undefined>;
+  publishStaffReview(sessionId: string, turnId: string, reason: string): Promise<void>;
   park(sessionId: string, toolUseId: string): Promise<void>;
   finish(sessionId: string, reason: string): Promise<void>;
 }
@@ -70,6 +71,25 @@ function resultContent(result: unknown): string {
 
 function sameResult(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(JSON.parse(resultContent(left)), JSON.parse(resultContent(right)));
+}
+
+const publishNudge = 'Nava runtime: call proposal_publish before ending this turn. Use staff_review if the request is unclear; leave unknown fields null. Do not Save or send mail.';
+
+function publicationState(state: RuntimeState) {
+  let boundary = state.messages.length - 1;
+  for (; boundary >= 0; boundary--) {
+    const message = state.messages[boundary];
+    if (message.role === 'user' && message.content.some(block => block.type === 'text' && block.text !== publishNudge)) break;
+  }
+  const turn = state.messages.slice(boundary + 1);
+  const nudges = turn.filter(message => message.role === 'user'
+    && message.content.some(block => block.type === 'text' && block.text === publishNudge)).length;
+  const published = turn.some(message => message.role === 'assistant' && toolUses(message).some(call => {
+    if (call.name !== 'proposal_publish') return false;
+    const result = state.toolOutcomes[call.id];
+    return result !== null && typeof result === 'object' && 'ok' in result && result.ok === true;
+  }));
+  return { turnId: String(boundary + 1), nudges, published };
 }
 
 // The caller binds each port to one live lease and a stable input delivery ID.
@@ -135,6 +155,21 @@ export class RuntimeLoop implements AgentRuntime {
     return this.deps.event(sessionId, kind, { ...payload, ...(this.options.metadata ? { metadata: this.options.metadata } : {}) });
   }
 
+  private async finishTurn(state: RuntimeState, reason: string, mayNudge: boolean): Promise<boolean> {
+    const { sessionId } = state;
+    const { turnId, nudges, published } = publicationState(state);
+    if (!published) {
+      if (reason === 'end_turn' && mayNudge && nudges < 2) {
+        await this.deps.append(sessionId, { role: 'user', content: [{ type: 'text', text: publishNudge }] });
+        await this.event(sessionId, 'proposal_nudge', { count: nudges + 1 });
+        return false;
+      }
+      await this.deps.publishStaffReview(sessionId, turnId, reason);
+    }
+    await this.deps.finish(sessionId, reason);
+    return true;
+  }
+
   private async run(sessionId: string): Promise<void> {
     let fresh: { version: number; reason: string | null } | undefined;
     let modelCalls = 0;
@@ -147,8 +182,8 @@ export class RuntimeLoop implements AgentRuntime {
         const reason = fresh?.version === state.version ? fresh.reason : state.pendingToolUseId !== null ? 'tool_use' : await this.deps.assistantStopReason(sessionId, state.version, last);
         if (reason === undefined) throw new Error('ASSISTANT_STOP_REASON_NOT_DURABLE');
         if (!calls.length) {
-          await this.deps.finish(sessionId, reason ?? 'unknown_stop_reason');
-          return;
+          if (await this.finishTurn(state, reason ?? 'unknown_stop_reason', modelCalls < (this.options.maxSteps ?? 30))) return;
+          continue;
         }
         if (reason !== 'tool_use') {
           for (const call of calls) {
@@ -161,7 +196,7 @@ export class RuntimeLoop implements AgentRuntime {
             role: 'user',
             content: calls.map(call => ({ type: 'tool_result', tool_use_id: call.id, content: resultContent(completed.toolOutcomes[call.id]) })),
           });
-          await this.deps.finish(sessionId, reason ?? 'unknown_stop_reason');
+          await this.finishTurn(completed, reason ?? 'unknown_stop_reason', false);
           return;
         }
         if (state.pendingToolUseId !== null && !calls.some(call => call.id === state.pendingToolUseId)) throw new Error('PENDING_TOOL_USE_MISMATCH');
@@ -215,7 +250,7 @@ export class RuntimeLoop implements AgentRuntime {
       }
       if (state.pendingToolUseId !== null) throw new Error('PENDING_TOOL_USE_MISMATCH');
       if (modelCalls >= (this.options.maxSteps ?? 30)) {
-        await this.deps.finish(sessionId, 'max_steps');
+        await this.finishTurn(state, 'max_steps', false);
         return;
       }
       const tools = await this.deps.tools(sessionId);

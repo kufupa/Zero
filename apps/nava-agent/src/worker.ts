@@ -36,6 +36,7 @@ export type RuntimeDeps = {
   runTool(sessionId:string,toolUse:{id:string;name:string;input:unknown}):Promise<{kind:'result';result:unknown}|{kind:'pause'}>;
   recordToolOutcome(sessionId:string,toolUseId:string,result:unknown):Promise<void>;
   assistantStopReason(sessionId:string,version:number,message:RuntimeMessage):Promise<string|null|undefined>;
+  publishStaffReview(sessionId:string,turnId:string,reason:string):Promise<void>;
   park(sessionId:string,toolUseId:string):Promise<void>;
   finish(sessionId:string,reason:string):Promise<void>;
 };
@@ -174,6 +175,13 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       },
       recordToolOutcome:async(id,toolUseId,result)=>{checkSession(id);const current=await deps.store.load(id);if(Object.hasOwn(current.toolOutcomes,toolUseId)) { if(!isDeepStrictEqual(current.toolOutcomes[toolUseId],result)) throw new Error('TOOL_OUTCOME_CONFLICT');return;} await deps.store.recordToolOutcome(lease,toolUseId,result);},
       assistantStopReason:async(id,messageVersion,message)=>{checkSession(id);const [row]=await sql`SELECT payload->>'stop_reason' AS reason FROM nava_agent.agent_event WHERE session_id=${id} AND kind='model_call' AND payload->>'status'='success' AND payload->>'assistant_version'=${String(messageVersion)} AND payload->'assistant'=${json(message)}::jsonb ORDER BY sequence DESC LIMIT 1`;return row ? row.reason : undefined;},
+      publishStaffReview:async(id,turnId,reason)=>{
+        checkSession(id);
+        const draft={workflow:'triage',disposition:'staff_review',reason:'Agent ended without a proposal. Review this email manually.',bookings:[],actions:[],field_specs:[],missing:[],warnings:[],reply_draft:null,native_result:null};
+        const answer=await registry.run('proposal_publish',draft,{sessionId:id,mode,propertyCode:session.property_code,toolUseId:`runtime-fallback:${turnId}`,fence:lease,signal:abort.signal,skillConfig});
+        if(answer.kind!=='result'||!answer.result.ok) throw new Error('STAFF_REVIEW_PUBLISH_FAILED');
+        await deps.store.event(lease,'proposal_fallback',{reason,turn_id:turnId,result:answer.result.data});
+      },
       park:async(id,toolUseId)=>{checkSession(id);await deps.store.park(lease,toolUseId);},
       finish:async(id,reason)=>{checkSession(id);await deps.store.finish(lease,reason);},
     });
