@@ -9,6 +9,7 @@ Read before any workflow via `skill_read`; [tool/proposal bindings](tools-and-pr
 - X03 Source priority: latest staff edit for proposed field; explicit current request; relevant supplied document; earlier agreed thread context; fresh HMS saved state for unchanged fields. Conflicts affecting action → explain exact conflict, ask one targeted question. Never invent missing values.
 - X04 Inspect supplied attachment when its contents matter. Filename, subject, payment instructions, pro-forma ≠ proof of payment. Document receipt ≠ paid folio. Confirmation PDF ≠ fresh native reservation state.
 - X05 Match reservation identifier + property, then verify guest + stay. Without identifier, search relevant guest/dates/company context. Sender/time alone, quoted number, same surname, same party ≠ unique booking. Ambiguous candidates → request distinguishing detail.
+- R6 Mail about existing confirmation → look up existing stay, never Create from notice. Automated HMS pre-stay self-mail can carry guest free text (20/107); surface actual text as note/Amend candidate, keep distinct current asks. No property-specific subject match.
 - X06 Codes come from native property catalogue: code + meaning. Price/availability comes from native quote/read, not historical email examples. Explicit staff edits remain authoritative, subject to native tool response; disclose changed price or unavailable code.
 - X07 Missing info → specific question; unsupported/out-of-scope task → staff review, not invented policy. `decline` means demonstrated inability/refusal; `skip` means no new action (e.g. duplicate or thanks). Never use either to conceal tool failure.
 - X08 Draft factual claims only. Quote ≠ reserved room; prepared ≠ saved; supplied POP ≠ settled account; cancellation request ≠ cancelled booking. Final confirmation requires actual corresponding result.
@@ -19,6 +20,7 @@ Read before any workflow via `skill_read`; [tool/proposal bindings](tools-and-pr
 - X10 Autonomous Labtest Save only: guest `Proof Labtest`, stay 2027+, CMS off. Not permission for real bookings. Historical backtest remains read-only.
 - X11 Uncertain Save result: fresh HMS read first; compare affected reservation/business fields/documents/status. Never blind-retry. Confirmed desired state → report; confirmed not applied → resume supported preparation; ambiguous/partial state → staff review. Multi-item Save results tracked separately; never replay already-saved items.
 - X12 Save/readback disagreement → state discrepancy, not success. Report actual saved identifiers and state; draft only supported claims. Never send mail automatically.
+- R3 Create/Amend CMS Send defaults on (228/228 sampled confirmed creates later got a letter; sample conditioned on confirmation, not proof of tick rate). Prefill current requester email when usable; staff may edit tick, recipient, supported message ID. Missing/ambiguous recipient → staff resolves or unticks. Only HMS sends on approved Save when ticked. Labtest off; Nava drafts only.
 
 ## Proposal semantics
 

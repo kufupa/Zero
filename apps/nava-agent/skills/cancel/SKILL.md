@@ -10,8 +10,8 @@ Read [common rules](../references/common.md), [scope/fees/native order](referenc
 1. Identify current cancellation intent + actual saved stay. Withdrawing unaccepted quote ≠ cancelling booking. One-night shortening → amend, not whole-stay cancel.
 2. Search/read exact property/reservation/guest/dates. Resolve room/party scope; linked stays never imply group-wide permission. Zero/ambiguous candidates → specific clarification.
 3. Read current status. Already cancelled → no second write. In-house/completed/no-show/unsupported state → staff review; never force native status.
-4. Supported preview: live reason code + meaning, note, affected stay, native penalty information. Fee unknown ≠ zero/waived. Missing reason-picker/fee capability explicit, no fabricated catalogue kind.
-5. Publish exact target/scope + native preview/unknown fees. `hms_save` waits for staff Go. Backend re-stage, cancel, fresh readback. Unexpected native charge decision remains visible; may arise after cancellation applied.
+4. Preview live reason code + meaning, note, affected stay and native fee. In `waiting_go`, staff see amount and choose supported charge/waive before one Go (R9; 5–10/51 threads mention fees). Unknown fee ≠ zero.
+5. Publish target/scope + preview; `hms_save` waits for one staff Go. Re-stage approved choice, cancel, read fresh. Unexpected/changed fee needs staff review and reconciliation; no second Go in same cancellation flow.
 6. Fresh read target/status/cancellation identifier/actual fee if exposed. Uncertain/partial result → read first; never cancel again blindly. Draft only supported cancellation/charge facts.
 
 Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `hms_prepare`, `proposal_publish`, `hms_save`, `reply_draft`. Exact [bindings](../references/tools-and-proposal.md). Backend initial cancel handler absent; supported capability required.
