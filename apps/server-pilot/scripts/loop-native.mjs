@@ -21,6 +21,8 @@ const [client, mail, auth, state, quote, create, amend, cancel, filing] = await 
 ]);
 const live = client.createDb(process.env.DATABASE_URL);
 const liveStarted = performance.now();
+const timestamp = value => value == null ? null : new Date(typeof value === 'string' && !/([zZ]|[+-]\d\d:?\d\d)$/.test(value)
+  ? `${value}+0000` : value).toISOString();
 const attachmentSnapshot = files => files.map(file => ({
   id: file.id, messageId: file.messageId ?? file.message_id, filename: file.filename,
   mimeType: file.mimeType ?? file.mime_type, sizeBytes: Number(file.sizeBytes ?? file.size_bytes),
@@ -59,14 +61,13 @@ try {
       (row[key] ?? '') !== (liveRow[['subject', 'text_body', 'html_body'][index]] ?? ''))) return true;
     if (input.selectionOnly) return false;
     const equal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-    const stamp = value => value == null ? null : new Date(value).toISOString();
     return row.businessDirection !== liveRow.direction || row.historyOnly !== liveRow.history_only ||
       !equal(row.sourceProvenance, liveRow.source_provenance) || !equal(row.from?.[0], liveRow.from_address) ||
       !equal(row.to, liveRow.to_addresses) || !equal(row.cc, liveRow.cc_addresses) || !equal(row.bcc, liveRow.bcc_addresses) ||
       !equal(row.ownerHeaderValue, liveRow.owner_header_value) || !equal(row.messageId, liveRow.message_id_header) ||
       !equal(row.inReplyTo, liveRow.in_reply_to) || !equal(row.references, liveRow.references) ||
-      stamp(row.receivedAt) !== stamp(liveRow.received_at) || stamp(row.sentAt) !== stamp(liveRow.sent_at) ||
-      stamp(row.createdAt) !== stamp(liveRow.created_at);
+      timestamp(row.receivedAt) !== timestamp(liveRow.received_at) || timestamp(row.sentAt) !== timestamp(liveRow.sent_at) ||
+      timestamp(row.createdAt) !== timestamp(liveRow.created_at);
   }))
     throw Error('live_thread_changed');
   snapshot.subject = selected.subject; snapshot.textBody = selected.text_body; snapshot.htmlBody = selected.html_body;
@@ -80,6 +81,7 @@ try {
   const oldArrival = input.source.arrivedAt;
   const actualHash = staffQuoteSourceHash({ id: selected.id, subject: selected.subject, textBody: selected.text_body, htmlBody: selected.html_body });
   const actualArrival = arrival.arrivedAt.toISOString();
+  if (!input.selectionOnly && (actualHash !== oldHash || actualArrival !== oldArrival)) throw Error('live_source_changed');
   const rebind = value => {
     if (Array.isArray(value)) return value.map(rebind);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, rebind(entry)]));
@@ -127,7 +129,9 @@ try {
           ['toAddresses', 'to_addresses'], ['ccAddresses', 'cc_addresses'], ['bccAddresses', 'bcc_addresses'],
           ['ownerHeaderValue', 'owner_header_value'], ['messageIdHeader', 'message_id_header'],
           ['inReplyTo', 'in_reply_to'], ['references', 'references']];
-        return !prior || fields.some(([key, column]) => JSON.stringify(row[key] ?? null) !== JSON.stringify(prior[column] ?? null));
+        return !prior || fields.some(([key, column]) => key.endsWith('At')
+          ? timestamp(row[key]) !== timestamp(prior[column])
+          : JSON.stringify(row[key] ?? null) !== JSON.stringify(prior[column] ?? null));
       })) throw Error('live_thread_changed');
       const selection = await loadSyncedQuoteSelectionFromMailbox({ db, transportId: input.transport.id, messageId: input.source.messageId,
         includeThreadState: true, sourceCutoffOnly: true, includeVisionImages: true, trackVisionImages: true, signal: AbortSignal.timeout(60_000) });
@@ -266,7 +270,7 @@ try {
       for (const [index, group] of request.body.groups.entries()) {
         if (group.quantity == null) await editQuote(`groups/${index}/quantity`, 1, 'Illustrative one-room scenario; extracted count is missing');
         if (group.quantity == null || group.quantity === 1) {
-          if (group.occupancy.scope == null || group.occupancy.scope === 'unknown')
+          if (group.occupancy.scope == null || ['unknown', 'unresolved', 'whole_group'].includes(group.occupancy.scope))
             await editQuote(`groups/${index}/occupancy/scope`, 'per_room', 'Illustrative single-room occupancy');
           if (group.occupancy.adults == null) await editQuote(`groups/${index}/occupancy/adults`, 1, 'Illustrative one-adult occupancy');
           if (group.occupancy.childCount == null && !group.occupancy.childAges?.length)

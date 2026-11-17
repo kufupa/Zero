@@ -55,6 +55,9 @@ function argumentsFor(args) {
   return options;
 }
 const sleep = ms => new Promise(done => setTimeout(done, ms));
+const prefillFailure = prefill => (prefill.errors ?? []).find(error =>
+  (['extract', 'synthesis'].includes(error.stage) && !error.code.startsWith('guard_') && error.code !== 'workflow_guidance_unavailable') ||
+  (error.stage === 'lookup' && ['failed', 'reader_failed'].includes(error.code)));
 function errorReason(error, stage) {
   const message = error instanceof Error ? error.message.replace(/\s+/g, ' ').trim() : '';
   return message && !/password|secret|api.?key|token|bearer|authorization/i.test(message)
@@ -352,7 +355,7 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
     timings.extraction = (performance.now() - at) / 1000;
     result.extracted = { ...prefill, lookups: prefillLookups };
     if (!prefill.proposal.content.requests.some(request => request.kind === options.workflow)) {
-      const failure = prefill.errors.find(error => error.stage === 'extract' && !error.code.startsWith('guard_'));
+      const failure = prefillFailure(prefill);
       result.status = failure || result.triage?.error ? 'FAIL' : 'NEEDS-STAFF';
       result.reason = failure?.message ?? result.triage?.error ?? `No ${options.workflow} request extracted`; return { result };
     }
@@ -389,12 +392,12 @@ async function prepareEmail(entry, options, outputDir) {
     const hasArtifacts = options.workflow !== 'quote' || artifacts.every(stage =>
       (stage.result?.unavailableInventory ? ['cover.json'] : ['cover.json', 'quote.pdf', 'quote.xlsx'])
         .every(file => files.has(`${stage.requestId}.${file}`)));
-    const simulated = result.hms.assumptions?.length > 0;
-    result.status = failed || failedLookup || complete && !hasArtifacts || result.triage?.error ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length && !triageNeedsStaff && !simulated ? 'PASS' : 'NEEDS-STAFF';
+    const simulated = result.hms.assumptions?.length > 0, upstreamFailure = prefillFailure(prefill);
+    result.status = failed || failedLookup || upstreamFailure || complete && !hasArtifacts || result.triage?.error ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length && !triageNeedsStaff && !simulated ? 'PASS' : 'NEEDS-STAFF';
     result.reason = failed?.result?.issue ?? failed?.result?.quotes?.find(quote => quote.status === 'failed')?.issue ??
       (failed?.result?.failures?.join('; ') || undefined) ??
       (failedLookup ? failedLookup.issue ?? failedLookup.outcome ?? 'Native lookup failed' : undefined) ??
-      result.triage?.error ??
+      result.triage?.error ?? upstreamFailure?.message ??
       (complete && !hasArtifacts ? 'Cover email, PDF or XLSX unavailable' : undefined) ??
       (complete ? prefill.errors.map(error => error.message).join('; ') || (triageNeedsStaff ? 'Triage requires staff review' : simulated ? 'Illustrative replay choices require staff review' : prefill.status === 'ready' ? '' : 'Prefill needs review') :
         incomplete?.result?.issue ?? 'Staff selection or review required');
