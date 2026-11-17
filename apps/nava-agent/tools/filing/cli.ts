@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     target.propertyCode === booking.property_code && target.reservationId === booking.reservation_id);
   if (flags.has('--fixture')) {
     context.resolveAttachment = async ref => ref.messageId === 'labtest-message' &&
-      ref.attachmentId === 'labtest-pdf' && ref.handle === 'generated-labtest-pdf'
+      ref.attachmentId === 'labtest-pdf'
       ? { ...ref, name: 'nava-labtest.pdf', mimeType: 'application/pdf', bytes: fixturePdf() } satisfies TrustedAttachment
       : null;
   }
@@ -58,8 +58,8 @@ async function main(): Promise<void> {
       typeof input.booking === 'object' && input.booking !== null && 'property_code' in input.booking
       ? input.booking.property_code : undefined;
     if (typeof property !== 'string') throw new Error('PROPERTY_REQUIRED');
-    result = await cloud.withCloudCredentialLease(property, (lease: unknown) =>
-      run(input, { ...context, hmsCredentialLease: lease }), { readOnly: true });
+    result = await cloud.withCloudCredentialLease(property, (lease: {signal:AbortSignal}) =>
+      run(input, { ...context, credentialLease: lease, signal: lease.signal }), { readOnly: true });
   } else {
     result = await run(input, context);
   }

@@ -68,7 +68,8 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
     if(!['filing','attach_document','voucher_submission','payment_proof_submission'].includes(action.type)) return null;
     const nested=booking.fields.property_code;
     if((booking.property_code!==null && booking.property_code!==property) || (nested!=null && nested!==property)) return null;
-    return {workflow,booking:{...booking,property_code:property},action};
+    const {property_code:_nested,...fields}=booking.fields;
+    return {workflow,booking:{...booking,fields,property_code:property},action};
   }
   if(action.type!==workflow || booking.property_code!==property || (workflow==='create' && booking.reservation_id!==null)) return null;
   return {workflow,booking,action};

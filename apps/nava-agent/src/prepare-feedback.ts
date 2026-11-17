@@ -60,10 +60,15 @@ const displayRow = z.discriminatedUnion('kind', [
 const nativePrice = z.object({
   averageRate:z.string().nullable().optional(),totalRate:z.string().nullable().optional(),currency:z.string().nullable().optional(),
 });
+const createObserved=z.object({
+  arrival:z.string().optional(),departure:z.string().optional(),adults:z.union([z.string(),z.number()]).optional(),
+  childAges:z.array(z.number()).optional(),roomType:z.string().optional(),roomTypeForCharge:z.string().optional(),
+  ratePlan:z.string().optional(),guaranteeType:z.string().optional(),sourceOfBusiness:z.string().optional(),
+  track:z.string().optional(),mealPlan:z.string().optional(),
+}).optional().catch(undefined);
 const envelope = z.object({native_result:z.unknown(),display_rows:z.array(z.unknown()).optional(),
   observed_fields:z.unknown(),coverage:z.unknown(),cancellation_fee:z.unknown(),
-  native:z.object({ratePlanAvailability:nativePrice.nullable().optional(),applied:z.unknown(),appliedVerification:z.unknown(),
-    guestCandidates:z.unknown(),guestCoverage:z.unknown()}).optional(),
+  native:z.object({ratePlanAvailability:nativePrice.nullable().optional(),applied:createObserved}).optional(),
   rate_choices:z.unknown(),guest_candidates:z.unknown(),
 }).passthrough();
 
@@ -84,8 +89,8 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
         native_path:`/native/ratePlanAvailability/${key}`,currency:rate.currency,date:null,basis:'native',official:true});
     }
   }
-  const native=workflow==='create' && capture ? {
-    native:capture.native ?? null,rate_choices:capture.rate_choices ?? null,guest_candidates:capture.guest_candidates ?? null,
+  const native=workflow==='create' ? {
+    native:rate ? {ratePlanAvailability:rate} : null,rate_choices:capture?.rate_choices ?? null,guest_candidates:capture?.guest_candidates ?? null,
   } : capture?.native_result ?? result?.data ?? null;
   const bounded=native===null || Buffer.byteLength(JSON.stringify(native) ?? '')<=2_000_000;
   const code=bounded?result?.error?.code ?? 'STAFF_JOB_CHANGED':'NATIVE_RESULT_TOO_LARGE';
@@ -105,7 +110,7 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     ...(hasCreateFeedback?{prepare}:{}),
   };
   const hasCapture=workflow==='create' ? !!rate || observed!==undefined || capture?.guest_candidates!=null
-    || capture?.rate_choices!=null || capture?.native?.guestCandidates!=null
+    || capture?.rate_choices!=null
     : native!==null;
   const stage=bounded && (ok || hasCapture) ? {
     state:ok?'prepared':'incomplete',revision,job_id:jobId,...(quoteId?{quote_id:quoteId}:{}),

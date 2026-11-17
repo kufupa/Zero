@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { json, sql, uid } from './db.js';
-import { groupedQuoteRequest, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
+import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
@@ -34,7 +34,7 @@ export type StaffNativeContext = ToolContext & {propertyCode:string; credentialL
 const modelReadTools = new Set(['hms_quote','hms_search_reservations','hms_read_reservation','hms_read_catalogue','hms_search_parties']);
 const prepareOnlyTool = (name:string) => name==='skill_read' || modelReadTools.has(name);
 const workflows = ['quote','create','amend','cancel','filing','triage'] as const;
-type ToolPack = {tools?:unknown;prepare?:unknown;save?:unknown;pinSkills?:unknown;quote?:unknown;stageRead?:unknown};
+type ToolPack = {tools?:unknown;prepare?:unknown;save?:unknown;pinSkills?:unknown;quote?:unknown;quoteModelView?:unknown;stageRead?:unknown};
 type FilingPorts = Required<Pick<import('../tools/filing/index.js').ToolContext,'authorizeTarget'|'resolveAttachment'>>;
 type StaffHandler = (input:unknown,context:StaffNativeContext & Partial<FilingPorts>)=>Promise<unknown>;
 function staffPackHandler(name:string,pack:ToolPack):StaffHandler|undefined {
@@ -42,17 +42,22 @@ function staffPackHandler(name:string,pack:ToolPack):StaffHandler|undefined {
   if(typeof hook==='function') return (input,context)=>Promise.resolve(hook(input,context));
 }
 
-async function filingPortModule() {
+type FilingModule = {
+  filingPortsAvailable?:()=>boolean;
+  createFilingPorts?:(context:StaffNativeContext,input:StaffNativeInput)=>Partial<FilingPorts>|Promise<Partial<FilingPorts>>;
+  withFilingSourceFields?:(draft:ProposalDraft,selectedMessage:unknown)=>ProposalDraft;
+};
+async function loadFilingModule():Promise<FilingModule|undefined> {
   const path='./filing-ports.js';
   try {
-    const mod = await import(path);
-    if(typeof mod.createFilingPorts==='function'
-        && (typeof mod.filingPortsAvailable!=='function' || mod.filingPortsAvailable()===true)) {
-      return {create: (context:StaffNativeContext,input:StaffNativeInput) => mod.createFilingPorts(context,input)};
-    }
+    return await import(path);
   } catch(error) {
     if(!(error instanceof Error) || !('code' in error) || error.code!=='ERR_MODULE_NOT_FOUND') throw error;
   }
+}
+async function filingPortFactory() {
+  const mod=await loadFilingModule();
+  return typeof mod?.createFilingPorts==='function' && mod.filingPortsAvailable?.()===true ? mod.createFilingPorts : undefined;
 }
 
 function result(data:unknown) { return JSON.stringify({ok:true,data,error:null}); }
@@ -168,7 +173,17 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           if(!same.equal || draft.workflow!=='quote') return failure('NATIVE_RESULT_MISMATCH','native_result must equal an actual quote capture for this session and request.');
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
-        const normalized=normalizeProposalFields(schemas.proposal_publish.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})}));
+        let staffDraft=proposalDraft.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
+        if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
+          const filing=await loadFilingModule();
+          const source=await selectedStageSource(tx,session.id);
+          if(filing?.withFilingSourceFields && source.success) {
+            const [selected]=await tx`SELECT payload FROM nava_agent.mail_message
+              WHERE thread_id=${session.thread_id} AND source_message_id=${source.data.source_message_id}`;
+            staffDraft=proposalDraft.parse(filing.withFilingSourceFields(staffDraft,selected?.payload));
+          }
+        }
+        const normalized=normalizeProposalFields(staffDraft);
         if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
         const current=normalized.draft;
         const id=uid('proposal');
@@ -211,12 +226,17 @@ export class ToolRegistry {
   private readonly packTools=new Map<string,PackTool>();
   private readonly mutations=new Map<string,MutationPack>();
   private readonly staffHandlers=new Map<string,StaffHandler>();
+  private quoteModelView?:(result:ToolResult)=>ToolResult;
   private pinSkills?: (root:string)=>Promise<SkillConfig['pin']>;
   constructor(private readonly deps:RegistryDeps) {}
 
   registerPack(name:string,pack:ToolPack) {
     const staffHandler=staffPackHandler(name,pack);
     if(staffHandler) this.staffHandlers.set(name,staffHandler);
+    if(name==='quote' && typeof pack.quoteModelView==='function') {
+      const modelView=pack.quoteModelView;
+      this.quoteModelView=answer=>parseResult(modelView(answer));
+    }
     if(name==='skills' && typeof pack.pinSkills==='function') {
       const pin=pack.pinSkills;
       this.pinSkills=async root=>z.object({version:z.string().min(1),files:z.record(z.string())}).strict().parse(await pin(root));
@@ -264,7 +284,7 @@ export class ToolRegistry {
         || input.workflow!==job.workflow || draft.workflow!==job.workflow) return failureObject('STAFF_JOB_CHANGED','Staff native job is no longer in scope.');
     const handler=this.staffHandlers.get(job.workflow);
     if(!handler) return failureObject('UNAVAILABLE','Workflow is unavailable.');
-    const filing=job.workflow==='filing'?await filingPortModule():undefined;
+    const filing=job.workflow==='filing'?await filingPortFactory():undefined;
     if(job.workflow==='filing' && !filing) return failureObject('ATTACHMENT_SOURCE_UNAVAILABLE','The selected attachment source is unavailable.');
     return this.nativeResult(()=>this.deps.native.withRead(job.source.property_code,context.signal,async credentialLease=>{
       const denied=await confirmedQueuedStaffStage(job,context.sessionId,draft);
@@ -272,7 +292,7 @@ export class ToolRegistry {
       credentialLease.signal.throwIfAborted();
       const staffStage={...job,mailboxId:job.source.mailbox_id,sourceMessageId:job.source.source_message_id,sourceThreadId:job.source.source_thread_id};
       const trusted={...context,propertyCode:job.source.property_code,credentialLease,signal:credentialLease.signal,staffStage};
-      const ports: FilingPorts | undefined=filing?await filing.create(trusted,input):undefined;
+      const ports=filing?await filing(trusted,input):undefined;
       credentialLease.signal.throwIfAborted();
       return parseResult(await handler(input.workflow==='quote'?input.request:input,{...trusted,...ports}));
     },job.workflow==='quote'?'quote':undefined));
@@ -301,6 +321,17 @@ export class ToolRegistry {
     if(pack) {
       await this.deps.emit(context.sessionId,'tool_started',{tool:name,tool_event_id:context.toolUseId});
       let response:ToolResult;
+      if(name==='hms_quote' && context.fence) {
+        const [prior]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${context.sessionId}
+          AND kind='native_quote' AND payload->>'tool_event_id'=${context.toolUseId} ORDER BY sequence DESC LIMIT 1`;
+        if(prior) {
+          if(!isDeepStrictEqual(prior.payload.input,input)) return {kind:'result',result:failureObject('TOOL_OUTCOME_CONFLICT','Native quote input differs from the captured request.')};
+          const capture=parseResult(prior.payload.response);
+          const result=this.quoteModelView?.(capture) ?? capture;
+          await this.deps.emit(context.sessionId,'tool_result',{tool:name,tool_event_id:context.toolUseId,result});
+          return {kind:'result',result};
+        }
+      }
       if(name.startsWith('hms_')) {
         const request=z.object({property_code:z.string().min(1)}).passthrough().safeParse(input);
         if(!request.success || (staffPrepareOnly() ? context.propertyCode!==request.data.property_code : (context.propertyCode && context.propertyCode!==request.data.property_code))) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
@@ -318,7 +349,10 @@ export class ToolRegistry {
           return pack.run(input,{...context,credentialLease:lease,signal:lease.signal});
         },name==='hms_quote'?'quote':undefined));
       } else response=await this.nativeResult(()=>pack.run(input,context));
-      if(name==='hms_quote') await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,input,response});
+      if(name==='hms_quote') {
+        await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,input,response});
+        response=this.quoteModelView?.(response) ?? response;
+      }
       await this.deps.emit(context.sessionId,'tool_result',{tool:name,tool_event_id:context.toolUseId,result:response});
       return {kind:'result',result:response};
     }
@@ -390,7 +424,7 @@ export async function installedStaffTools() {
       if(prepareOnlyTool(tool.name)) modelTools.add(tool.name);
     }
     const workflow=workflows.find(workflow=>workflow===name);
-    if(workflow && staffPackHandler(name,pack) && (workflow!=='filing' || await filingPortModule())) stages.push(workflow);
+    if(workflow && staffPackHandler(name,pack) && (workflow!=='filing' || await filingPortFactory())) stages.push(workflow);
   }
   return {stages,modelTools:[...modelTools]};
 }

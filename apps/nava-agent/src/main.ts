@@ -212,6 +212,7 @@ app.patch('/proposals/:id',async c=>{
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     if(error instanceof ZodError) return c.json({error:{code:'INVALID_INPUT',message:'Invalid field value',details:null}},400);
     if(code==='INVALID_CHILD_AGES') return c.json({error:{code,message:'Enter an age from 0 to 17 for each child.',details:null}},400);
+    if(code==='INVALID_GUEST_SELECTION') return c.json({error:{code,message:'Select the matching Infor profile and names, and remove the email lookup in the same edit.',details:null}},400);
     if(code==='INVALID_PATH') return c.json({error:{code,message:'Field is not editable',details:null}},400);
     return c.json({error:{code:'EDIT_FAILED',message:'Edit could not be saved',details:null}},503);
   }
