@@ -8,6 +8,7 @@ export type DisplayRow = {id:string; booking_id:string|null; label:string; nativ
 const object = (value:unknown):JsonObject => typeof value==='object' && value!==null && !Array.isArray(value) ? value as JsonObject : {};
 const list = (value:unknown):unknown[] => Array.isArray(value) ? value : [];
 const str = (value:unknown):string|null => typeof value==='string' ? value : null;
+export const zeroNativeQuotePrice = (amount:unknown):boolean => typeof amount==='string' && /^[+-]?0+(?:\.0+)?$/.test(amount.trim());
 
 /** Paths are relative to the returned aggregate, not to a detached option. */
 export function quoteDisplayRows(capture:unknown, searchIndex:number, quoteId:string, identities:({group_id:string; room_id:string}|undefined)[]):DisplayRow[] {
@@ -25,14 +26,17 @@ export function quoteDisplayRows(capture:unknown, searchIndex:number, quoteId:st
       }
       const status=option.availability;
       rows.push({...row('availability','Availability'),kind:'availability',status:status==='available'||status==='unavailable'||status==='restricted'?status:'unknown',rooms_available:null});
-      for (const [k,nightValue] of list(option.nightly).entries()) {
+      const nights=list(option.nightly);
+      const needsPriceReview=nights.some(value=>zeroNativeQuotePrice(object(object(value).price).amount));
+      for (const [k,nightValue] of nights.entries()) {
         const night=object(nightValue), price=object(night.price), date=str(night.date);
-        if(str(price.amount)!==null) rows.push({...row(`nightly/${k}/price`,'Nightly price'),kind:'money',amount:str(price.amount),currency:str(price.currency),unit:'night',date,basis:'native',official:true});
+        const zero=zeroNativeQuotePrice(price.amount);
+        if(str(price.amount)!==null) rows.push({...row(`nightly/${k}/price`,zero?'Nightly price needs staff review (HMS returned zero)':'Nightly price'),kind:'money',amount:zero?null:str(price.amount),currency:str(price.currency),unit:'night',date,basis:'native',official:!zero});
         if(Number.isInteger(night.inventory) && typeof night.inventory==='number' && night.inventory>=0) rows.push({...row(`nightly/${k}/inventory`,date?`Rooms available ${date}`:'Rooms available'),kind:'availability',status:night.restricted===true||night.rateAvailable===false?'restricted':night.rateAvailable===true&&night.restricted===false&&night.inventory>0?'available':night.inventory===0?'unavailable':'unknown',rooms_available:night.inventory});
       }
       for (const key of ['perRoom','forQuantity'] as const) {
         const sum=object(object(option.calculated)[key]);
-        if(sum.official===false && str(sum.amount)!==null) rows.push({...row(`calculated/${key}`,'Displayed nightly sum (not HMS payable total)'),kind:'money',amount:str(sum.amount),currency:str(sum.currency),unit:key==='perRoom'?'room':'stay',date:null,basis:'calculated',official:false});
+        if(!needsPriceReview && sum.official===false && str(sum.amount)!==null && !zeroNativeQuotePrice(sum.amount)) rows.push({...row(`calculated/${key}`,'Displayed nightly sum (not HMS payable total)'),kind:'money',amount:str(sum.amount),currency:str(sum.currency),unit:key==='perRoom'?'room':'stay',date:null,basis:'calculated',official:false});
       }
       const meal=object(option.mealPlan);
       if(str(meal.code)!==null||str(meal.label)!==null) rows.push({...row('mealPlan','Meal'),kind:'code',code:str(meal.code),meaning:str(meal.label)});

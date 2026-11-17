@@ -1,5 +1,5 @@
 import { quoteInput, quoteSchema, type QuoteInput } from './schema.js';
-import { quoteDisplayRows, type DisplayRow } from './display.js';
+import { quoteDisplayRows, zeroNativeQuotePrice, type DisplayRow } from './display.js';
 
 export type ToolContext = {sessionId:string; mode:'live'|'labtest'|'historical'; signal?:AbortSignal; credentialLease?:unknown};
 export type ToolResult = {ok:boolean; data:unknown; error:{code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'}|null};
@@ -99,13 +99,15 @@ export function quoteModelView(result:ToolResult):ToolResult {
               meal:bounded(meal.label??meal.code??option.mealPlan),availability:option.availability,eligibility:option.eligibility,
               match:option.matchStatus,nightly:array(option.nightly).slice(0,30).map(value=>{
                 const night=record(value), price=record(night.price);
-                return [night.date,price.amount,price.currency,night.inventory,night.restricted];
+                const amount=typeof price.amount==='string'?price.amount:null;
+                const zero=zeroNativeQuotePrice(amount);
+                return [night.date,zero?null:amount,price.currency,night.inventory,night.restricted,zero?'staff_review_zero':amount===null?'unavailable':'observed'];
               })};
           })};
         })};
     })};
   });
-  return {...result,data:{quotes,nightly_fields:['date','amount','currency','inventory','restricted']}};
+  return {...result,data:{quotes,nightly_fields:['date','amount','currency','inventory','restricted','price_status']}};
 }
 
 export const tools = [{name:'hms_quote',description:'Read native availability and nightly prices for one quote and its ordered date groups; does not book.',input_schema:quoteSchema,run:quote}];
