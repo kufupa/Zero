@@ -10,11 +10,12 @@ const list = (value:unknown):unknown[] => Array.isArray(value) ? value : [];
 const str = (value:unknown):string|null => typeof value==='string' ? value : null;
 
 /** Paths are relative to the returned aggregate, not to a detached option. */
-export function quoteDisplayRows(capture:unknown, searchIndex:number, quoteId:string, identities:{group_id:string; room_id:string}[]):DisplayRow[] {
+export function quoteDisplayRows(capture:unknown, searchIndex:number, quoteId:string, identities:({group_id:string; room_id:string}|undefined)[]):DisplayRow[] {
   const rows:DisplayRow[]=[];
   for (const [i,groupValue] of list(object(capture).groups).entries()) {
     const group=object(groupValue), identity=identities[i];
     if (!identity) continue;
+    if (!list(group.options).length) rows.push({id:`${searchIndex}:${i}:availability`,booking_id:identity.room_id,quote_id:quoteId,group_id:identity.group_id,label:'Availability',native_path:`/searches/${searchIndex}/native_result/groups/${i}/outcome`,kind:'availability',status:group.outcome==='unavailable'?'unavailable':'unknown',rooms_available:null});
     for (const [j,optionValue] of list(group.options).entries()) {
       const option=object(optionValue), base=`/searches/${searchIndex}/native_result/groups/${i}/options/${j}`;
       const row=(suffix:string,label:string)=>({id:`${searchIndex}:${i}:${j}:${suffix}`,booking_id:identity.room_id,quote_id:quoteId,group_id:identity.group_id,label,native_path:`${base}/${suffix}`});
