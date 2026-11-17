@@ -651,7 +651,7 @@ export function ReservationPane(props: ReservationPaneProps) {
           <div key={text(row.id)}>{row.workflow === 'guest_profile' ? 'Guest profile outcome unknown.' : text(row.summary) || text(row.workflow)} <button type="button" disabled={busy} onClick={() => { void commands.reconcile(text(row.id)).catch(() => {}); }}>Check outcome</button></div>)}</>
         : !recoveryOnly && <button type="button" disabled={busy || preview || Boolean(pendingDispatch)} onClick={() => { void workbench.reconcileSource().then(() => setChecked(null)).catch(() => {}); }}>I reviewed the updated evidence</button>}
     </div>}
-    {recoveryOnly && snapshot?.session.workflowDispatches?.some(d => d.status === 'needs_reconcile' || d.status === 'failed') &&
+    {recoveryOnly &&
       <div className={styles.notice} role="status">{staffFailureCopy('UNKNOWN', true)}</div>}
       {currentAttention && <div className={styles.notice} role="alert">
         <strong>{currentAttention.phase === 'review' ? 'Review needed before continuing.'
@@ -661,7 +661,7 @@ export function ReservationPane(props: ReservationPaneProps) {
         {[...new Set(currentIssues.map(issueText))].map(reason => <p key={reason}>{reason}</p>)}
         {reviewButtons.length > 0 && <div>{reviewButtons.map(({ field, label, target }) => <button type="button" key={label} onClick={() => { if (target) activeTarget.current = target; focusField(field); }}>{label}</button>)}</div>}
       </div>}
-      {props.skippedSource ? (props.skippedSource.kind === 'channel' || props.skippedSource.kind === 'system') && props.skippedSource.source
+      {!recoveryOnly && props.skippedSource ? (props.skippedSource.kind === 'channel' || props.skippedSource.kind === 'system') && props.skippedSource.source
         ? <MailSourceNoActionCard kind={props.skippedSource.kind} source={props.skippedSource.source} />
         : <div className={styles.notice} role="status"><p>Nava takes no action on this email.</p></div>
       : null}
