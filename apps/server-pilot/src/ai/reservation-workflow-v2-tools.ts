@@ -1104,7 +1104,7 @@ export async function reservationWorkflowV2Prepare(ctx: ReadContext,
       fields: [...new Set([...(native.missing ?? []).filter((field): field is string => typeof field === 'string')
         .map(field => field.split('.').at(-1)!), ...(native.issue === 'RATE_NOT_AVAILABLE' ? ['ratePlan'] : [])])],
       observationRef: observation.ref, ratePlanIssue: native.ratePlanIssue };
-    return { status: 'prepared', requestId: input.requestId, allocationId: input.allocationId,
+    return { status: 'prepared', hmsReadCompleted: true, requestId: input.requestId, allocationId: input.allocationId,
       observationRef: observation.ref, requestDigest: native.requestBinding?.digest,
       ratePlanAvailability: price, applied: native.applied ?? {}, commitOnlyFields: native.commitOnlyFields ?? [],
       screenshot: prepareShot };

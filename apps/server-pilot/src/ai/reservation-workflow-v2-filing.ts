@@ -796,7 +796,7 @@ export async function reservationWorkflowV2FilingPrepare(ctx: ReservationWorkflo
   });
   const saved = await recordFilingOperation(ctx, input, observation, 'prepared', 'PDF and saved stay prepared in HMS; nothing saved');
   if (saved.status !== 'ok') return saved;
-  return { status: 'prepared', requestId: input.requestId, documentId: selection.document.id,
+  return { status: 'prepared', hmsReadCompleted: true, requestId: input.requestId, documentId: selection.document.id,
     observationRef: observation.ref, documentName: preview.documentName, sourceDocumentName: preview.documentName,
     nativeDocumentName: bound.form.documentName, sha256: preview.documentSource.sha256,
     documentDescription: bound.form.documentDescription ?? bound.form.documentName,
