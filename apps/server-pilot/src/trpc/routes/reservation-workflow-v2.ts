@@ -797,6 +797,8 @@ export const reservationWorkflowV2Router = router({
     const scoped = await nativeContext(ctx.sessionUser, ctx.activeTransportId, input.source, input.propertySwitch);
     const workflow = await nativeWorkflow(scoped, input, input.requestId);
     if (workflow.result) return workflow.result;
+    if (input.nativeFieldPath && workflow.kind === 'quote' && /\/body\/parties\/(?:organization|bookingAgency)$/.test(input.nativeFieldPath))
+      return reservationWorkflowV2QuoteLookup(scoped, input);
     if (input.nativeFieldPath) return reservationWorkflowV2NativeChoices(scoped, input);
     if (workflow.kind === 'quote') return reservationWorkflowV2QuoteLookup(scoped, input);
     if (workflow.kind === 'filing') return reservationWorkflowV2FilingLookup(scoped, input);

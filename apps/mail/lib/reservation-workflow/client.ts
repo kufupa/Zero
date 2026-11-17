@@ -680,6 +680,7 @@ function quoteLookupNotice(result: unknown): string | undefined {
   if (!isRecord(result) || !Array.isArray(result.quotes)) return undefined;
   const issues = result.quotes.flatMap((value) => {
     if (!isRecord(value) || value.status === 'priced') return [];
+    if (value.status === 'needs_input' && Array.isArray(value.partyCandidates)) return [];
     const status = isString(value.status) ? value.status.replaceAll('_', ' ') : 'unknown outcome';
     const issue = nativeIssueText(value.issue);
     const fields = inputFieldLabels(value.fields);
@@ -1019,6 +1020,22 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
       }
       const input = { ...itemInput(command), ...(command.requestId ? { requestId: command.requestId } : {}),
         ...(command.nativeFieldPath ? { nativeFieldPath: command.nativeFieldPath } : {}) };
+      const quoteParty = Boolean(command.nativeFieldPath && /\/body\/parties\/(?:organization|bookingAgency)$/.test(command.nativeFieldPath) &&
+        command.snapshot.requests.some(request => request.id === command.requestId && request.kind === 'quote'));
+      if (quoteParty) {
+        let result: unknown;
+        try { result = await api.lookup.mutate(input, mailboxOptions(command.source)); }
+        catch { throw new Error('Infor could not search for this profile. Try again.'); }
+        await refreshAfterStale(input, command.source, result);
+        const reply = isRecord(result) ? result : {};
+        const notice = reply.status === 'ok' ? undefined
+          : reply.outcomeClass === 'hms_busy' || reply.issue === 'HMS_LOCK_BUSY' || reply.issue === 'STAFF_QUOTE_ACTIVE'
+            ? 'Infor is in use. Wait for the current action to finish, then search again.'
+            : reply.issue === 'native_party_search_incomplete'
+              ? 'Infor did not finish the profile search. Search again.'
+              : 'Infor could not search for this profile. Try again.';
+        return { ...await load(input, command.source), ...(notice ? { serviceNotice: notice } : {}), workflowReply: reply };
+      }
       const raw = await api.lookup.mutate(input, mailboxOptions(command.source));
       await refreshAfterStale(input, command.source, raw);
       const result = okResult(raw);
