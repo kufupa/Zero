@@ -4,7 +4,7 @@ import { prepare } from './index.js';
 
 const summary = z.object({
   outcome: z.literal('prepared'),
-  fields: z.record(z.unknown()),
+  changed_fields: z.array(z.string()),
   availability: z.object({ status: z.string() }),
   price: z.object({ basis: z.string() }),
 });
@@ -29,8 +29,8 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  const { outcome, fields, availability, price } = summary.parse(result.data);
-  process.stdout.write(JSON.stringify({ ok: true, outcome, staged_fields: Object.keys(fields),
+  const { outcome, changed_fields, availability, price } = summary.parse(result.data);
+  process.stdout.write(JSON.stringify({ ok: true, outcome, staged_fields: changed_fields,
     availability: availability.status, price_basis: price.basis }) + '\n');
 }
 

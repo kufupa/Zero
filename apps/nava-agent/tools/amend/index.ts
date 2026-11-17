@@ -35,7 +35,9 @@ const freshRead = z.object({
   shallow: z.object({ confirmation: z.string() }),
   record: z.object({
     nativePreimage: selectedStay,
-    details: z.object({ fields: z.array(z.object({ name: z.string(), rawValue: z.unknown() })) }),
+    details: z.object({ fields: z.array(z.object({
+      name: z.string().nullable(), value: z.unknown(), rawValue: z.unknown().optional(),
+    })) }),
   }),
 });
 const nativeStatus = z.object({ outcome: z.string(), issue: z.string().regex(/^[A-Z][A-Z_0-9]{2,80}$/).optional(),
@@ -48,6 +50,11 @@ const prepared = z.object({
     currency: z.string().regex(/^[A-Z]{3}$/),
     totalCents: minor,
     averageCents: minor.nullable(),
+    options: z.array(z.object({
+      roomType: z.string().max(12), ratePlan: z.string().max(12),
+      currency: z.string().regex(/^[A-Z]{3}$/),
+      nightly: z.array(z.object({ date: day, amountCents: minor })),
+    })).max(100),
   }),
   preserved: z.object({ cmsSend: z.boolean() }),
 });
@@ -83,7 +90,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (context.mode === 'historical') return refuse('HISTORICAL_HMS_UNAVAILABLE', 'Historical sessions cannot contact HMS.');
   if (context.signal?.aborted) return refuse('AMEND_ABORTED', 'Amendment preparation was aborted.');
   const envelope = prepareEnvelope.safeParse(input);
-  if (!envelope.success) return refuse('AMEND_INPUT_INVALID', 'Supply one booking, its property, and an amend action with the confirmation number.');
+  if (!envelope.success) return refuse('AMEND_INPUT_INVALID', 'Supply one booking, its property, and an amend action.');
   const { booking, action } = envelope.data;
   if (action.booking_ids[0] !== booking.id) return refuse('AMEND_TARGET_MISMATCH', 'Action does not identify the supplied booking.');
   const delta = patch.safeParse(booking.fields);
@@ -98,7 +105,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   const hint = booking.current_state?.arrival_date;
   const expectedArrival = hint == null ? null : day.safeParse(hint);
   if (expectedArrival?.success === false) return refuse('AMEND_INPUT_INVALID', 'Current arrival, if supplied, must be an ISO calendar date.');
-  const confirmation = action.details.confirmation_number;
+  const candidateConfirmation = booking.reservation_id;
+  const confirmation = action.details.confirmation_number ??
+    (candidateConfirmation && /^\d{6,10}(?:-\d{1,10})?$/.test(candidateConfirmation) ? candidateConfirmation : null);
+  if (!confirmation) return refuse('AMEND_CONFIRMATION_REQUIRED', 'Supply the confirmation number for the selected stay.');
   const signal = AbortSignal.any([AbortSignal.timeout(5 * 60_000), ...(context.signal ? [context.signal] : [])]);
   let phase: 'adapter' | 'target_read' | 'native_prepare' = 'adapter';
 
@@ -125,7 +135,8 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const selected = record.nativePreimage;
     if (selected.propertyCode !== property.propertyCode || selected.confirmation !== shallow.confirmation ||
         (confirmation.includes('-') ? selected.confirmation !== confirmation : selected.confirmation.split('-')[0] !== confirmation) ||
-        (booking.reservation_id !== null && booking.reservation_id !== selected.reservationStayId) ||
+        (booking.reservation_id !== null && booking.reservation_id !== selected.reservationStayId &&
+          booking.reservation_id !== selected.confirmation && booking.reservation_id !== selected.confirmation.split('-')[0]) ||
         (expectedArrival?.data !== undefined && expectedArrival.data !== selected.arrival)) {
       return refuse('AMEND_TARGET_MISMATCH', 'Fresh read did not match the requested stay identity.');
     }
@@ -134,12 +145,13 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       ...Object.fromEntries(Object.entries(stayFields).map(([key, native]) => [key, selected[native]])),
       ...Object.fromEntries(Object.entries(recordFields).map(([key, native]) => {
         const fields = record.details.fields.filter(field => field.name === native);
-        return [key, fields.length === 1 && typeof fields[0]?.rawValue === 'string' ? fields[0].rawValue : null];
+        if (fields.length !== 1) return [key, null];
+        const value = key === 'reservation_note' ? fields[0]?.rawValue : fields[0]?.value;
+        return [key, typeof value === 'string' ? value : null];
       })),
     };
     const changedKeys = patch.keyof().options.filter(key => requested[key] !== undefined && before[key] !== requested[key]);
-    const fields = changedKeys.map(key => [key, requested[key]]);
-    if (!fields.length) return refuse('AMEND_UNCHANGED', 'Requested fields already match HMS.');
+    if (!changedKeys.length) return refuse('AMEND_UNCHANGED', 'Requested fields already match HMS.');
     if ((requested.arrival_date ?? selected.arrival) >= (requested.departure_date ?? selected.departure)) {
       return refuse('AMEND_DATES_INVALID', 'Departure must follow arrival.');
     }
@@ -171,22 +183,38 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     }
     const staged = prepared.safeParse(response);
     if (!staged.success) return refuse('AMEND_STAGE_UNVERIFIED', 'Native stage did not return a verified price and form binding.');
+    if (staged.data.preserved.cmsSend) {
+      return refuse('AMEND_CMS_PRESERVATION_UNSUPPORTED', 'Current CMS send setting cannot be preserved by this preview.');
+    }
     const price = staged.data.approvedPrices;
+    const options = price.options.slice(0, 20);
     return { ok: true, error: null, data: {
       outcome: 'prepared', workflow: 'amend', property_code: property.propertyCode,
-      confirmation: selected.confirmation, reservation_id: selected.reservationStayId,
-      current_state: Object.fromEntries(fields.map(([key]) => [key, before[key] ?? null])),
-      fields: Object.fromEntries(fields),
+      confirmation: selected.confirmation, reservation_id: selected.confirmation, native_stay_id: selected.reservationStayId,
+      current_state: Object.fromEntries(patch.keyof().options.filter(key => requested[key] !== undefined)
+        .map(key => [key, before[key] ?? null])),
+      fields: requested, changed_fields: changedKeys,
       cms_send: false, current_cms_send: staged.data.preserved.cmsSend,
       native_digest: staged.data.nativeDigest,
-      availability: { status: needsAvailability ? 'native_check_passed' : 'not_checked', rooms_held: false },
+      availability: { status: needsAvailability ? 'native_check_passed' : 'not_checked' },
       price: { basis: retainRates ? 'saved_stay' : 'staged_stay', currency: price.currency,
-        total_cents: price.totalCents, average_nightly_cents: price.averageCents },
-      warnings: ['Unsaved preview. No reservation or email was changed.'],
+        total_cents: price.totalCents, average_nightly_cents: price.averageCents,
+        rate_shop_options: options.map(option => ({
+          room_type: option.roomType, rate_plan: option.ratePlan, currency: option.currency,
+          nightly: option.nightly.slice(0, 31).map(night => ({ date: night.date, amount_cents: night.amountCents })),
+          nights_observed: option.nightly.length,
+        })),
+        rate_options_observed: price.options.length,
+        rate_options_returned: options.length },
+      warnings: ['Unsaved preview. No reservation or email was changed.',
+        'Rate Shop observations do not hold inventory or establish the final payable total.'],
     } };
-  } catch {
+  } catch (error) {
+    const safeCodes = ['HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED', 'HMS_CREDENTIAL_LEASE_CONTENDED',
+      'HMS_CREDENTIAL_LEASE_CONNECTION_FAILED', 'HMS_CREDENTIAL_LEASE_LOST'];
+    const code = error instanceof Error && safeCodes.includes(error.message) ? error.message : 'AMEND_NATIVE_UNAVAILABLE';
     return signal.aborted ? refuse('AMEND_ABORTED', 'Amendment preparation was aborted or timed out.')
-      : refuse('AMEND_NATIVE_UNAVAILABLE', 'Native amend session could not be opened or completed.', { phase });
+      : refuse(code, 'Native amend session could not be opened or completed.', { phase });
   }
 }
 

@@ -27,7 +27,7 @@ export const prepareEnvelope = z.object({
   booking: z.object({
     id,
     property_code: z.string().regex(/^[A-Z][A-Z0-9]{1,15}$/),
-    reservation_id: z.string().regex(/^\d{1,100}$/).nullable(),
+    reservation_id: z.string().regex(/^\d{1,100}(?:-\d{1,10})?$/).nullable(),
     current_state: z.record(z.unknown()).nullable(),
     fields: z.record(z.unknown()),
   }).strict(),
@@ -36,7 +36,7 @@ export const prepareEnvelope = z.object({
     type: z.literal('amend'),
     booking_ids: z.tuple([id]),
     details: z.object({
-      confirmation_number: confirmation,
+      confirmation_number: confirmation.optional(),
       retain_rates: z.boolean().optional(),
     }).strict(),
   }).strict(),
@@ -52,11 +52,11 @@ export const prepareManifest = {
       workflow: { type: 'string', enum: ['amend'] },
       booking: {
         type: 'object',
-        description: 'Booking envelope. fields contains only requested changes; reservation_id is the native stay ID or null.',
+        description: 'Booking envelope. fields contains only requested changes; reservation_id may be a confirmation, native stay ID, or null.',
       },
       action: {
         type: 'object',
-        description: 'Amend action for that booking. details.confirmation_number is required; details.retain_rates is optional.',
+        description: 'Amend action for that booking. Supply confirmation_number in details or booking.reservation_id; retain_rates is optional.',
       },
     },
     required: ['workflow', 'booking', 'action'],
