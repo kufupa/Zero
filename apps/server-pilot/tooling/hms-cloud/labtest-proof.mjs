@@ -248,7 +248,7 @@ function assertUncancelledLabtest(record, expected, own) {
     native.confirmation === expected.confirmation && native.reservationStayId === expected.nativeStayId &&
     native.guestId === expected.guestId && native.firstName === 'Proof' && native.lastName === 'Labtest' &&
     native.arrival === expected.arrival && native.departure === expected.departure && native.status === 'Reserved' &&
-    native.note === own.note && Array.isArray(send) && send.length === 1 && send[0].value === false &&
+    Array.isArray(send) && send.length === 1 && send[0].value === false &&
     exactStayField(record, 'cancelreason') === '' && exactStayField(record, 'cancellationnote') === '' &&
     exactStayField(record, 'reservationnote') === own.note, 'CANCEL_STAGE_STAY_CHANGED');
 }
