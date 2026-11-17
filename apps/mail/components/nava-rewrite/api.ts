@@ -4,17 +4,22 @@ import {
   proposalSchema, threadInputSchema, threadSnapshotSchema,
 } from './wire';
 import type {
-  AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, ThreadInput, ThreadSnapshot,
+  AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, ThreadInput,
 } from './wire';
+
+const boundProposalSchema = proposalSchema.extend({ source_message_id: z.string().min(1).nullable().optional() });
+const boundThreadSnapshotSchema = threadSnapshotSchema.extend({ proposals: z.array(boundProposalSchema) });
+export type BoundProposal = z.infer<typeof boundProposalSchema>;
+export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 
 export type RequestOptions = { signal?: AbortSignal };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
 export type NavaApi = {
-  upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<ThreadSnapshot>;
-  getThread: (id: string, options?: RequestOptions) => Promise<ThreadSnapshot>;
+  upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
+  getThread: (id: string, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getCapabilities: (options?: RequestOptions) => Promise<Capabilities>;
   events: (id: string, afterSequence: number, options?: RequestOptions) => AsyncGenerator<NavaEvent>;
-  patchProposal: (request: RevisionRequest & { changes: Change[] }) => Promise<Proposal>;
+  patchProposal: (request: RevisionRequest & { changes: Change[]; staffAttachmentsChecked?: boolean }) => Promise<BoundProposal>;
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
@@ -68,7 +73,7 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
     return response;
   }
 
-  async function json<T>(path: string, schema: z.ZodType<T>, init: RequestInit = {}): Promise<T> {
+  async function json<T>(path: string, schema: z.ZodType<T, z.ZodTypeDef, unknown>, init: RequestInit = {}): Promise<T> {
     const response = await request(path, init);
     const payload: unknown = await response.json().catch(() => null);
     const parsed = schema.safeParse(payload);
@@ -132,16 +137,20 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
   }
 
   return {
-    upsertThread: (input, options) => {
+    upsertThread: async (input, options) => {
       const parsed = threadInputSchema.parse(input);
-      const key = encodeURIComponent(JSON.stringify([parsed.source, parsed.mailbox_id, parsed.source_thread_id, parsed.selected_message_id]));
-      return json('/threads', threadSnapshotSchema, body(parsed, options?.signal, { 'Idempotency-Key': key }));
+      const payload = JSON.stringify(parsed);
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
+      const key = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+      return json('/threads', boundThreadSnapshotSchema, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key }, body: payload, signal: options?.signal,
+      });
     },
-    getThread: (id, options) => json(`/threads/${pathId(id)}`, threadSnapshotSchema, { signal: options?.signal }),
+    getThread: (id, options) => json(`/threads/${pathId(id)}`, boundThreadSnapshotSchema, { signal: options?.signal }),
     getCapabilities: options => json('/capabilities', capabilitiesSchema, { signal: options?.signal }),
     events,
-    patchProposal: ({ proposalId, expectedRevision, changes, signal }) => json(proposalPath(proposalId), proposalSchema, {
-      ...body({ expected_revision: expectedRevision, changes }, signal), method: 'PATCH',
+    patchProposal: ({ proposalId, expectedRevision, changes, staffAttachmentsChecked, signal }) => json(proposalPath(proposalId), boundProposalSchema, {
+      ...body({ expected_revision: expectedRevision, changes, ...(staffAttachmentsChecked === undefined ? {} : { staff_attachments_checked: staffAttachmentsChecked }) }, signal), method: 'PATCH',
     }),
     undo: request => json(`${proposalPath(request.proposalId)}/undo`, proposalSchema, revisionBody(request)),
     redo: request => json(`${proposalPath(request.proposalId)}/redo`, proposalSchema, revisionBody(request)),

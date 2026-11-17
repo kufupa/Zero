@@ -84,6 +84,8 @@ export function NavaRewriteHost({ bridge, source, preview = false }: {
       {!preview && bridge.authorizationUnavailable && <button type="button" className="m-3 rounded border p-2 text-sm"
         onClick={bridge.refreshAuthorization}>Reconnect Outlook</button>}
       {bridgeError && <p role="alert" className="px-3 py-2 text-sm">{bridgeError}</p>}
+      {!bridgeUnavailable && source.status === 'ready' && email && source.input.messages.some(message => message.attachment_status !== 'complete') &&
+        <p role="status" className="shrink-0 px-3 py-2 text-sm text-slate-700">Check attachments in Outlook - Nava could not read them</p>}
       {!bridgeUnavailable && source.status === 'ready' && email ? <NavaController key={owner} input={source.input} email={email} api={api} stageWorkflows={['create']} /> : <>
         <NavaPane email={email}>{sourceMessage && <PaneMessage>{sourceMessage}</PaneMessage>}</NavaPane>
         {!email && sourceMessage && <p role="status" className="px-4 pb-4 text-sm text-slate-600">{sourceMessage}</p>}

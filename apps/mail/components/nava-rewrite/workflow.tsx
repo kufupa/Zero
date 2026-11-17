@@ -5,11 +5,11 @@ import type { ReactNode } from 'react';
 import { PaneField } from './field';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
-import type { FieldSpec, NativeDisplayRow, Proposal } from './wire';
+import type { FieldSpec, NativeDisplayRow, Proposal, ThreadInput } from './wire';
 import styles from './pane.module.css';
 import quoteStyles from './quote.module.css';
 
-export type DraftValue = string | boolean;
+export type DraftValue = string | boolean | string[];
 type ReviewControl = { checked: boolean; actionLabel: string; disabled?: boolean };
 
 export type WorkflowProps = {
@@ -22,6 +22,12 @@ export type WorkflowProps = {
   reviews?: Readonly<Record<string, ReviewControl>>;
   onReview?: (path: string, checked: boolean) => void;
   onOpenArtifact?: (artifactId: string) => void;
+  attachmentsChecked: boolean;
+  attachmentsAttention: boolean;
+  attachmentCoverageComplete: boolean;
+  attachmentsBusy: boolean;
+  attachmentMessages: ThreadInput['messages'];
+  onAttachmentsCheckedChange: (checked: boolean) => void;
 };
 
 export type WorkflowFooterProps = Pick<WorkflowProps, 'proposal' | 'drafts' | 'busy'> & {
@@ -160,6 +166,23 @@ function fieldContext(proposal: Proposal, path: string) {
   return undefined;
 }
 
+function childFieldPath(path: string, field: 'child_count' | 'child_ages') {
+  const match = /^(\/bookings\/(?:0|[1-9]\d*)\/fields\/)child_(?:count|ages)$/.exec(path);
+  return match ? `${match[1]}${field}` : undefined;
+}
+
+function childCount(value: unknown): number | undefined {
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+  if (typeof value === 'string' && !/^\d+$/.test(value)) return undefined;
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 0 && count <= 16 ? count : undefined;
+}
+
+function ageInputs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(age => typeof age === 'string' || typeof age === 'number' ? String(age) : '');
+}
+
 function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, showContext = true }: WorkflowProps & { spec: FieldSpec; locked: boolean; showContext?: boolean }) {
   const context = showContext ? fieldContext(proposal, spec.path) : undefined;
   const label = context ? `${spec.label} · ${context}` : spec.label;
@@ -178,7 +201,52 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, show
   const common = { label, required: spec.required, disabled: locked || !spec.editable, error: spec.error, hint, review };
   let control: ReactNode;
 
-  if (spec.control === 'checkbox') {
+  const agesPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_ages') : undefined;
+  const countPath = proposal.workflow === 'create' ? childFieldPath(spec.path, 'child_count') : undefined;
+  const agesSpec = agesPath && proposal.field_specs.find(item => item.path === agesPath);
+  if (agesPath && spec.path === agesPath && countPath) {
+    const resolvedCount = resolvePointer(proposal, countPath);
+    const countValue = Object.prototype.hasOwnProperty.call(drafts, countPath) ? drafts[countPath] : resolvedCount.kind === 'value' ? resolvedCount.value : undefined;
+    const count = childCount(countValue);
+    const ages = ageInputs(shown);
+    control = count === undefined ? <PaneMessage>{label}: enter a child count from 0 to 16 first.</PaneMessage> : <>
+      {count === 0 && !Array.isArray(shown) && <PaneMessage>
+        Confirm there are no children.
+        <button type="button" disabled={locked || !spec.editable} onClick={() => onEdit(spec.path, [])}>Confirm no children</button>
+      </PaneMessage>}
+      {Array.from({ length: count }, (_, index) => {
+        const age = ages[index] ?? '';
+        const valid = /^\d+$/.test(age) && Number(age) <= 17;
+        return <PaneField key={index} label={`Child ${index + 1} age${context ? ` · ${context}` : ''}`} control="number"
+          value={age} min="0" max="17" step="1" required disabled={locked || !spec.editable}
+          error={valid ? undefined : 'Enter an age from 0 to 17.'}
+          review={aiFilled && index < ages.length ? { provenance: 'ai', kind: 'marker' } : undefined}
+          onChange={next => {
+            const updated = Array.from({ length: Math.max(count, ages.length) }, (_, i) => ages[i] ?? '');
+            updated[index] = next;
+            onEdit(spec.path, updated);
+          }} />;
+      })}
+      {ages.length > count && <PaneMessage tone="error">
+        There are more saved ages than children. Confirm which ages to keep.
+        <button type="button" disabled={locked || !spec.editable} onClick={() => onEdit(spec.path, ages.slice(0, count))}>Keep the first {count} {count === 1 ? 'age' : 'ages'}</button>
+      </PaneMessage>}
+    </>;
+  } else if (countPath && spec.path === countPath && agesPath && spec.control === 'number') {
+    const count = childCount(shown);
+    const resolvedAges = resolvePointer(proposal, agesPath);
+    const ages = ageInputs(Object.prototype.hasOwnProperty.call(drafts, agesPath) ? drafts[agesPath] : resolvedAges.kind === 'value' ? resolvedAges.value : undefined);
+    if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string') {
+      control = <PaneField {...common} disabled={common.disabled || !agesSpec?.editable} control="number" value={shown === null || shown === undefined ? '' : String(shown)}
+        min="0" max="16" step="1" error={spec.error || (shown !== null && shown !== undefined && count === undefined ? 'Enter a child count from 0 to 16.' : undefined)}
+        hint={!agesSpec?.editable ? 'Child ages are unavailable to edit. Refresh the proposal.' : hint}
+        onChange={next => {
+          onEdit(spec.path, next);
+          const nextCount = childCount(next);
+          if (nextCount !== undefined) onEdit(agesPath, Array.from({ length: nextCount }, (_, i) => ages[i] ?? ''));
+        }} />;
+    }
+  } else if (spec.control === 'checkbox') {
     if (shown === null || shown === undefined) {
       control = <PaneField {...common} control="select" value="" placeholder="Not provided" options={[{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]} onChange={next => { if (next) onEdit(spec.path, next === 'true'); }} />;
     } else if (typeof shown === 'boolean') {
@@ -191,7 +259,10 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, show
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
     if (spec.control === 'select' || spec.control === 'combobox') {
-      control = <PaneField {...common} control={spec.control} value={text} options={spec.options} onChange={next => onEdit(spec.path, next)} />;
+      const rateCode = proposal.workflow === 'create' && /^\/bookings\/(0|[1-9]\d*)\/fields\/rate_plan$/.test(spec.path);
+      control = rateCode && spec.options.length === 0
+        ? <PaneField {...common} control="text" value={text} onChange={next => onEdit(spec.path, next)} />
+        : <PaneField {...common} control={rateCode ? 'combobox' : spec.control} value={text} options={spec.options} onChange={next => onEdit(spec.path, next)} />;
     } else {
       const date = spec.control === 'date' && text && !isDateValue(text) ? 'text' : spec.control;
       control = <PaneField {...common} control={date} value={text} onChange={next => onEdit(spec.path, next)} />;
@@ -275,6 +346,7 @@ function uncertain(proposal: Proposal) {
 
 function errorMessage(proposal: Proposal) {
   if (uncertain(proposal)) return 'Infor has not confirmed the outcome. Check Infor before trying again.';
+  if (proposal.error?.message.trim()) return proposal.error.message;
   const subject = {
     triage: 'email review', quote: 'quote request', create: 'reservation request',
     amend: 'change request', cancel: 'cancellation request', filing: 'document request',
@@ -298,11 +370,25 @@ export function Workflow(props: WorkflowProps) {
   return <>
     {phaseMessage && <PaneMessage><span role="status">{phaseMessage}{longWait && (proposal.workflow === 'quote' && proposal.phase === 'prefilling' ? ' This is taking longer than expected. Nava is still working on the quote.' : ' This is taking longer than expected. Please wait.')}</span></PaneMessage>}
     {uncertain(proposal) && !proposal.error && <PaneMessage>Infor has not confirmed the outcome. Check Infor before trying again.</PaneMessage>}
-    {proposal.error && <PaneMessage tone="error">{errorMessage(proposal)}</PaneMessage>}
+    {proposal.error && <PaneMessage tone="error">
+      {errorMessage(proposal)}
+      {proposal.error.recovery?.trim() && <p>{proposal.error.recovery}</p>}
+    </PaneMessage>}
     {dispositionMessage && <PaneMessage>{dispositionMessage}</PaneMessage>}
     {proposal.reason && <PaneMessage>{proposal.reason}</PaneMessage>}
     {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{proposal.missing.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
     {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
+    {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <PaneSection title="Check attachments">
+      {!props.attachmentCoverageComplete && <PaneMessage tone="error">Nava cannot prepare this request because attachment coverage is incomplete or could not be verified. Handle the request using your usual process.</PaneMessage>}
+      <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}Check the attachments in the selected email and each earlier email listed below in Outlook. Include all relevant attachment details in this proposal, then confirm.</p>
+      {props.attachmentMessages.length > 0 ? <ul>{props.attachmentMessages.map(message => <li key={message.id}>
+        {message.subject || '(No subject)'} · {message.from.name || message.from.email} · <time dateTime={message.received_at}>{message.received_at}</time>
+        {message.attachment_status === 'has_unread' ? ' · Attachments not read by Nava' : message.attachment_status !== 'complete' ? ' · Attachment status unknown' : ''}
+      </li>)}</ul> : <p>Emails used by Nava are unavailable. Refresh the proposal before confirming.</p>}
+      <PaneField control="checkbox" label="I reviewed attachments for every relevant email in this conversation and reflected every material attachment instruction in the current proposal." value={props.attachmentsChecked}
+        disabled={locked || props.attachmentsBusy || !props.attachmentCoverageComplete || Object.keys(props.drafts).length > 0 || props.attachmentMessages.length === 0}
+        onChange={props.onAttachmentsCheckedChange} />
+    </PaneSection>}
     {proposal.workflow !== 'quote' && <ActionContext proposal={proposal} />}
     {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
     {proposal.workflow !== 'quote' && proposal.field_specs.length > 0 && <PaneSection title="Details">

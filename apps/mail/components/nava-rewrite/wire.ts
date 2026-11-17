@@ -16,6 +16,7 @@ export const emailSchema = z.object({
   id, rfc_message_id: z.string().nullable(), direction: z.enum(['inbound', 'outbound']),
   from: addressSchema, to: z.array(addressSchema), cc: z.array(addressSchema),
   received_at: z.string(), subject: z.string(), body_text: z.string(), body_html: z.string().nullable(),
+  attachment_status: z.enum(['complete', 'unknown', 'has_unread']).optional(),
   attachments: z.array(z.object({
     id, name: z.string(), mime_type: z.string(), size: z.number().nonnegative(),
     handle: z.string(), extracted_text: z.string().nullable(),
@@ -63,6 +64,8 @@ export const proposalSchema = z.object({
   reply_draft: z.string().nullable(), native_result: jsonSchema,
   id, thread_id: id, session_id: id, revision, phase: phaseSchema,
   created_at: z.string(), updated_at: z.string(), display_rows: z.array(nativeDisplayRowSchema),
+  staff_attachments_checked: z.boolean().default(false),
+  attachment_coverage_complete: z.boolean().default(false),
   stage: z.object({ revision, summary: z.array(z.string()), native_result: jsonSchema, display_rows: z.array(nativeDisplayRowSchema) }).nullable(),
   result: z.object({
     confirmation: z.string().nullable(), reservation_id: z.string().nullable(),
