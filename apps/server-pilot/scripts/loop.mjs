@@ -287,6 +287,7 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
       return value;
     };
     const selected = restore(loaded.selection);
+    thread = loaded.messages;
     Object.assign(source, loaded.source);
     result.source.body = selected.bodyText;
     result.source.from = selected.fromAddress ? [selected.fromAddress] : [];
@@ -380,7 +381,8 @@ async function prepareEmail(entry, options, outputDir) {
     const triageNeedsStaff = result.triage?.output?.abstainReason || result.triage?.output?.humanAction === 'review_required' || result.triage?.output?.automationState === 'unknown';
     const incomplete = stages.find(stage => !['ok', 'priced', 'prepared', 'succeeded'].includes(stage.result?.status));
     const complete = prepared.length > 0 && prepared.every(stage => stage.result?.status === 'prepared') &&
-      (options.workflow !== 'quote' || artifacts.length === prepared.length && artifacts.every(stage => stage.result?.status === 'succeeded'));
+      (options.workflow !== 'quote' || prepared.every(stage => artifacts.some(output =>
+        output.requestId === stage.requestId && output.result?.status === 'succeeded')));
     const files = new Set(result.hms.files.map(path => path.split('/').at(-1)));
     const hasArtifacts = options.workflow !== 'quote' || artifacts.every(stage =>
       (stage.result?.unavailableInventory ? ['cover.json'] : ['cover.json', 'quote.pdf', 'quote.xlsx'])

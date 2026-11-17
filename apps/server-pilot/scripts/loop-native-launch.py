@@ -5,6 +5,7 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -14,9 +15,24 @@ os.umask(0o077)
 run = Path(sys.argv[1]).resolve()
 pilot = Path('/home/ubuntu/repos/zero/apps/server-pilot')
 nodebin = Path('/home/ubuntu/.nvm/versions/node/v22.23.1/bin')
+def trusted_pg_bin(directory):
+    try:
+        for path in [directory, *directory.parents]:
+            info = path.lstat()
+            sticky_tmp = path == Path('/tmp') and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid()) or (info.st_mode & 0o022 and not sticky_tmp):
+                return False
+        for name in ('initdb', 'pg_ctl'):
+            info = (directory / name).lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.getuid()) or info.st_mode & 0o022 or not info.st_mode & 0o111:
+                return False
+        return True
+    except OSError:
+        return False
+
 pgbin = next((p for p in [Path(os.environ.get('LOOP_PGBIN', '/usr/lib/postgresql/16/bin')),
                            Path('/tmp/nava-pgtest-20261102.WzDOzKK2/unpacked/usr/lib/postgresql/16/bin')]
-              if (p / 'initdb').is_file()), None)
+              if p.is_absolute() and trusted_pg_bin(p)), None)
 
 def call(args, **kwargs):
     try:

@@ -32,8 +32,8 @@ try {
   const current = await live.conn.begin('isolation level repeatable read read only', async sql => {
     const transports = await sql`select id, email, owner_header_value, mailbox_type, display_name, is_active
       from mailbox_transport where id = ${input.transport.id} and is_active = true`;
-    const messages = await sql`select id, direction, from_address, to_addresses, cc_addresses, owner_header_value,
-      subject, text_body, html_body, received_at, sent_at, created_at, ingest_mailbox_id, pop3_uidl, source_provenance, history_only, message_id_header
+    const messages = await sql`select id, direction, from_address, to_addresses, cc_addresses, bcc_addresses, owner_header_value,
+      in_reply_to, "references", subject, text_body, html_body, received_at, sent_at, created_at, ingest_mailbox_id, pop3_uidl, source_provenance, history_only, message_id_header
       from message where transport_id = ${input.transport.id} and thread_id = ${input.source.threadId}`;
     const attachments = await sql`select a.* from attachment a join message m on m.id = a.message_id
       where m.transport_id = ${input.transport.id} and m.thread_id = ${input.source.threadId}`;
@@ -50,6 +50,8 @@ try {
   const snapshot = input.messages.find(row => row.id === input.source.messageId);
   if (!selected || selected.direction !== 'inbound' || selected.history_only || !snapshot || ['subject', 'textBody', 'htmlBody'].some((key, index) =>
     (snapshot[key] ?? '') !== (selected[['subject', 'text_body', 'html_body'][index]] ?? ''))) throw Error('live_source_changed');
+  if (!input.selectionOnly && current.messages.some(row => !input.messages.some(message => message.id === row.id)))
+    throw Error('live_thread_changed');
   if (input.messages.some(row => {
     if (row.threadId !== input.source.threadId) return false;
     const liveRow = current.messages.find(message => message.id === row.id);
@@ -81,13 +83,15 @@ try {
   if (eligibility.status !== 'ok') throw Error(`live_source:${eligibility.status}`);
   for (const row of current.messages) {
     let snapshotRow = input.messages.find(entry => entry.id === row.id);
-    if (!snapshotRow && row.direction === 'inbound') {
-      snapshotRow = { id: row.id, threadId: input.source.threadId, businessDirection: 'inbound',
-        from: [row.from_address], to: row.to_addresses, cc: row.cc_addresses };
+    if (!snapshotRow) {
+      snapshotRow = { id: row.id, threadId: input.source.threadId, subject: row.subject, textBody: row.text_body,
+        htmlBody: row.html_body, businessDirection: row.direction, from: [row.from_address],
+        to: row.to_addresses, cc: row.cc_addresses, bcc: row.bcc_addresses };
       input.messages.push(snapshotRow);
     }
     if (snapshotRow) Object.assign(snapshotRow, { businessDirection: row.direction, from: [row.from_address],
-      to: row.to_addresses, cc: row.cc_addresses, ownerHeaderValue: row.owner_header_value,
+      to: row.to_addresses, cc: row.cc_addresses, bcc: row.bcc_addresses, inReplyTo: row.in_reply_to, references: row.references,
+      ownerHeaderValue: row.owner_header_value,
       receivedAt: row.received_at, sentAt: row.sent_at, createdAt: row.created_at, historyOnly: row.history_only,
       ingestMailboxId: row.ingest_mailbox_id, pop3Uidl: row.pop3_uidl, sourceProvenance: row.source_provenance,
       messageId: row.message_id_header, attachmentDescriptors: current.attachments.filter(file => file.message_id === row.id) });
@@ -104,11 +108,18 @@ try {
         .where(eq(mail.message.threadId, input.source.threadId));
       const attachments = attachmentSnapshot(attachmentRows.map(row => row.attachment));
       if (JSON.stringify(attachments) !== JSON.stringify(attachmentSnapshot(current.attachments))) throw Error('live_attachments_changed');
+      const threadRows = await db.select({ id: mail.message.id, subject: mail.message.subject, textBody: mail.message.textBody,
+        htmlBody: mail.message.htmlBody }).from(mail.message).where(eq(mail.message.threadId, input.source.threadId));
+      if (threadRows.length !== current.messages.length || threadRows.some(row => {
+        const prior = current.messages.find(message => message.id === row.id);
+        return !prior || (row.subject ?? '') !== (prior.subject ?? '') ||
+          (row.textBody ?? '') !== (prior.text_body ?? '') || (row.htmlBody ?? '') !== (prior.html_body ?? '');
+      })) throw Error('live_thread_changed');
       const selection = await loadSyncedQuoteSelectionFromMailbox({ db, transportId: input.transport.id, messageId: input.source.messageId,
         includeThreadState: true, sourceCutoffOnly: true, includeVisionImages: true, trackVisionImages: true, signal: AbortSignal.timeout(60_000) });
       if (!selection) throw Error('live_selection_unavailable');
       const evidence = await reservationArrivalEvidence(db, input.source.messageId);
-      return { selection, source: input.source, attachmentSnapshot: attachments, mailboxAddress: input.transport.email,
+      return { selection, source: input.source, messages: input.messages, attachmentSnapshot: attachments, mailboxAddress: input.transport.email,
         attachmentEvidenceUnknown: attachmentEvidenceUnknown(selected.source_provenance),
         contextAttachmentEvidenceUnknown: evidence.attachmentEvidenceUnknown,
         hasPersistedNonInlineAttachment: fileAttachmentPresence(current.attachments.some(file => file.message_id === selected.id && !file.is_inline), selected.source_provenance) === true,
@@ -285,6 +296,11 @@ try {
         await refresh();
         const observation = current.draft.observations.find(row => row.ref === result.observationRef);
         if (observation?.result?.extrasReviewItems?.length) await reviewQuote(quotePath('').replace(/\/$/, ''));
+        if (result.unavailableInventory) {
+          const again = await stage('prepare', request.id, async () => prepare({ ...ctx, signal: AbortSignal.timeout(70_000) },
+            { ...await refresh(), requestId: request.id }), stages);
+          if (again.status !== 'prepared') continue;
+        }
         const output = await stage('artifacts', request.id, async () => quote.reservationWorkflowV2QuoteExecute(ctx, {
           ...await refresh(), requestId: request.id, go: true, idempotencyKey: randomUUID(),
         }), stages);
