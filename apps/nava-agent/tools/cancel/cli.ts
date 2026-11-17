@@ -46,7 +46,7 @@ async function main() {
     if (!('executionId' in input) || typeof input.executionId !== 'string' || !journalDir) throw new Error('INVALID_CANCEL_INPUT');
     const executionId = input.executionId;
     return save(input, { ...context, markDispatched: (details) => durableMarker(journalDir, executionId, details) });
-  }, { readOnly: command !== 'save-labtest' });
+  }, { readOnly: command !== 'save-labtest', signal: base.signal });
   process.stdout.write(`${JSON.stringify({ ok: result.ok, error: result.error,
     outcome: result.ok && typeof result.data === 'object' && result.data !== null && 'outcome' in result.data ? result.data.outcome : null })}\n`);
   process.exitCode = result.ok ? 0 : 1;
