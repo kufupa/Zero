@@ -98,7 +98,7 @@ try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { awa
         fast_transfer = json.loads((run / 'input.json').read_text()).get('fastTransfer') is True
         for path in output.iterdir():
             entry = {'name': path.name, 'size': path.stat().st_size}
-            if fast_transfer and entry['size'] > 36000:
+            if fast_transfer:
                 bucket = env.get('S3_BUCKET')
                 if not bucket:
                     raise RuntimeError('mail_storage_unavailable')
@@ -120,3 +120,9 @@ try:
 except Exception as error:
     print('LOOP_ERROR ' + (str(error) if isinstance(error, RuntimeError) else type(error).__name__), file=sys.stderr)
     sys.exit(1)
+finally:
+    try:
+        if json.loads((run / 'input.json').read_text()).get('fastTransfer') is True:
+            shutil.rmtree(run, ignore_errors=True)
+    except (OSError, ValueError):
+        pass

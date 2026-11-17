@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { access, readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, readFile, writeFile, mkdir, mkdtemp, rename, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { dirname, join, resolve } from 'node:path';
@@ -20,6 +20,12 @@ const [{ createAzureExtractionAdapter }, { classifyWorkflowMailTriage },
 ]);
 const exec = promisify(execFile);
 const root = dirname(fileURLToPath(import.meta.url));
+let transferBucket;
+function rememberBucket(uri) {
+  const match = /^s3:\/\/([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\//.exec(uri);
+  if (!match) throw Error('Invalid storage location');
+  transferBucket = match[1];
+}
 const workflows = new Set(['quote', 'create', 'amend', 'cancel', 'filing', 'triage']);
 const usage = 'Usage: pnpm --dir apps/server-pilot loop <quote|create|amend|cancel|filing|triage> [--emails N | --ids a,b,c | --since 30d] [--parallel K] [--json out.json]';
 function argumentsFor(args) {
@@ -147,17 +153,26 @@ async function liveCorpus(options) {
   const id = randomUUID(), remote = `/home/ubuntu/stage/private/loop-corpus-${id}`;
   const end = new Date(), start = new Date(end.getTime() - (options.since ?? 30) * 86_400_000);
   const script = `import { createThreadCorpusPostgresReader } from './src/ops/centurion-thread-corpus-postgres-reader.ts';
+import { createDb } from './src/db/client.ts';
 import { writeFile } from 'node:fs/promises'; import { gzipSync } from 'node:zlib'; import { execFileSync } from 'node:child_process';
+const ids=${JSON.stringify(options.ids ?? [])}; let start=${JSON.stringify(start.toISOString())};
+if(ids.length){ const {conn}=createDb(process.env.DATABASE_URL); try {
+ const [row]=await conn.begin('isolation level repeatable read read only',sql=>sql.unsafe("select min(least(coalesce(received_at,created_at),coalesce(sent_at,created_at),created_at)) as oldest from message where transport_id = 'transport-centurion' and id = any($1)",[ids]));
+ if(row?.oldest){const prior=new Date(new Date(row.oldest).getTime()-86400000).toISOString(); if(prior<start)start=prior;}
+}finally{await conn.end();} }
 const reader=createThreadCorpusPostgresReader({databaseUrl:process.env.DATABASE_URL,transportIds:['transport-centurion']});
-try { const snapshot=await reader.readCenturionSnapshot({startInclusive:${JSON.stringify(start.toISOString())},endExclusive:${JSON.stringify(end.toISOString())}});
-const file=${JSON.stringify(remote + '/corpus.gz')}; await writeFile(file,gzipSync(Buffer.from(snapshot.messages.map(row=>JSON.stringify(row)).join('\\n')+'\\n')),{mode:0o600});
+try { const snapshot=await reader.readCenturionSnapshot({startInclusive:start,endExclusive:${JSON.stringify(end.toISOString())}});
+const threads=new Set(snapshot.messages.filter(row=>ids.includes(row.id)).map(row=>row.threadId));
+const rows=ids.length ? snapshot.messages.filter(row=>threads.has(row.threadId)) : snapshot.messages;
+const file=${JSON.stringify(remote + '/corpus.gz')}; await writeFile(file,gzipSync(Buffer.from(rows.map(row=>JSON.stringify(row)).join('\\n')+'\\n')),{mode:0o600});
 if(!process.env.S3_BUCKET)throw Error('mail_storage_unavailable'); const uri='s3://'+process.env.S3_BUCKET+'/ops-dumps/loop-corpus/${id}.gz';
 execFileSync('aws',['s3','cp',file,uri,'--region','af-south-1','--sse','AES256','--only-show-errors']); console.log('LOOP_CORPUS '+uri);
 } finally {await reader.close()}`;
-  const launcher = `import os,json,subprocess\nfrom pathlib import Path\nb='/home/ubuntu/.nvm/versions/node/v22.23.1/bin/'\np=[x['pid'] for x in json.loads(subprocess.check_output([b+'pm2','jlist'])) if x.get('name')=='http' and x.get('pm2_env',{}).get('status')=='online'][0]\ne=dict(x.decode().split('=',1) for x in Path('/proc',str(p),'environ').read_bytes().split(b'\\0') if b'=' in x)\nfor k in ['NODE_CHANNEL_FD','NODE_CHANNEL_SERIALIZATION_MODE','NODE_OPTIONS','TEST_DATABASE_URL','VITEST_ALLOW_PILOT_RDS']: e.pop(k,None)\ne['PATH']=b+':/usr/local/bin:/usr/bin:/bin'\nsubprocess.run([b+'node','--import','tsx','--input-type=module','-e',${JSON.stringify(script)}],cwd='/home/ubuntu/repos/zero/apps/server-pilot',env=e,check=True)`;
+  const launcher = `import os,json,subprocess,sys\nfrom pathlib import Path\nb='/home/ubuntu/.nvm/versions/node/v22.23.1/bin/'\np=[x['pid'] for x in json.loads(subprocess.check_output([b+'pm2','jlist'])) if x.get('name')=='http' and x.get('pm2_env',{}).get('status')=='online'][0]\ne=dict(x.decode().split('=',1) for x in Path('/proc',str(p),'environ').read_bytes().split(b'\\0') if b'=' in x)\nfor k in ['NODE_CHANNEL_FD','NODE_CHANNEL_SERIALIZATION_MODE','NODE_OPTIONS','TEST_DATABASE_URL','VITEST_ALLOW_PILOT_RDS']: e.pop(k,None)\ne['PATH']=b+':/usr/local/bin:/usr/bin:/bin'\np=subprocess.run([b+'node','--import','tsx','--input-type=module','-e',${JSON.stringify(script)}],cwd='/home/ubuntu/repos/zero/apps/server-pilot',env=e,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)\nprint(p.stdout,end='')\nif p.returncode: print(p.stderr[-1000:],file=sys.stderr);sys.exit(p.returncode)`;
   const output = await sendSsm([`install -d -m 700 -o ubuntu -g ubuntu ${remote}`, `sudo -u ubuntu ${python(launcher)}`], 600);
   const uri = output.split('\n').find(line => line.startsWith('LOOP_CORPUS '))?.slice(12);
   if (!uri?.startsWith('s3://') || !uri.endsWith(`/loop-corpus/${id}.gz`)) throw Error('Live corpus export failed');
+  rememberBucket(uri);
   const directory = await mkdtemp(join(tmpdir(), 'nava-loop-'));
   const compressed = join(directory, 'corpus.gz'), path = join(directory, 'messages.jsonl');
   try {
@@ -176,6 +191,7 @@ export async function runtimeConfig() {
   const output = await sendSsm([`install -d -m 700 -o ubuntu -g ubuntu ${remote}`, `sudo -u ubuntu ${python(script)}`], 600);
   const uri = output.split('\n').find(line => line.startsWith('LOOP_CONFIG '))?.slice(12);
   if (!uri?.startsWith('s3://') || !uri.endsWith(`/loop-config/${id}.tar.gz`)) throw Error('Runtime configuration export failed');
+  rememberBucket(uri);
   const directory = await mkdtemp(join(tmpdir(), 'nava-loop-config-'));
   try {
     const archive = join(directory, 'config.tar.gz');
@@ -194,39 +210,50 @@ export async function runtimeConfig() {
 export async function native(payload, directory) {
   const id = randomUUID();
   const remote = `/home/ubuntu/stage/private/loop-${id}`;
+  if (!transferBucket) {
+    const script = `import json,subprocess\nfrom pathlib import Path\nb='/home/ubuntu/.nvm/versions/node/v22.23.1/bin/'\np=[x['pid'] for x in json.loads(subprocess.check_output([b+'pm2','jlist'])) if x.get('name')=='http' and x.get('pm2_env',{}).get('status')=='online'][0]\ne=dict(x.decode().split('=',1) for x in Path('/proc',str(p),'environ').read_bytes().split(b'\\0') if b'=' in x)\nprint('LOOP_BUCKET '+e['S3_BUCKET'])`;
+    const output = await sendSsm([`sudo -u ubuntu ${python(script)}`], 60);
+    const bucket = output.trim().split('\n').find(line => line.startsWith('LOOP_BUCKET '))?.slice(12);
+    if (!bucket) throw Error('Mail storage unavailable');
+    rememberBucket(`s3://${bucket}/`);
+  }
   const runner = await readFile(join(root, 'loop-native.mjs'));
   const launcher = await readFile(join(root, 'loop-native-launch.py'));
-  const pack = gzipSync(Buffer.from(JSON.stringify({ runner: runner.toString('base64'), launcher: launcher.toString('base64'), input: { ...payload, fastTransfer: true } }))).toString('base64');
-  const chunks = pack.match(/.{1,12000}/g) ?? [];
-  await sendSsm([`install -d -m 700 -o ubuntu -g ubuntu ${remote}`], 60);
-  for (let i = 0; i < chunks.length; i += 3) {
-    await sendSsm(chunks.slice(i, i + 3).map(chunk => `sudo -u ubuntu sh -c 'umask 077; printf %s ${chunk} >> ${remote}/payload.b64'`), 60);
-  }
-  const install = `import base64,gzip,json,os\np=${JSON.stringify(remote)}\nx=json.loads(gzip.decompress(base64.b64decode(open(p+'/payload.b64','rb').read())))\nfor n in ('runner','launcher'):\n open(p+'/'+n+('.mjs' if n=='runner' else '.py'),'wb').write(base64.b64decode(x[n]))\nopen(p+'/input.json','w').write(json.dumps(x['input']))\nos.chmod(p+'/input.json',0o600)`;
-  const output = await sendSsm([`sudo -u ubuntu ${python(install)}`, `sudo -u ubuntu python3 ${remote}/launcher.py ${remote}`], 600);
+  const pack = gzipSync(Buffer.from(JSON.stringify({ runner: runner.toString('base64'), launcher: launcher.toString('base64'), input: { ...payload, fastTransfer: true } })));
+  const temp = await mkdtemp(join(tmpdir(), 'nava-loop-input-'));
+  const uri = `s3://${transferBucket}/ops-dumps/loop-input/${id}.gz`;
+  let remoteFinished = false, info;
+  try {
+  const local = join(temp, 'payload.gz');
+  await writeFile(local, pack, { mode: 0o600 });
+  await exec('aws', ['s3', 'cp', local, uri, '--region', 'af-south-1', '--sse', 'AES256', '--only-show-errors']);
+  const install = `import base64,gzip,json,os\np=${JSON.stringify(remote)}\nx=json.loads(gzip.decompress(open(p+'/payload.gz','rb').read()))\nfor n in ('runner','launcher'):\n open(p+'/'+n+('.mjs' if n=='runner' else '.py'),'wb').write(base64.b64decode(x[n]))\nopen(p+'/input.json','w').write(json.dumps(x['input']))\nos.chmod(p+'/input.json',0o600)`;
+  const output = await sendSsm([`install -d -m 700 -o ubuntu -g ubuntu ${remote}`,
+    `sudo -u ubuntu aws s3 cp ${uri} ${remote}/payload.gz --region af-south-1 --only-show-errors`,
+    `sudo -u ubuntu ${python(install)}`, `sudo -u ubuntu python3 ${remote}/launcher.py ${remote}`], 600);
+  remoteFinished = true;
   const marker = output.trim().split('\n').find(line => line.startsWith('LOOP_OUTPUT '));
   if (!marker) throw Error('HMS runner did not return an output');
-  const info = JSON.parse(marker.slice(12));
+  info = JSON.parse(marker.slice(12));
   await mkdir(directory, { recursive: true, mode: 0o700 });
   for (const file of info.files ?? []) {
     if (!(file.name === 'native.json' || /^[a-zA-Z0-9_-]+\.(?:cover\.json|quote\.pdf|quote\.xlsx)$/.test(file.name)) ||
       !Number.isSafeInteger(file.size) || file.size < 0) throw Error('Invalid HMS output file');
-    if (file.uri) {
-      if (!file.uri.startsWith('s3://') || !file.uri.endsWith(`/loop-files/loop-${id}/${file.name}`)) throw Error('Invalid HMS output location');
-      try { await exec('aws', ['s3', 'cp', file.uri, join(directory, file.name), '--region', 'af-south-1', '--only-show-errors']); }
-      finally { await exec('aws', ['s3', 'rm', file.uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {}); }
-      continue;
-    }
-    const pieces = [];
-    for (let offset = 0; offset < file.size; offset += 12000) {
-      const read = `import base64\nf=open(${JSON.stringify(remote + '/output/' + file.name)},'rb');f.seek(${offset});print(base64.b64encode(f.read(12000)).decode())`;
-      pieces.push(Buffer.from((await sendSsm([`sudo -u ubuntu ${python(read)}`], 60)).trim(), 'base64'));
-    }
-    await writeFile(join(directory, file.name), Buffer.concat(pieces), { mode: 0o600 });
+    if (file.uri !== `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/${file.name}`) throw Error('Invalid HMS output location');
+    await exec('aws', ['s3', 'cp', file.uri, join(directory, file.name), '--region', 'af-south-1', '--only-show-errors']);
   }
   const result = JSON.parse(await readFile(join(directory, 'native.json'), 'utf8'));
-  await sendSsm([`sudo -u ubuntu rm -rf ${remote}`], 60).catch(() => {});
   return { ...result, runtimeSha: info.runtimeSha, files: (info.files ?? []).filter(file => file.name !== 'native.json').map(file => join(directory, file.name)) };
+  } catch (error) {
+    if (error instanceof Error && /^HMS command (Failed|Cancelled|TimedOut):/.test(error.message)) remoteFinished = true;
+    throw error;
+  } finally {
+    await exec('aws', ['s3', 'rm', uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+    for (const file of info?.files ?? []) if (file.uri === `s3://${transferBucket}/ops-dumps/loop-files/loop-${id}/${file.name}`)
+      await exec('aws', ['s3', 'rm', file.uri, '--region', 'af-south-1', '--only-show-errors']).catch(() => {});
+    if (remoteFinished) await sendSsm([`sudo -u ubuntu rm -rf ${remote}`], 60).catch(() => {});
+    await rm(temp, { recursive: true, force: true });
+  }
 }
 async function extractEmail(row, thread, options, adapters, outputDir) {
   const timings = {}, started = performance.now();
@@ -235,7 +262,8 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
     sourceHash: staffQuoteSourceHash({ id: row.id, subject: row.subject ?? null, textBody: row.textBody ?? null, htmlBody: row.htmlBody ?? null }),
     arrivedAt: row.receivedAt ?? instant(row) };
   const result = { id: row.id, subject: row.subject, source: { from: addresses(row.from), receivedAt: source.arrivedAt,
-    body: body(row), attachments: row.attachmentDescriptors ?? [] }, timings, status: 'FAIL', reason: '', hms: null, extracted: null };
+    body: body(row), attachments: row.attachmentDescriptors ?? [] }, startedAt: new Date().toISOString(),
+    timings, status: 'FAIL', reason: '', hms: null, extracted: null };
   let stageName = 'triage', at = performance.now();
   try {
     const gate = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
@@ -266,9 +294,10 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
     result.source.arrivedAt = source.arrivedAt;
     timings.source = (performance.now() - at) / 1000;
     stageName = 'triage'; at = performance.now();
-    const triageMessages = thread.filter(item => Date.parse(instant(item)) <= Date.parse(source.arrivedAt)).map(item => ({
+    if (thread.some(item => !item.createdAt || !Number.isFinite(Date.parse(item.createdAt)))) throw Error('Triage message creation time unavailable');
+    const triageMessages = thread.map(item => ({
       id: item.id, from: addresses(item.from)[0] ?? '', subject: item.subject ?? '', body: body(item),
-      direction: item.businessDirection === 'outbound' ? 'outbound' : 'inbound', createdAt: new Date(instant(item)),
+      direction: item.businessDirection === 'outbound' ? 'outbound' : 'inbound', createdAt: new Date(item.createdAt),
       receivedAt: item.receivedAt ? new Date(item.receivedAt) : null, sentAt: item.sentAt ? new Date(item.sentAt) : null,
       to: addresses(item.to), cc: addresses(item.cc), bcc: addresses(item.bcc),
     }));
@@ -301,7 +330,7 @@ async function extractEmail(row, thread, options, adapters, outputDir) {
       hasPersistedNonInlineAttachment: loaded.hasPersistedNonInlineAttachment, currentAttachmentGaps: loaded.currentAttachmentGaps,
       contextAttachmentGaps: loaded.contextAttachmentGaps, readCandidate, signal: AbortSignal.timeout(1800000) });
     timings.extraction = (performance.now() - at) / 1000;
-    result.extracted = { status: prefill.status, extraction: prefill.extraction, proposal: prefill.proposal, errors: prefill.errors, lookups: prefillLookups };
+    result.extracted = { ...prefill, lookups: prefillLookups };
     if (!prefill.proposal.content.requests.some(request => request.kind === options.workflow)) {
       const failure = prefill.errors.find(error => error.stage === 'extract' && !error.code.startsWith('guard_'));
       result.status = failure ? 'FAIL' : 'NEEDS-STAFF';
@@ -327,18 +356,21 @@ async function prepareEmail(entry, options, outputDir) {
     const stages = result.hms.stages;
     const prepared = stages.filter(stage => stage.name === 'prepare');
     const artifacts = stages.filter(stage => stage.name === 'artifacts');
-    const failed = stages.find(stage => stage.result?.status === 'failed' || stage.result?.quotes?.some(quote => quote.status === 'failed'));
+    const failed = stages.find(stage => ['failed', 'partial'].includes(stage.result?.status) || stage.result?.quotes?.some(quote => quote.status === 'failed'));
     const incomplete = stages.find(stage => !['ok', 'priced', 'prepared', 'succeeded'].includes(stage.result?.status));
     const complete = prepared.length > 0 && prepared.every(stage => stage.result?.status === 'prepared') &&
       (options.workflow !== 'quote' || artifacts.length === prepared.length && artifacts.every(stage => stage.result?.status === 'succeeded'));
     const files = new Set(result.hms.files.map(path => path.split('/').at(-1)));
     const hasArtifacts = options.workflow !== 'quote' || artifacts.every(stage =>
-      ['cover.json', 'quote.pdf', 'quote.xlsx'].every(file => files.has(`${stage.requestId}.${file}`)));
-    result.status = failed ? 'FAIL' : complete && hasArtifacts && prefill.status === 'ready' && !prefill.errors.length ? 'PASS' : 'NEEDS-STAFF';
+      (stage.result?.unavailableInventory ? ['cover.json'] : ['cover.json', 'quote.pdf', 'quote.xlsx'])
+        .every(file => files.has(`${stage.requestId}.${file}`)));
+    result.status = failed || complete && !hasArtifacts ? 'FAIL' : complete && prefill.status === 'ready' && !prefill.errors.length ? 'PASS' : 'NEEDS-STAFF';
     result.reason = failed?.result?.issue ?? failed?.result?.quotes?.find(quote => quote.status === 'failed')?.issue ??
+      (failed?.result?.failures?.join('; ') || undefined) ??
       (complete ? prefill.errors.map(error => error.message).join('; ') || (prefill.status === 'ready' ? '' : 'Prefill needs review') :
         incomplete?.result?.issue ?? 'Staff selection or review required');
     if (incomplete?.result?.fields?.length) result.reason += `: ${incomplete.result.fields.join(', ')}`;
+    if (result.status === 'PASS' && artifacts.some(stage => stage.result?.unavailableInventory)) result.reason = 'HMS unavailable; unsent decline prepared';
     if (!hasArtifacts) result.reason ||= 'Cover email, PDF or XLSX unavailable';
   } catch (error) { result.reason = error instanceof Error ? error.message : 'Unknown error'; }
   finally { result.timings.hms = (performance.now() - at) / 1000; result.timings.total += result.timings.hms; }
@@ -346,6 +378,7 @@ async function prepareEmail(entry, options, outputDir) {
 async function main() {
   const options = argumentsFor(process.argv.slice(2));
   if (!options) { console.log(usage); return; }
+  const productSha = (await exec('git', ['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
   const dataset = await corpus(options);
   const runtime = options.workflow === 'triage' ? { env: {}, directory: null } : await runtimeConfig();
   try {
@@ -353,27 +386,44 @@ async function main() {
   const output = resolve(options.json), outputDir = `${output}.artifacts`;
   const rows = options.ids || options.since ? dataset.candidates : dataset.candidates.slice(0, options.emails);
   const entries = Array.from({ length: rows.length });
-  let index = 0;
+  let index = 0, completed = 0, saving = Promise.resolve();
+  await mkdir(dirname(output), { recursive: true });
+  const saveProgress = () => {
+    const results = entries.filter(entry => entry?.result?.observedAt).map(entry => entry.result);
+    const document = { workflow: options.workflow, productSha, generatedAt: new Date().toISOString(),
+      corpus: dataset.path, corpusLatest: dataset.latest, totalRows: rows.length, complete: results.length === rows.length, rows: results };
+    saving = saving.then(async () => {
+      const temp = `${output}.${randomUUID()}.tmp`;
+      try { await writeFile(temp, JSON.stringify(document, null, 2), { mode: 0o600 }); await rename(temp, output); }
+      finally { await rm(temp, { force: true }); }
+    });
+    return saving;
+  };
+  await saveProgress();
   await Promise.all(Array.from({ length: Math.min(options.parallel, rows.length) }, async () => {
     while (index < rows.length) {
       const i = index++, row = rows[i];
       entries[i] = await extractEmail(row, dataset.byThread.get(row.threadId), options, adapters, outputDir);
       console.error(`Extracted ${i + 1}/${rows.length}: ${row.id}`);
       await prepareEmail(entries[i], options, outputDir);
+      entries[i].result.observedAt = new Date().toISOString();
+      completed++;
+      if (completed === 1 || completed % (rows.length > 200 ? 100 : 1) === 0) await saveProgress();
       console.error(`Prepared ${i + 1}/${rows.length}: ${rows[i].id} ${entries[i].result.status}`);
     }
   }));
   const results = entries.map(entry => entry.result);
-  await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, JSON.stringify({ workflow: options.workflow, corpus: dataset.path, corpusLatest: dataset.latest, rows: results }, null, 2), { mode: 0o600 });
+  await saveProgress();
   const brief = (value, limit = 180) => String(value ?? '').replace(/\s+/g, ' ').slice(0, limit);
   const hmsSummary = row => (row.hms?.stages ?? []).map(stage => {
     const result = stage.result, detail = result?.quotes?.[0] ?? result, quote = detail?.quote;
     const price = quote?.totalMinor != null ? ` ${quote.currency ?? ''} ${(quote.totalMinor / 100).toFixed(2)}` :
       result?.ratePlanAvailability ? ` ${JSON.stringify(result.ratePlanAvailability)}` : result?.price ? ` ${JSON.stringify(result.price)}` : '';
-    return `${stage.name}:${detail?.status ?? 'unknown'}${detail?.issue ? ` (${detail.issue})` : ''}${price}`;
+    const fee = result?.feeState ? ` fee:${result.feeState}${result.penaltyText ? ` ${result.penaltyText}` : ''}` : '';
+    const document = result?.documentName ? ` ${result.documentName}${result.target?.confirmation ? ` ${result.target.confirmation}` : ''}` : '';
+    return `${stage.name}:${detail?.status ?? 'unknown'}${detail?.issue ? ` (${detail.issue})` : ''}${price}${fee}${document}`;
   }).join('; ');
-  console.table(results.map(row => ({ id: row.id, subject: brief(row.subject, 65), extracted: brief(JSON.stringify(row.extracted?.proposal?.content?.requests ?? [])),
+  console.table(results.map(row => ({ id: row.id, subject: brief(row.subject, 65), extracted: brief(JSON.stringify(row.extracted?.proposal?.content?.requests ?? row.triage?.output ?? [])),
     source: brief(row.source.body), hms: brief(hmsSummary(row)), status: row.status, reason: brief(row.reason),
     seconds: JSON.stringify({ ...row.timings, native: row.hms?.stages?.map(stage => [stage.name, stage.seconds]) ?? [] }) })));
   console.log(`Corpus latest: ${dataset.latest}; JSON: ${output}`);

@@ -200,8 +200,7 @@ try {
         value: { state: 'set', value: ['email_quote', 'pdf_quote', 'xlsx_quote'], updatedAt: new Date().toISOString() } });
       if (edited.status !== 'ok') throw Error(`quote_output_selection:${edited.status}`);
     }
-    const found = await stage('lookup', request.id, async () => lookup(ctx, { ...await refresh(), requestId: request.id }), stages);
-    if (found.status === 'failed') continue;
+    await stage('lookup', request.id, async () => lookup(ctx, { ...await refresh(), requestId: request.id }), stages);
     const targets = request.kind === 'create' ? request.body.allocations ?? [] :
       ['amend', 'cancel'].includes(request.kind) ? request.body.targets?.include ?? [] : [null];
     for (const target of targets.length ? targets : [null]) {
@@ -211,10 +210,10 @@ try {
         const output = await stage('artifacts', request.id, async () => quote.reservationWorkflowV2QuoteExecute(ctx, {
           ...await refresh(), requestId: request.id, go: true, idempotencyKey: randomUUID(),
         }), stages);
-        if (output.status === 'succeeded') {
+        if (output.status === 'succeeded' || output.status === 'partial') {
           if (output.emailSent !== false || output.reservationSaved !== false) throw Error('quote_output_not_unsent');
           if (!/^[a-zA-Z0-9_-]+$/.test(request.id)) throw Error('quote_request_id_invalid');
-          await writeFile(join(outputDir, `${request.id}.cover.json`), JSON.stringify(output.coverEmail, null, 2), { mode: 0o600 });
+          if (output.coverEmail) await writeFile(join(outputDir, `${request.id}.cover.json`), JSON.stringify(output.coverEmail, null, 2), { mode: 0o600 });
           for (const artifact of output.artifacts ?? []) {
             const extension = artifact.kind === 'pdf_quote' ? 'pdf' : artifact.kind === 'xlsx_quote' ? 'xlsx' : null;
             if (extension && artifact.bytesBase64) await writeFile(join(outputDir, `${request.id}.quote.${extension}`), Buffer.from(artifact.bytesBase64, 'base64'), { mode: 0o600 });
