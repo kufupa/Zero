@@ -15,4 +15,4 @@ if [[ -n ${NAVA_ENV_FILE:-} ]]; then
   # Avoid inheriting pilot credentials or overriding values in the dedicated env file.
   exec env -i HOME="$HOME" PATH="$PATH" USER="${USER:-}" node --env-file="$NAVA_ENV_FILE" apps/nava-agent/node_modules/tsx/dist/cli.mjs "apps/nava-agent/src/${task/start/main}.ts" "$@"
 fi
-exec npm --prefix apps/nava-agent run "$task" -- "$@"
+exec node apps/nava-agent/node_modules/tsx/dist/cli.mjs "apps/nava-agent/src/${task/start/main}.ts" "$@"
