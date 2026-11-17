@@ -2899,10 +2899,20 @@ function recoverSourceIntent(input: {
     row.messageId === input.source.messageId && row.threadId === input.source.threadId);
   if (!message) return extraction;
   const subject = input.selection.subject ?? '';
+  const noticeSubjectName = /^\s*Voucher Generated for\s+([^\r\n]+?)\s*$/i.exec(subject)?.[1];
+  const noticeBodyName = /^\s*Trip Itinerary Summary for\s+([^\r\n]+?)\s*$/im.exec(currentBody)?.[1];
+  const noticeArrival = /^\s*Check\s*in Date\s*:\s*(\d{4}-\d{2}-\d{2})\s*$/im.exec(currentBody)?.[1];
+  const noticeDeparture = /^\s*Check\s*out Date\s*:\s*(\d{4}-\d{2}-\d{2})\s*$/im.exec(currentBody)?.[1];
+  const voucherNotice = Boolean(noticeSubjectName && noticeBodyName &&
+    noticeBodyName.length <= 300 &&
+    normalizedFact(noticeSubjectName) === normalizedFact(noticeBodyName) &&
+    /\bAccommodation Voucher Notification\b/i.test(currentBody) &&
+    /^\s*Supplier Name\s*:\s*\S/im.test(currentBody) &&
+    isoDay(noticeArrival) && isoDay(noticeDeparture) && noticeArrival < noticeDeparture);
   const submission = /\b(?:attached|attachment|herewith|proof\s+of\s+payment|payment\s+proof|remittance|POP)\b/i.test(currentBody) ||
     /^\s*(?:fw|fwd):[^\n]*\b(?:voucher|proof\s+of\s+payment|POP)\b/i.test(subject);
   const bookingAsk = /\b(?:book|reserve)\b|\b(?:create|make|place|arrange)\s+(?:(?:a|an|the|new)\s+)?(?:booking|reservation|stay)\b/i.test(currentBody);
-  if (!submission || bookingAsk) return extraction;
+  if (!(submission || voucherNotice) || bookingAsk) return extraction;
   const pdfs = currentPdfEvidence(input);
   const documents = [...pdfs.values()].flatMap((pdf) => {
     const text = input.evidence.find((row) => row.ref === pdf.documentRef)?.text ?? '';
@@ -2911,9 +2921,19 @@ function recoverSourceIntent(input: {
     return (kind || explicitlySuppliedPayment && pdfs.size === 1) && pdf.contentRefs.length ? [{ pdf, text, kind: kind ?? ('unclassified' as const) }] : [];
   });
   if (!documents.length) return extraction;
+  // A generated accommodation voucher is a current hotel submission only when
+  // its sole PDF identifies the same traveller. It does not identify an HMS stay.
+  const currentPdfCount = input.selection.attachments.filter((attachment) => !attachment.isInline &&
+    (!attachment.messageId || attachment.messageId === input.source.messageId) &&
+    (/\.pdf$/i.test(attachment.filename) || attachment.mimeType?.toLowerCase() === 'application/pdf')).length;
+  const voucherName = /\bName[ \t]*:[ \t]*([^\r\n]*?)(?:[ \t]{2,}|$)/im.exec(documents[0]?.text ?? '')?.[1];
+  const sourcedVoucherNotice = voucherNotice && currentPdfCount === 1 && pdfs.size === 1 && documents.length === 1 &&
+    documents[0]?.kind === 'voucher' && Boolean(voucherName) && normalizedFact(voucherName) === normalizedFact(noticeBodyName);
+  if (!submission && !sourcedVoucherNotice) return extraction;
   const eligible = extraction.requests.filter((request) => ['other', 'filing', 'create'].includes(request.kind) &&
     currentClaim(request.requestText, currentRefs));
   if (eligible.length > 1 || extraction.requests.some((request) => !eligible.includes(request))) return extraction;
+  if (sourcedVoucherNotice && eligible.some((request) => request.kind === 'create')) return extraction;
   // Confirmations can be cited from a scanned attachment even when its text
   // cannot classify it as a filing document. Keep all selected current-file
   // evidence for conflict detection, with the physical attachment identity bound.
@@ -2938,9 +2958,9 @@ function recoverSourceIntent(input: {
       ? (row.text.match(/\b\d{6,10}-\d{1,2}\b/g) ?? []).map((value) => ({ raw: value, value, sourceRefs: [row.ref] })) : []);
   const currentClaims = [...typedCurrentClaims, ...currentConfirmations, ...attachmentConfirmations];
   const hasExactCurrentClaim = currentClaims.some((claim) => typeof claim.value === 'string' && /^\d{6,10}-\d{1,2}$/u.test(claim.value.trim()));
-  const confirmationClaims = hasExactCurrentClaim ? currentClaims : [...currentClaims, ...priorConfirmations];
+  const confirmationClaims = hasExactCurrentClaim || !submission ? currentClaims : [...currentClaims, ...priorConfirmations];
   const exactClaims = confirmationClaims.filter((claim) => typeof claim.value === 'string' && /^\d{6,10}-\d{1,2}$/u.test(claim.value.trim()));
-  if (!exactClaims.length) return extraction;
+  if (!exactClaims.length && !sourcedVoucherNotice) return extraction;
   const conflictingConfirmations = new Set(exactClaims.map((claim) => claim.value)).size > 1;
   // More than one historical booking cannot establish this document's target.
   if (!hasExactCurrentClaim && conflictingConfirmations) return extraction;
@@ -2950,6 +2970,19 @@ function recoverSourceIntent(input: {
   }] }).requests[0];
   if (!seed) return extraction;
   seed.kind = 'filing';
+  if (sourcedVoucherNotice && noticeBodyName && noticeArrival && noticeDeparture) {
+    const name = { raw: noticeBodyName, value: noticeBodyName, sourceRefs: [message.ref] };
+    const guests = seed.guests.filter((guest) => guest.role === 'guest');
+    if (!guests.length) seed.guests.push({ role: 'guest', name });
+    else if (guests.length === 1 && !guests[0]!.name) guests[0]!.name = name;
+    const arrival = { raw: noticeArrival, value: noticeArrival, sourceRefs: [message.ref] };
+    const departure = { raw: noticeDeparture, value: noticeDeparture, sourceRefs: [message.ref] };
+    if (!seed.dates.length) seed.dates.push({ arrival, departure });
+    else if (seed.dates.length === 1) {
+      seed.dates[0]!.arrival ??= arrival;
+      seed.dates[0]!.departure ??= departure;
+    }
+  }
   const mergedClaims = new Map<string, typeof seed.confirmationHints[number]>();
   for (const claim of confirmationClaims) {
     const key = `${typeof claim.value}:${String(claim.value)}`;
@@ -2965,7 +2998,9 @@ function recoverSourceIntent(input: {
   if (conflictingConfirmations) addIssue({ explanation:
     `Current submission/document confirmations disagree (${[...new Set(exactClaims.map((claim) => claim.value))].join(', ')}). Filing remains unbound; staff must identify the correct document and stay.`,
   sourceRefs: [...new Set(confirmationClaims.flatMap((claim) => claim.sourceRefs))].slice(0, 20) });
-  addIssue({ explanation: 'The current message submits an incoming voucher/payment document for one source-identified existing stay. Filing was recovered with an unresolved source confirmation; native identity and document handling still require review.',
+  addIssue({ explanation: exactClaims.length
+    ? 'The current message submits an incoming voucher/payment document for one source-identified existing stay. Filing was recovered with an unresolved source confirmation; native identity and document handling still require review.'
+    : 'The hotel voucher identifies a traveller and dates, but not an Infor confirmation. Search for and review the stay before filing.',
     sourceRefs: [message.ref, ...documents.map(({ pdf }) => pdf.documentRef)].slice(0, 20) });
   extraction.issues = extraction.issues.slice(0, 200);
   return extraction;
