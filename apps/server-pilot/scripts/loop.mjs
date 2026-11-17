@@ -235,7 +235,7 @@ export async function native(payload, directory) {
   const install = `import base64,gzip,json,os\np=${JSON.stringify(remote)}\nx=json.loads(gzip.decompress(open(p+'/payload.gz','rb').read()))\nfor n in ('runner','launcher'):\n open(p+'/'+n+('.mjs' if n=='runner' else '.py'),'wb').write(base64.b64decode(x[n]))\nopen(p+'/input.json','w').write(json.dumps(x['input']))\nos.chmod(p+'/input.json',0o600)`;
   const output = await sendSsm([`install -d -m 700 -o ubuntu -g ubuntu ${remote}`,
     `sudo -u ubuntu aws s3 cp ${uri} ${remote}/payload.gz --region af-south-1 --only-show-errors`,
-    `sudo -u ubuntu ${python(install)}`, `sudo -u ubuntu python3 ${remote}/launcher.py ${remote}`], 600);
+    `sudo -u ubuntu ${python(install)}`, `sudo -u ubuntu python3 ${remote}/launcher.py ${remote}`], 3600);
   remoteFinished = true;
   const marker = output.trim().split('\n').find(line => line.startsWith('LOOP_OUTPUT '));
   if (!marker) throw Error('HMS runner did not return an output');

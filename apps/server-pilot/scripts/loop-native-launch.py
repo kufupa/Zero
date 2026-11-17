@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -72,10 +73,29 @@ try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { awa
                                     str(run / 'input.json'), str(output)], cwd=pilot, env=env,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
         timed_out = False
-        try:
-            _, error = process.communicate(timeout=85)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        stage_key = None
+        stage_started = time.monotonic()
+        stage_limit = 85
+        while True:
+            try:
+                _, error = process.communicate(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                try:
+                    stages = json.loads((output / 'native.json').read_text()).get('stages', [])
+                    latest = stages[-1] if stages else None
+                    key = (len(stages), latest.get('name')) if latest else None
+                    if key != stage_key:
+                        stage_key = key
+                        stage_started = time.monotonic()
+                        stage_limit = 300 if latest and latest.get('name') == 'artifacts' else 85
+                except (OSError, ValueError, TypeError, AttributeError):
+                    pass
+                if time.monotonic() - stage_started < stage_limit:
+                    continue
+                timed_out = True
+                break
+        if timed_out:
             os.killpg(process.pid, signal.SIGTERM)
             try:
                 process.communicate(timeout=4)
@@ -88,8 +108,9 @@ try { await migrate(drizzle(db),{migrationsFolder:'./drizzle'}); } finally { awa
                 result = json.loads(result_path.read_text())
             except (OSError, ValueError):
                 result = {'stages': [], 'requests': 0}
-            result['stages'].append({'name': 'timeout', 'seconds': 85,
-                                     'result': {'status': 'failed', 'issue': 'native_case_timed_out'}})
+            result['stages'].append({'name': 'timeout', 'seconds': stage_limit,
+                                     'result': {'status': 'failed', 'issue': 'artifact_generation_timed_out'
+                                                if stage_key and stage_key[1] == 'artifacts' else 'native_case_timed_out'}})
             result_path.write_text(json.dumps(result))
         if process.returncode and not timed_out:
             match = re.search(rb'(?m)^Error: ([a-zA-Z0-9_:-]{1,100})$', error or b'')
