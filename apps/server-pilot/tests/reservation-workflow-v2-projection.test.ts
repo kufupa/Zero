@@ -667,7 +667,7 @@ describe('reservation workflow host projection', () => {
       status: 'unavailable', result: { reason: 'native_party_read_capability_unavailable' } });
   });
 
-  it('keeps a clear per-room adult claim across multiple occupancy and dated rows', async () => {
+  it('requires review before applying occupancy to multiple dated groups', async () => {
     const result = await project((sourceRef) => ({
       requests: [
         {
@@ -689,15 +689,15 @@ describe('reservation workflow host projection', () => {
         },
       ],
       issues: [],
-    }));
+    }), undefined, 'Please quote both stays for two adults per room: 14 November to 16 November and 20 November to 22 November.');
 
     const request = result.proposal.content.requests[0]!;
     expect(request.kind).toBe('quote');
     if (request.kind !== 'quote') throw new Error('expected quote');
     expect(request.body.groups).toHaveLength(2);
     expect(request.body.groups.map((group) => group.occupancy)).toEqual([
-      expect.objectContaining({ scope: 'per_room', adults: 2 }),
-      expect.objectContaining({ scope: 'per_room', adults: 2 }),
+      expect.objectContaining({ scope: 'unresolved', adults: null }),
+      expect.objectContaining({ scope: 'unresolved', adults: null }),
     ]);
   });
 

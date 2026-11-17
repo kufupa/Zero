@@ -1417,23 +1417,31 @@ function buildFallbackProposal(input: {
       const value = safeCurrentText(hint, currentRefs, 120);
       return value ? [[boardMeaning(value), boardValue(value)] as const] : [];
     })).values()];
+    const fallbackDates = request.kind === 'quote'
+      ? distinctQuoteDates(request, request.dates, currentRefs, input.evidence, () => true) : request.dates;
     if (request.kind === 'quote') return { ...base, kind: 'quote' as const, body: {
-      groups: request.dates.length ? request.dates.flatMap((date, dateIndex) => {
+      groups: fallbackDates.length ? fallbackDates.flatMap((date, dateIndex) => {
         const datedBoard = safeCurrentText(date.mealPlan, currentRefs, 120);
+        const roomHint = quoteRoomHintForDate(date, request, currentRefs, input.evidence);
         return (datedBoard ? [datedBoard] : fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
           id: stableId(id, 'date', String(dateIndex), 'board', String(boardIndex)),
           arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
           departure: currentClaim(date.departure, currentRefs) && typeof date.departure?.value === 'string' && date.departure.value.length <= 40 ? date.departure.value : null,
           quantity: quoteDatedRoomCount(request, date, currentRefs).count,
+          requestedRoomDescription: roomHint ? quoteRoomDescription(roomHint, date, currentRefs) : null,
           guestNames: date.guestNames?.flatMap(claim => safeCurrentText(claim, currentRefs, 300) ? [safeCurrentText(claim, currentRefs, 300)!] : []) ?? [],
           mealPlan: null, requestedMealPlan,
           roomCodes: currentSourceCodes(request.roomTypeHints, currentRefs, 'room', { evidence: input.evidence,
             evidenceComplete: input.evidenceComplete, currentAuthoredText: input.currentAuthoredText }).codes, ratePlan: null,
-          occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
+          occupancy: fallbackDates.length > 1 || fallbackBoards.length > 1 || request.roomTypeHints.length > 1
+            ? { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }
+            : fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [],
         }));
       }) : (fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
         id: stableId(id, 'date', '0', 'board', String(boardIndex)), arrival: null, departure: null, quantity: null, mealPlan: null, requestedMealPlan,
-        roomCodes: [], ratePlan: null, occupancy: fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [] })),
+        roomCodes: [], ratePlan: null, occupancy: fallbackBoards.length > 1
+          ? { scope: 'unresolved' as const, adults: null, childCount: null, childAges: null }
+          : fallbackQuoteOccupancy(request, currentRefs).occupancy, priceObservationRefs: [] })),
       guestNames: request.guests.flatMap(guest => guest.role === 'guest' && safeCurrentText(guest.name, currentRefs, 300) ? [safeCurrentText(guest.name, currentRefs, 300)!] : []),
       parties: Object.fromEntries(request.parties.filter(party => party.role !== 'ar_account').flatMap(party => {
         const name = safeCurrentText(party.name, currentRefs, 300);
@@ -2252,6 +2260,65 @@ function roomDescription(claim: { raw: string; value: unknown; sourceRefs: strin
   return value;
 }
 
+function quoteFactOccurrences(text: string, raw: string): number {
+  const source = normalizedFact(text), fact = normalizedFact(raw);
+  if (!fact) return 0;
+  let count = 0;
+  for (let index = source.indexOf(fact); index >= 0; index = source.indexOf(fact, index + 1)) {
+    if (!/[\p{L}\p{N}]/u.test(source[index - 1] ?? '') && !/[\p{L}\p{N}]/u.test(source[index + fact.length] ?? '')) count += 1;
+  }
+  return count;
+}
+
+function containsQuoteFact(text: string, raw: string): boolean {
+  return quoteFactOccurrences(text, raw) > 0;
+}
+
+function quoteCurrentEvidenceText(row: ReservationWorkflowV2Evidence): string {
+  if (row.relation !== 'current_message') return row.text;
+  const headerEnd = /^(?:From|Subject|Participants):/iu.test(row.text) ? row.text.indexOf('\n\n') : -1;
+  return currentAuthoredMessageText(row.text.slice(headerEnd < 0 ? 0 : headerEnd + 2));
+}
+
+function distinctQuoteDates(request: ReservationWorkflowV2Extraction['requests'][number],
+  dates: ReservationWorkflowV2Extraction['requests'][number]['dates'], currentRefs: Set<string>,
+  evidence: ReservationWorkflowV2Evidence[], canCollapse: (date: ReservationWorkflowV2Extraction['requests'][number]['dates'][number]) => boolean) {
+  if (request.occupancy.length > 1 || request.mealPlanHints.length > 1) return dates;
+  const seen = new Set<string>();
+  return dates.filter((date) => {
+    const key = JSON.stringify(date);
+    if (!seen.has(key)) { seen.add(key); return true; }
+    const count = currentClaim(date.roomCount, currentRefs);
+    if (!count || citedInteger(count) === null || !/\p{L}/u.test(count.raw) || !canCollapse(date)) return true;
+    const rows = evidence.filter((row) => currentRefs.has(row.ref) && count.sourceRefs.includes(row.ref));
+    const source = rows.map(quoteCurrentEvidenceText).join('\n');
+    return quoteFactOccurrences(source, count.raw) !== 1 ||
+      /\b(?:or|either|options?|alternatives?|each|every|per|another|separate)\b/iu.test(source);
+  });
+}
+
+function quoteRoomHintForDate(date: ReservationWorkflowV2Extraction['requests'][number]['dates'][number],
+  request: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>, evidence: ReservationWorkflowV2Evidence[]) {
+  const count = currentClaim(date.roomCount, currentRefs);
+  if (!count) return undefined;
+  const matches = request.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs) &&
+    containsQuoteFact(count.raw, typeof hint.value === 'string' && containsQuoteFact(hint.raw, hint.value) ? hint.value : hint.raw) &&
+    evidence.some((row) => currentRefs.has(row.ref) &&
+      count.sourceRefs.includes(row.ref) && hint.sourceRefs.includes(row.ref) &&
+      containsQuoteFact(quoteCurrentEvidenceText(row), count.raw) && containsQuoteFact(quoteCurrentEvidenceText(row), hint.raw)));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function quoteRoomDescription(hint: ReservationWorkflowV2Extraction['requests'][number]['roomTypeHints'][number],
+  date: ReservationWorkflowV2Extraction['requests'][number]['dates'][number], currentRefs: Set<string>) {
+  const suggested = roomDescription(hint, currentRefs, false);
+  const value = suggested && containsQuoteFact(hint.raw, suggested) ? suggested : hint.raw;
+  const count = currentClaim(date.roomCount, currentRefs);
+  const match = /^\s*(\d{1,3})(?:\s*[x×]\s*|\s+-\s+)(.+?\brooms?)(?:\s*\([^()]*\))?\s*$/iu.exec(hint.raw);
+  return match && count && Number(match[1]) === citedInteger(count) && normalizedFact(hint.raw) === normalizedFact(count.raw) &&
+    normalizedFact(value) === normalizedFact(hint.raw) ? match[2]!.trim() : value;
+}
+
 function quoteGroupsShareRoomScope(groups: Array<{ roomCodes: string[] }>): boolean {
   if (groups.length < 2) return true;
   const scopes = groups.map((group) => [...new Set(group.roomCodes)].sort().join('\u001f'));
@@ -2265,10 +2332,10 @@ function countedSourceQuoteRooms(request: ReservationWorkflowV2Extraction['reque
   evidence: ReservationWorkflowV2Evidence[], currentRefs: Set<string>, singleRequest: boolean) {
   const rows = request.roomTypeHints.flatMap((hint) => {
     const claim = currentClaim(hint, currentRefs);
-    const match = claim ? /^\s*(\d{1,3})\s*(?:[x×]\s*)?(.+?\brooms?)\s*$/iu.exec(claim.raw) : null;
+    const match = claim ? /^\s*(\d{1,3})(?:\s*[x×]\s*|\s+-\s+|\s+)(.+?\brooms?)(?:\s*\([^()]*\))?\s*$/iu.exec(claim.raw) : null;
     const quantity = match ? Number(match[1]) : null;
     if (!claim || !match || !quantity || quantity > 100 || !evidence.some((row) =>
-      currentRefs.has(row.ref) && claim.sourceRefs.includes(row.ref) && normalizedFact(row.text).includes(normalizedFact(claim.raw)))) return [];
+      currentRefs.has(row.ref) && claim.sourceRefs.includes(row.ref) && containsQuoteFact(quoteCurrentEvidenceText(row), claim.raw))) return [];
     return [{ quantity, description: match[2]!.trim(), claim }];
   });
   const total = citedInteger(currentClaim(request.roomCount, currentRefs) ??
@@ -4391,9 +4458,19 @@ function projectCurrentExtraction(input: {
     const editableDate = (claim: typeof extracted.dates[number]['arrival']) => claim && claim.value === null &&
       /^\s*\d{1,2}(?:\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)|[/-]\d{1,2})\s*$/iu.test(claim.raw)
       ? { ...claim, value: claim.raw.trim() } : claim;
-    const projectedDates = extracted.dates.map((date) => ({ ...date, arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
+    let projectedDates: ReservationWorkflowV2Extraction['requests'][number]['dates'] =
+      extracted.dates.map((date) => ({ ...date, arrival: editableDate(date.arrival), departure: editableDate(date.departure) }));
     if (request.kind === 'quote') {
       const originalDateGroups = structuredClone(request.body.groups);
+      projectedDates = distinctQuoteDates(extracted, projectedDates, currentRefs, input.evidence, (date) => {
+        const matching = originalDateGroups.filter((group) => group.arrival === date.arrival?.value &&
+          group.departure === date.departure?.value && group.quantity === citedInteger(currentClaim(date.roomCount, currentRefs)));
+        const ids = new Set(matching.map((group) => group.id));
+        const signatures = new Set(matching.map(({ id: _id, ...group }) => JSON.stringify(group)));
+        return signatures.size <= 1 && !request.body.requestedMoney.some((money) => money.targetRefs.some((ref) => ids.has(ref))) &&
+          !proposal.content.services.some((service) => service.targets.some(({ target }) =>
+            target.kind === 'quote_group' && target.requestId === request.id && ids.has(target.groupId)));
+      });
       for (const group of request.body.groups) { group.mealPlan = null; group.requestedMealPlan = null; }
       const sourceRooms = countedSourceQuoteRooms(extracted, input.evidence, currentRefs, currentExtraction.requests.length === 1);
       const currentBoards = extracted.mealPlanHints.flatMap((hint) => {
@@ -4855,6 +4932,11 @@ function projectCurrentExtraction(input: {
             'quote_board_scope_ambiguous'].includes(issue.kind));
         projectedGroupRows.forEach(({ date, inferred, category }, index) => {
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}`;
+          const hint = category ? undefined : quoteRoomHintForDate(date, extracted, currentRefs, input.evidence);
+          if (hint) {
+            request.body.groups[index]!.requestedRoomDescription = quoteRoomDescription(hint, date, currentRefs);
+            appendProjectedSource(proposal, `${path}/requestedRoomDescription`, hint, currentRefs);
+          }
           appendProjectedSource(proposal, `${path}/arrival`, date.arrival, currentRefs);
           appendProjectedSource(proposal, `${path}/departure`, date.departure, currentRefs);
           if (inferred) {
@@ -4888,6 +4970,12 @@ function projectCurrentExtraction(input: {
           appendProjectedSource(proposal,
             `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${groupIndex}/requestedMealPlan`, claim, currentRefs);
         }
+      }
+      if (request.body.groups.length > 1 && occupancySourceRefs.length) {
+        for (const group of request.body.groups)
+          group.occupancy = { scope: 'unresolved', adults: null, childCount: null, childAges: null };
+        addProjectionIssue(proposal, `/requests/${request.id}/body/groups`, 'quote_occupancy_scope_ambiguous',
+          'Occupancy could not be linked safely to every room group. Confirm each group before quoting.', occupancySourceRefs);
       }
       if (!request.body.outputIntent.artifacts.length) request.body.outputIntent.artifacts = ['email_quote', 'pdf_quote', 'xlsx_quote'];
     }
