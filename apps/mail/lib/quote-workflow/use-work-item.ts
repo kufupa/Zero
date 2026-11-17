@@ -46,6 +46,7 @@ export type StoredPane =
       staffManual?: boolean;
       existingStayInformation?: boolean;
       separateAsk?: string | null;
+      separateAskReview?: boolean;
       confirmationNumbers?: string[];
       workItemStatus: string | null;
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
@@ -689,6 +690,7 @@ export function useStoredWork(args: {
       staffManual: stored.staffManual,
       existingStayInformation: stored.existingStayInformation === true,
       separateAsk: stored.separateAsk ?? null,
+      separateAskReview: stored.separateAskReview === true,
       confirmationNumbers: stored.confirmationNumbers ?? [],
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,

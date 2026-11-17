@@ -6,8 +6,9 @@ import { basename, dirname, join } from 'node:path';
 import { and, eq, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
-import { message } from '../db/schema/mail.js';
+import { attachment, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import { fileAttachmentPresence } from '../mail/ingest/attachment-evidence.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { CREATE_GUARANTEES, blockingCreateMatches, createGuaranteeCode, isLabtestGuest, sameCreateGuest, validCreateDates } from '../../tooling/hms-cloud/cloud-create-policy.mjs';
 import { isCancelledStatus } from '../../tooling/hms-cloud/cancel-stay-rules.mjs';
@@ -20,11 +21,12 @@ import { acquisitionWithin, assertTargetAliasesHeld, createPostgresTargetAliasLo
 import { canonicalJson } from './draft-approval.js';
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
 import { formStays } from './work-items.js';
-import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { selfSentPreStayCandidate } from './existing-stay-information.js';
 import { persistHmsShots, verifyStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 import { captureHmsLabtestDispatchEpoch, claimHmsLabtestDispatch, HmsLabtestDispatchError, hmsLabtestIntentTarget, nativeCreateSaveDigest,
   readResolvedHmsLabtestCreates, resolveHmsLabtestDispatch, resolveNeverDispatchedCreate,
   type HmsLabtestIntent, type HmsLabtestWriteHandle } from './hms-labtest-dispatch.js';
+import { canonicalSourceBodyText, classifyMailSource } from './mail-source.js';
 import { lockCreateActorAccess, lockCreateActorSession } from './pane-create-actor-lock.js';
 import { paneStayHmsTargetForTransport } from './pane-stay-spawn-env.js';
 import { cloudCreatePolicyIssue, digestPaneCloudCreateProof, mapPaneStayToCloudCreateInput } from './pane-create-cloud-input.js';
@@ -198,6 +200,9 @@ function sourceKey(input: Input, cursor: Cursor) {
     messageId: input.selection.source.messageId, cursor };
 }
 
+/** The source guards checkSource can throw; every caller maps them to the same clear scope refusal, never raw. */
+const CLOUD_CREATE_SOURCE_GUARD = /^cloud_create_(source_changed|property_mismatch|existing_booking|scope_changed|source_blocked)$/;
+
 /** Recheck the exact source, extraction, mailbox and staff access while their rows are locked. */
 async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSource, input: Input, accessId?: string) {
   await assertNoCreateDispatchFence(tx, { transportId: input.transportId, workItemId: input.workItemId });
@@ -223,10 +228,24 @@ async function checkSource(tx: CreateFenceTransaction, source: LockedCreateSourc
       !currentPaneCreateDatesMatch(payload, source.item.state, input.selection.identity, input.stay, input.selection.source)) {
     throw new Error('cloud_create_scope_changed');
   }
+  const sourceBodyText = canonicalSourceBodyText({ textBody: mail.textBody, htmlBody: mail.htmlBody });
   const confirmations = payload && Array.isArray(payload.confirmationNumbers)
     ? payload.confirmationNumbers.filter((value): value is string => typeof value === 'string') : [];
-  if (!actor.mailboxAddress || isSelfSentPreStayInformationMail({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
-    subject: mail.subject, confirmationNumbers: confirmations })) throw new Error('cloud_create_existing_booking');
+  if (!actor.mailboxAddress || selfSentPreStayCandidate({ fromAddress: mail.fromAddress, mailboxAddress: actor.mailboxAddress,
+    subject: mail.subject, confirmationNumbers: confirmations, bodyText: sourceBodyText })) {
+    throw new Error('cloud_create_existing_booking');
+  }
+  // The pane hides channel and automated sources, but an older Create request
+  // can still reach this seam; reclassify the locked source with the same shared
+  // rules. Only a persisted non-inline file proves attachment presence; unproven
+  // enumeration stays unknown and keeps the mail reviewable rather than skipped.
+  const [fileAttachment] = await tx.select({ id: attachment.id }).from(attachment)
+    .where(and(eq(attachment.messageId, mail.id), eq(attachment.isInline, false))).limit(1);
+  if (classifyMailSource({ fromAddress: mail.fromAddress, subject: mail.subject,
+    bodyText: sourceBodyText,
+    hasAttachments: fileAttachmentPresence(fileAttachment != null, mail.sourceProvenance) }).kind !== 'direct') {
+    throw new Error('cloud_create_source_blocked');
+  }
   // Staff may edit the booking. The grant binds their reviewed form and selected
   // room identity; the native request fence checks the same values before Save.
   const state = { ...source.item.state };
@@ -693,7 +712,7 @@ export async function previewPaneCloud(db: DB, input: Input): Promise<PaneStayRe
       return { status: 'ok' as const, outcome: 'previewed', previewDigest: grant.digest, runId, screenshots: ['filled.png'], hmsPrice: price.data };
     });
   } catch (error) {
-    const sourceChanged = error instanceof Error && /^(create_source_|create_actor_|create_fence_|cloud_create_(source_changed|property_mismatch|existing_booking|scope_changed))/.test(error.message);
+    const sourceChanged = error instanceof Error && /^(create_source_|create_actor_|create_fence_|cloud_create_(source_changed|property_mismatch|existing_booking|scope_changed|source_blocked))/.test(error.message);
     return refused(sourceChanged ? 'cloud_create_scope_changed' : 'cloud_preview_unavailable');
   }
 }
@@ -733,7 +752,11 @@ export async function preparePaneCloudWrite(db: DB, input: {
         mapped.outcome !== 'ok' || cloudCreatePolicyIssue(configuration.formPolicy, mapped.input) ||
         !await previewShotValid(grant, roomInput)) throw new Error('cloud_batch_stale');
     const current = await withLockedCreateSource(db, sourceKey(roomInput, grant.cursor), async (tx, source) => {
-      const checked = await checkSource(tx, source, roomInput, grant.accessId);
+      const checked = await checkSource(tx, source, roomInput, grant.accessId).catch((error: unknown) => {
+        // The same source guards the preview already maps to one clear refusal; prepare never leaks their raw names.
+        if (error instanceof Error && CLOUD_CREATE_SOURCE_GUARD.test(error.message)) throw new Error('cloud_create_scope_changed');
+        throw error;
+      });
       const parsed = safeParseStoredMailExtraction(source.effectivePayload);
       if (!parsed.success) throw new Error('cloud_batch_stale');
       const groups = formStays(parsed.data, source.item.state).filter(group => group.id === grant.identity.stayId);

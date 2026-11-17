@@ -11,7 +11,7 @@ import { maskCardNumbers } from './card-mask.js';
 import { classifyMailSource } from './mail-source.js';
 import { buildReservationWorkflowV2MailQuery, selectReservationWorkflowV2MailCandidates } from './reservation-workflow-v2-mail-context.js';
 import { selectReservationWorkflowV2Guidance, type WorkflowGuidanceCatalog, type WorkflowGuidanceProjection, type WorkflowGuidanceReceipt } from './reservation-workflow-v2-memory.js';
-import { currentAuthoredMessageText, groundedSeparateAsk, isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { currentAuthoredMessageText, groundedSeparateAsk, selfSentPreStayCandidate } from './existing-stay-information.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import {
   EXTRACTION_MAX_PDF_PAGES,
@@ -6378,11 +6378,11 @@ function validateReviewRequirementRefs(
 
 /** Shared by manual initialization and the prefill runner, before attachment/model/native work. */
 export function classifyReservationWorkflowV2Source(input: { fromAddress?: string | null; subject?: string | null;
-  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean }) {
-  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject, bodyText: input.bodyText });
-  const confirmationNumbers = `${input.subject ?? ''}\n${input.bodyText}`.match(/\b\d{6,10}-\d{1,4}\b/g) ?? [];
-  const selfPreStay = isSelfSentPreStayInformationMail({ fromAddress: input.fromAddress,
-    mailboxAddress: input.mailboxAddress, subject: input.subject, confirmationNumbers });
+  bodyText: string; mailboxAddress?: string | null; isSpam?: boolean; hasAttachments?: boolean }) {
+  const classification = classifyMailSource({ fromAddress: input.fromAddress, subject: input.subject,
+    bodyText: input.bodyText, hasAttachments: input.hasAttachments });
+  const selfPreStay = selfSentPreStayCandidate({ fromAddress: input.fromAddress,
+    mailboxAddress: input.mailboxAddress, subject: input.subject, bodyText: input.bodyText });
   const skippedReason = input.isSpam ? 'spam' as const : !selfPreStay && classification.kind === 'channel' ? 'channel' as const :
     !selfPreStay && classification.kind === 'system' ? 'system' as const : undefined;
   return { classification, selfPreStay, skippedReason };
@@ -6491,6 +6491,10 @@ export async function runReservationWorkflowV2Prefill(input: {
   selection: SyncedQuoteSelection;
   mailboxAddress?: string | null;
   isSpam?: boolean;
+  /** Set when the source's attachment enumeration is incomplete (e.g. sync optionalMissing gaps). */
+  attachmentEvidenceUnknown?: boolean;
+  /** Set when a persisted non-inline attachment row exists for the source, even if the synced selection omits it. */
+  hasPersistedNonInlineAttachment?: boolean;
   readCandidate?: (candidate: ReservationWorkflowV2CandidateRead) => Promise<ReservationWorkflowV2ReadResult | null>;
   lookupFixtures?: Record<string, ReservationWorkflowV2ReadResult | null | undefined>;
   workflowGuidance?: WorkflowGuidanceCatalog | null;
@@ -6503,8 +6507,16 @@ export async function runReservationWorkflowV2Prefill(input: {
   const propertyCode = propertyCodeSchema.parse(input.propertyCode);
   const generationId = randomUUID();
   const sourceBound = input.selection.messageId === input.source.messageId && input.selection.threadId === input.source.threadId;
+  // Classification consumes the full canonical body (quoted forward headers
+  // included); currentBodyText stays the authored-only extraction input.
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress, subject: input.selection.subject,
-    bodyText: input.selection.currentBodyText ?? input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
+    bodyText: input.selection.bodyText, mailboxAddress: input.mailboxAddress, isSpam: input.isSpam,
+    hasAttachments: input.hasPersistedNonInlineAttachment === true ||
+        input.selection.attachments.some((row) => row.isInline !== true)
+      ? true
+      : input.attachmentEvidenceUnknown === true
+        ? undefined
+        : false });
   const { classification, selfPreStay } = admission;
   const skippedReason = !sourceBound ? 'invalid_source' as const : admission.skippedReason;
   if (skippedReason) {
@@ -6943,7 +6955,7 @@ export async function ensureReservationWorkflowV2Prefill(input: {
   const admitted = await validateReservationWorkflowV2Source(input.context, input.source);
   if (admitted.status !== 'ok') return { status: 'skipped', reason: `Canonical source rejected before model/native reads (${admitted.status}).` };
   const admission = classifyReservationWorkflowV2Source({ fromAddress: input.selection.fromAddress,
-    subject: input.selection.subject, bodyText: input.selection.currentBodyText ?? input.selection.bodyText,
+    subject: input.selection.subject, bodyText: input.selection.bodyText,
     mailboxAddress: input.mailboxAddress, isSpam: input.isSpam });
   if (admission.skippedReason) return { status: 'skipped', reason: `Known ${admission.skippedReason} source is excluded.` };
   const initialized = await initializeReservationWorkflowV2Draft(input.context, input.source);

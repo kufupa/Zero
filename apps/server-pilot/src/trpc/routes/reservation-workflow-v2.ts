@@ -43,6 +43,7 @@ import { addReservationWorkflowV2Action, changeReservationWorkflowV2Rows,
   selectReservationWorkflowV2Native, reviewReservationWorkflowV2Scope } from '../../ai/reservation-workflow-v2-draft-commands.js';
 import { reservationWorkflowV2VerifyLead } from '../../ai/reservation-workflow-v2-verify-lead.js';
 import { preStaySourceText } from '../../ai/existing-stay-information.js';
+import { canonicalSourceBodyText } from '../../ai/mail-source.js';
 import { prefillDraft } from '../../ai/reservation-workflow-v2-prefill-service.js';
 import { enqueueReservationArrival, promoteReservationArrival, reservationArrivalEnabled } from '../../ai/reservation-workflow-v2-arrival.js';
 import {
@@ -78,6 +79,7 @@ import { bindHmsMailboxProperty, guardCenturionHmsMailboxOrigin, loadThreadMailb
   from '../../hms/mailbox-hms-origin-bind.js';
 import { paneSourceMatchesContentHash, paneSourceContentHashSchema, paneSourceSelectionCondition, paneSourceSelectionSchema } from '../../mail/pane-source-selection.js';
 import { canonicalMessageId } from '../../mail/ingest/message-id.js';
+import { fileAttachmentPresence } from '../../mail/ingest/attachment-evidence.js';
 import { logPaneSourceResolution } from '../../mail/pane-source-diagnostics.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { logReservationWorkflowFailure } from '../reservation-workflow-v2-diagnostics.js';
@@ -204,8 +206,13 @@ async function requireCreateSource(scoped: ReturnType<typeof context>, source: R
       row.arrivedAt.toISOString() !== source.arrivedAt || staffQuoteSourceHash(row) !== source.sourceHash) {
     throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This email is no longer available. Reopen it and try again.' });
   }
+  const [fileAttachment] = await scoped.db.select({ id: attachment.id }).from(attachment)
+    .where(and(eq(attachment.messageId, row.id), eq(attachment.isInline, false))).limit(1);
   const classification = classifyReservationWorkflowV2Source({ fromAddress: row.fromAddress, subject: row.subject,
-    bodyText: preStaySourceText(row.textBody, row.htmlBody), mailboxAddress });
+    bodyText: canonicalSourceBodyText({ textBody: row.textBody, htmlBody: row.htmlBody }), mailboxAddress,
+    hasAttachments: fileAttachmentPresence(fileAttachment != null, row.sourceProvenance) });
+  if (classification.skippedReason) throw new TRPCError({ code: 'FORBIDDEN',
+    message: 'This email comes from an automated source; it cannot create a booking.' });
   if (classification.selfPreStay) throw new TRPCError({ code: 'FORBIDDEN',
     message: 'This pre-stay email describes an existing reservation. Choose another action.' });
 }
@@ -375,14 +382,21 @@ export const reservationWorkflowV2Router = router({
     const attachments = await scoped.db.select({ id: attachment.id, filename: attachment.filename,
       mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes, isInline: attachment.isInline })
       .from(attachment).where(eq(attachment.messageId, selected.id)).limit(50);
+    const [fileAttachment] = await scoped.db.select({ id: attachment.id }).from(attachment)
+      .where(and(eq(attachment.messageId, selected.id), eq(attachment.isInline, false))).limit(1);
     logPaneSourceResolution({ ...diagnostic, matches: 1, result: 'ready',
       matchedBy: input.selection.kind === 'web' ? 'web' : selected.nativeLinked ? 'native' : 'mailbox-copy' });
+    const admission = classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
+      bodyText: canonicalSourceBodyText({ textBody: selected.textBody, htmlBody: selected.htmlBody }),
+      mailboxAddress: ctx.transportEmail,
+      hasAttachments: fileAttachmentPresence(fileAttachment != null, selected.sourceProvenance) });
     return { status: 'ok' as const, propertyCode: scoped.propertyCode,
       internetMessageId: selected.internetMessageId,
       sourceText: preStaySourceText(selected.textBody, selected.htmlBody),
       sourceSubject: selected.subject ?? '', sourceSender: selected.fromAddress,
-      selfPreStay: classifyReservationWorkflowV2Source({ fromAddress: selected.fromAddress, subject: selected.subject,
-        bodyText: preStaySourceText(selected.textBody, selected.htmlBody), mailboxAddress: ctx.transportEmail }).selfPreStay,
+      selfPreStay: admission.selfPreStay,
+      skippedSource: admission.skippedReason
+        ? { kind: admission.skippedReason, source: admission.classification.source } : null,
       attachments,
       source: { propertyId: scoped.propertyCode, threadId: selected.threadId, messageId: selected.id,
         sourceHash: staffQuoteSourceHash(selected), arrivedAt: selected.arrivedAt.toISOString() } };
@@ -404,9 +418,14 @@ export const reservationWorkflowV2Router = router({
       threadId: source.threadId, messageId: source.id }) : { ok: true as const };
     if (!origin.ok) return { status: 'wrong_property' as const };
     const canonicalSource = { ...input.source, propertyId: scoped.propertyCode, arrivedAt: source.arrivedAt.toISOString() };
+    const [fileAttachment] = await scoped.db.select({ id: attachment.id }).from(attachment)
+      .where(and(eq(attachment.messageId, source.id), eq(attachment.isInline, false))).limit(1);
     const admission = classifyReservationWorkflowV2Source({ fromAddress: source.fromAddress, subject: source.subject,
-      bodyText: preStaySourceText(source.textBody, source.htmlBody), mailboxAddress: ctx.transportEmail });
-    if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.` };
+      bodyText: canonicalSourceBodyText({ textBody: source.textBody, htmlBody: source.htmlBody }),
+      mailboxAddress: ctx.transportEmail,
+      hasAttachments: fileAttachmentPresence(fileAttachment != null, source.sourceProvenance) });
+    if (admission.skippedReason) return { status: 'skipped' as const, reason: `Known ${admission.skippedReason} source is excluded.`,
+      skippedSource: { kind: admission.skippedReason, source: admission.classification.source } };
     const initialized = await initializeReservationWorkflowV2Draft(scoped, canonicalSource, { allowSourceChanged: true });
     // Staff opened an email whose arrival job is still waiting: move that job ahead of newly admitted mail.
     const waitingJobId = initialized.status === 'ok' && !initialized.sourceChanged &&

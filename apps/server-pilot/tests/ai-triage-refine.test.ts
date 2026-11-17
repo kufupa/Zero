@@ -1222,7 +1222,7 @@ describe('workflow source and automation refinement', () => {
       expect(refined.policyFlags).toContain('refine:system-mail-automated');
     });
 
-    it('routes Travelit automated new booking notifications to automated-channel', () => {
+    it('keeps Travelit travel-agent new booking notifications in scope', () => {
       const refined = refineTriageOutput(
         {
           from: 'notifications@travelit.co.za',
@@ -1234,9 +1234,8 @@ describe('workflow source and automation refinement', () => {
         }),
       );
 
-      expect(refined.primaryFolder).toBe('automated-channel');
-      expect(refined.urgent).toBe(false);
-      expect(refined.policyFlags).toContain('refine:system-mail-automated');
+      expect(refined.primaryFolder).toBe('bookings');
+      expect(refined.policyFlags).not.toContain('refine:system-mail-automated');
     });
 
     it('routes external job applications to unknown-review at P5', () => {

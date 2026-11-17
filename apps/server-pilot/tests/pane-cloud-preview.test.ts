@@ -90,7 +90,9 @@ beforeEach(async () => {
     extractionId: h.row.extraction.id, revision: h.row.item.revision,
     revisionHead: h.row.item.revisionHead, seq: h.row.item.revisionSeq }] : [] };
   const thread: any = { from: () => thread, where: () => thread, orderBy: () => thread,
-    limit: () => thread, for: async () => h.row ? [h.row.mail] : [] };
+    limit: () => Object.assign(Promise.resolve([] as unknown[]),
+      { for: async () => h.row ? [h.row.mail] : [] }),
+    for: async () => h.row ? [h.row.mail] : [] };
   h.db = { select: () => cursor }; h.tx = { select: () => thread };
   oldRun = paneCloudPreviewLoaders.run; oldRuntime = paneCloudPreviewLoaders.runtimeReady;
   paneCloudPreviewLoaders.runtimeReady = () => true;
@@ -150,14 +152,14 @@ describe('mounted read-only Cloud preview', () => {
     expect(await caller().quoteWorkflow.previewStay(other)).toMatchObject({ reason: 'guest_choice_required' });
   });
 
-  it('shows a private source-bound preview with no approval, and refuses the mounted Save route', async () => {
+  it('shows a private source-bound preview with no approval, and refuses commitStay without required binding', async () => {
     const result = await caller().quoteWorkflow.previewStay(request('123'));
     expect(result).toMatchObject({ status: 'ok', outcome: 'preview_only', screenshots: ['filled.png'] });
     expect(result).not.toHaveProperty('previewDigest');
     expect(await readStoredHmsShot({ runId: result.runId!, name: 'filled.png', owner: 'staff-1:transport-centurion' })).not.toBeNull();
     expect(await readStoredHmsShot({ runId: result.runId!, name: 'filled.png', owner: 'other:transport-centurion' })).toBeNull();
     expect(await caller().quoteWorkflow.commitStay({ ...request('123'), previewDigest: 'a'.repeat(64) })).toMatchObject({
-      status: 'refused', reason: 'pane_save_flag_off',
+      status: 'refused', reason: 'pane_preview_binding_required',
     });
     expect(calls).toHaveLength(1);
     h.row.item.state = { stays: { s1_1: { status: 'booked', confirmationNumber: '12345-1' } } };
@@ -167,7 +169,7 @@ describe('mounted read-only Cloud preview', () => {
       .toMatchObject({ reason: 'pane_stay_already_booked' });
   });
 
-  it('leaves HRDAV on its existing Save route and its own write-mode guard', async () => {
+  it('refuses HRDAV commitStay without required binding before write-mode guard', async () => {
     const oldMode = paneStaySaveLoaders.mode;
     paneStaySaveLoaders.mode = () => 'off';
     try {
@@ -177,7 +179,7 @@ describe('mounted read-only Cloud preview', () => {
       } as never);
       expect(await davinci.quoteWorkflow.commitStay({ ...stay, workItemId: undefined, stayId: undefined,
         propertyCode: 'HRDAV', previewDigest: 'a'.repeat(64) })).toMatchObject({
-        status: 'refused', reason: 'pane_save_flag_off',
+        status: 'refused', reason: 'pane_preview_binding_required',
       });
       expect(calls).toHaveLength(0);
     } finally { paneStaySaveLoaders.mode = oldMode; }

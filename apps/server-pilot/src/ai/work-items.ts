@@ -60,9 +60,8 @@ import {
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
 import { matchRoomType } from './room-types.js';
 import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
-import { groundedSeparateAsk, isSelfSentPreStayInformationMail, isSelfSentPreStaySubject, preStaySourceText } from './existing-stay-information.js';
+import { isSelfSentPreStaySubject, selfSentPreStayAskVerdict } from './existing-stay-information.js';
 import { collectNeedsYouPages, type NeedsYouCursor } from './work-items-list-pages.js';
-import { maskCardNumbers } from './card-mask.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import { paneSourceSelectionCondition, type PaneSourceSelection } from '../mail/pane-source-selection.js';
 import {
@@ -1653,10 +1652,12 @@ export async function planThreadWork(
       .map(run => ({ id: run.id, result: run.metrics?.reservationistResult, source: run.metrics?.reservationistDraftSource })), requestStates.get(source.id)));
     const untouched = !outstanding && !item.touched && Object.keys(item.state ?? {}).length === 0;
     const humanWritten = item.origin !== 'system_notice';
-    const separateAsk = currentKind && isSelfSentPreStayInformationMail({
+    const preStayAsk = currentKind ? selfSentPreStayAskVerdict({
       fromAddress: source.fromAddress, mailboxAddress: mailboxEmail, subject: source.subject,
+      textBody: source.textBody, htmlBody: source.htmlBody,
       confirmationNumbers: Array.isArray(payload?.confirmationNumbers) ? payload.confirmationNumbers : [],
-    }) && separatePreStayAsk(item.kind, payload, source.textBody, source.htmlBody);
+      payload,
+    }) : null;
     const lastGuest = latest(guest.filter((x) => x.at > at));
     const lastHotel = latest(hotel.filter((x) => x.at > at));
     // ponytail: any hotel mail after the request counts as its answer, an acknowledgement included. No content check.
@@ -1674,8 +1675,9 @@ export async function planThreadWork(
         : undefined;
     const closeOnReply =
       replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
-    // A prior pure-information read may have been automatically closed as staff-sent.
-    if (separateAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
+    // A prior pure-information read may have been automatically closed as staff-sent. A pre-stay the read could not
+    // clear also reopens: it may still carry a current ask, so it is never auto-done on a missing verdict.
+    if (preStayAsk && item.status === 'done' && item.lastStatusActor === 'system' && item.lastStatusReason === STAFF_SENT_OTHER) {
       if (closeOnReply && lastHotel) {
         if (lastHotel.m.id !== item.sentMessageId) {
           changes.push({ workItemId: item.id, kind, repoint: { sentAt: new Date(lastHotel.at), sentMessageId: lastHotel.m.id } });
@@ -1719,7 +1721,7 @@ export async function planThreadWork(
       }
       continue;
     }
-    const staffOther = kind === 'other' && ownSent(source) && !separateAsk;
+    const staffOther = kind === 'other' && ownSent(source) && !preStayAsk;
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
@@ -1903,6 +1905,8 @@ export type StoredWork =
       /** A self-sent pre-stay confirmation is information about an existing stay, not booking work. */
       existingStayInformation: boolean;
       separateAsk: string | null;
+      /** True when the stored read could not verify there is no other ask; staff review the current mail. */
+      separateAskReview: boolean;
       /** Confirmation numbers stay available to staff even when the extraction kind is shown as `other`. */
       confirmationNumbers: string[];
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
@@ -2025,13 +2029,6 @@ export async function startManualCreate(db: DB, input: {
 
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
 
-/** Old booking extractions never gain a work item or a separate-ask view. */
-function separatePreStayAsk(kind: string, payload: MailExtractionPayload | null, body: string | null, html: string | null): string | null {
-  if (kind !== 'other' || payload?.needsAction !== true ||
-      !['billing', 'group_event', 'other_actionable'].includes(payload.action ?? '')) return null;
-  return groundedSeparateAsk(maskCardNumbers(preStaySourceText(body, html)), payload.separateAsk);
-}
-
 const FIELD_PROVENANCE_EVENT_TYPES = ['field.seed', 'field.edit', 'field.accept', 'field.reject', 'field.reset'] as const;
 
 function fieldProvenanceSource(event: {
@@ -2103,13 +2100,17 @@ async function readyView(
       ? ((await succeededRead(db, messageId, item.extractionId)) ?? latest)
       : latest;
   const confirmationNumbers = payloadConfirmationNumbers(read.payload);
-  const existingStayInformation = isSelfSentPreStayInformationMail({
+  const preStayAsk = selfSentPreStayAskVerdict({
     fromAddress: msg.fromAddress,
     mailboxAddress: msg.mailboxAddress,
     subject: msg.subject,
+    textBody: msg.textBody,
+    htmlBody: msg.htmlBody,
     confirmationNumbers,
+    payload: read.payload,
   });
-  const separateAsk = existingStayInformation ? separatePreStayAsk(read.kind, read.payload, msg.textBody, msg.htmlBody) : null;
+  const existingStayInformation = preStayAsk !== null;
+  const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
   const paneItem = existingStayInformation && !separateAsk ? null : item;
   const state = hydrateStoredWorkState(paneItem?.state ?? {});
   const selectedConfirmation = confirmationNumbers[0] ?? '';
@@ -2171,6 +2172,7 @@ async function readyView(
     ...(staffManual ? { staffManual: true } : {}),
     existingStayInformation,
     separateAsk,
+    separateAskReview: preStayAsk?.status === 'review',
     confirmationNumbers,
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
@@ -2247,13 +2249,16 @@ export async function storedWorkFor(
   if (manual) return manual;
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg);
-  const existingStayInformation = isSelfSentPreStayInformationMail({
+  const preStayAsk = selfSentPreStayAskVerdict({
     fromAddress: msg.fromAddress,
     mailboxAddress: msg.mailboxAddress,
     subject: msg.subject,
+    textBody: msg.textBody,
+    htmlBody: msg.htmlBody,
     confirmationNumbers: payloadConfirmationNumbers(latest.payload),
+    payload: latest.payload,
   });
-  if (existingStayInformation && !separatePreStayAsk(latest.kind, latest.payload, msg.textBody, msg.htmlBody)) {
+  if (preStayAsk && preStayAsk.status !== 'ask') {
     return readyView(db, msg, latest, null, input.transportId);
   }
   const [item] = await db
@@ -2294,14 +2299,16 @@ export async function openStoredWork(
   if (manual) return manual;
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg);
-  if (
-    isSelfSentPreStayInformationMail({
-      fromAddress: msg.fromAddress,
-      mailboxAddress: msg.mailboxAddress,
-      subject: msg.subject,
-      confirmationNumbers: payloadConfirmationNumbers(latest.payload),
-    }) && !separatePreStayAsk(latest.kind, latest.payload, msg.textBody, msg.htmlBody)
-  ) {
+  const preStayAsk = selfSentPreStayAskVerdict({
+    fromAddress: msg.fromAddress,
+    mailboxAddress: msg.mailboxAddress,
+    subject: msg.subject,
+    textBody: msg.textBody,
+    htmlBody: msg.htmlBody,
+    confirmationNumbers: payloadConfirmationNumbers(latest.payload),
+    payload: latest.payload,
+  });
+  if (preStayAsk && preStayAsk.status !== 'ask') {
     return readyView(db, msg, latest, null, input.transportId);
   }
   const [v2Item] = await db.select({ state: workItem.state }).from(workItem)
@@ -2763,8 +2770,9 @@ export type NeedsYouChip = (typeof NEEDS_YOU_CHIPS)[number];
 /**
  * Work items in this transport with the given statuses, the Needs-you list. Stored origin `person` means human-written;
  * `system_notice` means automated and is excluded. A missing extraction or origin counts as human-written. Only quote,
- * booking, amendment, cancellation and voucher_pop items are included, plus grounded separate pre-stay requests.
- * Spam, trashed and deleted threads are left out.
+ * booking, amendment, cancellation and voucher_pop items are included, plus self-prestay mail whose stored read left a
+ * separate ask grounded or could not prove none: an unread, stale or unverified pre-stay read stays visible for review,
+ * only its own adjudicated no-ask verdict is dropped. Spam, trashed and deleted threads are left out.
  * Queued and In HMS come from the item's latest run on the HMS lane only (KTD14), so a follow-up or extraction run never
  * moves the chip. Otherwise a review item shows Review, and anything else needs her. Rows sort by chip in
  * NEEDS_YOU_CHIPS order, then the oldest mail first.
@@ -2783,6 +2791,22 @@ export async function listWorkItems(
     const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
       .mapWith(Number);
     const sortAge = sql`coalesce(${message.receivedAt}, ${workItem.createdAt})`;
+    const [mailbox] = await tx
+      .select({ email: mailboxTransport.email })
+      .from(mailboxTransport)
+      .where(eq(mailboxTransport.id, input.transportId))
+      .limit(1);
+    const mailboxEmail = normalizeEmailAddress(mailbox?.email ?? '');
+    // A self-prestay candidate must also reach the validator regardless of model
+    // kind/origin: SQL admits the narrow superset (own mailbox sender + pre-stay
+    // subject), and the shared validator enforces confirmation number + ask.
+    const preStayCandidate = mailboxEmail === '' ? undefined : and(
+      sql`strpos(lower(${message.fromAddress}), ${mailboxEmail}) > 0`,
+      or(
+        sql`${message.subject} ilike '%pre%stay%'`,
+        sql`${message.subject} ilike '%pre%arrival%'`,
+      ),
+    );
     const fetchPage = (cursor: NeedsYouCursor | null, size: number) => tx
       .select({
         id: workItem.id,
@@ -2798,6 +2822,7 @@ export async function listWorkItems(
         receivedAt: message.receivedAt,
         confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
         extractionPayload: mailExtraction.payload,
+        origin: origin.as('origin'),
         sourceBody: message.textBody,
         sourceHtml: message.htmlBody,
         reopenReason: sql<string | null>`(
@@ -2822,6 +2847,7 @@ export async function listWorkItems(
           eq(workItem.transportId, input.transportId),
           inArray(workItem.status, [...input.statuses]),
           or(
+            ...(preStayCandidate ? [preStayCandidate] : []),
             and(inArray(workItem.kind, [...NEEDS_YOU_KINDS]), ne(origin, 'system_notice')),
             and(eq(workItem.kind, 'other'), sql`${mailExtraction.payload}->>'separateAsk' is not null`),
           ),
@@ -2833,28 +2859,40 @@ export async function listWorkItems(
       )
       .orderBy(sql`chip_rank`, asc(sortAge), asc(workItem.id))
       .limit(size);
-    const [mailbox] = await tx
-      .select({ email: mailboxTransport.email })
-      .from(mailboxTransport)
-      .where(eq(mailboxTransport.id, input.transportId))
-      .limit(1);
     return collectNeedsYouPages({
       limit: input.limit,
       fetchPage: async (cursor, size) => fetchPage(cursor, size),
-      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, sourceBody, sourceHtml, ...row }) => {
-        const isPreStay = isSelfSentPreStayInformationMail({
+      validate: ({ chipRank: rank, sortAge: _sortAge, confirmationNumbers, extractionPayload, origin: rowOrigin, sourceBody, sourceHtml, ...row }) => {
+        const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
+        const payload = parsedPayload.success ? parsedPayload.data : null;
+        const preStayAsk = selfSentPreStayAskVerdict({
           fromAddress: row.sender,
           mailboxAddress: mailbox?.email,
           subject: row.subject,
+          textBody: sourceBody,
+          htmlBody: sourceHtml,
           confirmationNumbers: Array.isArray(confirmationNumbers)
             ? confirmationNumbers.filter((value): value is string => typeof value === 'string')
             : [],
+          payload,
         });
-        const parsedPayload = safeParseStoredMailExtraction(extractionPayload);
-        const payload = parsedPayload.success ? parsedPayload.data : null;
-        const separateAsk = isPreStay && separatePreStayAsk(row.kind, payload, sourceBody, sourceHtml);
-        if (isPreStay ? !separateAsk : row.kind === 'other') return null;
-        return { ...row, kind: separateAsk ? 'other_actionable' : row.kind, chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you' };
+        if (!preStayAsk) {
+          if (
+            row.kind === 'other'
+            || !NEEDS_YOU_KINDS.includes(row.kind as (typeof NEEDS_YOU_KINDS)[number])
+            || rowOrigin === 'system_notice'
+          ) {
+            return null;
+          }
+        }
+        const separateAsk = preStayAsk?.status === 'ask' ? preStayAsk.excerpt : null;
+        const reviewOnly = preStayAsk?.status === 'review';
+        return {
+          ...row,
+          kind: separateAsk ? 'other_actionable' : row.kind,
+          chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
+          ...(reviewOnly ? { reviewOnly: true } : {}),
+        };
       },
     });
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });

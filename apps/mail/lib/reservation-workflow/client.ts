@@ -25,7 +25,18 @@ import type {
   PropertySwitch,
 } from './types';
 import { ReservationWorkflowStaleRevisionError } from './types';
+import type { ReservationSkippedSource } from './types';
 import { knownFailureCopy } from './failure-copy';
+
+/** The source policy excluded this email before any draft existed; the pane shows a typed no-action card. */
+export class ReservationSourceSkippedError extends Error {
+  readonly skippedSource: ReservationSkippedSource;
+  constructor(skippedSource: ReservationSkippedSource, reason?: string) {
+    super(reason ?? `Known ${skippedSource.kind} source is excluded.`);
+    this.name = 'ReservationSourceSkippedError';
+    this.skippedSource = skippedSource;
+  }
+}
 
 type ItemInput = {
   propertySwitch?: PropertySwitch;
@@ -920,6 +931,13 @@ export function createTrpcReservationWorkflowClient<T extends ReservationWorkflo
         ...(source.propertySwitch ? { propertySwitch: source.propertySwitch } : {}), ...(mode ? { mode } : {}),
       };
       const raw = await api.ensure.mutate(queryInput, mailboxOptions(source));
+      if (isRecord(raw) && raw.status === 'skipped') {
+        const skipped: ReservationSkippedSource = isRecord(raw.skippedSource) &&
+          (raw.skippedSource.kind === 'channel' || raw.skippedSource.kind === 'system' || raw.skippedSource.kind === 'spam')
+          ? { kind: raw.skippedSource.kind, source: isString(raw.skippedSource.source) ? raw.skippedSource.source : null }
+          : { kind: 'system', source: null };
+        throw new ReservationSourceSkippedError(skipped, isString(raw.reason) ? raw.reason : undefined);
+      }
       try {
         const session = decodeDraft(raw);
         return await load({ workItemId: session.draft.workItemId, source: wire,

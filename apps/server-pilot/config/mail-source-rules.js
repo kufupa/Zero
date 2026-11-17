@@ -5,9 +5,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'SynXis',
     domains: ['synxis.com'],
-    forwardedSubjectPatterns: [
-      { source: '^synxis\\s+res(?:ervation)?\\s+confirmed\\b', flags: 'i' },
-    ],
     otaChip: true,
   },
   {
@@ -15,13 +12,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Expedia Partner Central',
     domains: ['m.expediapartnercentral.com', 'expediapartnercentral.com'],
-    forwardedSubjectPatterns: [
-      {
-        source:
-          '^(?:expedia\\s+partner\\s+central\\b|new\\s+(?:booking|reservation)\\s+from\\s+expedia\\b)',
-        flags: 'i',
-      },
-    ],
     otaChip: true,
   },
   {
@@ -29,9 +19,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Expedia',
     domains: ['expedia.com'],
-    forwardedSubjectPatterns: [
-      { source: '^expedia(?:\\.com)?\\s+(?:booking|reservation)\\b', flags: 'i' },
-    ],
     otaChip: true,
     bookingPhrase: 'expedia(?:\\.com)?',
   },
@@ -40,7 +27,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'WebBeds',
     domains: ['webbeds.com'],
-    forwardedSubjectPatterns: [{ source: '^webbeds\\b', flags: 'i' }],
     otaChip: true,
   },
   {
@@ -48,7 +34,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Hotelbeds',
     domains: ['hotelbeds.com'],
-    forwardedSubjectPatterns: [{ source: '^hotelbeds\\b', flags: 'i' }],
     otaChip: true,
   },
   {
@@ -56,7 +41,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Booking.com',
     domains: ['booking.com'],
-    forwardedSubjectPatterns: [{ source: '^booking\\.com\\b', flags: 'i' }],
     otaChip: true,
     bookingPhrase: 'booking\\s*\\.?\\s*com',
   },
@@ -65,7 +49,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Get-e',
     domains: ['get-e.com'],
-    forwardedSubjectPatterns: [{ source: '^get-e\\b', flags: 'i' }],
     otaChip: true,
   },
   {
@@ -73,7 +56,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Hotels.com',
     domains: ['hotels.com'],
-    forwardedSubjectPatterns: [{ source: '^hotels\\.com\\b', flags: 'i' }],
     otaChip: true,
     bookingPhrase: 'hotels\\.com',
   },
@@ -82,7 +64,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Agoda',
     domains: ['agoda.com'],
-    forwardedSubjectPatterns: [{ source: '^agoda\\b', flags: 'i' }],
     otaChip: true,
     bookingPhrase: 'agoda(?:\\.com)?',
   },
@@ -91,7 +72,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Trip.com',
     domains: ['trip.com'],
-    forwardedSubjectPatterns: [{ source: '^trip\\.com\\b', flags: 'i' }],
     otaChip: true,
     bookingPhrase: 'trip\\.com',
   },
@@ -100,7 +80,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Traveloka',
     domains: ['traveloka.com'],
-    forwardedSubjectPatterns: [{ source: '^traveloka\\b', flags: 'i' }],
     otaChip: true,
     bookingPhrase: 'traveloka(?:\\.com)?',
   },
@@ -109,7 +88,6 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Airbnb',
     domains: ['airbnb.com'],
-    forwardedSubjectPatterns: [{ source: '^airbnb\\b', flags: 'i' }],
     otaChip: true,
     bookingPhrase: 'airbnb(?:\\.com)?',
   },
@@ -118,6 +96,7 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Tiket.com',
     domains: ['tiket.com'],
+    exactHost: true,
     otaChip: true,
     bookingPhrase: 'tiket(?:\\.com)?',
   },
@@ -126,49 +105,113 @@ export const MAIL_SOURCE_RULE_DATA = [
     kind: 'channel',
     source: 'Profitroom',
     domains: ['profitroom.com'],
-    directSubjectPatterns: [{ source: '\\bcontact\\s+form\\b', flags: 'i' }],
+    exactHost: true,
+  },
+  {
+    id: 'nedbank-epay',
+    kind: 'system',
+    source: 'Nedbank e-pay',
+    domains: ['nedbank.co.za'],
+    exactHost: true,
+    senderPatterns: [{ source: '\\bepay-noreply@nedbank\\.co\\.za\\b', flags: 'i' }],
+    skipSubjectPatterns: [{ source: '^order\\s+confirmation\\s+from\\s+nedbank\\b', flags: 'i' }],
+    skipBodyPatterns: [
+      { source: '\\bmerchant\\s+reference\\b', flags: 'i' },
+      { source: '\\bsale\\b', flags: 'i' },
+    ],
+    requiresNoAttachments: true,
+  },
+  {
+    id: 'ratetiger',
+    kind: 'system',
+    source: 'RateTiger',
+    domains: ['ratetiger.com'],
+    exactHost: true,
   },
   {
     id: 'h-pay',
     kind: 'system',
     source: 'H-Pay',
     domains: ['hospitality.cloud'],
-    // Payment-link notices only; finance mail still reaches money-billing triage.
-    skipSubjectPatterns: [{ source: '\\bsecure\\s+payment\\s+link\\b', flags: 'i' }],
+    exactHost: true,
   },
   {
     id: 'reviewpro',
     kind: 'system',
     source: 'ReviewPro',
     domains: ['reviewpro.com'],
-    forwardedSubjectPatterns: [{ source: '^reviewpro\\b', flags: 'i' }],
   },
   {
     id: 'trustyou',
     kind: 'system',
     source: 'TrustYou',
     domains: ['trustyou.com'],
-    forwardedSubjectPatterns: [{ source: '^trustyou\\b', flags: 'i' }],
   },
   {
     id: 'revinate',
     kind: 'system',
     source: 'Revinate',
     domains: ['revinate.com'],
-    forwardedSubjectPatterns: [{ source: '^revinate\\b', flags: 'i' }],
   },
   {
     id: 'medallia',
     kind: 'system',
     source: 'Medallia',
     domains: ['medallia.com'],
-    forwardedSubjectPatterns: [{ source: '^medallia\\b', flags: 'i' }],
   },
   {
     id: 'tripadvisor',
     kind: 'system',
     source: 'Tripadvisor',
     domains: ['tripadvisor.com'],
-    forwardedSubjectPatterns: [{ source: '^tripadvisor\\b', flags: 'i' }],
+  },
+];
+
+/**
+ * Exact routine-notice exclusions shared by every intake path: an internal
+ * handover or automated digest whose sender and subject both match exactly.
+ * Anchored senders keep human forwards (Fwd:/Re: prefixed subjects do not
+ * match) staff-visible. Entries marked `humanOrigin` carry an exact bare
+ * subject pattern and only suppress a proven content-free send — an empty
+ * body and a proven-empty attachment set — because any body line or subject
+ * addition could be a current staff ask.
+ */
+export const ROUTINE_NOTICE_EXCLUSION_DATA = [
+  {
+    id: 'fortimail-quarantine',
+    kind: 'system',
+    source: 'FortiMail',
+    senderPattern: { source: '@fortimail-[a-z0-9-]+\\.[a-z0-9.-]+\\s*>?$', flags: 'i' },
+    subjectPattern: { source: '^quarantine\\s+summary\\b', flags: 'i' },
+  },
+  {
+    id: 'function-sheet',
+    kind: 'system',
+    source: 'Function Sheet',
+    senderPattern: { source: '@legacyhotels\\.(?:co\\.za|com)\\s*>?$', flags: 'i' },
+    // Internal mail can be answered or forwarded by staff; only the exact bare
+    // notice subject with an empty body and proven-empty attachments counts as
+    // the routine notice. Any suffix, reply/forward prefix or content keeps it
+    // reviewable.
+    subjectPattern: { source: '^(?:new\\s+|updated\\s+)?function\\s+sheet\\s*$', flags: 'i' },
+    humanOrigin: true,
+  },
+  {
+    id: 'guestrevu',
+    kind: 'system',
+    source: 'GuestRevu',
+    senderPattern: { source: '^(?:[^<>]*<)?no-reply@grfeedback-b\\.com\\s*>?$', flags: 'i' },
+    subjectPattern: {
+      source:
+        '^(?:The Centurion Hotel has received a new online review|The Centurion Hotel has received a Post-Stay survey response from |The Centurion Hotel - GuestRevu (?:Daily|Weekly) Summary)',
+      flags: 'i',
+    },
+  },
+  {
+    id: 'google-calendar',
+    kind: 'system',
+    source: 'Google Calendar',
+    senderPattern: { source: '^(?:[^<>]*<)?calendar-notification@google\\.com\\s*>?$', flags: 'i' },
+    subjectPattern: { source: '^(?:Invitation:|Declined:|Canceled event:)', flags: 'i' },
   },
 ];
