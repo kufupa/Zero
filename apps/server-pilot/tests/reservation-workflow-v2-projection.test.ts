@@ -116,6 +116,24 @@ function allocatedCreate(ref: string, shared: Record<string, unknown> = {}) {
 }
 
 describe('reservation workflow host projection', () => {
+  it.each(['5 smoking rooms', '5 king rooms'])('does not attach a room hint from a partial word or ungrounded count: %s', async (firstCount) => {
+    const body = 'Please quote 5 smoking rooms 2027-01-10 to 2027-01-12 and 1 king room 2027-01-13 to 2027-01-15.';
+    const result = await project(ref => ({ requests: [{ ...quoteFixture(ref), requestText: claim(body, body, ref),
+      roomTypeHints: [claim('king', 'king', ref)], dates: [
+        { arrival: claim('2027-01-10', '2027-01-10', ref), departure: claim('2027-01-12', '2027-01-12', ref),
+          roomCount: claim(firstCount, 5, ref) },
+        { arrival: claim('2027-01-13', '2027-01-13', ref), departure: claim('2027-01-15', '2027-01-15', ref),
+          roomCount: claim('1 king room', 1, ref) },
+      ] }], issues: [] }), undefined, body);
+    const request = result.proposal.content.requests.find(row => row.kind === 'quote');
+    if (!request || request.kind !== 'quote') throw new Error('quote missing');
+    const first = request.body.groups.find(row => row.arrival === '2027-01-10');
+    const second = request.body.groups.find(row => row.arrival === '2027-01-13');
+    expect(first?.requestedRoomDescription).toBeNull();
+    expect(first?.sourceAssociationUnresolved).toBe(true);
+    expect(second?.requestedRoomDescription).toBe('king');
+  });
+
   it.each([
     ['matched guest', { outcome: 'ok', rows: [{ firstName: 'Proof', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-12' }] }, true],
     ['wrong guest', { outcome: 'ok', rows: [{ firstName: 'Other', lastName: 'Labtest', status: 'Reserved', arrival: '2027-01-10', departure: '2027-01-12' }] }, false],

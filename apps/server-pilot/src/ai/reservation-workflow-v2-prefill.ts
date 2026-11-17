@@ -1421,7 +1421,7 @@ function buildFallbackProposal(input: {
     if (request.kind === 'quote') return { ...base, kind: 'quote' as const, body: {
       groups: request.dates.length ? request.dates.flatMap((date, dateIndex) => {
         const datedBoard = safeCurrentText(date.mealPlan, currentRefs, 120);
-        const roomHint = quoteRoomHintForDate(date, request, currentRefs);
+        const roomHint = quoteRoomHintForDate(date, request, currentRefs, input.evidence);
         return (datedBoard ? [datedBoard] : fallbackBoards.length ? fallbackBoards : [null]).map((requestedMealPlan, boardIndex) => ({
           id: stableId(id, 'date', String(dateIndex), 'board', String(boardIndex)),
           arrival: currentClaim(date.arrival, currentRefs) && typeof date.arrival?.value === 'string' && date.arrival.value.length <= 40 ? date.arrival.value : null,
@@ -1496,7 +1496,7 @@ function buildFallbackProposal(input: {
   for (const request of projected) {
     if (request.kind !== 'quote') continue;
     const extracted = requests.find((candidate) => candidate.id === request.id && candidate.kind === 'quote');
-    const unbound = extracted && retainQuoteRoomHints(request, extracted, currentRefs);
+    const unbound = extracted && retainQuoteRoomHints(request, extracted, currentRefs, input.evidence);
     if (unbound) {
       const path = `/requests/${request.id}/body/groups`;
       const sourceRefs = unbound.hint.sourceRefs.filter((ref) => currentRefs.has(ref));
@@ -2272,14 +2272,28 @@ function quoteRoomHintKey(value: unknown): string {
     .replace(/\s*\([^()]*\)\s*$/u, '').replace(/\brooms\b/gu, 'room').trim();
 }
 
+function containsWholeFact(haystack: unknown, needle: unknown): boolean {
+  const source = normalizedFact(haystack), wanted = normalizedFact(needle);
+  if (!wanted) return false;
+  let index = source.indexOf(wanted);
+  while (index !== -1) {
+    const before = source[index - 1] ?? '', after = source[index + wanted.length] ?? '';
+    if (!/[\p{L}\p{N}]/u.test(before) && !/[\p{L}\p{N}]/u.test(after)) return true;
+    index = source.indexOf(wanted, index + 1);
+  }
+  return false;
+}
+
 function quoteRoomHintForDate(date: ReservationWorkflowV2Extraction['requests'][number]['dates'][number],
-  extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>) {
+  extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>,
+  evidence: ReservationWorkflowV2Evidence[]) {
   const count = currentClaim(date.roomCount, currentRefs);
   if (!count) return undefined;
   const room = quoteRoomHintKey(count.raw);
   const matches = extracted.roomTypeHints.filter((hint) => currentClaim(hint, currentRefs) &&
-    hint.sourceRefs.some((ref) => count.sourceRefs.includes(ref)) && quoteRoomHintKey(hint.value ?? hint.raw) &&
-    room.includes(quoteRoomHintKey(hint.value ?? hint.raw)));
+    containsWholeFact(room, quoteRoomHintKey(hint.value ?? hint.raw)) && evidence.some((row) =>
+      currentRefs.has(row.ref) && count.sourceRefs.includes(row.ref) && hint.sourceRefs.includes(row.ref) &&
+      containsWholeFact(row.text, count.raw) && containsWholeFact(row.text, hint.raw)));
   return matches.length === 1 ? matches[0] : undefined;
 }
 
@@ -2287,6 +2301,7 @@ function quoteRoomHintForDate(date: ReservationWorkflowV2Extraction['requests'][
 function retainQuoteRoomHints(
   request: Extract<ReservationWorkflowV2Proposal['content']['requests'][number], { kind: 'quote' }>,
   extracted: ReservationWorkflowV2Extraction['requests'][number], currentRefs: Set<string>,
+  evidence: ReservationWorkflowV2Evidence[],
 ) {
   const hints = extracted.roomTypeHints.flatMap((hint) => {
     if (!currentClaim(hint, currentRefs)) return [];
@@ -2304,7 +2319,7 @@ function retainQuoteRoomHints(
       const matchingDates = extracted.dates.filter((date) =>
         safeCurrentText(date.arrival, currentRefs, 40) === group.arrival &&
         safeCurrentText(date.departure, currentRefs, 40) === group.departure);
-      const matched = matchingDates.length > 0 && matchingDates.every((date) => quoteRoomHintForDate(date, extracted, currentRefs) === hint);
+      const matched = matchingDates.length > 0 && matchingDates.every((date) => quoteRoomHintForDate(date, extracted, currentRefs, evidence) === hint);
       unbound ||= !matched;
       return matched
         ? { ...group, requestedRoomDescription: description } : { ...group, sourceAssociationUnresolved: true };
@@ -2314,18 +2329,15 @@ function retainQuoteRoomHints(
   const groups = hints.map(({ hint, description }, index) => {
     const counted = /^\s*(\d{1,3})\s*(?:[x×-]\s*)?(.+?\brooms?)(?:\s*\([^()]*\))?\s*$/iu.exec(hint.raw);
     const countedDescription = counted?.[2]?.trim();
-    const matchingDates = extracted.dates.filter((date) => {
-      const count = currentClaim(date.roomCount, currentRefs);
-      return count && count.sourceRefs.some((ref) => hint.sourceRefs.includes(ref)) &&
-        roomKey(count.raw).includes(roomKey(description));
-    });
+    const matchingDates = extracted.dates.filter((date) =>
+      quoteRoomHintForDate(date, extracted, currentRefs, evidence) === hint);
     const dates = hints.length === 1 && extracted.dates.length === 1 ? extracted.dates[0] :
       matchingDates.length === 1 ? matchingDates[0] : undefined;
     const singleDate = dates && currentClaim(dates.arrival, currentRefs) && currentClaim(dates.departure, currentRefs);
     const arrival = singleDate ? safeCurrentText(dates.arrival, currentRefs, 40) ?? null : null;
     const departure = singleDate ? safeCurrentText(dates.departure, currentRefs, 40) ?? null : null;
     const mentionsOtherHint = (raw: string) => hints.some(other => other.hint !== hint &&
-      roomKey(raw).includes(roomKey(other.description)));
+      containsWholeFact(roomKey(raw), roomKey(other.description)));
     const directCount = counted && !mentionsOtherHint(hint.raw) ? Number(counted[1]) : null;
     const dateCount = dates && currentClaim(dates.roomCount, currentRefs);
     const sharedCount = Boolean(dateCount && mentionsOtherHint(dateCount.raw));
@@ -4980,7 +4992,7 @@ function projectCurrentExtraction(input: {
         projectedGroupRows.forEach(({ date, inferred, category }, index) => {
           const path = `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${index}`;
           const group = request.body.groups[index]!;
-          const roomHint = category ? undefined : quoteRoomHintForDate(date, extracted, currentRefs);
+          const roomHint = category ? undefined : quoteRoomHintForDate(date, extracted, currentRefs, input.evidence);
           if (roomHint) {
             group.requestedRoomDescription = roomDescription(roomHint, currentRefs, false);
             appendProjectedSource(proposal, `${path}/requestedRoomDescription`, roomHint, currentRefs);
@@ -5019,7 +5031,7 @@ function projectCurrentExtraction(input: {
             `/proposal/content/requests/${encodeURIComponent(request.id)}/body/groups/${groupIndex}/requestedMealPlan`, claim, currentRefs);
         }
       }
-      const unboundRoom = retainQuoteRoomHints(request, extracted, currentRefs);
+      const unboundRoom = retainQuoteRoomHints(request, extracted, currentRefs, input.evidence);
       if (unboundRoom) {
         const path = `/requests/${request.id}/body/groups`;
         appendProjectedSource(proposal, path, unboundRoom.hint, currentRefs);
