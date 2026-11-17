@@ -643,6 +643,9 @@ function nativeIssueText(issue: unknown): string | null {
   if (issue === 'amend_room_count_requires_separate_reservations') return 'Choose the rooms to add or cancel as separate reservations';
   if (issue === 'amend_track_target_selection_required') return 'Find and select each saved stay in Infor before loading Track choices';
   if (issue === 'retained_rate_not_supported_for_priced_amendment') return 'Choose Reprice in Infor, or split these changes in Infor to keep the current rate';
+  if (issue === 'amend_guarantee_change_finish_in_hms') {
+    return 'Change the guarantee in Infor HMS. Remove it here to amend the other details with Nava';
+  }
   if (issue === 'amend_callback_change_finish_in_hms') {
     return 'Nava cannot show the Infor price for this change before it saves yet. Make this change in Infor HMS: open the stay, change it, check the new total, then Save. Or remove it here to amend the rest with Nava';
   }

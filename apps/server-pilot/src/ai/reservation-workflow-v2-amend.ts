@@ -700,6 +700,9 @@ function compileBase(draft: ReservationWorkflowV2Draft, requestId: string, hintI
     knownChildAgesChanged || (typeof baseChanges.guaranteeType === 'string' && typeof current.guaranteeCode === 'string' &&
       baseChanges.guaranteeType !== current.guaranteeCode);
   if (rateValue === 'retain' && (pricingChanged || knownCallbackChanged)) {
+    if (typeof baseChanges.guaranteeType === 'string') {
+      return { outcome: 'unsupported', issue: 'amend_guarantee_change_finish_in_hms', fields: ['guaranteeType'] };
+    }
     return { outcome: 'unsupported', issue: 'retained_rate_not_supported_for_priced_amendment', fields: ['rateHandling'] };
   }
   const target = { confirmation: current.confirmation, nativeStayId: current.reservationStayId,
@@ -1490,6 +1493,9 @@ export async function reservationWorkflowV2AmendPrepare(ctx: ReadContext,
   const unresolved = loaded.draft.operationResults.find(item => item.workflow === 'amend' && item.requestId === compiled.requestId &&
     item.allocationId === compiled.hintId && item.status === 'unknown');
   if (unresolved) return { status: 'needs_reconcile', operationId: unresolved.id };
+  if (typeof compiled.baseChanges.guaranteeType === 'string') {
+    return { status: 'unsupported', issue: 'amend_guarantee_change_finish_in_hms', fields: ['guaranteeType'] };
+  }
   if (callbackRequested(compiled)) return prepareCallbackAmend(ctx, input, loaded.draft, compiled);
   const locked = targetWriteLock(ctx, compiled.selected);
   if (!locked?.lock) return { status: 'unsupported', issue: 'amend_target_lock_unavailable' };
@@ -2266,6 +2272,9 @@ export async function reservationWorkflowV2AmendExecute(ctx: ReservationWorkflow
       return executeCallbackSecond(ctx, input, loaded.draft, compiled, pendingReview);
     }
     return pendingReview;
+  }
+  if (typeof compiled.baseChanges.guaranteeType === 'string') {
+    return { status: 'unsupported', issue: 'amend_guarantee_change_finish_in_hms', fields: ['guaranteeType'] };
   }
   const candidate = preparedObservation(loaded.draft, compiled);
   if (compiled.rateHandling === 'retain' && callbackRequested(compiled)) {
