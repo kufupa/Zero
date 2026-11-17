@@ -4861,7 +4861,6 @@ function projectCurrentExtraction(input: {
         request.body.requestedMoney.push({ id, amount, currency: null, unit: null,
           scope: 'unresolved', targetRefs: [], sourceRefs });
       }
-      const sourceBoundGroupOccupancy = new Set<string>();
       const datedRows = projectedDates.map((date, index) => {
         const arrivalClaim = currentClaim(date.arrival, currentRefs), departureClaim = currentClaim(date.departure, currentRefs);
         const quantity = quoteDatedRoomCount(extracted, date, currentRefs);
@@ -4982,39 +4981,6 @@ function projectCurrentExtraction(input: {
             group.requestedRoomDescription = roomDescription(roomHint, currentRefs, false);
             appendProjectedSource(proposal, `${path}/requestedRoomDescription`, roomHint, currentRefs);
           }
-          const roomCount = currentClaim(date.roomCount, currentRefs);
-          const sourceLines = roomCount?.raw.trim() && roomHint ? input.evidence.filter((row) => currentRefs.has(row.ref) &&
-            roomCount.sourceRefs.includes(row.ref)).flatMap((row) => row.text.split(/\r?\n/u)
-            .filter((line) => normalizedFact(line).includes(normalizedFact(roomCount.raw)))) : [];
-          const sourceLine = sourceLines[0];
-          const roomCountsOnLine = sourceLine ? extracted.dates.filter((item) => {
-            const claim = currentClaim(item.roomCount, currentRefs);
-            return claim?.raw.trim() && normalizedFact(sourceLine).includes(normalizedFact(claim.raw));
-          }) : [];
-          if (sourceLine && sourceLines.length === 1 && roomCountsOnLine.length === 1 &&
-              !/\b(?:or|either|alternatives?|options?)\b/iu.test(sourceLine)) {
-            const occupancyRows = extracted.occupancy.filter((row) => row.scope === 'per_room' &&
-              [row.adults, row.childCount, ...(row.childAges ?? [])].some((claim) => {
-                const current = currentClaim(claim, currentRefs);
-                return current?.raw.trim() && current.sourceRefs.some((ref) => roomCount!.sourceRefs.includes(ref)) &&
-                  normalizedFact(sourceLine).includes(normalizedFact(current.raw));
-              }));
-            if (occupancyRows.length === 1) {
-              const row = occupancyRows[0]!;
-              const localClaim = (claim: typeof row.adults) => currentClaim(claim, currentRefs) && claim?.raw.trim() &&
-                claim.sourceRefs.some((ref) => roomCount!.sourceRefs.includes(ref)) &&
-                normalizedFact(sourceLine).includes(normalizedFact(claim.raw)) ? claim : undefined;
-              const local = { ...row, adults: /\badults?\b/iu.test(row.adults?.raw ?? '') ? localClaim(row.adults) : undefined,
-                childCount: /\b(?:child|children|kids?)\b/iu.test(row.childCount?.raw ?? '') ? localClaim(row.childCount) : undefined,
-                childAges: undefined };
-              group.occupancy = fallbackQuoteOccupancy({ ...extracted, occupancy: [local] }, currentRefs).occupancy;
-              if ((group.occupancy.adults !== null || group.occupancy.childCount !== null) &&
-                  (!row.adults || local.adults) && (!row.childCount || local.childCount) && !row.childAges?.length)
-                sourceBoundGroupOccupancy.add(group.id);
-              appendProjectedSource(proposal, `${path}/occupancy/adults`, local.adults, currentRefs);
-              appendProjectedSource(proposal, `${path}/occupancy/childCount`, local.childCount, currentRefs);
-            }
-          }
           appendProjectedSource(proposal, `${path}/arrival`, date.arrival, currentRefs);
           appendProjectedSource(proposal, `${path}/departure`, date.departure, currentRefs);
           if (inferred) {
@@ -5057,19 +5023,15 @@ function projectCurrentExtraction(input: {
           `Room preference "${unboundRoom.description}" could not be linked to a date row; review its scope.`,
           unboundRoom.hint.sourceRefs.filter((ref) => currentRefs.has(ref)));
       }
-      if (sourceBoundGroupOccupancy.size === request.body.groups.length && request.body.groups.length > 0 &&
-          extracted.occupancy.length === request.body.groups.length &&
-          request.body.groups.every((group) => sourceBoundGroupOccupancy.has(group.id))) {
-        proposal.issues = proposal.issues.filter((issue) => issue.path !== `/requests/${request.id}/body/groups` ||
-          issue.kind !== 'quote_occupancy_scope_ambiguous');
-      }
       const groupsByDate = new Map<string, number>();
       for (const group of request.body.groups) {
         if (!group.arrival || !group.departure) continue;
         const key = `${group.arrival}/${group.departure}`;
         groupsByDate.set(key, (groupsByDate.get(key) ?? 0) + 1);
       }
-      if ([...groupsByDate.values()].some(count => count > 1)) {
+      const hasSourceOptions = /\boption\s+(?:[a-z]|\d{1,2})\s*[:.)-]/iu.test(
+        currentAuthoredMessageText(input.selection.currentBodyText ?? input.selection.bodyText));
+      if ([...groupsByDate.values()].some(count => count > 1) || hasSourceOptions) {
         const refs = request.sourceRefs.filter(ref => currentRefs.has(ref));
         const authored = currentAuthoredMessageText(input.selection.currentBodyText ?? input.selection.bodyText);
         const signOff = OPERATIONAL_NOTE_REGARDS.exec(authored)?.index ?? [...authored.matchAll(OPERATIONAL_NOTE_THANKS)].at(-1)?.index;
@@ -5141,7 +5103,11 @@ function projectCurrentExtraction(input: {
             if (matching.length === 1) matching[0]!.groupIds.push(group.id);
           }
         }
-        const linkedOptions = relationshipSourceTrusted && options.length >= 2 && options.length <= 32 && options.every((option) => option.groupIds.length > 0) &&
+        const optionScopeUnclear = request.serviceRefs.length > 0 || request.body.requestedMoney.length > 0 ||
+          proposal.content.services.some((service) => service.targets.some(({ target }) =>
+            target.kind === 'quote_group' && target.requestId === request.id)) ||
+          /\b(?:hotels?|propert(?:y|ies)|clients?|customers?|agenc(?:y|ies)|recipients?|budgets?|rates?|prices?|costs?|billing|invoices?)\b/iu.test(authoredContent);
+        const linkedOptions = relationshipSourceTrusted && !optionScopeUnclear && options.length >= 2 && options.length <= 32 && options.every((option) => option.groupIds.length > 0) &&
           options.reduce((total, option) => total + option.groupIds.length, 0) === request.body.groups.length;
         request.body.quoteComposition = linkedOptions ? { kind: 'scenarios', scenarios: options.map((option, index) => ({
           id: stableId(request.id, 'source_option', String(index)), label: option.label, groupIds: option.groupIds, evidenceRefs: refs,
