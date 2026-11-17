@@ -6502,6 +6502,7 @@ export async function runReservationWorkflowV2Prefill(input: {
   });
   const evidence = sourceEvidence({ source: input.source, selection: input.selection, vision });
   const textCoverageComplete = !(input.currentAttachmentGaps ?? 0) &&
+    input.attachmentEvidenceUnknown !== true &&
     completeCurrentSourceText({ source: input.source, selection: input.selection, evidence,
       attachmentReads: vision.attachmentReads });
   const attachmentIdentityByRef = sourceAttachmentIdentityByRef({ source: input.source, selection: input.selection, vision });

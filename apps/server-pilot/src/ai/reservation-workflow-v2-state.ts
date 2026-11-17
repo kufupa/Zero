@@ -144,6 +144,8 @@ function storedReservationWorkflowV2Draft(draft: ReservationWorkflowV2Draft): Re
 
 /** A no-action decision is valid only on a complete, issue-free, error-free, zero-request/operation extraction. */
 function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boolean {
+  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
+  const sourceObsComplete = !sourceObs || (sourceObs.coverage.complete && sourceObs.result?.textCoverageComplete !== false);
   return draft.status === 'ready' &&
     Boolean(draft.extraction) &&
     draft.extractionGenerationId === draft.generationId &&
@@ -151,7 +153,8 @@ function noActionDispositionConsistent(draft: ReservationWorkflowV2Draft): boole
     draft.operationResults.length === 0 &&
     !draft.extraction?.issues?.length &&
     !draft.proposal.issues?.length &&
-    draft.errors.length === 0;
+    draft.errors.length === 0 &&
+    sourceObsComplete;
 }
 
 /** The intake decision applies only while it still binds to this exact draft. */

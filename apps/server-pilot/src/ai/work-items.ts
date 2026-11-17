@@ -2,6 +2,7 @@ import { failedReadFingerprint } from './extraction/retry-binding.js';
 import { randomUUID } from 'node:crypto';
 import { MANUAL_CREATE_KEY, manualCreateMarker, manualCreatePayload } from './manual-create-source.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
+import { attachmentEvidenceUnknown } from '../mail/ingest/attachment-evidence.js';
 import {
   and,
   asc,
@@ -2780,12 +2781,14 @@ function boundNoActionIntake(state: Record<string, unknown>, draft: ReservationW
   const { decision, generationId, sourceHash } = intake.data.disposition;
   if (decision !== 'no_action' || generationId !== draft.generationId ||
       sourceHash !== draft.source.sourceHash) return null;
+  const sourceObs = draft.observations.find((obs) => obs.ref === 'obs_source');
+  const sourceObsComplete = !sourceObs || (sourceObs.coverage.complete && sourceObs.result?.textCoverageComplete !== false);
   if (draft.status !== 'ready' || !draft.extraction ||
       draft.extractionGenerationId !== draft.generationId ||
       draft.extraction.issues?.length ||
       draft.proposal.issues?.length ||
       draft.proposal.content.requests.length > 0 || draft.operationResults.length > 0 ||
-      draft.errors.length > 0) return null;
+      draft.errors.length > 0 || !sourceObsComplete) return null;
   return intake.data;
 }
 
@@ -2979,12 +2982,15 @@ export async function listWorkItems(
       const evidence = await reservationArrivalEvidenceBatch(tx, candidateIds);
       for (const { row, draft, intake } of candidates) {
         const live = row.sourceMessageId ? liveById.get(row.sourceMessageId) : undefined;
+        const liveEvidence = row.sourceMessageId ? evidence.get(row.sourceMessageId) : undefined;
         if (live && live.direction === 'inbound' && live.historyOnly === false &&
             live.threadHistoryOnly === false && live.threadTrashedAt === null && live.threadSpamAt === null &&
             live.sourceProvenance?.attention == null &&
+            !attachmentEvidenceUnknown(live.sourceProvenance) &&
+            !(liveEvidence?.missingCurrent.length) &&
             live.arrivedAt instanceof Date && live.arrivedAt.toISOString() === draft.source.arrivedAt &&
             staffQuoteSourceHash(live) === draft.source.sourceHash &&
-            evidence.get(row.sourceMessageId!)?.hash === intake.evidenceHash) {
+            liveEvidence?.hash === intake.evidenceHash) {
           boundNoAction.add(row.id);
         }
       }
