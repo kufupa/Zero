@@ -1,135 +1,250 @@
-import { mkdir } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
-import { resolve, posix } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { client, environmentId, mirrorEvent, startPending, deliverPending } from './runtime.js';
-import { event, json, sql, uid } from './db.js';
-import { schemas, tools, type ProposalDraft } from './schema.js';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
+import { client, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
+import { event, json, sql, uid } from './db.js';
+import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type ToolDefinition, type ToolResult } from './tool-registry.js';
 
-if (!process.env.DATABASE_URL || !process.env.ANTHROPIC_API_KEY || !process.env.ANTHROPIC_ENVIRONMENT_KEY || !environmentId) throw new Error('DATABASE_URL and first-party Managed Agents credentials required');
-const slots=Number(process.env.NAVA_HMS_SLOTS ?? 10);
-if (!Number.isInteger(slots) || slots<1 || slots>12) throw new Error('NAVA_HMS_SLOTS must be 1..12');
-const nativeCap=Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8);
-if (!Number.isInteger(nativeCap) || nativeCap<1 || nativeCap>8) throw new Error('HMS_CREDENTIAL_SESSION_CAP must be 1..8');
+export type RuntimeBlock = {type:string;[key:string]:unknown};
+export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
+export type SessionState = {threadId:string;sessionId:string;messages:RuntimeMessage[];pendingToolUseId:string|null;version:number;toolOutcomes:Record<string,unknown>;status:string};
+export type SessionStore = {
+  claim(sessionId:string,workerId:string,leaseMs:number):Promise<LeaseFence|null>;
+  refresh(lease:LeaseFence,leaseMs:number):Promise<boolean>;
+  release(lease:LeaseFence):Promise<boolean>;
+  load(sessionId:string):Promise<SessionState>;
+  append(lease:LeaseFence,version:number,deliveryId:string,message:RuntimeMessage):Promise<number>;
+  event(lease:LeaseFence,kind:string,payload:unknown):Promise<void>;
+  park(lease:LeaseFence,toolUseId:string):Promise<void>;
+  finish(lease:LeaseFence,reason:string):Promise<void>;
+  recordToolOutcome(lease:LeaseFence,toolUseId:string,result:unknown):Promise<void>;
+  markDispatched(lease:LeaseFence,proposalId:string,executionId:string,details:unknown):Promise<void>;
+};
+export type RuntimeDeps = {
+  load(sessionId:string):Promise<{threadId:string;sessionId:string;messages:RuntimeMessage[];pendingToolUseId:string|null;toolOutcomes:Record<string,unknown>}>;
+  append(sessionId:string,message:RuntimeMessage):Promise<void>;
+  event(sessionId:string,kind:string,payload:unknown):Promise<void>;
+  tools(sessionId:string):Promise<ToolDefinition[]>;
+  runTool(sessionId:string,toolUse:{id:string;name:string;input:unknown}):Promise<{kind:'result';result:unknown}|{kind:'pause'}>;
+  recordToolOutcome(sessionId:string,toolUseId:string,result:unknown):Promise<void>;
+  park(sessionId:string,toolUseId:string):Promise<void>;
+  finish(sessionId:string,reason:string):Promise<void>;
+};
+export type AgentRuntime = {startTurn(threadId:string,input:{sessionId:string;content:string}):Promise<void>;resumeWithToolResult(sessionId:string,toolUseId:string,result:unknown):Promise<void>};
+export type RuntimeFactory = (deps:RuntimeDeps)=>AgentRuntime;
+export type PendingInput = {id:string;kind:'mail_pending'|'context_pending';payload:{text?:string}};
+export type ApprovedSave = MutationInput & {sessionId:string;proposalId:string;executionId:string;toolUseId:string;mode:Mode;propertyCode:string|null;dispatch:'pending'|'dispatched';completed?:ToolResult};
+export type SaveQueue = {
+  // A claim is an already-authenticated, durably pinned Go, owned by this fenced lease.
+  claimApprovedSave(lease:LeaseFence):Promise<ApprovedSave|null>;
+  completeSave(lease:LeaseFence,job:ApprovedSave,result:ToolResult):Promise<void>;
+};
+export type WorkerDeps = {store:SessionStore;runtime:RuntimeFactory;native:NativeAdmission;saveQueue?:SaveQueue};
+
+const leaseMs=60_000;
 const owner=`${hostname()}:${process.pid}:${uid('worker')}`;
-const running=new Set<string>();
-async function mirror(session:{id:string;managed_session_id:string}) {
+
+function cap(value:string|undefined,fallback:number,maximum:number,name:string):number {
+  const parsed=value===undefined ? fallback : Number(value);
+  if(!Number.isInteger(parsed) || parsed<1 || parsed>maximum) throw new Error(`${name}_INVALID`);
+  return parsed;
+}
+export function configuredSlots() {
+  const requested=cap(process.env.NAVA_HMS_SLOTS,10,12,'NAVA_HMS_SLOTS');
+  const native=cap(process.env.HMS_CREDENTIAL_SESSION_CAP,8,8,'HMS_CREDENTIAL_SESSION_CAP');
+  return {requested,native,local:Math.min(requested,native)};
+}
+
+class Semaphore {
+  private used=0;
+  private readonly waiting:Array<()=>void>=[];
+  constructor(private readonly limit:number) {}
+  async run<T>(signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T> {
+    signal?.throwIfAborted();
+    while(this.used>=this.limit) {
+      await new Promise<void>((resolve,reject)=>{
+        const wake=()=>{signal?.removeEventListener('abort',abort);resolve();};
+        const abort=()=>{const i=this.waiting.indexOf(wake);if(i>=0)this.waiting.splice(i,1);reject(signal?.reason);};
+        this.waiting.push(wake); signal?.addEventListener('abort',abort,{once:true});
+        if(signal?.aborted) abort();
+      });
+      signal?.throwIfAborted();
+    }
+    this.used++;
+    try { return await work(); } finally { this.used--;this.waiting.shift()?.(); }
+  }
+}
+
+export function createNativeAdmission():NativeAdmission {
+  const semaphore=new Semaphore(configuredSlots().local);
+  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:()=>Promise<T>):Promise<T> {
+    const databaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
+    if(!databaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
+    return semaphore.run(signal,async()=>{
+      const nativePath=process.env.NAVA_HMS_SESSION_MODULE ?? resolve('apps/server-pilot/tooling/hms-cloud/cloud-session.mjs');
+      const cloud=await import(pathToFileURL(nativePath).href);
+      if(typeof cloud.withCloudCredentialLease!=='function') throw new Error('NATIVE_ADMISSION_UNAVAILABLE');
+      return cloud.withCloudCredentialLease(propertyCode,async(lease:{signal:AbortSignal})=>{
+        lease.signal.throwIfAborted();
+        const result=await work();
+        lease.signal.throwIfAborted();
+        return result;
+      },{databaseUrl,readOnly,priority:'staff',signal});
+    });
+  }
+  return {withRead:(property,signal,work)=>withLease(property,signal,true,work),withSave:(property,signal,work)=>withLease(property,signal,false,work)};
+}
+
+async function pendingInput(sessionId:string,deliveryId?:string):Promise<PendingInput|null> {
+  const [row]=deliveryId ? await sql`SELECT id,kind,payload FROM nava_agent.agent_event WHERE id=${deliveryId} AND session_id=${sessionId} AND kind IN ('mail_pending','context_pending')` : await sql`SELECT id,kind,payload FROM nava_agent.agent_event WHERE session_id=${sessionId} AND kind IN ('mail_pending','context_pending') AND payload->>'delivered'='false' ORDER BY sequence LIMIT 1`;
+  if(!row || (row.kind!=='mail_pending' && row.kind!=='context_pending')) return null;
+  return {id:row.id,kind:row.kind,payload:row.payload};
+}
+async function markDelivered(lease:LeaseFence,id:string) {
+  const rows=await sql`UPDATE nava_agent.agent_event e SET payload=jsonb_set(e.payload,'{delivered}','true'::jsonb) FROM nava_agent.agent_session s WHERE e.id=${id} AND e.session_id=s.id AND s.id=${lease.sessionId} AND s.worker_id=${lease.workerId} AND s.lease_epoch=${lease.epoch}::bigint AND s.lease_until>clock_timestamp() RETURNING e.id`;
+  if(!rows.length) throw new Error('LEASE_LOST');
+}
+async function canParkSave(lease:LeaseFence,proposalId:string,revision:number) {
+  const [proposal]=await sql`SELECT p.id FROM nava_agent.proposal p JOIN nava_agent.agent_session s ON s.id=p.session_id WHERE p.id=${proposalId} AND p.session_id=${lease.sessionId} AND p.revision=${revision} AND p.phase='ready' AND p.workflow IN ('create','amend','cancel','filing') AND s.worker_id=${lease.workerId} AND s.lease_epoch=${lease.epoch}::bigint AND s.lease_until>clock_timestamp()`;
+  return !!proposal;
+}
+function deliveryId(message:RuntimeMessage,version:number,pending:PendingInput|null):string {
+  const text=message.content.filter(block=>block.type==='text' && typeof block.text==='string').map(block=>block.text).join('\n');
+  if(message.role==='user' && pending && text.includes(`nava-mail-event:${pending.id}`)) return `input:${pending.id}`;
+  const resultIds=message.content.filter(block=>block.type==='tool_result' && typeof block.tool_use_id==='string').map(block=>block.tool_use_id).sort();
+  if(message.role==='user' && resultIds.length) return `results:${createHash('sha256').update(JSON.stringify(resultIds)).digest('hex')}`;
+  return `message:${version}:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
+}
+
+export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void> {
+  const lease=await deps.store.claim(sessionId,owner,leaseMs);
+  if(!lease) return;
   const abort=new AbortController();
-  const renew=setInterval(()=>{void sql`UPDATE nava_agent.agent_session SET lease_until=now()+interval '60 seconds' WHERE id=${session.id} AND worker_id=${owner} RETURNING id`.then(rows=>{if(!rows.length)abort.abort();},()=>abort.abort());},20000);
+  let refreshing=false;
+  const timer=setInterval(()=>{if(refreshing)return;refreshing=true;void deps.store.refresh(lease,leaseMs).then(ok=>{if(!ok)abort.abort();},()=>abort.abort()).finally(()=>{refreshing=false;});},20_000);
+  timer.unref();
   try {
-    const stream=await client.beta.sessions.events.stream(session.managed_session_id,{}, {signal:abort.signal});
-    for await (const item of client.beta.sessions.events.list(session.managed_session_id,{order:'asc'})) await mirrorEvent(session.id,item);
-    for await (const item of stream) await mirrorEvent(session.id,item);
-  } catch { /* next pass opens a new stream before replaying history */ }
-  finally { clearInterval(renew); abort.abort(); await sql`UPDATE nava_agent.agent_session SET worker_id=NULL,lease_until=NULL WHERE id=${session.id} AND worker_id=${owner}`; running.delete(session.id); }
-}
-async function mirrorLoop() {
-  for (;;) {
-    const rows=await sql`UPDATE nava_agent.agent_session SET worker_id=${owner},lease_until=now()+interval '60 seconds' WHERE id IN (SELECT id FROM nava_agent.agent_session WHERE managed_session_id IS NOT NULL AND (lease_until IS NULL OR lease_until<now()) FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id,managed_session_id`;
-    for (const row of rows) if (!running.has(row.id)) { running.add(row.id); void mirror({id:row.id,managed_session_id:row.managed_session_id}); }
-    await delay(3000);
-  }
-}
-function result(data:unknown) { return JSON.stringify({ok:true,data,error:null}); }
-function failure(code:string,message:string) { return JSON.stringify({ok:false,data:null,error:{code,message,retryable:false,outcome:'known'}}); }
-async function dispatch(managedId:string,name:string,input:unknown,toolEvent:string,signal?:AbortSignal|null) {
-  const [session]=await sql`SELECT s.*,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.managed_session_id=${managedId}`;
-  if (!session) return failure('SESSION_NOT_FOUND','Session is not registered.');
-  await event(session.id,'tool_started',{tool:name,tool_event_id:toolEvent});
-  let response:string;
-  try {
-    if(name==='skill_read') {
-      const request=schemas.skill_read.parse(input);
-      if(request.skill_name!=='quote') response=failure('UNAVAILABLE','Only the quote skill is available.');
-      else {
-        const requested=request.path ?? 'SKILL.md';
-        const path=posix.normalize(`quote/${requested}`);
-        const files=session.config?.skill_files;
-        if(posix.isAbsolute(requested) || (!path.startsWith('quote/') && !path.startsWith('references/')) || !files || !Object.hasOwn(files,path) || typeof files[path]!=='string') response=failure('SKILL_REFERENCE_UNAVAILABLE','Skill reference unavailable in pinned tree.');
-        else response=result({skill_name:'quote',path,version:session.config.skill_sha256,text:files[path]});
-      }
-    } else if(name==='mail_read_thread') {
-      schemas.mail_read_thread.parse(input);
-      const thread=await sql`SELECT source,source_thread_id,mailbox_id,selected_message_id,property_code,mode FROM nava_agent.mail_thread WHERE id=${session.thread_id}`;
-      const messages=await sql`SELECT payload FROM nava_agent.mail_message WHERE thread_id=${session.thread_id} ORDER BY received_at,id`;
-      const [source]=await sql`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='train_source' ORDER BY sequence DESC LIMIT 1`;
-      const sourceInput=source?.payload;
-      response=result({...thread[0],messages:messages.map(m=>m.payload),...(sourceInput ? {source_input:{input_cutoff:sourceInput.input_cutoff,selected_message:sourceInput.selected_message,earlier_relevant_source_events:sourceInput.earlier_relevant_source_events}} : {})});
-    } else if (name==='hms_quote') {
-      const q=schemas.hms_quote.parse(input);
-      if(session.mode==='historical') response=failure('HISTORICAL_HMS_UNAVAILABLE','Historical sessions cannot access live HMS.');
-      else if (session.property_code && session.property_code!==q.property_code) response=failure('PROPERTY_MISMATCH','Requested property differs from thread property.');
-      else {
-        response=await sql.begin(async tx=>{
-          await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:quote:'+session.id},0))`;
-          const [prior]=await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='native_quote' AND payload->>'tool_event_id'=${toolEvent}`;
-          if(prior) return JSON.stringify(prior.payload.response);
-          const nativePath=process.env.NAVA_HMS_QUOTE_MODULE ?? resolve('apps/server-pilot/tooling/hms-cloud/fetch-quote.mjs');
-          const {fetchQuote}=await import(nativePath);
-          const request={schemaVersion:2,propertyCode:q.property_code,arrivalDate:q.arrival_date,departureDate:q.departure_date,rooms:q.rooms.map(r=>({id:r.id,quantity:r.quantity,adults:r.adults,children:r.children,childAges:r.child_ages})),...(q.search?{search:q.search}:{}),...(q.details?{details:q.details}:{}),...(q.max_options_per_group?{maxOptionsPerGroup:q.max_options_per_group}:{})};
-          const native=await fetchQuote({propertyCode:q.property_code,request,signal:signal ?? undefined});
-          const complete=['quote','no_match','unavailable'].includes(native.outcome) && native.audit?.status==='complete';
-          const envelope=complete ? {ok:true,data:native,error:null} : {ok:false,data:native,error:{code:typeof native.outcome==='string'?native.outcome.toUpperCase():'NATIVE_FAILURE',message:'Native quote incomplete or failed; inspect returned capture.',retryable:native.outcome==='execution_failure',outcome:'known'}};
-          await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
-          await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'native_quote',${json({tool_event_id:toolEvent,response:envelope})})`;
-          return JSON.stringify(envelope);
-        });
-      }
-    } else if (name==='proposal_publish') {
-      const draft:ProposalDraft=schemas.proposal_publish.parse(input);
-      if(draft.workflow!=='quote') response=failure('WORKFLOW_UNAVAILABLE','Only quote proposals are supported.');
-      else response=await sql.begin(async tx=>{
-        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:quote:'+session.id},0))`;
-        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${toolEvent},0))`;
-        const [existing]=await tx`SELECT id,revision,phase FROM nava_agent.proposal WHERE session_id=${session.id} AND execution->>'publish_event_id'=${toolEvent}`;
-        if(existing) return result({proposal_id:existing.id,revision:existing.revision,phase:existing.phase});
-        const [lastCall]=await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='tool_started' AND payload->>'tool'='hms_quote' AND sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0) ORDER BY sequence DESC LIMIT 1`;
-        const [capture]=lastCall ? await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind='native_quote' AND payload->>'tool_event_id'=${lastCall.payload.tool_event_id} ORDER BY sequence DESC LIMIT 1` : [];
-        const native=capture?.payload.response.data ?? null;
-        if(draft.native_result!==null) {
-          const [same]=await tx`SELECT ${json(draft.native_result)}::jsonb IS NOT DISTINCT FROM ${json(native)}::jsonb AS equal`;
-          if(!same.equal || !capture || draft.workflow!=='quote') return failure('NATIVE_RESULT_MISMATCH','native_result must equal the actual quote capture for this session and request.');
+    let state=await deps.store.load(sessionId);
+    const [session]=await sql`SELECT s.mode,s.config,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.id=${sessionId}`;
+    if(!session || !['live','labtest','historical'].includes(session.mode)) throw new Error('SESSION_MODE_INVALID');
+    const mode:Mode=session.mode;
+    const pending=await pendingInput(sessionId,state.status==='running' && typeof session.config?.worker_delivery_id==='string' ? session.config.worker_delivery_id : undefined);
+    const registry=new ToolRegistry({native:deps.native,emit:async(_id,kind,payload)=>{abort.signal.throwIfAborted();await deps.store.event(lease,kind,payload);}});
+    await discoverToolPacks(registry);
+    let version=state.version;
+    const checkSession=(id:string)=>{if(id!==sessionId)throw new Error('SESSION_MISMATCH');abort.signal.throwIfAborted();};
+    const runtime=deps.runtime({
+      load:async id=>{checkSession(id);state=await deps.store.load(id);version=state.version;return state;},
+      append:async(id,message)=>{checkSession(id);const delivery=deliveryId(message,version,pending);version=await deps.store.append(lease,version,delivery,message);version=(await deps.store.load(id)).version;if(pending && delivery===`input:${pending.id}`)await markDelivered(lease,pending.id);},
+      event:async(id,kind,payload)=>{checkSession(id);await deps.store.event(lease,kind,payload);},
+      tools:async id=>{checkSession(id);return registry.definitions();},
+      runTool:async(id,toolUse)=>{
+        checkSession(id); const current=await deps.store.load(id);
+        if(Object.hasOwn(current.toolOutcomes,toolUse.id)) return {kind:'result',result:current.toolOutcomes[toolUse.id]};
+        const answer=await registry.run(toolUse.name,toolUse.input,{sessionId:id,mode,propertyCode:session.property_code,toolUseId:toolUse.id,fence:lease,signal:abort.signal});
+        if(answer.kind==='pause') {
+          if(!await canParkSave(lease,answer.proposalId,answer.revision)) return {kind:'result',result:{ok:false,data:null,error:{code:'INVALID_SAVE',message:'Proposal is unavailable or revision changed.',retryable:false,outcome:'known'}}};
+          return {kind:'pause'};
         }
-        const incomplete=draft.workflow==='quote' && (!capture || capture.payload.response.ok!==true);
-        const current={...draft,native_result:draft.workflow==='quote'?native:null,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})};
-        const id=uid('proposal');
-        await tx`INSERT INTO nava_agent.proposal(id,thread_id,session_id,revision,workflow,phase,original,current,execution) VALUES (${id},${session.thread_id},${session.id},1,${draft.workflow},'ready',${json(current)},${json(current)},${json({publish_event_id:toolEvent,native_quote_event_id:capture?.payload.tool_event_id ?? null})})`;
-        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
-        await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'proposal',${json({proposal_id:id,workflow:draft.workflow,revision:1,fields:{bookings:current.bookings,actions:current.actions}})})`;
-        return result({proposal_id:id,revision:1,phase:'ready'});
-      });
-    } else if (name==='reply_draft') {
-      const draft=schemas.reply_draft.parse(input);
-      response=await sql.begin(async tx=>{
-        const rows=await tx`UPDATE nava_agent.proposal SET current=jsonb_set(current,'{reply_draft}',to_jsonb(${draft.text}::text)),revision=revision+1,updated_at=now() WHERE id=${draft.proposal_id} AND session_id=${session.id} AND current->>'reply_draft' IS DISTINCT FROM ${draft.text} RETURNING id,revision`;
-        if(rows.length) await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
-        if(rows.length) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'proposal',${json({proposal_id:rows[0].id,revision:rows[0].revision,change:'reply_draft'})})`;
-        const [current]=rows.length?rows:await tx`SELECT id,revision FROM nava_agent.proposal WHERE id=${draft.proposal_id} AND session_id=${session.id}`;
-        return current?result({proposal_id:current.id,revision:current.revision}):failure('NOT_FOUND','Proposal not found in this session.');
-      });
-    } else response=failure('UNAVAILABLE','Tool is unavailable.');
-  } catch { response=failure('TOOL_FAILED','Tool execution failed or input was invalid.'); }
-  await event(session.id,'tool_result',{tool:name,tool_event_id:toolEvent,result:JSON.parse(response)});
-  return response;
+        checkSession(id);await deps.store.recordToolOutcome(lease,toolUse.id,answer.result);return {kind:'result',result:answer.result};
+      },
+      recordToolOutcome:async(id,toolUseId,result)=>{checkSession(id);const current=await deps.store.load(id);if(Object.hasOwn(current.toolOutcomes,toolUseId)) { if(JSON.stringify(current.toolOutcomes[toolUseId])!==JSON.stringify(result)) throw new Error('TOOL_OUTCOME_CONFLICT');return;} await deps.store.recordToolOutcome(lease,toolUseId,result);},
+      park:async(id,toolUseId)=>{checkSession(id);await deps.store.park(lease,toolUseId);},
+      finish:async(id,reason)=>{checkSession(id);await deps.store.finish(lease,reason);},
+    });
+    if(state.pendingToolUseId) {
+      const save=await deps.saveQueue?.claimApprovedSave(lease);
+      if(save) {
+        if(save.sessionId!==sessionId || save.toolUseId!==state.pendingToolUseId || save.mode!==mode || save.propertyCode!==session.property_code || save.booking.property_code!==session.property_code) throw new Error('SAVE_BINDING_MISMATCH');
+        const outcome:ToolResult=save.completed ?? (save.dispatch==='dispatched' ? {ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before retry.',retryable:false,outcome:'uncertain'}} : await registry.save(save,{sessionId,mode,signal:abort.signal,markDispatched:details=>deps.store.markDispatched(lease,save.proposalId,save.executionId,details)}));
+        if(!save.completed) await deps.saveQueue!.completeSave(lease,save,outcome);
+        await runtime.resumeWithToolResult(sessionId,save.toolUseId,outcome);
+      }
+      return;
+    }
+    if(!pending) return;
+    const marker=`nava-mail-event:${pending.id}`;
+    const exists=state.messages.some(message=>message.role==='user' && message.content.some(block=>block.type==='text' && typeof block.text==='string' && block.text.includes(marker)));
+    if(exists && !['running','pending'].includes(state.status)) {await markDelivered(lease,pending.id);return;}
+    const begun=await sql`UPDATE nava_agent.agent_session SET status='running',config=jsonb_set(config,'{worker_delivery_id}',to_jsonb(${pending.id}::text)),updated_at=now() WHERE id=${sessionId} AND worker_id=${lease.workerId} AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() RETURNING id`;
+    if(!begun.length) throw new Error('LEASE_LOST');
+    const content=pending.kind==='mail_pending'?'Read the selected thread and handle its request.':`Staff context: ${pending.payload.text ?? ''}`;
+    await runtime.startTurn(state.threadId,{sessionId,content:`${marker} ${content}`});
+  } finally {clearInterval(timer);abort.abort();await deps.store.release(lease);}
 }
-function registry(managedId:string):BetaRunnableTool[] {
-  return tools.map(def=>({type: "custom",name:def.name,input_schema:def.input_schema,description:def.description,
-    parse:(input:unknown)=>input,
-    run:(input:unknown,context?:{toolUse:{id:string};signal?:AbortSignal|null})=>dispatch(managedId,def.name,input,context?.toolUse.id ?? '',context?.signal)
-  } as BetaRunnableTool));
-}
-async function pendingLoop() {
-  for (;;) {
-    const rows=await sql`SELECT s.id,s.managed_session_id FROM nava_agent.agent_session s WHERE EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false') LIMIT 50`;
-    for (const row of rows) { try { if (row.managed_session_id) await deliverPending(row.id); else await startPending(row.id); } catch { /* retry from durable pending event */ } }
-    await delay(3000);
+
+export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<void> {
+  const active=new Set<string>();
+  const limit=configuredSlots().requested;
+  while(!signal?.aborted) {
+    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now()) AND (EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false') OR s.status='running' OR (s.status='waiting_go' AND ${Boolean(deps.saveQueue)})) ORDER BY s.updated_at LIMIT ${limit}`;
+    for(const row of rows) if(active.size<limit && !active.has(row.id)) {
+      active.add(row.id);
+      void runSession(row.id,deps).catch(error=>{console.error(JSON.stringify({event:'worker_error',session_id:row.id,error:error instanceof Error?error.name:'unknown'}));}).finally(()=>active.delete(row.id));
+    }
+    await delay(3000,undefined,{signal}).catch(()=>{});
   }
+  while(active.size) await delay(100);
 }
-void pendingLoop();
-void mirrorLoop();
-await Promise.all(Array.from({length:slots},async(_,i)=>{
-  const workdir=resolve(process.env.NAVA_WORK_DIR ?? '.private/nava-agent/work',owner,String(i)); await mkdir(workdir,{recursive:true,mode:0o700});
-  const worker=client.beta.environments.work.worker({environmentId,environmentKey:process.env.ANTHROPIC_ENVIRONMENT_KEY,workdir,memorySyncIntervalMs:null,workerId:`${owner}:${i}`,tools:ctx=>registry(ctx.session?.id ?? ctx.sessionId ?? '')});
-  await worker.run();
-}));
+
+async function runCma(native:NativeAdmission):Promise<void> {
+  if(!process.env.ANTHROPIC_API_KEY || !process.env.ANTHROPIC_ENVIRONMENT_KEY || !environmentId) throw new Error('CMA_CREDENTIALS_REQUIRED');
+  const registry=new ToolRegistry({native,emit:event});
+  await discoverToolPacks(registry);
+  const running=new Set<string>();
+  async function mirror(session:{id:string;managed_session_id:string}) {
+    const abort=new AbortController();
+    const renew=setInterval(()=>{void sql`UPDATE nava_agent.agent_session SET lease_until=now()+interval '60 seconds' WHERE id=${session.id} AND worker_id=${owner} RETURNING id`.then(rows=>{if(!rows.length)abort.abort();},()=>abort.abort());},20_000);
+    try {
+      const stream=await client.beta.sessions.events.stream(session.managed_session_id,{}, {signal:abort.signal});
+      for await(const item of client.beta.sessions.events.list(session.managed_session_id,{order:'asc'})) await mirrorEvent(session.id,item);
+      for await(const item of stream) await mirrorEvent(session.id,item);
+    } catch { /* reopen and replay history on the next lease */ }
+    finally {clearInterval(renew);abort.abort();await sql`UPDATE nava_agent.agent_session SET worker_id=NULL,lease_until=NULL WHERE id=${session.id} AND worker_id=${owner}`;running.delete(session.id);}
+  }
+  async function mirrorLoop() {
+    for(;;) {
+      const rows=await sql`UPDATE nava_agent.agent_session SET worker_id=${owner},lease_until=now()+interval '60 seconds' WHERE id IN (SELECT id FROM nava_agent.agent_session WHERE managed_session_id IS NOT NULL AND (lease_until IS NULL OR lease_until<now()) FOR UPDATE SKIP LOCKED LIMIT 100) RETURNING id,managed_session_id`;
+      for(const row of rows) if(!running.has(row.id)){running.add(row.id);void mirror({id:row.id,managed_session_id:row.managed_session_id});}
+      await delay(3000);
+    }
+  }
+  async function pendingLoop() {
+    for(;;) {
+      const rows=await sql`SELECT s.id,s.managed_session_id FROM nava_agent.agent_session s WHERE EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false') LIMIT 50`;
+      for(const row of rows) try {if(row.managed_session_id)await deliverPending(row.id);else await startPending(row.id);} catch { /* durable input remains pending */ }
+      await delay(3000);
+    }
+  }
+  void mirrorLoop(); void pendingLoop();
+  await Promise.all(Array.from({length:configuredSlots().requested},async(_,index)=>{
+    const workdir=resolve(process.env.NAVA_WORK_DIR ?? '.private/nava-agent/work',owner,String(index));
+    await mkdir(workdir,{recursive:true,mode:0o700});
+    const worker=client.beta.environments.work.worker({environmentId,environmentKey:process.env.ANTHROPIC_ENVIRONMENT_KEY,workdir,memorySyncIntervalMs:null,workerId:`${owner}:${index}`,tools:context=>registry.definitions().filter(def=>def.name!=='hms_save').map(def=>({type:'custom',name:def.name,description:def.description,input_schema:def.input_schema,parse:(input:unknown)=>input,run:async(input:unknown,ctx?:{toolUse:{id:string};signal?:AbortSignal|null})=>{
+      const managedId=context.session?.id ?? context.sessionId ?? '';
+      const [session]=await sql`SELECT s.id,s.mode,t.property_code FROM nava_agent.agent_session s JOIN nava_agent.mail_thread t ON t.id=s.thread_id WHERE s.managed_session_id=${managedId}`;
+      if(!session || !['live','labtest','historical'].includes(session.mode)) return JSON.stringify({ok:false,data:null,error:{code:'SESSION_NOT_FOUND',message:'Session is unavailable.',retryable:false,outcome:'known'}});
+      const answer=await registry.run(def.name,input,{sessionId:session.id,mode:session.mode,propertyCode:session.property_code,toolUseId:ctx?.toolUse.id ?? '',signal:ctx?.signal ?? undefined});
+      if(answer.kind==='pause') throw new Error('CMA_SAVE_PAUSE_UNAVAILABLE');
+      return JSON.stringify(answer.result);
+    }}) as BetaRunnableTool)});
+    await worker.run();
+  }));
+}
+
+async function main():Promise<void> {
+  if(!process.env.DATABASE_URL) throw new Error('DATABASE_URL_REQUIRED');
+  const native=createNativeAdmission();
+  if(runtimeProvider()==='cma') return runCma(native);
+  if((process.env.AWS_REGION ?? 'eu-west-1')!=='eu-west-1') throw new Error('BEDROCK_REGION_INVALID');
+  const storePath='./session-store.js',runtimePath='./agent-runtime/index.js';
+  const store:SessionStore=await import(storePath);
+  const runtimeModule=await import(runtimePath);
+  if(typeof runtimeModule.BedrockRuntime!=='function') throw new Error('BEDROCK_RUNTIME_UNAVAILABLE');
+  await runWorker({store,native,runtime:deps=>new runtimeModule.BedrockRuntime(deps)});
+}
+if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) await main();

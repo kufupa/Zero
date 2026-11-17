@@ -6,7 +6,13 @@ import { sql, uid, json, event } from './db.js';
 import { tools, type ThreadInput } from './schema.js';
 import { quoteDisplayRows } from './display.js';
 
-export const model = 'claude-haiku-5-5';
+export type RuntimeProvider = 'bedrock' | 'cma';
+export function runtimeProvider(): RuntimeProvider {
+  const value = process.env.NAVA_AGENT_RUNTIME ?? 'bedrock';
+  if (value !== 'bedrock' && value !== 'cma') throw new Error('NAVA_AGENT_RUNTIME_INVALID');
+  return value;
+}
+export const model = runtimeProvider() === 'bedrock' ? 'global.anthropic.claude-haiku-5-5' : 'claude-haiku-5-5';
 export const environmentId = process.env.ANTHROPIC_ENVIRONMENT_ID;
 export const client = new Anthropic({apiKey: process.env.ANTHROPIC_API_KEY ?? 'not-configured'});
 export async function skillSnapshot() {
@@ -25,11 +31,14 @@ export async function skillSnapshot() {
   return {files:entries,sha256:createHash('sha256').update(JSON.stringify(entries)).digest('hex')};
 }
 export async function authReady() {
+  if (runtimeProvider() === 'bedrock') return (process.env.AWS_REGION ?? 'eu-west-1') === 'eu-west-1';
   if (!process.env.ANTHROPIC_API_KEY || !process.env.ANTHROPIC_ENVIRONMENT_KEY || !environmentId) return false;
   try { await skillSnapshot(); return true; } catch { return false; }
 }
 let authCheck: {until:number; ready:boolean}|undefined;
 export async function verifiedAuth() {
+  // Credential availability alone is not an authenticated Bedrock request.
+  if (runtimeProvider() === 'bedrock') return false;
   if (!await authReady() || !environmentId || !process.env.ANTHROPIC_ENVIRONMENT_KEY) return false;
   if (authCheck && authCheck.until>Date.now()) return authCheck.ready;
   let ready=false;
@@ -77,6 +86,8 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
   });
 }
 export async function startPending(sessionId:string) {
+  // Bedrock workers consume the durable mail_pending/context_pending events.
+  if (runtimeProvider() === 'bedrock') return;
   if (!await authReady()) return;
   await sql.begin(async tx=>{
     const [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE id=${sessionId} FOR UPDATE`;
@@ -90,6 +101,7 @@ export async function startPending(sessionId:string) {
   await deliverPending(sessionId);
 }
 export async function deliverPending(sessionId:string) {
+  if (runtimeProvider() === 'bedrock') return;
   await sql.begin(async tx=>{
     const [session]=await tx`SELECT * FROM nava_agent.agent_session WHERE id=${sessionId} FOR UPDATE`;
     if (!session?.managed_session_id) return;
