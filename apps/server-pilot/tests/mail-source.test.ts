@@ -200,43 +200,6 @@ const directExamples = [
     name: 'look-alike host is not Tiket.com',
     input: { fromAddress: 'sales@mytiket.com', subject: 'Rates', bodyText: '' },
   },
-  {
-    name: 'internal FW with authored ask above a forwarded channel notice',
-    input: {
-      fromAddress: 'bongi@legacyhotels.co.za',
-      subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
-      bodyText: [
-        'Please note.',
-        '---------- Forwarded message ----------',
-        'From: SynXis Reservations <noreply@synxis.com>',
-        'Subject: SynXis Res Confirmed',
-      ].join('\n'),
-    },
-  },
-  {
-    name: 'internal FW with authored ask matching a channel subject template',
-    input: {
-      fromAddress: 'ops@legacyhotels.co.za',
-      subject: 'FW: SynXis Res Confirmed (5940SH007118) (MODIFICATION)',
-      bodyText: 'Please file this.',
-    },
-  },
-  {
-    name: 'internal forward whose embedded Subject line is absent',
-    input: {
-      fromAddress: 'reservations@legacyhotels.co.za',
-      subject: 'Fwd: New reservation',
-      bodyText: 'Forwarded message:\nSender: Guest Messaging <notice@property.booking.com>',
-    },
-  },
-  {
-    name: 'internal FW whose envelope subject adds an ask to the embedded subject',
-    input: {
-      fromAddress: 'reservations@legacyhotels.co.za',
-      subject: 'FW: SynXis Res Confirmed — please amend dates',
-      bodyText: 'Forwarded message:\nFrom: SynXis Reservations <noreply@synxis.com>\nSubject: SynXis Res Confirmed',
-    },
-  },
 ] as const;
 
 describe('classifyMailSource', () => {

@@ -20,9 +20,10 @@ function fixture(hasReply: boolean): DB {
     id: 'work-1', kind: 'other', status: 'done', sourceMessageId: 'mail-1', sentAt: null,
     sentMessageId: null, state: {}, hmsOpen: false, rejectedReplyId: null, touched: false,
     lastStatusActor: 'system', lastStatusReason: 'staff_sent_other', origin: 'person',
-    extractionPayload: { confirmationNumbers: ['123456'], needsAction: true, action: 'other_actionable', separateAsk: ask },
+    extractionPayload: { confirmationNumbers: ['123456'], needsAction: true, action: 'other_actionable', separateAsk: ask,
+      contact: { name: null, email: null, phone: null }, bookingAgency: null, organization: null, stays: [], missing: [] },
   }], [], [], [{ messageId: 'mail-1', kind: 'other' }], [{ email: mailbox }],
-  [mail('mail-1', 'inbound', at), ...(hasReply ? [mail('reply-1', 'outbound', replyAt)] : [])], [{ from: mailbox }]];
+  [mail('mail-1', 'inbound', at), ...(hasReply ? [mail('reply-1', 'outbound', replyAt)] : [])], [], [{ from: mailbox }]];
   const query = () => {
     const result = rows.shift();
     if (!result) throw new Error('Unexpected database query');
