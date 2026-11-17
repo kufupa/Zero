@@ -1,0 +1,36 @@
+.stay {
+  min-width: 0;
+  margin: 14px 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  padding: 0;
+}
+
+.stay legend {
+  padding: 0 8px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stay > div:first-of-type { margin-top: 10px; }
+
+.resultNote {
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+
+.requests {
+  margin: 12px 0 18px;
+  overflow-wrap: anywhere;
+}
+
+.requests summary {
+  color: #6546bb;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.requests ol { margin: 8px 0; padding-left: 18px; }
+.requests ol > li { margin: 7px 0; }
+.requests ul { margin: 4px 0; padding-left: 18px; }
+.requests p { margin: 4px 0; color: var(--muted); }

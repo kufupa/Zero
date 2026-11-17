@@ -1,4 +1,5 @@
 import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
+import { createNavaRewriteGateway } from './nava-rewrite-gateway.js';
 import { pruneOutlookAuthorizationHistory } from './outlook-security/retention.js';
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { createOutlookSyncNativeHandler } from './http/outlook-sync-native.js';
@@ -47,6 +48,9 @@ app.get('/api/public/providers', (c) => {
 // Better Auth handlers mount at /api/auth/* (better-auth default basePath).
 const auth = createAuth();
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+
+const navaRewriteGateway = createNavaRewriteGateway(auth);
+app.on(['GET', 'POST', 'PATCH'], '/api/nava/v1/*', (c) => navaRewriteGateway(c.req.raw));
 
 // Native enrollment is a one-use, operator-approved pairing; no browser signup exists.
 app.post('/api/outlook/native/sync/:operation', (c) =>
