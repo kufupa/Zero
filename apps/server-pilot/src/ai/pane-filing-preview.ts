@@ -5,6 +5,7 @@ import { workItem } from '../db/schema/work.js';
 import { bindHmsMailboxProperty, isDaVinciMailboxOrigin, loadThreadMailboxHmsOriginScan } from '../hms/mailbox-hms-origin-bind.js';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 import { propertyCodeSchema, type PropertySwitch } from '../hms/property-registry.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { getS3Storage, type S3Storage } from '../storage/s3.js';
 import { readPaneFilingAttachment } from './pane-filing-source.js';
 import { findStay } from './pane-stay-lookup.js';
@@ -29,7 +30,7 @@ export type PreviewInput = {
 type PreviewResult =
   | { status: 'ready'; confirmation: string; arrival: string; documentName: string;
       documentSource: { sha256: string; snapshotDigest: string }; revisionSeq: number }
-  | { status: 'refused'; reason: string };
+  | { status: 'refused'; reason: string; failureCode?: 'AUTHENTICATED_SHELL_TIMEOUT' };
 
 /** Recheck the selected message, work item and current mailbox access around the remote reads. */
 async function currentFilingSource(db: DB, input: PreviewInput): Promise<{ threadId: string; revisionSeq: number } | null> {
@@ -104,7 +105,8 @@ export async function previewFiling(input: PreviewInput): Promise<PreviewResult>
   if (found.outcome !== 'found' || !found.stay || found.arrivalMismatch ||
       found.stay.confirmation !== input.confirmation || found.stay.arrival !== input.arrival ||
       !found.stay.lastName || normalizeName(found.stay.lastName) !== normalizeName(input.lastName)) {
-    return { status: 'refused', reason: 'booking_unavailable' };
+    return { status: 'refused', reason: 'booking_unavailable',
+      ...(classifyHmsLoginOutage(found) ? { failureCode: 'AUTHENTICATED_SHELL_TIMEOUT' as const } : {}) };
   }
 
   if (!await originAllowed()) return { status: 'refused', reason: 'property_unavailable' };
