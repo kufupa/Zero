@@ -10,7 +10,7 @@ import { projectCancellationPreflight } from './guest-stay-cancel-preflight.mjs'
 const RETRYABLE_LOOKUPS = new Set([
   'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND', 'CONFIRMATION_HINT_MISMATCH',
   'CONFIRMATION_HINT_UNVERIFIED', 'SEARCH_RESULTS_CHANGED',
-  'INVALID_CONFIRMATION', 'INVALID_GUEST_NAME', 'INVALID_ARRIVAL_DATE', 'INVALID_LOOKUP_OPTIONS',
+  'INVALID_CONFIRMATION', 'INVALID_GUEST_NAME', 'INVALID_ARRIVAL_DATE', 'INVALID_DEPARTURE_DATE', 'INVALID_LOOKUP_OPTIONS',
 ]);
 
 function readFailure(error, stage, shallow) {
@@ -81,7 +81,7 @@ export async function withSavedStayAgentSession(operation, { signal, readOnly = 
       let shallow;
       try {
         shallow = await readShallow(page, request.confirmation,
-          { guestName: request.guestName, arrivalDate: request.arrivalDate, signal, propertyCode });
+          { guestName: request.guestName, arrivalDate: request.arrivalDate, departureDate: request.departureDate, signal, propertyCode });
       } catch (error) {
         const result = readFailure(error, 'shallow');
         if (!RETRYABLE_LOOKUPS.has(result.issue)) { sealed = true; result.next = 'fresh_session'; }

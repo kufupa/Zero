@@ -55,13 +55,13 @@ export function buildStaySearchCompleteness({ searchedDateRange = null, searched
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'];
 
-function parseArrivalDate(value) {
+function parseDateHint(value, errorCode) {
   if (value === undefined || value === null || value === '') return null;
-  if (typeof value !== 'string') throw new Error('INVALID_ARRIVAL_DATE');
+  if (typeof value !== 'string') throw new Error(errorCode);
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) throw new Error('INVALID_ARRIVAL_DATE');
+  if (!match) throw new Error(errorCode);
   const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
-  if (date.toISOString().slice(0, 10) !== value) throw new Error('INVALID_ARRIVAL_DATE');
+  if (date.toISOString().slice(0, 10) !== value) throw new Error(errorCode);
   return date;
 }
 
@@ -201,7 +201,9 @@ export function normalizeLookupOptions(options) {
       options.guestName.length > 256 || /[\r\n]/.test(options.guestName))) {
     throw new Error('INVALID_GUEST_NAME');
   }
-  return { guestName: options.guestName?.trim() || null, arrivalDate: parseArrivalDate(options.arrivalDate) };
+  return { guestName: options.guestName?.trim() || null,
+    arrivalDate: parseDateHint(options.arrivalDate, 'INVALID_ARRIVAL_DATE'),
+    departureDate: parseDateHint(options.departureDate, 'INVALID_DEPARTURE_DATE') };
 }
 
 function lookupError(code, matches, searchedDateRange, searchResults, completeness) {
@@ -215,10 +217,11 @@ function lookupError(code, matches, searchedDateRange, searchResults, completene
   });
 }
 
-function matchHints(matches, guestName, arrivalDate) {
+function matchHints(matches, { guestName, arrivalDate, departureDate }) {
   const expectedName = guestName ? nameTokens(guestName) : null;
   const expectedWithoutTitle = guestName ? nameTokens(guestName, true) : null;
-  const expectedDate = arrivalDate?.toISOString().slice(0, 10);
+  const expectedDates = [['arrivalDate', arrivalDate?.toISOString().slice(0, 10)],
+    ['departureDate', departureDate?.toISOString().slice(0, 10)]];
   return matches.map((match) => {
     let contradicted = false;
     let verified = true;
@@ -233,9 +236,10 @@ function matchHints(matches, guestName, arrivalDate) {
         else if (candidateWithoutTitle.join('\0') !== expectedWithoutTitle.join('\0')) contradicted = true;
       }
     }
-    if (expectedDate) {
-      if (!match.candidate.arrivalDate) verified = false;
-      else if (match.candidate.arrivalDate !== expectedDate) contradicted = true;
+    for (const [field, expected] of expectedDates) {
+      if (!expected) continue;
+      if (!match.candidate[field]) verified = false;
+      else if (match.candidate[field] !== expected) contradicted = true;
     }
     return { match, contradicted, verified };
   });
@@ -326,7 +330,7 @@ async function waitForSelectedDetails(page, popup, wanted) {
   throw new Error('CONFIRMATION_DETAILS_NOT_LOADED');
 }
 
-// Options: { guestName?, arrivalDate? (YYYY-MM-DD) }; omitted options retain legacy batch hints.
+// Options: { guestName?, arrivalDate?, departureDate? }; date hints use YYYY-MM-DD.
 // Lookup errors include candidates, searchedDateRange and searchResults when available.
 // Kept as an action on the caller's page so record-view reads can build on it.
 export async function readConfirmationFromStay360(page, confirmation, options) {
@@ -336,7 +340,8 @@ export async function readConfirmationFromStay360(page, confirmation, options) {
   const wanted = confirmation.trim();
   // Keep the existing diagnostic batch working; explicit options never read process-wide hints.
   const hints = options === undefined ? legacyLookupOptions(wanted) : options;
-  const { guestName, arrivalDate } = normalizeLookupOptions(hints);
+  const normalizedHints = normalizeLookupOptions(hints);
+  const { guestName, arrivalDate, departureDate } = normalizedHints;
   const duration = Number.isFinite(hints?.maxDurationMs) ? Math.max(0, hints.maxDurationMs) : 45_000;
   const deadline = Date.now() + duration;
   checkSweepBudget({ deadline, signal: hints?.signal });
@@ -412,7 +417,8 @@ export async function readConfirmationFromStay360(page, confirmation, options) {
       const found = (await exactSearchMatches(popup, wanted)).map((match) => ({ ...match, chunkStartDate: searchedDateRange.from }));
       snapshots.set(searchedDateRange.from, found);
       for (const match of found) {
-        const key = [hints?.propertyCode || '', wanted, match.candidate.arrivalDate || '', match.candidate.guestName || ''].join('|');
+        const key = [hints?.propertyCode || '', wanted, match.candidate.arrivalDate || '',
+          departureDate ? match.candidate.departureDate || '' : '', match.candidate.guestName || ''].join('|');
         if (!keys.has(key)) { keys.add(key); matches.push(match); }
       }
       if (!searchResults.complete) throw lookupError('SEARCH_RESULTS_CAPPED', matches, searchedDateRange, searchResults, completeness());
@@ -420,14 +426,14 @@ export async function readConfirmationFromStay360(page, confirmation, options) {
   }
   if (matches.length === 0) throw lookupError('CONFIRMATION_NOT_FOUND', matches, searchedDateRange, searchResults, completeness());
 
-  const viable = matchHints(matches, guestName, arrivalDate).filter((item) => !item.contradicted);
+  const viable = matchHints(matches, normalizedHints).filter((item) => !item.contradicted);
   if (viable.length === 0) throw lookupError('CONFIRMATION_HINT_MISMATCH', matches, searchedDateRange, searchResults, completeness());
   if (viable.length !== 1 || !viable[0].verified) {
     const error = matches.length === 1 ? 'CONFIRMATION_HINT_UNVERIFIED' : 'AMBIGUOUS_CONFIRMATION';
     throw lookupError(error, matches, searchedDateRange, searchResults, completeness());
   }
   const selected = viable[0].match;
-  const matchedHints = [guestName && 'guestName', arrivalDate && 'arrivalDate'].filter(Boolean);
+  const matchedHints = [guestName && 'guestName', arrivalDate && 'arrivalDate', departureDate && 'departureDate'].filter(Boolean);
   const matchSelection = matches.length > 1 ? `unique ${matchedHints.join(' and ')} match` : null;
 
   if (selected.chunkStartDate && selected.chunkStartDate !== searchedDateRange?.from) {

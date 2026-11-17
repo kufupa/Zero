@@ -33,7 +33,8 @@ async function execute(context: ToolContext, action: () => Promise<ToolResult>):
   }
 }
 
-async function savedRead(property: string, confirmation: string, context: ToolContext, view: 'shallow' | 'record', hints: Record<string, unknown> = {}) {
+async function savedRead(property: string, confirmation: string, context: ToolContext, view: 'shallow' | 'record',
+  hints: { guestName?: string; arrivalDate?: string; departureDate?: string } = {}) {
   const { withSavedStayAgentSession } = await native('saved-stay-agent-session.mjs');
   return withSavedStayAgentSession(
     ({ runTool }: { runTool: (input: Record<string, unknown>) => Promise<Record<string, unknown>> }) =>
@@ -42,14 +43,19 @@ async function savedRead(property: string, confirmation: string, context: ToolCo
   );
 }
 
-async function verifyObservedDeparture(result: Record<string, unknown>, requested: string): Promise<'match' | 'mismatch' | 'unverified'> {
+function uniqueRecordField(result: Record<string, unknown>, name: string): string | undefined {
   const record = obj(result.record) ? result.record : {};
   const details = obj(record.details) ? record.details : {};
   const fields: unknown[] = Array.isArray(details.fields) ? details.fields : [];
-  const departures = fields.filter(field => obj(field) && field.name === 'departuredate');
-  if (departures.length !== 1 || !obj(departures[0]) || !str(departures[0].value)) return 'unverified';
+  const matches = fields.filter(field => obj(field) && field.name === name);
+  return matches.length === 1 && obj(matches[0]) && str(matches[0].value) ? matches[0].value : undefined;
+}
+
+async function verifyObservedDeparture(result: Record<string, unknown>, requested: string): Promise<'match' | 'mismatch' | 'unverified'> {
+  const departure = uniqueRecordField(result, 'departuredate');
+  if (departure === undefined) return 'unverified';
   const { hmsDateToIso } = await native('cancel-stay-rules.mjs');
-  const actual: unknown = hmsDateToIso(departures[0].value);
+  const actual: unknown = hmsDateToIso(departure);
   return typeof actual !== 'string' ? 'unverified' : actual === requested ? 'match' : 'mismatch';
 }
 
@@ -182,12 +188,26 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
 }
 
 export async function readReservation(input: unknown, context: ToolContext): Promise<ToolResult> {
-  if (!obj(input) || !keys(input, ['property_code', 'reservation_id']) || !str(input.property_code) || !str(input.reservation_id)) return fail('INVALID_INPUT', 'Property and reservation identifier are required.');
-  if (!/^(?:\d+-\d+|\d{6,10})$/.test(input.reservation_id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
-  const property = input.property_code, id = input.reservation_id;
+  if (!obj(input) || !keys(input, ['property_code', 'reservation_id', 'arrival_date', 'departure_date', 'last_name']) ||
+      !str(input.property_code) || !str(input.reservation_id)) return fail('INVALID_INPUT', 'Property and reservation identifier are required.');
+  const { property_code: property, reservation_id: id, arrival_date: arrival, departure_date: departure, last_name: surname } = input;
+  if ((arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure)) ||
+      (surname !== undefined && !str(surname)) || (arrival && departure && departure < arrival)) {
+    return fail('INVALID_INPUT', 'Use a valid arrival and departure in YYYY-MM-DD order and a nonblank surname, when known.');
+  }
+  if (!/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   return execute(context, async () => {
-    const result: Record<string, unknown> = await savedRead(property, id, context, 'record');
-    if (result.outcome === 'ok') return ok(result);
+    const result: Record<string, unknown> = await savedRead(property, id, context, 'record', { arrivalDate: arrival, departureDate: departure });
+    if (result.outcome === 'ok') {
+      const refusal = await departureRefusal(result, departure);
+      if (refusal) return refusal;
+      if (surname !== undefined) {
+        const observed = uniqueRecordField(result, 'lastname');
+        if (observed === undefined) return fail('CONFIRMATION_HINT_UNVERIFIED', 'Infor did not return one readable guest surname.');
+        if (normalizeSurname(observed) !== normalizeSurname(surname)) return fail('CONFIRMATION_HINT_MISMATCH', 'The native guest surname differs from the requested surname.');
+      }
+      return ok(result);
+    }
     if (['AMBIGUOUS_CONFIRMATION', 'CONFIRMATION_HINT_UNVERIFIED', 'CONFIRMATION_HINT_MISMATCH', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND'].includes(String(result.issue))) return ok({ outcome: 'not_uniquely_read', native: result });
     return fail(String(result.issue || 'HMS_READ_FAILED'), 'Native reservation read failed.', true);
   });
@@ -257,7 +277,7 @@ export async function searchParties(input: unknown, context: ToolContext): Promi
 
 export const tools = [
   { name: 'hms_search_reservations', description: 'Search native reservation candidates without selecting a booking.', input_schema: schemas.hms_search_reservations, run: searchReservations },
-  { name: 'hms_read_reservation', description: 'Read a fresh uniquely identified native saved reservation.', input_schema: schemas.hms_read_reservation, run: readReservation },
+  { name: 'hms_read_reservation', description: 'Read a fresh uniquely identified native saved reservation. Include known stay dates and exact guest surname when available.', input_schema: schemas.hms_read_reservation, run: readReservation },
   { name: 'hms_read_catalogue', description: 'Read native catalogue codes and meanings with explicit coverage.', input_schema: schemas.hms_read_catalogue, run: readCatalogue },
   { name: 'hms_search_parties', description: 'Search native guest, organization, agency or A/R candidates without linking.', input_schema: schemas.hms_search_parties, run: searchParties },
 ];

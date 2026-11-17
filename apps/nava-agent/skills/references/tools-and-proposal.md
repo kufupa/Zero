@@ -10,7 +10,7 @@ Normative wire owner: `/home/orca/nava-rewrite/contracts/nava-agent-backend.md`,
 | `mail_read_thread` | `{}` | Authorized session messages + attachment metadata |
 | `mail_read_attachment` | `message_id`, `attachment_id` | Supplied document text/metadata or explicit unavailable |
 | `hms_search_reservations` | `property_code`, `criteria` | Criteria only `reservation_id`, `guest_name`, `arrival_date`, `departure_date`; candidate list |
-| `hms_read_reservation` | `property_code`, `reservation_id` | Fresh saved state; verify identity/status/business fields |
+| `hms_read_reservation` | `property_code`, `reservation_id`; optional `arrival_date`, `departure_date` (YYYY-MM-DD), `last_name` (surname only) | Fresh saved state. Send known arrival to scope the lookup; verify known departure and surname against the native stay. |
 | `hms_read_catalogue` | `property_code`, `kinds` | Kinds: `room_type`, `rate_plan`, `meal_plan`, `source_of_business`, `track`, `guarantee_type`, `organization`, `agency` |
 | `hms_quote` | `quote_id`, `property_code`, `groups`; optional `search`, `details`, `max_options_per_group` | Native capture per group, not booked inventory |
 | `hms_prepare` | `workflow`, `booking`, `action` | Workflow `create|amend|cancel|filing`; complete Booking/Action below; unsaved stage, session closes |
