@@ -24,7 +24,7 @@ async function main() {
       (command === 'save-labtest' && !journalDir)) throw new Error('USAGE');
   const input: unknown = JSON.parse(await readFile(inputPath, 'utf8'));
   const mode: ToolContext['mode'] = command === 'prepare-live' ? 'live' : 'labtest';
-  const base: ToolContext = { sessionId: `cli-${randomUUID()}`, mode };
+  const base: ToolContext = { sessionId: `cli-${randomUUID()}`, mode, signal: AbortSignal.timeout(85_000) };
   // Operator must configure this process with the actual native admission DB on its existing box.
   if (process.env.NAVA_HMS_SHARED_ADMISSION !== '1') {
     const result = command === 'save-labtest'
