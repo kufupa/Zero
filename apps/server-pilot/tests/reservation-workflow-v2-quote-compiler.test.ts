@@ -131,6 +131,55 @@ function fields(value: ReservationWorkflowV2Draft, execute = false): string[] {
 }
 
 describe('reservation workflow v2 Quote compiler staff edits', () => {
+  it('keeps split quote dates on the selected Infor party while allowing typed names and separate options', () => {
+    const value = draft();
+    const first = value.proposal.content.requests[0]!;
+    if (first.kind !== 'quote') throw new Error('quote fixture missing');
+    first.body.groups[0]!.ratePlan = 'BAR';
+    first.body.groups[0]!.occupancy = { scope: 'per_room', adults: 1, childCount: 0, childAges: [] };
+    const second = structuredClone(first);
+    second.id = 'quote-2';
+    second.body.groups[0]!.id = 'group-2';
+    second.body.groups[0]!.arrival = '2027-02-03';
+    second.body.groups[0]!.departure = '2027-02-04';
+    const members = [{ requestId: 'quote-1', label: 'First' }, { requestId: 'quote-2', label: 'Second' }];
+    const family = { id: 'family', members, composition: { kind: 'additive' as const } };
+    first.body.quoteFamily = { ...family, label: 'First' };
+    second.body.quoteFamily = { ...family, label: 'Second' };
+    value.proposal.content.requests.push(second);
+    const firstPath = `${requestRoot}/parties/organization/nativeSelectionRef`;
+    const secondPath = '/proposal/content/requests/quote-2/body/parties/organization/nativeSelectionRef';
+    const guard = `${secondPath}:quote_family_party_selection_required`;
+    const compiledFields = (execute: boolean) => {
+      const result = compileReservationWorkflowV2Quote(value, second, execute);
+      return result.status === 'ok' ? [] : result.fields;
+    };
+
+    // A family that uses typed names throughout needs no Infor selection.
+    expect(compiledFields(false)).not.toContain(guard);
+    value.fieldOverrides[firstPath] = { state: 'set', value: candidateRef, updatedAt: now };
+    expect(compiledFields(false)).toContain(guard);
+    expect(compiledFields(true)).toContain(guard);
+
+    const original = value.observations[0]!;
+    value.observations.push({ ...structuredClone(original), ref: 'second-candidate', generationId: 'old-generation',
+      criteria: { workflow: 'quote', requestId: 'quote-2', role: 'organization' } });
+    value.fieldOverrides[secondPath] = { state: 'set', value: 'second-candidate', updatedAt: now };
+    expect(compiledFields(false)).toContain(guard);
+    value.observations.at(-1)!.generationId = value.generationId;
+    expect(compiledFields(false)).not.toContain(guard);
+    value.observations.at(-1)!.result.nativeId = 'ORG-2';
+    expect(compiledFields(false)).toContain(guard);
+
+    const composition = { kind: 'scenarios' as const, options: [
+      { id: 'a', label: 'A', requestIds: ['quote-1'], evidenceRefs: [] },
+      { id: 'b', label: 'B', requestIds: ['quote-2'], evidenceRefs: [] },
+    ] };
+    first.body.quoteFamily = { ...family, label: 'First', composition };
+    second.body.quoteFamily = { ...family, label: 'Second', composition };
+    expect(compiledFields(false)).not.toContain(guard);
+  });
+
   it('splits alternative dates and meals without losing groups, extras or confirmed counts', async () => {
     const value = draft();
     const request = value.proposal.content.requests[0]!;
