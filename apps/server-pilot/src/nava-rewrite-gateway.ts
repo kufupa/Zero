@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { getDb } from './db/client.js';
 import { mailboxAccess, mailboxTransport } from './db/schema/mail.js';
 import { resolvePilotTrustedOrigins, type Auth } from './lib/auth.js';
+import { signNavaAttachmentCoverage, validCoverageRequest } from './mail/nava-attachment-coverage.js';
 
 const resourceId = '([^/]+)';
 const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
@@ -39,6 +40,21 @@ function configuredAgentOrigin(value: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+async function readImportBody(body: ReadableStream<Uint8Array>): Promise<string | null> {
+  const limit=2*1024*1024, reader=body.getReader(), chunks:Uint8Array[]=[];
+  let size=0;
+  try {
+    for (;;) {
+      const next=await reader.read();
+      if(next.done) break;
+      size+=next.value.length;
+      if(size>limit) { await reader.cancel(); return null; }
+      chunks.push(next.value);
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } finally { reader.releaseLock(); }
 }
 
 function staffToken(userId: string, mailboxIds: string[], secret: string) {
@@ -100,6 +116,17 @@ function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number
 export function createNavaRewriteGateway(auth: Auth) {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
+    if (request.method==='POST' && url.pathname==='/api/nava/v1/internal/attachment-coverage') {
+      const secret=process.env.NAVA_STAFF_JWT_SECRET, mailbox=process.env.NAVA_REWRITE_COHORT_MAILBOX_ID;
+      if (!secret || Buffer.byteLength(secret)<32 || !mailbox || !request.body) return error(403,'forbidden','Coverage unavailable');
+      const raw=await readImportBody(request.body).catch(()=>null);
+      if (raw===null) return error(413,'import_too_large','Selected conversation is too large');
+      const challenge=validCoverageRequest(raw,request.headers.get('X-Nava-Coverage-Request'),secret);
+      if (!challenge) return error(403,'forbidden','Coverage unavailable');
+      const proof=await signNavaAttachmentCoverage(raw,mailbox,secret,challenge).catch(()=>null);
+      if (!proof) return error(409,'attachments_unconfirmed','Attachment inventory unavailable');
+      return Response.json({proof},{headers:{'Cache-Control':'no-store'}});
+    }
     const match = routes
       .filter((route) => route.method === request.method)
       .map((route) => route.path.exec(url.pathname))
@@ -186,7 +213,14 @@ export function createNavaRewriteGateway(auth: Auth) {
         redirect: 'manual',
         signal: request.signal,
       };
-      if (request.method !== 'GET' && request.body) {
+      if (request.method==='POST' && url.pathname==='/api/nava/v1/threads' && request.body) {
+        const raw=await readImportBody(request.body);
+        if(raw===null) return error(413,'import_too_large','Selected conversation is too large');
+        const issued=String(Date.now());
+        const proof=await signNavaAttachmentCoverage(raw,cohortMailboxId,secret,issued).catch(()=>null);
+        if(proof) headers.set('X-Nava-Attachment-Coverage',`${issued}.${proof}`);
+        init.body=raw;
+      } else if (request.method !== 'GET' && request.body) {
         init.body = request.body;
         init.duplex = 'half';
       }

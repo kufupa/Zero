@@ -12,7 +12,7 @@ import { authReady, verifiedAuth, importThread, model, snapshot, startPending, d
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
 import { hmsSaveEnabled } from './hms-mode.js';
-import { attachmentsUnconfirmed } from './attachment-gate.js';
+import { attachmentsUnconfirmed, verifyAttachmentImport } from './attachment-gate.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
 type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code;
@@ -93,11 +93,15 @@ app.post('/labtest/create/seed',async c=>{
 });
 app.post('/threads',async c=>{
   if (!c.req.header('Idempotency-Key')) return c.json({error:{code:'IDEMPOTENCY_REQUIRED',message:'Idempotency-Key required',details:null}},400);
-  const parsed=threadInput.safeParse(await c.req.json().catch(()=>null));
+  const raw=await c.req.text().catch(()=>'');
+  let body:unknown=null;
+  try { body=JSON.parse(raw); } catch { /* rejected by schema */ }
+  const parsed=threadInput.safeParse(body);
   if (!parsed.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid thread',details:parsed.error.flatten()}},400);
   const principal=c.get('principal');
   if(!hasMailbox(principal,parsed.data.mailbox_id) || (principal.kind==='staff' && parsed.data.mode!=='live')) return c.json({error:{code:'FORBIDDEN',message:'Mailbox or mode unavailable',details:null}},403);
-  try { if(principal.kind==='staff') {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!); const current=await snapshot(imported.id); if(process.env.NAVA_CREATE_PREPARE_ONLY==='1' && parsed.data.mode==='live' && current?.selected_message_id!==parsed.data.selected_message_id) throw new Error('IMPORT_SELECTION_MISMATCH'); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
+  const coverage=verifyAttachmentImport(raw,c.req.header('X-Nava-Attachment-Coverage'),process.env.NAVA_STAFF_JWT_SECRET);
+  try { if(principal.kind==='staff') {const seeded=await findManualLabtest(parsed.data);if(seeded)return c.json(seeded,200);} const imported=await importThread(parsed.data,c.req.header('Idempotency-Key')!,undefined,undefined,coverage); const current=await snapshot(imported.id); if(process.env.NAVA_CREATE_PREPARE_ONLY==='1' && parsed.data.mode==='live' && current?.selected_message_id!==parsed.data.selected_message_id) throw new Error('IMPORT_SELECTION_MISMATCH'); if(!imported.skipped && current?.session) void startPending(current.session.id).catch(()=>{}); return c.json(current,imported.created?201:200); }
   catch (error) { const message=error instanceof Error ? error.message : 'IMPORT_FAILED'; return c.json({error:{code:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'IMPORT_UNAVAILABLE',message:['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?message:'Unable to import thread',details:null}},['THREAD_MODE_CONFLICT','IDEMPOTENCY_CONFLICT','MESSAGE_CONFLICT','HISTORICAL_CONTEXT_CONFLICT'].includes(message)?409:503); }
 });
 app.get('/threads/:id',async c=>{const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);const result=await snapshot(c.req.param('id')); return result?c.json(result):c.json({error:{code:'NOT_FOUND',message:'Thread not found',details:null}},404);});

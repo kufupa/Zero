@@ -3,7 +3,7 @@ import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
 import { editablePointer, pointerParts, validChildAges } from './proposal-fields.js';
-import { attachmentCheckPath, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentCheckPath, completeAttachmentSnapshot, staffAttachmentsChecked } from './attachment-gate.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
   if(x.op!=='remove' && !Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'value required'});
@@ -83,6 +83,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,edit_id:editId,revision,path:item.change.path,before:item.before,after:item.after,before_present:item.before_present,after_present:item.after_present,who:actor,at:saved.at})})`;
     }
     const [updated]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id}`;
-    return {...proposalWire(updated),staff_attachments_checked:input.staff_attachments_checked===true};
+    return {...proposalWire({...updated,attachment_coverage_complete:await completeAttachmentSnapshot(tx,p.session_id)}),
+      staff_attachments_checked:input.staff_attachments_checked===true};
   });
 }

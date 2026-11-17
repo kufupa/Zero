@@ -5,7 +5,7 @@ import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { proposalDraft } from './schema.js';
 import { createPilotRequested, hmsSaveEnabled } from './hms-mode.js';
 import { describePrepareRejection, readPrepareRejection } from './prepare-feedback.js';
-import { attachmentsUnconfirmed, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentsUnconfirmed, completeAttachmentSnapshot, staffAttachmentsChecked } from './attachment-gate.js';
 import type { LeaseFence, RegistryContext, ToolRegistry, ToolResult } from './tool-registry.js';
 
 export const manualLabtestTarget = z.object({
@@ -52,7 +52,8 @@ export function createPilotOperations(): ProposalOperations | undefined {
       if (request.mode === 'labtest' && !isSeededLabtest(p.config?.manual_create_labtest, input.booking.fields)) return {ok:false,code:'FORBIDDEN'};
       if (request.operation === 'stage') {
         if (!['idle','waiting_go'].includes(p.status)) return {ok:false,code:'INVALID_PHASE'};
-        if (process.env.NAVA_CREATE_PREPARE_ONLY==='1' && !await staffAttachmentsChecked(tx,p.id,p.revision)) {
+        if (process.env.NAVA_CREATE_PREPARE_ONLY==='1' && (!await staffAttachmentsChecked(tx,p.id,p.revision)
+            || !await completeAttachmentSnapshot(tx,p.session_id,true))) {
           return {ok:false,code:attachmentsUnconfirmed.code};
         }
         const stage = queuedStage.parse({job_id:uid('stage'),revision:request.expectedRevision,actor:request.actor,previous_phase:p.phase,state:'queued'});
