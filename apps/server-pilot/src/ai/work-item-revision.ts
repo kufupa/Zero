@@ -35,13 +35,32 @@ function isPaneFieldKey(key: string): boolean {
     key === RESERVATION_V2_KEY;
 }
 
+function sourceBindingOf(value: unknown): {
+  generationId: string; propertyCode: string; threadId: string; messageId: string; sourceHash: string;
+} | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const draft = value as Record<string, unknown>;
+  const source = draft.source && typeof draft.source === 'object' && !Array.isArray(draft.source)
+    ? draft.source as Record<string, unknown> : null;
+  const binding = source ? { generationId: draft.generationId, propertyCode: draft.propertyCode,
+    threadId: source.threadId, messageId: source.messageId, sourceHash: source.sourceHash } : draft.sourceCueBinding;
+  if (!binding || typeof binding !== 'object' || Array.isArray(binding)) return null;
+  const { generationId, propertyCode, threadId, messageId, sourceHash } = binding as Record<string, unknown>;
+  return typeof generationId === 'string' && generationId && typeof propertyCode === 'string' && propertyCode &&
+    typeof threadId === 'string' && threadId && typeof messageId === 'string' && messageId &&
+    typeof sourceHash === 'string' && sourceHash
+    ? { generationId, propertyCode, threadId, messageId, sourceHash } : null;
+}
+
 export function paneStateOf(state: PaneState): PaneState {
   const pane: PaneState = {};
   for (const [key, value] of Object.entries(state)) {
     if (key === RESERVATION_V2_KEY) {
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         const draft = value as Record<string, unknown>;
+        const sourceCueBinding = sourceBindingOf(draft);
         pane[key] = { ...(Object.hasOwn(draft, 'proposal') ? { proposal: draft.proposal } : {}),
+          ...(sourceCueBinding ? { sourceCueBinding } : {}),
           fieldOverrides: draft.fieldOverrides ?? {}, staffReviews: draft.staffReviews ?? {} };
       }
     } else if (isPaneFieldKey(key)) pane[key] = value;
@@ -442,14 +461,33 @@ async function applyHistoryMove(
     const previousV2 = item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     if (previousV2?.proposal && restoredV2?.proposal) {
+      const snapshotBinding = sourceBindingOf(restored[RESERVATION_V2_KEY]);
+      const currentBinding = sourceBindingOf(previousV2);
+      const sameSource = snapshotBinding !== null && currentBinding !== null &&
+        currentBinding.generationId === snapshotBinding.generationId && currentBinding.propertyCode === snapshotBinding.propertyCode &&
+        currentBinding.threadId === snapshotBinding.threadId && currentBinding.messageId === snapshotBinding.messageId &&
+        currentBinding.sourceHash === snapshotBinding.sourceHash;
+      const restoredRequestIds = new Set<string>();
       // Source cues are host-produced for the current source, not historical staff edits.
       for (const request of restoredV2.proposal.content.requests) {
         if (request.kind !== 'amend') continue;
         const current = previousV2.proposal.content.requests.find((row) => row.id === request.id && row.kind === 'amend');
-        request.body.sourceCues = current?.kind === 'amend' ? current.body.sourceCues ?? [] : [];
+        if (current?.kind === 'amend') request.body.sourceCues = current.body.sourceCues ?? [];
+        else if (sameSource) restoredRequestIds.add(request.id);
+        else request.body.sourceCues = [];
       }
       const otherIssues = restoredV2.proposal.issues.filter((issue) => issue.kind !== 'source_note_for_review');
-      const sourceIssues = previousV2.proposal.issues.filter((issue) => issue.kind === 'source_note_for_review');
+      const presentRequestIds = restoredV2.proposal.content.requests.filter((request) => request.kind === 'amend')
+        .map((request) => request.id);
+      const belongsTo = (path: string, ids: Iterable<string>) => [...ids].some((id) =>
+        path.startsWith(`/proposal/content/requests/${encodeURIComponent(id)}/body/`));
+      const sourceIssues = previousV2.proposal.issues.filter((issue) => issue.kind === 'source_note_for_review' &&
+        belongsTo(issue.path, presentRequestIds));
+      if (sameSource) sourceIssues.push(...restoredV2.proposal.issues.filter((issue) =>
+        issue.kind === 'source_note_for_review' && belongsTo(issue.path, restoredRequestIds) &&
+        !sourceIssues.some((current) => current.path === issue.path && current.explanation === issue.explanation &&
+          current.evidenceRefs.length === issue.evidenceRefs.length &&
+          issue.evidenceRefs.every((ref) => current.evidenceRefs.includes(ref)))));
       restoredV2.proposal.issues = [...otherIssues, ...sourceIssues.slice(0, Math.max(0, 1000 - otherIssues.length))];
     }
     if (previousV2?.proposal && restoredV2?.proposal && Array.isArray(previousV2.observations)) {
