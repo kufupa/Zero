@@ -5,7 +5,7 @@ import type { BoundThreadSnapshot, NavaApi } from './api';
 import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
-import { Workflow, quoteCheckIssue, workflowPrimaryAction } from './workflow';
+import { Workflow, hasWorkflowAction, quoteCheckIssue, workflowPrimaryAction } from './workflow';
 import type { DraftValue, GuestCandidate } from './workflow';
 import { jsonSchema } from './wire';
 import type { Capabilities, Change, FieldSpec, Json, Proposal, QuoteSelection, ThreadInput, Workflow as WorkflowName } from './wire';
@@ -883,7 +883,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     if (kind === 'stage' && !validSavedChildren(current)) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
-    if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !current.actions.some(action => action.type === current.workflow))) return;
+    if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !hasWorkflowAction(current))) return;
     if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || quoteCheckIssue(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
     const attemptKey = kind === 'quote' ? JSON.stringify([proposal.id, proposal.revision, quoteId]) : null;
