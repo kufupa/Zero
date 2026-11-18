@@ -155,10 +155,11 @@ function guestChoices(result: NativeResult) {
 
 // Use the native rate shop for the same stay and party; its rows are observations,
 // not a claim that a particular rate is the customer's contract.
-async function scopedRateChoices(request: NativeRequest, lease: Lease, transportId: string, roomType?: string) {
+async function scopedRateChoices(request: NativeRequest, lease: Lease, transportId: string, roomType?: string, sellableOnly = false) {
   const unavailable = {status:'unavailable',items:[],coverage:null};
   const noChoices = {rateChoices:unavailable,roomChoices:unavailable};
-  const {arrival, departure, adults, childCount, childAges} = request.stay;
+  const {arrival, departure, adults, childAges} = request.stay;
+  const childCount = request.stay.childCount ?? (Array.isArray(childAges) ? childAges.length : undefined);
   if (typeof arrival !== 'string' || typeof departure !== 'string' ||
       !Number.isInteger(adults) || !Number.isInteger(childCount) || !Array.isArray(childAges) ||
       childAges.length !== childCount || !childAges.every(Number.isInteger)) return noChoices;
@@ -177,18 +178,18 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     rooms:[{id:'create',quantity:1,adults,children:childCount,childAges,
       ...(roomType ? {required:{roomCodes:[roomType]}} : {})}],
     ...(Object.keys(rateContext).length ? {rateContext} : {}),
-    search:{includeAlternatives:false},details:'summary',maxOptionsPerGroup:200};
+    search:{includeAlternatives:false,includeRestricted:sellableOnly},details:'summary',maxOptionsPerGroup:200};
   try {
     const base = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
     const {fetchQuote} = await import(new URL('fetch-quote.mjs', base).href);
     const quote: unknown = await fetchQuote({request:shopRequest,propertyCode:request.propertyCode,transportId,
       credentialLease:lease,signal:lease.signal});
     lease.signal.throwIfAborted();
-    if (!object(quote) || quote.outcome !== 'quote' || !object(quote.audit) || quote.audit.status !== 'complete' ||
+    if (!object(quote) || quote.propertyCode !== request.propertyCode ||
         !Array.isArray(quote.groups) || quote.groups.length !== 1 || !object(quote.groups[0])) return noChoices;
     const group = quote.groups[0], completeness = group.completeness;
     if (group.id !== 'create' || !object(completeness) || completeness.search !== 'complete' ||
-        completeness.requiredFacts !== 'complete' || !Array.isArray(group.options) || !Array.isArray(group.applied) ||
+        !Array.isArray(group.options) || !Array.isArray(group.applied) ||
         !group.applied.length || !object(group.resolvedContext)) return noChoices;
     for (const [kind,idKey] of [['bookingAgency','travelAgencyID'],['organization','organizationID']] as const) {
       const expected = rateContext[kind]?.nativeId ?? '';
@@ -203,13 +204,15 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     const rooms = new Map<string,{value:string;label:string;meaning:string}>();
     for (const option of group.options) {
       if (!object(option) || !object(option.rate) || !object(option.room) || option.eligibility !== 'verified' ||
+          (sellableOnly && (option.matchStatus !== 'match' || option.availability !== 'available' || option.rate.code === request.room.ratePlan)) ||
           typeof option.rate.code !== 'string' || !/^[A-Z0-9_-]{1,100}$/.test(option.rate.code) ||
           typeof option.rate.label !== 'string' || !option.rate.label.trim() || option.rate.label.length > 200 ||
           /[\r\n\p{Cc}]/u.test(option.rate.label) || typeof option.room.code !== 'string' ||
           !/^[A-Z0-9_-]{1,100}$/.test(option.room.code) || (roomType && option.room.code !== roomType) ||
           !['public','contextual','unknown'].includes(String(option.rateScope)) ||
           !['available','unavailable','restricted','unknown'].includes(String(option.availability))) continue;
-      const value = option.rate.code, meaning = option.rate.label.trim();
+      const value = option.rate.code, meaning = [option.rate.label.trim(),
+        typeof option.mealPlan === 'string' ? option.mealPlan : null].filter(Boolean).join(' · ');
       const choice = {value,label:value,meaning,room_type:option.room.code,rate_scope:String(option.rateScope),eligibility:option.eligibility,
         availability:String(option.availability)};
       choices.set(JSON.stringify(choice),choice);
@@ -220,8 +223,12 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
     }
     const all = [...choices.values()], items = all.slice(0,50);
     const truncated = completeness.optionsTruncated !== false || completeness.matchingRowsUnseen !== false || items.length !== all.length;
+    const soldOut = sellableOnly && !!roomType && !truncated && group.options.length > 0 &&
+      group.options.every(option => object(option) && object(option.room) &&
+        option.room.code === roomType && option.availability === 'unavailable');
+    if (sellableOnly && !items.length && !soldOut) return noChoices;
     const roomItems = [...rooms.values()].slice(0,50);
-    return {rateChoices:{status:'available',items,coverage:{complete:!truncated,possibly_truncated:truncated,
+    return {rateChoices:{status:soldOut?'sold_out':'available',items,coverage:{complete:!truncated,possibly_truncated:truncated,
       returned:items.length,source_options:completeness.sourceOptions,examined_options:completeness.examinedOptions}},
       roomChoices:{status:'available',items:roomItems,coverage:{complete:!truncated && roomItems.length === rooms.size,
         possibly_truncated:truncated || roomItems.length !== rooms.size,returned:roomItems.length}}};
@@ -282,13 +289,17 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
         credentialLease: lease, signal: lease.signal, transportId, expectedGuest, cloudTargetKey, requireExplicitGuestSelection: true,
         allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
       });
-      const needsRate = result.outcome === 'needs_input' && !!result.applied && !!result.appliedVerification && !built.unknown.length &&
-        (result.issue === 'room_type_not_unique' || !request.room.ratePlan || object(result.ratePlanIssue) ||
-        (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate'))));
-      const roomType = typeof result.applied?.roomType === 'string' ? result.applied.roomType : undefined;
-      const choices = needsRate ? await scopedRateChoices(request,lease,transportId,roomType) :
+      const rateUnavailable = result.issue === 'RATE_NOT_AVAILABLE' ||
+        (object(result.detail) && result.detail.issue === 'RATE_NOT_AVAILABLE');
+      const needsRate = !built.unknown.length && (rateUnavailable ||
+        (result.outcome === 'needs_input' && !!result.applied && !!result.appliedVerification &&
+          (result.issue === 'room_type_not_unique' || !request.room.ratePlan || object(result.ratePlanIssue) ||
+          (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate'))))));
+      const roomType = typeof result.applied?.roomType === 'string' ? result.applied.roomType :
+        typeof request.room.roomType === 'string' ? request.room.roomType : undefined;
+      const choices = needsRate ? await scopedRateChoices(request,lease,transportId,roomType,rateUnavailable) :
         {rateChoices:{status:'unavailable',items:[],coverage:null},roomChoices:{status:'unavailable',items:[],coverage:null}};
-      return {result,rateChoices:choices.rateChoices,roomChoices:nativeRoomChoices(result,choices.roomChoices)};
+      return {result,rateChoices:{...choices.rateChoices,sellable_only:rateUnavailable},roomChoices:nativeRoomChoices(result,choices.roomChoices)};
     };
     const {result,rateChoices,roomChoices} = context.credentialLease ? await run(context.credentialLease) :
       await api.withCloudCredentialLease(request.propertyCode, run, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
