@@ -526,17 +526,38 @@ export async function createReservation(input, options = {}) {
       }
       state.rateAvailabilityRequired = typeof createAuthority?.withM1CreateRateAvailability === 'function';
       const propertyCode = input.propertyCode;
-      if (input.track != null) {
+      if (!commit || input.track != null) {
         const listed = await listTrack(page, { propertyCode });
         const rows = Array.isArray(listed?.candidates) ? listed.candidates : [];
-        const matches = rows.filter(row => row?.code === input.track && typeof row.description === 'string' &&
-          row.description.trim() === row.description && row.description.length > 0 && row.description.length <= 200 &&
-          !/[\p{Cc}]/u.test(row.description));
-        if (listed?.outcome !== 'ok' || listed.coverage?.complete !== true ||
-            listed.coverage?.nativeResponseCorrelated !== true || listed.coverage.loaded !== rows.length || matches.length !== 1) {
-          stop('needs_input', 'native_track_not_unique_or_unavailable', { field: 'track' });
+        if (!commit) {
+          if (listed?.cleanupRequired || listed?.issue === 'TRACK_FORM_CHANGED') {
+            stop('uncertain', 'native_track_lookup_unverified', { field: 'track' });
+          }
+          const coverage = listed?.coverage;
+          const valid = listed?.outcome === 'ok' && listed.criteria?.propertyCode === propertyCode &&
+            listed.criteria?.scope === 'unfiltered' && coverage?.complete === true &&
+            coverage.nativeResponseCorrelated === true && coverage.possiblyTruncated === false &&
+            coverage.loaded === rows.length && coverage.total === rows.length && rows.length > 0 && rows.length <= 100 &&
+            new Set(rows.map(row => row?.code)).size === rows.length && rows.every(row =>
+              /^[A-Z0-9]{1,12}$/.test(row?.code || '') && typeof row.description === 'string' &&
+              row.description.trim() === row.description && row.description.length > 0 &&
+              row.description.length <= 200 && !/[\p{Cc}]/u.test(row.description));
+          output.trackChoices = valid ? {
+            status: 'available', property_code: propertyCode,
+            items: rows.map(row => ({ value: row.code, label: row.code, meaning: row.description })),
+            coverage: { loaded: rows.length, total: rows.length, complete: true, possibly_truncated: false, returned: rows.length },
+          } : { status: 'unavailable', property_code: propertyCode, items: [], coverage: null };
         }
-        state.track = { lookupCode: matches[0].code, display: matches[0].description };
+        if (input.track != null) {
+          const matches = rows.filter(row => row?.code === input.track && typeof row.description === 'string' &&
+            row.description.trim() === row.description && row.description.length > 0 && row.description.length <= 200 &&
+            !/[\p{Cc}]/u.test(row.description));
+          if (listed?.outcome !== 'ok' || listed.coverage?.complete !== true ||
+              listed.coverage?.nativeResponseCorrelated !== true || listed.coverage.loaded !== rows.length || matches.length !== 1) {
+            stop('needs_input', 'native_track_not_unique_or_unavailable', { field: 'track' });
+          }
+          state.track = { lookupCode: matches[0].code, display: matches[0].description };
+        }
       }
       if (commit) {
         state.guest = await selectGuest(runTool, input.guest, true, false, allowRealGuest, expectedGuest);

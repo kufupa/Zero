@@ -264,8 +264,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     };
     const {result,rateChoices} = context.credentialLease ? await run(context.credentialLease) :
       await api.withCloudCredentialLease(request.propertyCode, run, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
+    const trackChoices = object(result.trackChoices) && result.trackChoices.property_code === request.propertyCode
+      ? result.trackChoices : {status:'unavailable',property_code:request.propertyCode,items:[],coverage:null};
     const data = bounded({ native: result, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
-      rate_choices:rateChoices });
+      rate_choices:rateChoices, track_choices:trackChoices });
     if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);
   } catch (error) {
