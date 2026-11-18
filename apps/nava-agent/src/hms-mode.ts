@@ -1,6 +1,11 @@
 import type { Workflow } from './schema.js';
 
 const writeWorkflows = ['create','amend','cancel','filing'] as const;
+export const maxStaffHmsSlots = 12;
+export function staffSlotCount(value:string) {
+  return /^[1-9]\d*$/.test(value) && Number(value)<=maxStaffHmsSlots;
+}
+
 export type WriteWorkflow = (typeof writeWorkflows)[number];
 export function isWriteWorkflow(workflow: Workflow): workflow is WriteWorkflow {
   return writeWorkflows.some(value=>value===workflow);

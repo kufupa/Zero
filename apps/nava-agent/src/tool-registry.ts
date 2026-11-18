@@ -400,7 +400,7 @@ export class ToolRegistry {
     try {
       const value=await this.deps.native.withSave(property,context.signal,async lease=>{
         const trusted={...context,credentialLease:lease,signal:lease.signal};
-        const ports=filing?await filing(trusted,{workflow:input.workflow,booking:input.booking,action:input.action}):undefined;
+        const ports=filing?await filing(trusted,input):undefined;
         return save(input,{...trusted,...ports,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}});
       });
       const parsed=resultSchema.safeParse(value);

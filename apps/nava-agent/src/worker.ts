@@ -12,7 +12,7 @@ import { event, json, sql, uid } from './db.js';
 import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
 import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffStage } from './create-operations.js';
 import { writeEvent } from './session-store.js';
-import { createGoEnabled, createPilotRequested, hmsSaveEnabled, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
+import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -64,8 +64,8 @@ function cap(value:string|undefined,fallback:number,maximum:number,name:string):
 }
 export function configuredSlots() {
   const prepareOnly=staffPrepareOnly();
-  const requested=cap(process.env.NAVA_HMS_SLOTS,prepareOnly?4:10,prepareOnly?4:12,'NAVA_HMS_SLOTS');
-  const native=cap(process.env.HMS_CREDENTIAL_SESSION_CAP,prepareOnly?4:8,prepareOnly?4:8,'HMS_CREDENTIAL_SESSION_CAP');
+  const requested=cap(process.env.NAVA_HMS_SLOTS,prepareOnly?4:10,maxStaffHmsSlots,'NAVA_HMS_SLOTS');
+  const native=cap(process.env.HMS_CREDENTIAL_SESSION_CAP,prepareOnly?4:8,prepareOnly?maxStaffHmsSlots:8,'HMS_CREDENTIAL_SESSION_CAP');
   return {requested,native,local:Math.min(requested,native)};
 }
 

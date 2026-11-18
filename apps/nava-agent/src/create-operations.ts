@@ -5,7 +5,7 @@ import type { ProposalOperations } from './main.js';
 import { sql, json, uid } from './db.js';
 import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow } from './schema.js';
-import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly } from './hms-mode.js';
+import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly, staffSlotCount } from './hms-mode.js';
 import { missingCreateFields } from './proposal-fields.js';
 import { stageFeedback } from './prepare-feedback.js';
 import { attachmentsUnconfirmed, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedStageSource, stageSource, staffAttachmentsChecked } from './attachment-gate.js';
@@ -19,7 +19,7 @@ export function createPilotEnabled() {
   const nativeCap=process.env.HMS_CREDENTIAL_SESSION_CAP ?? '';
   return createPilotRequested() && process.env.NAVA_QUOTE_SKELETON !== '1'
     && (process.env.NAVA_AGENT_RUNTIME ?? 'bedrock') === 'bedrock'
-    && (staffPrepareOnly() ? /^[1-4]$/.test(nativeCap) && /^[1-4]$/.test(process.env.NAVA_HMS_SLOTS ?? '4') : nativeCap==='2')
+    && (staffPrepareOnly() ? staffSlotCount(nativeCap) && staffSlotCount(process.env.NAVA_HMS_SLOTS ?? '4') : nativeCap==='2')
     && !!process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
 }
 
@@ -281,8 +281,8 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
   } else {
     const staffStage:StaffJobBinding={proposalId:p.id,revision:go.revision,jobId:p.stage.job_id,workerId:lease.workerId,epoch:lease.epoch,
       workflow:input.workflow,source:source.data};
-    result=await registry.save({...input,executionId,expectedPrice:go.expectedPrice,
-      prepared:p.stage.native_result?.native ?? p.stage.native_result,confirmPenalty:go.confirmPenalty},
+    const approved=input.workflow==='create' ? {expectedPrice:go.expectedPrice} : {prepared:p.stage.native_result};
+    result=await registry.save({...input,executionId,...approved,...(go.confirmPenalty?{confirmPenalty:go.confirmPenalty}:{})},
       {sessionId:context.sessionId,mode:context.mode,signal:context.signal,staffStage,staffGo:{executionId},
       markDispatched:async details=>{
         await sql.begin(async tx => {
