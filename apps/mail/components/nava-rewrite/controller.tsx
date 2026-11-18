@@ -25,7 +25,6 @@ export type NavaControllerProps = {
   input: ThreadInput | null;
   email: SelectedEmail | null;
   api: NavaApi;
-  reconcileSupported?: boolean;
   onAuthenticationRequired?: () => void | Promise<void>;
   onSourceNotEligible?: () => void;
   quoteDraftTarget?: 'webmail' | 'outlook';
@@ -144,7 +143,7 @@ function supports(capabilities: Capabilities | null, key: 'tools' | 'workflows',
   return Array.isArray(value) && value.some(item => item === name);
 }
 
-function advertised(capabilities: Capabilities | null, workflow: WorkflowName, operation: 'stage' | 'quote' | 'go'): boolean {
+function advertised(capabilities: Capabilities | null, workflow: WorkflowName, operation: 'stage' | 'quote' | 'go' | 'reconcile'): boolean {
   return capabilities?.auth_ready === true && supports(capabilities, 'workflows', workflow) &&
     capabilities.workflow_capabilities?.[workflow]?.[operation] === true;
 }
@@ -234,7 +233,7 @@ export function NavaController(props: NavaControllerProps) {
 
 type ThreadControllerProps = Omit<NavaControllerProps, 'input' | 'email'> & { input: ThreadInput; email: SelectedEmail; cache: Cache };
 
-function ThreadController({ input, email, api, cache, reconcileSupported = false, onAuthenticationRequired, onSourceNotEligible, quoteDraftTarget = 'outlook', saveQuoteDraft, findQuoteDraft, openQuoteDraft }: ThreadControllerProps) {
+function ThreadController({ input, email, api, cache, onAuthenticationRequired, onSourceNotEligible, quoteDraftTarget = 'outlook', saveQuoteDraft, findQuoteDraft, openQuoteDraft }: ThreadControllerProps) {
   const [snapshot, setSnapshot] = useState<BoundThreadSnapshot | null>(null);
   const snapshotRef = useRef<BoundThreadSnapshot | null>(null);
   const inputKey = JSON.stringify(input);
@@ -269,6 +268,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       if (operation.kind === 'reconcile' && cache.goLocks[operation.proposalId] === 'reconciling') cache.goLocks[operation.proposalId] = 'uncertain';
       operationRef.current = null;
     }
+    for (const id of Object.keys(cache.goLocks)) if (cache.goLocks[id] === 'reconciling') cache.goLocks[id] = 'uncertain';
   }
 
   function expireAuthentication(error: unknown, signal: AbortSignal): boolean {
@@ -322,7 +322,9 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         const serverTime = Date.parse(latest.updated_at);
         cache.operationStarts[latest.id] = { phase: latest.phase, at: Number.isFinite(serverTime) ? serverTime : Date.now() };
       }
-      if (latest.phase === 'done') { delete cache.goLocks[latest.id]; delete cache.goUncertainAfter[latest.id]; clearPendingGo(latest.id); }
+      if (latest.phase === 'done' || authoritative && latest.workflow === 'create' && latest.phase === 'error' && latest.error?.outcome === 'known' && latest.result?.rooms) {
+        delete cache.goLocks[latest.id]; delete cache.goUncertainAfter[latest.id]; clearPendingGo(latest.id);
+      }
       else {
         // Server says Go was refused before dispatch (back to ready with a known error): nothing was saved, so release
         // an accepted Go (or a remounted pending key) and let staff Prepare again. An uncertain lock is never released here.
@@ -352,7 +354,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
           delete cache.goUncertainAfter[latest.id];
         }
       }
-      if (latest.phase === 'uncertain' || latest.error?.outcome === 'uncertain') {
+      if ((latest.phase === 'uncertain' || latest.error?.outcome === 'uncertain') && cache.goLocks[latest.id] !== 'reconciling') {
         cache.goLocks[latest.id] = 'uncertain';
         if (authoritative) cache.goUncertainAfter[latest.id] = Math.max(cache.goUncertainAfter[latest.id] ?? 0, next.event_sequence);
       }
@@ -422,13 +424,17 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
             } })) {
               if (signal.aborted) return;
               if (event.sequence <= cursor) continue;
+              if (event.kind === 'reconcile_finished' && event.proposal_id && cache.goLocks[event.proposal_id] === 'reconciling') {
+                cache.goLocks[event.proposal_id] = 'uncertain';
+                refreshVersion();
+              }
               const next = await api.getThread(thread.id, { signal });
               if (signal.aborted) return;
               if (next.event_sequence < event.sequence) throw new Error('Snapshot is behind the event stream.');
               const stageEvent = (event.kind === 'stage_queued' || event.kind === 'stage_finished') && event.proposal_id &&
                 event.sequence > (cache.stagePending[event.proposal_id] ?? Number.POSITIVE_INFINITY) ? event.proposal_id : undefined;
               applySnapshot(next, true, stageEvent);
-              cursor = Math.max(event.sequence, next.event_sequence);
+              cursor = event.sequence;
               setStreamMessage(null);
             }
             streamConnectedRef.current = false;
@@ -448,7 +454,6 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
             const next = await api.getThread(thread.id, { signal });
             if (signal.aborted) return;
             applySnapshot(next);
-            cursor = Math.max(cursor, next.event_sequence);
           } catch (error) {
             if (signal.aborted) return;
             if (expireAuthentication(error, signal)) return;
@@ -966,7 +971,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     if (kind === 'target' && (!lookup || !['amend', 'cancel', 'filing'].includes(current.workflow) || !advertised(capabilities, current.workflow, 'stage'))) return;
     if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !hasWorkflowAction(current))) return;
     if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || quoteCheckIssue(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
-    if (kind === 'reconcile' && !reconcileSupported) return;
+    if (kind === 'reconcile' && (current.phase !== 'uncertain' || !advertised(capabilities, current.workflow, 'reconcile'))) return;
     const attemptKey = kind === 'quote' ? JSON.stringify([proposal.id, proposal.revision, quoteId]) : null;
     let idempotencyKey = attemptKey ? cache.quoteAttempts[attemptKey] : undefined;
     if (attemptKey && !idempotencyKey) {
@@ -994,7 +999,6 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         }
       } else {
         await api.reconcile(request);
-        if (!signal.aborted) cache.goLocks[proposal.id] = 'uncertain';
       }
       if (!signal.aborted && snapshotRef.current) {
         const threadId = snapshotRef.current.id;
@@ -1006,6 +1010,20 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         }
         if ((kind === 'stage' || kind === 'quote' || kind === 'target') && !signal.aborted && cache.stagePending[proposal.id] === sequenceBeforeOperation) {
           void recoverStage(threadId, proposal.id, sequenceBeforeOperation, signal);
+        }
+        if (kind === 'reconcile' && !signal.aborted) {
+          void (async () => {
+            while (!signal.aborted && cache.goLocks[proposal.id] === 'reconciling') {
+              await delay(signal, 2000);
+              if (signal.aborted || cache.goLocks[proposal.id] !== 'reconciling') return;
+              try {
+                const latest = await api.getThread(threadId, { signal });
+                if (!signal.aborted) applySnapshot(latest);
+              } catch (error) {
+                if (signal.aborted || expireAuthentication(error, signal)) return;
+              }
+            }
+          })();
         }
       }
     } catch (error) {
@@ -1103,7 +1121,8 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       onClick: () => setConfirmedPreparation(goConfirmation(proposal)),
     }
     : proposal && isUncertain
-    ? reconcileSupported ? { label: 'Check Infor', disabled: busy || Boolean(issue), onClick: () => { void operation('reconcile', proposal); } } : undefined
+    ? proposal.phase === 'uncertain' && advertised(capabilities, proposal.workflow, 'reconcile')
+      ? { label: lock === 'reconciling' ? 'Checking Infor…' : 'Check Infor', disabled: busy || Boolean(issue) || lock === 'reconciling', onClick: () => { void operation('reconcile', proposal); } } : undefined
     : stagePrimary;
   const goFooter = proposal && canGo && !isUncertain && proposal.phase !== 'done' ? <>
     {confirmingGo && proposal && <div role="group" aria-label="Confirm Go">
