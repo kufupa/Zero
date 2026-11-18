@@ -1,25 +1,11 @@
 # Cancel reply drafts
 
-Proposed wording, not audited verbatim staff templates. Only actual results fill placeholders; draft only.
+The 50-thread sample had one model-linked reply per request; 45/50 later hotel messages were in the same thread. First-reply text screens found cancel/canceled/voided in 29/50 and completed-form wording in 25/50. These are lexical signals, not verified HMS outcomes or a verbatim-template audit.
 
-## Before confirmation
+Before readback: "We received your cancellation request for [guest or stay]. We will confirm the outcome after checking the reservation."
 
-“Thank you for your cancellation request for [guest/stay]. We are checking the reservation and any applicable cancellation charge. We will confirm once the cancellation outcome is verified.” Native fee unknown stays unknown.
+After readback: "Your reservation for [guest], [dates], shows as cancelled. [Cancellation reference: actual number.]"
 
-## Missing target/scope
+If a charge remains pending after cancellation: "Your reservation for [guest], [dates], shows as cancelled. We are checking the cancellation charge and will confirm once it is resolved."
 
-“Could you please confirm the booking reference and which guest/room or dates you wish to cancel?” Ask actual missing pieces only. No “no confirmed stay exists” claim from failed lookup.
-
-## After fresh readback
-
-“Your reservation for [guest], [dates], booking reference [reference], is cancelled. Cancellation reference: [actual cancellation number, if available]. [Actual verified charge/waiver if established].” Omit unavailable number/fee; never imply free cancellation.
-
-## Already cancelled
-
-“The reservation already shows as cancelled, so no further cancellation was made.” Current status/identity must match.
-
-## Partial / unknown / charge pending
-
-“[Verified item] is cancelled. We are still verifying [other affected item/native charge decision] and will confirm once checked.” If no confirmed item, omit first sentence. Never re-cancel after possible application.
-
-Quote withdrawal only: “We have noted that you do not wish to proceed with the quotation.” Only current explicit intent; no cancellation-number/booked-stay claim.
+Only use the status after a fresh HMS read. Include an exact charge, fee decision, or reference only when HMS returns it. Nava saves drafts; it never sends.
