@@ -46,7 +46,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
     if(batch.rooms.length>8) {
       for(const identity of batch.identities) groups[identity.group_id].status='unsupported_group_limit';
       failure ??= {code:'NATIVE_GROUP_LIMIT',message:'More than eight room occupancies share one search; joint allocation cannot be verified.',retryable:false,outcome:'known'};
-      continue;
+      break;
     }
     const searchIndex=searches.length;
     try {
@@ -73,11 +73,14 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
       }
       display_rows.push(...quoteDisplayRows(native,searchIndex,request.quote_id,displayIdentities));
       if(context.signal?.aborted) {failure={code:'ABORTED',message:'Quote was cancelled; retained captures are incomplete.',retryable:false,outcome:'known'};break;}
-      if(!complete || displayIdentities.some(identity=>!identity) || batch.identities.some(identity=>groups[identity.group_id].status!=='complete')) failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote incomplete; inspect retained captures and group status.',retryable:native.outcome==='execution_failure',outcome:'known'};
+      if(!complete || displayIdentities.some(identity=>!identity) || batch.identities.some(identity=>groups[identity.group_id].status!=='complete')) {
+        failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote incomplete; inspect retained captures and group status.',retryable:native.outcome==='execution_failure',outcome:'known'};
+        break;
+      }
     } catch {
       for(const identity of batch.identities) groups[identity.group_id].status=context.signal?.aborted?'aborted':'search_failed';
       failure ??= {code:context.signal?.aborted?'ABORTED':'NATIVE_FAILURE',message:context.signal?.aborted?'Quote was cancelled; retained captures are incomplete.':'Native quote failed before a complete capture.',retryable:!context.signal?.aborted,outcome:'known'};
-      if(context.signal?.aborted) break;
+      break;
     }
   }
   return failure ? {ok:false,data,error:failure} : {ok:true,data,error:null};
