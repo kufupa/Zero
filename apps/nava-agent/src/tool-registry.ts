@@ -316,6 +316,22 @@ export class ToolRegistry {
     },job.workflow==='quote'?'quote':undefined));
   }
 
+  async reconcileCreate(intent:unknown, signal:AbortSignal):Promise<ToolResult> {
+    const parsed=z.object({operation:z.literal('create'),propertyCode:z.string(),approvedDigest:z.string(),
+      recovery:z.object({request:z.unknown(),ratePlanAvailability:z.unknown().optional(),arAccountProfileId:z.string().optional()}).passthrough()}).passthrough().safeParse(intent);
+    if(!parsed.success) return failureObject('SAVE_UNCERTAIN','Check the booking in Infor before taking further action.');
+    return this.nativeResult(()=>this.deps.native.withRead(parsed.data.propertyCode,signal,async credentialLease=>{
+      const base=new URL('../../server-pilot/tooling/hms-cloud/',import.meta.url);
+      const native=await import(new URL('create-positive-recovery.mjs',base).href);
+      const proof=await native.provePositiveCreateRecovery(parsed.data,{credentialLease,signal:credentialLease.signal});
+      if(proof?.outcome!=='verified') return failureObject('SAVE_UNCERTAIN','Infor did not confirm the Save. Check the booking before taking further action.');
+      return {ok:true,data:{confirmation:proof.confirmation,reservation_id:proof.readback.nativeStayId,readback:proof.readback,
+        sibling:{confirmation:proof.confirmation,nativeStayId:proof.readback.nativeStayId,approvedRequest:parsed.data.recovery.request,
+          requestDigest:parsed.data.approvedDigest,ratePlanAvailability:parsed.data.recovery.ratePlanAvailability,
+          ...(parsed.data.recovery.arAccountProfileId?{arProfileId:parsed.data.recovery.arAccountProfileId}:{})}},error:null};
+    }));
+  }
+
   async runStayLookup(lookup:z.infer<typeof targetLookup>, bookingId:string, draft:ProposalDraft, job:StaffJobBinding, context:Omit<RegistryContext,'toolUseId'>):Promise<ToolResult> {
     if(!staffPrepareOnly() || context.mode!=='live' || context.propertyCode!==job.source.property_code ||
       !['amend','cancel','filing'].includes(job.workflow) || draft.workflow!==job.workflow) return failureObject('STAFF_JOB_CHANGED','The request changed. Search again.');

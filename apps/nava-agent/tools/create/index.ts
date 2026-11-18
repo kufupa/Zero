@@ -381,10 +381,15 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         ...(stage.requestBinding.arAccountProfileId ? { expectedArProfileId: stage.requestBinding.arAccountProfileId } : {}),
         ...(siblingTools ? { verifyLabtestMatches: async (census:unknown) => siblingTools.censusMatchesApprovedSiblings(census,priorRooms ?? [],{propertyCode:request.propertyCode}) } : {}),
         authorizeCandidate: async () => !lease.signal.aborted && !markerAttempted,
-        dispatchCandidate: async (_candidate: unknown, proceed: () => Promise<unknown>) => {
+        dispatchCandidate: async (_candidate: unknown, proceed: () => Promise<unknown>, evidence: {preimage:unknown;writer:unknown;guaranteeDisplay:unknown}) => {
           if (markerAttempted || lease.signal.aborted) throw new Error('DISPATCH_NOT_AUTHORIZED');
           markerAttempted = true;
-          await context.markDispatched({ workflow: 'create', executionId: parsed.data.executionId, propertyCode: request.propertyCode });
+          await context.markDispatched(bounded({ workflow:'create',executionId:parsed.data.executionId,
+            operation:'create',propertyCode:request.propertyCode,transportId,firstName:binding.data.guest.firstName,
+            lastName:binding.data.guest.lastName,nativeGuestId:binding.data.guest.nativeId,approvedDigest:stage.requestBinding.digest,
+            recovery:{request:binding.data,preimage:evidence.preimage,writer:evidence.writer,guaranteeDisplay:evidence.guaranteeDisplay,
+              ...(price?{ratePlanAvailability:price}:{}),...(priorRooms?{batchManifest:priorRooms}:{}),
+              ...(stage.requestBinding.arAccountProfileId?{arAccountProfileId:stage.requestBinding.arAccountProfileId}:{})} }));
           lease.signal.throwIfAborted();
           return proceed();
         },

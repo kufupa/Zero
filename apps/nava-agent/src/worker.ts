@@ -10,7 +10,7 @@ import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableT
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
 import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
-import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffStage } from './create-operations.js';
+import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffReconcile, runStaffStage } from './create-operations.js';
 import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { initialSkillContext } from './initial-skill-context.js';
@@ -166,6 +166,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     }
     if(createPilotEnabled() && await runStaffStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
     if(createPilotEnabled() && await runStaffGo(lease,registry,{sessionId,mode,signal:abort.signal})) return;
+    if(createPilotEnabled() && await runStaffReconcile(lease,registry,abort.signal)) return;
     const skillContext=staffPrepareOnly() && process.env.NAVA_QUOTE_SKELETON!=='1' && skillConfig
       ? await initialSkillContext(skillConfig,sessionId,mode,abort.signal) : null;
     let version=state.version;
@@ -276,6 +277,7 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         OR s.status='running'))
       OR (${createPilotEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='staging' AND p.stage->>'state'='queued'))
       OR (${createPilotEnabled() && createGoEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='saving' AND p.execution->'go'->>'staff'='true'))
+      OR (${createPilotEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='uncertain' AND p.execution->'reconcile'->>'state'='queued'))
       OR (s.status='waiting_go' AND ${hmsSaveEnabled() && Boolean(deps.saveQueue)} AND (
         (s.mode='labtest' AND ${!createPilotRequested()} AND NOT (s.config ? 'manual_create_labtest'))
         OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL

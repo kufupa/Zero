@@ -125,7 +125,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
       async installed() {
         const {stages,writers,modelTools}=await installedTools();
         return {modelTools,capabilities:Object.fromEntries(stages.map(workflow=>[workflow,{
-          stage:workflow!=='quote',quote:workflow==='quote',go_labtest:false,reconcile:false,go:createGoEnabled() && writers.includes(workflow),
+          stage:workflow!=='quote',quote:workflow==='quote',go_labtest:false,reconcile:workflow==='create' && createGoEnabled(),go:createGoEnabled() && writers.includes(workflow),
         }]))};
       },
     } : {}),
@@ -134,6 +134,17 @@ export function createPilotOperations(): ProposalOperations | undefined {
         JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id WHERE p.id=${request.proposalId}`;
       if (!p) return {ok:false,code:'NOT_FOUND'};
       if(staffPrepareOnly()) {
+        if(request.operation==='reconcile') {
+          const source=await selectedStageSource(tx,p.session_id);
+          if(!source.success || source.data.mailbox_id!==request.mailboxId) return {ok:false,code:'FORBIDDEN'};
+          if(request.mode!=='live' || request.workflow!=='create' || p.workflow!=='create' || p.phase!=='uncertain' ||
+            p.config?.replay_id || !p.execution?.last_go?.details) return {ok:false,code:'UNAVAILABLE'};
+          if(p.execution?.reconcile?.state==='queued') return {ok:true,phase:'uncertain',jobId:p.execution.reconcile.job_id,replayed:true};
+          const reconcile={job_id:uid('reconcile'),revision:p.revision,state:'queued'};
+          await tx`UPDATE nava_agent.proposal SET execution=execution || ${json({reconcile})}::jsonb,updated_at=now() WHERE id=${p.id}`;
+          await writeEvent(tx,p.session_id,'reconcile_queued',{proposal_id:p.id,job_id:reconcile.job_id,revision:p.revision,actor:request.actor});
+          return {ok:true,phase:'uncertain',jobId:reconcile.job_id};
+        }
         if(request.operation==='go' && !request.createProfile) return p.config?.replay_id ? {ok:false,code:'UNAVAILABLE'} : submitStaffGo(tx,p,request);
         if(request.mode!=='live' || (request.operation!=='stage' && request.operation!=='quote' && request.operation!=='target' && !(request.operation==='go' && request.createProfile))) return {ok:false,code:'UNAVAILABLE'};
         const source=await selectedStageSource(tx,p.session_id);
@@ -400,6 +411,47 @@ async function finishCreateRoom(lease:LeaseFence,proposalId:string,executionId:s
       outcome:rooms[index].state,confirmation:rooms[index].confirmation ?? null,reservation_id:rooms[index].reservation_id ?? null});
     return phase==='saving';
   });
+}
+
+export async function runStaffReconcile(lease:LeaseFence,registry:ToolRegistry,signal:AbortSignal) {
+  const [row]=await sql`SELECT id,revision,execution FROM nava_agent.proposal WHERE session_id=${lease.sessionId}
+    AND phase='uncertain' AND execution->'reconcile'->>'state'='queued' ORDER BY updated_at LIMIT 1`;
+  if(!row) return false;
+  const job=row.execution.reconcile, last=row.execution.last_go;
+  const {error:_lastError,...lastGo}=last ?? {};
+  const prior=staffGo.safeParse({...lastGo,state:'queued'});
+  const draft=prior.success ? proposalDraft.safeParse(prior.data.snapshot) : null;
+  const recovered=prior.success && draft?.success && draft.data.workflow==='create'
+    ? await registry.reconcileCreate(prior.data.details,signal)
+    : {ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Check the booking in Infor before taking further action.',retryable:false,outcome:'uncertain' as const}};
+  const saved=z.object({confirmation:z.string().regex(/^\d+-\d+$/),reservation_id:z.string().regex(/^\d+$/),readback:z.unknown(),sibling:z.unknown()}).safeParse(recovered.data);
+  await sql.begin(async tx=>{
+    const [owner]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
+      AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;
+    if(!owner) throw new Error('LEASE_LOST');
+    const [p]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${row.id} AND session_id=${lease.sessionId} FOR UPDATE`;
+    if(!p || p.phase!=='uncertain' || p.revision!==row.revision || p.execution?.reconcile?.job_id!==job.job_id ||
+      p.execution.reconcile.state!=='queued' || p.execution?.last_go?.executionId!==last?.executionId) return;
+    let phase='uncertain', result=p.result, error=p.execution.error;
+    const identified=prior.success && draft?.success && (prior.data.rooms
+      ? prior.data.rooms.filter(room=>room.state==='uncertain').length===1 : draft.data.bookings.length===1);
+    if(recovered.ok && saved.success && prior.success && draft?.success && identified) {
+      const rooms=prior.data.rooms ? prior.data.rooms.map(room=>room.state==='uncertain'?{...room,...saved.data,state:'saved' as const}:room)
+        : [{booking_id:draft.data.bookings[0].id,...saved.data,state:'saved' as const}];
+      const complete=rooms.every(room=>room.state==='saved');
+      phase=complete?'done':'error';
+      result=prior.data.rooms ? {confirmation:null,reservation_id:null,readback:complete?rooms.map(room=>room.readback):null,rooms}
+        : {confirmation:saved.data.confirmation,reservation_id:saved.data.reservation_id,readback:saved.data.readback,rooms};
+      error=complete?null:{code:'PARTIAL_CREATE',message:'Infor confirmed the interrupted room. Review the completed and remaining rooms.',
+        recovery:'Check Infor before taking further action.',retryable:false,outcome:'known',operation:'staff_stage'};
+      last.rooms=rooms;
+      last.state=complete?'saved':'failed';
+    } else error={code:'SAVE_UNCERTAIN',message:'Infor did not confirm the Save. Check the booking before taking further action.',retryable:false,outcome:'uncertain'};
+    const execution={...p.execution,last_go:last,reconcile:{...job,state:'finished'},error};
+    await tx`UPDATE nava_agent.proposal SET phase=${phase},result=${json(result)},execution=${json(execution)},updated_at=now() WHERE id=${row.id}`;
+    await writeEvent(tx,lease.sessionId,'reconcile_finished',{proposal_id:row.id,job_id:job.job_id,outcome:phase});
+  });
+  return true;
 }
 
 async function runCreateRooms(lease:LeaseFence,registry:ToolRegistry,context:{sessionId:string;mode:'live'|'labtest'|'historical';signal:AbortSignal},

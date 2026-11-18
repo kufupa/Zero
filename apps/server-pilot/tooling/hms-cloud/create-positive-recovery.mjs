@@ -118,6 +118,7 @@ export async function provePositiveCreateRecovery(intent, options = {}) {
     const expected = { arrival: stay.arrival, departure: stay.departure, adults: stay.adults, children: ages.length,
       childAges: ages,
       roomType: room.roomType, ratePlan: room.ratePlan, note: request.note, guestId: guest.nativeId,
+      ...(room.roomTypeForCharge ? { roomTypeForCharge: room.roomTypeForCharge, checkedPricing: recovery.checkedPricing } : {}),
       ...(room.mealPlan ? { mealPlan: room.mealPlan } : {}),
       firstName: guest.firstName, lastName: guest.lastName, allowRealGuest: true,
       ...(request.sourceOfBusiness ? { source: request.sourceOfBusiness.description } : {}),
