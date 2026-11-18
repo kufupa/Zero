@@ -1255,9 +1255,15 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
   }));
   const started = Date.now(), clock = createPhaseClock();
   const auditTimeout = new AbortController();
-  let phase = 'input', result, auditReport;
+  let phase = 'input', result, auditReport, auditStarted=false, auditStart=Promise.resolve();
   const event = next => { phase = next; try { const entry = audit.event(next); if (logEvents) process.stderr.write(JSON.stringify(entry) + '\n'); } catch {} };
-  const checkpoint = async name => { try { await audit.checkpoint(name); } catch {} };
+  const checkpoint = async name => { if (auditStarted) try { await audit.checkpoint(name); } catch {} };
+  const finishAudit = sessionSignal => {
+    try { auditReport=audit.snapshot(); } catch { auditReport=unavailableAudit; }
+    const timer=setTimeout(() => auditTimeout.abort(new Error('QUOTE_AUDIT_FINALIZATION_TIMEOUT')), QUOTE_AUDIT_FINALIZE_TIMEOUT_MS);
+    const auditSignal=sessionSignal ? AbortSignal.any([sessionSignal,auditTimeout.signal]) : auditTimeout.signal;
+    void auditStart.then(() => audit.finish({signal:auditSignal})).catch(() => {}).finally(() => clearTimeout(timer));
+  };
   try {
     signal?.throwIfAborted();
     const input = suppliedRequest ?? JSON.parse(await readFile(requestPath, 'utf8'));
@@ -1281,7 +1287,7 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
         }
         page.setDefaultTimeout(20000);
         try {
-          event('audit_start'); try { await audit.start(page); } catch {}
+          event('audit_start'); auditStart=audit.start(page).then(() => { auditStarted=true; }).catch(() => {});
           await checkpoint('login-complete');
           event('hotel_availability'); await clock.time('nav', () => openHotelAvailability(page));
           await verifyCloudProperty(page, { propertyCode, tenantId: property.expectedTenant });
@@ -1292,14 +1298,12 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
           event(`result_${next.outcome}`);
           return { ...next, propertyCode };
         } finally {
-          const timer = setTimeout(() => auditTimeout.abort(new Error('QUOTE_AUDIT_FINALIZATION_TIMEOUT')), QUOTE_AUDIT_FINALIZE_TIMEOUT_MS);
-          try { auditReport = await clock.time('traceFinish', () => audit.finish({signal:AbortSignal.any([session.signal,auditTimeout.signal])})).catch(() => unavailableAudit); }
-          finally { clearTimeout(timer); }
+          finishAudit(session.signal);
         }
       }, { propertyCode, transportId, signal, credentialLease, readRequestPolicy, prepareContext: installReadOnlyGuard });
     }
   } catch (error) { result = executionFailure(error, phase); }
-  if (!auditReport) auditReport = await audit.finish().catch(() => ({ status: 'incomplete', errors: ['AUDIT_FINALIZATION_FAILED'] }));
+  if (!auditReport) finishAudit(signal);
   result = applyQuoteScreenshotContract({ ...result, audit: auditReport, elapsedMs: Date.now() - started,
     evidenceDirectory: directory, phaseMs: { ...clock.ms }, toolVersion: `cloud-quote-v2:${cloudQuoteDependencyDigest()}` });
   try { audit.event('phase_timings', { phaseMs: result.phaseMs }); } catch {}
