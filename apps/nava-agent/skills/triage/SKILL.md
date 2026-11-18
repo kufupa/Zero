@@ -9,6 +9,8 @@ Read the selected message and relevant earlier context. Load `../references/comm
 
 Route each current request separately, preserving its guest, stay, dates, document and other known fields. Then load the relevant skill and publish its editable proposal. The current body takes precedence over an old subject or quoted request. An existing-confirmation or pre-stay notice is about an existing stay; retain any separate new request. Mixed work is common: 590/1,439 model-labelled decisions had multiple workflow labels.
 
+When the selected message has a blank or near-blank body and a PDF identified by its filename or available extracted text as a voucher, POP or proof of payment, route the file to Filing for staff review. Preserve its selected message and attachment IDs and use any extracted text for the booking reference. A filename is a document hint, not proof of its contents or payment; leave uncertain PDFs for staff review.
+
 | Current request | Route |
 |---|---|
 | Price or availability | `quote` |
