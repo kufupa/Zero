@@ -14,6 +14,11 @@ export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 export type RequestOptions = { signal?: AbortSignal };
 type EventOptions = RequestOptions & { onConnected?: () => void };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
+type GoRequest = RevisionRequest & { idempotencyKey: string; preparedJobId?: string; confirmPenalty?: true };
+type Go = {
+  (request: GoRequest & { createProfile: true }): Promise<AcceptedStage>;
+  (request: GoRequest & { createProfile?: undefined }): Promise<AcceptedGo>;
+};
 export type StayLookup = { kind: 'surname'; surname: string } | { kind: 'confirmation'; confirmation: string; arrival_date?: string };
 export type NavaApi = {
   upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
@@ -28,7 +33,7 @@ export type NavaApi = {
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
   lookupStay: (request: RevisionRequest & { lookup: StayLookup }) => Promise<AcceptedStage>;
   selectStay: (request: RevisionRequest & { jobId: string; removeFields: string[] }) => Promise<Proposal>;
-  go: (request: RevisionRequest & { idempotencyKey: string; preparedJobId?: string; confirmPenalty?: true }) => Promise<AcceptedGo>;
+  go: Go;
   reconcile: (request: RevisionRequest) => Promise<void>;
   sendContext: (request: RequestOptions & { threadId: string; text: string; proposalId?: string }) => Promise<void>;
   getArtifact: (id: string, options?: RequestOptions) => Promise<Response>;
@@ -142,6 +147,22 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
     }
   }
 
+  async function go(requestValue: GoRequest & { createProfile: true }): Promise<AcceptedStage>;
+  async function go(requestValue: GoRequest & { createProfile?: undefined }): Promise<AcceptedGo>;
+  async function go(requestValue: GoRequest & { createProfile?: true }): Promise<AcceptedStage | AcceptedGo> {
+    const response = await request(`${proposalPath(requestValue.proposalId)}/go`, body({
+      expected_revision: requestValue.expectedRevision, idempotency_key: requestValue.idempotencyKey,
+      prepared_job_id: requestValue.preparedJobId, confirm_penalty: requestValue.confirmPenalty,
+      create_profile: requestValue.createProfile,
+    }, requestValue.signal));
+    const payload: unknown = await response.json().catch(() => null);
+    const parsed = requestValue.createProfile ? acceptedStageSchema.safeParse(payload) : acceptedGoSchema.safeParse(payload);
+    if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== requestValue.proposalId || parsed.data.revision !== requestValue.expectedRevision) {
+      throw new NavaApiError('Nava returned an invalid Go response.', 'invalid_response', response.status);
+    }
+    return parsed.data;
+  }
+
   return {
     upsertThread: async (input, options) => {
       const parsed = threadInputSchema.parse(input);
@@ -196,18 +217,7 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
     },
     selectStay: requestValue => json(`${proposalPath(requestValue.proposalId)}/target/select`, proposalSchema,
       body({ expected_revision: requestValue.expectedRevision, job_id: requestValue.jobId, remove_fields: requestValue.removeFields }, requestValue.signal)),
-    go: async requestValue => {
-      const response = await request(`${proposalPath(requestValue.proposalId)}/go`, body({
-        expected_revision: requestValue.expectedRevision, idempotency_key: requestValue.idempotencyKey,
-        prepared_job_id: requestValue.preparedJobId, confirm_penalty: requestValue.confirmPenalty,
-      }, requestValue.signal));
-      const payload: unknown = await response.json().catch(() => null);
-      const parsed = acceptedGoSchema.safeParse(payload);
-      if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== requestValue.proposalId || parsed.data.revision !== requestValue.expectedRevision) {
-        throw new NavaApiError('Nava returned an invalid Go response.', 'invalid_response', response.status);
-      }
-      return parsed.data;
-    },
+    go,
     reconcile: async requestValue => {
       await request(`${proposalPath(requestValue.proposalId)}/reconcile`, revisionBody(requestValue));
     },
