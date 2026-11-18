@@ -1,6 +1,6 @@
 import { mkdir, chmod, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { constants, createCipheriv, publicEncrypt, randomBytes, randomUUID } from 'node:crypto';
 import { cloudWriterCurrent, cloudWriterIdentity, withCloudCredentialLease } from './cloud-session.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
 import { pathToFileURL } from 'node:url';
@@ -23,6 +23,49 @@ const stop = (outcome, issue, extra = {}) => { throw Object.assign(new Error(iss
 const safeIssue = (error) => /^[A-Z][A-Z0-9_]{2,100}$/.test(error?.message || '') ? error.message : 'SESSION_FAILED';
 const candidate = ({ nativeId, firstName, lastName, email, phoneNumber, city, country }) =>
   ({ nativeId, firstName, lastName, email, phoneNumber, city, country });
+
+// An optional, encrypted diagnostic for an unsaved Labtest Prepare. The dialog
+// handlers remain unchanged: this only observes a failure before the page closes.
+function prepareDialogDiagnostic(page, publicKey) {
+  let activeTool = null, nativeDialog = null;
+  const onDialog = dialog => {
+    try { nativeDialog ||= { tool: activeTool, type: dialog.type(), text: dialog.message().slice(0, 4096) }; } catch {}
+  };
+  page.on('dialog', onDialog);
+  return {
+    wrap: nativeRunTool => async request => {
+      activeTool = request.tool;
+      try {
+        const result = await nativeRunTool(request);
+        if (result.issue === 'UNEXPECTED_DIALOG') {
+          try {
+            let count = null;
+            const windows = [];
+            try {
+              const locator = page.locator('.x-window:visible:not(.x-menu)');
+              count = await locator.count();
+              for (let index = 0; index < Math.min(count, 4); index++) {
+                windows.push((await locator.nth(index).innerText({ timeout: 500 })).slice(0, 4096));
+              }
+            } catch {}
+            const plaintext = Buffer.from(JSON.stringify({ tool: request.tool, nativeDialog, windowCount: count, windows }));
+            const key = randomBytes(32), iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
+            const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+            const encryptedKey = publicEncrypt({ key: Buffer.from(publicKey, 'base64'), padding: constants.RSA_PKCS1_OAEP_PADDING,
+              oaepHash: 'sha256' }, key);
+            const dir = join('/tmp', `hms-cloud-create-dialog-${randomUUID()}`);
+            await mkdir(dir, { mode: 0o700 });
+            await writeFile(join(dir, 'diagnostic.json'), JSON.stringify({ key: encryptedKey.toString('base64'),
+              iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'),
+              ciphertext: ciphertext.toString('base64') }), { mode: 0o600, flag: 'wx' });
+          } catch {}
+        }
+        return result;
+      } finally { activeTool = null; }
+    },
+    close: () => page.off('dialog', onDialog),
+  };
+}
 
 export const REAL_GUEST_CREATE_AUTHORIZATION_HOLD = 'trusted_staff_create_authorization_unavailable';
 
@@ -453,6 +496,11 @@ export async function createReservation(input, options = {}) {
   if (commit) output.screenshots = {};
   try {
     await withSession(async ({ page, runTool, labtestPreimage, createAuthority }) => {
+      const diagnosticKey = process.env.NAVA_CREATE_DIALOG_DIAGNOSTIC_PUBLIC_KEY_B64;
+      const diagnostic = !commit && process.env.NAVA_CREATE_PREPARE_ONLY === '1' &&
+        isLabtestGuest(expectedGuest) && diagnosticKey ? prepareDialogDiagnostic(page, diagnosticKey) : null;
+      if (diagnostic) runTool = diagnostic.wrap(runTool);
+      try {
       state.preimage = labtestPreimage;
       if (commit && authorizeCandidate && withSession === withBookingLookupSession) {
         state.writer = cloudWriterIdentity(page);
@@ -871,6 +919,7 @@ export async function createReservation(input, options = {}) {
       } catch { state.save = { outcome: 'uncertain', issue: 'SAVE_TOOL_FAILED' }; }
       if (state.save.billingReferenceStaged === true) output.applied.billingReference = input.billingReference;
       try { await screenshot('after'); } catch { state.afterScreenshotFailed = true; }
+      } finally { diagnostic?.close(); }
     }, { memory: null, blockServiceWorkers: true, staging: !commit, propertyCode: input.propertyCode, transportId, signal, credentialLease,
       ...(allowRealGuest ? { allowRealGuest: true, expectedGuest } : {}),
       ...(cloudTargetKey ? { cloudTargetKey } : {}),
