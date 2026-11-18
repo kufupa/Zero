@@ -120,6 +120,7 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
       result?.error?.message.slice(0,240) ?? `HMS ${action} did not complete.`,
     recovery:attachmentsBlocked?attachmentsUnconfirmed.message:`Review the proposal and run ${action} again.`,
     ...(hasCreateFeedback?{prepare}:{}),
+    ...(result?.error?.native_error?{native_error:result.error.native_error}:{}),
   };
   const hasCapture=workflow==='create' ? !!rate || !!failedStep || !!detailIssue || observed!==undefined || capture?.guest_candidates!=null
     || capture?.rate_choices!=null || capture?.room_choices!=null || capture?.track_choices!=null

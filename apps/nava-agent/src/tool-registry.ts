@@ -14,7 +14,10 @@ import { lookupStay, targetLookup } from './stay-target.js';
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
 export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal; skillConfig?:SkillConfig; staffStage?:StaffStage; staffGo?:{executionId:string}; credentialLease?:NativeLease };
-export type ToolResult = { ok: boolean; data: unknown; error: {code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'} | null };
+const nativeErrorSchema=z.object({error_class:z.string(),message:z.string(),native_step:z.string(),stack:z.string().nullable()}).strict();
+export const toolErrorSchema=z.object({code:z.string(),message:z.string(),retryable:z.boolean(),
+  outcome:z.enum(['known','uncertain']),native_error:nativeErrorSchema.optional()}).strict();
+export type ToolResult = { ok: boolean; data: unknown; error: z.infer<typeof toolErrorSchema> | null };
 export type ToolDefinition = { name:string; description:string; input_schema:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:boolean} };
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
@@ -253,13 +256,30 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
 const prepareInput=z.object({workflow:z.enum(['create','amend','cancel','filing']),booking:z.object({id:z.string(),property_code:z.string().nullable(),reservation_id:z.string().nullable(),current_state:z.record(z.unknown()).nullable(),fields:z.record(z.unknown())}).strict(),action:z.object({id:z.string(),type:z.string(),booking_ids:z.array(z.string()),details:z.unknown()}).strict()}).strict();
 const saveInput=z.object({proposal_id:z.string().min(1),expected_revision:z.number().int().positive()}).strict();
 const definitionSchema=z.object({name:z.string().regex(/^[a-z][a-z0-9_]*$/),description:z.string(),input_schema:z.object({type:z.literal('object'),properties:z.record(z.unknown()),required:z.array(z.string()).optional(),additionalProperties:z.boolean().optional()}).passthrough(),run:z.function()});
-const resultSchema=z.object({ok:z.boolean(),data:z.unknown(),error:z.object({code:z.string(),message:z.string(),retryable:z.boolean(),outcome:z.enum(['known','uncertain'])}).strict().nullable()}).strict().refine(value=>value.ok ? value.error===null : value.error!==null);
+const resultSchema=z.object({ok:z.boolean(),data:z.unknown(),error:toolErrorSchema.nullable()}).strict().refine(value=>value.ok ? value.error===null : value.error!==null);
 function parseResult(value:unknown):ToolResult {
   if(typeof value!=='object' || value===null || !Object.hasOwn(value,'data')) throw new Error('INVALID_TOOL_RESULT');
   const parsed=resultSchema.parse(value);
   return {ok:parsed.ok,data:parsed.data,error:parsed.error};
 }
 const failureObject=(code:string,message:string):ToolResult=>({ok:false,data:null,error:{code,message,retryable:false,outcome:'known'}});
+function nativeError(error:unknown, step:string):z.infer<typeof nativeErrorSchema> {
+  const e=error instanceof Error ? error : new Error(typeof error==='string'?error:'Native tool threw a non-Error value');
+  const info=e as Error & {step?:unknown;stage?:unknown;phase?:unknown};
+  const provided=[info.step,info.stage,info.phase].find(value=>typeof value==='string' && /^[a-z][\w.:-]{0,95}$/i.test(value));
+  const redact=(value:string)=>value
+    .replace(/\b(?:Bearer|Basic)\s+[\w.+\/=-]+/gi,'[redacted authorization]')
+    .replace(/\b(authorization|cookie|password|secret|token|api[_-]?key|access[_-]?key)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,'$1=[redacted]')
+    .replace(/([a-z][\w+.-]*:\/\/)[^\s/@]+:[^\s/@]+@/gi,'$1[redacted]@')
+    .replace(/(https?:\/\/[^\s?]+)\?[^\s)]+/gi,'$1?[redacted]')
+    .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g,'[redacted token]')
+    .replace(/\b[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+\b/g,'[redacted email]');
+  const message=redact(e.message).slice(0,1800);
+  const error_class=redact(e.constructor?.name || e.name || 'Error').slice(0,96);
+  const frames=e.stack?.split('\n').filter(line=>/^\s+at\s/.test(line)).slice(0,14);
+  return {error_class,message,native_step:typeof provided==='string'?provided:step,
+    stack:frames?.length?redact([error_class+': '+message,...frames].join('\n')).slice(0,6200):null};
+}
 const prepareDefinition:ToolDefinition={name:'hms_prepare',description:'Prepare a native change without saving.',input_schema:{type:'object',properties:{workflow:{type:'string',enum:['create','amend','cancel','filing']},booking:{type:'object'},action:{type:'object'}},required:['workflow','booking','action'],additionalProperties:false}};
 const saveDefinition:ToolDefinition={name:'hms_save',description:'Pause for approval before saving the current proposal.',input_schema:{type:'object',properties:{proposal_id:{type:'string'},expected_revision:{type:'integer',minimum:1}},required:['proposal_id','expected_revision'],additionalProperties:false}};
 
@@ -328,17 +348,25 @@ export class ToolRegistry {
     if(!handler) return failureObject('UNAVAILABLE','Workflow is unavailable.');
     const filing=job.workflow==='filing'?await filingPortFactory():undefined;
     if(job.workflow==='filing' && !filing) return failureObject('ATTACHMENT_SOURCE_UNAVAILABLE','The selected attachment source is unavailable.');
+    let step='native_read_admission';
     return this.nativeResult(()=>this.deps.native.withRead(job.source.property_code,context.signal,async credentialLease=>{
+      step='confirm_staff_stage_source';
       const denied=await confirmedQueuedStaffStage(job,context.sessionId,draft);
       if(denied) return failureObject(denied,denied===attachmentsUnconfirmed.code?attachmentsUnconfirmed.message
         :denied===invalidGuestSelection.code?invalidGuestSelection.message:'The selected source or proposal revision changed.');
       credentialLease.signal.throwIfAborted();
       const staffStage={...job,mailboxId:job.source.mailbox_id,sourceMessageId:job.source.source_message_id,sourceThreadId:job.source.source_thread_id};
       const trusted={...context,propertyCode:job.source.property_code,credentialLease,signal:credentialLease.signal,staffStage};
+      step='resolve_staff_stage_inputs';
       const ports=filing?await filing(trusted,input):undefined;
       credentialLease.signal.throwIfAborted();
-      return parseResult(await handler(input.workflow==='quote'?input.request:input,{...trusted,...ports}));
-    },job.workflow==='quote'?'quote':undefined));
+      step='execute_'+job.workflow;
+      const raw=await handler(input.workflow==='quote'?input.request:input,{...trusted,...ports});
+      step='validate_'+job.workflow+'_result';
+      const parsed=parseResult(raw);
+      step='release_native_read';
+      return parsed;
+    },job.workflow==='quote'?'quote':undefined),()=>step);
   }
 
   async reconcileCreate(intent:unknown, signal:AbortSignal):Promise<ToolResult> {
@@ -500,8 +528,14 @@ export class ToolRegistry {
     }
   }
 
-  private async nativeResult(work:()=>Promise<ToolResult>):Promise<ToolResult> {
-    try { return parseResult(await work()); } catch(error) { if(error instanceof Error && error.message==='LEASE_LOST') throw error; if(error instanceof Error && ['HMS_CREDENTIAL_SESSION_CAP_REQUIRED','NATIVE_SHARED_LEASE_DATABASE_REQUIRED'].includes(error.message)) return failureObject(error.message,'Native shared admission is not configured.'); return failureObject('TOOL_FAILED','Tool execution failed or was interrupted.'); }
+  private async nativeResult(work:()=>Promise<ToolResult>, step:()=>string=()=> 'execute_native_tool'):Promise<ToolResult> {
+    try { return parseResult(await work()); } catch(error) {
+      if(error instanceof Error && error.message==='LEASE_LOST') throw error;
+      const admission=error instanceof Error && ['HMS_CREDENTIAL_SESSION_CAP_REQUIRED','NATIVE_SHARED_LEASE_DATABASE_REQUIRED'].includes(error.message);
+      return {ok:false,data:null,error:{code:admission?error.message:'TOOL_FAILED',
+        message:admission?'Native shared admission is not configured.':'Tool execution failed or was interrupted.',
+        retryable:false,outcome:'known',native_error:nativeError(error,step())}};
+    }
   }
 }
 

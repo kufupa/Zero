@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
-import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type NativeTiming, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
+import { discoverToolPacks, ToolRegistry, toolErrorSchema, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type NativeTiming, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
 import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffReconcile, runStaffStage } from './create-operations.js';
 import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
@@ -306,7 +306,7 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
 }
 
 const goSchema=z.object({executionId:z.string().min(1),toolUseId:z.string().min(1),dispatch:z.enum(['pending','dispatched']),snapshot:z.unknown(),completion:z.object({toolResult:z.unknown()}).passthrough().optional()}).passthrough();
-const toolResultSchema=z.object({ok:z.boolean(),data:z.unknown(),error:z.object({code:z.string(),message:z.string(),retryable:z.boolean(),outcome:z.enum(['known','uncertain'])}).strict().nullable()}).strict();
+const toolResultSchema=z.object({ok:z.boolean(),data:z.unknown(),error:toolErrorSchema.nullable()}).strict();
 const savedSnapshotSchema=z.object({bookings:z.array(z.object({id:z.string(),property_code:z.string().nullable()}).passthrough()),actions:z.array(z.object({id:z.string(),type:z.string(),booking_ids:z.array(z.string()),details:z.unknown()}).passthrough())}).passthrough();
 const knownFailure=(code:string,message:string):ToolResult=>({ok:false,data:null,error:{code,message,retryable:false,outcome:'known'}});
 
