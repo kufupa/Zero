@@ -457,4 +457,23 @@ async function main():Promise<void> {
   const saveInstruction=saveEnabled ? ' When ready, request hms_save to pause for approval.' : ' End after publishing the proposal. Save is disabled.';
   await runWorker({store,native,...(saveEnabled?{saveQueue:createSaveQueue(store)}:{}),runtime:(deps,skillContext)=>new runtimeModule.BedrockRuntime(deps,{system:system+saveInstruction+(skillContext ? `\n\n${skillContext}` : '')})});
 }
-if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) await main();
+if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
+  const reportedQuoteClosures=new WeakSet<Error>();
+  process.on('unhandledRejection',(cause:unknown)=>{
+    const stack=cause instanceof Error ? cause.stack ?? '' : '';
+    // Playwright disconnects outstanding RPCs when the owned Quote browser is closed.
+    // That detached rejection must not restart the worker and interrupt unrelated jobs.
+    if(cause instanceof Error && cause.constructor.name==='TargetClosedError2'
+      && cause.message==='Target page, context or browser has been closed'
+      && stack.includes('at Connection.close (') && stack.includes('at Browser2.close (')
+      && stack.includes('/tools/quote/native/tooling/hms-cloud/cloud-session.mjs:')) {
+      if(!reportedQuoteClosures.has(cause)) {
+        reportedQuoteClosures.add(cause);
+        console.warn(JSON.stringify({event:'quote_browser_close_rejection',error:cause.constructor.name}));
+      }
+      return;
+    }
+    throw cause;
+  });
+  await main();
+}
