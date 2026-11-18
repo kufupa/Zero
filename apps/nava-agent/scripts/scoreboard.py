@@ -177,6 +177,13 @@ def terminal_stage(p):
     return p.get('phase') not in ('staging',) and (p.get('stage') is not None or p.get('error') is not None)
 
 
+def triage_lookup_eligible(proposal):
+    actions = proposal.get('actions') or []
+    return (proposal.get('workflow') == 'triage' and proposal.get('phase') == 'ready'
+            and proposal.get('disposition') in ('propose', 'staff_review')
+            and len(actions) == 1 and actions[0].get('type') == 'triage')
+
+
 def capture_stage_events(gateway, path, after, through, entries):
     """Read the finite, already-observed event range; never delay the measured path."""
     by_job = {entry['job_id']: entry for entry in entries if entry.get('job_id')}
@@ -219,7 +226,7 @@ def timing_result(result):
             for event in result.get('events', []) if event.get('kind') == 'model_call'],
         'prepare': [{k: entry.get(k) for k in (
             'workflow', 'proposal_id', 'revision', 'job_id', 'status', 'reason',
-            'wall_ms', 'elapsed_from_post_ms', 'stage_events')}
+            'wall_ms', 'elapsed_from_post_ms', 'native_outcome', 'stage_events')}
             for entry in result.get('prepare', [])],
     }
 
@@ -339,7 +346,8 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         if prepare:
             for p in result['proposals']:
                 workflow = p.get('workflow')
-                if workflow not in WRITES | {'quote'} or p.get('phase') != 'ready' or p.get('disposition') != 'propose':
+                if not triage_lookup_eligible(p) and (workflow not in WRITES | {'quote'}
+                        or p.get('phase') != 'ready' or p.get('disposition') != 'propose'):
                     continue
                 op = 'quote' if workflow == 'quote' else 'stage'
                 body = {'expected_revision': p['revision']}
@@ -374,6 +382,10 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                             entry['status'] = 'complete' if not item.get('error') else 'failed'
                             entry['reason'] = None if entry['status'] == 'complete' else 'operation_error'
                             entry['stage'] = stage
+                            if workflow == 'triage' and isinstance(stage.get('native_result'), dict):
+                                native_outcome = stage['native_result'].get('outcome')
+                                if native_outcome in ('uniquely_read', 'candidates', 'incomplete', 'not_uniquely_read'):
+                                    entry['native_outcome'] = native_outcome
                             entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
                             entry['elapsed_from_post_ms'] = round((time.monotonic() - monotonic) * 1000)
                             entry['reply_draft_present'] = bool(item.get('reply_draft'))
@@ -705,6 +717,7 @@ def score(results, labels, prices):
     for workflow, group in groups.items():
         outcomes, reasons, field_counts, sources, prep, artifacts, labtests = Counter(), Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
         prepare_timing = Counter()
+        lookup_outcomes = Counter()
         by_field = {}
         latencies, prepare_latencies, labtest_latencies, costs, per_email_cost = [], [], [], [], []
         labels_with_fields = 0
@@ -813,6 +826,19 @@ def score(results, labels, prices):
                 reasons['quote_unsent_draft_not_observed'] += 1
             else:
                 outcome = 'complete'
+            if workflow == 'triage' and r.get('tier') != 'C' and p and triage_lookup_eligible(p):
+                matches = [e for e in r.get('prepare', []) if e.get('workflow') == 'triage'
+                           and e.get('proposal_id') == p.get('id') and e.get('revision') == p.get('revision')]
+                lookup = prepare_outcome(r, p, matches[0]) if len(matches) == 1 else 'unknown'
+                if lookup == 'failed':
+                    outcome = 'failed'
+                elif lookup != 'complete':
+                    if outcome == 'complete':
+                        outcome = 'unknown'
+                    reasons['triage_lookup_unfinished'] += 1
+                elif matches[0].get('native_outcome') == 'incomplete' and outcome == 'complete':
+                    outcome = 'unknown'
+                    reasons['triage_lookup_incomplete'] += 1
             outcomes[outcome] += 1
             if r['status'] == 'complete' and r.get('wall_ms') is not None:
                 latencies.append(r['wall_ms'])
@@ -837,13 +863,16 @@ def score(results, labels, prices):
                     prepare_timing[timing_status] += 1
                     if prepared == 'complete' and type(e.get('elapsed_from_post_ms')) in (int, float):
                         prepare_latencies.append(e['elapsed_from_post_ms'])
+                    if workflow == 'triage' and e.get('native_outcome'):
+                        lookup_outcomes[e['native_outcome']] += 1
                     if e.get('reason'):
                         reasons['prepare:' + e['reason']] += 1
                     if e.get('artifact_reason'):
                         reasons['artifacts:' + e['artifact_reason']] += 1
                     if e.get('artifacts'):
                         artifacts[e['artifacts']] += 1
-            if r.get('tier') != 'C' and workflow in WRITES | {'quote'} and not any(e.get('workflow') == workflow for e in r.get('prepare', [])):
+            if (r.get('tier') != 'C' and (workflow in WRITES | {'quote'} or p and triage_lookup_eligible(p))
+                    and not any(e.get('workflow') == workflow for e in r.get('prepare', []))):
                 reasons['prepare:not_attempted'] += 1
                 prepare_timing['not_attempted'] += 1
         denom = len(group)
@@ -862,7 +891,10 @@ def score(results, labels, prices):
                                    'unknown': prepare_timing['unknown'], 'not_attempted': prepare_timing['not_attempted']},
             'labtest_e2e_wall_ms': {'n': len(labtest_latencies), 'p50': percentile(labtest_latencies, .5), 'p95': percentile(labtest_latencies, .95)},
             'haiku_usd_per_email': {'n': len(costs), 'mean': sum(costs) / len(costs) if costs else None, 'emails': per_email_cost},
-            'real_unsaved_prepare': dict(prep), 'labtest_completion': dict(labtests) if workflow in WRITES else None,
+            'real_unsaved_prepare': dict(prep) if workflow != 'triage' else {},
+            'real_unsaved_lookup': {**dict(prep), 'not_attempted': prepare_timing['not_attempted'],
+                                    'native_outcomes': dict(lookup_outcomes)} if workflow == 'triage' else None,
+            'labtest_completion': dict(labtests) if workflow in WRITES else None,
             'quote_artifacts': dict(artifacts), 'label_sources': dict(sources), 'unknown_reasons': dict(reasons)}
     return {'pricing_model': prices.get('model') if prices else None,
             'pricing_source': prices.get('source') if prices else None, 'workflows': report,
