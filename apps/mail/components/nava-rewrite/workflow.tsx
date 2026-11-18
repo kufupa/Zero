@@ -1010,7 +1010,10 @@ export function Workflow(props: WorkflowProps) {
     </PaneSection>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
-      {proposal.result.rooms && <ul>{proposal.result.rooms.map((room,index)=><li key={room.booking_id}>Room {index+1}: {room.state==='saved' ? `confirmed${room.confirmation ? ` · Confirmation ${room.confirmation}` : ''}${room.reservation_id ? ` · Reservation ${room.reservation_id}` : ''}` : room.state==='unattempted' ? 'not attempted' : room.state==='dispatched' || room.state==='uncertain' ? 'outcome unconfirmed; check Infor' : 'not saved'}</li>)}</ul>}
+      {proposal.result.rooms && <ul>{proposal.result.rooms.map(room=>{
+        const index=proposal.bookings.findIndex(booking=>booking.id===room.booking_id);
+        return <li key={room.booking_id}>Room{index >= 0 ? ` ${index+1}` : ''}: {room.state==='saved' ? `confirmed${room.confirmation ? ` · Confirmation ${room.confirmation}` : ''}${room.reservation_id ? ` · Reservation ${room.reservation_id}` : ''}` : room.state==='unattempted' ? 'not attempted' : room.state==='dispatched' || room.state==='uncertain' ? 'outcome unconfirmed; check Infor' : 'not saved'}</li>;
+      })}</ul>}
       {proposal.result.readback !== null && proposal.phase === 'done' && <p role="status">{
         proposal.workflow === 'cancel' ? 'Infor confirms the booking is cancelled.'
           : proposal.workflow === 'filing' ? 'Infor confirms the PDF is in the stay’s Documents.'
