@@ -305,6 +305,16 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       }
       if (latest.phase === 'done') { delete cache.goLocks[latest.id]; delete cache.goUncertainAfter[latest.id]; clearPendingGo(latest.id); }
       else {
+        // Server says Go was refused before dispatch (back to ready with a known error): nothing was saved, so release
+        // an accepted Go (or a remounted pending key) and let staff Prepare again. An uncertain lock is never released here.
+        const knownGoRefusal = authoritative && latest.phase === 'ready' && latest.error?.outcome === 'known' && proposal.revision === latest.revision;
+        if (knownGoRefusal && cache.goLocks[latest.id] !== 'uncertain' && cache.goLocks[latest.id] !== 'reconciling') {
+          let pendingKey = false;
+          try { pendingKey = Boolean(window.sessionStorage.getItem(goStorageKey(latest.id))); } catch { /* storage unavailable */ }
+          if (cache.goLocks[latest.id] === 'accepted' || pendingKey) {
+            delete cache.goLocks[latest.id]; delete cache.goUncertainAfter[latest.id]; clearPendingGo(latest.id);
+          }
+        }
         try {
           if (window.sessionStorage.getItem(goStorageKey(latest.id)) && !cache.goLocks[latest.id]) {
             cache.goLocks[latest.id] = latest.phase === 'saving' ? 'accepted' : 'uncertain';

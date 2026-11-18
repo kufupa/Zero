@@ -239,16 +239,24 @@ async function parkFailedSession(sessionId:string) {
     await writeEvent(tx,sessionId,'worker_parked',{reason:'repeated_worker_failure'});
   });
 }
+async function lastSequence(sessionId:string):Promise<string> {
+  const [row]=await sql`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${sessionId}`;
+  return row?.n ?? '0';
+}
 
 export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<void> {
   const active=new Set<string>();
   // Consecutive failures per session: after 3, stop picking it up (and stop a stuck model turn) instead of retrying forever.
   const failures=new Map<string,number>();
+  // Parked sessions stay excluded only until a newer event (e.g. a fresh signed Prepare/Go) arrives; then they get 3 new tries.
+  // A dispatched Save is already uncertain in the DB, so re-admission never re-clicks it.
+  const parked=new Map<string,string>();
   const limit=configuredSlots().requested;
   while(!signal?.aborted) {
-    const parked=[...failures].filter(([,count])=>count>=3).map(([id])=>id);
+    const parkedIds=[...parked.keys()],parkedSeqs=[...parked.values()];
     const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now())
-      AND NOT (s.id::text = ANY(${sql.array(parked)}::text[])) AND (
+      AND NOT EXISTS (SELECT 1 FROM unnest(${sql.array(parkedIds)}::text[],${sql.array(parkedSeqs)}::bigint[]) AS x(id,seq)
+        WHERE x.id=s.id::text AND NOT EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.sequence>x.seq)) AND (
       ((s.pending_tool_use_id IS NULL OR ${hmsSaveEnabled()}) AND (
         EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false')
         OR s.status='running'))
@@ -259,14 +267,18 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL
           AND (p.phase='saving' OR p.execution->'go'->'completion' IS NOT NULL))))
       ) ORDER BY s.updated_at LIMIT ${limit}`;
-    for(const row of rows) if(active.size<limit && !active.has(row.id) && (failures.get(row.id) ?? 0)<3) {
+    for(const row of rows) if(parked.delete(row.id)) failures.delete(row.id);
+    for(const row of rows) if(active.size<limit && !active.has(row.id)) {
       active.add(row.id);
       void runSession(row.id,deps).then(()=>{failures.delete(row.id);},async error=>{
         const message=error instanceof Error?error.message:'';
         const count=(failures.get(row.id) ?? 0)+1;
         failures.set(row.id,count);
         console.error(JSON.stringify({event:count>=3?'worker_gave_up':'worker_error',session_id:row.id,attempt:count,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));
-        if(count>=3) await parkFailedSession(row.id).catch(()=>{});
+        if(count>=3) {
+          await parkFailedSession(row.id).catch(()=>{});
+          parked.set(row.id,await lastSequence(row.id).catch(()=>String(Number.MAX_SAFE_INTEGER)));
+        }
       }).finally(()=>active.delete(row.id));
     }
     await delay(3000,undefined,{signal}).catch(()=>{});
