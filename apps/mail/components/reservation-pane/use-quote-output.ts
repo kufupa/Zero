@@ -18,6 +18,7 @@ type OutlookReplyInput = {
   html: string; confirmUnknown?: Confirm;
 } & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean } |
   { output: QuoteOutput; isCurrentSnapshot: () => boolean });
+export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] } };
 
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
 const RETRY_WINDOW_MS = 15 * 60 * 1000;
@@ -190,7 +191,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
     finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };
 
-  const createOutlookReplyLocked = async (input: OutlookReplyInput): Promise<QuoteOutputResult> => {
+  const createOutlookReplyLocked = async (input: OutlookReplyInput): Promise<OutlookReplyResult> => {
     const { html, confirmUnknown, isCurrentSnapshot } = input;
     if (busy.current) return { status: 'error', message: 'A reply is already being prepared.' };
     busy.current = true; setSaving(true); setError(null); beginMutation();
@@ -199,7 +200,11 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       let output: QuoteOutput;
       if ('output' in input) {
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
-        if (!completeQuotePackage(input.output) || !html.trim()) throw new Error('Review the cover reply and generate the PDF and Excel files first.');
+        const artifacts=input.output.artifacts;
+        if (!completeQuotePackage(input.output) || input.output.inventoryDecline || !html.trim() || artifacts.length!==2 ||
+            !artifacts.some(item=>item.kind==='pdf_quote' && item.fileName==='Quotation.pdf' && item.mimeType==='application/pdf') ||
+            !artifacts.some(item=>item.kind==='xlsx_quote' && item.fileName==='Quotation.xlsx' && item.mimeType==='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
+          throw new Error('Review the cover reply and generate the PDF and Excel files first.');
         await verifyAttachments(input.output.artifacts);
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
         output = input.output;
@@ -313,7 +318,9 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Check Outlook Drafts.');
       if (storedAttempt(readMarker())?.createOperationId === attempt.create.operationId) writeMarker(null);
       pending.current = null;
-      return report('created', 'Quote saved in Outlook Drafts. Review it there before sending.');
+      return {...report('created', 'Quote saved in Outlook Drafts. Review it there before sending.'),
+        readback: { subject: draft.subject, attachmentNames: metadata.filter(item=>
+          attempt.output.artifacts.some(artifact=>artifact.fileName===item.fileName)).map(item=>item.fileName) }};
     } catch (error) {
       if (submitted || pending.current?.location || (pending.current && storedAttempt(readMarker())?.createOperationId === pending.current.create.operationId))
         return report('unknown', `${failure(error)} Retry the same reply, or check Outlook Drafts.`);
@@ -321,7 +328,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       return report('error', failure(error));
     } finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };
-  const createOutlookReply = async (input: OutlookReplyInput): Promise<QuoteOutputResult> => {
+  const createOutlookReply = async (input: OutlookReplyInput): Promise<OutlookReplyResult> => {
     if (!navigator.locks) return report('error', 'Update the Outlook browser to safely prepare the draft.');
     return navigator.locks.request('nava-v2-quote-outlook-draft', { ifAvailable: true }, lock =>
       lock ? createOutlookReplyLocked(input) : report('error', 'A quote draft is already being prepared.'));
