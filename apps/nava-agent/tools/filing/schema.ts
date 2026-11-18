@@ -25,3 +25,23 @@ export const filingPrepare = z.object({
     }).strict(),
   }).strict(),
 }).strict();
+
+export const filingPrepared = z.object({
+  outcome: z.literal('prepared'), unsaved: z.literal(true), booking_id: id,
+  target: z.object({
+    property_code: id, confirmation: id, reservation_id: id, reservation_stay_id: id, native_status: id,
+    native_stay: z.object({
+      propertyCode: id, confirmation: id, firstName: text(200), lastName: text(200),
+      arrival: z.string().date(), departure: z.string().date(), nativeGuestId: id, nativeStayId: id,
+      allowRealGuest: z.boolean(),
+    }).strict(),
+    native_snapshot: z.object({ cmsSend: z.boolean() }).strict(),
+  }).passthrough(),
+  source: z.object({ message_id: id, attachment_id: id }).strict(),
+  document: z.object({
+    name: text(150), mime_type: z.literal('application/pdf'), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    document_code: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/), description: text(200),
+  }).strict(),
+}).passthrough();
+
+export const filingSave = filingPrepare.extend({ executionId: id, prepared: filingPrepared.optional() }).strict();

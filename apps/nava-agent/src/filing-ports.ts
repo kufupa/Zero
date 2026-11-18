@@ -109,21 +109,27 @@ async function readPdf(response: Response, expectedSize: number): Promise<Buffer
   }
 }
 
-export function createFilingPorts({ sessionId, staffStage }: { sessionId: string; staffStage?: StaffStage }, input?: unknown):
+export function createFilingPorts({ sessionId, staffStage, staffGo }: {
+  sessionId: string; staffStage?: StaffStage; staffGo?: { executionId: string };
+}, input?: unknown):
   Pick<ToolContext, 'authorizeTarget' | 'resolveAttachment'> {
   async function current(signal: AbortSignal) {
     signal.throwIfAborted();
     if (!staffStage) return null;
     const stage = staffStage;
     return sql.begin('isolation level repeatable read read only', async tx => {
-      const [row] = await tx`SELECT p.current, p.stage->>'actor' AS actor,
+      const [row] = await tx`SELECT p.current, p.stage->'native_result' AS prepared,
+          CASE WHEN p.phase='saving' THEN p.execution->'go'->>'actor' ELSE p.stage->>'actor' END AS actor,
           t.mailbox_id, t.source_thread_id, t.selected_message_id, t.property_code, m.payload
         FROM nava_agent.proposal p
         JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id
         JOIN nava_agent.mail_thread t ON t.id=p.thread_id
         JOIN nava_agent.mail_message m ON m.thread_id=t.id AND m.source_message_id=t.selected_message_id
         WHERE p.id=${stage.proposalId} AND p.session_id=${sessionId} AND p.revision=${stage.revision}
-          AND p.workflow='filing' AND p.phase='staging' AND p.stage->>'state'='queued'
+          AND p.workflow='filing' AND (
+            (p.phase='staging' AND p.stage->>'state'='queued') OR
+            (p.phase='saving' AND p.stage->>'state'='prepared' AND p.execution->'go'->>'executionId'=${staffGo?.executionId ?? null}
+              AND p.execution->'go'->>'revision'=${String(stage.revision)}))
           AND p.stage->>'job_id'=${stage.jobId} AND p.stage->>'revision'=${String(stage.revision)}
           AND t.source='outlook' AND t.mode='live' AND t.selection_key LIKE 'prepare:%' AND s.mode='live'
           AND s.worker_id=${stage.workerId} AND s.lease_epoch=${stage.epoch}::bigint AND s.lease_until>clock_timestamp()`;
@@ -138,14 +144,13 @@ export function createFilingPorts({ sessionId, staffStage }: { sessionId: string
           (nestedProperty != null && nestedProperty !== property_code)) return null;
       const { property_code: _nested, ...fields } = booking.fields;
       const durableInput = { workflow: 'filing', booking: { ...booking, fields, property_code }, action };
-      if (input !== undefined && !isDeepStrictEqual(input, durableInput)) return null;
+      if (input !== undefined) {
+        if (typeof input !== 'object' || input === null || !('workflow' in input) || !('booking' in input) || !('action' in input) ||
+            !isDeepStrictEqual({ workflow: input.workflow, booking: input.booking, action: input.action }, durableInput)) return null;
+        if (staffGo && ('prepared' in input) && !isDeepStrictEqual(input.prepared, row.prepared?.native ?? row.prepared)) return null;
+      }
       const request = parseFilingRequest(durableInput);
       if (!request || request.ref.messageId !== selected_message_id) return null;
-
-      // This adapter handles the simple case: the selected inbound binds the exact stay.
-      const currentBody = payload.body_text.split(/^(?:\s*>|On .+ wrote:\s*$|\s*-{2,}\s*(?:Original Message|Forwarded message)|\s*From:\s)/im, 1)[0];
-      const confirmations = new Set(`${payload.subject}\n${currentBody}`.match(/(?<![\w-])\d{5,95}-\d{1,4}(?![\w-])/g));
-      if (confirmations.size !== 1 || !confirmations.has(request.confirmation)) return null;
       return { scope: scope.data, request };
     });
   }

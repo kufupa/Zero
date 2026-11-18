@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { filingBooking, filingPrepare } from './schema.js';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { filingBooking, filingPrepare, filingSave } from './schema.js';
 
 export const maxFilingPdfBytes = 10 * 1024 * 1024;
 
@@ -12,6 +16,7 @@ export type ToolContext = {
   authorizeTarget?: (request: TargetAuthorization, options: { signal: AbortSignal }) => Promise<boolean>;
   resolveAttachment?: (request: AttachmentReference, options: { signal: AbortSignal }) => Promise<TrustedAttachment | null>;
 };
+export type SaveContext = ToolContext & { markDispatched(details: unknown): Promise<void> };
 
 export type TargetAuthorization = {
   sessionId: string; bookingId: string; propertyCode: string; reservationId: string | null; confirmation: string;
@@ -51,6 +56,10 @@ type NativeModules = {
   filingSnapshot: (record: NativeRecord) => { cmsSend: boolean } | null;
   approvedDocumentDispatch: (record: NativeRecord, stay: Record<string, unknown>, snapshot: { cmsSend: boolean }) => unknown;
   prepareCloudPaneAttach: (input: Record<string, unknown>) => Promise<{ outcome?: string; issue?: string; documentCode?: string }>;
+  runCloudPaneAttach: (input: Record<string, unknown>) => Promise<{
+    outcome?: string; uploadSent?: boolean; documentCode?: string; listed?: boolean;
+    nativeReadback?: unknown; cleanupRoot?: string;
+  }>;
   getPropertyRegistration: (propertyCode: string) => { active: boolean; mailboxTransportId: string } | null;
 };
 
@@ -216,6 +225,96 @@ export async function inspect(input: unknown, context: ToolContext): Promise<Too
   }
 }
 
+/** Save exactly the stay and PDF shown in Prepare, then return the fresh Documents observation. */
+export async function save(input: unknown, context: SaveContext): Promise<ToolResult> {
+  const parsed = filingSave.safeParse(input);
+  const request = parsed.success ? parseFilingRequest({ workflow: parsed.data.workflow, booking: parsed.data.booking, action: parsed.data.action }) : null;
+  const prepared = parsed.success ? parsed.data.prepared : undefined;
+  if (!parsed.success || !request || !prepared) return failure('INVALID_FILING_INPUT', 'Prepare the selected stay and PDF before Save.');
+  if (!context || !text(context.sessionId) || !['live', 'labtest'].includes(context.mode)) return failure('INVALID_CONTEXT', 'Server session context is invalid.');
+  if (!context.credentialLease || typeof context.markDispatched !== 'function' ||
+      typeof context.authorizeTarget !== 'function' || typeof context.resolveAttachment !== 'function') {
+    return failure('FILING_CONTEXT_UNAVAILABLE', 'The shared HMS lease and selected source are required.');
+  }
+  context = { ...context, signal: effectiveSignal(context) };
+  if (context.signal?.aborted) return failure('ABORTED', 'Filing was aborted before dispatch.');
+  const reference = { sessionId: context.sessionId, ...request.ref };
+  if (prepared.booking_id !== request.bookingId || prepared.target.property_code !== request.propertyCode ||
+      prepared.target.confirmation !== request.confirmation || prepared.source.message_id !== reference.messageId ||
+      prepared.source.attachment_id !== reference.attachmentId ||
+      prepared.document.description !== (request.description ?? prepared.document.name)) {
+    return failure('PREPARED_FILING_CHANGED', 'The selected stay or PDF changed; prepare again.');
+  }
+  let markerStarted = false;
+  let temp: string | undefined;
+  let nativeCleanup: string | undefined;
+  const uncertain = (): ToolResult => ({ ok: false, data: null, error: {
+    code: 'FILING_OUTCOME_UNCERTAIN', message: 'Check the stay Documents before retrying.', retryable: false, outcome: 'uncertain',
+  } });
+  try {
+    if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
+    const attachment = await bounded(context, signal => context.resolveAttachment!(reference, { signal }));
+    if (!matchesAttachment(reference, attachment) || attachment.name !== prepared.document.name ||
+        createHash('sha256').update(attachment.bytes).digest('hex') !== prepared.document.sha256) {
+      return failure('ATTACHMENT_CHANGED', 'The selected PDF changed or is unavailable; prepare again.');
+    }
+    const native = await nativeModules();
+    const property = native.getPropertyRegistration(request.propertyCode);
+    if (!property?.active) return failure('PROPERTY_UNAVAILABLE', 'The selected HMS property is unavailable.');
+    const target = await observeTarget(native, request, context, property.mailboxTransportId);
+    if (!target || target.identity.reservationId !== prepared.target.reservation_id || target.identity.status !== prepared.target.native_status ||
+        target.identity.reservationStayId !== prepared.target.reservation_stay_id ||
+        !isDeepStrictEqual(target.stay, prepared.target.native_stay) ||
+        !isDeepStrictEqual(target.snapshot, prepared.target.native_snapshot)) {
+      return failure('STAY_MISMATCH', 'The native stay changed since Prepare.');
+    }
+    temp = await mkdtemp(join(tmpdir(), 'nava-filing-pdf-'));
+    const file = join(temp, 'selected.pdf');
+    await writeFile(file, attachment.bytes, { mode: 0o600 });
+    const allowed = async () => !context.signal?.aborted && await authorize(context, request);
+    const result = await native.runCloudPaneAttach({ target: { propertyCode: request.propertyCode },
+      transportId: property.mailboxTransportId, credentialLease: context.credentialLease, signal: context.signal,
+      confirmation: prepared.target.confirmation, arrival: prepared.target.native_stay.arrival,
+      guestName: `${prepared.target.native_stay.firstName} ${prepared.target.native_stay.lastName}`,
+      approvedStay: prepared.target.native_stay, approvedSnapshot: prepared.target.native_snapshot,
+      allowRealGuest: context.mode === 'live', documentName: prepared.document.name,
+      documentDescription: prepared.document.description, documentCode: prepared.document.document_code,
+      pdfSha256: prepared.document.sha256, file, beforeDispatch: allowed,
+      finalAuthority: async (code: string) => code === prepared.document.document_code && await allowed(),
+      continuationAllowed: () => !context.signal?.aborted,
+      dispatchWithAuthority: async (code: string, guestId: string, stayId: string, requestDigest: string, send: () => Promise<unknown>) => {
+        if (markerStarted || code !== prepared.document.document_code || guestId !== prepared.target.native_stay.nativeGuestId ||
+            stayId !== prepared.target.native_stay.nativeStayId || !await allowed()) throw new Error('FILING_DISPATCH_DISARMED');
+        markerStarted = true;
+        await context.markDispatched({ workflow: 'filing', executionId: parsed.data.executionId, requestDigest,
+          confirmation: prepared.target.confirmation, reservationStayId: stayId, documentCode: code });
+        context.signal?.throwIfAborted();
+        return send();
+      },
+    });
+    nativeCleanup = result.cleanupRoot;
+    const readback = result.nativeReadback;
+    if (markerStarted && result.outcome === 'confirmed' && result.uploadSent === true && result.listed === true &&
+        result.documentCode === prepared.document.document_code && object(readback) &&
+        readback.confirmation === prepared.target.confirmation && readback.nativeStayId === prepared.target.native_stay.nativeStayId &&
+        readback.nativeGuestId === prepared.target.native_stay.nativeGuestId && readback.documentCode === prepared.document.document_code &&
+        readback.documentName === prepared.document.name && readback.documentDescription === prepared.document.description &&
+        readback.uniqueFreshListing === true) {
+      return { ok: true, data: { confirmation: prepared.target.confirmation,
+        reservation_id: prepared.target.reservation_stay_id, readback }, error: null };
+    }
+    return markerStarted || result.uploadSent ? uncertain()
+      : failure('FILING_SAVE_FAILED', 'The document was not submitted; prepare again.');
+  } catch (error) {
+    if (markerStarted) return uncertain();
+    if (context.signal?.aborted) return failure('ABORTED', 'Filing was aborted before dispatch.');
+    return failure(safeErrorCode(error, 'FILING_SAVE_FAILED'), 'Filing failed before dispatch.');
+  } finally {
+    if (temp) await rm(temp, { recursive: true, force: true }).catch(() => {});
+    if (nativeCleanup) await rm(nativeCleanup, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** Open a fresh, bounded native stage. Nothing here dispatches an upload. */
 export async function prepare(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (context?.mode === 'historical') return failure('HISTORICAL_HMS_UNAVAILABLE', 'Historical sessions cannot access live HMS.');
@@ -266,7 +365,8 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       ({ id, booking_id: request.bookingId, kind: 'text', label, value, native_path });
     return { ok: true, data: { outcome: 'prepared', unsaved: true, booking_id: request.bookingId,
       target: { property_code: request.propertyCode, confirmation: target.identity.confirmation,
-        reservation_id: target.identity.reservationId, reservation_stay_id: target.identity.reservationStayId },
+        reservation_id: target.identity.reservationId, reservation_stay_id: target.identity.reservationStayId,
+        native_status: target.identity.status, native_stay: target.stay, native_snapshot: target.snapshot },
       source: { message_id: reference.messageId, attachment_id: reference.attachmentId },
       document: { name: attachment.name, mime_type: 'application/pdf', sha256, document_code: staged.documentCode, description },
       ...documents, observed_fields: ['document_code', 'description', 'file'],
