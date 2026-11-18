@@ -1,4 +1,5 @@
 import type { ProposalDraft } from './schema.js';
+import { withCancelReviewFields } from '../tools/cancel/index.js';
 
 export function pointerParts(path: string): string[] | null {
   if (!path.startsWith('/') || /~(?![01])/.test(path)) return null;
@@ -184,6 +185,7 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
   if(draft.workflow==='create') draft=withCreateNativeFields(createChildFields(draft));
   if(draft.workflow==='quote') draft=withQuoteStaffFields(draft);
+  if(draft.workflow==='cancel') draft=withCancelReviewFields(draft);
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
     id: 'quote-input', type: 'quote', booking_ids: [],
@@ -194,6 +196,7 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
   const fields: ProposalDraft['field_specs'] = [];
   for (const field of draft.field_specs) {
     const pointer = field.path.startsWith('/') ? field.path : '/' + field.path;
+    if (draft.workflow === 'cancel' && field.editable && /^\/bookings\/(0|[1-9]\d*)\/(reservation_id|property_code)$/.test(pointer)) continue;
     const path = scaffold && Object.hasOwn(missingQuotePaths, pointer) ? missingQuotePaths[pointer] : pointer;
     const parts = pointerParts(path);
     if (!parts || !resolves(value, parts) || (field.editable && !editablePointer(parts)) || seen.has(path)) return {kind:'invalid',path};

@@ -8,7 +8,6 @@ import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft,
 import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
-import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, targetLookup } from './stay-target.js';
 
@@ -198,7 +197,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           }
         }
         if(staffPrepareOnly() && session.mode==='live') {
-          staffDraft=withCancelReviewFields(withTriageLookupFields(staffDraft));
+          staffDraft=withTriageLookupFields(staffDraft);
         }
         const normalized=normalizeProposalFields(staffDraft);
         if(normalized.kind==='invalid') return failure('INVALID_FIELD_PATH',`Field ${JSON.stringify(normalized.path)} must resolve to a value in the proposal. Include its action details or booking fields; use null for unknown values. Editable paths must be under actions/{index}/details, bookings/{index}/fields, or /reply_draft.`);
