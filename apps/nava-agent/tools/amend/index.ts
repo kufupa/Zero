@@ -10,7 +10,8 @@ export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'histo
 export type SaveContext = ToolContext & { markDispatched(details: unknown): Promise<void> };
 type ToolResult =
   | { ok: true; data: unknown; error: null }
-  | { ok: false; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } };
+  | { ok: false; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain';
+      native_error?: { error_class: string; message: string; native_step: string; stack: string | null } } };
 
 const refuse = (code: string, message: string, data: unknown = null): ToolResult =>
   ({ ok: false, data, error: { code, message, retryable: false, outcome: 'known' } });
@@ -353,10 +354,20 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   let directory: string | undefined;
   const captureLabtest = reviewed.selected.firstName === 'Proof' && reviewed.selected.lastName === 'Labtest' &&
     reviewed.selected.arrival >= '2027-01-01' && reviewed.preserved.cmsSend === false;
-  const uncertain = (): ToolResult => ({ ok: false, data: null, error: {
-    code: 'AMEND_OUTCOME_UNCERTAIN', message: 'Read the stay in HMS before retrying this amendment.',
-    retryable: false, outcome: 'uncertain',
-  } });
+  const uncertain = (raw?: unknown): ToolResult => {
+    const diagnostic = z.object({ issue: z.string().regex(/^[A-Z][A-Z_0-9]{2,80}$/).optional(),
+      nativeStep: z.string().regex(/^[a-z_]+$/).optional(), blockedRequests: z.number().int().nonnegative().optional(),
+      visibleDialogCount: z.number().int().nonnegative().optional() }).safeParse(raw);
+    const native = diagnostic.success && (diagnostic.data.issue || diagnostic.data.nativeStep) ? diagnostic.data : null;
+    return { ok: false, data: null, error: {
+      code: 'AMEND_OUTCOME_UNCERTAIN', message: 'Read the stay in HMS before retrying this amendment.',
+      retryable: false, outcome: 'uncertain',
+      ...(native ? { native_error: { error_class: 'NativeAmend', message: JSON.stringify({ issue: native.issue ?? 'AMEND_UNVERIFIED',
+        ...(native.blockedRequests !== undefined ? { blocked_requests: native.blockedRequests } : {}),
+        ...(native.visibleDialogCount !== undefined ? { visible_dialogs: native.visibleDialogCount } : {}) }),
+      native_step: native.nativeStep ?? 'commit_cloud_pane_amend', stack: null } } : {}),
+    } };
+  };
   try {
     const registry: { getPropertyRegistration(code: string): Property | undefined } = await import(nativePath('property-registry'));
     const property = registry.getPropertyRegistration(request.booking.property_code);
@@ -401,7 +412,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return { ok: true, data: { confirmation: result.data.readback.confirmation,
         reservation_id: result.data.readback.nativeStayId, readback: result.data.readback }, error: null };
     }
-    if (markerStarted) return uncertain();
+    if (markerStarted) return uncertain(response);
     return nativeRefusal(response, 'AMEND_SAVE_REFUSED', 'HMS did not save the amendment.');
   } catch {
     return markerStarted ? uncertain() : refuse('AMEND_SAVE_UNAVAILABLE', 'Native amendment stopped before dispatch.');

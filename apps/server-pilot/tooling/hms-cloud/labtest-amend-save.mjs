@@ -334,6 +334,7 @@ export async function runLabtestAmendSave(page, {
   let availabilityArmed = false, availabilityRequest = null, availabilityDispatched = false, availabilitySnapshot = null;
   let retainArmed = false, retainRequest = null, retainDispatched = false, retainSnapshot = null;
   let extendArmed = false, extendRequest = null, extendDispatched = false, extendSnapshot = null;
+  let nativeStep = 'prepare';
   const blockedTargets = new Set();
   let signalStop;
   const stopped = new Promise((resolve) => { signalStop = resolve; });
@@ -509,6 +510,7 @@ export async function runLabtestAmendSave(page, {
     if (!routeChain) throw new Error(stopReason || 'AMEND_TIMEOUT');
     usedPages.add(page);
 
+    nativeStep = 'stage';
     inStage = true;
     const stageContext = Object.freeze({ page, frame: prepared.frame, childStageGate, roomStageGate, rateStageGate, guaranteeStageGate, partyStageGate,
       ...(callbackReviewOnly || callbackFinal ? { callbackAuthority } : {}),
@@ -526,28 +528,34 @@ export async function runLabtestAmendSave(page, {
     rateStageGate?.close();
     guaranteeStageGate?.close();
     partyStageGate?.close();
+    nativeStep = 'validate_draft';
     const verification = blocked || nativeDialog
       ? { ok: false, issue: 'AMEND_DRAFT_CHANGED' }
       : await bounded(validate(bounded, prepared, staged));
     if (verification !== true && verification?.ok !== true) {
       return result(possiblyDispatched ? 'uncertain' : 'not_dispatched', {
         issue: verification?.issue || 'AMEND_DRAFT_CHANGED',
+        nativeStep,
         ...diagnostics(),
         ...details(),
       });
     }
 
     if (availability) {
+      nativeStep = 'availability_snapshot';
       availabilitySnapshot = structuredClone(await bounded(availability.snapshot(bounded, prepared, staged)));
       const blockedBeforeAvailability = blocked;
       const pendingAvailability = page.waitForResponse((item) => item.request() === availabilityRequest,
         { timeout: timeoutMs }).catch(() => null);
       availabilityArmed = true;
+      nativeStep = 'availability_click';
       await bounded(availability.click(bounded, prepared, staged));
+      nativeStep = 'availability_response';
       const availabilityResponse = await bounded(pendingAvailability);
       if (!availabilityDispatched || !availabilityResponse || availabilityResponse.status() !== 200 ||
           !(await bounded(routeChain.waitForAvailability())) || !withinDeadline()) throw new Error('AVAILABILITY_UNCERTAIN');
       availabilityArmed = false;
+      nativeStep = 'availability_validate';
       const verified = await bounded(availability.validate(bounded, prepared, staged, availabilityResponse, { fence, scope }));
       if ((verified !== true && verified?.ok !== true) || blocked !== blockedBeforeAvailability || nativeDialog ||
           await bounded(prepared.frame.locator('.x-window:visible:not(.x-menu)').count()) !== 0) {
@@ -564,11 +572,14 @@ export async function runLabtestAmendSave(page, {
       ...diagnostics(), ...details(),
     });
 
+    nativeStep = 'before_save';
     if (beforeSave) await bounded(beforeSave(bounded, prepared, staged, { fence, scope }));
     const pending = page.waitForResponse((item) => item.request() === authorizedRequest, { timeout: timeoutMs })
       .catch(() => null);
     armed = true;
+    nativeStep = 'save_click';
     await bounded(prepared.save.click({ timeout: 5_000, noWaitAfter: true }));
+    nativeStep = 'save_response';
     response = await bounded(pending);
     armed = false;
     // The native response can precede the server wrapper's completion. A
@@ -584,6 +595,7 @@ export async function runLabtestAmendSave(page, {
     await bounded(page.waitForTimeout(500));
     if (!withinDeadline()) throw new Error(stopReason || 'AMEND_TIMEOUT');
     if (retainRate) {
+      nativeStep = 'rate_question';
       if (!dispatched || !response || response.status() !== 200 || blocked !== blockedAtDispatch || nativeDialog) {
         throw new Error('RETAIN_QUESTION_UNVERIFIED');
       }
@@ -626,6 +638,7 @@ export async function runLabtestAmendSave(page, {
       nativeDialog, dialogs, blockedAfterDispatch,
     });
     const outcomeDetails = {
+      nativeStep,
       ...diagnostics(),
       blockedRequestsAfterDispatch: blockedAfterDispatch,
       ...details(),
@@ -662,6 +675,7 @@ export async function runLabtestAmendSave(page, {
     }
     return result(possiblyDispatched ? 'uncertain' : 'not_dispatched', {
       issue: stopReason || labtestAmendIssue(error),
+      nativeStep,
       ...diagnostics(),
       ...details(),
     });
