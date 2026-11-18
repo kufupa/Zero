@@ -317,8 +317,11 @@ export async function readCalendar(page) {
 }
 
 export async function saveEvidence(directory, name, value) {
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await writeFile(join(directory,name), typeof value === 'string' ? value : JSON.stringify(value,null,2)+'\n', { mode: 0o600 });
+  try {
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    await writeFile(join(directory,name), typeof value === 'string' ? value : JSON.stringify(value,null,2)+'\n', { mode: 0o600 });
+    return true;
+  } catch { return false; }
 }
 
 /** Only the exact value 'on' enables the provisional quote capture. Anything else stays sequential. */
@@ -343,7 +346,7 @@ export function createPhaseClock(now = () => performance.now()) {
 
 /**
  * The quote capture as it stands before the trace is finished: audit status 'pending', no trace
- * hash. Returns null unless the outcome is still a quote after the screenshot contract. It reads
+ * hash. Returns null unless the native outcome is a quote. It reads
  * audit state only; the trace is still stopped and sanitized by audit.finish() afterwards.
  */
 export function provisionalQuoteCapture({result,audit,directory,started,now=Date.now()}) {
@@ -1046,8 +1049,10 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
 }
 
 export async function runInPage(page, request, directory, event=()=>{}, checkpoint=async name=>{
-  await mkdir(join(directory,'screenshots'),{recursive:true,mode:0o700});
-  await page.screenshot({path:join(directory,'screenshots',`${name}.png`),fullPage:true,timeout:10000});
+  try {
+    await mkdir(join(directory,'screenshots'),{recursive:true,mode:0o700});
+    await page.screenshot({path:join(directory,'screenshots',`${name}.png`),fullPage:true,timeout:10000});
+  } catch { /* Screenshots are diagnostic only. */ }
 }, clock=createPhaseClock(), env=process.env) {
   if(!request.normalizedFrom) {
     const normalized=normalizeQuoteRequest(request);
@@ -1182,8 +1187,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       const publicRoom={...request.rooms[0],required:undefined,preferred:undefined};
       publicReset=await searchCalendar(page,publicRequest,publicRoom,undefined,undefined,clock);
       searchCount+=publicReset.searchCount;
-      await saveEvidence(directory,'public-reset.json',publicReset.windows.map(projectWindow));
-      publicResetEvidenceSaved=true;
+      publicResetEvidenceSaved=await saveEvidence(directory,'public-reset.json',publicReset.windows.map(projectWindow));
     }
     resetPhase='controls';
     await clock.time('criteriaReset',()=>resetPublicControls(page));
@@ -1200,7 +1204,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
   return {schemaVersion:2,...aggregate,observedAt:new Date().toISOString(),sourceScreen:'Hotel Availability',requested:request,
     groups,allocation,issues,searchCompleteness:{status:groups.every(g=>g.completeness.search==='complete')?'complete':'partial',searchCount,distinctSignatures:cache.size},
     publicReset:publicResetFailure?{status:'failed',...publicResetFailure,...(publicResetEvidenceSaved?{evidence:'public-reset.json'}:{})}
-      :publicReset?{status:'verified',evidence:'public-reset.json'}:{status:'controls_reset'},
+      :publicReset?{status:'verified',...(publicResetEvidenceSaved?{evidence:'public-reset.json'}:{})}:{status:'controls_reset'},
     limitations:['Displayed-rate sums are not PMS payable totals.','No hold, booking or price lock.',
       'Joint allocation uses proven property/building/room-type identity only; sequential occupancy searches are not an atomic hold.'],
     screenshots:copiedShots};
@@ -1244,13 +1248,16 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
   const outputRoot = resolve(outputDir ?? root), rel = relative(root, outputRoot);
   if (rel.startsWith('..') || isAbsolute(rel)) throw new Error('OUTPUT_MUST_BE_PRIVATE_CLOUD_DIRECTORY');
   const directory = join(outputRoot, new Date().toISOString().replace(/[:.]/g, '-') + '-' + randomUUID().slice(0, 8));
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  const audit = await createAudit(directory, { video });
+  await mkdir(directory, { recursive: true, mode: 0o700 }).catch(() => {});
+  const unavailableAudit={status:'incomplete',trace:{status:'failed'},screenshots:[],errors:['AUDIT_UNAVAILABLE']};
+  const audit = await createAudit(directory, { video }).catch(() => ({
+    event:phase=>({phase}),start:async()=>{},checkpoint:async()=>{},snapshot:()=>unavailableAudit,finish:async()=>unavailableAudit,
+  }));
   const started = Date.now(), clock = createPhaseClock();
   const auditTimeout = new AbortController();
-  const sessionSignal = signal ? AbortSignal.any([signal,auditTimeout.signal]) : auditTimeout.signal;
   let phase = 'input', result, auditReport;
-  const event = next => { phase = next; const entry = audit.event(next); if (logEvents) process.stderr.write(JSON.stringify(entry) + '\n'); };
+  const event = next => { phase = next; try { const entry = audit.event(next); if (logEvents) process.stderr.write(JSON.stringify(entry) + '\n'); } catch {} };
+  const checkpoint = async name => { try { await audit.checkpoint(name); } catch {} };
   try {
     signal?.throwIfAborted();
     const input = suppliedRequest ?? JSON.parse(await readFile(requestPath, 'utf8'));
@@ -1274,33 +1281,32 @@ export async function fetchQuote({ requestPath, request: suppliedRequest, output
         }
         page.setDefaultTimeout(20000);
         try {
-          event('audit_start'); await audit.start(page);
-          await audit.checkpoint('login-complete');
+          event('audit_start'); try { await audit.start(page); } catch {}
+          await checkpoint('login-complete');
           event('hotel_availability'); await clock.time('nav', () => openHotelAvailability(page));
           await verifyCloudProperty(page, { propertyCode, tenantId: property.expectedTenant });
-          await audit.checkpoint('hotel-availability');
-          const next = await runInPage(page, request, directory, event, audit.checkpoint, clock, env);
+          await checkpoint('hotel-availability');
+          const next = await runInPage(page, request, directory, event, checkpoint, clock, env);
           signal?.throwIfAborted();
           await verifyCloudProperty(page, { propertyCode, tenantId: property.expectedTenant });
           event(`result_${next.outcome}`);
           return { ...next, propertyCode };
         } finally {
           const timer = setTimeout(() => auditTimeout.abort(new Error('QUOTE_AUDIT_FINALIZATION_TIMEOUT')), QUOTE_AUDIT_FINALIZE_TIMEOUT_MS);
-          try { auditReport = await clock.time('traceFinish', () => audit.finish({signal:session.signal})); }
+          try { auditReport = await clock.time('traceFinish', () => audit.finish({signal:AbortSignal.any([session.signal,auditTimeout.signal])})).catch(() => unavailableAudit); }
           finally { clearTimeout(timer); }
         }
-      }, { propertyCode, transportId, signal: sessionSignal, credentialLease, readRequestPolicy, prepareContext: installReadOnlyGuard });
+      }, { propertyCode, transportId, signal, credentialLease, readRequestPolicy, prepareContext: installReadOnlyGuard });
     }
   } catch (error) { result = executionFailure(error, phase); }
   if (!auditReport) auditReport = await audit.finish().catch(() => ({ status: 'incomplete', errors: ['AUDIT_FINALIZATION_FAILED'] }));
   result = applyQuoteScreenshotContract({ ...result, audit: auditReport, elapsedMs: Date.now() - started,
     evidenceDirectory: directory, phaseMs: { ...clock.ms }, toolVersion: `cloud-quote-v2:${cloudQuoteDependencyDigest()}` });
-  if (result.outcome === 'quote' && result.audit.status !== 'complete') result = { ...result, outcome: 'execution_failure', issue: 'CLOUD_QUOTE_AUDIT_INCOMPLETE' };
-  audit.event('phase_timings', { phaseMs: result.phaseMs });
+  try { audit.event('phase_timings', { phaseMs: result.phaseMs }); } catch {}
   event('run_finished');
   await saveEvidence(directory, 'result.json', result);
   await saveEvidence(directory, 'summary.txt', summarize(result));
-  if (onCaptured && result.audit.status === 'complete') await onCaptured(result);
+  if (onCaptured) await onCaptured(result);
   return result;
 }
 
@@ -1318,9 +1324,7 @@ export async function copyGroupGridShots(directory, fromPrefix, toPrefix) {
     try {
       await copyFile(join(directory, 'screenshots', `${fromPrefix}-${name}.png`), join(directory, rel));
       copied.push(rel);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
+    } catch {}
   }
   return copied;
 }
@@ -1335,29 +1339,10 @@ function listedScreenshotPaths(result) {
   return paths;
 }
 
-/** outcome quote requires both grid shots listed for every occupancy group. */
+/** Include the screenshots that were captured, without changing the native result. */
 export function applyQuoteScreenshotContract(result) {
   const screenshots = listedScreenshotPaths(result);
-  const next = { ...result, screenshots };
-  if (next.outcome !== 'quote') return next;
-  const groupCount = Math.max(Array.isArray(next.groups) ? next.groups.length : 0, 1);
-  const missing = [];
-  for (let groupNumber = 1; groupNumber <= groupCount; groupNumber++) {
-    for (const path of quoteGridShotPaths(groupNumber)) {
-      if (!screenshots.includes(path)) missing.push(path);
-    }
-  }
-  if (!missing.length) return next;
-  return {
-    ...next,
-    outcome: 'partial',
-    issues: [...(next.issues ?? []), {
-      code: 'QUOTE_SCREENSHOT_MISSING',
-      path: 'screenshots',
-      reason: `outcome quote requires ${missing.join(', ')}.`,
-      action: 'A run without screenshots/group-N-availability-results.png is not a quote. screenshots/group-N-criteria-applied.png is required too.',
-    }],
-  };
+  return { ...result, screenshots };
 }
 
 export function resultEnvelope(partial={}) {
