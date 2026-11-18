@@ -819,7 +819,7 @@ export function Workflow(props: WorkflowProps) {
       {proposal.workflow === 'quote' && proposal.stage.artifacts?.map(artifact => <p key={artifact.id}>
         {props.onOpenArtifact ? <button type="button" onClick={() => props.onOpenArtifact?.(artifact.id)}>{artifact.name}</button> : artifact.name}
       </p>)}
-      {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <p>This check did not save changes in Infor.</p>}
+      {proposal.phase !== 'done' && ['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <p>This check did not save changes in Infor.</p>}
     </PaneSection>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">

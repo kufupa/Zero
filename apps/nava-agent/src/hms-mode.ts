@@ -1,3 +1,11 @@
+import type { Workflow } from './schema.js';
+
+const writeWorkflows = ['create','amend','cancel','filing'] as const;
+export type WriteWorkflow = (typeof writeWorkflows)[number];
+export function isWriteWorkflow(workflow: Workflow): workflow is WriteWorkflow {
+  return writeWorkflows.some(value=>value===workflow);
+}
+
 export function staffPrepareOnly(): boolean {
   return process.env.NAVA_CREATE_PREPARE_ONLY === '1'; // staff mode; Go always available in it (ship mode)
 }

@@ -197,8 +197,20 @@ function missingRequired(proposal: Proposal): string[] {
 }
 
 function goReady(proposal: Proposal): boolean {
-  return proposal.workflow === 'create' && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' &&
+  return proposal.phase === 'ready' && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
     proposal.stage.revision === proposal.revision && !proposal.error && missingRequired(proposal).length === 0;
+}
+
+function cancellationPenalty(proposal: Proposal): string | null {
+  if (proposal.workflow !== 'cancel') return null;
+  const native = proposal.stage?.native_result;
+  const fee = proposal.stage?.cancellation_fee ?? (native && typeof native === 'object' && !Array.isArray(native) ? native.cancellation_fee : null);
+  return fee && typeof fee === 'object' && !Array.isArray(fee) && fee.state === 'review_required' &&
+    typeof fee.text === 'string' && fee.text.trim() ? fee.text : null;
+}
+
+function goConfirmation(proposal: Proposal) {
+  return JSON.stringify([proposal.id, proposal.revision, proposal.stage?.job_id]);
 }
 
 function goStorageKey(proposalId: string) { return `nava-pending-go:${proposalId}`; }
@@ -232,7 +244,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const [selectedId, setSelectedId] = useState(cache.selectedId);
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [confirmGoId, setConfirmGoId] = useState<string | null>(null);
+  const [confirmedPreparation, setConfirmedPreparation] = useState<string | null>(null);
   const [openingLong, setOpeningLong] = useState(false);
   const [openAttempt, setOpenAttempt] = useState(0);
   const [authenticationExpired, setAuthenticationExpired] = useState(false);
@@ -824,19 +836,22 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!current || current.revision !== proposal.revision || cache.issues[current.id] || cache.goLocks[current.id] ||
         cache.stagePending[current.id] !== undefined || Object.keys(cache.drafts[current.id] ?? {}).length) return;
-    if (current.workflow !== 'create' || !advertised(capabilities, 'create', 'go') || !goReady(current)) return;
+    if (!advertised(capabilities, current.workflow, 'go') || !goReady(current) ||
+        confirmedPreparation !== goConfirmation(current)) return;
     let idempotencyKey: string;
     try { idempotencyKey = crypto.randomUUID(); window.sessionStorage.setItem(goStorageKey(current.id), idempotencyKey); }
     catch { setMessage('Could not start the Save. Reload the pane and try again.'); return; }
     const currentOperation = { kind: 'go' as const, proposalId: current.id, signal };
     operationRef.current = currentOperation;
-    setConfirmGoId(null);
+    setConfirmedPreparation(null);
     setMessage(null);
     setBusy(true);
     cache.goLocks[current.id] = 'accepted';
     refreshVersion();
     try {
-      const accepted = await api.go({ proposalId: current.id, expectedRevision: current.revision, idempotencyKey, signal });
+      const accepted = await api.go({ proposalId: current.id, expectedRevision: current.revision, idempotencyKey, signal,
+        preparedJobId: current.stage?.job_id, ...(cancellationPenalty(current) ? { confirmPenalty: true } : {}),
+      });
       if (signal.aborted) return;
       cache.operationStarts[current.id] = { phase: 'saving', at: Date.now() };
       applyProposal({ ...current, phase: accepted.phase });
@@ -849,7 +864,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       if (refused) { delete cache.goLocks[current.id]; clearPendingGo(current.id); }
       else cache.goLocks[current.id] = 'uncertain';
       setMessage(refused ? safeOperationError(error) ?? 'Nava could not start the Save. Refresh and try again.'
-        : 'Infor may have saved this booking. Check HMS before trying again.');
+        : 'Infor may have applied this change. Check the stay in HMS before trying again.');
     } finally {
       if (operationRef.current === currentOperation) operationRef.current = null;
       if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
@@ -929,25 +944,38 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const isUncertain = Boolean(proposal && (lock === 'uncertain' || lock === 'reconciling' || proposal.phase === 'uncertain' || proposal.error?.outcome === 'uncertain'));
   const canStage = Boolean(proposal && proposal.workflow !== 'quote' && advertised(capabilities, proposal.workflow, 'stage'));
   const canQuote = Boolean(proposal && proposal.workflow === 'quote' && advertised(capabilities, proposal.workflow, 'quote'));
-  const canGo = Boolean(proposal && proposal.workflow === 'create' && advertised(capabilities, 'create', 'go'));
+  const canGo = Boolean(proposal && advertised(capabilities, proposal.workflow, 'go'));
   const goEnabled = Boolean(proposal && canGo && goReady(proposal) && !busy && !isUncertain && !lock && !issue && !authenticationExpired &&
     cache.stagePending[proposal.id] === undefined && Object.keys(drafts).length === 0);
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];
-  const confirmingGo = Boolean(proposal && goEnabled && confirmGoId === proposal.id);
+  const confirmingGo = Boolean(proposal && goEnabled && confirmedPreparation === goConfirmation(proposal));
+  const penalty = proposal ? cancellationPenalty(proposal) : null;
+  const goLabels = {
+    create: 'Save this booking in Infor?',
+    amend: 'Save these changes in Infor?',
+    cancel: 'Cancel this booking in Infor?',
+    filing: 'File this PDF in the stay’s Infor Documents?',
+    triage: 'Save in Infor?',
+    quote: 'Save in Infor?',
+  };
   const stagePrimary = proposal && !isUncertain ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined ||
         (needsAttachmentReview(proposal.workflow) && (!proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]))) || !validSavedChildren(proposal),
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
   const primary = proposal && goEnabled
-    ? confirmingGo ? undefined : { label: 'Go — save in Infor', onClick: () => setConfirmGoId(proposal.id) }
+    ? confirmingGo ? undefined : {
+      label: proposal.workflow === 'cancel' ? 'Go — cancel in Infor' : proposal.workflow === 'filing' ? 'Go — file PDF' : 'Go — save in Infor',
+      onClick: () => setConfirmedPreparation(goConfirmation(proposal)),
+    }
     : proposal && isUncertain
     ? reconcileSupported ? { label: 'Check Infor', disabled: busy || Boolean(issue), onClick: () => { void operation('reconcile', proposal); } } : undefined
     : stagePrimary;
   const goFooter = proposal && canGo && !isUncertain && proposal.phase !== 'done' ? <>
     {confirmingGo && proposal && <div role="group" aria-label="Confirm Go">
-      <p>Save this booking in Infor?</p>
-      <button type="button" disabled={busy} onClick={() => { void go(proposal); }}>Confirm Go</button>{' '}
-      <button type="button" onClick={() => setConfirmGoId(null)}>Cancel</button>
+      <p>{goLabels[proposal.workflow]}</p>
+      {penalty && <p>Infor shows this penalty: {penalty}</p>}
+      <button type="button" disabled={busy} onClick={() => { void go(proposal); }}>{penalty ? 'Confirm Go and accept fee' : 'Confirm Go'}</button>{' '}
+      <button type="button" onClick={() => setConfirmedPreparation(null)}>Back</button>
     </div>}
     {goEnabled && !confirmingGo && stagePrimary && proposal && <button type="button" disabled={stagePrimary.disabled} onClick={stagePrimary.onClick}>Prepare again</button>}
     {goMissing.length > 0 && <p role="status">Fill before Go: {goMissing.join(', ')}</p>}

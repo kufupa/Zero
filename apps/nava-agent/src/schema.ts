@@ -30,8 +30,9 @@ export const schemas = {skill_read:skillInput,mail_read_thread:emptyInput,hms_qu
 export type ThreadInput = z.infer<typeof threadInput>;
 export type ProposalDraft = z.infer<typeof proposalDraft>;
 export const revisionInput = z.object({expected_revision:z.number().int().min(1)}).strict();
-export const goInput = revisionInput.extend({idempotency_key:z.string().trim().min(1).max(256)}).strict();
-export const requoteInput = goInput.extend({quote_id:z.string().min(1)}).strict();
+const operationKey = revisionInput.extend({idempotency_key:z.string().trim().min(1).max(256)});
+export const goInput = operationKey.extend({prepared_job_id:id.optional(),confirm_penalty:z.literal(true).optional()}).strict();
+export const requoteInput = operationKey.extend({quote_id:z.string().min(1)}).strict();
 const calendarDate = z.string().date();
 export const groupedQuoteRequest = nativeGroupedQuote
   .refine(quote=>new Set(quote.groups.map(group=>group.group_id)).size===quote.groups.length,{message:'group ids must be unique'})

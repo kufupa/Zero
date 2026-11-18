@@ -83,7 +83,10 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
   const failedStep=workflow==='create' && !result?.ok ? capture?.native?.stage : undefined;
   const detailIssue=workflow==='create' && !result?.ok ? capture?.native?.detail?.issue ?? capture?.native?.issue : undefined;
   const observed=capture?.observed_fields ?? (workflow==='create'?capture?.native?.applied:undefined);
-  const rows=(capture?.display_rows ?? []).flatMap(value=>{
+  const cancellation=workflow==='cancel'?z.object({
+    cancellation_fee:z.unknown(),display_rows:z.array(z.unknown()).optional(),
+  }).safeParse(result?.data).data:undefined;
+  const rows=(capture?.display_rows ?? cancellation?.display_rows ?? []).flatMap(value=>{
     const row=displayRow.safeParse(value);
     return row.success ? [row.data] : [];
   });
@@ -128,7 +131,8 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     native_result:native,display_rows:rows,
     ...(observed!==undefined?{observed_fields:observed}:{}),
     ...(capture?.coverage!==undefined?{coverage:capture.coverage}:{}),
-    ...(capture?.cancellation_fee!==undefined?{cancellation_fee:capture.cancellation_fee}:{}),
+    ...((capture?.cancellation_fee ?? cancellation?.cancellation_fee)!==undefined
+      ? {cancellation_fee:capture?.cancellation_fee ?? cancellation?.cancellation_fee}:{}),
   } : null;
   return {stage,error};
 }

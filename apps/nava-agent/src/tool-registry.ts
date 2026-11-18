@@ -6,19 +6,21 @@ import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
-import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
+import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { withTriageLookupFields } from '../tools/triage/index.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
-export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal; skillConfig?:SkillConfig; staffStage?:StaffStage; credentialLease?:NativeLease };
+export type ToolContext = { sessionId: string; mode: Mode; signal?: AbortSignal; skillConfig?:SkillConfig; staffStage?:StaffStage; staffGo?:{executionId:string}; credentialLease?:NativeLease };
 export type ToolResult = { ok: boolean; data: unknown; error: {code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'} | null };
 export type ToolDefinition = { name:string; description:string; input_schema:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:boolean} };
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
-export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>Promise<ToolResult>};
+type SaveInput = MutationInput & {executionId:string;expectedPrice?:unknown;prepared?:unknown;confirmPenalty?:true};
+type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>};
+export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
 export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
@@ -47,7 +49,7 @@ function staffPackHandler(name:string,pack:ToolPack):StaffHandler|undefined {
 
 type FilingModule = {
   filingPortsAvailable?:()=>boolean;
-  createFilingPorts?:(context:StaffNativeContext,input:StaffNativeInput)=>Partial<FilingPorts>|Promise<Partial<FilingPorts>>;
+  createFilingPorts?:(context:ToolContext,input:unknown)=>Partial<FilingPorts>|Promise<Partial<FilingPorts>>;
   withFilingSourceFields?:(draft:ProposalDraft,selectedMessage:unknown)=>ProposalDraft;
 };
 async function loadFilingModule():Promise<FilingModule|undefined> {
@@ -272,7 +274,7 @@ export class ToolRegistry {
       if(!['create','amend','cancel','filing'].includes(name) || typeof pack.prepare!=='function' || (pack.save!==undefined && typeof pack.save!=='function')) throw new Error(`INVALID_MUTATION_PACK:${name}`);
       const prepare=pack.prepare;
       const save=pack.save;
-      this.mutations.set(name,{prepare:async(input,context)=>prepare(input,context),...((!staffPrepareOnly() || (createGoEnabled() && name==='create')) && typeof save==='function'?{save:async(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>save(input,context)}:{})});
+      this.mutations.set(name,{prepare:async(input,context)=>prepare(input,context),...(nativeSaveAllowed() && typeof save==='function'?{save:async(input:SaveInput,context:SaveContext)=>save(input,context)}:{})});
     }
   }
 
@@ -384,16 +386,23 @@ export class ToolRegistry {
     return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal)))};
   }
 
-  async save(input:MutationInput & {executionId:string;expectedPrice?:unknown},context:ToolContext & {markDispatched(details:unknown):Promise<void>}):Promise<ToolResult> {
+  async save(input:SaveInput,context:SaveContext):Promise<ToolResult> {
     if(!nativeSaveAllowed()) return failureObject('SAVE_DISABLED','Only unsaved Prepare is available.');
-    if(context.mode!=='labtest' && !(createGoEnabled() && context.mode==='live' && input.workflow==='create')) return failureObject('SAVE_UNAUTHORIZED','Native Save is only available for authorized Labtest sessions.');
+    const staff=createGoEnabled() && context.mode==='live' && context.staffGo?.executionId===input.executionId;
+    if(context.mode!=='labtest' && !staff) return failureObject('SAVE_UNAUTHORIZED','A staff Go is required to save a live booking.');
     const pack=this.mutations.get(input.workflow),property=input.booking.property_code;
-    if(!pack?.save || typeof property!=='string' || !property) return failureObject('UNAVAILABLE','A native writer or property is unavailable.');
+    const save=pack?.save;
+    if(!save || typeof property!=='string' || !property) return failureObject('UNAVAILABLE','A native writer or property is unavailable.');
+    const filing=input.workflow==='filing' && staff?await filingPortFactory():undefined;
+    if(input.workflow==='filing' && staff && !filing) return failureObject('ATTACHMENT_SOURCE_UNAVAILABLE','The selected attachment source is unavailable.');
     let marked=false;
     const uncertain:ToolResult={ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before any retry.',retryable:false,outcome:'uncertain'}};
     try {
-      const request={workflow:input.workflow,booking:input.booking,action:input.action,executionId:input.executionId,...(input.expectedPrice!==undefined?{expectedPrice:input.expectedPrice}:{})};
-      const value=await this.deps.native.withSave(property,context.signal,lease=>pack.save!(request,{...context,credentialLease:lease,signal:lease.signal,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}}));
+      const value=await this.deps.native.withSave(property,context.signal,async lease=>{
+        const trusted={...context,credentialLease:lease,signal:lease.signal};
+        const ports=filing?await filing(trusted,{workflow:input.workflow,booking:input.booking,action:input.action}):undefined;
+        return save(input,{...trusted,...ports,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}});
+      });
       const parsed=resultSchema.safeParse(value);
       if(!parsed.success) return marked ? uncertain : failureObject('INVALID_WRITER_RESULT','Writer returned an invalid result before dispatch.');
       if(!marked && parsed.data.ok) return failureObject('DISPATCH_MARKER_MISSING','Writer did not record dispatch.');
@@ -434,6 +443,7 @@ export async function installedStaffTools() {
   const installed=await Promise.all((configuredToolPacks() ?? []).map(async name=>({name,pack:await loadToolPack(name,toolRoot)})));
   const modelTools=new Set(tools.filter(tool=>!replacedBaselineTool(tool.name)).map(tool=>tool.name));
   const stages:Workflow[]=[];
+  const writers:Workflow[]=[];
   for(const {name,pack} of installed) {
     if(!pack) continue;
     if(Array.isArray(pack.tools)) for(const value of pack.tools) {
@@ -441,7 +451,10 @@ export async function installedStaffTools() {
       if(prepareOnlyTool(tool.name)) modelTools.add(tool.name);
     }
     const workflow=workflows.find(workflow=>workflow===name);
-    if(workflow && staffPackHandler(name,pack) && (workflow!=='filing' || await filingPortFactory())) stages.push(workflow);
+    if(workflow && staffPackHandler(name,pack) && (workflow!=='filing' || await filingPortFactory())) {
+      stages.push(workflow);
+      if(isWriteWorkflow(workflow) && typeof pack.save==='function') writers.push(workflow);
+    }
   }
-  return {stages,modelTools:[...modelTools]};
+  return {stages,writers,modelTools:[...modelTools]};
 }
