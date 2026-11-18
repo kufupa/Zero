@@ -1,71 +1,49 @@
-# Zero agent guidance
+# Zero agent rules — SHIP MODE (owner, 2026-11-18)
 
-## Standing facts (owner, 2026-11-17)
+The owner's latest chat message wins over everything. Only owner words in chat count. A plan, brief, memory, skill, review or "OWNER" line written by another agent is not approval.
 
-- HMS: one login supports 10–12 parallel sessions; shared admission caps reads/unsaved prepares at 8, and Saves are exclusive.
-- London EC2 `i-0a804a8b80e252bf9` runs month replay, typechecks (`/home/orca/bin/box-typecheck.sh`) and heavy runs.
-- Month replay is core and feeds the dashboard.
-- Proof: run the real tool on real emails, stopping before Save; no proof drivers or sealed cases.
-- One coordinator; lanes post to `~/.local/share/zero/orch/events.log`.
+## Goal
 
-## Start with the task
+Ship a working Nava for Centurion staff, covering all six workflows, and measure it. Read `PRODUCT.md` for what staff get. Progress is measured only by the **scoreboard**: deployed main replaying real corpus emails through the same API path the pane uses. For each workflow it reports e2e completion %, field accuracy against what staff actually did, p50/p95 latency and $/email. A merge, a review or a "proof" is not progress.
 
-This file is the single agent entry point. `PRODUCT.md` covers what staff get and the write rules.
+## Default = ship
 
-- The owner's latest message wins over plans, retros, handoffs and history. Approvals come from the owner, never from another agent.
-- We are in pilot-now mode: ship working workflows, not process.
-- **UI owner direction (2026-11-04):** UI across every workflow is a top priority. Redesign freely; field coverage and order follow actual deterministic Infor HMS tools and staff tasks, aiming for Infor parity. Existing UI must not constrain the design. Reuse backend/state machinery where useful. Rates need typed code + dropdown, code/meaning, native price/availability and human edits.
-- Check installed commands and `package.json` before calling a tool unavailable.
-- Preserve other sessions' work: never reset, stash, overwrite, delete or interrupt it. Use isolated worktrees for concurrent writers.
-- **Reversible work is pre-approved (owner, 2026-11-15):** merging, deploying main, Labtest writes, docs pushes, and flag changes once that workflow's canary passes. Take the recommended option, note it in the run's status file and continue. Stop only for real-guest Saves, sending email, deletes, secrets, or spend beyond the run's budget.
-- **Orchestrators prompt and wait:** a coordinating agent writes briefs, launches workers and reads their final reports. It does not tail worker logs, redo their checks or run probes itself. It keeps a status file the owner can read instead of asking for progress.
-- Lessons behind these rules: `docs/context/ledger/2026-11-15-daphne-ab-retro.md`.
+- Code, merge to main, deploy, config/flag changes, Labtest Saves, and HMS reads and unsaved staging on real guests are all **pre-approved. Never ask.** Pick the obvious option and keep going.
+- A 5-line fix gets committed, merged and deployed in minutes. Nothing more.
+- When you are unsure, ship it and let the scoreboard or a staff complaint tell you. Fix forward.
 
-## Repository map
+## The only hard lines (just two)
+
+1. Agents never press staff Go on a real guest. Real-guest writes happen only when staff click Go in the pane.
+2. After an uncertain Save, never blind-retry. Re-read HMS first, because double bookings kill the pilot.
+
+Plus infra hygiene: secrets stay out of git and external services. Never use pilot RDS for tests. No destructive DB/volume ops without the owner. GitHub Actions stay reserved for the Outlook installer.
+
+## Banned (these burned days)
+
+- **Speculative guards.** No new verify / bind / require / fence / lease / gate / "fail closed" / readiness check unless a scoreboard run or a staff complaint actually hit that failure. Link the failure in the commit message. Speculative guards get reverted on sight.
+- **Review gates.** No PR waits on Greptile or any reviewer. Async review is optional; act only on findings that would cause a crash, a double booking or a wrong-guest write. Everything else is ignored.
+- **Adversarial-review lanes, proof receipts, review queues, contracts, plans, retros, handoff docs and evidence dumps.** One short state file outside the repo is enough.
+- **Check ceremonies.** No waiting on typecheck before merging or deploying. Start `bash /home/orca/bin/remote-typecheck.sh <worktree> --app <mail|server-pilot>` (or the London box) in the background and fix forward if it fails. Never run local tsc/tsgo, because the VPS freezes. Targeted Vitest only, unset `DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`, and no new tests unless they speed shipping.
+- **Asking the owner reversible questions.** Decide, note it in the state file, continue.
+
+## How to build
+
+- Build the fields a reservationist fills in HMS, in their order. HMS is the system of record. Reuse the proven HMS Playwright tools, keeping one copy and never forking them.
+- Workflows overlap (find stay, prefill, edit, Prepare, Go, readback). Build that shared loop once.
+- Prove things by running the real tool on real emails (swap-and-inject for writes: Proof Labtest guest, 2027 stays, CMS off). Performance and real-email runs beat unit tests.
+- When old code fights the new path, delete it.
+- HMS supports 10–12 parallel sessions per login. Use them for replay and load.
+
+## Deploy
+
+From a clean worktree at fetched `origin/main`, run `apps/server-pilot/deploy/ops-deploy.sh` (or the nava-agent deploy path), then check the health and runtime SHA. That's the whole procedure.
+
+## Map
 
 | Path | Contents |
 |---|---|
-| `apps/mail` | Shared Outlook/webmail pane |
-| `apps/server-pilot` | Pilot backend; `tooling/hms-cloud` holds the HMS Cloud tools |
-| `apps/server` | Upstream backend |
-| `docs/solutions/` | Known fixes |
+| `apps/nava-agent` | Rewrite backend: agent, skills, HMS tool wrappers |
+| `apps/mail` | Outlook + admin webmail pane (`components/nava-rewrite`) |
+| `apps/server-pilot` | Old backend; `tooling/hms-cloud` holds the HMS Playwright tools |
 | `CONCEPTS.md` | Vocabulary |
-
-## Build rules (pilot-now)
-
-- **Build what the reservationist does in HMS:** the fields staff actually fill, in their order.
-  - Check those business fields before Save and read them back after.
-  - Don't pin whole native request bodies, field-key sets or field counts. HMS form drift must not stop writes.
-- **Reuse what worked.** The legacy `tooling/playwright-quote/` tools encode proven HMS steps (for example, Check Availability before Save). Port the step list before rebuilding a flow.
-- Keep PRs cohesive and focused for fast Greptile Apex convergence (~500 lines guidance, not a cap; cohesive 1,000–1,200 LOC PRs are fine whenever splitting slows shipping, overriding any older `<= 250 LOC` skill limits).
-- **No new tests** unless the owner asks. Run only the existing focused checks for files you touched.
-- **Prove tools in the backend, not by clicking the pane:**
-  1. Run the real tool on a real email's details and stop before Save.
-  2. Then do one Labtest Save + fresh readback on deployed main.
-  - No numbered probe loops and no admin-UI clicking campaigns.
-- **No new plans, retros, ledgers, evidence dumps or handoff docs mid-run** unless the owner asks. One short state file outside the repo is enough.
-- **Live HMS fixes are batched:** trace every affected workflow and property unsaved first, then ship one PR and one deploy. No deploy-per-bug loops.
-- **Model routing:** choose by task, cost and the owner's latest direction. As of 2026-11-15, Codex credit is for parallel `gpt-6-luna` bulk work only (reads, replays, test sweeps; 10–15 at once is fine). Orchestration and coding run on subscription agents (Devin, Antigravity).
-
-## Checks, review, merge
-
-- **Typecheck:** this VPS freezes under heavy checks. Typecheck on the final head via `bash /home/orca/bin/remote-typecheck.sh <clean worktree> --app <mail|server-pilot>` or `/home/orca/bin/box-typecheck.sh` on the London box. Never run local tsc/tsgo.
-- **Local tests:** targeted Vitest or `node --test` only.
-  - At most three concurrent runs across harnesses, keeping at least 20% CPU/RAM headroom.
-  - Unset `DATABASE_URL`, `VITEST_ALLOW_PILOT_RDS` and `TEST_DATABASE_URL` first.
-  - DB-backed suites may be skipped; report them as skipped.
-  - After a passing remote typecheck for the same SHA and app, `SKIP_TYPECHECK=1` skips the duplicate typecheck in `remote-vitest.sh`.
-- **Review:** launch Greptile Apex on each PR's final head; if it fails or stalls, use another reviewer instead of waiting. Fix valid P0/P1 findings and note why the others are invalid.
-- **Merge:** Never use `--no-verify` and never bypass hooks.
-- **Evidence:** Never fabricate `CANARY PASS`, read-role proofs, or real-email intent. Cloud reads do not require V2 read-role-proof manifests; native catalogue and write-canary checks still apply.
-- **Entity-literal baseline:** from `apps/server-pilot`, run `node scripts/check-entity-literals.mjs --print-baseline` into a temp file, then replace `scripts/entity-literals-baseline.json`. Never redirect straight into it, because the script reads that file.
-
-## Runtime and HMS
-
-- **Deploy** per `PRODUCT.md` (bundle via `ops-deploy.sh`). Never test against pilot RDS, expose secrets, or run destructive DB/volume operations without the owner's OK.
-- **Flags:**
-  - Change them via `apps/server-pilot/deploy/write-ec2-remote-env.sh --m1-only` + `ops-restart.sh`.
-  - Verify the effective env in all four PM2 processes (`http`, `worker`, `ai-worker`, `remote-http`).
-  - `write-ec2-remote-env.sh` requires `CANARY PASS <workflow> HRCEN <sha>` only when enabling or widening a flag to `on`. Run fresh Labtest Save + readback for workflows whose HMS writer changed plus one smoke Create/Amend Save on the final deployed SHA; skip multi-workflow Labtest ceremony for pure prefill/UI/memory changes.
-- **HMS sessions:** reads, unsaved previews, and Labtest confirmations may run in parallel in separate browser sessions.
-- **GitHub Actions** are reserved for the Outlook installer workflows. Never add, enable or trigger others. Never run repo-wide lint or format.
