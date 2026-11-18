@@ -606,7 +606,6 @@ export const reservationWorkflowV2Router = router({
     }).from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId),
       eq(mailThread.transportId, message.transportId)))
       .where(and(eq(message.transportId, scoped.transportId), eq(message.direction, 'inbound'),
-        eq(message.historyOnly, false), eq(mailThread.historyOnly, false),
         isNull(mailThread.trashedAt), isNull(mailThread.spamAt),
         paneSourceSelectionCondition(input.selection, { userId: scoped.userId, internetMessageId: input.internetMessageId, contentHash: input.contentHash }),
         input.internetMessageId !== undefined ? eq(message.messageIdHeader, internetMessageId ?? '') : undefined))
