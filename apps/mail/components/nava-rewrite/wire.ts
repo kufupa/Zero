@@ -6,13 +6,20 @@ export const jsonSchema: z.ZodType<Json> = z.lazy(() => z.union([
   z.null(), z.string(), z.number().finite(), z.boolean(), z.array(jsonSchema), z.record(jsonSchema),
 ]));
 
-const amendPriceSchema = z.object({
-  currency: z.string(), totalCents: z.string(), averageCents: z.string().nullable().optional(),
+const savedPriceSchema = z.object({
+  currency: z.string().nullable(), totalCents: z.string().nullable(), averageCents: z.string().nullable().optional(),
 });
+export type SavedPrice = z.infer<typeof savedPriceSchema>;
 export const amendReadbackSchema = z.object({
   arrival: z.string().optional(), departure: z.string().optional(),
-  price: amendPriceSchema.nullish(), preparedPrice: amendPriceSchema.nullish(), priceWarning: z.string().optional(),
+  price: savedPriceSchema.nullish(), preparedPrice: savedPriceSchema.nullish(), priceInfo: z.string().optional(),
   addonAlignmentChoice: z.string().optional(), nativeWarnings: z.array(z.string()).optional(),
+});
+export const createReadbackSchema = z.object({
+  savedPrice: savedPriceSchema.nullish(), preparedPrice: savedPriceSchema.nullish(), priceInfo: z.string().optional(),
+});
+export const cancelReadbackSchema = z.object({
+  cancellation_fee: z.object({ state: z.string(), text: z.string().nullable() }).optional(), fee_info: z.string().optional(),
 });
 
 const id = z.string().min(1);

@@ -8,8 +8,8 @@ import { quoteArtifactIds } from './quote-draft';
 import { defaultQuoteSelections } from './quote-defaults';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
-import { amendReadbackSchema } from './wire';
-import type { FieldSpec, Json, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
+import { amendReadbackSchema, cancelReadbackSchema, createReadbackSchema } from './wire';
+import type { FieldSpec, Json, NativeDisplayRow, Proposal, QuoteSelection, SavedPrice, ThreadInput } from './wire';
 import type { StayLookup } from './api';
 import styles from './pane.module.css';
 import quoteStyles from './quote.module.css';
@@ -965,23 +965,49 @@ function TriageLookupResult({ proposal }: { proposal: Proposal }) {
   return <p>Infor did not return lookup details.</p>;
 }
 
-function AmendReadback({ readback }: { readback: Json }) {
-  const parsed = amendReadbackSchema.safeParse(readback);
-  if (!parsed.success) return null;
-  const { arrival, departure, price, preparedPrice, priceWarning, addonAlignmentChoice, nativeWarnings } = parsed.data;
+function PriceTotals({ prepared, saved }: { prepared?: SavedPrice | null; saved?: SavedPrice | null }) {
   const money = (currency: string, cents: string) => {
     const digits = cents.padStart(3, '0');
     return `${currency} ${digits.slice(0, -2)}.${digits.slice(-2)}`;
   };
   return <>
+    {prepared?.currency && prepared.totalCents != null && <p>Prepared total: {money(prepared.currency, prepared.totalCents)}
+      {prepared.averageCents != null && ` · Average per night: ${money(prepared.currency, prepared.averageCents)}`}</p>}
+    {saved?.currency && saved.totalCents != null && <p>Saved HMS total: {money(saved.currency, saved.totalCents)}
+      {saved.averageCents != null && ` · Average per night: ${money(saved.currency, saved.averageCents)}`}</p>}
+  </>;
+}
+
+function CreateReadback({ readback }: { readback: Json }) {
+  const parsed = createReadbackSchema.safeParse(readback);
+  if (!parsed.success) return null;
+  const { savedPrice, preparedPrice, priceInfo } = parsed.data;
+  return <>
+    {priceInfo && <p>{priceInfo}</p>}
+    <PriceTotals prepared={preparedPrice} saved={savedPrice} />
+  </>;
+}
+
+function AmendReadback({ readback }: { readback: Json }) {
+  const parsed = amendReadbackSchema.safeParse(readback);
+  if (!parsed.success) return null;
+  const { arrival, departure, price, preparedPrice, priceInfo, addonAlignmentChoice, nativeWarnings } = parsed.data;
+  return <>
     {arrival && departure && <p>Saved stay: {arrival} – {departure}</p>}
-    {priceWarning && <p role="alert">{priceWarning}</p>}
-    {preparedPrice && <p>Prepared total: {money(preparedPrice.currency, preparedPrice.totalCents)}
-      {preparedPrice.averageCents != null && ` · Average per night: ${money(preparedPrice.currency, preparedPrice.averageCents)}`}</p>}
-    {price && <p>Saved HMS total: {money(price.currency, price.totalCents)}
-      {price.averageCents != null && ` · Average per night: ${money(price.currency, price.averageCents)}`}</p>}
+    {priceInfo && <p>{priceInfo}</p>}
+    <PriceTotals prepared={preparedPrice} saved={price} />
     {addonAlignmentChoice === 'yes' && <p>Adjust add-ons aligned with the stay dates: Yes.</p>}
-    {nativeWarnings && nativeWarnings.length > 0 && <ul>{nativeWarnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>}
+    {!priceInfo && nativeWarnings && nativeWarnings.length > 0 && <ul>{nativeWarnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>}
+  </>;
+}
+
+function CancelReadback({ readback }: { readback: Json }) {
+  const parsed = cancelReadbackSchema.safeParse(readback);
+  if (!parsed.success) return null;
+  const { cancellation_fee, fee_info } = parsed.data;
+  return <>
+    {fee_info && <p>{fee_info}</p>}
+    {cancellation_fee && <p>Cancellation fee: {cancellation_fee.text ?? 'Not shown by HMS'}</p>}
   </>;
 }
 
@@ -1059,7 +1085,9 @@ export function Workflow(props: WorkflowProps) {
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
       {proposal.result.rooms && <ul>{proposal.result.rooms.map(room=>{
         const index=proposal.bookings.findIndex(booking=>booking.id===room.booking_id);
-        return <li key={room.booking_id}>Room{index >= 0 ? ` ${index+1}` : ''}: {room.state==='saved' ? `confirmed${room.confirmation ? ` · Confirmation ${room.confirmation}` : ''}${room.reservation_id ? ` · Reservation ${room.reservation_id}` : ''}` : room.state==='unattempted' ? 'not attempted' : room.state==='dispatched' || room.state==='uncertain' ? 'outcome unconfirmed; check Infor' : 'not saved'}</li>;
+        return <li key={room.booking_id}>Room{index >= 0 ? ` ${index+1}` : ''}: {room.state==='saved' ? `confirmed${room.confirmation ? ` · Confirmation ${room.confirmation}` : ''}${room.reservation_id ? ` · Reservation ${room.reservation_id}` : ''}` : room.state==='unattempted' ? 'not attempted' : room.state==='dispatched' || room.state==='uncertain' ? 'outcome unconfirmed; check Infor' : 'not saved'}
+          {proposal.workflow === 'create' && room.state === 'saved' && room.readback && <CreateReadback readback={room.readback} />}
+        </li>;
       })}</ul>}
       {proposal.result.readback !== null && proposal.phase === 'done' && <p role="status">{
         proposal.workflow === 'cancel' ? 'Infor confirms the booking is cancelled.'
@@ -1068,6 +1096,8 @@ export function Workflow(props: WorkflowProps) {
           : 'Infor confirms the booking was saved.'
       }</p>}
       {proposal.workflow === 'amend' && proposal.phase === 'done' && <AmendReadback readback={proposal.result.readback} />}
+      {proposal.workflow === 'create' && proposal.phase === 'done' && !proposal.result.rooms?.length && <CreateReadback readback={proposal.result.readback} />}
+      {proposal.workflow === 'cancel' && proposal.phase === 'done' && <CancelReadback readback={proposal.result.readback} />}
       {proposal.result.confirmation && <p style={{ fontSize: '1.25em', fontWeight: 600 }}>Confirmation: {proposal.result.confirmation}</p>}
       {proposal.result.reservation_id && <p>Reservation: {proposal.result.reservation_id}</p>}
       {proposal.result.display_rows.length > 0 && <NativeRows rows={proposal.result.display_rows} proposal={proposal} />}
