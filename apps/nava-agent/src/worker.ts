@@ -13,6 +13,7 @@ import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type Mutat
 import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffStage } from './create-operations.js';
 import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
+import { initialSkillContext } from './initial-skill-context.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -44,7 +45,7 @@ export type RuntimeDeps = {
   finish(sessionId:string,reason:string):Promise<void>;
 };
 export type AgentRuntime = {startTurn(threadId:string,input:{sessionId:string;content:string}):Promise<void>;resumeWithToolResult(sessionId:string,toolUseId:string,result:unknown):Promise<void>};
-export type RuntimeFactory = (deps:RuntimeDeps)=>AgentRuntime;
+export type RuntimeFactory = (deps:RuntimeDeps,skillContext?:string)=>AgentRuntime;
 export type PendingInput = {id:string;kind:'mail_pending'|'context_pending';payload:{text?:string}};
 export type ApprovedSave = MutationInput & {sessionId:string;proposalId:string;executionId:string;toolUseId:string;mode:Mode;propertyCode:string|null;dispatch:'pending'|'dispatched';completed?:ToolResult;preflightFailure?:ToolResult};
 export type SaveQueue = {
@@ -165,6 +166,8 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     }
     if(createPilotEnabled() && await runStaffStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
     if(createPilotEnabled() && await runStaffGo(lease,registry,{sessionId,mode,signal:abort.signal})) return;
+    const skillContext=staffPrepareOnly() && process.env.NAVA_QUOTE_SKELETON!=='1' && skillConfig
+      ? await initialSkillContext(skillConfig,sessionId,mode,abort.signal) : null;
     let version=state.version;
     const checkSession=(id:string)=>{if(id!==sessionId)throw new Error('SESSION_MISMATCH');abort.signal.throwIfAborted();};
     const runtime=deps.runtime({
@@ -194,7 +197,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       },
       park:async(id,toolUseId)=>{checkSession(id);await deps.store.park(lease,toolUseId);},
       finish:async(id,reason)=>{checkSession(id);await deps.store.finish(lease,reason);},
-    });
+    },skillContext ?? undefined);
     if(state.pendingToolUseId) {
       if(!hmsSaveEnabled()) return;
       const save=await deps.saveQueue?.claimApprovedSave(lease,workflow=>registry.supportsSave(workflow) && (deps.native.available?.() ?? true));
@@ -431,10 +434,10 @@ async function main():Promise<void> {
   const pilot=createPilotRequested();
   const saveEnabled=hmsSaveEnabled() && !quoteOnly && (!pilot || createPilotEnabled());
   const system=quoteOnly?'Read the selected email using mail_read_thread and load quote/SKILL.md and its references with skill_read. If dates, property and occupancy support a native search, call hms_quote before publishing, including when group review is still needed. Never fabricate missing input or prices. Publish a quote proposal with native_result null; the server attaches native capture. Read only: no Save or email send.'
-    :staffPrepareOnly()?'Read the selected inbound with mail_read_thread. Use skill_read to load triage/SKILL.md, then the relevant workflow skill and linked references. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask.'
+    :staffPrepareOnly()?'Read the selected inbound with mail_read_thread. Use the pinned triage files supplied in the system context, or load triage/SKILL.md and its references with skill_read if they were not supplied. Load the relevant workflow skill and any references not already supplied with skill_read. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask.'
     :pilot?'Read the selected email using mail_read_thread and read triage/SKILL.md and create/SKILL.md for new bookings. Load shared tool rules with skill_read({"skill_name":"create","path":"../references/tools-and-proposal.md"}). Create is the only supported native workflow in this pilot. Publish one grounded Create action and booking for one complete supported request, or needs_info/staff_review when unclear. Use first_name and last_name, empty Create action details, and editable pointers under /bookings/0/fields. Publish with native_result null. Only staff runs Prepare. Never send mail or invent missing input.'
     :'Read the selected mail thread with mail_read_thread, then read triage/SKILL.md and the relevant workflow skill and references with skill_read. Use registered tools and native facts only; never invent prices or send email. Publish a proposal for staff, including missing information.';
   const saveInstruction=saveEnabled ? ' When ready, request hms_save to pause for approval.' : ' End after publishing the proposal. Save is disabled.';
-  await runWorker({store,native,...(saveEnabled?{saveQueue:createSaveQueue(store)}:{}),runtime:deps=>new runtimeModule.BedrockRuntime(deps,{system:system+saveInstruction})});
+  await runWorker({store,native,...(saveEnabled?{saveQueue:createSaveQueue(store)}:{}),runtime:(deps,skillContext)=>new runtimeModule.BedrockRuntime(deps,{system:system+saveInstruction+(skillContext ? `\n\n${skillContext}` : '')})});
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) await main();
