@@ -370,8 +370,10 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         if prepare:
             for p in result['proposals']:
                 workflow = p.get('workflow')
-                if not triage_lookup_eligible(p) and (workflow not in WRITES | {'quote'}
-                        or p.get('phase') != 'ready' or p.get('disposition') != 'propose'):
+                disposition = p.get('disposition')
+                write_ready = workflow in WRITES and disposition == 'propose'
+                quote_ready = workflow == 'quote' and disposition in ('propose', 'staff_review', 'needs_info')
+                if not triage_lookup_eligible(p) and (p.get('phase') != 'ready' or not (write_ready or quote_ready)):
                     continue
                 op = 'quote' if workflow == 'quote' else 'stage'
                 body = {'expected_revision': p['revision']}
