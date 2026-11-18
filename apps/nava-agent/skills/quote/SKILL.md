@@ -7,28 +7,35 @@ description: Use when a current hotel email requests room prices, availability, 
 
 Load shared rules with `skill_read({"skill_name":"quote","path":"../references/common.md"})` and bindings with `skill_read({"skill_name":"quote","path":"../references/tools-and-proposal.md"})`. The `../` is required for both shared files; retry the exact call if a shared file is unavailable. Only `references/rules.md` and `references/replies.md` are relative to Quote without `../`.
 
-1. Gather property, dates, rooms/quantity, per-room adults/children/ages, room/meal requests, native party context. Keep distinct room groups inside one client quote unless separate quotes requested or staff split. Missing required criteria → inspect supplied spec, then specific question. No children indicated → editable zero, not AI-prefilled fact; children indicated → confirm count/ages as needed.
-2. Resolve needed native codes + meanings. For a normal room/rate lookup use `hms_read_catalogue({"property_code":"HRCEN","kinds":["room_type","rate_plan"]})` with the thread property. Request other kinds only for an explicit party or code question. Apply board defaults in R5; company/government wording guides search, not eligibility. Staff typed code/price overrides stay distinct from native prices.
-3. Call `hms_quote` with stable quote ID and separate date/room groups. Start with nightly `summary` and the native option limit; lowering the limit can hide matching options and make the search partial. Read native availability, price and restrictions per group. Absent combination/criteria unavailable ≠ sold out. No quote read holds rooms.
-4. Publish the exact grouped request in `actions[].details`; staff edits and rechecks that request. Use `native_result:null`; backend owns the capture and native display rows. Cover text may cite room/rate code + meaning, meal scope, dated price/currency/basis and availability with missing/unsupported details. Official total only native-supported; estimates labelled, no invented extras/discounts.
+1. Gather property, dates, rooms/quantity, per-room adults/children/ages, room/meal requests, native party context. Keep distinct room groups inside one client quote unless separate quotes requested or staff split. For partial, rate-match or conflicting requests, publish an editable `quote-1` group with confirmed facts; use `needs_info` and ask specific questions. Leave unknown or conflicting dates, room quantity and adults null; preserve conflicts in `missing` and do not infer allocations. Per Q02, when no children are indicated, use editable `children:0` and `child_ages:[]` as a labelled default, not a fact; if children are indicated but their number or ages are unclear, clarify.
+2. Resolve needed native codes + meanings only from the verified thread property and native catalogue. Leave unknown property and native codes null or absent in the draft; never invent a code or price or copy an example into the request. Request other kinds only for an explicit party or code question. Apply board defaults in R5 only on a native-supported plan; company/government wording guides search, not eligibility. Staff typed code/price overrides stay distinct from native prices.
+3. Once required criteria are complete and any supplied native codes are verified, call `hms_quote` with stable quote ID and separate date/room groups. Start with nightly `summary` and the native option limit; lowering the limit can hide matching options and make the search partial. Read native availability, price and restrictions per group. Absent combination/criteria unavailable ≠ sold out. No quote read holds rooms.
+4. Publish grouped criteria in `actions[].details` with editable `field_specs` even when incomplete; preserve known dates and room bindings, and expose unknown required fields as null for staff. Use only native schema keys in details; omit unknown optional code arrays, and put names and requested text in labels or warnings. For separate named quotes, publish a separate action for each full guest name and include that full name in its field labels and warnings, bound to its unique `quote_id`; do not abbreviate to a surname. The artifact header cannot yet be set per guest, so flag that staff must check the named label before use. Staff edits and rechecks that request only after required criteria and any supplied native codes are validated. Use `native_result:null`; backend owns the capture and native display rows. Cover text may cite room/rate code + meaning, meal scope, dated price/currency/basis and availability with missing/unsupported details. Official total only native-supported; estimates labelled, no invented extras/discounts.
 5. Draft cover email + signable PDF + editable Excel (R4 owner 2026-11-17; 44/338 attachment-template, 23/338 inline prices). Simple price can appear inline too. Staff selects verified native options and requests the artifact pair after recheck. Say attached only once both files are on the unsent draft. Greet known first name; normally omit organization (R1: 0/33 priced replies named it).
 6. Native confirmed unavailability → 1–3 sentences; say which requested nights/rooms remain available and offer to quote. Sister hotel only if staff adds (R2: 6/12 alternatives, 1/12 sister hotel). End turn; no `hms_prepare` or `hms_save`. Later explicit proceed → create skill.
 
 Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_read_catalogue`, `hms_quote`, `proposal_publish`, `reply_draft`. Exact [inputs/proposal](../references/tools-and-proposal.md); unavailable capabilities explicit.
 
-Example (replace all values with actual request and resolved codes):
+Example: a partial quote draft when no children are indicated. Replace each null with a source-confirmed value when known; never send this incomplete draft to `hms_quote`.
 
 ```js
-const details = {quote_id:"quote-1",property_code:"HRCEN",details:"summary",
-  groups:[{group_id:"stay-1",arrival_date:"2027-02-01",departure_date:"2027-02-02",rooms:[
-    {id:"room-1",quantity:1,adults:2,children:0,child_ages:[]}
+const details = {quote_id:"quote-1",property_code:null,details:"summary",
+  groups:[{group_id:"stay-1",arrival_date:null,departure_date:null,rooms:[
+    {id:"room-1",quantity:null,adults:null,children:0,child_ages:[]}
   ]}]};
-hms_quote(details);
-proposal_publish({workflow:"quote",disposition:"propose",reason:null,bookings:[],
-  actions:[{id:"quote-1",type:"quote",booking_ids:[],details}],
-  field_specs:[{path:"/actions/0/details/groups/0/rooms/0/adults",label:"Adults per room",
-    provenance:"ai",editable:true,required:true,error:null,control:"number",options:[],evidence:[]}],
-  missing:[],warnings:[],reply_draft:null,native_result:null});
+const field_specs = [
+  ["/actions/0/details/property_code", "Property", "text"],
+  ["/actions/0/details/groups/0/arrival_date", "Arrival", "date"],
+  ["/actions/0/details/groups/0/departure_date", "Departure", "date"],
+  ["/actions/0/details/groups/0/rooms/0/quantity", "Rooms", "number"],
+  ["/actions/0/details/groups/0/rooms/0/adults", "Adults", "number"],
+  ["/actions/0/details/groups/0/rooms/0/children", "Children (editable default)", "number", "default"],
+  ["/actions/0/details/groups/0/rooms/0/child_ages", "Child ages", "text"],
+].map(([path,label,control,provenance="unknown"]) => ({path,label,control,provenance,
+  editable:true,required:true,error:null,options:[],evidence:[]}));
+proposal_publish({workflow:"quote",disposition:"needs_info",reason:"Quote criteria need confirmation",
+  bookings:[],actions:[{id:"quote-1",type:"quote",booking_ids:[],details}],
+  field_specs,missing:["Confirm missing quote criteria"],warnings:[],reply_draft:null,native_result:null});
 ```
 
 One `rooms[]` entry per different occupancy/board. `required` and `preferred` may carry `roomCodes`, `rateCodes`, `bedTypes`, `mealPlanBases`. Publish editable fields for dates, room quantity, per-room occupancy, and supplied constraints at their actual paths. Include the actual `adults`, `children` and `child_ages` paths together, even when the age array is empty, so staff can correct the classification in one edit. Keep reported ages in evidence when classification is provisional. Never invent a room count from a guest count. Missing required facts → `needs_info` with the actual gaps; do not make a speculative HMS read.
