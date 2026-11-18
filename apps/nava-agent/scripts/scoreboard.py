@@ -28,7 +28,12 @@ false, save: {confirmation or stay_id, evidence, at}, readback: {confirmation or
 stay_id, evidence, observed_at}, wall_ms?}. A completed Save and later matching
 readback are required, as is this proposal's real signed Prepare. Use labtests
 with one distinct Save/readback per booking for multi-booking proposals. Identifiers
-must be opaque case IDs.
+must be opaque case IDs. Rooms in one Go can share an execution ID within one
+case/proposal; each room needs a distinct booking ID and matched stay readback.
+Quote evidence is quote_observation: {source_message_id, proposal_id, revision,
+quote_id, unsent_draft_reopened, pdf_download, xlsx_download, wall_ms?}.
+For a decline, replace the download observations with sold_out_verified.
+Observations hold evidence references from the signed pane probe.
 For triage, /classified_workflows compares the sorted proposed workflow names.
 
 prices: JSON {model, input, output, cache_read, cache_write, long_context_above,
@@ -310,6 +315,7 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         result['wall_ms'] = round((time.monotonic() - monotonic) * 1000)
         if status != 201:
             raise ValueError('existing_session_not_fresh')
+        result['import_accepted'] = True
         if not snap.get('session'):
             result.update(status='complete', reason='filtered', proposals=[{'workflow': 'triage', 'disposition': 'skip'}], cost_reason='filtered_no_model')
             return result
@@ -459,6 +465,8 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                  'conversation_after_cutoff', 'selected_inbound_missing', 'existing_session_not_fresh',
                  'session_mode_mismatch', 'fresh_mail_event_not_observed', 'turn_not_finished', 'selected_mail_changed'}
         result['reason'] = str(exc) if isinstance(exc, RuntimeError) or str(exc) in known else 'request_or_stream_error'
+        if isinstance(exc, GatewayHttpError):
+            result['error_code'] = exc.gateway_code
         result['wall_ms'] = round((time.monotonic() - monotonic) * 1000) if monotonic is not None else None
     return result
 
@@ -674,7 +682,17 @@ def field_identity(proposal, field, label, source, conflicts):
     return 'proposal_identity_unbound'
 
 
-def labtest_label(label, result, proposal, evidence, used_executions):
+def labtest_booking(evidence):
+    return evidence.get('execution_id'), evidence.get('booking_id')
+
+
+def labtest_targets(evidence):
+    readback = evidence.get('readback') or {}
+    return [(evidence.get('workflow'), key, readback[key]) for key in ('confirmation', 'stay_id')
+            if isinstance(readback.get(key), str) and readback[key]]
+
+
+def labtest_label(label, result, proposal, evidence, unique_room_evidence):
     if not isinstance(evidence, dict):
         return False
     try:
@@ -689,7 +707,7 @@ def labtest_label(label, result, proposal, evidence, used_executions):
             and isinstance(source_id, str) and source_id and evidence.get('source_message_id') == source_id
             and proposal and evidence.get('real_proposal_id') == proposal.get('id')
             and evidence.get('booking_id') and sum(b.get('id') == evidence['booking_id'] for b in proposal.get('bookings') or []) == 1
-            and isinstance(execution, str) and execution and used_executions[execution] == 1
+            and isinstance(execution, str) and execution and unique_room_evidence(evidence)
             and type(evidence.get('completed')) is bool):
         return False
     save = evidence.get('save') or {}
@@ -704,6 +722,19 @@ def labtest_label(label, result, proposal, evidence, used_executions):
     except (KeyError, ValueError, TypeError):
         ordered = False
     return bool(readback.get('evidence') and ids and ordered and all(save[key] == readback[key] for key in ids))
+
+
+def quote_observed(label, result, proposal):
+    observation = label.get('quote_observation') or {}
+    def observed(key):
+        return isinstance(observation.get(key), str) and bool(observation[key])
+
+    return (observation.get('source_message_id') == (result.get('source') or {}).get('message_id')
+            and observation.get('proposal_id') == proposal.get('id')
+            and observation.get('revision') == proposal.get('revision')
+            and observation.get('quote_id') == quote_id(proposal)
+            and all(observed(key) for key in ('source_message_id', 'proposal_id', 'quote_id', 'unsent_draft_reopened'))
+            and (observed('sold_out_verified') or (observed('pdf_download') and observed('xlsx_download'))))
 
 
 def prepare_outcome(result, proposal, item):
@@ -724,8 +755,21 @@ def score(results, labels, prices):
     if len(by_id) != len(results):
         raise ValueError('duplicate replay id')
     groups = {w: [] for w in WORKFLOWS}
-    used_executions = Counter(evidence['execution_id'] for label in labels for evidence in labtest_evidences(label)
-                              if isinstance(evidence, dict) and evidence.get('execution_id'))
+    execution_scopes, used_rooms, used_targets = {}, Counter(), Counter()
+    for label in labels:
+        for evidence in labtest_evidences(label):
+            if not isinstance(evidence, dict) or not isinstance(evidence.get('execution_id'), str):
+                continue
+            execution_scopes.setdefault(evidence['execution_id'], set()).add(
+                (label['id'], label['workflow'], evidence.get('real_proposal_id')))
+            used_rooms[labtest_booking(evidence)] += 1
+            used_targets.update(labtest_targets(evidence))
+
+    def unique_room_evidence(evidence):
+        return (len(execution_scopes.get(evidence.get('execution_id'), ())) == 1
+                and used_rooms[labtest_booking(evidence)] == 1
+                and all(used_targets[target] == 1 for target in labtest_targets(evidence)))
+
     seen = set()
     for label in labels:
         key = (label['id'], label['workflow'])
@@ -737,10 +781,10 @@ def score(results, labels, prices):
     report = {}
     for workflow, group in groups.items():
         outcomes, reasons, field_counts, sources, prep, artifacts, labtests = Counter(), Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
-        prepare_timing = Counter()
+        prepare_timing, funnel = Counter(), Counter()
         lookup_outcomes = Counter()
         by_field = {}
-        latencies, prepare_latencies, labtest_latencies, costs, per_email_cost = [], [], [], [], []
+        latencies, prepare_latencies, labtest_latencies, quote_latencies, costs, per_email_cost = [], [], [], [], [], []
         labels_with_fields = 0
         for label, r in group:
             sources[label.get('source', 'unspecified')] += 1
@@ -750,6 +794,18 @@ def score(results, labels, prices):
                 candidates = [{**triage, 'classified_workflows': sorted({p.get('workflow') for p in r['proposals']
                                                                             if p.get('workflow') in WORKFLOWS and p.get('workflow') != 'triage'})}]
             p = candidates[0] if len(candidates) == 1 else None
+            if r.get('import_accepted') or r['status'] == 'complete':
+                funnel['import_accepted'] += 1
+            if r['status'] == 'complete':
+                funnel['prefill_complete'] += 1
+            if candidates:
+                funnel['matching_proposal'] += 1
+            if any(candidate.get('field_specs') for candidate in candidates):
+                funnel['editable_proposal'] += 1
+            if any(e.get('workflow') == workflow and e.get('accepted') is True for e in r.get('prepare', [])):
+                funnel['prepare_accepted'] += 1
+            if r.get('error_code'):
+                reasons['import:' + r['error_code']] += 1
             assertion_results = []
             bound_bookings = set()
             conflicts = conflicting_bindings(label)
@@ -789,7 +845,7 @@ def score(results, labels, prices):
                 reasons['model_only_scope'] += 1
             elif workflow in WRITES:
                 evidence = labtest_evidences(label)
-                valid = [item for item in evidence if labtest_label(label, r, p, item, used_executions)]
+                valid = [item for item in evidence if labtest_label(label, r, p, item, unique_room_evidence)]
                 booking_ids = [b.get('id') for b in (p.get('bookings') or [])] if p else []
                 covered_ids = [item['booking_id'] for item in valid]
                 if any(item['completed'] is False for item in valid):
@@ -823,8 +879,9 @@ def score(results, labels, prices):
                 if real_outcome == 'unknown':
                     reasons['real_prepare_unbound_or_missing'] += 1
                 if lab_outcome == 'unknown':
-                    reused = any(isinstance(item, dict) and item.get('execution_id') and used_executions[item['execution_id']] > 1 for item in evidence)
-                    reason = 'labtest_execution_reused' if reused else 'labtest_terminal_evidence_unbound_or_missing'
+                    reused = any(isinstance(item, dict) and isinstance(item.get('execution_id'), str)
+                                 and not unique_room_evidence(item) for item in evidence)
+                    reason = 'labtest_room_or_execution_reused' if reused else 'labtest_terminal_evidence_unbound_or_missing'
                     reasons[reason] += 1
             elif r['status'] != 'complete':
                 outcome = 'unknown'
@@ -842,11 +899,15 @@ def score(results, labels, prices):
                 reasons['triage_classification_or_disposition_missing'] += 1
             elif not all(assertion_results):
                 outcome = 'failed'
-            elif workflow == 'quote':
+            elif workflow == 'quote' and not quote_observed(label, r, p):
                 outcome = 'unknown'
                 reasons['quote_unsent_draft_not_observed'] += 1
             else:
                 outcome = 'complete'
+                if workflow == 'quote':
+                    quote_ms = label['quote_observation'].get('wall_ms')
+                    if type(quote_ms) in (int, float) and quote_ms >= 0:
+                        quote_latencies.append(quote_ms)
             if workflow == 'triage' and r.get('tier') != 'C' and p and triage_lookup_eligible(p):
                 matches = [e for e in r.get('prepare', []) if e.get('workflow') == 'triage'
                            and e.get('proposal_id') == p.get('id') and e.get('revision') == p.get('revision')]
@@ -870,7 +931,7 @@ def score(results, labels, prices):
             else:
                 costs.append(cost)
             evidences = labtest_evidences(label)
-            if len(evidences) == 1 and labtest_label(label, r, p, evidences[0], used_executions):
+            if len(evidences) == 1 and labtest_label(label, r, p, evidences[0], unique_room_evidence):
                 labtest_ms = evidences[0].get('wall_ms')
                 if type(labtest_ms) in (int, float) and labtest_ms >= 0:
                     labtest_latencies.append(labtest_ms)
@@ -888,6 +949,8 @@ def score(results, labels, prices):
                         lookup_outcomes[e['native_outcome']] += 1
                     if e.get('reason'):
                         reasons['prepare:' + e['reason']] += 1
+                    if e.get('error_code'):
+                        reasons['prepare_code:' + e['error_code']] += 1
                     if e.get('artifact_reason'):
                         reasons['artifacts:' + e['artifact_reason']] += 1
                     if e.get('artifacts'):
@@ -900,6 +963,7 @@ def score(results, labels, prices):
         scored = field_counts['correct'] + field_counts['wrong']
         report[workflow] = {'denominator': denom, 'e2e': dict(outcomes),
             'e2e_completion_pct_of_all': round(100 * outcomes['complete'] / denom, 2) if denom else None,
+            'funnel': dict(funnel),
             'outcome_coverage': {'known': outcomes['complete'] + outcomes['failed'], 'unknown': outcomes['unknown']},
             'label_coverage': {'with_fields': labels_with_fields, 'denominator': denom, 'scoreable_fields': scored, 'unknown_fields': field_counts['unknown']},
             'field_accuracy': {'correct': field_counts['correct'], 'scored': scored, 'unknown': field_counts['unknown'],
@@ -911,6 +975,7 @@ def score(results, labels, prices):
                                    'failed': prepare_timing['failed'], 'timed_out': prepare_timing['timed_out'],
                                    'unknown': prepare_timing['unknown'], 'not_attempted': prepare_timing['not_attempted']},
             'labtest_e2e_wall_ms': {'n': len(labtest_latencies), 'p50': percentile(labtest_latencies, .5), 'p95': percentile(labtest_latencies, .95)},
+            'quote_e2e_wall_ms': {'n': len(quote_latencies), 'p50': percentile(quote_latencies, .5), 'p95': percentile(quote_latencies, .95)},
             'haiku_usd_per_email': {'n': len(costs), 'mean': sum(costs) / len(costs) if costs else None, 'emails': per_email_cost},
             'real_unsaved_prepare': dict(prep) if workflow != 'triage' else {},
             'real_unsaved_lookup': {**dict(prep), 'not_attempted': prepare_timing['not_attempted'],
