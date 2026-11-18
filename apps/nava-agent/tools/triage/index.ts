@@ -250,13 +250,14 @@ export async function cachedCatalogue(input: unknown, context: ToolContext, load
   if (!catalogueRequest(input)) return fail('INVALID_INPUT', 'Property and supported catalogue kinds are required.');
   if (context.mode === 'historical') return fail('HISTORICAL_HMS_DISABLED', 'Live HMS is unavailable in historical mode.');
   if (context.signal?.aborted) return fail('ABORTED', 'HMS read aborted.');
-  const key = JSON.stringify([input.property_code, input.arrival_date ?? null, input.departure_date ?? null]);
+  const key = input.property_code;
   const now = Date.now();
   for (const [scope, entries] of catalogueCache) {
     for (const [kind, entry] of entries) if (entry.expires <= now) entries.delete(kind);
     if (!entries.size) catalogueCache.delete(scope);
   }
   const observed: Record<string, unknown> = {};
+  let logged = false;
   for (;;) {
     const cached = catalogueCache.get(key);
     for (const kind of input.kinds) {
@@ -264,6 +265,11 @@ export async function cachedCatalogue(input: unknown, context: ToolContext, load
       if (entry && entry.expires > Date.now()) observed[kind] = entry.section;
     }
     const missing = input.kinds.filter(kind => !Object.hasOwn(observed, kind));
+    if (!logged) {
+      console.info(JSON.stringify({ event: 'catalogue_cache', property_code: key,
+        hit: input.kinds.filter(kind => Object.hasOwn(observed, kind)), miss: missing }));
+      logged = true;
+    }
     if (!missing.length) return ok({ property_code: input.property_code, sections: observed });
     let pending = cataloguePending.get(key);
     if (!pending) {
