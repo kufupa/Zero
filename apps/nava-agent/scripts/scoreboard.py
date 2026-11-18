@@ -219,9 +219,10 @@ def timing_result(result):
     return {
         'id': result['id'], 'tier': result['tier'], 'status': result['status'],
         'reason': result.get('reason'), 'wall_ms': result.get('wall_ms'),
+        'turn_finish_reason': result.get('turn_finish_reason'),
         'stage_events_error': result.get('stage_events_error'),
         'model_calls': [{k: event['payload'].get(k) for k in (
-            'attempt_id', 'status', 'latency_ms', 'input_tokens', 'output_tokens',
+            'attempt_id', 'status', 'stop_reason', 'error_code', 'latency_ms', 'input_tokens', 'output_tokens',
             'cache_read_input_tokens', 'cache_creation_input_tokens')}
             for event in result.get('events', []) if event.get('kind') == 'model_call'],
         'prepare': [{k: entry.get(k) for k in (
@@ -325,10 +326,11 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                     if found:
                         if event.get('kind') == 'model_call':
                             result['events'].append({'kind': 'model_call', 'payload': {k: p.get(k) for k in (
-                                'attempt_id', 'status', 'input_tokens', 'output_tokens', 'cache_read_input_tokens',
+                                'attempt_id', 'status', 'stop_reason', 'error_code', 'input_tokens', 'output_tokens', 'cache_read_input_tokens',
                                 'cache_creation_input_tokens', 'latency_ms', 'metadata')}})
                         if event.get('kind') == 'turn_finished':
                             finished = True
+                            result['turn_finish_reason'] = p.get('reason')
                             model_end_sequence = event.get('sequence', 0)
                             break
         result['wall_ms'] = round((time.monotonic() - monotonic) * 1000)
