@@ -201,7 +201,7 @@ export async function priorQuotedRateChoices(tx:TransactionSql,threadId:string) 
       AND e.payload->>'job_id'=p.stage->>'job_id'
       AND e.payload->'artifact_ids'=jsonb_build_array(p.stage->'artifacts'->0->>'id',p.stage->'artifacts'->1->>'id')
     WHERE current_thread.id=${threadId} AND prior_mail.source_message_id<>current_mail.source_message_id
-      AND prior_mail.received_at<=current_mail.received_at AND e.at<=current_mail.received_at
+      AND prior_mail.received_at<=current_mail.received_at
       AND p.stage->>'state'='prepared' AND p.stage->>'revision'=p.revision::text
     ORDER BY e.at DESC,p.id`;
   return projectQuotedRateChoices(rows);
