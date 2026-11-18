@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { sql, uid, json, event } from './db.js';
 import { proposalDraft, tools, type ThreadInput } from './schema.js';
 import { withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
-import { quoteOptions } from '../tools/quote-artifacts/index.js';
+import { quoteArtifactBlockReason, quoteOptions } from '../tools/quote-artifacts/index.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
@@ -181,6 +181,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
     Object.assign(stage,{
       quote_options:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result) : [],
       quote_choices:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result,false) : [],
+      quote_artifact_block_reason:quote.length===1 ? quoteArtifactBlockReason(p.stage.native_result) : null,
     });
   }
   const result=p.phase==='done' && p.result ? {

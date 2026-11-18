@@ -55,7 +55,7 @@ function roomLines(quote:QuoteScope,group:QuoteGroup,room:QuoteRoom,capturedRoom
       if (request.quantity !== room.quantity || request.adults !== room.adults || request.children !== room.children ||
           request.childAges.length !== room.child_ages.length || request.childAges.some((age, i) => age !== room.child_ages[i])) throw new Error('occupancy changed');
       const selected = option.parse(capturedRoom.native_result.options[index]);
-      if(request.required && Object.keys(request.required).length>0 && selected.matchStatus!=='match') throw new Error('required selection changed');
+      if(requireJointSelection && request.required && Object.keys(request.required).length>0 && selected.matchStatus!=='match') throw new Error('required selection changed');
       const sameSearch = quote.groups.filter(item=>item.arrival_date===group.arrival_date && item.departure_date===group.departure_date);
       if(requireJointSelection && sameSearch.reduce((sum,item)=>sum+item.rooms.length,0)>1 &&
          (request.required?.roomCodes?.length!==1 || request.required.roomCodes[0]!==selected.room.code ||
@@ -101,12 +101,22 @@ function linesFor(quote: ReturnType<typeof snapshot.parse>): WorkbookLine[] {
 const quoteCapture = z.object({quotes:z.record(z.unknown()),searches:z.array(z.object({arrival_date:z.string(),departure_date:z.string(),
   native_result:z.object({outcome:z.string(),audit:z.object({status:z.string()})})})).min(1)});
 
+function hasOverlappingSearches(searches: z.infer<typeof quoteCapture>['searches']): boolean {
+  return searches.some((search,i)=>searches.slice(0,i).some(prior=>
+    prior.arrival_date<search.departure_date && search.arrival_date<prior.departure_date));
+}
+
+export function quoteArtifactBlockReason(native: unknown): 'overlapping_date_searches' | null {
+  const captured=quoteCapture.safeParse(native);
+  return captured.success && hasOverlappingSearches(captured.data.searches) ? 'overlapping_date_searches' : null;
+}
+
 export function quoteOptions(request:unknown, native:unknown, requireJointSelection=true) {
   const parsedRequest=quoteInput.safeParse(request), captured=quoteCapture.safeParse(native);
   if (!parsedRequest.success || !captured.success) return [];
   const q=parsedRequest.data, searches=captured.data.searches;
-  if(searches.some((search,i)=>search.native_result.outcome!=='quote' || search.native_result.audit.status!=='complete' ||
-      searches.slice(0,i).some(prior=>prior.arrival_date<search.departure_date && search.arrival_date<prior.departure_date))) return [];
+  if(searches.some(search=>search.native_result.outcome!=='quote' || search.native_result.audit.status!=='complete') ||
+      (requireJointSelection && hasOverlappingSearches(searches))) return [];
   const parsed=scopeSchema.safeParse({quote_id:q.quote_id,property_code:q.property_code,groups:q.groups,
     capture:captured.data.quotes[q.quote_id]});
   if(!parsed.success) return [];
