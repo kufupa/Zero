@@ -163,7 +163,7 @@ function safeOperationError(error: unknown): string | null {
     case 'UNAVAILABLE': return 'This Infor check is currently unavailable.';
     case 'REQUIRED_FIELDS_MISSING': return goMissingMessage(error.details);
     case 'FORBIDDEN': return 'You do not have permission to save this booking in Infor.';
-    case 'REAL_GUEST_GO_UNAVAILABLE': return 'Saving real guest bookings is not switched on yet. Only Labtest bookings can be saved.';
+    case 'REAL_GUEST_GO_UNAVAILABLE': return 'This request cannot be saved in Infor.';
     default: return null;
   }
 }

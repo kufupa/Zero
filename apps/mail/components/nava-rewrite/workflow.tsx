@@ -823,6 +823,12 @@ export function Workflow(props: WorkflowProps) {
     </PaneSection>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
+      {proposal.result.readback !== null && <p role="status">{
+        proposal.workflow === 'cancel' ? 'Infor confirms the booking is cancelled.'
+          : proposal.workflow === 'filing' ? 'Infor confirms the PDF is in the stay’s Documents.'
+          : proposal.workflow === 'amend' ? 'Infor confirms the changes were saved.'
+          : 'Infor confirms the booking was saved.'
+      }</p>}
       {proposal.result.confirmation && <p style={{ fontSize: '1.25em', fontWeight: 600 }}>Confirmation: {proposal.result.confirmation}</p>}
       {proposal.result.reservation_id && <p>Reservation: {proposal.result.reservation_id}</p>}
       {proposal.result.display_rows.length > 0 && <NativeRows rows={proposal.result.display_rows} proposal={proposal} />}
