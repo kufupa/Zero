@@ -1,35 +1,24 @@
 ---
 name: triage
-description: Use when a new hotel email needs routing, several guests or tasks overlap, quoted history obscures current intent, or voucher, payment, group, agency and notification requests need separating.
+description: Use when an inbound hotel email needs routing, including multiple guests, stays, documents or overlapping requests.
 ---
 
 # Triage
 
-Read [common rules](../references/common.md), then [routing rules](references/rules.md). Current request first; one task per guest/stay/document.
+Read the selected message and relevant earlier context. Load `../references/common.md`, `../references/tools-and-proposal.md` and `references/rules.md` using `skill_read`.
 
-1. Read current inbound + earlier chronology. Separate quoted history. Body missing → original message/MIME if available; do not infer no request from empty parser output.
-2. Apply R7 host rules + exceptions. Extract current asks, dates/guests/booking refs, relevant documents. Existing-confirmation mail → existing stay; surface pre-stay guest text per R6.
-3. Route each task using table below. Preserve independent tasks and explicit missing info. Earlier staff reply ≠ every current task complete.
-4. Publish ordered task list + target + reason + source IDs + unresolved conflicts. Read existing booking when current ask is status/check; never re-create from quoted booking request.
-5. Open relevant skill. Triage itself never calls `hms_save`. Draft only when useful; skip acknowledgments without manufactured reply.
+Route each current request separately, preserving its guest, stay, dates, document and other known fields. Then load the relevant skill and publish its editable proposal. The current body takes precedence over an old subject or quoted request. An existing-confirmation or pre-stay notice is about an existing stay; retain any separate new request. Mixed work is common: 590/1,439 model-labelled decisions had multiple workflow labels.
 
-| Current intent | Route |
+| Current request | Route |
 |---|---|
-| Price/availability enquiry | `quote` |
-| Explicit book/proceed instruction | `create` |
-| Change existing booking | `amend` |
-| Cancel existing booking | `cancel` |
-| Supplied voucher/POP/booking document | `filing`; distinct document roles |
-| Invoice/payment/status/logistics question | Read-supported answer or staff review; not automatic document filing |
-| ≥10 rooms to book | Rooming-list/group review; preserve supported quote and individual work (R8) |
-| Missing task-critical evidence | Needs info; ask exact missing detail |
-| Thanks/duplicate with same completed task verified/no new ask | Skip with reason; no automatic reply |
-| Excluded host / Booking.com notice | Skip unless R7 exception; other agency/GDS/no-reply signals alone insufficient |
+| Price or availability | `quote` |
+| Book, reserve, proceed, or accept an offer | `create` |
+| Change a booked stay or shorten its dates | `amend` |
+| Cancel a booked stay or a booked room | `cancel` |
+| Submit a voucher or proof of payment | `filing` |
+| Existing reservation status | `triage` lookup; include known confirmation, surname and dates |
+| Invoice, payment or logistics question | Preserve as a separate question for staff or supported read |
 
-No universal automatic decline policy found. Active unsupported task → staff review. Native unavailability → quote-specific decline, not global triage suppression.
+A request may have several routes: e.g. quote a new stay and release a previous booking. Do not turn explicit booking intent into Quote merely because an earlier subject says quotation. Use `propose` for an identifiable supported action with editable fields, even when staff must complete a choice or run a lookup. Ask for information only if the request or affected stay cannot be identified from available context. Skip thanks, completed duplicate tasks, OTA/channel, automated and spam notices; agency/GDS requests remain in scope. More than 8 rooms needs staff handling; keep independent supported work.
 
-Tools: `skill_read`, `mail_read_thread`, `mail_read_attachment`, `hms_search_reservations`, `hms_read_reservation`, `proposal_publish`, `reply_draft`. Exact [inputs/proposal](../references/tools-and-proposal.md); runtime capability may be unavailable. Never invent tool or silent success.
-
-For an existing-stay status check, publish a `triage` action with `details.lookup` containing `reservation_id`, `guest_name`, `arrival_date`, and `departure_date`; use `null` for unknown values. `guest_name` is surname only for a surname search. Add editable field specs for these exact `/actions/0/details/lookup/...` paths and cite the selected message. Preserve independent asks in their own actions. Staff may correct a hint and run the read from that revision. A surname search returns candidates, not a selected stay; staff must choose an exact confirmation before a unique status read. Do not infer a match from an incomplete search or an old quote. Publish `native_result: null`; the server supplies fresh native results.
-
-Example: quoted “book two rooms”; current “cancel one, voucher attached for other” → cancel target + filing target, not two creates.
+For a status lookup, publish a `triage` action with `details.lookup` keys `reservation_id`, `guest_name` (surname), `arrival_date`, `departure_date`; unknown values null and known values editable. `native_result` is null. Do not claim a reservation was found or changed without an actual read. Draft only, never send.

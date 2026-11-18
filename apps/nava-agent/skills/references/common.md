@@ -1,31 +1,13 @@
-# Common business rules
+# Common rules
 
-Read before any workflow via `skill_read`; [tool/proposal bindings](tools-and-proposal.md) apply throughout. Guest drafts: normal polite grammar; terse docs ≠ terse guest mail.
+Use the current inbound request and its relevant earlier context. Split independent tasks by guest, stay and document; keep the requested values attached to the right task. An existing-confirmation or pre-stay notice concerns an existing stay, not a new booking. Surface guest text as an amend/note request (20/107 pre-stay self-mails contained guest text).
 
-## Request + evidence
+**Prefill for staff:** publish `propose` for an identifiable supported task, including the information already known and editable defaults or empty fields for staff to finish. Missing native results, an unread attachment, or an editable native choice alone does not make the whole proposal `staff_review`. Put the specific gap in `missing` or `warnings`; never invent a price, confirmation, native code, payment or result. Use `needs_info` when a material guest detail is genuinely needed to identify or understand the request; use `staff_review` for an unsupported task or a conflict staff cannot resolve in the editor. Preserve other supported tasks.
 
-- X01 Evaluate selected current inbound in session context. Latest actionable instruction for same task controls; newer mail can supersede an older selection, not silently switch task. Earlier messages supply context; quoted or later staff outcomes never create booking authority. Separate requested action from observed completed state. Historical selection stops at input cutoff.
-- X02 One thread may contain several guests, stays, documents, workflows. Keep task per guest/stay/document; fulfil independent supported tasks. One unclear item must not erase other items.
-- X03 Source priority: latest staff edit for proposed field; explicit current request; relevant supplied document; earlier agreed thread context; fresh HMS saved state for unchanged fields. Conflicts affecting action → explain exact conflict, ask one targeted question. Never invent missing values.
-- X04 Inspect supplied attachment when its contents matter. Filename, subject, payment instructions, pro-forma ≠ proof of payment. Document receipt ≠ paid folio. Confirmation PDF ≠ fresh native reservation state.
-- X05 Match reservation identifier + property, then verify guest + stay. Without identifier, search relevant guest/dates/company context. Sender/time alone, quoted number, same surname, same party ≠ unique booking. Ambiguous candidates → request distinguishing detail.
-- R6 Mail about existing confirmation → look up existing stay, never Create from notice. Automated HMS pre-stay self-mail can carry guest free text (20/107); surface actual text as note/Amend candidate, keep distinct current asks. No property-specific subject match.
-- X06 Codes come from native property catalogue: code + meaning. Price/availability comes from native quote/read, not historical email examples. Explicit staff edits remain authoritative, subject to native tool response; disclose changed price or unavailable code.
-- X07 Missing info → specific question; unsupported/out-of-scope task → staff review, not invented policy. `decline` means demonstrated inability/refusal; `skip` means no new action (e.g. duplicate or thanks). Never use either to conceal tool failure.
-- X08 Draft factual claims only. Quote ≠ reserved room; prepared ≠ saved; supplied POP ≠ settled account; cancellation request ≠ cancelled booking. Final confirmation requires actual corresponding result.
+Use explicit request and prior agreed context before editable defaults. An attachment's filename is a hint, not its contents; an unread attachment is not evidence that no attachment exists. A voucher or pro-forma is not proof of payment. Search an existing stay using the available confirmation, surname, dates and property; show relevant candidates, but do not assume the pane can bind a selected stay. Never select a different guest or stay to fill a gap.
 
-## Save: owner rules
+Property, prices, availability, rate/code meanings and current reservation state come from the session or HMS, not historical examples. CMS Send defaults on for Create; Amend preserves the existing CMS setting unless changed. Prefill a usable requester email when requested and allow staff to change it. In 217/222 sampled confirmed creates the confirmation went to the requester; this is not a measured checkbox rate. Labtest CMS is off.
 
-- X09 Real guest: unsaved staging permitted; call `hms_save` only through staff-Go path. Agent waits on custom-tool result. Staff may edit; backend re-login/re-stage edited proposal, Save, fresh readback. Never bypass waiting with native Save script.
-- X10 Autonomous Labtest Save only: guest `Proof Labtest`, stay 2027+, CMS off. Not permission for real bookings. Historical backtest remains read-only.
-- X11 Uncertain Save result: fresh HMS read first; compare affected reservation/business fields/documents/status. Never blind-retry. Confirmed desired state → report; confirmed not applied → resume supported preparation; ambiguous/partial state → staff review. Multi-item Save results tracked separately; never replay already-saved items.
-- X12 Save/readback disagreement → state discrepancy, not success. Report actual saved identifiers and state; draft only supported claims. Never send mail automatically.
-- R3 Create/Amend CMS Send defaults on (228/228 sampled confirmed creates later got a letter; sample conditioned on confirmation, not proof of tick rate). Prefill current requester email when usable; staff may edit tick, recipient, supported message ID. Missing/ambiguous recipient → staff resolves or unticks. Only HMS sends on approved Save when ticked. Labtest off; Nava drafts only.
+Prepare is unsaved. Real guest Save happens only when staff click Go. After an uncertain Save, re-read HMS before any retry. A requested, prepared or quoted action is not completed; only claim a booking, cancellation, filing or payment when the corresponding result establishes it. Nava creates drafts, never sends them.
 
-## Proposal semantics
-
-Backend contract owns exact JSON/tool schema. Preserve: workflow; guest/stay/document identity; requested fields in staff order; fresh existing state separate from patch; code + meaning; native price/availability; source message/attachment IDs; missing details; warning/reason; proposed reply. Staff-filled vs AI-filled provenance must survive edits.
-
-Historical mode: pre-cutoff inputs + supplied fixtures only; no live HMS/catalogue/price or Save. Missing fixture stays missing. Source corpus outcomes are authoring evidence, never runtime facts for an earlier cutoff.
-
-No whole-form key/count/body pinning. Check business fields staff intended; native form drift alone must not become refusal.
+Load shared references via `skill_read` with `path:"../references/common.md"` or `"../references/tools-and-proposal.md"`; local references use `"references/..."`. Use the registered tools and their schemas.
