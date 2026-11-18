@@ -49,6 +49,7 @@ import argparse
 import concurrent.futures
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import pathlib
@@ -253,6 +254,39 @@ def timing_result(result):
     }
 
 
+def turn_events(gateway, path, deadline):
+    cursor = 0
+    while time.monotonic() < deadline:
+        try:
+            with gateway.request(path + '/events?after_sequence=' + str(cursor),
+                                 headers={'Accept': 'text/event-stream', 'Last-Event-ID': str(cursor)},
+                                 timeout=max(1, min(320, deadline - time.monotonic()))) as stream:
+                data = []
+                while time.monotonic() < deadline:
+                    raw = stream.readline()
+                    if not raw:
+                        break
+                    line = raw.decode('utf-8').rstrip('\r\n')
+                    if line.startswith('data:'):
+                        data.append(line[5:].lstrip(' '))
+                    elif not line and data:
+                        event = json.loads('\n'.join(data))
+                        data = []
+                        cursor = event['sequence']
+                        yield event
+        except (TimeoutError, ConnectionError, http.client.IncompleteRead):
+            pass  # Resume the same signed read; never dispatch the turn again.
+        except GatewayHttpError as exc:
+            if str(exc) not in ('http_502', 'http_504'):
+                raise
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, (TimeoutError, ConnectionError)):
+                raise
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(1, remaining))
+
+
 def historical_thread(case, mailbox):
     selected = case['selected_message']
     events = case['earlier_relevant_source_events']
@@ -273,7 +307,7 @@ def historical_thread(case, mailbox):
             'messages': [email(e['message']) for e in events] + [email(selected)]}
 
 
-def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', historical_mailbox=None, run_id=None):
+def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', historical_mailbox=None, run_id=None, turn_timeout=720):
     result = {'id': case['id'], 'input_cutoff': case['input_cutoff'], 'status': 'unknown',
               'tier': tier, 'reason': None, 'wall_ms': None, 'proposals': [], 'events': [], 'prepare': []}
     monotonic = None
@@ -323,38 +357,27 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
             raise ValueError('session_mode_mismatch')
         path = '/threads/' + urllib.parse.quote(snap['id'], safe='')
         selected_id = thread['selected_message_id']
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + turn_timeout
         # Start at zero to capture calls that finished before POST returned.
         # A 201 is a new thread, and mail_pending identifies its selected turn.
         found = False
         finished = False
         model_end_sequence = 0
-        with gateway.request(path + '/events?after_sequence=0', headers={'Accept': 'text/event-stream', 'Last-Event-ID': '0'}) as stream:
-            data = []
-            while time.monotonic() < deadline:
-                raw = stream.readline()
-                if not raw:
+        for event in turn_events(gateway, path, deadline):
+            p = event.get('payload') or {}
+            if event.get('kind') == 'mail_pending' and p.get('message_id') == selected_id:
+                found = True
+                result['events'] = []
+            if found:
+                if event.get('kind') == 'model_call':
+                    result['events'].append({'kind': 'model_call', 'payload': {k: p.get(k) for k in (
+                        'attempt_id', 'status', 'stop_reason', 'error_code', 'input_tokens', 'output_tokens', 'cache_read_input_tokens',
+                        'cache_creation_input_tokens', 'latency_ms', 'metadata')}})
+                if event.get('kind') == 'turn_finished':
+                    finished = True
+                    result['turn_finish_reason'] = p.get('reason')
+                    model_end_sequence = event.get('sequence', 0)
                     break
-                line = raw.decode('utf-8').rstrip('\r\n')
-                if line.startswith('data:'):
-                    data.append(line[5:].lstrip(' '))
-                elif not line and data:
-                    event = json.loads('\n'.join(data))
-                    data = []
-                    p = event.get('payload') or {}
-                    if event.get('kind') == 'mail_pending' and p.get('message_id') == selected_id:
-                        found = True
-                        result['events'] = []
-                    if found:
-                        if event.get('kind') == 'model_call':
-                            result['events'].append({'kind': 'model_call', 'payload': {k: p.get(k) for k in (
-                                'attempt_id', 'status', 'stop_reason', 'error_code', 'input_tokens', 'output_tokens', 'cache_read_input_tokens',
-                                'cache_creation_input_tokens', 'latency_ms', 'metadata')}})
-                        if event.get('kind') == 'turn_finished':
-                            finished = True
-                            result['turn_finish_reason'] = p.get('reason')
-                            model_end_sequence = event.get('sequence', 0)
-                            break
         result['wall_ms'] = round((time.monotonic() - monotonic) * 1000)
         if not found:
             raise ValueError('fresh_mail_event_not_observed')
@@ -1019,6 +1042,7 @@ def main():
     replay.add_argument('--concurrency', type=int, default=4)
     replay.add_argument('--run-id', type=uuid.UUID, default=None, help='optional unique UUID to record for this run')
     replay.add_argument('--timeout', type=int, default=300)
+    replay.add_argument('--turn-timeout', type=int, default=720, help='total seconds to observe the model turn across signed SSE reconnects')
     replay.add_argument('--no-prepare', action='store_true')
     replay.add_argument('--quote-first', action='store_true', help='create quote artifacts using first eligible option per room; no draft or send')
     replay.add_argument('--historical-mailbox-id', help='authorized mailbox ID for legacy Tier C inputs')
@@ -1047,7 +1071,7 @@ def main():
             for case in cases:
                 if 'id' not in case and 'decision_id' in case:
                     case['id'] = case['decision_id']
-        if not 1 <= args.concurrency <= 12 or args.timeout < 1 or len({c['id'] for c in cases}) != len(cases):
+        if not 1 <= args.concurrency <= 12 or min(args.timeout, args.turn_timeout) < 1 or len({c['id'] for c in cases}) != len(cases):
             raise ValueError('invalid concurrency, timeout, or duplicate id')
         if pathlib.Path(args.out).exists():
             raise ValueError('output already exists')
@@ -1063,7 +1087,7 @@ def main():
         run_id = str(args.run_id or uuid.uuid4())
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             results = list(pool.map(lambda c: run_case(gateway, c, not args.no_prepare, args.timeout, args.quote_first,
-                                                      args.tier, args.historical_mailbox_id, run_id), cases))
+                                                      args.tier, args.historical_mailbox_id, run_id, args.turn_timeout), cases))
         elapsed_ms = round((time.monotonic() - started) * 1000)
         run = {'tier': args.tier, 'run_id': run_id, 'concurrency': args.concurrency, 'effective_limit': limit,
                'elapsed_ms': elapsed_ms, 'results': results}
