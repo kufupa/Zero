@@ -39,11 +39,23 @@ function prepareDialogDiagnostic(page, publicKey) {
         const result = await nativeRunTool(request);
         if (result.issue === 'UNEXPECTED_DIALOG') {
           try {
-            let count = 0, unreadableFrames = 0;
+            let count = 0, unreadableFrames = 0, skippedFrames = 0;
             const windows = [], allFrames = typeof page.frames === 'function' ? page.frames() : [page];
             const frames = allFrames.slice(0, 20);
             for (const frame of frames) {
               try {
+                if (new URL(frame.url()).origin !== 'https://hmsweb.hms.eu1.inforcloudsuite.com') {
+                  skippedFrames++;
+                  continue;
+                }
+                if (frame !== page.mainFrame()) {
+                  const title = frame.locator('h1.pagetitle:visible').filter({ hasText: /^Hotel Availability$/ });
+                  const dates = frame.locator('input[name="dates"]:visible');
+                  if (await title.count() !== 1 || await dates.count() !== 1 || !(await (await frame.frameElement()).isVisible())) {
+                    skippedFrames++;
+                    continue;
+                  }
+                }
                 const locator = frame.locator('.x-window:visible:not(.x-menu), .x-message-box:visible');
                 const frameCount = await locator.count();
                 count += frameCount;
@@ -53,7 +65,8 @@ function prepareDialogDiagnostic(page, publicKey) {
               } catch { unreadableFrames++; }
             }
             const plaintext = Buffer.from(JSON.stringify({ tool: request.tool, nativeDialog, windowCount: count,
-              unreadableFrames, framesExamined: frames.length, framesTruncated: allFrames.length > frames.length, windows }));
+              unreadableFrames, skippedFrames, framesExamined: frames.length, framesTruncated: allFrames.length > frames.length,
+              windowsTruncated: count > windows.length, windows }));
             const key = randomBytes(32), iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
             const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
             const encryptedKey = publicEncrypt({ key: Buffer.from(publicKey, 'base64'), padding: constants.RSA_PKCS1_OAEP_PADDING,
