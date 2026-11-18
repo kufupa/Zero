@@ -21,6 +21,7 @@ type OutlookReplyInput = {
 export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] } };
 
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
+const COMPLETED_PREFIX = 'nava_quote_completed_reply_v1:';
 const RETRY_WINDOW_MS = 15 * 60 * 1000;
 const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 // Older Outlook bridge fingerprints use a 2 MiB JSON string limit, including base64.
@@ -79,10 +80,18 @@ function storedAttempt(raw: string | null): StoredAttempt | null {
 }
 async function fingerprintFor(source: ReservationSourceContext, email: WorkstationEmailPayload, output: QuoteOutput, html: string): Promise<string> {
   const input = JSON.stringify([source.mailboxId, source.propertyId, source.messageId, source.threadId, source.sourceHash, source.subject,
-    email.entryId, email.storeId, email.folderEntryId, output.operationId, output.cover?.to, html, output.artifacts.map(item => [item.fileName, item.sha256])]);
+    email.entryId, email.storeId, email.folderEntryId, output.requestId, output.operationId, output.observationRef, output.cover?.to, html, output.artifacts.map(item => [item.fileName, item.sha256])]);
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
+async function completedKey(source: ReservationSourceContext, email: WorkstationEmailPayload, output: QuoteOutput): Promise<string> {
+  const input=JSON.stringify([source.mailboxId,source.propertyId,source.messageId,source.threadId,source.sourceHash,
+    email.entryId,email.storeId,email.folderEntryId,output.requestId,output.operationId,output.observationRef,
+    output.artifacts.map(item=>[item.fileName,item.sha256])]);
+  const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(input));
+  return COMPLETED_PREFIX+[...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+}
+const completedSchema=z.object({fingerprint:z.string().regex(/^[a-f0-9]{64}$/),location:MailLocationSchema}).strict();
 // Same rule as canonicalMessageId in apps/server-pilot/src/mail/ingest/message-id.ts: strip angle
 // brackets, unquote a quoted local part, lowercase. Outlook gives the raw header; the server returns this form.
 function canonicalMessageId(raw: string | null | undefined): string | null {
@@ -224,6 +233,48 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!z.string().email().safeParse(recipient).success) throw new Error('Enter a recipient email address.');
       const fingerprint = await fingerprintFor(source, email, output, html);
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
+      const completionKey = 'output' in input ? await completedKey(source,email,output) : null;
+      let completed: z.infer<typeof completedSchema> | null = null;
+      if(completionKey) {
+        const raw=localStorage.getItem(completionKey);
+        if(raw) {
+          const parsed=completedSchema.safeParse(JSON.parse(raw));
+          if(!parsed.success) return report('unknown','Check the existing Outlook draft before continuing.');
+          completed=parsed.data;
+          if(completed.fingerprint!==fingerprint) return report('unknown','The quote already has an Outlook draft. Check it before changing the cover.');
+        }
+      }
+      const inspectDraft = async (location:MailLocation, expected:QuoteOutput, expectedHtml:string) => {
+        const identity={entryId:location.entryId,storeId:location.storeId,folderEntryId:location.folderEntryId};
+        const draft=await host.sendCommand<typeof identity,WorkstationEmailPayload|null>('GET_EMAIL_BY_ENTRY_ID',identity);
+        const metadata=z.array(AttachmentMetaSchema).parse(await host.sendCommand<typeof identity,unknown>('GET_ATTACHMENT_METADATA',identity));
+        const normalize=(value:string)=>value.replace(/\s+/gu,' ').trim();
+        const body=document.createElement('div'); body.innerHTML=expectedHtml;
+        body.querySelectorAll('br').forEach(lineBreak=>lineBreak.replaceWith('\n'));
+        const expectedBody=normalize(body.textContent??'');
+        if(!current() || isCurrentSnapshot && !isCurrentSnapshot() || !draft || draft.entryId!==location.entryId ||
+            draft.storeId!==location.storeId || draft.folderEntryId!==location.folderEntryId ||
+            normalize(draft.subject)!==normalize(subject) || !expectedBody || !normalize(draft.bodyText).includes(expectedBody))
+          throw new Error('Outlook could not confirm the draft and attachments.');
+        for(const item of expected.artifacts) {
+          const matches=metadata.filter(att=>att.fileName===item.fileName);
+          if(matches.length!==1 || matches[0]!.byteSize!==item.sizeBytes) throw new Error('Outlook could not confirm the draft and attachments.');
+          const payload={...identity,attachmentIndex:matches[0]!.index};
+          const content=AttachmentContentSchema.parse(await host.sendCommand<typeof payload,unknown>('READ_ATTACHMENT_BASE64',payload));
+          if(content.fileName!==item.fileName || content.byteSize!==item.sizeBytes || content.base64Data!==item.bytesBase64)
+            throw new Error('A draft attachment did not match the generated file. Check Outlook Drafts.');
+        }
+        if(!draft.to || address(draft.to)!==address(recipient) || draft.cc?.trim())
+          throw new Error('Outlook could not verify the recipient address. Check the address in Drafts before sending.');
+        if(!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Check Outlook Drafts.');
+        return {subject:draft.subject,attachmentNames:metadata.filter(item=>
+          expected.artifacts.some(artifact=>artifact.fileName===item.fileName)).map(item=>item.fileName)};
+      };
+      if(completed) {
+        submitted=true;
+        const readback=await inspectDraft(completed.location,output,html);
+        return {...report('created','Quote saved in Outlook Drafts. Review it there before sending.'),readback};
+      }
       let attempt = pending.current;
       const marker = readMarker(), saved = storedAttempt(marker), age = saved ? Date.now() - saved.startedAt : -1;
       if (!attempt && saved?.phase === 'attaching' && saved.fingerprint === fingerprint && age >= 0 && age < RETRY_WINDOW_MS &&
@@ -300,27 +351,12 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
         if (added !== true) throw new Error('Outlook did not confirm an attachment.');
         attempt.completed = index + 1;
       }
-      const draft = await host.sendCommand<typeof identity, WorkstationEmailPayload | null>('GET_EMAIL_BY_ENTRY_ID', identity);
-      const metadata = await readMetadata();
-      const normalize = (value: string) => value.replace(/\s+/gu, ' ').trim();
-      const body = document.createElement('div');
-      body.innerHTML = attempt.html;
-      body.querySelectorAll('br').forEach(lineBreak => lineBreak.replaceWith('\n'));
-      const expectedBody = normalize(body.textContent ?? '');
-      if (!current() || isCurrentSnapshot && !isCurrentSnapshot() || !draft || draft.entryId !== location.entryId ||
-          draft.storeId !== location.storeId || draft.folderEntryId !== location.folderEntryId ||
-          normalize(draft.subject) !== normalize(subject) || !expectedBody || !normalize(draft.bodyText).includes(expectedBody))
-        throw new Error('Outlook could not confirm the draft and attachments.');
-      for (const item of attempt.output.artifacts) if (!await matchesArtifact(item, metadata))
-        throw new Error('Outlook could not confirm the draft and attachments.');
-      if (!draft.to || address(draft.to) !== address(recipient) || draft.cc?.trim())
-        throw new Error('Outlook could not verify the recipient address. Check the address in Drafts before sending.');
-      if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Check Outlook Drafts.');
+      const readback=await inspectDraft(location,attempt.output,attempt.html);
+      if(completionKey) localStorage.setItem(completionKey,JSON.stringify({fingerprint,location}));
       if (storedAttempt(readMarker())?.createOperationId === attempt.create.operationId) writeMarker(null);
       pending.current = null;
       return {...report('created', 'Quote saved in Outlook Drafts. Review it there before sending.'),
-        readback: { subject: draft.subject, attachmentNames: metadata.filter(item=>
-          attempt.output.artifacts.some(artifact=>artifact.fileName===item.fileName)).map(item=>item.fileName) }};
+        readback};
     } catch (error) {
       if (submitted || pending.current?.location || (pending.current && storedAttempt(readMarker())?.createOperationId === pending.current.create.operationId))
         return report('unknown', `${failure(error)} Retry the same reply, or check Outlook Drafts.`);
