@@ -1,4 +1,3 @@
-import { hmsSaveEnabled } from '../../src/hms-mode.js';
 import type { ProposalDraft } from '../../src/schema.js';
 
 export type ToolContext = {
@@ -23,6 +22,7 @@ type Parsed = {
   arrival?: string;
   scope: 'whole_stay' | 'specific_room' | 'unspecified';
   note: string;
+  reason?: string;
 };
 
 type NativeResult = Record<string, unknown>;
@@ -55,6 +55,8 @@ export function withCancelReviewFields(draft: ProposalDraft): ProposalDraft {
       options: [{ value: 'whole_stay', label: 'Whole stay', meaning: null },
         { value: 'specific_room', label: 'Specific room', meaning: null },
         { value: 'unspecified', label: 'Unspecified', meaning: null }] },
+    { target: details, key: 'cancellation_reason', path: '/actions/0/details/cancellation_reason', label: 'Cancellation reason', control: 'text' as const, options: [] },
+    { target: details, key: 'cancellation_note', path: '/actions/0/details/cancellation_note', label: 'Cancellation note', control: 'text' as const, options: [] },
     { target: fields, key: 'guest_name', path: `/bookings/${index}/fields/guest_name`, label: 'Guest name', control: 'text' as const, options: [] },
     { target: fields, key: 'arrival_date', path: `/bookings/${index}/fields/arrival_date`, label: 'Arrival date', control: 'date' as const, options: [] },
   ];
@@ -86,14 +88,16 @@ function parse(input: unknown): Parsed | null {
   if (fields.guest_name !== undefined && fields.guest_name !== null &&
       (!text(fields.guest_name) || fields.guest_name.length > 256 || /[\p{Cc}]/u.test(fields.guest_name))) return null;
   const note = details.cancellation_note ?? '';
-  if (typeof note !== 'string' || note.length > 200 || /[\p{Cc}]/u.test(note)) return null;
+  const reason = details.cancellation_reason;
+  if (typeof note !== 'string' || note.length > 200 || /[\p{Cc}]/u.test(note) ||
+      (reason != null && (!text(reason) || reason !== reason.trim() || reason.length > 120 || /[\p{Cc}]/u.test(reason)))) return null;
   return {
     bookingId: booking.id,
     confirmation: booking.reservation_id,
     propertyCode: booking.property_code,
     ...(typeof fields.guest_name === 'string' ? { guestName: fields.guest_name } : {}),
     ...(typeof fields.arrival_date === 'string' ? { arrival: fields.arrival_date } : {}),
-    scope, note,
+    scope, note, ...(typeof reason === 'string' ? { reason } : {}),
   };
 }
 
@@ -121,36 +125,36 @@ function nativeFailure(result: NativeResult): ToolResult {
   return error(issue, 'Native cancellation preparation did not complete.');
 }
 
-function commonInput(target: Parsed, transportId: string, context: ToolContext) {
+function commonInput(target: Parsed, arrival: string, transportId: string, context: ToolContext) {
   return {
     target: { propertyCode: target.propertyCode }, transportId,
-    confirmation: target.confirmation, arrival: target.arrival,
-    allowRealGuest: false, credentialLease: context.credentialLease, signal: context.signal,
+    confirmation: target.confirmation, arrival,
+    allowRealGuest: context.mode === 'live', credentialLease: context.credentialLease, signal: context.signal,
   };
 }
 
-async function labStage(target: Parsed, transportId: string, context: ToolContext, cancel: Awaited<ReturnType<typeof nativeWriterModules>>['cancel']) {
-  return cancel.runCloudPaneCancel({ ...commonInput(target, transportId, context), mode: 'preview',
-    previewStage: { reasonLabel: 'Test Reservations', cancellationNote: target.note } });
+const feeText = (stage: NativeResult): string | null => {
+  const value = stage.penaltyText ?? (object(stage.staged) ? stage.staged.penaltyText : null);
+  return typeof value === 'string' && value.trim() && value.length <= 2000 ? value : null;
+};
+const fee = (notice: string | null) => notice
+  ? { state: 'review_required', text: notice }
+  : { state: 'unknown_precommit', text: null };
+const preimageKeys = ['propertyCode', 'confirmation', 'guestId', 'nativeStayId', 'firstName', 'lastName',
+  'arrival', 'departure', 'roomType', 'ratePlan', 'note', 'cmsSend', 'allowRealGuest'] as const;
+const samePreimage = (left: NativeResult, right: NativeResult) => preimageKeys.every(key => left[key] === right[key]);
+
+async function preview(target: Parsed, arrival: string, transportId: string, context: ToolContext,
+  cancel: Awaited<ReturnType<typeof nativeWriterModules>>['cancel']): Promise<NativeResult> {
+  return cancel.runCloudPaneCancel({ ...commonInput(target, arrival, transportId, context), mode: 'preview',
+    ...(target.reason ? { previewStage: { reasonLabel: target.reason, cancellationNote: target.note } } : {}) });
 }
 
-function validateStage(stage: NativeResult): ToolResult | null {
-  if (stage.feeDialogPending === true || stage.penaltyText || (object(stage.staged) && stage.staged.penaltyText)) {
-    const notice = stage.penaltyText ?? (object(stage.staged) ? stage.staged.penaltyText : null);
-    return { ...error('CANCEL_FEE_REQUIRES_REVIEW', 'Cancellation fee or penalty requires review; no acceptance is authorized.'),
-      data: { fee: { state: 'review_required', text: typeof notice === 'string' && notice.length <= 2000 ? notice : null },
-        policy_facts: stage.policyFacts ?? [] } };
-  }
-  if (stage.outcome !== 'preview_ok' || stage.requestDispatched !== false || !object(stage.expected) ||
-      !object(stage.staged) || stage.staged.reasonCode !== 'TEST' || stage.staged.reasonLabel !== 'Test Reservations') {
-    return nativeFailure(stage);
-  }
-  return null;
-}
-
-function labTarget(target: Parsed): boolean {
-  return target.propertyCode === 'HRCEN' && /^\d+-\d+$/.test(target.confirmation) &&
-    target.arrival !== undefined && target.arrival >= '2027-01-01' && target.scope === 'whole_stay';
+function selectedReason(stage: NativeResult, reason: string | undefined): { code: string; label: string } | null {
+  if (!reason || !Array.isArray(stage.reasons)) return null;
+  const matches = stage.reasons.filter(item => object(item) && item.display === reason && text(item.value));
+  if (matches.length !== 1 || !object(matches[0]) || !text(matches[0].value)) return null;
+  return { code: matches[0].value, label: reason };
 }
 
 function preflightDisplay(result: NativeResult, bookingId: string) {
@@ -183,27 +187,62 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
   if (context.mode === 'historical') return error('HISTORICAL_HMS_FORBIDDEN', 'Historical sessions cannot access live HMS.');
   if (context.signal?.aborted) return error('ABORTED', 'Cancellation preparation was aborted.');
   if (!context.credentialLease) return error('HMS_SHARED_LEASE_REQUIRED', 'The host must supply a native shared HMS credential lease.');
+  if (target.scope !== 'whole_stay') return error('CANCEL_SCOPE_REQUIRES_REVIEW', 'Choose the whole stay before preparing this cancellation.');
   try {
-    const { preflight, registry } = await nativePreflightModules();
+    const [{ preflight, registry }, { cancel }] = await Promise.all([nativePreflightModules(), nativeWriterModules()]);
     const property = registry.getPropertyRegistration(target.propertyCode);
     if (!property?.active || !text(property.mailboxTransportId)) return error('HMS_PROPERTY_UNSUPPORTED', 'Property is not supported.');
-    return await preflight.withCancellationPreflightSession(async ({ runTool }: { runTool: (request: unknown) => Promise<NativeResult> }) => {
-      const read = await runTool({ tool: 'read', confirmation: target.confirmation,
+    const readResult = await preflight.withCancellationPreflightSession(async ({ runTool }: { runTool: (request: unknown) => Promise<NativeResult> }) => {
+      const read = await runTool({ tool: 'read', confirmation: target.confirmation, includeNativePreimage: true,
         ...(target.guestName ? { guestName: target.guestName } : {}),
         ...(target.arrival ? { arrivalDate: target.arrival } : {}) });
-      if (read.outcome !== 'ok') return nativeFailure(read);
+      if (read.outcome !== 'ok') return { failure: nativeFailure(read) };
       const result = await runTool({ tool: 'prepareCancellation', requestedScope: target.scope });
-      if (result.outcome !== 'prepared_for_human_review') return nativeFailure(result);
-      const data = { ...result, display_rows: preflightDisplay(result, target.bookingId),
-        cancellation_fee: result.fee ?? null, request_dispatched: false };
+      if (result.outcome !== 'prepared_for_human_review') return { failure: nativeFailure(result) };
       const stay = object(result.stay) ? result.stay : {};
       const status = object(stay.status) ? stay.status : {};
       if (status.state !== 'observed' || typeof status.value !== 'string' || status.value.trim().toLowerCase() !== 'reserved') {
-        return { ...error('CANCEL_STATUS_REQUIRES_REVIEW', 'Fresh status is not confirmed Reserved; staff review is required.'), data };
+        return { failure: { ...error('CANCEL_STATUS_REQUIRES_REVIEW', 'Fresh status is not Reserved; staff review is required.'), data: result } };
       }
-      return success(data);
+      const record = object(read.record) ? read.record : {};
+      const identity = object(record.nativePreimage) ? record.nativePreimage : null;
+      return { result, identity };
     }, { propertyCode: target.propertyCode, transportId: property.mailboxTransportId,
       confirmation: target.confirmation, signal: context.signal, credentialLease: context.credentialLease });
+    if (readResult.failure) return readResult.failure;
+    const { result, identity } = readResult;
+    if (!identity || !date(identity.arrival) || identity.confirmation !== target.confirmation ||
+        identity.propertyCode !== target.propertyCode || (target.arrival && identity.arrival !== target.arrival)) {
+      return error('CANCEL_TARGET_UNVERIFIED', 'The reservation target or arrival could not be verified.');
+    }
+    const stage = await preview(target, identity.arrival, property.mailboxTransportId, context, cancel);
+    const expected = object(stage.expected) ? stage.expected : null;
+    if (!['preview_ok', 'refused_reason_missing'].includes(String(stage.outcome)) || stage.requestDispatched !== false || !expected ||
+        expected.confirmation !== identity.confirmation || expected.propertyCode !== identity.propertyCode ||
+        expected.nativeStayId !== identity.reservationStayId || expected.guestId !== identity.guestId ||
+        expected.firstName !== identity.firstName || expected.lastName !== identity.lastName ||
+        expected.arrival !== identity.arrival || expected.departure !== identity.departure) return nativeFailure(stage);
+    const reason = selectedReason(stage, target.reason);
+    const notice = feeText(stage);
+    const data = { ...result, native: { expected, reason, guestName: target.guestName ?? null,
+      arrivalHint: target.arrival ?? null, cancellationNote: target.note, penaltyText: notice,
+      feeDialogPending: stage.feeDialogPending === true },
+      reasons: stage.reasons ?? [], policy_facts: stage.policyFacts ?? [],
+      display_rows: [...preflightDisplay(result, target.bookingId).filter(row => row.id !== 'fee'),
+        { id: 'cancel-reason', booking_id: target.bookingId, label: 'Cancellation reason', native_path: '/native/reason/label', kind: 'text' as const, value: reason?.label ?? null },
+        { id: 'cancel-reason-options', booking_id: target.bookingId, label: 'HMS cancellation reasons', native_path: '/reasons', kind: 'text' as const,
+          value: Array.isArray(stage.reasons) ? stage.reasons.flatMap(item => object(item) && text(item.display) ? [item.display] : []).join(', ') || null : null },
+        { id: 'cancel-fee', booking_id: target.bookingId, label: 'Cancellation fee or penalty', native_path: '/cancellation_fee/text', kind: 'text' as const, value: notice ?? 'Not shown by HMS before Save' }],
+      cancellation_fee: fee(notice), request_dispatched: false };
+    if (stage.feeDialogPending === true && !notice) {
+      return { ...error('CANCEL_PENALTY_UNAVAILABLE', 'HMS reported a penalty but did not provide its text. Review the reservation in HMS.'), data };
+    }
+    if (!reason) return { ...error('CANCEL_REASON_REQUIRED', 'Choose a cancellation reason from the HMS reasons and run Prepare again.'), data };
+    if (!stage.feeDialogPending && (!object(stage.staged) || stage.staged.reasonCode !== reason.code ||
+        stage.staged.reasonLabel !== reason.label || stage.staged.cancellationNote !== target.note)) {
+      return { ...nativeFailure(stage), data };
+    }
+    return success(data);
   } catch (cause) {
     if (context.signal?.aborted) return error('ABORTED', 'Cancellation preparation was aborted.');
     const code = cause instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(cause.message) ? cause.message : 'HMS_PREPARE_FAILED';
@@ -212,60 +251,123 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
 }
 
 export async function save(input: unknown, context: SaveContext): Promise<ToolResult> {
-  if (!hmsSaveEnabled()) return error('SAVE_DISABLED', 'Only unsaved Prepare is available.');
   const target = parse(input);
   if (!target || !object(input) || !text(input.executionId) || input.executionId.length > 200) {
     return error('INVALID_CANCEL_INPUT', 'A cancellation target and execution ID are required.');
   }
-  if (!context || context.mode !== 'labtest' || !text(context.sessionId) || !labTarget(target)) {
-    return error('LABTEST_ONLY', 'Cancellation Save is limited to a whole HRCEN Proof Labtest stay in 2027 or later.');
+  if (!context || !['live', 'labtest'].includes(context.mode) || !text(context.sessionId)) {
+    return error('INVALID_CONTEXT', 'A staff session is required.');
   }
+  if (target.scope !== 'whole_stay') return error('CANCEL_SCOPE_REQUIRES_REVIEW', 'Choose the whole stay before cancellation.');
   if (context.signal?.aborted) return error('ABORTED', 'Cancellation was aborted before dispatch.');
   if (!context.credentialLease || typeof context.markDispatched !== 'function') {
     return error('HMS_SHARED_LEASE_REQUIRED', 'The host must supply an exclusive native HMS lease and durable dispatch marker.');
   }
+  const prepared = object(input.prepared) ? input.prepared : null;
+  const native = prepared && object(prepared.native) ? prepared.native : null;
+  const expected = native && object(native.expected) ? native.expected : null;
+  const reason = native && object(native.reason) ? native.reason : null;
+  const preparedFee = prepared && object(prepared.cancellation_fee) ? prepared.cancellation_fee : null;
+  const shownNotice = native && typeof native.penaltyText === 'string' ? native.penaltyText : null;
+  if (!expected || !reason || !text(reason.code) || !text(reason.label) || reason.label !== target.reason ||
+      native?.cancellationNote !== target.note || native?.guestName !== (target.guestName ?? null) ||
+      native?.arrivalHint !== (target.arrival ?? null) || expected.propertyCode !== target.propertyCode ||
+      expected.confirmation !== target.confirmation || !date(expected.arrival) ||
+      (target.arrival && expected.arrival !== target.arrival) || !preparedFee ||
+      preparedFee.text !== shownNotice || preparedFee.state !== fee(shownNotice).state) {
+    return error('CANCEL_PREPARE_REQUIRED', 'Run Prepare for this reservation and reason before Go.');
+  }
+  if (shownNotice && input.confirmPenalty !== true) {
+    return { ...error('CANCEL_PENALTY_CONFIRMATION_REQUIRED', 'Review the displayed cancellation penalty and confirm it before Go.'),
+      data: { cancellation_fee: fee(shownNotice) } };
+  }
   const executionId = input.executionId;
   let markerStarted = false;
+  let currentNotice: string | null = null;
+  let feeChanged = false;
+  let cancellationReleased = false;
+  let chargeReleased = false;
   try {
     const { cancel, registry } = await nativeWriterModules();
     const property = registry.getPropertyRegistration(target.propertyCode);
     if (!property?.active || !text(property.mailboxTransportId)) return error('HMS_PROPERTY_UNSUPPORTED', 'Property is not supported.');
-    const stage: NativeResult = await labStage(target, property.mailboxTransportId, context, cancel);
-    const refusal = validateStage(stage);
-    if (refusal) return refusal;
-    const expected = stage.expected;
+    const stage = await preview(target, expected.arrival, property.mailboxTransportId, context, cancel);
+    const freshExpected = object(stage.expected) ? stage.expected : null;
+    const freshReason = selectedReason(stage, target.reason);
+    if (stage.outcome !== 'preview_ok' || stage.requestDispatched !== false || !freshExpected || !samePreimage(expected, freshExpected)) {
+      return error('CANCEL_RECHECK_CHANGED', 'The reservation could not be rechecked. Run Prepare again.');
+    }
+    currentNotice = feeText(stage);
+    if (stage.feeDialogPending === true && !currentNotice) {
+      return { ...error('CANCEL_PENALTY_UNAVAILABLE', 'HMS reported a penalty but did not provide its text. Review the reservation in HMS.'),
+        data: { cancellation_fee: { state: 'review_required', text: null } } };
+    }
+    if (currentNotice !== shownNotice) {
+      return { ...error('CANCEL_PENALTY_CHANGED', 'The cancellation penalty changed. Review it and run Prepare again.'),
+        data: { cancellation_fee: fee(currentNotice) } };
+    }
+    if (!freshReason || freshReason.code !== reason.code || freshReason.label !== reason.label ||
+        (!stage.feeDialogPending && (!object(stage.staged) || stage.staged.reasonCode !== reason.code ||
+          stage.staged.reasonLabel !== reason.label || stage.staged.cancellationNote !== target.note))) {
+      return error('CANCEL_RECHECK_CHANGED', 'The reservation or cancellation reason changed. Run Prepare again.');
+    }
+    const mark = async (details: unknown) => {
+      if (markerStarted || context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
+      markerStarted = true;
+      await context.markDispatched(details);
+      if (context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
+    };
     const result: NativeResult = await cancel.runCloudPaneCancel({
-      ...commonInput(target, property.mailboxTransportId, context), mode: 'commit', expected,
-      reasonCode: 'TEST', reasonLabel: 'Test Reservations', cancellationNote: target.note,
+      ...commonInput(target, expected.arrival, property.mailboxTransportId, context), mode: 'commit', expected,
+      reasonCode: reason.code, reasonLabel: reason.label, cancellationNote: target.note,
       commitBudgetMs: 20 * 60_000,
       continuationAllowed: () => !context.signal?.aborted,
       beforeDispatch: async () => !context.signal?.aborted,
+      awaitChargeApproval: async (dialog: { text?: unknown }) => {
+        const observed = typeof dialog.text === 'string' ? dialog.text : null;
+        currentNotice = observed;
+        feeChanged = observed !== shownNotice;
+        return !feeChanged && shownNotice !== null && input.confirmPenalty === true && !context.signal?.aborted;
+      },
+      prepareChargeWithAuthority: async () => {
+        if (!markerStarted) await mark({ workflow: 'cancel', executionId, propertyCode: target.propertyCode, action: 'penalty_acceptance' });
+      },
       dispatchWithAuthority: async (send: () => Promise<unknown>, digest: string) => {
-        if (markerStarted || context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
-        markerStarted = true;
-        await context.markDispatched({ workflow: 'cancel', executionId, requestDigest: digest });
+        if (cancellationReleased) throw new Error('CANCEL_DISPATCH_DISARMED');
+        if (!markerStarted) await mark({ workflow: 'cancel', executionId, requestDigest: digest });
         if (context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
+        cancellationReleased = true;
+        return send();
+      },
+      dispatchChargeWithAuthority: async (send: () => Promise<unknown>) => {
+        if (!markerStarted || chargeReleased || context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
+        chargeReleased = true;
         return send();
       },
     });
     const readback = result.nativeReadback;
-    if (markerStarted && result.outcome === 'cancelled' && result.requestDispatched === true &&
-        result.chargeApproved === false && result.chargeDispatched === false && object(readback) &&
-        object(expected) && readback.confirmation === expected.confirmation &&
+    const resultNotice = feeText(result);
+    const confirmedResultFee = !resultNotice || (shownNotice !== null && input.confirmPenalty === true &&
+      resultNotice === shownNotice);
+    if (markerStarted && result.outcome === 'cancelled' && result.requestDispatched === true && confirmedResultFee &&
+        object(readback) && readback.confirmation === expected.confirmation &&
         readback.nativeStayId === expected.nativeStayId && readback.nativeGuestId === expected.guestId &&
         typeof readback.status === 'string' && /^cancel(?:l)?ed$/i.test(readback.status) &&
-        readback.reasonCode === 'TEST' && readback.cancellationNote === target.note) {
+        readback.reasonCode === reason.code && readback.cancellationNote === target.note) {
       return success({ confirmation: target.confirmation, reservation_id: readback.nativeStayId, readback });
     }
     if (markerStarted || result.requestDispatched === true) {
-      const uncertain = error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain');
-      if (result.outcome !== 'cancel_penalty_pending' && !result.penaltyText) return uncertain;
-      const notice = typeof result.penaltyText === 'string' && result.penaltyText.length <= 2000 ? result.penaltyText : null;
-      return { ...uncertain, data: { fee: { state: 'review_required', text: notice }, readback: readback ?? null } };
+      return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain'),
+        data: { cancellation_fee: fee(feeText(result) ?? currentNotice ?? shownNotice), readback: readback ?? null } };
+    }
+    if (feeChanged || feeText(result)) {
+      return { ...error('CANCEL_PENALTY_CHANGED', 'The cancellation penalty changed. Review it and run Prepare again.'),
+        data: { cancellation_fee: fee(currentNotice ?? feeText(result)) } };
     }
     return nativeFailure(result);
   } catch (cause) {
-    if (markerStarted) return error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation in a fresh session before retrying.', 'uncertain');
+    if (markerStarted) return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation in a fresh session before retrying.', 'uncertain'),
+      data: { cancellation_fee: fee(currentNotice ?? shownNotice) } };
     if (context.signal?.aborted) return error('ABORTED', 'Cancellation was aborted before dispatch.');
     const code = cause instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(cause.message) ? cause.message : 'HMS_CANCEL_FAILED';
     return error(code, 'Native cancellation failed before dispatch.');
