@@ -6,7 +6,13 @@ const object = (properties: Record<string, unknown>, required: string[]) => ({
 export const schemas = {
   hms_search_reservations: object({
     property_code: string,
-    criteria: object({ reservation_id: string, guest_name: string, arrival_date: string, departure_date: string }, []),
+    criteria: object({
+      reservation_id: string,
+      guest_name: { ...string, description: 'Guest surname only. For Proof Labtest use Labtest, not Proof Labtest. Preserve the full compound surname if known.' },
+      guest_name_is_surname: { type: 'boolean', description: 'Required true for a surname containing spaces, and only when the source identifies the entire value as the surname (e.g. De Koker).' },
+      arrival_date: string,
+      departure_date: string,
+    }, []),
   }, ['property_code', 'criteria']),
   hms_read_reservation: object({
     property_code: string,

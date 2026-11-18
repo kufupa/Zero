@@ -66,28 +66,43 @@ async function departureRefusal(result: Record<string, unknown>, requested: stri
     comparison === 'mismatch' ? 'The native departure differs from the requested date.' : 'Infor did not return one readable departure date.');
 }
 
+function surnameRefusal(result: Record<string, unknown>, surname: string | undefined): ToolResult | null {
+  if (surname === undefined) return null;
+  const observed = uniqueRecordField(result, 'lastname');
+  if (observed === undefined) return fail('CONFIRMATION_HINT_UNVERIFIED', 'Infor did not return one readable guest surname.');
+  return normalizeSurname(observed) === normalizeSurname(surname) ? null :
+    fail('CONFIRMATION_HINT_MISMATCH', 'The native guest surname differs from the requested surname.');
+}
+
 export async function searchReservations(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
-      !keys(input.criteria, ['reservation_id', 'guest_name', 'arrival_date', 'departure_date'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
-  const { reservation_id: id, guest_name: name, arrival_date: arrival, departure_date: departure } = input.criteria;
+      !keys(input.criteria, ['reservation_id', 'guest_name', 'guest_name_is_surname', 'arrival_date', 'departure_date'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
+  const { reservation_id: id, guest_name: name, guest_name_is_surname: confirmedSurname, arrival_date: arrival, departure_date: departure } = input.criteria;
   if ((id !== undefined && !str(id)) || (name !== undefined && !str(name)) ||
+      (confirmedSurname !== undefined && (typeof confirmedSurname !== 'boolean' || !name)) ||
       (arrival !== undefined && !date(arrival)) || (departure !== undefined && !date(departure))) return fail('INVALID_INPUT', 'Invalid search criterion.');
-  if (!id && !name) return fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
-  if (id && !/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
-  if (!id && name && name.includes(',')) return fail('UNSUPPORTED_CRITERIA', 'Surname search requires the surname alone.');
+  if (name && (name.includes(',') || (/\s/u.test(name.trim()) && confirmedSurname !== true))) {
+    return fail('UNSUPPORTED_CRITERIA', 'Supply only the surname, or use the confirmation. Set guest_name_is_surname only for a known compound surname.');
+  }
   const property = input.property_code;
+  if (!id) return name ? searchBySurname(property, name.trim(), arrival, departure, context) : fail('INPUT_GAP', 'Provide a reservation identifier or surname.');
+  if (!/^(?:\d+-\d+|\d{6,10})$/.test(id)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   return execute(context, async () => {
-    if (id) {
-      const result: Record<string, unknown> = await savedRead(property, id, context, departure ? 'record' : 'shallow', { guestName: name, arrivalDate: arrival });
-      if (result.outcome === 'ok') {
-        const refusal = await departureRefusal(result, departure);
-        return refusal ?? ok({ outcome: 'candidates', candidates: [{ reservation_id: id, native: result.shallow }], completeness: result.completeness });
-      }
-      if (result.outcome === 'read_failed' && ['AMBIGUOUS_CONFIRMATION', 'CONFIRMATION_HINT_UNVERIFIED', 'CONFIRMATION_HINT_MISMATCH', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND'].includes(String(result.issue))) {
-        return ok({ outcome: result.issue === 'CONFIRMATION_NOT_FOUND' ? 'not_found_in_searched_range' : 'ambiguous_or_incomplete', native: result });
-      }
-      return fail(String(result.issue || 'HMS_READ_FAILED'), 'Native reservation search failed.', true);
+    const result: Record<string, unknown> = await savedRead(property, id, context, departure || name ? 'record' : 'shallow', { arrivalDate: arrival, departureDate: departure });
+    if (result.outcome === 'ok') {
+      const refusal = await departureRefusal(result, departure) ?? surnameRefusal(result, name);
+      return refusal ?? ok({ outcome: 'candidates', candidates: [{ reservation_id: id, native: result.shallow }], completeness: result.completeness });
     }
+    if (result.outcome === 'read_failed' && ['AMBIGUOUS_CONFIRMATION', 'CONFIRMATION_HINT_UNVERIFIED', 'CONFIRMATION_HINT_MISMATCH', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND'].includes(String(result.issue))) {
+      return ok({ outcome: result.issue === 'CONFIRMATION_NOT_FOUND' ? 'not_found_in_searched_range' : 'ambiguous_or_incomplete', native: result });
+    }
+    return fail(String(result.issue || 'HMS_READ_FAILED'), 'Native reservation search failed.', true);
+  });
+}
+
+function searchBySurname(property: string, surname: string, arrival: string | undefined, departure: string | undefined, context: ToolContext): Promise<ToolResult> {
+  if (surname.includes(',')) return Promise.resolve(fail('UNSUPPORTED_CRITERIA', 'Surname search requires the surname alone.'));
+  return execute(context, async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nava-hms-read-'));
     try {
       const { searchGuestInCloud } = await native('pane-guest-search.mjs');
@@ -97,7 +112,7 @@ export async function searchReservations(input: unknown, context: ToolContext): 
           if (!identity || typeof operation !== 'function') throw new Error('GUEST_STAY_PROPERTY_UNVERIFIED');
           return operation(page, identity);
         }, { ...options, credentialLease: context.credentialLease }) : undefined;
-      const result: Record<string, unknown> = await searchGuestInCloud({ propertyCode: property, lastName: name, arrival, departure, dir }, { signal: context.signal, ...(openSession ? { openSession } : {}) });
+      const result: Record<string, unknown> = await searchGuestInCloud({ propertyCode: property, lastName: surname, arrival, departure, dir }, { signal: context.signal, ...(openSession ? { openSession } : {}) });
       const { screenshots: _screenshots, unreadableRows: _unreadableRows, ...publicResult } = result;
       if (!['ok', 'ambiguous_capped'].includes(String(result.outcome))) return fail('HMS_SEARCH_INCOMPLETE', 'Native surname search failed or returned unreadable rows.', true);
       return ok({ outcome: result.outcome === 'ambiguous_capped' ? 'incomplete' : 'candidates', native: publicResult });
@@ -151,7 +166,8 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
   const lookup = parsed.data.action.details.lookup;
   const property = context.propertyCode;
   if (!lookup.reservation_id) {
-    const result = await searchReservations({ property_code: property, criteria: lookup }, context);
+    if (!lookup.guest_name) return fail('INPUT_GAP', 'Provide a reservation number or surname in the lookup.');
+    const result = await searchBySurname(property, lookup.guest_name, lookup.arrival_date, lookup.departure_date, context);
     if (!result.ok || !obj(result.data) || !obj(result.data.native)) return result;
     const native = result.data.native;
     const rows: unknown[] = Array.isArray(native.rows) ? native.rows : [];
@@ -199,14 +215,7 @@ export async function readReservation(input: unknown, context: ToolContext): Pro
   return execute(context, async () => {
     const result: Record<string, unknown> = await savedRead(property, id, context, 'record', { arrivalDate: arrival, departureDate: departure });
     if (result.outcome === 'ok') {
-      const refusal = await departureRefusal(result, departure);
-      if (refusal) return refusal;
-      if (surname !== undefined) {
-        const observed = uniqueRecordField(result, 'lastname');
-        if (observed === undefined) return fail('CONFIRMATION_HINT_UNVERIFIED', 'Infor did not return one readable guest surname.');
-        if (normalizeSurname(observed) !== normalizeSurname(surname)) return fail('CONFIRMATION_HINT_MISMATCH', 'The native guest surname differs from the requested surname.');
-      }
-      return ok(result);
+      return await departureRefusal(result, departure) ?? surnameRefusal(result, surname) ?? ok(result);
     }
     if (['AMBIGUOUS_CONFIRMATION', 'CONFIRMATION_HINT_UNVERIFIED', 'CONFIRMATION_HINT_MISMATCH', 'SEARCH_RESULTS_CAPPED', 'CONFIRMATION_NOT_FOUND'].includes(String(result.issue))) return ok({ outcome: 'not_uniquely_read', native: result });
     return fail(String(result.issue || 'HMS_READ_FAILED'), 'Native reservation read failed.', true);

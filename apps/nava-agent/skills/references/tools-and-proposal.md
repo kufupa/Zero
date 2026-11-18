@@ -9,7 +9,7 @@ Normative wire owner: `/home/orca/nava-rewrite/contracts/nava-agent-backend.md`,
 | `skill_read` | `skill_name` (`triage|quote|create|amend|cancel|filing`), optional `path` | Pinned `SKILL.md` default or contained relative reference; whole skills tree mounted |
 | `mail_read_thread` | `{}` | Authorized session messages + attachment metadata |
 | `mail_read_attachment` | `message_id`, `attachment_id` | Supplied document text/metadata or explicit unavailable |
-| `hms_search_reservations` | `property_code`, `criteria` | Criteria only `reservation_id`, `guest_name`, `arrival_date`, `departure_date`; candidate list |
+| `hms_search_reservations` | `property_code`, `criteria` | Criteria: `reservation_id`, `guest_name` (surname only), `guest_name_is_surname`, `arrival_date`, `departure_date`; candidate list |
 | `hms_read_reservation` | `property_code`, `reservation_id`; optional `arrival_date`, `departure_date` (YYYY-MM-DD), `last_name` (surname only) | Fresh saved state. Send known arrival to scope the lookup; verify known departure and surname against the native stay. |
 | `hms_read_catalogue` | `property_code`, `kinds` | Kinds: `room_type`, `rate_plan`, `meal_plan`, `source_of_business`, `track`, `guarantee_type`, `organization`, `agency` |
 | `hms_quote` | `quote_id`, `property_code`, `groups`; optional `search`, `details`, `max_options_per_group` | Native capture per group, not booked inventory |
@@ -18,6 +18,8 @@ Normative wire owner: `/home/orca/nava-rewrite/contracts/nava-agent-backend.md`,
 | `hms_save` | `proposal_id`, `expected_revision` | Real guest idle until staff Go; backend pins edited revision; actual Save + fresh readback result |
 | `reply_draft` | `proposal_id`, `text` | Draft only; never sends |
 | `quote_artifacts` | `quote_id` | Artifacts from published quote revision; backend currently declares PDF only. Owner R4 requires PDF + Excel; report missing workbook until supported. Never sends. |
+
+For `hms_search_reservations`, use `guest_name: "Labtest"` for Proof Labtest. If the source identifies an entire compound surname such as De Koker, keep it intact and set `guest_name_is_surname: true`. If the surname is unclear, use the confirmation and known dates or ask staff; do not guess by splitting a name.
 
 `hms_quote.groups[]`: unique `group_id`, `arrival_date`, `departure_date`, nonempty `rooms`. Room keys: `id`, `quantity` integer ≥1, `adults` integer ≥1, `children` integer ≥0, `child_ages` array of integers ≥0; all required. Search keys: `sales_strategy`, `include_restricted`, `include_alternatives`; runtime schema wins. `details` = `summary|full`. No children indicated → editable zero + empty ages, not AI extraction. Don't guess adults or quantity.
 
