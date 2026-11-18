@@ -61,7 +61,7 @@ export class BedrockRuntime implements AgentRuntime {
         max_tokens: maxTokens,
         thinking: { type: 'adaptive' },
         messages: request.messages.map(({ role, content }) => ({ role, content })) as unknown as MessageParam[],
-        ...(request.system ? { system: request.system } : {}),
+        ...(request.system ? { system: [{ type: 'text' as const, text: request.system, cache_control: { type: 'ephemeral' as const } }] } : {}),
         ...(request.tools.length ? {
           tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.input_schema, ...(strictCompatible(tool.input_schema) ? { strict: true } : {}) })),
           tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
