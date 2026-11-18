@@ -135,6 +135,17 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def error_code(error):
+    value = error.get('code') if isinstance(error, dict) else error
+    return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{1,79}', value) else None
+
+
+class GatewayHttpError(RuntimeError):
+    def __init__(self, code, gateway_code):
+        super().__init__('http_' + str(code))
+        self.gateway_code = gateway_code
+
+
 class Gateway:
     def __init__(self, origin, cookie, browser_origin, timeout):
         url = urllib.parse.urlsplit(origin)
@@ -157,8 +168,13 @@ class Gateway:
         try:
             return self.opener.open(req, timeout=self.timeout if timeout is None else timeout)
         except urllib.error.HTTPError as e:
-            e.close()
-            raise RuntimeError('http_' + str(e.code)) from None
+            with e:
+                try:
+                    reply = json.loads(e.read(8192))
+                    gateway_code = error_code(reply.get('error')) if isinstance(reply, dict) else None
+                except (ValueError, OSError):
+                    gateway_code = None
+            raise GatewayHttpError(e.code, gateway_code) from None
 
     def json(self, path, body=None, headers=None):
         with self.request(path, body, headers) as res:
@@ -383,6 +399,7 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                                 break
                             entry['status'] = 'complete' if not item.get('error') else 'failed'
                             entry['reason'] = None if entry['status'] == 'complete' else 'operation_error'
+                            entry['error_code'] = error_code(item.get('error'))
                             entry['stage'] = stage
                             if workflow == 'triage' and isinstance(stage.get('native_result'), dict):
                                 native_outcome = stage['native_result'].get('outcome')
@@ -421,6 +438,8 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                                        str(exc) if isinstance(exc, RuntimeError) else 'operation_dispatch_or_read_unknown')
                     if isinstance(exc, RuntimeError) and re.fullmatch(r'http_4\d\d', str(exc)):
                         entry['status'] = 'failed'
+                    if isinstance(exc, GatewayHttpError):
+                        entry['error_code'] = exc.gateway_code
                 finally:
                     if entry['wall_ms'] is None:
                         entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
