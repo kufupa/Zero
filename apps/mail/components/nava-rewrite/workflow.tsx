@@ -318,7 +318,8 @@ function nativeTrackOptions(proposal: Proposal, drafts: WorkflowProps['drafts'],
 function quoteCodeOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], path: string, kind: 'room' | 'rate') {
   const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)\/rooms\/(0|[1-9]\d*)\/required$/.exec(path);
   const stage = proposal.stage;
-  if (!match || !stage?.quote_id || stage.revision !== proposal.revision || proposal.phase === 'staging' || Object.keys(drafts).length) return [];
+  if (!match || !stage?.quote_id || stage.revision !== proposal.revision || proposal.phase === 'staging' ||
+      Object.keys(drafts).some(key => !/^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*)\/required$/.test(key))) return [];
   const action = proposal.actions[Number(match[1])];
   const details = action?.details;
   if (!details || typeof details !== 'object' || Array.isArray(details) || details.quote_id !== stage.quote_id || !Array.isArray(details.groups)) return [];
@@ -327,11 +328,20 @@ function quoteCodeOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], p
   const room = group.rooms[Number(match[3])];
   if (!room || typeof room !== 'object' || Array.isArray(room) || typeof room.id !== 'string') return [];
   const seen = new Set<string>();
-  return (stage.quote_choices ?? stage.quote_options ?? []).flatMap(option => {
+  const choices = (stage.quote_choices ?? stage.quote_options ?? []).flatMap(option => {
     const code = option[kind];
     if (option.group_id !== group.group_id || option.room_id !== room.id || seen.has(code.code)) return [];
     seen.add(code.code);
     return [{ value: code.code, label: code.code, meaning: code.label }];
+  });
+  if (choices.length || stage.state !== 'incomplete') return choices;
+  return stage.display_rows.flatMap(row => {
+    if (row.kind !== 'code' || row.label !== (kind === 'room' ? 'Room' : 'Rate') || !row.code ||
+        row.quote_id !== stage.quote_id || row.group_id !== group.group_id || row.booking_id !== room.id || seen.has(row.code)) return [];
+    const availabilityPath = row.native_path.replace(/\/(?:room|rate)$/, '/availability');
+    if (!stage.display_rows.some(item => item.native_path === availabilityPath && item.kind === 'availability' && item.status === 'available')) return [];
+    seen.add(row.code);
+    return [{ value: row.code, label: row.code, meaning: row.meaning }];
   });
 }
 
@@ -412,10 +422,11 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     const chosen = draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : { roomCode: roomCodes[0] ?? '', rateCode: rateCodes[0] ?? '' };
     const rooms = quoteCodeOptions(proposal, drafts, spec.path, 'room');
     const rates = quoteCodeOptions(proposal, drafts, spec.path, 'rate');
+    const choiceNote = proposal.stage?.state === 'incomplete' ? 'Observed in Infor. Choose a room and rate for each room, then check them together.' : 'Choices from the latest Infor check. Check again after changing.';
     const roomNote = roomCodes.length > 1 ? 'Changing the room replaces the current list of room codes.'
-      : rooms.length ? 'Choices from the latest Infor check. Check again after changing.' : 'Type a room code, or check Infor to load choices.';
+      : rooms.length ? choiceNote : 'Type a room code, or check Infor to load choices.';
     const rateNote = rateCodes.length > 1 ? 'Changing the rate replaces the current list of rate codes.'
-      : rates.length ? 'Choices from the latest Infor check. Check again after changing.' : 'Type a rate code, or check Infor to load choices.';
+      : rates.length ? choiceNote : 'Type a rate code, or check Infor to load choices.';
     return <div><PaneField {...common} review={chosen.roomCode ? review : undefined} label={context ? `Room type · ${context}` : 'Room type'} control="combobox" value={chosen.roomCode}
       options={rooms} placeholder="Type a room code" hint={roomNote} onChange={next => onEdit(spec.path, { ...chosen, roomCode: next })} />
       <PaneField {...common} review={chosen.rateCode ? review : undefined} label={context ? `Rate plan · ${context}` : 'Rate plan'} control="combobox" value={chosen.rateCode}
