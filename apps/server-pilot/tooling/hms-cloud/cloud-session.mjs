@@ -1314,8 +1314,16 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       const safe = [secret?.password, secret?.username, secret?.loginUrl].filter(Boolean)
         .reduce((text, value) => text.replaceAll(value, '[withheld]'), message)
         .replace(/(https?:\/\/[^\s?]+)\?[^\s]*/g, '$1?[withheld]')
-        .replace(/\b(cookie|set-cookie|authorization|requesttoken|csrftckt)\s*[:=]\s*[^\s,;]+/gi, '$1=[withheld]');
+        .replace(/\b(cookie|set-cookie|authorization)[ \t]*["']?[ \t]*[:=][^\r\n]*/gi, '$1=[withheld]')
+        .replace(/\bBearer\s+[^\s,;"']+/gi, 'Bearer [withheld]')
+        .replace(/\b(requesttoken|csrftckt|password|token|api[_-]?key|secret)\s*["']?\s*[:=]\s*["']?[^\s,;"']+/gi, '$1=[withheld]');
       failure = new Error(safe);
+      failure.nativeSafeMessage = safe;
+      if (['Error', 'TypeError', 'ReferenceError', 'RangeError', 'SyntaxError', 'DOMException', 'TimeoutError',
+        'DataCloneError', 'AbortError'].includes(error?.name)) failure.nativeErrorClass = error.name;
+      if (typeof error?.stack === 'string') {
+        failure.nativeErrorLocation = error.stack.match(/\/tooling\/hms-cloud\/([A-Za-z0-9-]+\.mjs:\d+:\d+)/)?.[1] ?? null;
+      }
     }
   } finally {
     recordSetup();

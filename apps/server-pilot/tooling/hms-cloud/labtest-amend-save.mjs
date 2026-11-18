@@ -692,8 +692,7 @@ export async function runLabtestAmendSave(page, {
     signal?.removeEventListener('abort', onAbort);
     inStage = false;
     availabilityArmed = false;
-    retainArmed = false;
-    extendArmed = false;
+    continuationArmed = false;
     childStageGate?.close();
     guaranteeStageGate?.close();
     partyStageGate?.close();
