@@ -550,7 +550,7 @@ async function prepareNewProfiles(lease:LeaseFence,registry:ToolRegistry,context
     if(!result.ok || !saved.success) {
       const [latest]=await sql`SELECT stage FROM nava_agent.proposal WHERE id=${p.id}`;
       await profileStageFailure(lease,p.id,job,result.error?.code ?? 'PROFILE_CREATE_UNCERTAIN',!!latest?.stage?.profile_dispatch || result.error?.outcome==='uncertain',
-        z.object({nativeId:z.string().nullable().optional()}).safeParse(result.data).data?.nativeId ?? null);
+        z.object({nativeId:z.string().nullable().optional()}).safeParse(result.data).data?.nativeId ?? null,result.error?.native_error);
       return false;
     }
     await sql.begin(async tx=>{
@@ -584,18 +584,19 @@ async function prepareNewProfiles(lease:LeaseFence,registry:ToolRegistry,context
   }
 }
 
-async function profileStageFailure(lease:LeaseFence,proposalId:string,job:z.infer<typeof queuedStage>,code:string,uncertain:boolean,nativeId:string|null=null) {
+async function profileStageFailure(lease:LeaseFence,proposalId:string,job:z.infer<typeof queuedStage>,code:string,uncertain:boolean,nativeId:string|null=null,
+  nativeError?:NonNullable<ToolResult['error']>['native_error']) {
   await sql.begin(async tx=>{
     const [owner]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;
     if(!owner) throw new Error('LEASE_LOST');
     const error={code,outcome:uncertain?'uncertain':'known',operation:'staff_stage',message:uncertain?'Guest Profile outcome is unconfirmed. Check Infor before retrying.':'Infor could not create the Guest Profile.',
-      recovery:uncertain?'Check the Guest Profile in Infor before any retry.':'Review the Guest Profile details.'};
+      recovery:uncertain?'Check the Guest Profile in Infor before any retry.':'Review the Guest Profile details.',...(nativeError?{native_error:nativeError}:{})};
     await tx`UPDATE nava_agent.proposal SET phase=${uncertain?'uncertain':'ready'},
       execution=COALESCE(execution,'{}'::jsonb)||${json({error})}::jsonb || CASE WHEN ${uncertain} THEN jsonb_build_object('profile_uncertain',COALESCE(stage->'profile_dispatch','{}'::jsonb) || ${json({native_id:nativeId})}::jsonb) ELSE '{}'::jsonb END,
       stage=NULL,updated_at=now()
       WHERE id=${proposalId} AND phase='staging' AND stage->>'job_id'=${job.job_id}`;
-    await writeEvent(tx,lease.sessionId,'guest_profile_finished',{proposal_id:proposalId,job_id:job.job_id,outcome:uncertain?'uncertain':'failed'});
+    await writeEvent(tx,lease.sessionId,'guest_profile_finished',{proposal_id:proposalId,job_id:job.job_id,outcome:uncertain?'uncertain':'failed',error});
   });
 }
 

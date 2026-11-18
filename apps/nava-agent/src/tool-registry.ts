@@ -472,6 +472,9 @@ export class ToolRegistry {
   async createGuestProfile(input:{propertyCode:string;guest:{firstName:string;lastName:string;mobile:string;email?:string};attemptId:string},
     context:{signal:AbortSignal;authorize:()=>Promise<boolean>;markDispatched:()=>Promise<void>}):Promise<ToolResult> {
     const base=new URL('../../server-pilot/tooling/hms-cloud/',import.meta.url);
+    let step='acquire_native_save';
+    const failureDetail=(value:{issue?:unknown;outcome?:unknown})=>({error_class:'NativeProfileResult',
+      message:typeof value.issue==='string' && /^[A-Z][A-Z0-9_]{2,100}$/.test(value.issue)?value.issue:'PROFILE_NATIVE_UNCONFIRMED',native_step:step,stack:null});
     try {
       return await this.deps.native.withSave(input.propertyCode,context.signal,async credentialLease=>{
         const [native,properties]=await Promise.all([import(new URL('guest-profile-runner.mjs',base).href),import(new URL('property-registry.mjs',base).href)]);
@@ -480,21 +483,28 @@ export class ToolRegistry {
           authorizeStaffWrite:async()=>!credentialLease.signal.aborted && await context.authorize(),
           dispatchStaffWrite:async(_candidate:unknown,proceed:()=>Promise<unknown>)=>{await context.markDispatched(); credentialLease.signal.throwIfAborted(); return proceed();}});
         const business={propertyCode:input.propertyCode,guest:input.guest,confirmDuplicateName:true};
+        step='prepare_guest_profile';
         const preview=await runner.prepareGuestProfile(business);
-        if(preview.outcome!=='ready') return failureObject('PROFILE_PREPARE_FAILED','Infor could not prepare the Guest Profile.');
+        if(preview.outcome!=='ready') return {ok:false,data:preview,error:{code:'PROFILE_PREPARE_FAILED',message:'Infor could not prepare the Guest Profile.',
+          retryable:false,outcome:'known',native_error:failureDetail(preview)}};
+        step='create_guest_profile';
         const saved=await runner.createGuestProfile({...business,attemptId:input.attemptId,expectedPreviewDigest:preview.previewDigest,
           ...(preview.review?{expectedReview:preview.review}:{})});
         if(saved.outcome!=='created' || typeof saved.nativeId!=='string' || !/^\d+$/.test(saved.nativeId)) {
-          return {ok:false,data:saved,error:{code:'PROFILE_CREATE_FAILED',message:'Infor did not confirm the new Guest Profile.',retryable:false,outcome:saved.dispatched===false?'known':'uncertain'}};
+          return {ok:false,data:saved,error:{code:'PROFILE_CREATE_FAILED',message:'Infor did not confirm the new Guest Profile.',retryable:false,
+            outcome:saved.dispatched===false?'known':'uncertain',native_error:failureDetail(saved)}};
         }
+        step='read_guest_profile';
         const fresh=await runner.readGuestProfile({propertyCode:input.propertyCode,nativeId:saved.nativeId,attemptId:input.attemptId});
         if(fresh.outcome!=='read' || fresh.nativeId!==saved.nativeId || fresh.reconciliation?.outcome!=='created') {
-          return {ok:false,data:saved,error:{code:'PROFILE_READBACK_UNCONFIRMED',message:'Check the Guest Profile in Infor before retrying.',retryable:false,outcome:'uncertain'}};
+          return {ok:false,data:saved,error:{code:'PROFILE_READBACK_UNCONFIRMED',message:'Check the Guest Profile in Infor before retrying.',retryable:false,
+            outcome:'uncertain',native_error:failureDetail(fresh)}};
         }
         return {ok:true,data:{nativeId:saved.nativeId,readback:fresh},error:null};
       });
-    } catch {
-      return {ok:false,data:null,error:{code:'PROFILE_CREATE_UNAVAILABLE',message:'Infor could not confirm the Guest Profile.',retryable:false,outcome:'uncertain'}};
+    } catch(error) {
+      return {ok:false,data:null,error:{code:'PROFILE_CREATE_UNAVAILABLE',message:'Infor could not confirm the Guest Profile.',retryable:false,
+        outcome:'uncertain',native_error:nativeError(error,step)}};
     }
   }
 

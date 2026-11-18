@@ -63,14 +63,14 @@ export function profileBusinessFields(input) {
       Object.keys(guest).some(key => !['firstName', 'lastName', 'mobile', 'email', ...EXTRA_FIELDS].includes(key))) return null;
   if (guest.email != null && typeof guest.email !== 'string') return null;
   const suppliedExtras = EXTRA_FIELDS.filter(key => Object.hasOwn(guest, key));
-  if ((!suppliedExtras.length && Object.hasOwn(input, 'expectedReview')) || suppliedExtras.some(key =>
-    typeof guest[key] !== 'string' || !clean(guest[key]))) return null;
+  if (suppliedExtras.some(key => typeof guest[key] !== 'string' || !clean(guest[key]))) return null;
   const fields = { firstName: clean(guest.firstName), lastName: clean(guest.lastName),
     mobile: clean(guest.mobile), email: guest.email == null ? '' : clean(guest.email) };
   for (const key of suppliedExtras) fields[key] = clean(guest[key]);
   // HMS rejects an email address without a type ("E-Mail Type required for E-Mail.").
   // Default Primary when staff/workflow supply an email but omit the type code.
   if (fields.email && !Object.hasOwn(fields, 'emailTypeCode')) fields.emailTypeCode = 'PRIM';
+  if (!EXTRA_FIELDS.some(key => Object.hasOwn(fields, key)) && Object.hasOwn(input, 'expectedReview')) return null;
   if (['firstName', 'lastName', 'mobile'].some(key => !fields[key]) ||
       (fields.phoneTypeCode && !fields.phoneNumber) || (fields.emailTypeCode && !fields.email) ||
       Object.values(fields).some(value => value.length > 200 || [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))) return null;
