@@ -23,6 +23,7 @@ import { createLabtestAmendDispatch } from './labtest-amend-dispatch.mjs';
 import { createFirstGoCallbackAuthority, isFirstGoCallbackAuthority } from './pane-amend-callback-authority.mjs';
 import { createFinalGoCallbackAuthority, isFinalGoCallbackAuthority } from './pane-amend-final-authority.mjs';
 import { runCloudPaneAmendCallbacks } from './pane-amend-callback-phase.mjs';
+import { withLabtestSaveAudit } from './labtest-save-audit.mjs';
 import { nativeMoneyCents, nativeAverageCents, nativeMoneyTenThousandths, nativePriceDigest, parseNativePricingJson,
   readAmendNightlyQuote, readSavedStayNightlyRates } from './saved-stay-nightly-rates.mjs';
 import { stageSavedAdultForComposition } from './guest-stay-amend-adults.mjs';
@@ -1594,6 +1595,7 @@ export async function commitCloudPaneAmend(input, authorization) {
     const protectedSession = guardedSession(input, installSavedStayReadGuard, 12 * 60_000);
     const saved = await withCloudWriterSession(async (page) => {
       if (!protectedSession.hasGuard(page.context(), page)) throw new Error('BROWSER_CONTEXT_UNSAFE');
+      return withLabtestSaveAudit(page, input.diagnosticDirectory, async () => {
       await readShallow(page, input.confirmation, searchHints(input.selected, input.arrival));
       const record = await readRecord(page, input.confirmation, { nativePropertyCode: input.selected.propertyCode });
       const expected = expectedLabtestAmendRecord(record, input.selected, { allowRealGuest: input.allowRealGuest === true,
@@ -1604,6 +1606,7 @@ export async function commitCloudPaneAmend(input, authorization) {
         input: { ...input, signal: protectedSession.options.signal }, expected,
         authorization: bindCloudAmendWriter(page, authorization),
         captureBefore: (value) => { before = value; } }, { recordOptions: nativeOptions(input, record) }));
+      });
     }, protectedSession.options);
     if (saved.outcome !== 'awaiting_readback' || saved.dispatchCallbacksDrained !== true) return saved;
     if (!before) return { outcome: 'uncertain', issue: 'AMEND_PREIMAGE_UNVERIFIED' };

@@ -351,6 +351,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   }
   let markerStarted = false;
   let directory: string | undefined;
+  const captureLabtest = reviewed.selected.firstName === 'Proof' && reviewed.selected.lastName === 'Labtest' &&
+    reviewed.selected.arrival >= '2027-01-01' && reviewed.preserved.cmsSend === false;
   const uncertain = (): ToolResult => ({ ok: false, data: null, error: {
     code: 'AMEND_OUTCOME_UNCERTAIN', message: 'Read the stay in HMS before retrying this amendment.',
     retryable: false, outcome: 'uncertain',
@@ -373,6 +375,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       changes: reviewed.changes, childAgePreimage: reviewed.childAgePreimage,
       nativeDigest: reviewed.nativeDigest, approvedPrices: reviewed.approvedPrices,
       preserved: reviewed.preserved, allowRealGuest: context.mode === 'live', beforeScreenshot, afterScreenshot,
+      ...(captureLabtest ? { diagnosticDirectory: join(directory, 'audit') } : {}),
       signal: context.signal,
     }, {
       operationDigest,
@@ -403,7 +406,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   } catch {
     return markerStarted ? uncertain() : refuse('AMEND_SAVE_UNAVAILABLE', 'Native amendment stopped before dispatch.');
   } finally {
-    if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
+    if (directory && !captureLabtest) await rm(directory, { recursive: true, force: true }).catch(() => {});
   }
 }
 

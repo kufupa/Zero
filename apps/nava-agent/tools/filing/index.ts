@@ -274,6 +274,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     const file = join(temp, 'selected.pdf');
     await writeFile(file, attachment.bytes, { mode: 0o600 });
     const allowed = async () => !context.signal?.aborted && await authorize(context, request);
+    const labtest = prepared.target.native_stay.firstName === 'Proof' && prepared.target.native_stay.lastName === 'Labtest' &&
+      prepared.target.native_stay.arrival >= '2027-01-01' && prepared.target.native_snapshot.cmsSend === false;
     const result = await native.runCloudPaneAttach({ target: { propertyCode: request.propertyCode },
       transportId: property.mailboxTransportId, credentialLease: context.credentialLease, signal: context.signal,
       confirmation: prepared.target.confirmation, arrival: prepared.target.native_stay.arrival,
@@ -281,7 +283,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       approvedStay: prepared.target.native_stay, approvedSnapshot: prepared.target.native_snapshot,
       allowRealGuest: context.mode === 'live', documentName: prepared.document.name,
       documentDescription: prepared.document.description, documentCode: prepared.document.document_code,
-      pdfSha256: prepared.document.sha256, file, beforeDispatch: allowed,
+      pdfSha256: prepared.document.sha256, file, beforeDispatch: allowed, captureLabtest: labtest,
       finalAuthority: async (code: string) => code === prepared.document.document_code && await allowed(),
       continuationAllowed: () => !context.signal?.aborted,
       dispatchWithAuthority: async (code: string, guestId: string, stayId: string, requestDigest: string, send: () => Promise<unknown>) => {
@@ -314,7 +316,10 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     return failure(safeErrorCode(error, 'FILING_SAVE_FAILED'), 'Filing failed before dispatch.');
   } finally {
     if (temp) await rm(temp, { recursive: true, force: true }).catch(() => {});
-    if (nativeCleanup) await rm(nativeCleanup, { recursive: true, force: true }).catch(() => {});
+    if (nativeCleanup && !(prepared.target.native_stay.firstName === 'Proof' && prepared.target.native_stay.lastName === 'Labtest' &&
+      prepared.target.native_stay.arrival >= '2027-01-01' && prepared.target.native_snapshot.cmsSend === false)) {
+      await rm(nativeCleanup, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

@@ -8,6 +8,7 @@ import { getPropertyRegistration } from './property-registry.mjs';
 import { readConfirmationFromStay360 as readShallow } from './stay360-confirmation.mjs';
 import { readRecordViewFromStay360 as readRecord } from './stay360-record-view.mjs';
 import { readDocumentsFromStay360 as readDocuments } from './stay360-documents.mjs';
+import { withLabtestSaveAudit } from './labtest-save-audit.mjs';
 import { installPaneAttachReadGuard } from './pane-attach-read-guard.mjs';
 import { attachLabtestDocument } from './stay360-document-attach.mjs';
 
@@ -317,6 +318,7 @@ async function runCloudPaneAttachWithLease(input, { openSession = withCloudWrite
   try {
     result = await openSession(async (page) => {
       writerPage.current = page;
+      return withLabtestSaveAudit(page, input.captureLabtest ? join(root, 'audit') : null, async () => {
       await shallow(page, input.confirmation, lookupOptions(input.guestName, input.arrival));
       const record = await read(page, input.confirmation, { nativePropertyCode: input.target.propertyCode, nativeIdentityOnly: true });
       const expected = approvedDocumentDispatch(record, { ...input.approvedStay, propertyCode: input.target.propertyCode }, input.approvedSnapshot);
@@ -336,6 +338,7 @@ async function runCloudPaneAttachWithLease(input, { openSession = withCloudWrite
             dispatch, writer, beforeShot, intercepted);
         },
         onDispatched: () => { dispatched = true; }, strictNetwork: true, cloudGuarded: true, timeoutMs: 7 * 60_000 });
+      });
     }, options(writing, 10 * 60_000, writerSignal, true));
     writerSessionClosed = true;
   } catch {
