@@ -7,12 +7,13 @@ import { workItem } from '../db/schema/work.js';
 import { isDaVinciMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import { lockCanonicalMailbox } from '../mail/ingest/canonical-identity.js';
 import { canonicalMessageId } from '../mail/ingest/message-id.js';
-import { panePop3AttachmentCandidate, readPanePop3Attachment } from '../mail/artifacts/pane-pop3-attachment.js';
-import { OutlookSyncStorage } from '../outlook-sync/storage.js';
-import { getS3Storage, type S3Storage } from '../storage/s3.js';
+import { panePop3AttachmentCandidate } from '../mail/artifacts/pane-pop3-attachment.js';
+import { readPaneFilingAttachment } from '../mail/pane-filing-attachment.js';
+import { getS3Storage } from '../storage/s3.js';
 import { heartbeatAiRun, type AiRunFence } from './run-ledger.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { readVoucherDiscoverySource, resolveOutlookVoucherSnapshot } from './voucher-filing-source.js';
+import { resolveOutlookVoucherSnapshot } from './voucher-filing-source.js';
+export { readPaneFilingAttachment } from '../mail/pane-filing-attachment.js';
 
 export type BoundFilingForm = {
   action: 'attach_document'; confirmation: string; arrival: string; lastName: string;
@@ -27,23 +28,6 @@ export type BoundFilingForm = {
 type Scope = { transportId: string; workItemId: string; form: BoundFilingForm };
 type WorkTransaction = Parameters<Parameters<DB['transaction']>[0]>[0];
 type Item = typeof workItem.$inferSelect;
-type PaneSource = { transportId: string; messageId: string; attachmentId: string;
-  filename: string; sha256: string; snapshotDigest: string };
-
-/** Preserve POP3's existing digest; sealed Outlook bytes use their accepted receipt digest. */
-export async function readPaneFilingAttachment(input: {
-  db: DB; s3: S3Storage; transportId: string; messageId: string; attachmentId: string;
-  signal: AbortSignal; checkAuthority: () => Promise<boolean>; expected?: PaneSource;
-}): Promise<{ source: PaneSource; bytes: Buffer } | null> {
-  const pop3 = await readPanePop3Attachment(input);
-  if (pop3) return pop3;
-  try {
-    const storage = new OutlookSyncStorage({ bucket: input.s3.bucket });
-    return await readVoucherDiscoverySource(input, { db: input.db, storage, signal: input.signal,
-      checkAuthority: input.checkAuthority }, input.expected ? { ...input.expected, mimeType: 'application/pdf' } : undefined);
-  } catch { return null; }
-}
-
 function matchesForm(item: Item | undefined, form: BoundFilingForm): item is Item {
   return Boolean(item && !['done', 'dismissed'].includes(item.status) && item.sourceMessageId === form.sourceMessageId &&
     Object.entries(form).every(([key, value]) => item.state[key] === value));

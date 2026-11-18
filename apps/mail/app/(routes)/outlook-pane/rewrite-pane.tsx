@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { ReservationPaneHost } from '@/components/nava-pane/reservation-pane-host';
 import { NavaRewriteHost } from '@/components/nava-rewrite/host';
 import { useRewriteEligibility } from '@/components/nava-rewrite/eligibility';
 import { webThreadInput } from '@/components/nava-rewrite/web-input';
@@ -17,7 +16,7 @@ import { htmlToPlainText } from '../../../../server-pilot/src/mail/inbound-react
 type Source =
   | { status: 'ready'; input: ThreadInput; draftSource: ReservationSourceContext }
   | { status: 'loading'; reason: string }
-  | { status: 'fallback' };
+  | { status: 'unavailable'; reason: string };
 
 // Corroborate the synced copy with native content when the sender is resolvable.
 async function selectedContentHash(email: WorkstationEmailPayload): Promise<string | undefined> {
@@ -42,7 +41,7 @@ export function OutlookRewritePane({ bridge }: { bridge: PaneBridge }) {
     ? JSON.stringify([session.user.id, session.session?.id, connection.id, email]) : null;
   if (eligibility === 'ineligible' || !owner || !email || !email.storeId || !connection?.id || !bridge.isConnected ||
       bridge.requiresRelogin || bridge.updateRequired || bridge.authorizationUnavailable ||
-      bridge.selectionOutsideMailbox || !bridge.workstationInfo?.paired) return <ReservationPaneHost bridge={bridge} />;
+      bridge.selectionOutsideMailbox || !bridge.workstationInfo?.paired) return <NavaRewriteHost bridge={bridge} source={{ status: 'unavailable', reason: 'Select an email in an authorized mailbox to use Nava.' }} />;
   if (eligibility === 'checking') return <NavaRewriteHost bridge={bridge} source={{ status: 'loading', reason: 'Opening selected email…' }} />;
   return <OutlookRewriteSelection key={owner} bridge={bridge} owner={owner}
     email={email} storeId={email.storeId} mailboxId={connection.id} />;
@@ -59,7 +58,7 @@ function OutlookRewriteSelection({ bridge, owner, email, storeId, mailboxId }: {
     const options = inMailbox(mailboxId);
     const load = async () => {
       if (isFrontendOnlyDemo()) {
-        if (live) setSource({ status: 'fallback' });
+        if (live) setSource({ status: 'unavailable', reason: 'Open a live mailbox to use Nava.' });
         return;
       }
       try {
@@ -73,16 +72,11 @@ function OutlookRewriteSelection({ bridge, owner, email, storeId, mailboxId }: {
         }, options);
         if (!live) return;
         if (match.status !== 'ok' || match.propertyCode !== 'HRCEN' || match.source.propertyId !== match.propertyCode) {
-          setSource({ status: 'fallback' });
+          setSource({ status: 'unavailable', reason: 'Could not open this email in Nava. Select it again after mailbox sync.' });
           return;
         }
         const thread = await trpcClient.mail.get.query({ id: match.source.threadId, mergeLinked: true }, options);
         if (!live) return;
-        if (thread.messages.some(message => message.id === match.source.messageId && (!message.body.trim() ||
-            message.body === message.processedHtml && /<[a-z][\s\S]*>/i.test(message.body)))) {
-          setSource({ status: 'fallback' });
-          return;
-        }
         const mapped = webThreadInput({ thread, requestedThreadId: match.source.threadId,
           selectedMessageId: match.source.messageId, connectionId: mailboxId, isDemo: false });
         setSource(mapped.status === 'ready'
@@ -93,15 +87,14 @@ function OutlookRewriteSelection({ bridge, owner, email, storeId, mailboxId }: {
               sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes, uploadability: 'unknown' as const,
             })),
           } }
-          : { status: 'fallback' });
+          : { status: 'unavailable', reason: mapped.reason });
       } catch {
-        if (live) setSource({ status: 'fallback' });
+        if (live) setSource({ status: 'unavailable', reason: 'Could not open this email in Nava. Try again after mailbox sync.' });
       }
     };
     void load();
     return () => { live = false; };
   }, [owner, email, storeId, mailboxId]);
 
-  if (source.status === 'fallback') return <ReservationPaneHost bridge={bridge} />;
   return <NavaRewriteHost bridge={bridge} source={source} />;
 }

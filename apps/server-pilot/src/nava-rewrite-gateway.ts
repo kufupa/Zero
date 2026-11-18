@@ -1,9 +1,10 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { readPaneFilingAttachment } from './ai/pane-filing-source.js';
+import { readPaneFilingAttachment } from './mail/pane-filing-attachment.js';
 import { getDb } from './db/client.js';
 import { mailboxAccess, mailboxTransport } from './db/schema/mail.js';
+import { resolvePropertyScope } from './hms/property-registry.js';
 import { resolvePilotTrustedOrigins, type Auth } from './lib/auth.js';
 import { canonicalCenturionPaneImport, isCenturionFilingSource } from './mail/nava-outlook-import.js';
 import { getS3Storage } from './storage/s3.js';
@@ -76,7 +77,7 @@ const filingPdfRequest = z.object({
   attachment_id: z.string().min(1).max(256), exp: z.number().int(),
 }).strict();
 
-async function readFilingPdf(request: Request, secret: string, cohortUserId: string, cohortMailboxId: string): Promise<Response> {
+async function readFilingPdf(request: Request, secret: string): Promise<Response> {
   if (!request.body) return error(400, 'invalid_input', 'Filing source is required');
   const raw = await readImportBody(request.body);
   if (raw === null) return error(413, 'invalid_input', 'Filing request is too large');
@@ -90,11 +91,10 @@ async function readFilingPdf(request: Request, secret: string, cohortUserId: str
   if (!parsed.success) return error(400, 'invalid_input', 'Invalid filing request');
   const input = parsed.data;
   const fresh = () => input.exp > Math.floor(Date.now() / 1000) && input.exp <= Math.floor(Date.now() / 1000) + 60;
-  if (!fresh() || input.actor !== cohortUserId || input.mailbox_id !== cohortMailboxId) return error(403, 'forbidden', 'Filing source unavailable');
+  if (!fresh()) return error(403, 'forbidden', 'Filing source unavailable');
   const db = getDb();
   const checkAuthority = async () => {
-    if (!fresh() || process.env.NAVA_REWRITE_COHORT_USER_ID !== input.actor ||
-        process.env.NAVA_REWRITE_COHORT_MAILBOX_ID !== input.mailbox_id) return false;
+    if (!fresh()) return false;
     const grants = await db.select({ transportId: mailboxAccess.transportId }).from(mailboxAccess)
       .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
       .where(eq(mailboxAccess.userId, input.actor));
@@ -209,15 +209,13 @@ export function createNavaRewriteGateway(auth: Auth, eventShutdown?: AbortSignal
 
     const agentOrigin = configuredAgentOrigin(process.env.NAVA_AGENT_BASE_URL);
     const secret = process.env.NAVA_STAFF_JWT_SECRET;
-    const cohortUserId = process.env.NAVA_REWRITE_COHORT_USER_ID;
-    const cohortMailboxId = process.env.NAVA_REWRITE_COHORT_MAILBOX_ID;
     const isEligibility = request.method === 'GET' && url.pathname === '/api/nava/v1/eligibility';
-    if (!agentOrigin || !secret || Buffer.byteLength(secret) < 32 || !cohortUserId || !cohortMailboxId) {
+    if (!agentOrigin || !secret || Buffer.byteLength(secret) < 32) {
       if (isEligibility) return eligibility(false);
       return error(503, 'gateway_unavailable', 'Gateway is not configured');
     }
     if (request.method === 'POST' && url.pathname === '/api/nava/v1/internal/filing-pdf') {
-      try { return await readFilingPdf(request, secret, cohortUserId, cohortMailboxId); }
+      try { return await readFilingPdf(request, secret); }
       catch { return error(502, 'gateway_error', 'Filing source unavailable'); }
     }
     if (request.method !== 'GET') {
@@ -234,21 +232,23 @@ export function createNavaRewriteGateway(auth: Auth, eventShutdown?: AbortSignal
       if (cookie) sessionHeaders.set('cookie', cookie);
       const session = await auth.api.getSession({ headers: sessionHeaders });
       if (!session?.user?.id) return isEligibility ? eligibility(false) : error(401, 'unauthorized', 'Authentication required');
-      if (session.user.id !== cohortUserId) return isEligibility ? eligibility(false) : error(403, 'forbidden', 'Rewrite is not available');
-
       const grants = await getDb()
         .select({ transportId: mailboxAccess.transportId })
         .from(mailboxAccess)
         .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
         .where(eq(mailboxAccess.userId, session.user.id));
-      if (!grants.some((grant) => grant.transportId === cohortMailboxId)) {
+      const mailboxIds = grants.map(grant => grant.transportId).filter(transportId => {
+        try { return resolvePropertyScope({ transportId }).propertyCode === 'HRCEN'; }
+        catch { return false; }
+      });
+      if (!mailboxIds.length) {
         return isEligibility ? eligibility(false) : error(403, 'forbidden', 'Mailbox access required');
       }
 
-      const staff = staffToken(session.user.id, [cohortMailboxId], secret);
+      const staff = staffToken(session.user.id, mailboxIds, secret);
       if (isEligibility) {
         const mailboxes = url.searchParams.getAll('mailbox_id');
-        if (mailboxes.length !== 1 || mailboxes[0] !== cohortMailboxId) return eligibility(false);
+        if (mailboxes.length !== 1 || !mailboxIds.includes(mailboxes[0])) return eligibility(false);
         const response = await fetch(`${agentOrigin}/api/nava/v1/capabilities`, {
           headers: { Authorization: `Bearer ${staff.token}` },
           redirect: 'manual',
@@ -283,7 +283,11 @@ export function createNavaRewriteGateway(auth: Auth, eventShutdown?: AbortSignal
         let payload: unknown;
         try { payload = JSON.parse(body.toString('utf8')); }
         catch { return error(400, 'invalid_input', 'Invalid mail thread'); }
-        const canonical = await canonicalCenturionPaneImport(payload, cohortMailboxId);
+        const requested = z.object({ mailbox_id: z.string() }).safeParse(payload);
+        if (!requested.success || !mailboxIds.includes(requested.data.mailbox_id)) {
+          return error(403, 'source_not_eligible', 'This email is not an eligible Centurion source');
+        }
+        const canonical = await canonicalCenturionPaneImport(payload, requested.data.mailbox_id);
         if (!canonical) {
           return error(403, 'source_not_eligible', 'This email is not an eligible Centurion source');
         }

@@ -72,8 +72,7 @@ export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: 
       if (!candidate || (row.direction === 'inbound' && isDaVinciMailboxOrigin(row))) return null;
       const canonical = toParsedMessage(row);
       const htmlOnly = canonical.body === canonical.processedHtml && /<[a-z][\s\S]*>/i.test(canonical.body);
-      if (row.id === input.selected_message_id && (!canonical.body.trim() || htmlOnly ||
-          (input.source === 'webmail' && !canonical.messageId?.trim()))) return null;
+      if (row.id === input.selected_message_id && input.source === 'webmail' && !canonical.messageId?.trim()) return null;
       const { attachment_status: _clientAttachmentStatus, ...fields } = candidate;
       const sourceFields = {
         id: canonical.id, rfc_message_id: canonical.messageId ?? null, direction: row.direction,
