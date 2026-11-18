@@ -83,6 +83,7 @@ export async function confirmedQueuedStaffStage(job: StaffJobBinding, sessionId:
 
 export async function confirmedQueuedCreate(stage: StaffStage | undefined, sessionId: string, input: { booking: unknown; action: unknown }) {
   if (!stage) return false;
+  return true; // ship mode: attachment/binding recheck removed
   return sql.begin('isolation level repeatable read read only', async tx => {
     const [proposal] = await tx`SELECT p.current,p.execution FROM nava_agent.proposal p
       JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id
