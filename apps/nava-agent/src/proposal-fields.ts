@@ -1,4 +1,4 @@
-import { groupedQuoteRequest, type ProposalDraft } from './schema.js';
+import type { ProposalDraft } from './schema.js';
 
 export function pointerParts(path: string): string[] | null {
   if (!path.startsWith('/') || /~(?![01])/.test(path)) return null;
@@ -87,29 +87,41 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='quote') return draft;
   const fieldSpecs=[...draft.field_specs];
   const actions=draft.actions.map((action,actionIndex)=>{
-    if(action.type!=='quote') return action;
-    const parsed=groupedQuoteRequest.safeParse(action.details);
-    if(!parsed.success) return action;
+    if(action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details)) return action;
     const add=(path:string,label:string,control:'date'|'number'|'text',required:boolean)=>{
       const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
       if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
       else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
     };
-    const groups=parsed.data.groups.map((group,groupIndex)=>{
+    const details={...action.details};
+    if(!Object.hasOwn(details,'property_code')) details.property_code=null;
+    add(`/actions/${actionIndex}/details/property_code`,'Property','text',true);
+    if(!Array.isArray(details.groups)) return {...action,details};
+    const groups=details.groups.map((value,groupIndex)=>{
+      if(!value || typeof value!=='object' || Array.isArray(value)) return value;
+      const group:Record<string,unknown>={...value};
       const groupRoot=`/actions/${actionIndex}/details/groups/${groupIndex}`;
+      if(!Object.hasOwn(group,'arrival_date')) group.arrival_date=null;
+      if(!Object.hasOwn(group,'departure_date')) group.departure_date=null;
       add(`${groupRoot}/arrival_date`,'Arrival','date',true);
       add(`${groupRoot}/departure_date`,'Departure','date',true);
-      const rooms=group.rooms.map((room,roomIndex)=>{
+      if(!Array.isArray(group.rooms)) return group;
+      const rooms=group.rooms.map((value:unknown,roomIndex:number)=>{
+        if(!value || typeof value!=='object' || Array.isArray(value)) return value;
+        const room:Record<string,unknown>={...value};
         const root=`${groupRoot}/rooms/${roomIndex}`;
         for(const [key,label,control,required] of [
           ['quantity','Rooms','number',true], ['adults','Adults','number',true], ['children','Children','number',false],
           ['child_ages','Child ages','text',false], ['required','Required room and rate','text',false],
-        ] as const) add(`${root}/${key}`,label,control,required);
-        return {...room,required:room.required ?? {}};
+        ] as const) {
+          if(!Object.hasOwn(room,key)) room[key]=key==='required'?{}:null;
+          add(`${root}/${key}`,label,control,required);
+        }
+        return room;
       });
       return {...group,rooms};
     });
-    return {...action,details:{...parsed.data,groups}};
+    return {...action,details:{...details,groups}};
   });
   return {...draft,actions,field_specs:fieldSpecs};
 }

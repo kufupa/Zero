@@ -2,10 +2,10 @@ import { z } from 'zod';
 
 const id = z.string().trim().min(1);
 const constraints = z.object({
-  roomCodes: z.array(id).min(1).optional(), rateCodes: z.array(id).min(1).optional(),
-  bedTypes: z.array(id).min(1).optional(), mealPlanBases: z.array(id).min(1).optional(),
-  features: z.array(z.object({ name: id, value: id }).strict()).min(1).optional(),
-}).strict();
+  roomCodes: z.array(id).optional(), rateCodes: z.array(id).optional(),
+  bedTypes: z.array(id).optional(), mealPlanBases: z.array(id).optional(),
+  features: z.array(z.object({ name: id, value: id }).strict()).optional(),
+}).strict().transform(value=>Object.fromEntries(Object.entries(value).filter(([,items])=>Array.isArray(items) && items.length>0)) as typeof value);
 const room = z.object({
   id, quantity: z.number().int().min(1), adults: z.number().int().min(1),
   children: z.number().int().min(0), child_ages: z.array(z.number().int().min(0).max(99)),
