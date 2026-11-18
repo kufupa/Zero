@@ -924,7 +924,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     catch { setMessage('Could not start the Guest Profile creation. Reload and try again.'); return; }
     const active: ActiveOperation = { kind: 'go', proposalId: current.id, signal };
     const sequence = snapshotRef.current?.event_sequence ?? 0;
-    operationRef.current = active; setBusy(true); setMessage(null); cache.goLocks[current.id] = 'uncertain'; refreshVersion();
+    operationRef.current = active; setBusy(true); setMessage(null); cache.goLocks[current.id] = 'profile_accepted'; refreshVersion();
     try {
       const accepted = await api.go({ proposalId: current.id, expectedRevision: current.revision, idempotencyKey, createProfile: true, signal });
       if (signal.aborted) return;
@@ -1144,7 +1144,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         <button type="button" disabled={busy || authenticationExpired} onClick={() => { void applyDraftAfterRefresh(proposal.id); }}>Apply my edits</button>{' '}
         <button type="button" disabled={busy || authenticationExpired} onClick={() => { delete cache.issues[proposal.id]; delete cache.drafts[proposal.id]; refreshVersion(); }}>Discard my edits</button>
       </PaneMessage>}
-      {Object.keys(drafts).length > 0 && !issue && <PaneMessage>Edits are waiting to be saved.</PaneMessage>}
+      {Object.keys(drafts).length > 0 && !issue && <PaneMessage>{proposal.workflow === 'quote' ? 'Press Enter or Check quote in Infor to update prices.' : 'Edits are waiting to be saved.'}</PaneMessage>}
       <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || issue?.kind === 'conflict' || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={!issue ? id => { void openArtifact(proposal.id, proposal.revision, id); } : undefined}
         onLookupStay={canStage && !issue && !isUncertain ? lookup => { void operation('target', proposal, undefined, lookup); } : undefined}
         onSelectStay={canStage && !issue && !isUncertain ? (jobId, removeFields) => { void selectStay(proposal, jobId, removeFields); } : undefined}
