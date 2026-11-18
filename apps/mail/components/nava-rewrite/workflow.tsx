@@ -284,7 +284,8 @@ function currentNativeRoom(proposal: Proposal, drafts: WorkflowProps['drafts'], 
 }
 
 function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], index: number) {
-  const choices = currentNativeRoom(proposal, drafts, index)?.rate_choices;
+  const otherDrafts = Object.fromEntries(Object.entries(drafts).filter(([path]) => path !== `/bookings/${index}/fields/rate_plan`));
+  const choices = currentNativeRoom(proposal, otherDrafts, index)?.rate_choices;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status === 'unavailable' || !Array.isArray(choices.items)) return [];
   return choices.items.flatMap(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.value !== 'string' || !item.value || typeof item.label !== 'string') return [];
@@ -392,10 +393,11 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   const hasReviewed=proposal.profile_reviews.some(item=>item.booking_id===booking?.id && item.first_name===booking.fields.first_name && item.last_name===booking.fields.last_name && item.guest_email===(booking.fields.guest_email??null));
   const searchFirst=!!newProfileMatch && !hasChoices && !hasReviewed && shown!==true;
   const selectedProfile=!!newProfileMatch && !!booking?.fields.guest_profile_id;
-  const hint = searchFirst ? 'Check Infor for matching profiles first.' : selectedProfile ? 'An existing profile is selected.' : guestProfile ? 'Run Prepare to load verified Infor profiles.'
+  const createPrice = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/price$/.test(spec.path);
+  const hint = createPrice ? 'Price set by HMS rate plan.' : searchFirst ? 'Check Infor for matching profiles first.' : selectedProfile ? 'An existing profile is selected.' : guestProfile ? 'Run Prepare to load verified Infor profiles.'
     : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
   const requiredEmpty = spec.required && (shown === null || shown === undefined || typeof shown === 'string' && shown.trim() === '');
-  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile || searchFirst || selectedProfile, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
+  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile || searchFirst || selectedProfile || createPrice, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
   let control: ReactNode;
 
   const filingField = proposal.workflow === 'filing' && /^(\/actions\/(?:0|[1-9]\d*)\/details\/)attachment_id$/.exec(spec.path);
@@ -691,7 +693,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
       ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
   });
   return <PaneSection title="Choose quote options">
-    <p>Prices and availability are from the latest Infor check. Review the selected options; combined availability is not confirmed.</p>
+    <p>Price set by HMS rate plan. Prices and availability are from the latest Infor check. Review the selected options; combined availability is not confirmed.</p>
     {selections.length < rooms.length && <p>Some room groups could not be priced and are not included in the quote.</p>}
     {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor checked these overlapping dates separately.</p>}
     {rooms.map(room => {
@@ -1068,6 +1070,7 @@ export function Workflow(props: WorkflowProps) {
     {proposal.stage && !stageCurrent && <PaneMessage>{proposal.phase === 'staging' ? 'A new check is in progress; earlier results are hidden.' : 'Details have changed since the last check. Check again for current Infor results.'}</PaneMessage>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.stage && stageCurrent && proposal.stage.state !== 'target' && <PaneSection title="Checked details">
+      {proposal.workflow === 'create' && <p>Price set by HMS rate plan.</p>}
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
         <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{item}</li>)}</ul>

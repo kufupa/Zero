@@ -88,8 +88,9 @@ function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName, p
       if (draft.roomCode.trim()) required.roomCodes = [draft.roomCode.trim()];
       else delete required.roomCodes;
     }
-    if (draft.rateCode !== currentRate) {
-      if (draft.rateCode.trim()) required.rateCodes = [draft.rateCode.trim()];
+    const rateCode = draft.rateCode.trim().toUpperCase();
+    if (rateCode !== currentRate) {
+      if (rateCode) required.rateCodes = [rateCode];
       else delete required.rateCodes;
     }
     const parsed = jsonSchema.safeParse(required);
@@ -115,6 +116,7 @@ function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName, p
     ? { ok: true, value: draft } : { ok: false, message: `${spec.label}: choose yes or no.` };
   if (typeof draft !== 'string') return { ok: false, message: `${spec.label}: check this value.` };
   if (workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/guest_profile_id$/.test(spec.path) && draft === '') return { ok: true, value: null };
+  if (workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/rate_plan$/.test(spec.path)) return { ok: true, value: draft.trim().toUpperCase() };
   if (spec.control === 'number' || quoteChildCount || quoteNumber) {
     if (!draft.trim()) return { ok: true, value: null };
     const value = Number(draft);
