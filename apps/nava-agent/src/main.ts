@@ -11,11 +11,11 @@ import { event, sql } from './db.js';
 import { authReady, verifiedAuth, importThread, model, snapshot, startPending, deliverPending } from './runtime.js';
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
-import { hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
+import { createGoEnabled, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, invalidGuestSelection } from './attachment-gate.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
-type OperationFailure = 'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
+type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
 type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
@@ -24,15 +24,15 @@ type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;
 // staff-final audit, enforce idempotency and pending Save, and use the native
 // Labtest checks and durable dispatch marker before any later Save.
 export interface ProposalOperations {
-  capabilities: Partial<Record<Workflow, {stage:boolean;go_labtest:boolean;reconcile:boolean;quote?:boolean}>>;
+  capabilities: Partial<Record<Workflow, {stage:boolean;go_labtest:boolean;reconcile:boolean;quote?:boolean;go?:boolean}>>;
   installed?():Promise<{capabilities:ProposalOperations['capabilities'];modelTools:string[]}>;
   submit(tx:postgres.TransactionSql, request:OperationRequest):Promise<
     {ok:true;phase:'staging'|'saving'|'uncertain';jobId?:string;replayed?:boolean} |
-    {ok:false;code:OperationFailure}
+    {ok:false;code:OperationFailure;details?:unknown}
   >;
 }
 class OperationError extends Error {
-  constructor(readonly code:OperationFailure|'REAL_GUEST_GO_UNAVAILABLE'|'HISTORICAL_UNAVAILABLE') { super(code); }
+  constructor(readonly code:OperationFailure|'REAL_GUEST_GO_UNAVAILABLE'|'HISTORICAL_UNAVAILABLE',readonly details:unknown=null) { super(code); }
 }
 const workflows:Workflow[]=['triage','quote','create','amend','cancel','filing'];
 const labtestSource = z.object({source: z.enum(['outlook','webmail','corpus','eval']), mailbox_id: z.string().min(1), source_thread_id: z.string().min(1), selected_message_id: z.string().min(1)});
@@ -57,14 +57,15 @@ app.get('/capabilities',async c=>{
   const workflow_capabilities=Object.fromEntries(workflows.map(workflow=>{
     const supported=capabilities?.[workflow];
     const labtestSave=staff && hmsSaveEnabled() && !!supported?.go_labtest;
-    return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:false,save:false,go_labtest:labtestSave,save_labtest:labtestSave,reconcile:staff && !!supported?.reconcile,quote:staff && workflow==='quote' && !!supported?.quote,undo:false,redo:false}];
+    const staffGo=staff && createGoEnabled() && !!supported?.go;
+    return [workflow,{edit:staff,stage:staff && !!supported?.stage,go:staffGo,save:staffGo,go_labtest:labtestSave,save_labtest:labtestSave,reconcile:staff && !!supported?.reconcile,quote:staff && workflow==='quote' && !!supported?.quote,undo:false,redo:false}];
   }));
   const create=!!capabilities?.create?.stage;
   const enabled=installed ? Object.keys(installed.capabilities) : staffPrepareOnly() ? [] : create?['triage','create']:['quote'];
   const modelTools=installed?.modelTools ?? (staffPrepareOnly()?['mail_read_thread','proposal_publish']:
     ['skill_read','mail_read_thread','hms_quote','proposal_publish','reply_draft',...(create?['hms_prepare']:[]),...(hmsSaveEnabled() && capabilities?.create?.go_labtest?['hms_save']:[])]);
   const authConfigured=await authReady();
-  return c.json({workflows:enabled,tools:modelTools,model,environment_type:'self_hosted',auth_ready:installed || create?authConfigured && c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:authConfigured,configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:false,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
+  return c.json({workflows:enabled,tools:modelTools,model,environment_type:'self_hosted',auth_ready:installed || create?authConfigured && c.get('principal').kind==='staff':await verifiedAuth(),auth_configured:authConfigured,configured_hms_slots:Number(process.env.NAVA_HMS_SLOTS ?? 10),native_read_slot_cap:Number(process.env.HMS_CREDENTIAL_SESSION_CAP ?? 8),effective_hms_slots:'not measured; bounded by shared native credential admission',staff_go:staff && createGoEnabled() && !!capabilities?.create?.go,staff_edit:staff,workflow_capabilities,deployed_sha:process.env.NAVA_DEPLOYED_SHA ?? process.env.NAVA_DEPLOY_SHA ?? null});
 });
 async function findManualLabtest(source:z.infer<typeof labtestSource>) {
   if(!hmsSaveEnabled() || !operations?.capabilities.create?.go_labtest) return null;
@@ -134,7 +135,7 @@ app.post('/threads/:id/messages',async c=>{
 for (const operation of ['stage','go','reconcile','undo','redo','quote'] as const) app.post(`/proposals/:id/${operation}`,async c=>{
   const principal=c.get('principal');
   if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
-  if(operation==='go' && !hmsSaveEnabled()) return c.json({error:{code:'SAVE_DISABLED',message:'Only unsaved Prepare is available.',details:null}},403);
+  if(operation==='go' && !hmsSaveEnabled() && !createGoEnabled()) return c.json({error:{code:'SAVE_DISABLED',message:'Only unsaved Prepare is available.',details:null}},403);
   const input=(operation==='go'?goInput:operation==='quote'?requoteInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
   if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid operation input',details:input.error.flatten()}},400);
   try {
@@ -151,16 +152,17 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       if(operation==='undo' || operation==='redo') throw new OperationError('UNAVAILABLE');
       if(p.mode==='historical') throw new OperationError('HISTORICAL_UNAVAILABLE');
       if(p.mode!=='live' && p.mode!=='labtest') throw new OperationError('UNAVAILABLE');
-      if((operation==='stage' || operation==='quote') && staffPrepareOnly()
+      const staffGo=operation==='go' && createGoEnabled();
+      if((operation==='stage' || operation==='quote' || staffGo) && staffPrepareOnly()
           && (p.mode!=='live' || !p.selection_key.startsWith('prepare:'))) throw new OperationError('UNAVAILABLE');
-      if(operation==='go' && p.mode==='live') throw new OperationError('REAL_GUEST_GO_UNAVAILABLE');
+      if(operation==='go' && p.mode==='live' && !(staffGo && p.workflow==='create')) throw new OperationError('REAL_GUEST_GO_UNAVAILABLE');
       const workflow=proposalDraft.shape.workflow.safeParse(p.workflow);
       if(!workflow.success) throw new OperationError('UNAVAILABLE');
       const installed=await operations?.installed?.();
       const capability=(installed?.capabilities ?? operations?.capabilities)?.[workflow.data];
-      if(!operations || !(operation==='go'?capability?.go_labtest:capability?.[operation])) throw new OperationError('UNAVAILABLE');
+      if(!operations || !(operation==='go'?(staffGo?capability?.go:capability?.go_labtest):capability?.[operation])) throw new OperationError('UNAVAILABLE');
       if((operation==='stage' && p.phase!=='ready' && p.phase!=='waiting_go') ||
-         (operation==='go' && p.phase!=='waiting_go' && p.phase!=='saving') ||
+         (operation==='go' && p.phase!==(staffGo?'ready':'waiting_go') && p.phase!=='saving') ||
          (operation==='quote' && p.phase!=='ready' && p.phase!=='staging') ||
          (operation==='reconcile' && p.phase!=='uncertain')) throw new OperationError('INVALID_PHASE');
       const idempotencyKey='idempotency_key' in input.data && typeof input.data.idempotency_key==='string'?input.data.idempotency_key:null;
@@ -173,7 +175,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
         if(!groupedQuoteRequest.safeParse(action.details).success) throw new OperationError('INVALID_INPUT');
       }
       const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId});
-      if(!accepted.ok) throw new OperationError(accepted.code);
+      if(!accepted.ok) throw new OperationError(accepted.code,accepted.details ?? null);
       const expectedPhase=operation==='stage'||operation==='quote'?'staging':operation==='go'?'saving':'uncertain';
       if(accepted.phase!==expectedPhase) throw new OperationError('UNAVAILABLE');
       if(operation==='quote' && (!accepted.jobId || !quoteId)) throw new OperationError('UNAVAILABLE');
@@ -188,8 +190,9 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
     const code=error instanceof OperationError?error.code:'UNAVAILABLE';
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
-    if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is disabled in this pilot.',details:null}},403);
+    if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is not switched on yet; only Labtest bookings can be saved.',details:null}},403);
     if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid proposal fields',details:null}},400);
+    if(code==='REQUIRED_FIELDS_MISSING') return c.json({error:{code,message:'Fill the required booking fields first.',details:error instanceof OperationError?error.details:null}},409);
     if(code===invalidGuestSelection.code) return c.json({error:{...invalidGuestSelection,details:null}},400);
     if(code===attachmentsUnconfirmed.code) return c.json({error:{...attachmentsUnconfirmed,details:null}},409);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE'||code==='INVALID_PHASE'||code==='IDEMPOTENCY_CONFLICT') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);

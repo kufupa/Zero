@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { prepareInput, saveInput, type CreateInput } from './schema.js';
-import { hmsSaveEnabled } from '../../src/hms-mode.js';
+import { createGoEnabled, createGoRealGuests, hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; staffStage?:StaffStage; credentialLease?:Lease };
@@ -22,11 +22,12 @@ const nativeResult = z.object({
 }).passthrough();
 const stagedBinding = z.object({
   propertyCode: z.literal('HRCEN'),
-  guest: z.object({ nativeId: z.string().regex(/^\d+$/), firstName: z.literal('Proof'), lastName: z.literal('Labtest') }).passthrough(),
+  guest: z.object({ nativeId: z.string().regex(/^\d+$/), firstName: z.string(), lastName: z.string() }).passthrough(),
   stay: z.object({ arrival: z.string(), departure: z.string() }).passthrough(),
   note: z.string(),
-  sendHmsConfirmation: z.object({ kind: z.literal('never') }).strict(),
+  sendHmsConfirmation: z.union([z.object({ kind: z.literal('never') }).strict(), z.object({ kind: z.literal('send'), recipient: z.string() }).strict()]),
 }).passthrough();
+const sameName = (a: unknown, b: unknown) => typeof a === 'string' && typeof b === 'string' && a.trim().toLowerCase() === b.trim().toLowerCase();
 type NativeResult = z.infer<typeof nativeResult>;
 type NativeRequest = Record<string, unknown> & { propertyCode: string; guest: Record<string, unknown>; stay: Record<string, unknown>; room: Record<string, unknown> };
 type Lease = { signal: AbortSignal };
@@ -96,7 +97,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (value === null && ['agency_id', 'agency_name', 'guest_profile_id', 'guest_email', 'source_of_business', 'track'].includes(field)) continue;
+    if (value === null) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');
@@ -276,8 +277,9 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
 }
 
 export async function save(input: unknown, context: SaveContext): Promise<ToolResult> {
-  if (!hmsSaveEnabled()) return fail('SAVE_DISABLED', 'Only unsaved Prepare is available.');
-  if (context.mode !== 'labtest') return fail('LABTEST_ONLY', 'Create Save is available only in Labtest mode.');
+  const staffGo = createGoEnabled() && context.mode === 'live';
+  if (!hmsSaveEnabled() && !staffGo) return fail('SAVE_DISABLED', 'Only unsaved Prepare is available.');
+  if (context.mode !== 'labtest' && !staffGo) return fail('LABTEST_ONLY', 'Create Save is available only in Labtest mode.');
   if (context.signal?.aborted) return fail('ABORTED', 'Operation aborted.');
   const parsed = saveInput.safeParse(input);
   if (!parsed.success || typeof context.markDispatched !== 'function') return fail('INVALID_INPUT', 'Create Save requires an execution ID and durable dispatch callback.');
@@ -285,40 +287,58 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   if ('ok' in built) return built;
   const { request, expectedGuest, unknown } = built;
   if (unknown.length) return fail('UNSUPPORTED_CREATE_FIELDS', 'Unsupported fields cannot be saved.', 'known', { fields: unknown });
-  if (Object.hasOwn(parsed.data.booking.fields, 'guest_email')) {
-    return fail('GUEST_EMAIL_SAVE_UNSUPPORTED', 'The requested guest email cannot yet be bound across the fresh create stage.');
+  if (parsed.data.booking.fields.guest_email != null && !request.guest.profileId) {
+    return fail('GUEST_PROFILE_REQUIRED', 'Choose the guest profile in Prepare before Save.');
   }
-  if (request.propertyCode !== 'HRCEN' || expectedGuest?.firstName !== labGuest.firstName || expectedGuest.lastName !== labGuest.lastName ||
-      typeof request.stay.arrival !== 'string' || request.stay.arrival < '2027-01-01' ||
-      !object(request.cms) || request.cms.send !== false) {
-    return fail('LABTEST_TARGET_REQUIRED', 'HRCEN Proof Labtest, arrival in 2027 or later, and explicit CMS off are required.');
+  const today = new Date().toISOString().slice(0, 10);
+  const labtest = expectedGuest?.firstName === labGuest.firstName && expectedGuest.lastName === labGuest.lastName;
+  const cmsSend = object(request.cms) && request.cms.send === true;
+  if (!expectedGuest || request.propertyCode !== 'HRCEN' || typeof request.stay.arrival !== 'string') {
+    return fail('CREATE_TARGET_REQUIRED', 'HRCEN, guest first and last name, and arrival are required.');
   }
+  if (labtest ? (request.stay.arrival < '2027-01-01' || cmsSend) : (!staffGo || !createGoRealGuests() || request.stay.arrival < today)) {
+    return fail('LABTEST_TARGET_REQUIRED', labtest ? 'Labtest needs arrival in 2027 or later and CMS off.' : 'Real-guest Save needs staff Go enabled for real guests and a current or future arrival.');
+  }
+  // Staff Go must save at the HMS price staff saw after Prepare.
+  const expectedPrice = parsed.data.expectedPrice;
+  if (staffGo && !expectedPrice) return fail('CREATE_PRICE_UNVERIFIED', 'Run Prepare so Infor shows the price before Go.');
+  // Every Create states CMS explicitly; absent means do not send.
+  request.cms = { ...(object(request.cms) ? request.cms : {}), send: cmsSend };
   if (!leaseDatabase()) return fail('HMS_SHARED_LEASE_DATABASE_REQUIRED', 'Configure the existing shared HMS admission database.');
   let markerAttempted = false;
   try {
     const api = await nativeApi();
     const transportId = transport(api, request.propertyCode);
     if (!transportId) return fail('UNSUPPORTED_PROPERTY', 'Native HMS property or transport is unavailable.');
-    const target = api.createCloudTargetKey(labGuest, request.stay.arrival, request.propertyCode);
+    const target = api.createCloudTargetKey(expectedGuest, request.stay.arrival, request.propertyCode);
     if (!target) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
-    return await api.withCloudCredentialLease(request.propertyCode, async lease => {
-      const options = { credentialLease: lease, signal: lease.signal, expectedGuest: labGuest, cloudTargetKey: target, transportId };
+    const realGuest = !labtest;
+    const write = async (lease: Lease) => {
+      const options = { credentialLease: lease, signal: lease.signal, expectedGuest, cloudTargetKey: target, transportId,
+        ...(realGuest ? { allowRealGuest: true, requireExplicitGuestSelection: true } : {}) };
       const stage = await loadNativeResult(api, { ...request, mode: 'prepare' }, options);
       const guest = stage.applied?.guest;
       const note = stage.applied?.note;
       const binding = stagedBinding.safeParse(stage.requestBinding?.request);
       if (stage.outcome !== 'prepared' || stage.appliedVerification?.visibleFields !== true ||
-          !object(guest) || guest.firstName !== 'Proof' || guest.lastName !== 'Labtest' ||
-          !/^\d+$/.test(String(guest.nativeId ?? '')) || typeof note !== 'string' || !note ||
+          !object(guest) || !sameName(guest.firstName, expectedGuest.firstName) || !sameName(guest.lastName, expectedGuest.lastName) ||
+          !/^\d+$/.test(String(guest.nativeId ?? '')) || (request.guest.profileId != null && String(request.guest.profileId) !== String(guest.nativeId)) ||
+          typeof note !== 'string' || !note ||
           !stage.requestBinding || !/^[a-f0-9]{64}$/.test(stage.requestBinding.digest) || !binding.success ||
           binding.data.guest.nativeId !== String(guest.nativeId) || binding.data.stay.arrival !== request.stay.arrival ||
-          binding.data.stay.departure !== request.stay.departure || binding.data.note !== note) {
-        return fail('CREATE_RESTAGE_INCOMPLETE', stage.issue ?? 'Fresh Labtest stage was not verified.', 'known', bounded({ native: stage }));
+          binding.data.stay.departure !== request.stay.departure || binding.data.note !== note ||
+          (binding.data.sendHmsConfirmation.kind === 'send') !== cmsSend ||
+          (binding.data.sendHmsConfirmation.kind === 'send' && (labtest || binding.data.sendHmsConfirmation.recipient !== (request.cms as Record<string, unknown>).recipient))) {
+        return fail('CREATE_RESTAGE_INCOMPLETE', stage.issue ?? 'Fresh stage was not verified.', 'known', bounded({ native: stage }));
       }
       const commit = { ...request, mode: 'commit', guest: { profileId: String(guest.nativeId) }, note };
       const price = stage.ratePlanAvailability;
       if (price && !['averageRate', 'totalRate', 'currency'].every(key => typeof price[key] === 'string' && price[key].trim())) {
         return fail('CREATE_PRICE_UNVERIFIED', 'Native staged price is incomplete.', 'known', bounded({ native: stage }));
+      }
+      if (expectedPrice && (!price || price.averageRate !== expectedPrice.averageRate || price.totalRate !== expectedPrice.totalRate || price.currency !== expectedPrice.currency)) {
+        const now = price ? `${price.currency} ${price.totalRate}` : 'no price';
+        return fail('CREATE_PRICE_CHANGED', `Infor price changed since Prepare (was ${expectedPrice.currency} ${expectedPrice.totalRate}, now ${now}). Nothing saved; run Prepare again.`, 'known', bounded({ native: stage }));
       }
       const saved = await loadNativeResult(api, commit, {
         ...options,
@@ -342,7 +362,10 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         return success(bounded({ confirmation: saved.confirmation, reservation_id: saved.nativeStayId, readback: saved.readback }));
       }
       return fail(markerAttempted ? 'CREATE_SAVE_UNCERTAIN' : 'CREATE_SAVE_REFUSED', saved.issue ?? 'Native Save was not verified.', markerAttempted ? 'uncertain' : 'known', bounded({ native: saved }));
-    }, { databaseUrl: leaseDatabase(), readOnly: false, signal: context.signal });
+    };
+    // The registry already holds the exclusive write lease; taking a second one here would wait on ourselves.
+    return context.credentialLease ? await write(context.credentialLease)
+      : await api.withCloudCredentialLease(request.propertyCode, write, { databaseUrl: leaseDatabase(), readOnly: false, signal: context.signal });
   } catch {
     return fail(markerAttempted ? 'CREATE_SAVE_UNCERTAIN' : 'CREATE_SAVE_UNAVAILABLE', markerAttempted ? 'Save may have dispatched; reconcile before any retry.' : 'Native create Save did not dispatch.', markerAttempted ? 'uncertain' : 'known');
   }

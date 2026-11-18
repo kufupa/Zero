@@ -10,8 +10,9 @@ import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableT
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
 import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
-import { createPilotEnabled, manualLabtestTarget, runStaffStage } from './create-operations.js';
-import { createPilotRequested, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
+import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffStage } from './create-operations.js';
+import { writeEvent } from './session-store.js';
+import { createGoEnabled, createPilotRequested, hmsSaveEnabled, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -109,7 +110,7 @@ export function createNativeAdmission():NativeAdmission {
     });
   }
   return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope)=>withLease(property,signal,true,work,scope),withSave:async(property,signal,work)=>{
-    if(!hmsSaveEnabled()) throw new Error('SAVE_DISABLED');
+    if(!nativeSaveAllowed()) throw new Error('SAVE_DISABLED');
     return withLease(property,signal,false,work);
   }};
 }
@@ -163,6 +164,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       }
     }
     if(createPilotEnabled() && await runStaffStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
+    if(createPilotEnabled() && await runStaffGo(lease,registry,{sessionId,mode,signal:abort.signal})) return;
     let version=state.version;
     const checkSession=(id:string)=>{if(id!==sessionId)throw new Error('SESSION_MISMATCH');abort.signal.throwIfAborted();};
     const runtime=deps.runtime({
@@ -215,23 +217,69 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
   } finally {clearInterval(timer);abort.abort();await deps.store.release(lease);}
 }
 
+// After repeated worker failures, leave every queued step in a visible terminal state so staff see it and the session
+// stops being picked. A Save whose dispatch marker was written may have been clicked: it becomes uncertain, never retried.
+async function parkFailedSession(sessionId:string) {
+  const failed={code:'WORKER_FAILED',message:'Nava could not finish this step. Nothing new was saved; run Prepare again.',
+    recovery:'Run Prepare again.',retryable:false,outcome:'known',operation:'staff_stage'};
+  const uncertain={code:'SAVE_UNCERTAIN',message:'Save may have dispatched; check HMS before any retry.',retryable:false,outcome:'uncertain'};
+  await sql.begin(async tx=>{
+    const [s]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${sessionId} AND (lease_until IS NULL OR lease_until<clock_timestamp()) FOR NO KEY UPDATE`;
+    if(!s) return;
+    await tx`UPDATE nava_agent.proposal SET phase=COALESCE(stage->>'previous_phase','ready'),stage=NULL,
+      execution=COALESCE(execution,'{}'::jsonb)||${json({error:failed})}::jsonb,updated_at=now()
+      WHERE session_id=${sessionId} AND phase='staging' AND stage->>'state'='queued'`;
+    await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go')||jsonb_build_object('last_go',execution->'go','error',${json(uncertain)}::jsonb),updated_at=now()
+      WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' AND execution->'go'->>'dispatch'<>'pending'`;
+    await tx`UPDATE nava_agent.proposal SET phase='ready',execution=(execution-'go')||jsonb_build_object('last_go',execution->'go','error',${json(failed)}::jsonb),updated_at=now()
+      WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' AND execution->'go'->>'dispatch'='pending'`;
+    await tx`UPDATE nava_agent.agent_event SET payload=jsonb_set(payload,'{delivered}','true'::jsonb)
+      WHERE session_id=${sessionId} AND kind IN ('mail_pending','context_pending') AND payload->>'delivered'='false'`;
+    await tx`UPDATE nava_agent.agent_session SET status='idle',updated_at=now() WHERE id=${sessionId} AND status='running'`;
+    await writeEvent(tx,sessionId,'worker_parked',{reason:'repeated_worker_failure'});
+  });
+}
+async function lastSequence(sessionId:string):Promise<string> {
+  const [row]=await sql`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${sessionId}`;
+  return row?.n ?? '0';
+}
+
 export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<void> {
   const active=new Set<string>();
+  // Consecutive failures per session: after 3, stop picking it up (and stop a stuck model turn) instead of retrying forever.
+  const failures=new Map<string,number>();
+  // Parked sessions stay excluded only until a newer event (e.g. a fresh signed Prepare/Go) arrives; then they get 3 new tries.
+  // A dispatched Save is already uncertain in the DB, so re-admission never re-clicks it.
+  const parked=new Map<string,string>();
   const limit=configuredSlots().requested;
   while(!signal?.aborted) {
-    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now()) AND (
+    const parkedIds=[...parked.keys()],parkedSeqs=[...parked.values()];
+    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now())
+      AND NOT EXISTS (SELECT 1 FROM unnest(${sql.array(parkedIds)}::text[],${sql.array(parkedSeqs)}::bigint[]) AS x(id,seq)
+        WHERE x.id=s.id::text AND NOT EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.sequence>x.seq)) AND (
       ((s.pending_tool_use_id IS NULL OR ${hmsSaveEnabled()}) AND (
         EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false')
         OR s.status='running'))
       OR (${createPilotEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='staging' AND p.stage->>'state'='queued'))
+      OR (${createPilotEnabled() && createGoEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='saving' AND p.execution->'go'->>'staff'='true'))
       OR (s.status='waiting_go' AND ${hmsSaveEnabled() && Boolean(deps.saveQueue)} AND (
         (s.mode='labtest' AND ${!createPilotRequested()} AND NOT (s.config ? 'manual_create_labtest'))
         OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL
           AND (p.phase='saving' OR p.execution->'go'->'completion' IS NOT NULL))))
       ) ORDER BY s.updated_at LIMIT ${limit}`;
+    for(const row of rows) if(parked.delete(row.id)) failures.delete(row.id);
     for(const row of rows) if(active.size<limit && !active.has(row.id)) {
       active.add(row.id);
-      void runSession(row.id,deps).catch(error=>{const message=error instanceof Error?error.message:'';console.error(JSON.stringify({event:'worker_error',session_id:row.id,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));}).finally(()=>active.delete(row.id));
+      void runSession(row.id,deps).then(()=>{failures.delete(row.id);},async error=>{
+        const message=error instanceof Error?error.message:'';
+        const count=(failures.get(row.id) ?? 0)+1;
+        failures.set(row.id,count);
+        console.error(JSON.stringify({event:count>=3?'worker_gave_up':'worker_error',session_id:row.id,attempt:count,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));
+        if(count>=3) {
+          await parkFailedSession(row.id).catch(()=>{});
+          parked.set(row.id,await lastSequence(row.id).catch(()=>String(Number.MAX_SAFE_INTEGER)));
+        }
+      }).finally(()=>active.delete(row.id));
     }
     await delay(3000,undefined,{signal}).catch(()=>{});
   }

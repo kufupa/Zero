@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import {
-  acceptedQuoteSchema, acceptedStageSchema, apiErrorSchema, capabilitiesSchema, eventSchema,
+  acceptedGoSchema, acceptedQuoteSchema, acceptedStageSchema, apiErrorSchema, capabilitiesSchema, eventSchema,
   proposalSchema, threadInputSchema, threadSnapshotSchema,
 } from './wire';
 import type {
-  AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, QuoteSelection, ThreadInput,
+  AcceptedGo, AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, QuoteSelection, ThreadInput,
 } from './wire';
 
 const boundProposalSchema = proposalSchema.extend({ source_message_id: z.string().min(1).nullable().optional() });
@@ -25,6 +25,7 @@ export type NavaApi = {
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
   quoteArtifacts: (request: RevisionRequest & { quoteId: string; selections: QuoteSelection[] }) => Promise<void>;
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
+  go: (request: RevisionRequest & { idempotencyKey: string }) => Promise<AcceptedGo>;
   reconcile: (request: RevisionRequest) => Promise<void>;
   sendContext: (request: RequestOptions & { threadId: string; text: string; proposalId?: string }) => Promise<void>;
   getArtifact: (id: string, options?: RequestOptions) => Promise<Response>;
@@ -180,6 +181,17 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
       const parsed = acceptedStageSchema.safeParse(payload);
       if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== requestValue.proposalId || parsed.data.revision !== requestValue.expectedRevision) {
         throw new NavaApiError('Nava returned an invalid Prepare response.', 'invalid_response', response.status);
+      }
+      return parsed.data;
+    },
+    go: async requestValue => {
+      const response = await request(`${proposalPath(requestValue.proposalId)}/go`, body({
+        expected_revision: requestValue.expectedRevision, idempotency_key: requestValue.idempotencyKey,
+      }, requestValue.signal));
+      const payload: unknown = await response.json().catch(() => null);
+      const parsed = acceptedGoSchema.safeParse(payload);
+      if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== requestValue.proposalId) {
+        throw new NavaApiError('Nava returned an invalid Go response.', 'invalid_response', response.status);
       }
       return parsed.data;
     },

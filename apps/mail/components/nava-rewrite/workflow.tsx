@@ -324,10 +324,18 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   const review: PaneFieldProps['review'] = !aiFilled ? undefined : reviewControl && onReview
     ? { provenance: 'ai', ...reviewControl, onChange: (checked: boolean) => onReview(spec.path, checked) }
     : { provenance: 'ai', kind: 'marker' };
+  const cmsDetail = proposal.workflow === 'create' && /\/(cms_message_id|cms_recipient)$/.exec(spec.path);
+  if (cmsDetail) {
+    const sendPath = spec.path.replace(/\/(cms_message_id|cms_recipient)$/, '/cms_send');
+    const send = Object.prototype.hasOwnProperty.call(drafts, sendPath) ? drafts[sendPath] : resolvePointer(proposal, sendPath);
+    const sendValue = send && typeof send === 'object' && 'kind' in send ? (send.kind === 'value' ? send.value : undefined) : send;
+    if (sendValue === false) return null;
+  }
   const guestProfile = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/guest_profile_id$/.test(spec.path);
   const hint = guestProfile ? 'Clear the selected profile before changing the guest name or email. Run Prepare to load verified Infor profiles.'
     : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
-  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile, error: spec.error, hint, review };
+  const requiredEmpty = spec.required && (shown === null || shown === undefined || typeof shown === 'string' && shown.trim() === '');
+  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
   let control: ReactNode;
 
   const filingField = proposal.workflow === 'filing' && /^(\/actions\/(?:0|[1-9]\d*)\/details\/)attachment_id$/.exec(spec.path);
@@ -415,7 +423,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     const ages = ageInputs(Object.prototype.hasOwnProperty.call(drafts, agesPath) ? drafts[agesPath] : resolvedAges.kind === 'value' ? resolvedAges.value : undefined);
     if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string') {
       control = <PaneField {...common} disabled={common.disabled || !agesSpec?.editable} control="number" value={shown === null || shown === undefined ? '' : String(shown)}
-        min="0" max={proposal.workflow === 'create' ? '16' : undefined} step="1" error={spec.error || (shown !== null && shown !== undefined && count === undefined ? proposal.workflow === 'quote' ? 'Enter a non-negative whole number of children.' : 'Enter a child count from 0 to 16.' : undefined)}
+        min="0" max={proposal.workflow === 'create' ? '16' : undefined} step="1" error={spec.error || common.error || (shown !== null && shown !== undefined && count === undefined ? proposal.workflow === 'quote' ? 'Enter a non-negative whole number of children.' : 'Enter a child count from 0 to 16.' : undefined)}
         hint={!agesSpec?.editable ? 'Child ages are unavailable to edit. Refresh the proposal.' : hint}
         onChange={next => {
           onEdit(spec.path, next);
@@ -751,7 +759,7 @@ export function Workflow(props: WorkflowProps) {
   const locked = props.busy || uncertain(proposal) || ['prefilling', 'staging', 'saving', 'done'].includes(proposal.phase);
   const phaseMessage = proposal.phase === 'prefilling' ? proposal.workflow === 'quote' ? 'Nava is preparing the quote.' : 'Nava is reading the email.'
     : proposal.phase === 'staging' ? 'Checking in Infor…'
-    : proposal.phase === 'saving' ? 'Waiting for Infor and readback…' : null;
+    : proposal.phase === 'saving' ? 'Saving in Infor… this can take up to 2 minutes.' : null;
   const stageCurrent = proposal.stage?.revision === proposal.revision && proposal.phase !== 'staging' && Object.keys(props.drafts).length === 0;
   const rateChoices = proposal.workflow === 'create' ? currentNativeResult(proposal, props.drafts)?.rate_choices : undefined;
   const rateChoicesUnavailable = Boolean(rateChoices && typeof rateChoices === 'object' && !Array.isArray(rateChoices) && rateChoices.status === 'unavailable');
@@ -812,7 +820,7 @@ export function Workflow(props: WorkflowProps) {
     </PaneSection>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
-      {proposal.result.confirmation && <p>Confirmation: {proposal.result.confirmation}</p>}
+      {proposal.result.confirmation && <p style={{ fontSize: '1.25em', fontWeight: 600 }}>Confirmation: {proposal.result.confirmation}</p>}
       {proposal.result.reservation_id && <p>Reservation: {proposal.result.reservation_id}</p>}
       {proposal.result.display_rows.length > 0 && <NativeRows rows={proposal.result.display_rows} proposal={proposal} />}
       {proposal.result.artifacts.map(artifact => <p key={artifact.id}>{props.onOpenArtifact
