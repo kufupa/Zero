@@ -614,13 +614,13 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
       const key = JSON.stringify([room.groupId, room.roomId]);
       const sourceOptions = stage.artifacts?.length ? stage.quote_selected_options ?? [] : stage.quote_options;
       const options = sourceOptions?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
-      const picked = options.find(option => option.option_index === selected[key]);
+      const picked = stage.artifacts?.length ? options[0] : options.find(option => option.option_index === selected[key]);
       const format = (code: string, meaning: string | null) => meaning && meaning !== code ? `${code} — ${meaning}` : code;
       return <fieldset key={key} className={quoteStyles.stay}>
         <legend>{room.label}</legend>
         {options.length ? <>
           <label className={styles.field}>Option
-            <select value={selected[key] === undefined ? '' : String(selected[key])} disabled={busy || Boolean(stage.artifacts?.length)}
+            <select value={picked ? String(picked.option_index) : ''} disabled={busy || Boolean(stage.artifacts?.length)}
               onChange={event => {
                 const next = event.target.value;
                 setSelected(current => {
