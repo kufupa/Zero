@@ -193,7 +193,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
     reservation_id:typeof p.result.reservation_id==='string'?p.result.reservation_id:null,
     readback:p.result.readback??null,display_rows:Array.isArray(p.result.display_rows)?p.result.display_rows:[],
     artifacts:Array.isArray(p.result.artifacts)?p.result.artifacts:[],
-    ...(Array.isArray(p.result.rooms)?{rooms:p.result.rooms.map((room:any)=>({booking_id:room.booking_id,state:room.state,confirmation:room.confirmation??null,reservation_id:room.reservation_id??null}))}:{}),
+    ...(Array.isArray(p.result.rooms)?{rooms:p.result.rooms.map((room:any)=>({booking_id:room.booking_id,state:room.state,confirmation:room.confirmation??null,reservation_id:room.reservation_id??null,readback:room.readback??null}))}:{}),
   } : null;
   const rawError=p.execution?.error ?? p.execution?.go?.completion?.toolResult?.error;
   const uncertain=p.phase==='uncertain' || rawError?.outcome==='uncertain';
