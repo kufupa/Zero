@@ -27,6 +27,16 @@ export function targetIsBound(booking:ProposalDraft['bookings'][number],executio
     stay.confirmation===booking.reservation_id && isDeepStrictEqual(stay.current_state,booking.current_state);
 }
 
+export function withAmendRoomTypeField(draft:ProposalDraft,execution:unknown):ProposalDraft {
+  const [booking]=draft.bookings, [action]=draft.actions;
+  const path='/bookings/0/fields/room_type';
+  if(draft.workflow!=='amend' || draft.disposition!=='propose' || draft.bookings.length!==1 || draft.actions.length!==1 ||
+    !booking || !action || action.type!=='amend' || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
+    !targetIsBound(booking,execution) || draft.field_specs.some(spec=>spec.path===path || spec.path===path.slice(1))) return draft;
+  return {...draft,field_specs:[...draft.field_specs,{path,label:'Room Type code',control:'text',editable:true,
+    required:false,provenance:'unknown',error:null,options:[],evidence:[]}]};
+}
+
 export async function lookupStay(lookup:z.infer<typeof targetLookup>, bookingId:string, context:StaffNativeContext):Promise<ToolResult> {
   if(lookup.kind==='surname') {
     const result=await stageRead({workflow:'triage',booking:{id:bookingId},action:{type:'triage',details:{lookup:{guest_name:lookup.surname}}}},

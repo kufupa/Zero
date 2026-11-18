@@ -12,7 +12,7 @@ import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
 import { attachmentCheckPath, attachmentsUnconfirmed } from './attachment-gate.js';
-import { targetIsBound } from './stay-target.js';
+import { targetIsBound, withAmendRoomTypeField } from './stay-target.js';
 
 export type RuntimeProvider = 'bedrock' | 'cma';
 export function runtimeProvider(): RuntimeProvider {
@@ -168,9 +168,9 @@ export async function snapshot(threadId:string) {
   });
 }
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
-  const draft=p.phase==='ready' && (p.workflow==='create' || p.workflow==='quote' || p.workflow==='cancel') ? proposalDraft.safeParse(p.current) : null;
-  const current=draft?.success ? withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(draft.data)),
-    p.stage?.revision===p.revision ? p.stage.native_result?.reasons : null) : p.current;
+  const draft=p.phase==='ready' && (p.workflow==='create' || p.workflow==='quote' || p.workflow==='cancel' || p.workflow==='amend') ? proposalDraft.safeParse(p.current) : null;
+  const current=draft?.success ? withAmendRoomTypeField(withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(draft.data)),
+    p.stage?.revision===p.revision ? p.stage.native_result?.reasons : null),p.execution) : p.current;
   const stage=p.stage && p.stage.state!=='queued' && p.stage.revision===p.revision ? {
     revision:p.stage.revision,state:p.stage.state,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
     display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],

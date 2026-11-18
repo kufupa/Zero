@@ -7,7 +7,7 @@ import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
 import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profileReview, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, staffAttachmentsChecked } from './attachment-gate.js';
 import { staffPrepareOnly } from './hms-mode.js';
-import { targetSelection } from './stay-target.js';
+import { targetSelection, withAmendRoomTypeField } from './stay-target.js';
 
 export async function selectStayTarget(id:string,mailboxIds:string[],actor:string,input:{expected_revision:number;job_id:string;remove_fields:string[]}) {
   return sql.begin(async tx=>{
@@ -110,13 +110,15 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(p.phase!=='ready' && p.phase!=='waiting_go') throw new Error('NOT_EDITABLE');
     const stored=proposalDraft.parse(structuredClone(p.current));
     const draft=p.phase==='ready' ? withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(stored))) : stored;
+    const editable=p.phase==='ready' ? withAmendRoomTypeField(draft,p.execution) : draft;
     const identities=JSON.stringify(quoteIdentities(draft));
     const quoteActions=p.workflow==='quote'?structuredClone(draft.actions):null;
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];
     for(const item of input.changes) {
-      const spec=draft.field_specs.find(f=>f.path===item.path);
+      const spec=editable.field_specs.find(f=>f.path===item.path);
       if(!spec?.editable || (p.workflow==='filing' && /^\/actions\/\d+\/details\/message_id(?:\/|$)/.test(item.path))) throw new Error('INVALID_PATH');
       const modified=apply(draft,item);
+      if(!draft.field_specs.includes(spec)) draft.field_specs.push(spec);
       spec.provenance='staff';
       changes.push({change:item,...modified});
     }
