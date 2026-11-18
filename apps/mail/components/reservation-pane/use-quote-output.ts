@@ -14,6 +14,10 @@ export { getQuoteOutput, quoteCoverHtml } from '@/lib/reservation-workflow/quote
 export type { QuoteOutput, QuoteOutputArtifact, QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
 
 type Confirm = () => boolean | Promise<boolean>;
+type OutlookReplyInput = {
+  html: string; confirmUnknown?: Confirm;
+} & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean } |
+  { output: QuoteOutput; isCurrentSnapshot: () => boolean });
 
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
 const RETRY_WINDOW_MS = 15 * 60 * 1000;
@@ -186,14 +190,23 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
     finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };
 
-  const createOutlookReplyLocked = async ({ snapshot, requestId, html, confirmUnknown, isCurrentSnapshot }: {
-    snapshot: ReservationPaneSnapshot; requestId: string; html: string; confirmUnknown?: Confirm; isCurrentSnapshot?: () => boolean;
-  }): Promise<QuoteOutputResult> => {
+  const createOutlookReplyLocked = async (input: OutlookReplyInput): Promise<QuoteOutputResult> => {
+    const { html, confirmUnknown, isCurrentSnapshot } = input;
     if (busy.current) return { status: 'error', message: 'A reply is already being prepared.' };
     busy.current = true; setSaving(true); setError(null); beginMutation();
     let submitted = false;
     try {
-      const output = await getReady(requestId, html, snapshot, isCurrentSnapshot), host = live.current.bridge, email = host?.activeEmail;
+      let output: QuoteOutput;
+      if ('output' in input) {
+        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
+        if (!completeQuotePackage(input.output) || !html.trim()) throw new Error('Review the cover reply and generate the PDF and Excel files first.');
+        await verifyAttachments(input.output.artifacts);
+        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
+        output = input.output;
+      } else {
+        output = await getReady(input.requestId, html, input.snapshot, isCurrentSnapshot);
+      }
+      const host = live.current.bridge, email = host?.activeEmail;
       if (!host || !email || !email.entryId || !email.storeId || !email.folderEntryId ||
           !host.supportsAction('GET_ACTIVE_EMAIL') || !host.supportsAction('CREATE_REPLY_DRAFT') ||
           !host.supportsAction('UPDATE_DRAFT') || !host.supportsAction('GET_EMAIL_BY_ENTRY_ID') || !host.supportsAction('GET_ATTACHMENT_METADATA') ||
@@ -308,7 +321,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       return report('error', failure(error));
     } finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };
-  const createOutlookReply = async (input: Parameters<typeof createOutlookReplyLocked>[0]): Promise<QuoteOutputResult> => {
+  const createOutlookReply = async (input: OutlookReplyInput): Promise<QuoteOutputResult> => {
     if (!navigator.locks) return report('error', 'Update the Outlook browser to safely prepare the draft.');
     return navigator.locks.request('nava-v2-quote-outlook-draft', { ifAvailable: true }, lock =>
       lock ? createOutlookReplyLocked(input) : report('error', 'A quote draft is already being prepared.'));
