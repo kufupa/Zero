@@ -115,7 +115,7 @@ export function quoteOptions(request:unknown, native:unknown, requireJointSelect
   const parsedRequest=quoteInput.safeParse(request), captured=quoteCapture.safeParse(native);
   if (!parsedRequest.success || !captured.success) return [];
   const q=parsedRequest.data, searches=captured.data.searches;
-  if(searches.some(search=>search.native_result.outcome!=='quote' || search.native_result.audit.status!=='complete') ||
+  if(searches.some(search=>search.native_result.outcome!=='quote') ||
       (requireJointSelection && hasOverlappingSearches(searches))) return [];
   const parsed=scopeSchema.safeParse({quote_id:q.quote_id,property_code:q.property_code,groups:q.groups,
     capture:captured.data.quotes[q.quote_id]});

@@ -82,7 +82,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
       return c.json(responseError('QUOTE_CAPTURE_UNAVAILABLE','No matching native quote capture for this revision.'),409);
     }
     const searches=ready.data.native_result.searches;
-    if(searches.some((search,i)=>search.native_result.outcome!=='quote' || search.native_result.audit.status!=='complete' ||
+    if(searches.some((search,i)=>search.native_result.outcome!=='quote' ||
       searches.slice(0,i).some(prior=>prior.arrival_date<search.departure_date && search.arrival_date<prior.departure_date))) {
       return c.json(responseError('QUOTE_ALLOCATION_UNVERIFIED','Choose a quote with verified prices and availability for all requested nights.'),409);
     }

@@ -58,7 +58,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
       searches.push({property_code:request.property_code,arrival_date:batch.arrival_date,departure_date:batch.departure_date,identities:batch.identities,native_result:native});
       const nativeGroups=array(native.groups);
       const displayIdentities=nativeGroups.map(value=>batch.identities.find(identity=>identity.native_id===record(value).id));
-      const complete=['quote','no_match','unavailable'].includes(native.outcome) && native.audit?.status==='complete';
+      const complete=['quote','no_match','unavailable'].includes(native.outcome);
       for(const identity of batch.identities) {
         const group=groups[identity.group_id], room=group.rooms.find(item=>item.room_id===identity.room_id);
         const nativeIndex=nativeGroups.findIndex(item=>record(item).id===identity.native_id);
