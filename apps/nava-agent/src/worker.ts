@@ -454,8 +454,8 @@ async function main():Promise<void> {
     const input={property_code:'HRCEN',kinds:['room_type','rate_plan','source_of_business','track','guarantee_type','organization','agency','meal_plan']};
     const context:CatalogueContext={sessionId:'catalogue_warm',mode:'live'};
     void cachedCatalogue(input,context,request=>native.withRead(input.property_code,undefined,
-      lease=>readCatalogue(request,{...context,credentialLease:lease,signal:lease.signal}),undefined,undefined,'short','background'))
-      .catch(error=>console.error(JSON.stringify({event:'catalogue_warm_failed',error:error instanceof Error?error.name:'unknown'})));
+      lease=>readCatalogue(request,{...context,credentialLease:lease,signal:lease.signal}),undefined,undefined,'short'))
+      .catch(error=>console.error(JSON.stringify({event:'catalogue_warm_failed',error:error instanceof Error && /^[A-Z0-9_]+$/.test(error.message)?error.message:error instanceof Error?error.name:'unknown'})));
   }
   if(runtimeProvider()==='cma') return runCma(native);
   if((process.env.AWS_REGION ?? 'eu-west-1')!=='eu-west-1') throw new Error('BEDROCK_REGION_INVALID');
