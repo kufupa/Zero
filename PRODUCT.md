@@ -45,7 +45,7 @@ The workflows:
    - Typed nightly rate: on the property's override rate codes staff may type the nightly rate, and a quote row staff priced by hand carries its rate into Create. Nava stages it, shows HMS's total before Go, requires a note saying who approved it, and reads the rate back after Save.
    - Multi-room = sequential single-room creates (1–8 rooms) under one Go.
 4. **Amend**: find the confirmation, then change what the guest asked for: dates/nights, room type, room type for charge, adults/children and ages, rate plan, booking agency/organization, reservation note, billing reference, guest/booker details, and CMS. HMS reprices, and Nava shows the new price and the common rate options before Go.
-5. **Cancel**: find the confirmation and cancel with a reason. If HMS shows a penalty or charge, show it to staff; staff decide with a second Go.
+5. **Cancel**: find the confirmation and cancel with a reason. Show HMS cancellation policy details before Go when available. If HMS reports a fee after Save, show the amount and tell staff to post it in HMS if the hotel charges it. Nava does not post the fee.
 6. **Filing**: file the selected voucher/POP PDF into the stay's Documents. Staff can search for and choose the stay when extraction misses it.
 
 **CMS confirmation (Create and Amend)** is a staff control: a tick box (default on), a CMS message ID and a recipient email, all editable. HMS sends its confirmation only when staff leave it ticked. Nava never sends email itself; it saves unsent drafts.

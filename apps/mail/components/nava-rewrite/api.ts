@@ -14,7 +14,7 @@ export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 export type RequestOptions = { signal?: AbortSignal };
 type EventOptions = RequestOptions & { onConnected?: () => void };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
-type GoRequest = RevisionRequest & { idempotencyKey: string; preparedJobId?: string; confirmPenalty?: true };
+type GoRequest = RevisionRequest & { idempotencyKey: string; preparedJobId?: string };
 type Go = {
   (request: GoRequest & { createProfile: true }): Promise<AcceptedStage>;
   (request: GoRequest & { createProfile?: undefined }): Promise<AcceptedGo>;
@@ -152,7 +152,7 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
   async function go(requestValue: GoRequest & { createProfile?: true }): Promise<AcceptedStage | AcceptedGo> {
     const response = await request(`${proposalPath(requestValue.proposalId)}/go`, body({
       expected_revision: requestValue.expectedRevision, idempotency_key: requestValue.idempotencyKey,
-      prepared_job_id: requestValue.preparedJobId, confirm_penalty: requestValue.confirmPenalty,
+      prepared_job_id: requestValue.preparedJobId,
       create_profile: requestValue.createProfile,
     }, requestValue.signal));
     const payload: unknown = await response.json().catch(() => null);

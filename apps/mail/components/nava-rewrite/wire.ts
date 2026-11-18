@@ -20,7 +20,9 @@ export const createReadbackSchema = z.object({
 });
 export const cancelReadbackSchema = z.object({
   cancellation_fee: z.object({ state: z.string(), text: z.string().nullable() }).optional(), fee_info: z.string().optional(),
+  post_save_fee: z.object({ amount: z.string(), currency: z.string().nullable() }).optional(),
 });
+export const cancelPrepareSchema = z.object({ policy_facts: z.array(z.string()).optional() });
 
 const id = z.string().min(1);
 const revision = z.number().int().positive();

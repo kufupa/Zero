@@ -212,16 +212,8 @@ function goReady(proposal: Proposal): boolean {
   return (proposal.workflow !== 'create' || hasActionToPrepare(proposal)) &&
     (proposal.phase === 'ready' || remainingCreateRooms(proposal) !== null) && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
     proposal.stage.revision === proposal.revision &&
-    (!proposal.error || remainingCreateRooms(proposal) !== null || proposal.workflow === 'cancel' && proposal.error.code === 'CANCEL_PENALTY_CHANGED' && Boolean(cancellationPenalty(proposal))) &&
+    (!proposal.error || remainingCreateRooms(proposal) !== null) &&
     missingRequired(proposal).length === 0;
-}
-
-function cancellationPenalty(proposal: Proposal): string | null {
-  if (proposal.workflow !== 'cancel') return null;
-  const native = proposal.stage?.native_result;
-  const fee = proposal.stage?.cancellation_fee ?? (native && typeof native === 'object' && !Array.isArray(native) ? native.cancellation_fee : null);
-  return fee && typeof fee === 'object' && !Array.isArray(fee) && fee.state === 'review_required' &&
-    typeof fee.text === 'string' && fee.text.trim() ? fee.text : null;
 }
 
 function goConfirmation(proposal: Proposal) {
@@ -914,7 +906,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     refreshVersion();
     try {
       const accepted = await api.go({ proposalId: current.id, expectedRevision: current.revision, idempotencyKey, signal,
-        preparedJobId: current.stage?.job_id, ...(cancellationPenalty(current) ? { confirmPenalty: true } : {}),
+        preparedJobId: current.stage?.job_id,
       });
       if (signal.aborted) return;
       cache.operationStarts[current.id] = { phase: 'saving', at: Date.now() };
@@ -1130,7 +1122,6 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     cache.stagePending[proposal.id] === undefined && Object.keys(drafts).length === 0);
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];
   const confirmingGo = Boolean(proposal && goEnabled && confirmedPreparation === goConfirmation(proposal));
-  const penalty = proposal ? cancellationPenalty(proposal) : null;
   const remainingRooms = proposal ? remainingCreateRooms(proposal) : null;
   const remainingLabels = proposal && remainingRooms ? remainingRooms.map(room => {
     const index = proposal.bookings.findIndex(booking => booking.id === room.booking_id);
@@ -1162,8 +1153,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
   const goFooter = proposal && canGo && !isUncertain && proposal.phase !== 'done' ? <>
     {confirmingGo && proposal && <div role="group" aria-label="Confirm Go">
       <p>{goLabels[proposal.workflow]}</p>
-      {penalty && <p>Infor shows this penalty: {penalty}</p>}
-      <button type="button" disabled={busy} onClick={() => { void go(proposal); }}>{penalty ? 'Confirm Go and accept fee' : 'Confirm Go'}</button>{' '}
+      <button type="button" disabled={busy} onClick={() => { void go(proposal); }}>Confirm Go</button>{' '}
       <button type="button" onClick={() => setConfirmedPreparation(null)}>Back</button>
     </div>}
     {goEnabled && !confirmingGo && stagePrimary && proposal && <button type="button" disabled={stagePrimary.disabled} onClick={stagePrimary.onClick}>Prepare again</button>}

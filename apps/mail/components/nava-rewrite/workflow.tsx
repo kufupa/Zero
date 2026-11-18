@@ -8,7 +8,7 @@ import { quoteArtifactIds } from './quote-draft';
 import { defaultQuoteSelections } from './quote-defaults';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
-import { amendReadbackSchema, cancelReadbackSchema, createReadbackSchema } from './wire';
+import { amendReadbackSchema, cancelPrepareSchema, cancelReadbackSchema, createReadbackSchema } from './wire';
 import type { FieldSpec, Json, NativeDisplayRow, Proposal, QuoteSelection, SavedPrice, ThreadInput } from './wire';
 import type { StayLookup } from './api';
 import styles from './pane.module.css';
@@ -1019,11 +1019,24 @@ function AmendReadback({ readback }: { readback: Json }) {
 function CancelReadback({ readback }: { readback: Json }) {
   const parsed = cancelReadbackSchema.safeParse(readback);
   if (!parsed.success) return null;
-  const { cancellation_fee, fee_info } = parsed.data;
+  const { cancellation_fee, fee_info, post_save_fee } = parsed.data;
+  if (post_save_fee) {
+    const { amount, currency } = post_save_fee;
+    return <p>HMS cancellation fee {currency ? `${currency} ` : ''}{amount} — not posted by Nava; post it in HMS if the hotel charges it.</p>;
+  }
   return <>
     {fee_info && <p>{fee_info}</p>}
     {cancellation_fee && <p>Cancellation fee: {cancellation_fee.text ?? 'Not shown by HMS'}</p>}
   </>;
+}
+
+function CancelPolicy({ prepared }: { prepared: Json }) {
+  const parsed = cancelPrepareSchema.safeParse(prepared);
+  if (!parsed.success || !parsed.data.policy_facts?.length) return null;
+  return <div>
+    <strong>HMS cancellation policy</strong>
+    <ul>{[...new Set(parsed.data.policy_facts)].map(text => <li key={text}>{text}</li>)}</ul>
+  </div>;
 }
 
 export function Workflow(props: WorkflowProps) {
@@ -1084,6 +1097,7 @@ export function Workflow(props: WorkflowProps) {
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.stage && stageCurrent && proposal.stage.state !== 'target' && <PaneSection title="Checked details">
       {proposal.workflow === 'create' && <p>Price set by HMS rate plan.</p>}
+      {proposal.workflow === 'cancel' && <CancelPolicy prepared={proposal.stage.native_result} />}
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
         <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{item}</li>)}</ul>
