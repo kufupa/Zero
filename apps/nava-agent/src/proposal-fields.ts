@@ -44,15 +44,17 @@ function createChildFields(draft: ProposalDraft): ProposalDraft {
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
     const root=`/bookings/${index}/fields`;
-    if(!Object.hasOwn(fields,'child_count')) fields.child_count=fields.children ?? (Array.isArray(fields.child_ages) ? fields.child_ages.length : 0);
-    if(!Object.hasOwn(fields,'child_ages')) fields.child_ages=[];
+    // Unknown children stay blank and required: staff must enter them before Prepare/Go (never a silent 0 or []).
+    if(fields.child_count==null) fields.child_count=typeof fields.children==='number' ? fields.children : Array.isArray(fields.child_ages) ? fields.child_ages.length : null;
+    if(fields.child_ages==null) fields.child_ages=fields.child_count===0 ? [] : null;
     delete fields.children;
     for(const [key,label,control] of [['child_count','Children','number'],['child_ages','Child ages','text']] as const) {
       const path=`${root}/${key}`;
       const paths=[path,path.slice(1),...(key==='child_count'?[`${root}/children`,`${root}/children`.slice(1)]:[])];
       const existing=fieldSpecs.findIndex(spec=>paths.includes(spec.path));
-      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
-      else fieldSpecs.push({path,label,control,editable:true,provenance:'default',required:false,error:null,options:[],evidence:[]});
+      const unknown=fields[key]==null;
+      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control,required:true,...(unknown?{provenance:'unknown' as const}:{})};
+      else fieldSpecs.push({path,label,control,editable:true,provenance:'unknown',required:true,error:null,options:[],evidence:[]});
     }
     return {...booking,fields};
   });
@@ -71,16 +73,61 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
       ['first_name','Guest first name',true,'text'], ['last_name','Guest last name',true,'text'],
       ['guest_email','Guest email',false,'text'],
       ['agency_name','Booking agency',false,'text'], ['agency_id','Booking agency ID',false,'text'],
+      ['organization_name','Company',false,'text'], ['organization_id','Company ID',false,'text'],
+      ['ar_account_name','A/R account',false,'text'], ['ar_account_id','A/R account ID',false,'text'],
+      ['billing_reference','Billing reference',false,'text'],
+      ['booker_name','Booker name',false,'text'], ['booker_contact','Booker contact',false,'text'],
+      ['reason_for_stay','Reason for stay',false,'text'], ['note','Reservation note',false,'textarea'],
+      ['guest_opt_in','Guest opt-in',false,'checkbox'],
+      ['cms_send','Send Infor confirmation (CMS)',false,'checkbox'], ['cms_message_id','CMS message ID',false,'text'],
+      ['cms_recipient','CMS recipient email',false,'text'],
     ] as const) {
       const path=`/bookings/${index}/fields/${key}`;
       const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
-      if(!Object.hasOwn(fields,key)) fields[key]=null;
+      if(key==='note' && !Object.hasOwn(fields,'note') && typeof fields.reservation_note==='string') fields.note=fields.reservation_note;
+      if(!Object.hasOwn(fields,key)) fields[key]=createFieldDefault(key,fields);
       if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,required,control};
       else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
     }
+    delete fields.reservation_note;
     return {...booking,fields};
   });
-  return {...draft,bookings,field_specs:fieldSpecs};
+  return {...draft,bookings,field_specs:fieldSpecs.filter(spec=>!/^\/?bookings\/\d+\/fields\/reservation_note$/.test(spec.path))};
+}
+
+function isLabtestGuest(fields: Record<string, unknown>) {
+  return fields.first_name==='Proof' && fields.last_name==='Labtest';
+}
+
+function createFieldDefault(key: string, fields: Record<string, unknown>): unknown {
+  if(key==='cms_send') return !isLabtestGuest(fields);
+  if(key==='cms_message_id') return '03';
+  if(key==='cms_recipient') return typeof fields.guest_email==='string' && fields.guest_email ? fields.guest_email : null;
+  if(key==='guest_opt_in') return false;
+  return null;
+}
+
+/**
+ * Field keys staff must fill before Create Prepare or Go. Generic: every required field spec that is blank blocks,
+ * so whatever the model failed to extract surfaces as an empty required box rather than a silent default.
+ */
+export function missingCreateFields(draft: ProposalDraft, operation: 'stage' | 'go', index = 0): string[] {
+  const fields=draft.bookings[index]?.fields ?? {};
+  const blank=(value: unknown)=>value==null || (typeof value==='string' && !value.trim());
+  const root=`/bookings/${index}/fields/`;
+  // Prepare needs the stay and party (HMS then offers rate/track/guest choices); Go needs every required field.
+  const missing=new Set(['arrival_date','departure_date','adults','first_name','last_name'].filter(key=>blank(fields[key])));
+  if(!validChildAges(fields.child_count,fields.child_ages)) missing.add(fields.child_count==null?'child_count':'child_ages');
+  if(operation==='stage') return [...missing];
+  for(const spec of draft.field_specs) {
+    const path=spec.path.startsWith('/')?spec.path:'/'+spec.path;
+    if(spec.required && path.startsWith(root) && !path.slice(root.length).includes('/') && blank(fields[path.slice(root.length)])) missing.add(path.slice(root.length));
+  }
+  if(fields.cms_send===true) {
+    if(isLabtestGuest(fields)) missing.add('cms_send');
+    for(const key of ['cms_message_id','cms_recipient']) if(blank(fields[key])) missing.add(key);
+  }
+  return [...missing];
 }
 
 export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {

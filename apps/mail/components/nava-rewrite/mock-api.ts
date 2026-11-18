@@ -115,6 +115,7 @@ export function createMockNavaApi(fixture: {
     quote: unavailable,
     quoteArtifacts: unavailable,
     stage: unavailable,
+    go: unavailable,
     reconcile: unavailable,
     sendContext: unavailable,
     getArtifact: unavailable,

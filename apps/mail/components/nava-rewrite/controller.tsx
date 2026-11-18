@@ -30,7 +30,7 @@ type Draft = { value: DraftValue; version: number; base: { exists: boolean; valu
 type Drafts = Record<string, Record<string, Draft>>;
 type Issue = { kind: 'conflict' | 'error'; message: string };
 type GoLock = 'accepted' | 'uncertain' | 'reconciling';
-type ActiveOperation = { kind: 'stage' | 'quote' | 'reconcile' | 'refresh' | 'attachments' | 'quote_artifacts' | 'quote_draft' | 'context'; proposalId: string; signal: AbortSignal };
+type ActiveOperation = { kind: 'stage' | 'quote' | 'go' | 'reconcile' | 'refresh' | 'attachments' | 'quote_artifacts' | 'quote_draft' | 'context'; proposalId: string; signal: AbortSignal };
 type Cache = {
   drafts: Drafts;
   issues: Record<string, Issue>;
@@ -136,7 +136,7 @@ function supports(capabilities: Capabilities | null, key: 'tools' | 'workflows',
   return Array.isArray(value) && value.some(item => item === name);
 }
 
-function advertised(capabilities: Capabilities | null, workflow: WorkflowName, operation: 'stage' | 'quote'): boolean {
+function advertised(capabilities: Capabilities | null, workflow: WorkflowName, operation: 'stage' | 'quote' | 'go'): boolean {
   return capabilities?.auth_ready === true && supports(capabilities, 'workflows', workflow) &&
     capabilities.workflow_capabilities?.[workflow]?.[operation] === true;
 }
@@ -158,6 +158,8 @@ function safeOperationError(error: unknown): string | null {
     case 'STALE_REVISION': case 'INVALID_PHASE': case 'NOT_EDITABLE': return 'The proposal changed. Refresh it and review the latest details.';
     case 'INVALID_INPUT': return 'Check the proposal details and try again.';
     case 'UNAVAILABLE': return 'This Infor check is currently unavailable.';
+    case 'REQUIRED_FIELDS_MISSING': return goMissingMessage(error.details);
+    case 'FORBIDDEN': return 'You do not have permission to save this booking in Infor.';
     default: return null;
   }
 }
@@ -173,6 +175,26 @@ function delay(signal: AbortSignal, ms: number): Promise<void> {
 
 function displayDrafts(cache: Cache, proposalId: string): Record<string, DraftValue> {
   return Object.fromEntries(Object.entries(cache.drafts[proposalId] ?? {}).map(([path, draft]) => [path, draft.value]));
+}
+
+function goMissingMessage(details: unknown): string {
+  const fields = details && typeof details === 'object' && !Array.isArray(details) && Array.isArray((details as { fields?: unknown }).fields)
+    ? (details as { fields: unknown[] }).fields.filter((item): item is string => typeof item === 'string') : [];
+  return fields.length ? `Fill before Go: ${fields.join(', ')}.` : 'Some required details are missing. Fill them in, then try Go again.';
+}
+
+// Required fields (server field_specs) whose saved value is still empty. Labels only; never hardcode field lists.
+function missingRequired(proposal: Proposal): string[] {
+  return proposal.field_specs.filter(spec => {
+    if (!spec.required) return false;
+    const value = pointer(proposal, spec.path);
+    return !value.exists || value.value === null || value.value === undefined || typeof value.value === 'string' && value.value.trim() === '';
+  }).map(spec => spec.label);
+}
+
+function goReady(proposal: Proposal): boolean {
+  return proposal.workflow === 'create' && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' &&
+    proposal.stage.revision === proposal.revision && !proposal.error && missingRequired(proposal).length === 0;
 }
 
 function goStorageKey(proposalId: string) { return `nava-pending-go:${proposalId}`; }
@@ -206,6 +228,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const [selectedId, setSelectedId] = useState(cache.selectedId);
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [confirmGoId, setConfirmGoId] = useState<string | null>(null);
   const [openingLong, setOpeningLong] = useState(false);
   const [openAttempt, setOpenAttempt] = useState(0);
   const [authenticationExpired, setAuthenticationExpired] = useState(false);
@@ -773,6 +796,44 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     }
   }
 
+  async function go(proposal: Proposal) {
+    const signal = controllerRef.current?.signal;
+    if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
+    const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
+    if (!current || current.revision !== proposal.revision || cache.issues[current.id] || cache.goLocks[current.id] ||
+        cache.stagePending[current.id] !== undefined || Object.keys(cache.drafts[current.id] ?? {}).length) return;
+    if (current.workflow !== 'create' || !advertised(capabilities, 'create', 'go') || !goReady(current)) return;
+    let idempotencyKey: string;
+    try { idempotencyKey = crypto.randomUUID(); window.sessionStorage.setItem(goStorageKey(current.id), idempotencyKey); }
+    catch { setMessage('Could not start the Save. Reload the pane and try again.'); return; }
+    const currentOperation = { kind: 'go' as const, proposalId: current.id, signal };
+    operationRef.current = currentOperation;
+    setConfirmGoId(null);
+    setMessage(null);
+    setBusy(true);
+    cache.goLocks[current.id] = 'accepted';
+    refreshVersion();
+    try {
+      const accepted = await api.go({ proposalId: current.id, expectedRevision: current.revision, idempotencyKey, signal });
+      if (signal.aborted) return;
+      cache.operationStarts[current.id] = { phase: 'saving', at: Date.now() };
+      applyProposal({ ...current, phase: accepted.phase });
+      const latest = await api.getThread(snapshotRef.current?.id ?? current.thread_id, { signal }).catch(() => null);
+      if (latest && !signal.aborted) applySnapshot(latest, true);
+    } catch (error) {
+      if (signal.aborted || expireAuthentication(error, signal)) return;
+      // A definite refusal (4xx with a known code) means nothing was sent to Infor; anything else is unknown.
+      const refused = error instanceof NavaApiError && error.code !== null && error.status !== null && error.status >= 400 && error.status < 500;
+      if (refused) { delete cache.goLocks[current.id]; clearPendingGo(current.id); }
+      else cache.goLocks[current.id] = 'uncertain';
+      setMessage(refused ? safeOperationError(error) ?? 'Nava could not start the Save. Refresh and try again.'
+        : 'Infor may have saved this booking. Check HMS before trying again.');
+    } finally {
+      if (operationRef.current === currentOperation) operationRef.current = null;
+      if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
+    }
+  }
+
   async function operation(kind: 'stage' | 'quote' | 'reconcile', proposal: Proposal, quoteId?: string) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
@@ -846,12 +907,29 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const isUncertain = Boolean(proposal && (lock === 'uncertain' || lock === 'reconciling' || proposal.phase === 'uncertain' || proposal.error?.outcome === 'uncertain'));
   const canStage = Boolean(proposal && proposal.workflow !== 'quote' && advertised(capabilities, proposal.workflow, 'stage'));
   const canQuote = Boolean(proposal && proposal.workflow === 'quote' && advertised(capabilities, proposal.workflow, 'quote'));
-  const primary = proposal && isUncertain
-    ? reconcileSupported ? { label: 'Check Infor', disabled: busy || Boolean(issue), onClick: () => { void operation('reconcile', proposal); } } : undefined
-    : proposal ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined ||
+  const canGo = Boolean(proposal && proposal.workflow === 'create' && advertised(capabilities, 'create', 'go'));
+  const goEnabled = Boolean(proposal && canGo && goReady(proposal) && !busy && !isUncertain && !lock && !issue && !authenticationExpired &&
+    cache.stagePending[proposal.id] === undefined && Object.keys(drafts).length === 0);
+  const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];
+  const confirmingGo = Boolean(proposal && goEnabled && confirmGoId === proposal.id);
+  const stagePrimary = proposal && !isUncertain ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined ||
         (needsAttachmentReview(proposal.workflow) && (!proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]))) || !validSavedChildren(proposal),
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
+  const primary = proposal && goEnabled
+    ? confirmingGo ? undefined : { label: 'Go — save in Infor', onClick: () => setConfirmGoId(proposal.id) }
+    : proposal && isUncertain
+    ? reconcileSupported ? { label: 'Check Infor', disabled: busy || Boolean(issue), onClick: () => { void operation('reconcile', proposal); } } : undefined
+    : stagePrimary;
+  const goFooter = proposal && canGo && !isUncertain && proposal.phase !== 'done' ? <>
+    {confirmingGo && proposal && <div role="group" aria-label="Confirm Go">
+      <p>Save this booking in Infor?</p>
+      <button type="button" disabled={busy} onClick={() => { void go(proposal); }}>Confirm Go</button>{' '}
+      <button type="button" onClick={() => setConfirmGoId(null)}>Cancel</button>
+    </div>}
+    {goEnabled && !confirmingGo && stagePrimary && proposal && <button type="button" disabled={stagePrimary.disabled} onClick={stagePrimary.onClick}>Prepare again</button>}
+    {goMissing.length > 0 && <p role="status">Fill before Go: {goMissing.join(', ')}</p>}
+  </> : undefined;
 
   return <NavaPane email={email} actions={snapshot && snapshot.proposals.length > 0 ? {
     items: snapshot.proposals.map(item => {
@@ -860,7 +938,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       return { id: item.id, label: matching.length > 1 ? `${name} ${matching.findIndex(other => other.id === item.id) + 1}` : name };
     }),
     selectedId, onSelect: id => { cache.selectedId = id; setSelectedId(id); }, available: [], onAdd: () => {},
-  } : undefined} primaryAction={primary && authenticationExpired ? { ...primary, disabled: true } : primary}>
+  } : undefined} footer={goFooter || undefined} primaryAction={primary && authenticationExpired ? { ...primary, disabled: true } : primary}>
     {authenticationExpired && <PaneMessage tone="error">Your Nava session has expired. Sign in again to continue.{' '}
       <button type="button" onClick={() => { void restoreAuthentication(); }}>{onAuthenticationRequired ? 'Sign in again' : 'Reload pane'}</button>
     </PaneMessage>}
@@ -871,7 +949,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       ? 'Nava cannot verify which email this proposal belongs to. Reopen the email or contact support.'
       : 'Nava is reading this email. Actions will appear here when available.'}</PaneMessage>}
     {proposal && <>
-      {isUncertain && <PaneMessage tone="error">The Save outcome is unknown. Check Infor before any further Save.</PaneMessage>}
+      {isUncertain && <PaneMessage tone="error">Infor may have saved this booking. Check HMS before trying again.</PaneMessage>}
       {issue && <PaneMessage tone="error">{issue.message}
         <ul>{Object.keys(drafts).map(path => {
           const field = proposal.field_specs.find(spec => spec.path === path);

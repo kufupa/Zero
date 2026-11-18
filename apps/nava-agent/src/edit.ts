@@ -90,7 +90,8 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(p.workflow==='create') for(const change of input.changes) {
       const match=/^\/bookings\/(\d+)\/fields\/child_(?:count|ages)(?:\/|$)/.exec(change.path);
       const fields=match && valid.bookings[Number(match[1])]?.fields;
-      if(fields && !validChildAges(fields.child_count,fields.child_ages)) throw new Error('INVALID_CHILD_AGES');
+      if(fields && !validChildAges(fields.child_count,fields.child_ages)
+        && !(fields.child_ages==null && (fields.child_count==null || (Number.isInteger(fields.child_count) && Number(fields.child_count)>0)))) throw new Error('INVALID_CHILD_AGES');
     }
     if(input.staff_attachments_checked!==undefined) {
       if(!requiresStaffAttachmentCheck(p.workflow)) throw new Error('INVALID_PATH');

@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
-import { configuredToolPacks, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
+import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { withTriageLookupFields } from '../tools/triage/index.js';
@@ -272,7 +272,7 @@ export class ToolRegistry {
       if(!['create','amend','cancel','filing'].includes(name) || typeof pack.prepare!=='function' || (pack.save!==undefined && typeof pack.save!=='function')) throw new Error(`INVALID_MUTATION_PACK:${name}`);
       const prepare=pack.prepare;
       const save=pack.save;
-      this.mutations.set(name,{prepare:async(input,context)=>prepare(input,context),...(!staffPrepareOnly() && typeof save==='function'?{save:async(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>save(input,context)}:{})});
+      this.mutations.set(name,{prepare:async(input,context)=>prepare(input,context),...((!staffPrepareOnly() || (createGoEnabled() && name==='create')) && typeof save==='function'?{save:async(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>})=>save(input,context)}:{})});
     }
   }
 
@@ -385,8 +385,8 @@ export class ToolRegistry {
   }
 
   async save(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>}):Promise<ToolResult> {
-    if(!hmsSaveEnabled()) return failureObject('SAVE_DISABLED','Only unsaved Prepare is available.');
-    if(context.mode!=='labtest') return failureObject('SAVE_UNAUTHORIZED','Native Save is only available for authorized Labtest sessions.');
+    if(!nativeSaveAllowed()) return failureObject('SAVE_DISABLED','Only unsaved Prepare is available.');
+    if(context.mode!=='labtest' && !(createGoEnabled() && context.mode==='live' && input.workflow==='create')) return failureObject('SAVE_UNAUTHORIZED','Native Save is only available for authorized Labtest sessions.');
     const pack=this.mutations.get(input.workflow),property=input.booking.property_code;
     if(!pack?.save || typeof property!=='string' || !property) return failureObject('UNAVAILABLE','A native writer or property is unavailable.');
     let marked=false;

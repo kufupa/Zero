@@ -77,7 +77,7 @@ export const proposalSchema = z.object({
   created_at: z.string(), updated_at: z.string(), display_rows: z.array(nativeDisplayRowSchema),
   staff_attachments_checked: z.boolean().default(false),
   stage: z.object({
-    revision, job_id: id.optional(), quote_id: id.optional(), quote_options: z.array(quoteOptionSchema).optional(),
+    revision, state: z.string().optional(), job_id: id.optional(), quote_id: id.optional(), quote_options: z.array(quoteOptionSchema).optional(),
     quote_choices: z.array(quoteOptionSchema).optional(), quote_selected_options: z.array(quoteOptionSchema).optional(),
     quote_artifact_block_reason: z.string().nullable().optional(), summary: z.array(z.string()), native_result: jsonSchema,
     display_rows: z.array(nativeDisplayRowSchema), coverage: jsonSchema.optional(),
@@ -99,7 +99,7 @@ export const capabilitiesSchema = z.object({
   workflows: jsonSchema, tools: jsonSchema, model: z.string(),
   environment_type: z.string(), auth_ready: z.boolean(),
   workflow_capabilities: z.record(z.string(), z.object({
-    stage: z.boolean().optional(), quote: z.boolean().optional(),
+    stage: z.boolean().optional(), quote: z.boolean().optional(), go: z.boolean().optional(),
   })).optional(),
 });
 export const eventSchema = z.object({
@@ -107,6 +107,7 @@ export const eventSchema = z.object({
   session_id: id, proposal_id: z.string().nullable(), payload: jsonSchema,
 });
 export const acceptedStageSchema = z.object({ proposal_id: id, revision, phase: z.literal('staging'), job_id: id.optional() });
+export const acceptedGoSchema = z.object({ proposal_id: id, revision, phase: z.literal('saving') });
 export const acceptedQuoteSchema = z.object({ job_id: id, proposal_id: id, revision, quote_id: id, phase: z.literal('staging') });
 export const apiErrorSchema = z.object({ error: z.object({ code: z.string(), message: z.string(), details: jsonSchema }) });
 
@@ -124,6 +125,7 @@ export type ThreadSnapshot = z.infer<typeof threadSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;
 export type NavaEvent = z.infer<typeof eventSchema>;
 export type AcceptedStage = z.infer<typeof acceptedStageSchema>;
+export type AcceptedGo = z.infer<typeof acceptedGoSchema>;
 export type AcceptedQuote = z.infer<typeof acceptedQuoteSchema>;
 export type Change =
   | { op: 'add' | 'replace'; path: string; value: Json }

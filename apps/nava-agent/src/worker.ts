@@ -10,8 +10,8 @@ import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableT
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
 import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
-import { createPilotEnabled, manualLabtestTarget, runStaffStage } from './create-operations.js';
-import { createPilotRequested, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
+import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffStage } from './create-operations.js';
+import { createGoEnabled, createPilotRequested, hmsSaveEnabled, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -109,7 +109,7 @@ export function createNativeAdmission():NativeAdmission {
     });
   }
   return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope)=>withLease(property,signal,true,work,scope),withSave:async(property,signal,work)=>{
-    if(!hmsSaveEnabled()) throw new Error('SAVE_DISABLED');
+    if(!nativeSaveAllowed()) throw new Error('SAVE_DISABLED');
     return withLease(property,signal,false,work);
   }};
 }
@@ -163,6 +163,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
       }
     }
     if(createPilotEnabled() && await runStaffStage(lease,registry,{sessionId,mode,propertyCode:session.property_code,fence:lease,signal:abort.signal,skillConfig})) return;
+    if(createPilotEnabled() && await runStaffGo(lease,registry,{sessionId,mode,signal:abort.signal})) return;
     let version=state.version;
     const checkSession=(id:string)=>{if(id!==sessionId)throw new Error('SESSION_MISMATCH');abort.signal.throwIfAborted();};
     const runtime=deps.runtime({
@@ -217,6 +218,8 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
 
 export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<void> {
   const active=new Set<string>();
+  // Consecutive failures per session: after 3, stop picking it up (and stop a stuck model turn) instead of retrying forever.
+  const failures=new Map<string,number>();
   const limit=configuredSlots().requested;
   while(!signal?.aborted) {
     const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now()) AND (
@@ -224,14 +227,22 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false')
         OR s.status='running'))
       OR (${createPilotEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='staging' AND p.stage->>'state'='queued'))
+      OR (${createPilotEnabled() && createGoEnabled()} AND EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='saving' AND p.execution->'go'->>'staff'='true'))
       OR (s.status='waiting_go' AND ${hmsSaveEnabled() && Boolean(deps.saveQueue)} AND (
         (s.mode='labtest' AND ${!createPilotRequested()} AND NOT (s.config ? 'manual_create_labtest'))
         OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL
           AND (p.phase='saving' OR p.execution->'go'->'completion' IS NOT NULL))))
       ) ORDER BY s.updated_at LIMIT ${limit}`;
-    for(const row of rows) if(active.size<limit && !active.has(row.id)) {
+    for(const row of rows) if(active.size<limit && !active.has(row.id) && (failures.get(row.id) ?? 0)<3) {
       active.add(row.id);
-      void runSession(row.id,deps).catch(error=>{const message=error instanceof Error?error.message:'';console.error(JSON.stringify({event:'worker_error',session_id:row.id,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));}).finally(()=>active.delete(row.id));
+      void runSession(row.id,deps).then(()=>{failures.delete(row.id);},async error=>{
+        const message=error instanceof Error?error.message:'';
+        const count=(failures.get(row.id) ?? 0)+1;
+        failures.set(row.id,count);
+        console.error(JSON.stringify({event:count>=3?'worker_gave_up':'worker_error',session_id:row.id,attempt:count,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));
+        if(count>=3) await sql`UPDATE nava_agent.agent_session SET status='idle',updated_at=now() WHERE id=${row.id} AND status='running'
+          AND (lease_until IS NULL OR lease_until<clock_timestamp())`.catch(()=>{});
+      }).finally(()=>active.delete(row.id));
     }
     await delay(3000,undefined,{signal}).catch(()=>{});
   }
