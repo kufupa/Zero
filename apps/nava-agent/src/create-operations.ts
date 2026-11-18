@@ -5,7 +5,7 @@ import type { ProposalOperations } from './main.js';
 import { sql, json, uid } from './db.js';
 import { claimGoInTransaction, writeEvent } from './session-store.js';
 import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow } from './schema.js';
-import { createGoEnabled, createPilotRequested, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
+import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js';
 import { missingCreateFields } from './proposal-fields.js';
 import { stageFeedback } from './prepare-feedback.js';
 import { attachmentsUnconfirmed, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedStageSource, stageSource, staffAttachmentsChecked } from './attachment-gate.js';
@@ -165,7 +165,9 @@ function fieldLabels(draft: ProposalDraft, keys: string[]) {
 const staffGo = z.object({
   executionId:z.string(), revision:z.number().int().positive(), idempotencyKey:z.string(), actor:z.string(),
   snapshot:z.unknown(), dispatch:z.enum(['pending','dispatched']), state:z.enum(['queued','running']), staff:z.literal(true), details:z.unknown().optional(),
+  expectedPrice:z.object({averageRate:z.string().min(1),totalRate:z.string().min(1),currency:z.string().min(1)}).strict(),
 }).strict();
+const shownPrice = z.object({averageRate:z.string().trim().min(1),totalRate:z.string().trim().min(1),currency:z.string().trim().min(1)});
 
 // Staff Go is a signed staff click on a Prepared Create: the model never saves. It queues durable work for the worker,
 // which re-stages, checks the binding, persists the dispatch marker, clicks Save once and reads back.
@@ -186,10 +188,18 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   if(p.status!=='idle' || p.pending_tool_use_id!==null || p.phase!=='ready' || p.revision!==request.expectedRevision
       || p.stage?.state!=='prepared' || p.stage?.revision!==p.revision) return {ok:false,code:'INVALID_PHASE'};
   if(!await staffAttachmentsChecked(tx,p.id,p.revision)) return {ok:false,code:attachmentsUnconfirmed.code};
+  const fields=input.booking.fields;
+  const labtest=fields.first_name==='Proof' && fields.last_name==='Labtest' && typeof fields.arrival_date==='string'
+    && fields.arrival_date>='2027-01-01' && fields.cms_send!==true;
+  if(!labtest && !createGoRealGuests()) return {ok:false,code:'REAL_GUEST_GO_UNAVAILABLE'};
   const missing=missingCreateFields(draft.data,'go');
   if(missing.length) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:fieldLabels(draft.data,missing)}};
+  // Bind Go to the exact HMS price staff saw after this Prepare; the worker refuses to Save if Infor now prices differently.
+  const price=shownPrice.safeParse(p.stage?.native_result?.native?.ratePlanAvailability);
+  if(!price.success) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Infor price (run Prepare again)']}};
   const go=staffGo.parse({executionId:uid('execution'),revision:p.revision,idempotencyKey:request.idempotencyKey,actor:request.actor,
-    snapshot:p.current,dispatch:'pending',state:'queued',staff:true});
+    snapshot:p.current,dispatch:'pending',state:'queued',staff:true,
+    expectedPrice:{averageRate:price.data.averageRate,totalRate:price.data.totalRate,currency:price.data.currency}});
   const [seq]=await tx`SELECT COALESCE(max(sequence),0)+1 AS n FROM nava_agent.staff_edit WHERE proposal_id=${p.id}`;
   await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,who,snapshot)
     VALUES (${uid('edit')},${seq.n},${p.id},${p.session_id},${p.workflow},'staff_final',${p.revision},${request.actor},${json(p.current)})`;
@@ -254,7 +264,7 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
   if(!input || input.workflow!=='create' || p.revision!==go.revision) {
     result={ok:false,data:null,error:{code:'INVALID_INPUT',message:'The booking changed before Save.',retryable:false,outcome:'known'}};
   } else {
-    result=await registry.save({workflow:'create',booking:input.booking,action:input.action,executionId},{sessionId:context.sessionId,mode:context.mode,signal:context.signal,
+    result=await registry.save({workflow:'create',booking:input.booking,action:input.action,executionId,expectedPrice:go.expectedPrice},{sessionId:context.sessionId,mode:context.mode,signal:context.signal,
       markDispatched:async details=>{
         await sql.begin(async tx => {
           const {p:locked,go:current}=await lockedProposal(tx,lease,row.id,executionId);

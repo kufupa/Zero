@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { prepareInput, saveInput, type CreateInput } from './schema.js';
-import { createGoEnabled, hmsSaveEnabled } from '../../src/hms-mode.js';
+import { createGoEnabled, createGoRealGuests, hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
 
 export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; staffStage?:StaffStage; credentialLease?:Lease };
@@ -296,9 +296,12 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   if (!expectedGuest || request.propertyCode !== 'HRCEN' || typeof request.stay.arrival !== 'string') {
     return fail('CREATE_TARGET_REQUIRED', 'HRCEN, guest first and last name, and arrival are required.');
   }
-  if (labtest ? (request.stay.arrival < '2027-01-01' || cmsSend) : (!staffGo || request.stay.arrival < today)) {
-    return fail('LABTEST_TARGET_REQUIRED', labtest ? 'Labtest needs arrival in 2027 or later and CMS off.' : 'Real-guest Save needs staff Go and a current or future arrival.');
+  if (labtest ? (request.stay.arrival < '2027-01-01' || cmsSend) : (!staffGo || !createGoRealGuests() || request.stay.arrival < today)) {
+    return fail('LABTEST_TARGET_REQUIRED', labtest ? 'Labtest needs arrival in 2027 or later and CMS off.' : 'Real-guest Save needs staff Go enabled for real guests and a current or future arrival.');
   }
+  // Staff Go must save at the HMS price staff saw after Prepare.
+  const expectedPrice = parsed.data.expectedPrice;
+  if (staffGo && !expectedPrice) return fail('CREATE_PRICE_UNVERIFIED', 'Run Prepare so Infor shows the price before Go.');
   // Every Create states CMS explicitly; absent means do not send.
   request.cms = { ...(object(request.cms) ? request.cms : {}), send: cmsSend };
   if (!leaseDatabase()) return fail('HMS_SHARED_LEASE_DATABASE_REQUIRED', 'Configure the existing shared HMS admission database.');
@@ -332,6 +335,10 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       const price = stage.ratePlanAvailability;
       if (price && !['averageRate', 'totalRate', 'currency'].every(key => typeof price[key] === 'string' && price[key].trim())) {
         return fail('CREATE_PRICE_UNVERIFIED', 'Native staged price is incomplete.', 'known', bounded({ native: stage }));
+      }
+      if (expectedPrice && (!price || price.averageRate !== expectedPrice.averageRate || price.totalRate !== expectedPrice.totalRate || price.currency !== expectedPrice.currency)) {
+        const now = price ? `${price.currency} ${price.totalRate}` : 'no price';
+        return fail('CREATE_PRICE_CHANGED', `Infor price changed since Prepare (was ${expectedPrice.currency} ${expectedPrice.totalRate}, now ${now}). Nothing saved; run Prepare again.`, 'known', bounded({ native: stage }));
       }
       const saved = await loadNativeResult(api, commit, {
         ...options,

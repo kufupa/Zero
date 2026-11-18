@@ -384,7 +384,7 @@ export class ToolRegistry {
     return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal)))};
   }
 
-  async save(input:MutationInput & {executionId:string},context:ToolContext & {markDispatched(details:unknown):Promise<void>}):Promise<ToolResult> {
+  async save(input:MutationInput & {executionId:string;expectedPrice?:unknown},context:ToolContext & {markDispatched(details:unknown):Promise<void>}):Promise<ToolResult> {
     if(!nativeSaveAllowed()) return failureObject('SAVE_DISABLED','Only unsaved Prepare is available.');
     if(context.mode!=='labtest' && !(createGoEnabled() && context.mode==='live' && input.workflow==='create')) return failureObject('SAVE_UNAUTHORIZED','Native Save is only available for authorized Labtest sessions.');
     const pack=this.mutations.get(input.workflow),property=input.booking.property_code;
@@ -392,7 +392,7 @@ export class ToolRegistry {
     let marked=false;
     const uncertain:ToolResult={ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before any retry.',retryable:false,outcome:'uncertain'}};
     try {
-      const request={workflow:input.workflow,booking:input.booking,action:input.action,executionId:input.executionId};
+      const request={workflow:input.workflow,booking:input.booking,action:input.action,executionId:input.executionId,...(input.expectedPrice!==undefined?{expectedPrice:input.expectedPrice}:{})};
       const value=await this.deps.native.withSave(property,context.signal,lease=>pack.save!(request,{...context,credentialLease:lease,signal:lease.signal,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}}));
       const parsed=resultSchema.safeParse(value);
       if(!parsed.success) return marked ? uncertain : failureObject('INVALID_WRITER_RESULT','Writer returned an invalid result before dispatch.');

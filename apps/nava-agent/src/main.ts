@@ -15,7 +15,7 @@ import { createGoEnabled, hmsSaveEnabled, staffPrepareOnly } from './hms-mode.js
 import { attachmentsUnconfirmed, invalidGuestSelection } from './attachment-gate.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote';
-type OperationFailure = 'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
+type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
 type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
@@ -190,7 +190,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
     const code=error instanceof OperationError?error.code:'UNAVAILABLE';
     if(code==='NOT_FOUND') return c.json({error:{code,message:'Proposal not found',details:null}},404);
     if(code==='FORBIDDEN') return c.json({error:{code,message:'Mailbox unavailable',details:null}},403);
-    if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is disabled in this pilot.',details:null}},403);
+    if(code==='REAL_GUEST_GO_UNAVAILABLE') return c.json({error:{code,message:'Real guest Save is not switched on yet; only Labtest bookings can be saved.',details:null}},403);
     if(code==='INVALID_INPUT') return c.json({error:{code,message:'Invalid proposal fields',details:null}},400);
     if(code==='REQUIRED_FIELDS_MISSING') return c.json({error:{code,message:'Fill the required booking fields first.',details:error instanceof OperationError?error.details:null}},409);
     if(code===invalidGuestSelection.code) return c.json({error:{...invalidGuestSelection,details:null}},400);
