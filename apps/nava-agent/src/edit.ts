@@ -180,11 +180,12 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
         const selectsGuest=input.changes.some(change=>change.path===`/bookings/${index}/fields/guest_profile_id` && change.op!=='remove');
         const cloned=selected!==null && clonedFromFirst.includes(booking.id) && guestSelections.some(first=>first.booking_id===valid.bookings[0]?.id &&
           first.native_id===selected.native_id && first.first_name===selected.first_name && first.last_name===selected.last_name);
-        if(!selected || (!hasBoundCreateGuest(booking,p.execution) && !cloned && !(selectsGuest && candidates.success && candidates.data.items.some(candidate=>
-          candidate.native_id===selected.native_id && candidate.first_name===selected.first_name && candidate.last_name===selected.last_name)))) {
+        const matched=selected && candidates.success && candidates.data.items.some(candidate=>
+          candidate.native_id===selected.native_id && candidate.first_name===selected.first_name && candidate.last_name===selected.last_name);
+        if(selectsGuest && !matched && !hasBoundCreateGuest(booking,p.execution) && !cloned) {
           throw new Error(invalidGuestSelection.code);
         }
-        guestSelections.push(selected);
+        if(selected && (hasBoundCreateGuest(booking,p.execution) || cloned || (selectsGuest && matched))) guestSelections.push(selected);
       }
     }
     if(p.workflow==='create') for(const change of input.changes) {

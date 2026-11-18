@@ -118,7 +118,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   // A chosen native ID and name can coexist in the proposal; the native request
   // selects by ID and verifies the supplied name separately.
   if ('profileId' in request.guest && 'search' in request.guest) {
-    if (!expectedGuest || booking.fields.guest_email != null) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name; email lookup cannot be combined.');
+    if (!expectedGuest) return fail('GUEST_IDENTITY_CONFLICT', 'Profile ID requires matching first and last name.');
     delete request.guest.search;
   }
   return { request, unknown, ...(expectedGuest ? { expectedGuest } : {}) };

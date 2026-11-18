@@ -156,7 +156,6 @@ export function createPilotOperations(): ProposalOperations | undefined {
         if(!input) return {ok:false,code:'INVALID_INPUT'};
         if(request.operation==='target' && (!request.lookup || !['amend','cancel','filing'].includes(input.workflow))) return {ok:false,code:'INVALID_INPUT'};
         if(request.operation==='stage' && !hasBoundTarget(input,p.execution)) return {ok:false,code:'INVALID_INPUT'};
-        if(input.workflow==='create' && draft.success && draft.data.bookings.some(booking=>!hasBoundCreateGuest(booking,p.execution))) return {ok:false,code:invalidGuestSelection.code};
         if(input.workflow==='create' && draft.success) {
           const needsProfile=draft.data.bookings.some(booking=>booking.fields.profile_create_new===true && booking.fields.guest_profile_id==null);
           if(needsProfile && !request.createProfile) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Go: Create Guest Profile and check price']}};
@@ -580,7 +579,7 @@ async function profileStageFailure(lease:LeaseFence,proposalId:string,job:z.infe
 }
 
 export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, context: Omit<RegistryContext,'toolUseId'>) {
-  const [p] = await sql`SELECT id,revision,workflow,stage,current FROM nava_agent.proposal
+  const [p] = await sql`SELECT id,revision,workflow,stage,current,execution FROM nava_agent.proposal
     WHERE session_id=${lease.sessionId} AND (${staffPrepareOnly()} OR workflow='create') AND phase='staging' AND stage->>'state'='queued' ORDER BY updated_at LIMIT 1`;
   if (!p) return false;
   const job = queuedStage.parse(p.stage);
@@ -595,12 +594,14 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   const binding={proposalId:p.id,revision:job.revision,jobId:job.job_id,workerId:lease.workerId,epoch:lease.epoch};
   let result:ToolResult|null=null;
   let captures:ReturnType<typeof stageFeedback>[]|undefined;
+  const guestCaptures:unknown[]=[];
   if(staffPrepareOnly() && draft.success && input && job.source && job.workflow) {
     const inputs=input.workflow==='create' ? createInputs(draft.data,job.source.property_code) : null;
     if(inputs && inputs.length>1) {
       captures=[];
       for(const room of inputs) {
         const answer=await registry.runStaffStage(room,draft.data,{...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id},context);
+        guestCaptures.push(answer.data);
         captures.push(stageFeedback({result:answer,workflow:'create',bookingId:room.booking.id,revision:job.revision,jobId:job.job_id}));
       }
     } else {
@@ -628,12 +629,22 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   } : stageFeedback({result,workflow,bookingId,revision:job.revision,jobId:job.job_id,quoteId:job.quote_id});
   if(profileCreated && stage) stage.summary=['Guest Profile created in Infor. Booking not saved.',...stage.summary.map(text=>text.replace('Nothing saved.','No booking saved.'))];
   if(stage && job.lookup) Object.assign(stage,{state:'target',source:job.source});
+  const selections=draft.success && workflow==='create' && stage ? draft.data.bookings.flatMap((booking,index)=>{
+    const selected=selectedCreateGuest(booking);
+    if(!selected) return [];
+    const observed=captures ? guestCaptures[index] : result?.data;
+    const guest=z.object({native:z.object({applied:z.object({guest:z.object({nativeId:z.string(),firstName:z.string(),lastName:z.string()})})})}).safeParse(observed);
+    const match=guest.success && guest.data.native.applied.guest.nativeId===selected.native_id &&
+      guest.data.native.applied.guest.firstName.trim().toLowerCase()===selected.first_name.trim().toLowerCase() &&
+      guest.data.native.applied.guest.lastName.trim().toLowerCase()===selected.last_name.trim().toLowerCase();
+    return match || hasBoundCreateGuest(booking,p.execution) ? [selected] : [];
+  }) : [];
   await sql.begin(async tx => {
     const [owner] = await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;
     if (!owner) throw new Error('LEASE_LOST');
     const updated = await tx`UPDATE nava_agent.proposal SET phase=${job.previous_phase},stage=${json(stage)},
-      execution=COALESCE(execution,'{}'::jsonb)||${json({error})}::jsonb,updated_at=now()
+      execution=COALESCE(execution,'{}'::jsonb)||${json({error,...(selections.length?{staff_guest_selections:selections}:{})})}::jsonb,updated_at=now()
       WHERE id=${p.id} AND revision=${job.revision} AND phase='staging' AND stage->>'job_id'=${job.job_id} RETURNING id`;
     if (!updated.length) throw new Error('STAGE_CHANGED');
     await writeEvent(tx,lease.sessionId,'stage_finished',{proposal_id:p.id,job_id:job.job_id,revision:job.revision,

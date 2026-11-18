@@ -11,7 +11,7 @@ export const attachmentsUnconfirmed = {
 } as const;
 export const invalidGuestSelection = {
   code: 'INVALID_GUEST_SELECTION',
-  message: 'Select a verified Infor profile with matching names and clear the email lookup.',
+  message: 'Select a verified Infor profile with matching names.',
 } as const;
 
 export function requiresStaffAttachmentCheck(workflow: string): boolean {
@@ -44,7 +44,6 @@ export function profileReviewFor(booking:ProposalDraft['bookings'][number],execu
 }
 type Booking=ProposalDraft['bookings'][number];
 export function selectedCreateGuest(booking:Booking) {
-  if(booking.fields.guest_email!=null) return null;
   return guestIdentity.safeParse({booking_id:booking.id,native_id:booking.fields.guest_profile_id,
     first_name:booking.fields.first_name,last_name:booking.fields.last_name}).data ?? null;
 }
@@ -81,7 +80,6 @@ export async function confirmedQueuedStaffStage(job: StaffJobBinding, sessionId:
     const source = await selectedStageSource(tx,sessionId);
     if (!source.success || !isDeepStrictEqual(source.data,job.source)) return 'STAFF_SOURCE_CHANGED';
     if (requiresStaffAttachmentCheck(job.workflow) && !await staffAttachmentsChecked(tx,job.proposalId,job.revision)) return attachmentsUnconfirmed.code;
-    if (job.workflow==='create' && draft.bookings.some(booking=>!hasBoundCreateGuest(booking,proposal.execution))) return 'INVALID_GUEST_SELECTION';
     return null;
   });
 }

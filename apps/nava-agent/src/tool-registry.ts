@@ -70,6 +70,26 @@ function result(data:unknown) { return JSON.stringify({ok:true,data,error:null})
 function failure(code:string,message:string) { return JSON.stringify({ok:false,data:null,error:{code,message,retryable:false,outcome:'known'}}); }
 const groupedCaptureSchema=z.object({quote_order:z.array(z.string()),quotes:z.record(z.unknown()),searches:z.array(z.unknown()),display_rows:z.array(z.unknown())}).passthrough();
 const captureEnvelopeSchema=z.object({ok:z.boolean(),data:z.unknown()}).passthrough();
+const exactProfileRead=z.object({
+  input:z.object({kind:z.literal('guest'),field:z.literal('profile_id'),query:z.string().regex(/^\d+$/),property_code:z.string()}),
+  response:z.object({ok:z.literal(true),data:z.object({native:z.object({
+    outcome:z.literal('matches'),criteria:z.object({field:z.literal('profileId'),query:z.string()}),
+    candidates:z.array(z.object({nativeId:z.string(),firstName:z.string(),lastName:z.string()})),
+  })})}),
+});
+function readProfileId(booking:Booking,values:unknown[]):string|null {
+  const first=booking.fields.first_name, last=booking.fields.last_name;
+  if(typeof first!=='string' || typeof last!=='string') return null;
+  const ids=new Set<string>();
+  for(const value of values) {
+    const read=exactProfileRead.safeParse(value);
+    if(!read.success || read.data.input.property_code!==booking.property_code || read.data.input.query!==read.data.response.data.native.criteria.query) continue;
+    const matches=read.data.response.data.native.candidates.filter(candidate=>candidate.nativeId===read.data.input.query);
+    if(matches.length===1 && matches[0].firstName.trim().toLowerCase()===first.trim().toLowerCase() &&
+       matches[0].lastName.trim().toLowerCase()===last.trim().toLowerCase()) ids.add(matches[0].nativeId);
+  }
+  return ids.size===1 ? [...ids][0] : null;
+}
 function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{native:unknown;incomplete:boolean} {
   const latest=new Map<string,{data:z.infer<typeof groupedCaptureSchema>;ok:boolean;input:unknown}>();
   let legacy:unknown=null,legacyOk=false;
@@ -181,11 +201,15 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let staffDraft=proposalDraft.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
         if(staffPrepareOnly() && staffDraft.workflow==='create') {
+          const reads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
+            FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
+              AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
+            WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
+              AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
+            ORDER BY r.sequence`;
           staffDraft={...staffDraft,
-            bookings:staffDraft.bookings.map(booking=>Object.hasOwn(booking.fields,'guest_profile_id') ?
-              {...booking,fields:{...booking.fields,guest_profile_id:null,profile_create_new:false}} : {...booking,fields:{...booking.fields,profile_create_new:false}}),
-            field_specs:staffDraft.field_specs.map(field=>/^\/?bookings\/\d+\/fields\/guest_profile_id$/.test(field.path) ?
-              {...field,provenance:'unknown',options:[],evidence:[]} : field),
+            bookings:staffDraft.bookings.map(booking=>({...booking,fields:{...booking.fields,
+              guest_profile_id:booking.fields.guest_profile_id ?? readProfileId(booking,reads),profile_create_new:false}})),
           };
         }
         if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
