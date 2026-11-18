@@ -1,8 +1,8 @@
 # PRODUCT.md — Nava reservationist (Centurion)
 
-Pilot-now scope, rewritten 2026-11-04 by owner direction: the staff pilot is late, so ship the core workflows. The owner's latest message wins over this file, plans, retros and [asks history](PRODUCT-ASKS-HISTORY.md#asks-logged).
+Ship mode (owner, 2026-11-18): working product end to end, fast. The owner's latest message wins over this file.
 
-Staff-facing name: **Nava**. Never show the model name (Luna) to staff.
+Staff-facing name: **Nava**. Never show the model name to staff.
 
 ## What this is
 
@@ -67,25 +67,12 @@ One primary action per step. No dead controls. Use Infor HMS field labels across
 
 ## Rules
 
-- **Privacy:** guest data may be stored, logged, and used in tests and LLM chats (PIA/GDPR, NDAs and zero-retention providers cover this). Never send credentials or secrets to external services.
-- **Real-guest writes:** the owner (2026-11-04) approves turning every HRCEN pane write flag (Create, Amend, Cancel, Filing) from `lab` to `on` as soon as that workflow works.
-  - Each real write happens only on staff Go in the pane.
-  - Agents never Save on a real guest themselves.
-- **HMS reads and unsaved staging** on real guests and bookings are always allowed. This is how tools are proven on real email: run the real tool on a real email's details and stop before Save.
-- **Labtest writes** (Proof Labtest guest, 2027+ stays) are always allowed; never ask. Keep CMS send off on Labtest.
-- **Uncertain write:** never blind-retry; re-read HMS first. This prevents double bookings.
-- **Deploy main:** from a clean worktree at fetched `origin/main`, run that checkout's `apps/server-pilot/deploy/ops-deploy.sh`. Verify the runtime SHA, effective flags on all PM2 processes, and health.
+- **Privacy:** guest data may be stored, logged and used in tests and LLM chats (PIA/GDPR, NDAs and zero-retention providers cover this). Never send credentials or secrets to external services.
+- **Writes:** real-guest writes happen only when staff click Go in the pane, and agents never press Go on a real guest. Labtest writes (Proof Labtest guest, 2027+ stays, CMS off) and HMS reads/unsaved staging on real guests are always allowed. No write flags or canary gates: once a workflow is deployed, staff can use it.
+- **Uncertain Save:** never blind-retry. Re-read HMS first.
 
-Engineering and verification rules live in `AGENTS.md`.
-DB-backed Vitest suites may be skipped on the VPS; report skips honestly and run `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL` before tests. Never run local `tsc`/`tsgo`; use `bash /home/orca/bin/remote-typecheck.sh <clean worktree> --app <mail|server-pilot>`. Never use `--no-verify` or fabricate canary passes, read-role proofs, or real-email intent.
+Everything else on how to work is in `AGENTS.md` (ship mode).
 
 ## Done
 
-A workflow is done when deployed main runs it for real guests. That means:
-
-- its flag is `on` in every PM2 process;
-- the tool has correctly prepared a real email's stay (unsaved);
-- one Labtest Save has a fresh readback;
-- staff can Go from the pane.
-
-Merged code or green checks alone is progress, not done.
+The product is done when staff can do all six workflows from the pane on deployed main, and the scoreboard (real corpus emails replayed through the pane API path) shows, per workflow: e2e completion %, field accuracy against what staff did, p50/p95 latency and $/email. Accuracy improves after launch. Working e2e comes first.
