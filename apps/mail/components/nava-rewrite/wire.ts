@@ -78,7 +78,8 @@ export const proposalSchema = z.object({
   staff_attachments_checked: z.boolean().default(false),
   stage: z.object({
     revision, job_id: id.optional(), quote_id: id.optional(), quote_options: z.array(quoteOptionSchema).optional(),
-    quote_choices: z.array(quoteOptionSchema).optional(), quote_artifact_block_reason: z.string().nullable().optional(), summary: z.array(z.string()), native_result: jsonSchema,
+    quote_choices: z.array(quoteOptionSchema).optional(), quote_selected_options: z.array(quoteOptionSchema).optional(),
+    quote_artifact_block_reason: z.string().nullable().optional(), summary: z.array(z.string()), native_result: jsonSchema,
     display_rows: z.array(nativeDisplayRowSchema), coverage: jsonSchema.optional(),
     observed_fields: jsonSchema.optional(), cancellation_fee: jsonSchema.optional(),
     artifacts: z.array(artifactSchema).optional(),

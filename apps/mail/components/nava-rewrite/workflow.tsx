@@ -595,7 +595,8 @@ function quoteRooms(proposal: Proposal, quoteId: string) {
 }
 
 function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProps) {
-  const [selected, setSelected] = useState<Record<string, number>>({});
+  const [selected, setSelected] = useState<Record<string, number>>(() => Object.fromEntries(
+    (proposal.stage?.quote_selected_options ?? []).map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
   const stage = proposal.stage;
   if (!stage?.quote_id || !stage.job_id || !stage.quote_options || !onGenerateQuoteArtifacts) return null;
   const rooms = quoteRooms(proposal, stage.quote_id);
@@ -611,7 +612,8 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
     {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor has not confirmed availability across these overlapping dates together. Use your usual process to complete this quote.</p>}
     {rooms.map(room => {
       const key = JSON.stringify([room.groupId, room.roomId]);
-      const options = stage.quote_options?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
+      const sourceOptions = stage.artifacts?.length ? stage.quote_selected_options ?? [] : stage.quote_options;
+      const options = sourceOptions?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
       const picked = options.find(option => option.option_index === selected[key]);
       const format = (code: string, meaning: string | null) => meaning && meaning !== code ? `${code} — ${meaning}` : code;
       return <fieldset key={key} className={quoteStyles.stay}>
@@ -641,7 +643,8 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
               <p>{[picked.meal_plan.code, picked.meal_plan.label].filter(value => typeof value === 'string' && value).join(' · ')}</p>}
             <ul>{picked.nightly.map(night => <li key={night.date}>{night.date}: {night.price.currency} {night.price.amount} per room · {night.inventory} available</li>)}</ul>
           </div>}
-        </> : <p>{stage.quote_choices?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)
+        </> : <p>{stage.artifacts?.length ? 'The selected option is unavailable for these files. Check Infor again to make a new quote.'
+          : stage.quote_choices?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)
           ? 'Choose a room type and rate above, then check Infor again before making the files.'
           : 'No verified options for this room. Check the details and run Infor again.'}</p>}
       </fieldset>;
