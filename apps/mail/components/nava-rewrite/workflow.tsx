@@ -893,6 +893,33 @@ function errorMessage(proposal: Proposal) {
   return `Nava couldn’t complete this ${subject}. Check the details.`;
 }
 
+function TriageLookupResult({ proposal }: { proposal: Proposal }) {
+  const stage = proposal.stage;
+  const result = stage?.native_result;
+  if (!stage || !result || typeof result !== 'object' || Array.isArray(result)) return <p>Infor did not return lookup details.</p>;
+  if (result.outcome === 'uniquely_read') return <>
+    <p>Infor read this stay.</p>
+    {stage.display_rows.length > 0 ? <NativeRows rows={stage.display_rows} proposal={proposal} /> : <p>Infor did not return a reservation status.</p>}
+  </>;
+  if ((result.outcome === 'candidates' || result.outcome === 'incomplete') && Array.isArray(result.candidates)) {
+    const candidates = result.candidates;
+    const coverage = result.coverage && typeof result.coverage === 'object' && !Array.isArray(result.coverage) ? result.coverage : null;
+    return <>
+      <p>Search results. Use a confirmation number to look up a stay.</p>
+      <p>Search covers a limited date range; additional stays may exist.{result.outcome === 'incomplete' || coverage?.candidates_truncated === true ? ' Not all matches are shown.' : ''}</p>
+      {candidates.length === 0 ? <p>No matching stays were returned.</p> : <ul>{candidates.map((candidate, index) => {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+        const text = (key: string) => { const value = candidate[key]; return typeof value === 'string' ? value : ''; };
+        return <li key={index}>
+          Confirmation: {text('confirmation') || 'Not provided'} · {text('firstName')} {text('lastName')} · {text('arrival') || 'Arrival not provided'} – {text('departure') || 'Departure not provided'}
+          {text('status') && <> · Search status: {text('status')}</>}
+        </li>;
+      })}</ul>}
+    </>;
+  }
+  return <p>Infor did not return lookup details.</p>;
+}
+
 export function Workflow(props: WorkflowProps) {
   const { proposal } = props;
   const longWait = useLongWait(proposal, props.operationStartedAt);
@@ -955,7 +982,8 @@ export function Workflow(props: WorkflowProps) {
         <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{item}</li>)}</ul>
       </div>}
       <ObservedFields proposal={proposal} />
-      {proposal.workflow === 'quote' && proposal.stage.quote_options?.length ? null
+      {proposal.workflow === 'triage' ? <TriageLookupResult proposal={proposal} />
+        : proposal.workflow === 'quote' && proposal.stage.quote_options?.length ? null
         : proposal.stage.display_rows.length > 0 ? <NativeRows rows={proposal.stage.display_rows} proposal={proposal} /> : <p>No price or availability details were provided for this check.</p>}
       {proposal.workflow === 'quote' && proposal.stage.artifacts?.map(artifact => <p key={artifact.id}>
         {props.onOpenArtifact ? <button type="button" onClick={() => props.onOpenArtifact?.(artifact.id)}>{artifact.name}</button> : artifact.name}
