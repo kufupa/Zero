@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Private rewrite config is loaded only by the legacy HTTP child.
+# Private rewrite config is loaded only by the HTTP children.
 # Values use the unquoted KEY=value subset of dotenv; no shell is evaluated.
 
 nava_gateway_load() {

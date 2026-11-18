@@ -8,10 +8,11 @@ import { resolvePropertyScope } from '../hms/property-registry.js';
 import { toParsedMessage } from '../trpc/wire-compat.js';
 import { loadConversationMetaForThread } from './conversation-group.js';
 import { htmlToPlainText } from './inbound-reaction-parser.js';
+import { paneAttachmentStatus } from './ingest/attachment-evidence.js';
 
 const address = z.object({ name: z.string().nullable(), email: z.string() }).strict();
-const outlookImport = z.object({
-  source: z.literal('outlook'), mode: z.literal('live'), property_code: z.literal('HRCEN'),
+const paneImport = z.object({
+  source: z.enum(['outlook', 'webmail']), mode: z.literal('live'), property_code: z.literal('HRCEN'),
   mailbox_id: z.string(), source_thread_id: z.string(), selected_message_id: z.string(),
   messages: z.array(z.object({
     id: z.string(), rfc_message_id: z.string().nullable(), direction: z.enum(['inbound', 'outbound']),
@@ -26,8 +27,8 @@ function sourceAddress(value: { name?: string; email: string }) {
   return { name: value.name === localPart ? null : value.name ?? null, email: value.email };
 }
 
-export async function canonicalCenturionOutlookImport(payload: unknown, mailboxId: string) {
-  const parsed = outlookImport.safeParse(payload);
+export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: string) {
+  const parsed = paneImport.safeParse(payload);
   if (!parsed.success || parsed.data.mailbox_id !== mailboxId) return null;
   try {
     if (resolvePropertyScope({ transportId: mailboxId }).propertyCode !== parsed.data.property_code) return null;
@@ -48,33 +49,44 @@ export async function canonicalCenturionOutlookImport(payload: unknown, mailboxI
     const scope = await loadConversationMetaForThread(tx, mailboxId, selected.threadId);
     if (scope.conversationId !== input.source_thread_id) return null;
     const rows = await tx.select().from(message).where(and(eq(message.transportId, mailboxId),
-      inArray(message.threadId, [selected.threadId, ...scope.linkedThreadIds])));
+      inArray(message.threadId, [selected.threadId, ...scope.linkedThreadIds])))
+      .orderBy(asc(message.receivedAt), asc(message.id));
     if (rows.length !== imported.size) return null;
-    const valid = rows.every(row => {
+
+    const files = await tx.select({ id: attachment.id, messageId: attachment.messageId, name: attachment.filename,
+      mime: attachment.mimeType, size: attachment.sizeBytes }).from(attachment)
+      .where(and(inArray(attachment.messageId, rows.map(row => row.id)), eq(attachment.isInline, false)))
+      .orderBy(asc(attachment.id));
+    const withFiles = new Set(files.map(file => file.messageId));
+    const canonicalMessages = [];
+    for (const row of rows) {
       const candidate = imported.get(row.id);
-      if (!candidate || (row.direction === 'inbound' && isDaVinciMailboxOrigin(row))) return false;
+      if (!candidate || (row.direction === 'inbound' && isDaVinciMailboxOrigin(row))) return null;
       const canonical = toParsedMessage(row);
       const htmlOnly = canonical.body === canonical.processedHtml && /<[a-z][\s\S]*>/i.test(canonical.body);
-      if (row.id === input.selected_message_id && (!canonical.body.trim() || htmlOnly)) return false;
-      return isDeepStrictEqual(candidate, {
+      if (row.id === input.selected_message_id && (!canonical.body.trim() || htmlOnly ||
+          (input.source === 'webmail' && !canonical.messageId?.trim()))) return null;
+      const { attachment_status: _clientAttachmentStatus, ...fields } = candidate;
+      const sourceFields = {
         id: canonical.id, rfc_message_id: canonical.messageId ?? null, direction: row.direction,
         from: sourceAddress(canonical.sender), to: canonical.to.map(sourceAddress), cc: (canonical.cc ?? []).map(sourceAddress),
         received_at: canonical.receivedOn, subject: canonical.subject,
         body_text: htmlOnly ? htmlToPlainText(canonical.body) : canonical.body, body_html: htmlOnly ? canonical.processedHtml : null,
-        ...(candidate.attachment_status === undefined ? {} : { attachment_status: candidate.attachment_status }), attachments: [],
-      });
-    });
-    if (!valid) return null;
-    const files = await tx.select({ id: attachment.id, name: attachment.filename, mime: attachment.mimeType,
-      size: attachment.sizeBytes, inline: attachment.isInline }).from(attachment)
-      .where(eq(attachment.messageId, input.selected_message_id)).orderBy(asc(attachment.id));
-    const pdfs = files.filter(file => !file.inline && file.id.length > 0 && file.name.length <= 150 &&
+        attachments: [],
+      };
+      const status = paneAttachmentStatus(withFiles.has(row.id), row.sourceProvenance);
+      if (!isDeepStrictEqual(fields, sourceFields)) return null;
+      canonicalMessages.push({ ...sourceFields, attachment_status: status });
+    }
+    const pdfs = files.filter(file => file.messageId === input.selected_message_id && file.id.length > 0 && file.name.length <= 150 &&
       file.name === file.name.replace(/\s+/g, ' ').trim() &&
       !/["\\/\p{Cc}]/u.test(file.name) && /\.pdf$/i.test(file.name) &&
       ['application/pdf', 'application/x-pdf', 'application/octet-stream'].includes(file.mime.split(';', 1)[0]?.trim().toLowerCase() ?? '') &&
       Number.isSafeInteger(file.size) && file.size > 5 && file.size <= 10 * 1024 * 1024)
       .map(file => ({ id: file.id, name: file.name, mime_type: 'application/pdf', size: file.size, handle: file.id, extracted_text: null }));
-    return { ...input, messages: input.messages.map(item => item.id === input.selected_message_id ? { ...item, attachments: pdfs } : item) };
+    // Both clients open the same synced mail and share its workflow identity.
+    return { ...input, source: 'outlook' as const, messages: canonicalMessages.map(item =>
+      item.id === input.selected_message_id ? { ...item, attachments: pdfs } : item) };
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
 

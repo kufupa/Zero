@@ -1,6 +1,13 @@
-import { useLayoutEffect } from 'react';
+import { useCallback, useLayoutEffect, useState } from 'react';
 import { useWebPreview, type PreviewSelection } from '@/lib/workstation/web-pane-bridge';
 import { ReservationPaneHost } from '@/components/nava-pane/reservation-pane-host';
+import { NavaRewriteHost } from '@/components/nava-rewrite/host';
+import { useRewriteEligibility } from '@/components/nava-rewrite/eligibility';
+import { webThreadInput } from '@/components/nava-rewrite/web-input';
+import type { ThreadInput } from '@/components/nava-rewrite/wire';
+import type { WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
+import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
+import type { ReactNode } from 'react';
 import {
   HmsJobNoticeBanner,
   HmsJobRunningChip,
@@ -36,7 +43,7 @@ export function WebPanePanel({
   goldLabelEnabled?: boolean;
   hmsNoticesManagedByParent?: boolean;
 }) {
-  const { selection, bridge } = useWebPreview({
+  const { selection, bridge, thread } = useWebPreview({
     threadId,
     ...(sourceThreadId ? { sourceThreadId } : {}),
     ...(sourceMessageId != null ? { sourceMessageId } : {}),
@@ -72,17 +79,46 @@ export function WebPanePanel({
       </div>
     );
   }
+  const fallback = <div data-nava-host="webmail-legacy" className="h-full min-h-0">
+    <ReservationPaneHost bridge={bridge} preview webSelectedThreadId={selection.threadId} />
+  </div>;
+  const candidate = requireSelectedMessage && selection.threadId && selection.email.storeId
+    ? webThreadInput({
+      thread, requestedThreadId: threadId, selectedMessageId: selection.email.entryId,
+      connectionId: selection.email.storeId, isDemo: isFrontendOnlyDemo(),
+    }) : null;
+  const input = candidate?.status === 'ready' ? candidate.input : null;
+  const selected = input?.messages.find(message => message.id === selection.email.entryId);
+  const matches = input && selected && selected.direction === 'inbound' && selected.body_text.trim() &&
+    selected.body_html === null && selected.subject === selection.email.subject &&
+    selected.from.email === selection.email.senderEmail &&
+    selected.rfc_message_id?.trim() === selection.email.internetMessageId;
   return (
     <div
       data-preview-status="ready"
       data-preview-thread={threadId}
       className="h-full min-h-0 overflow-hidden"
     >
-      <ReservationPaneHost
-        bridge={bridge}
-        preview
-        webSelectedThreadId={selection.threadId}
-      />
+      {matches && selection.threadId ? <WebRewriteSelection key={JSON.stringify([input, selection.threadId])} email={selection.email} threadId={selection.threadId}
+        input={input} fallback={fallback} /> : fallback}
     </div>
   );
+}
+
+function WebRewriteSelection({ email, input, threadId, fallback }: {
+  email: WorkstationEmailPayload;
+  threadId: string;
+  input: ThreadInput;
+  fallback: ReactNode;
+}) {
+  const eligibility = useRewriteEligibility(input.mailbox_id);
+  const [rejected, setRejected] = useState(false);
+  const onSourceNotEligible = useCallback(() => setRejected(true), []);
+  if (eligibility === 'ineligible' || rejected) return fallback;
+  return <NavaRewriteHost webmail={{
+    email, threadId, onSourceNotEligible,
+    source: eligibility === 'eligible'
+      ? { status: 'ready', input: { ...input, property_code: 'HRCEN' } }
+      : { status: 'loading', reason: 'Opening selected email…' },
+  }} />;
 }

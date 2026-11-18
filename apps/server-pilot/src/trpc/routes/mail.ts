@@ -78,7 +78,7 @@ import { formatContentDispositionFilename } from '../../mail/attachment-filename
 import { formatEmlFilename } from '../../mail/eml-export.js';
 import { getS3Storage } from '../../storage/s3.js';
 import { withMailboxIngestLock } from '../../mail/ingest/mailbox-ingest-lock.js';
-import { attachmentEvidenceUnknown, fileAttachmentPresence, UNAVAILABLE_ROLE } from '../../mail/ingest/attachment-evidence.js';
+import { paneAttachmentStatus } from '../../mail/ingest/attachment-evidence.js';
 import { assertSafeOutboundFields } from '../../mail/send/validate-outbound.js';
 import { resolveReplyHeaders } from '../../mail/send/resolve-reply-headers.js';
 import { processEmailHtmlForDisplay } from '../../mail/process-email-html.js';
@@ -611,20 +611,7 @@ export const mailRouter = tRouter({
         const groupedReactions = groupReactions(msgReactions, callerEmail);
         const rows = attachmentsByMessage.get(m.id) ?? [];
         const parsed = toParsedMessage(m, rows, groupedReactions);
-        const provenance = m.sourceProvenance;
-        const evidence = provenance?.evidence;
-        const requiredRoles = evidence && typeof evidence === 'object' && 'requiredArtifactRoles' in evidence
-          ? evidence.requiredArtifactRoles : undefined;
-        const scopes = provenance?.linkedAttachmentScopes;
-        const enumerated = Array.isArray(scopes) && scopes.length > 0
-          ? scopes.every(scope => scope && typeof scope === 'object' && scope.enumerated === true)
-          : typeof provenance?.sourceId === 'string' && typeof provenance.sourceObservationId === 'string' &&
-            Array.isArray(requiredRoles) && !requiredRoles.includes(UNAVAILABLE_ROLE) &&
-            (Array.isArray(provenance.linkedOptionalMissing) || Array.isArray(provenance.optionalMissing));
-        const presence = fileAttachmentPresence(rows.some(row => !row.isInline), provenance);
-        const attachmentStatus = presence === true ? 'has_unread' as const
-          : !enumerated || presence === undefined || attachmentEvidenceUnknown(provenance) ? 'unknown' as const
-            : 'complete' as const;
+        const attachmentStatus = paneAttachmentStatus(rows.some(row => !row.isInline), m.sourceProvenance);
         // Stored direction, so a client can tell the guest's mail from the mailbox's replies.
         if (transportId !== 'transport-nava') return { ...parsed, direction: m.direction, attachmentStatus };
         return {
