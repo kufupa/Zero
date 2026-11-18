@@ -561,6 +561,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       attempted = true;
       try { await check.click({ timeout: 5000 }); }
       finally { await check.dispose(); }
+      if (stagedCreate) await page.waitForTimeout(2500);
       const availabilityResponse = await bounded(responsePromise,16000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       if (!availabilityResponse) throw new Error('RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
       const nativeAvailability = await bounded(validateAvailabilityResponse(availabilityResponse),10000,'RATE_AVAILABILITY_RESPONSE_UNVERIFIED');
