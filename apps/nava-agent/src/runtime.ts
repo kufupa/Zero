@@ -74,7 +74,10 @@ function canonicalJson(value:unknown):string {
 }
 export async function importThread(input:ThreadInput, key:string, sourceInput?:unknown, options?:ImportOptions) {
   const prepareLive=process.env.NAVA_CREATE_PREPARE_ONLY==='1' && input.mode==='live';
-  const payload={input,sourceInput:sourceInput ?? null,...(options ? {options} : {})};
+  const identityInput=prepareLive && input.source==='outlook' && !input.replay_id ? {
+    ...input,messages:input.messages.map(message=>({...message,attachments:message.attachments.map(file=>({...file,extracted_text:null}))})),
+  } : input;
+  const payload={input:identityInput,sourceInput:sourceInput ?? null,...(options ? {options} : {})};
   const requestHash=createHash('sha256').update(prepareLive?canonicalJson(payload):JSON.stringify(payload)).digest('hex');
   const selectionKey=prepareLive?`prepare:${requestHash}`:'';
   const keyHash=createHash('sha256').update(prepareLive?canonicalJson(['prepare',input.source,input.mailbox_id,input.source_thread_id,requestHash]):key).digest('hex');
