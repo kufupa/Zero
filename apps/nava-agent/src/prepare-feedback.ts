@@ -18,6 +18,7 @@ const messages = new Map([
   ['guest_email_unverified', 'Infor could not verify the guest email against the selected profile.'],
   ['room_type_not_unique', 'Infor could not confirm the selected room type. Check the room code.'],
   ['CURRENT_RATE_CODE_UNVERIFIED', 'Infor did not confirm this rate code for the selected stay.'],
+  ['RATE_NOT_AVAILABLE', 'Infor did not offer this rate for the selected stay.'],
   ['RATE_SHOP_CRITERIA_UNAVAILABLE', 'Infor could not confirm the rate for these stay details. Check the rate code.'],
   ['RATE_PRICE_UNCONFIRMED', 'Infor could not confirm the price for this rate.'],
   ['RATE_AVAILABILITY_UNVERIFIED', 'Infor could not verify availability for this rate.'],
