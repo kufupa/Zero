@@ -18,7 +18,8 @@ type OutlookReplyInput = {
   html: string; confirmUnknown?: Confirm;
 } & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean; verifyCurrentSnapshot?: () => Promise<boolean> } |
   { output: QuoteOutput; isCurrentSnapshot: () => boolean; verifyCurrentSnapshot: () => Promise<boolean> });
-export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] } };
+export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] }; location?: MailLocation };
+export type QuoteDraftBinding = { proposalId: string; revision: number; quoteId: string; jobId: string; artifactIds: [string, string] };
 
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
 const COMPLETED_PREFIX = 'nava_quote_completed_reply_v1:';
@@ -123,13 +124,14 @@ function replaceToken(error: unknown): string | null {
   return item.data?.code === 'CONFLICT' && item.message?.startsWith(prefix) ? item.message.slice(prefix.length) : null;
 }
 
-export async function saveQuoteWebDraft({ source, output, html, to, confirmReplace, verifyCurrent }: {
+export async function saveQuoteWebDraft({ source, output, html, to, confirmReplace, verifyCurrent, quoteBinding }: {
   source: Pick<ReservationSourceContext, 'mailboxId' | 'threadId' | 'messageId' | 'subject'>;
   output: QuoteOutput;
   html: string;
   to?: string;
   confirmReplace?: Confirm;
   verifyCurrent: () => boolean | Promise<boolean>;
+  quoteBinding?: QuoteDraftBinding;
 }): Promise<QuoteOutputResult> {
   try {
     const recipient = (to ?? output.cover?.to ?? '').trim();
@@ -140,20 +142,21 @@ export async function saveQuoteWebDraft({ source, output, html, to, confirmRepla
     await verifyAttachments(output.artifacts);
     if (!await verifyCurrent()) throw new Error('The selected email or quote changed. Review it again.');
     const payload = { threadId: source.threadId, replyToMessageId: source.messageId, to: [recipient],
-      subject: replySubject(source.subject), html, replyKind: 'quote' as const,
+      subject: replySubject(source.subject), html, replyKind: 'quote' as const, ...(quoteBinding ? { quoteBinding } : {}),
       attachments: output.artifacts.map((item) => ({ name: item.fileName, type: item.mimeType,
         size: item.sizeBytes, lastModified: Date.now(), base64: item.bytesBase64 })) };
     const options = inMailbox(source.mailboxId);
-    try { await trpcClient.drafts.saveReply.mutate(payload, options); }
+    let saved: { id: string };
+    try { saved = await trpcClient.drafts.saveReply.mutate(payload, options); }
     catch (error) {
       const token = replaceToken(error);
       if (!token) throw error;
       if (!confirmReplace) return { status: 'error', message: 'This thread has another draft. Confirm replacement before saving.' };
       if (!await confirmReplace()) return { status: 'cancelled', message: 'The existing draft was kept.' };
       if (!await verifyCurrent()) throw new Error('The selected email or quote changed. The existing draft was kept.');
-      await trpcClient.drafts.saveReply.mutate({ ...payload, replaceDraft: token }, options);
+      saved = await trpcClient.drafts.saveReply.mutate({ ...payload, replaceDraft: token }, options);
     }
-    return { status: 'saved', message: 'The reviewed reply was saved as an unsent draft.' };
+    return { status: 'saved', message: 'The reviewed reply was saved as an unsent draft.', draftId: saved.id };
   } catch (error) { return { status: 'error', message: failure(error) }; }
 }
 
@@ -306,7 +309,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
         submitted=true;
         await verifyBeforeMutation();
         const readback=await inspectDraft(completed.location,output,html);
-        return {...report('created','Quote saved in Outlook Drafts. Review it there before sending.'),readback};
+        return {...report('created','Quote saved in Outlook Drafts. Review it there before sending.'),readback,location:completed.location};
       }
       let attempt = pending.current;
       const marker = readMarker(), saved = storedAttempt(marker), age = saved ? Date.now() - saved.startedAt : -1;
@@ -392,7 +395,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (storedAttempt(readMarker())?.createOperationId === attempt.create.operationId) writeMarker(null);
       pending.current = null;
       return {...report('created', 'Quote saved in Outlook Drafts. Review it there before sending.'),
-        readback};
+        readback, location};
     } catch (error) {
       if (submitted || pending.current?.location || (pending.current && storedAttempt(readMarker())?.createOperationId === pending.current.create.operationId))
         return report('unknown', `${failure(error)} Retry the same reply, or check Outlook Drafts.`);

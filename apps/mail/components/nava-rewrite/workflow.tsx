@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
+import type { QuoteDraftBinding } from '@/components/reservation-pane/use-quote-output';
 import { PaneField } from './field';
+import { quoteArtifactIds } from './quote-draft';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
 import type { FieldSpec, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
@@ -28,7 +30,8 @@ export type WorkflowProps = {
   quoteDraftTarget?: 'webmail' | 'outlook';
   onSaveQuoteDraft?: (body: string) => Promise<{ status: string; message: string }>;
   quoteConnectionReady?: boolean;
-  savedQuoteDraftMessage?: string;
+  onFindQuoteDraft?: (binding: QuoteDraftBinding) => Promise<boolean>;
+  onOpenQuoteDraft?: (binding: QuoteDraftBinding) => Promise<{ subject: string; body: string; files: string[]; to?: string; cc?: string } | null>;
   onAddContext?: (text: string) => Promise<string>;
   onSelectGuest?: (candidate: GuestCandidate, roomIndex: number) => void;
   attachmentsChecked: boolean;
@@ -694,27 +697,53 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
   </PaneSection>;
 }
 
-function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage, quoteConnectionReady, quoteDraftTarget = 'outlook' }: WorkflowProps) {
-  const [body, setBody] = useState('Good day,\n\nPlease find the quotation attached.\n\nKind regards');
+function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft, onOpenQuoteDraft, quoteConnectionReady, quoteDraftTarget = 'outlook' }: WorkflowProps) {
+  const [body, setBody] = useState(proposal.reply_draft || 'Good day,\n\nPlease find the quotation attached.\n\nKind regards');
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(Boolean(savedQuoteDraftMessage));
+  const [saved, setSaved] = useState(false);
+  const [checking, setChecking] = useState(Boolean(onFindQuoteDraft));
+  const [opened, setOpened] = useState<{ subject: string; body: string; files: string[]; to?: string; cc?: string } | null>(null);
+  const [refresh, setRefresh] = useState(0);
   const artifacts = proposal.stage?.artifacts ?? [];
   const pdf = artifacts.find(item => item.mime_type === 'application/pdf');
   const workbook = artifacts.find(item => item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  if (!pdf || !workbook) return null;
+  const quoteId = proposal.stage?.quote_id, jobId = proposal.stage?.job_id;
+  const artifactIds = quoteArtifactIds(artifacts);
+  const binding: QuoteDraftBinding = { proposalId: proposal.id, revision: proposal.revision, quoteId: quoteId ?? '', jobId: jobId ?? '', artifactIds: artifactIds ?? ['', ''] };
+  const bindingKey = JSON.stringify(binding);
+  useEffect(() => {
+    let active = true;
+    setSaved(false); setOpened(null);
+    if (onFindQuoteDraft && quoteConnectionReady !== false && quoteId && jobId && artifactIds && Object.keys(drafts).length === 0) {
+      setChecking(true);
+      void onFindQuoteDraft(JSON.parse(bindingKey)).then(found => { if (active) setSaved(found); })
+        .catch(() => { if (active) setMessage('Could not check the saved draft. Try again.'); })
+        .finally(() => { if (active) setChecking(false); });
+    } else setChecking(false);
+    return () => { active = false; };
+  }, [bindingKey, refresh, quoteConnectionReady, Object.keys(drafts).length]);
+  if (!pdf || !workbook || !artifactIds) return null;
   return <PaneSection title="Cover email and quote files">
-    <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving || saved} onChange={value => { setBody(value); setMessage(null); }} />
+    {!saved && <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving} onChange={value => { setBody(value); setMessage(null); }} />}
     <p>Files: {pdf.name}, {workbook.name}</p>
     {onSaveQuoteDraft && !saved && quoteConnectionReady === false && <p>Reconnect to Nava before saving the draft.</p>}
-    {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || !body.trim() || quoteConnectionReady === false} onClick={() => {
+    {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || checking || Object.keys(drafts).length > 0 || !body.trim() || quoteConnectionReady === false} onClick={() => {
       setSaving(true); setMessage(null);
-      void onSaveQuoteDraft(body).then(result => { setMessage(result.message); if (result.status === 'created') setSaved(true); })
-        .catch(() => setMessage(quoteDraftTarget === 'webmail'
-          ? 'Could not confirm the draft. Check Drafts before trying again.'
-          : 'Could not confirm the draft. Check Outlook Drafts before trying again.')).finally(() => setSaving(false));
+      void onSaveQuoteDraft(body).then(result => { setMessage(result.message); if (result.status === 'created') { setSaved(true); setRefresh(value => value + 1); } })
+        .catch(() => setMessage('Could not confirm the draft. Check Drafts before trying again.')).finally(() => setSaving(false));
     }}>{saving ? 'Saving draft…' : quoteDraftTarget === 'webmail' ? 'Save unsent draft' : 'Save unsent Outlook draft'}</button>}
-    {(message || savedQuoteDraftMessage) && <p role="status">{message || savedQuoteDraftMessage}</p>}
+    {saved && onOpenQuoteDraft && <button type="button" disabled={busy || saving || quoteConnectionReady === false} onClick={() => {
+      setSaving(true); setMessage(null);
+      void onOpenQuoteDraft(binding).then(result => {
+        if (result) setOpened(result);
+        else if (quoteDraftTarget === 'outlook') setMessage('The draft is no longer available. Check Outlook Drafts.');
+      }).catch(() => setMessage('Could not open the draft. Check Drafts and try again.')).finally(() => setSaving(false));
+    }}>Open unsent draft</button>}
+    {saved && <p role="status">Unsent draft saved. Staff review and send it.</p>}
+    {message && <p role="status">{message}</p>}
+    {opened && <div><strong>{opened.subject}</strong>{opened.to && <p>To: {opened.to}</p>}{opened.cc && <p>Cc: {opened.cc}</p>}<p style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{opened.body}</p>
+      <p>Files: {opened.files.join(', ')}</p><p>Open Outlook Drafts to edit and send.</p></div>}
   </PaneSection>;
 }
 

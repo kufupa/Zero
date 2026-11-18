@@ -12,7 +12,7 @@ export type QuoteOutput = {
   cover: { to: string; subject: string; body: string } | null;
   artifacts: QuoteOutputArtifact[]; failures: string[]; issues: string[]; stale: boolean; inventoryDecline: boolean;
 };
-export type QuoteOutputResult = { status: 'saved' | 'created' | 'cancelled' | 'error' | 'unknown'; message: string };
+export type QuoteOutputResult = { status: 'saved' | 'created' | 'cancelled' | 'error' | 'unknown'; message: string; draftId?: string };
 export function completeQuotePackage(output: QuoteOutput): boolean {
   return Boolean(output.cover) && output.issues.length === 0 && output.failures.length === 0 &&
     (output.inventoryDecline || (output.artifacts.some(item => item.kind === 'pdf_quote') &&

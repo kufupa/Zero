@@ -48,6 +48,7 @@ import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFa
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
 import { hashAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
+import { matchesQuoteDraftBinding, quoteDraftBindingSchema } from './quote-draft-binding.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
 import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
@@ -2074,6 +2075,7 @@ export const draftsRouter = tRouter({
         subject: z.string().max(998).default(''),
         html: z.string(),
         replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']).default('other'),
+        quoteBinding: quoteDraftBindingSchema.optional(),
         preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32).default([]),
         attachments: z.array(serializedAttachmentInput).max(64).default([]),
         replaceDraft: z.string().max(200).optional(),
@@ -2085,8 +2087,13 @@ export const draftsRouter = tRouter({
       const transportId = ctx.activeTransportId;
       await requireThreadForTransport(db, input.threadId, transportId);
       const replyParent = await requireMessageForTransport(db, input.replyToMessageId, transportId);
-      if (replyParent.threadId !== input.threadId) {
+      if (replyParent.threadId !== input.threadId || (input.quoteBinding && replyParent.direction !== 'inbound')) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
+      }
+      if (input.quoteBinding && (input.replyKind !== 'quote' || decodedAttachments.length !== 2 ||
+          !decodedAttachments.some(({ file }) => file.name === 'Quotation.pdf' && file.type === 'application/pdf') ||
+          !decodedAttachments.some(({ file }) => file.name === 'Quotation.xlsx' && file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))) {
+        throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
       }
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
       try {
@@ -2118,7 +2125,8 @@ export const draftsRouter = tRouter({
               .limit(1);
             untouchedSavedReply =
               latest?.id.startsWith(SAVED_REPLY_REVISION_PREFIX) === true &&
-              latest.actorUserId === ctx.sessionUser.id;
+              latest.actorUserId === ctx.sessionUser.id && prior.replyToMessageId === input.replyToMessageId &&
+              (!input.quoteBinding || matchesQuoteDraftBinding(prior.attachments, input.quoteBinding));
             // The confirm names the draft as staff saw it. Someone else's newer work since then asks again.
             const replaceToken = `${prior.id}:${latest?.id ?? ''}`;
             if (!untouchedSavedReply && input.replaceDraft === undefined) {
@@ -2140,12 +2148,16 @@ export const draftsRouter = tRouter({
           }
           const updateInPlace = prior !== undefined && untouchedSavedReply;
           const draftId = updateInPlace ? prior.id : randomUUID();
-          const attachments = await persistStaffAttachments(
+          const attachments = (await persistStaffAttachments(
             decodedAttachments,
             transportId,
             draftId,
             updateInPlace ? prior.attachments : [],
-          );
+          )).map(attachment => {
+            const { quoteBinding: _previous, quoteArtifactId: _previousId, ...rest } = attachment as typeof attachment & { quoteBinding?: unknown; quoteArtifactId?: unknown };
+            return input.quoteBinding ? { ...rest, quoteBinding: input.quoteBinding,
+              quoteArtifactId: input.quoteBinding.artifactIds[attachment.filename === 'Quotation.pdf' ? 0 : 1] } : rest;
+          });
           const content = {
             threadId: input.threadId,
             replyToMessageId: input.replyToMessageId,
@@ -2205,6 +2217,23 @@ export const draftsRouter = tRouter({
         }
         throw error;
       }
+    }),
+
+  /** Find the active quote reply for this source and generated proposal revision. */
+  quoteReply: mailboxProcedure
+    .input(z.object({ threadId: z.string(), messageId: z.string(), binding: quoteDraftBindingSchema }))
+    .query(async ({ input, ctx }) => {
+      const db = getDb(), transportId = ctx.activeTransportId;
+      await requireThreadForTransport(db, input.threadId, transportId);
+      const [row] = await db.select({ draft: mailDraft }).from(mailDraft).innerJoin(message, and(
+        eq(message.id, mailDraft.replyToMessageId), eq(message.transportId, transportId),
+        eq(message.threadId, input.threadId), eq(message.direction, 'inbound'),
+      )).where(and(
+        eq(mailDraft.transportId, transportId), eq(mailDraft.threadId, input.threadId),
+        eq(mailDraft.replyToMessageId, input.messageId), eq(mailDraft.isSent, false), eq(mailDraft.status, 'active'),
+      )).limit(1);
+      if (!row || !matchesQuoteDraftBinding(row.draft.attachments, input.binding)) return null;
+      return { id: row.draft.id };
     }),
 
   /** The thread's saved reply (saveReply) with its PDFs, or null. Feeds the Outlook pane's Insert saved reply. */
