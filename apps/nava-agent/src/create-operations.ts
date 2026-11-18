@@ -298,6 +298,25 @@ async function lockedProposal(tx: postgres.TransactionSql, lease: LeaseFence, pr
   return {p,go:go.data};
 }
 
+async function resumeFilingAfterCreate(tx: postgres.TransactionSql, p: ProposalRow, data: {confirmation:string|null;reservation_id:string|null;readback:unknown}) {
+  if(p.workflow!=='create' || !data.confirmation || !data.reservation_id || data.readback==null) return;
+  const [row]=await tx`SELECT m.payload FROM nava_agent.mail_thread t JOIN nava_agent.mail_message m
+    ON m.thread_id=t.id AND m.source_message_id=t.selected_message_id WHERE t.id=${p.thread_id}`;
+  const selected=z.object({id:z.string(),direction:z.literal('inbound'),subject:z.string(),body_text:z.string(),
+    attachments:z.array(z.object({id:z.string(),name:z.string(),mime_type:z.string(),extracted_text:z.string().nullable()}))}).safeParse(row?.payload);
+  if(!selected.success) return;
+  const document=/voucher|proof[\s_-]+of[\s_-]+payment|(?:^|[^a-z])pop(?:[^a-z]|$)/i;
+  const pdfs=selected.data.attachments.filter(file=>file.mime_type==='application/pdf');
+  const attachments=pdfs.filter(file=>document.test(`${file.name}\n${file.extracted_text ?? ''}`) ||
+    (pdfs.length===1 && document.test(`${selected.data.subject}\n${selected.data.body_text}`)));
+  if(!attachments.length) return;
+  const readback={create_proposal_id:p.id,source_message_id:selected.data.id,
+    attachments:attachments.map(({id,name})=>({id,name})),confirmation:data.confirmation,
+    reservation_stay_id:data.reservation_id,readback:data.readback};
+  await writeEvent(tx,p.session_id,'context_pending',{delivered:false,origin:'create_readback',text:
+    `Infor Create Go completed. Use this exact readback and selected source for the outstanding voucher or proof of payment Filing; publish a separate Filing proposal with booking.reservation_id set to this confirmation. Staff must review and select the Infor target before Prepare. ${JSON.stringify(readback)}`});
+}
+
 async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId: string, result: ToolResult) {
   await sql.begin(async tx => {
     const {p,go}=await lockedProposal(tx,lease,proposalId,executionId);
@@ -311,6 +330,7 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
         ? [{booking_id:draft.data.bookings[0].id,state:'saved',confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback}] : undefined;
       await tx`UPDATE nava_agent.proposal SET phase='done',result=${json({confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback,...(rooms?{rooms}:{})})},
         execution=(execution-'go') || ${json({last_go:completion})}::jsonb,updated_at=now() WHERE id=${p.id}`;
+      await resumeFilingAfterCreate(tx,p,data);
     } else if(uncertain) {
       await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go') || ${json({last_go:completion,
         error:{...(result.error ?? {code:'SAVE_UNCERTAIN',message:'Save may have dispatched.',retryable:false}),outcome:'uncertain'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;

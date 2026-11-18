@@ -46,7 +46,7 @@ export type RuntimeDeps = {
 };
 export type AgentRuntime = {startTurn(threadId:string,input:{sessionId:string;content:string}):Promise<void>;resumeWithToolResult(sessionId:string,toolUseId:string,result:unknown):Promise<void>};
 export type RuntimeFactory = (deps:RuntimeDeps,skillContext?:string)=>AgentRuntime;
-export type PendingInput = {id:string;kind:'mail_pending'|'context_pending';payload:{text?:string}};
+export type PendingInput = {id:string;kind:'mail_pending'|'context_pending';payload:{text?:string;origin?:string}};
 export type ApprovedSave = MutationInput & {sessionId:string;proposalId:string;executionId:string;toolUseId:string;mode:Mode;propertyCode:string|null;dispatch:'pending'|'dispatched';completed?:ToolResult;preflightFailure?:ToolResult};
 export type SaveQueue = {
   // A claim is an already-authenticated, durably pinned Go, owned by this fenced lease.
@@ -158,7 +158,7 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
     let skillConfig:SkillConfig|undefined;
     if(registry.hasSkillPack()) {
       const existing=z.object({root:z.string(),pin:z.object({version:z.string(),files:z.record(z.string())}).strict()}).strict().safeParse(session.config?.skill_config);
-      if(existing.success) skillConfig={root:resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url))),pin:existing.data.pin};
+      if(existing.success && !(pending?.payload.origin==='create_readback' && state.status!=='running')) skillConfig={root:resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url))),pin:existing.data.pin};
       else {
         const pin=await registry.pinSkillTree(resolve(process.env.NAVA_SKILLS_DIR ?? fileURLToPath(new URL('../skills/',import.meta.url))));
         if(!pin) throw new Error('SKILL_PIN_UNAVAILABLE');
