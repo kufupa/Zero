@@ -209,7 +209,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
       p.phase==='error'?'Review the booking and verify HMS before trying again.':'Review the booking fields and run Prepare again.',
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
-  const stayTargetSelected=['amend','cancel'].includes(p.workflow) && p.current?.bookings?.length===1 && targetIsBound(p.current.bookings[0],p.execution);
+  const stayTargetSelected=['amend','cancel','filing'].includes(p.workflow) && p.current?.bookings?.length===1 && targetIsBound(p.current.bookings[0],p.execution);
   return {...current,profile_reviews:Array.isArray(p.execution?.staff_profile_reviews)?p.execution.staff_profile_reviews:[],profile_outcome:p.execution?.profile_uncertain ?? null,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,stay_target_selected:stayTargetSelected,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {

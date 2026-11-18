@@ -319,7 +319,7 @@ export class ToolRegistry {
 
   async runStayLookup(lookup:z.infer<typeof targetLookup>, bookingId:string, draft:ProposalDraft, job:StaffJobBinding, context:Omit<RegistryContext,'toolUseId'>):Promise<ToolResult> {
     if(!staffPrepareOnly() || context.mode!=='live' || context.propertyCode!==job.source.property_code ||
-      !['amend','cancel'].includes(job.workflow) || draft.workflow!==job.workflow) return failureObject('STAFF_JOB_CHANGED','The request changed. Search again.');
+      !['amend','cancel','filing'].includes(job.workflow) || draft.workflow!==job.workflow) return failureObject('STAFF_JOB_CHANGED','The request changed. Search again.');
     return this.nativeResult(()=>this.deps.native.withRead(job.source.property_code,context.signal,async credentialLease=>{
       const denied=await confirmedQueuedStaffStage(job,context.sessionId,draft);
       if(denied) return failureObject(denied,'The request changed. Search again.');

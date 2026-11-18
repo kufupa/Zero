@@ -912,7 +912,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     if (kind === 'stage' && !validSavedChildren(current)) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
-    if (kind === 'target' && (!lookup || !['amend', 'cancel'].includes(current.workflow) || !advertised(capabilities, current.workflow, 'stage'))) return;
+    if (kind === 'target' && (!lookup || !['amend', 'cancel', 'filing'].includes(current.workflow) || !advertised(capabilities, current.workflow, 'stage'))) return;
     if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !hasWorkflowAction(current))) return;
     if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || quoteCheckIssue(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;

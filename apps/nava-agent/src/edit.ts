@@ -24,8 +24,9 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
     const draft=proposalDraft.parse(p.current);
     const booking=draft.bookings[0],action=draft.actions[0];
     if(!source.success || !isDeepStrictEqual(source.data,p.stage?.source) || source.data.mailbox_id!==ref.mailbox_id || !selection.success ||
-      !['amend','cancel'].includes(draft.workflow) || draft.bookings.length!==1 || draft.actions.length!==1 ||
-      !booking || !action || action.type!==draft.workflow || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
+      !['amend','cancel','filing'].includes(draft.workflow) || draft.bookings.length!==1 || draft.actions.length!==1 ||
+      !booking || !action || (action.type!==draft.workflow && !(draft.workflow==='filing' && ['attach_document','voucher_submission','payment_proof_submission'].includes(action.type))) ||
+      action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
       selection.data.booking_id!==booking.id || (booking.property_code!==null && selection.data.property_code!==booking.property_code) ||
       selection.data.property_code!==source.data.property_code) throw new Error('STALE_REVISION');
     const before=structuredClone(booking);
@@ -39,6 +40,14 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
       if(action.details && typeof action.details==='object' && !Array.isArray(action.details) && 'confirmation_number' in action.details)
         action.details.confirmation_number=selection.data.confirmation;
     } else if(input.remove_fields.length) throw new Error('STALE_REVISION');
+    if(draft.workflow==='filing') {
+      const stay=selection.data.current_state;
+      for(const [key,value] of Object.entries({confirmation_number:selection.data.confirmation,
+        first_name:stay.first_name,guest_first_name:stay.first_name,last_name:stay.last_name,guest_last_name:stay.last_name,
+        arrival_date:stay.arrival_date,departure_date:stay.departure_date})) {
+        if(Object.hasOwn(booking.fields,key)) booking.fields[key]=value;
+      }
+    }
     const revision=p.revision+1;
     const execution:Record<string,unknown>={...z.record(z.unknown()).safeParse(p.execution).data,staff_stay_selection:selection.data};
     delete execution.error;

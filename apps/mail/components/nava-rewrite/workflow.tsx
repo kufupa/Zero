@@ -823,7 +823,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowPro
   const [previousJob,setPreviousJob]=useState<string | null>(null);
   const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries(
     ['guest_name','group_name','guest_names','confirmation_number','guest_last_name','guest_first_name','guest_names_hint','reservation_hint','confirmation_hint'].map(key=>[key,true])));
-  if(!['amend','cancel'].includes(proposal.workflow) || proposal.disposition!=='propose' || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
+  if(!['amend','cancel','filing'].includes(proposal.workflow) || proposal.disposition!=='propose' || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
   const stage=proposal.stage;
   const native=stage?.state==='target' && stage.revision===proposal.revision && proposal.phase==='ready' &&
     stage.job_id!==previousJob && !changed && Object.keys(drafts).length===0 ? stage.native_result : null;
@@ -855,6 +855,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowPro
     </>}
     {result?.kind==='confirmation' && selection && state && stage?.job_id && <>
       <p>Infor found: {String(selection.property_code)} · {String(selection.confirmation)} · {String(state.first_name)} {String(state.last_name)} · {String(state.arrival_date)} – {String(state.departure_date)} · {String(result.status)}</p>
+      {proposal.workflow==='filing' && <p>Use this stay to replace the previous stay details and continue. The selected PDF stays the same.</p>}
       {proposal.workflow==='amend' && Object.keys(booking.fields).length>0 && <div>
         <p>Mark lookup clues that should not be sent as changes:</p>
         {Object.entries(booking.fields).map(([key,value])=><PaneField key={key} control="checkbox" label={`Remove ${proposal.field_specs.find(spec=>spec.path===`/bookings/0/fields/${key}`)?.label ?? key.replace(/_/g,' ')}: ${String(typeof value==='string'?value:JSON.stringify(value)).slice(0,100)} from changes`} value={removed[key]===true} disabled={locked}
@@ -997,7 +998,7 @@ export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onRecon
   if (!mutableWorkflow) return undefined;
   if (proposal.workflow !== 'triage' && (proposal.disposition !== 'propose' || !hasWorkflowAction(proposal))) return undefined;
   if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && !proposal.stay_target_selected) return undefined;
-  if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && proposal.stage?.state === 'target') return undefined;
+  if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing') && proposal.stage?.state === 'target') return undefined;
   if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Create Guest Profile and check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }

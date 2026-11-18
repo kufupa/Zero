@@ -104,11 +104,13 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
 }
 
 function targetStageInput(draft:ProposalDraft,workflow:Workflow,property:string):StaffNativeInput|null {
-  if((workflow!=='amend' && workflow!=='cancel') || draft.workflow!==workflow || draft.disposition!=='propose' ||
+  if((workflow!=='amend' && workflow!=='cancel' && workflow!=='filing') || draft.workflow!==workflow || draft.disposition!=='propose' ||
     draft.bookings.length!==1 || draft.actions.length!==1) return null;
   const [booking]=draft.bookings, [action]=draft.actions;
-  if(action.type!==workflow || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
-    (booking.property_code!==null && booking.property_code!==property)) return null;
+  if((action.type!==workflow && !(workflow==='filing' && ['attach_document','voucher_submission','payment_proof_submission'].includes(action.type))) ||
+    action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
+    (booking.property_code!==null && booking.property_code!==property) ||
+    (workflow==='filing' && booking.fields.property_code!=null && booking.fields.property_code!==property)) return null;
   return {workflow,booking:{...booking,property_code:property},action};
 }
 
@@ -140,7 +142,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
           ? targetStageInput(draft.data,request.workflow,source.data.property_code)
           : stageInput(draft.data,request.workflow,source.data.property_code,request.quoteId) : null;
         if(!input) return {ok:false,code:'INVALID_INPUT'};
-        if(request.operation==='target' && (!request.lookup || !['amend','cancel'].includes(input.workflow))) return {ok:false,code:'INVALID_INPUT'};
+        if(request.operation==='target' && (!request.lookup || !['amend','cancel','filing'].includes(input.workflow))) return {ok:false,code:'INVALID_INPUT'};
         if(request.operation==='stage' && !hasBoundTarget(input,p.execution)) return {ok:false,code:'INVALID_INPUT'};
         if(input.workflow==='create' && draft.success && draft.data.bookings.some(booking=>!hasBoundCreateGuest(booking,p.execution))) return {ok:false,code:invalidGuestSelection.code};
         if(input.workflow==='create' && draft.success) {
