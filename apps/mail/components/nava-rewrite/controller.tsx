@@ -5,7 +5,7 @@ import type { BoundThreadSnapshot, NavaApi } from './api';
 import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
-import type { QuoteDraftBinding } from '@/components/reservation-pane/use-quote-output';
+import type { QuoteDraftBinding } from './quote-output-bridge';
 import { Workflow, hasWorkflowAction, quoteCheckIssue, workflowPrimaryAction } from './workflow';
 import { quoteArtifactIds } from './quote-draft';
 import type { DraftValue, GuestCandidate } from './workflow';
@@ -37,7 +37,7 @@ export type NavaControllerProps = {
 type Draft = { value: DraftValue; version: number; base: { exists: boolean; value?: unknown } };
 type Drafts = Record<string, Record<string, Draft>>;
 type Issue = { kind: 'conflict' | 'error'; message: string };
-type GoLock = 'accepted' | 'uncertain' | 'reconciling';
+type GoLock = 'accepted' | 'profile_accepted' | 'uncertain' | 'reconciling';
 type ActiveOperation = { kind: 'stage' | 'target' | 'quote' | 'go' | 'reconcile' | 'refresh' | 'attachments' | 'quote_artifacts' | 'quote_draft' | 'context'; proposalId: string; signal: AbortSignal };
 type Cache = {
   drafts: Drafts;
@@ -199,7 +199,9 @@ function missingRequired(proposal: Proposal): string[] {
 
 function goReady(proposal: Proposal): boolean {
   return proposal.phase === 'ready' && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
-    proposal.stage.revision === proposal.revision && !proposal.error && missingRequired(proposal).length === 0;
+    proposal.stage.revision === proposal.revision &&
+    (!proposal.error || proposal.workflow === 'cancel' && proposal.error.code === 'CANCEL_PENALTY_CHANGED' && Boolean(cancellationPenalty(proposal))) &&
+    missingRequired(proposal).length === 0;
 }
 
 function cancellationPenalty(proposal: Proposal): string | null {
@@ -333,7 +335,14 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
           }
         }
         try {
-          if (window.sessionStorage.getItem(goStorageKey(latest.id)) && !cache.goLocks[latest.id]) {
+          const pending = window.sessionStorage.getItem(goStorageKey(latest.id));
+          if (pending?.startsWith('profile-accepted:')) {
+            const jobId = pending.slice('profile-accepted:'.length);
+            if (authoritative && latest.phase === 'ready' && (latest.stage?.job_id === jobId || latest.error?.outcome === 'known')) {
+              delete cache.goLocks[latest.id]; clearPendingGo(latest.id);
+            } else if (latest.phase === 'staging') cache.goLocks[latest.id] = 'profile_accepted';
+            else if (!cache.goLocks[latest.id]) cache.goLocks[latest.id] = 'uncertain';
+          } else if (pending && !cache.goLocks[latest.id]) {
             cache.goLocks[latest.id] = latest.phase === 'saving' ? 'accepted' : 'uncertain';
           }
         } catch { /* Go cannot start unless its pending key can be stored. */ }
@@ -904,6 +913,46 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     }
   }
 
+  async function goProfile(proposal: Proposal) {
+    const signal = controllerRef.current?.signal;
+    const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
+    if (!signal || signal.aborted || !current || current.revision !== proposal.revision || operationRef.current || cache.inFlightEdit ||
+        authenticationExpiredRef.current || cache.issues[current.id] || cache.goLocks[current.id] ||
+        cache.stagePending[current.id] !== undefined || Object.keys(cache.drafts[current.id] ?? {}).length) return;
+    let idempotencyKey: string;
+    try { idempotencyKey = crypto.randomUUID(); window.sessionStorage.setItem(goStorageKey(current.id), `profile:${idempotencyKey}`); }
+    catch { setMessage('Could not start the Guest Profile creation. Reload and try again.'); return; }
+    const active: ActiveOperation = { kind: 'go', proposalId: current.id, signal };
+    const sequence = snapshotRef.current?.event_sequence ?? 0;
+    operationRef.current = active; setBusy(true); setMessage(null); cache.goLocks[current.id] = 'uncertain'; refreshVersion();
+    try {
+      const accepted = await api.go({ proposalId: current.id, expectedRevision: current.revision, idempotencyKey, createProfile: true, signal });
+      if (signal.aborted) return;
+      if (!accepted.job_id) throw new Error('Missing profile job');
+      window.sessionStorage.setItem(goStorageKey(current.id), `profile-accepted:${accepted.job_id}`);
+      cache.goLocks[current.id] = 'profile_accepted';
+      cache.stagePending[current.id] = sequence;
+      cache.operationStarts[current.id] = { phase: 'staging', at: Date.now() };
+      applyProposal({ ...current, phase: accepted.phase });
+      const threadId = snapshotRef.current?.id;
+      if (threadId) {
+        const latest = await api.getThread(threadId, { signal }).catch(() => null);
+        if (latest && !signal.aborted) applySnapshot(latest, true, current.id);
+        if (!signal.aborted && cache.stagePending[current.id] === sequence) void recoverStage(threadId, current.id, sequence, signal);
+      }
+    } catch (error) {
+      if (signal.aborted || expireAuthentication(error, signal)) return;
+      const refused = error instanceof NavaApiError && error.code !== null && error.status !== null && error.status >= 400 && error.status < 500;
+      if (refused) { delete cache.goLocks[current.id]; clearPendingGo(current.id); }
+      else cache.goLocks[current.id] = 'uncertain';
+      setMessage(refused ? safeOperationError(error) ?? 'Could not create the Guest Profile. Review the details.'
+        : 'Infor may have created the Guest Profile. Check Infor before trying again.');
+    } finally {
+      if (operationRef.current === active) operationRef.current = null;
+      if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
+    }
+  }
+
   async function operation(kind: 'stage' | 'target' | 'quote' | 'reconcile', proposal: Proposal, quoteId?: string, lookup?: StayLookup) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
@@ -1035,6 +1084,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];
   const confirmingGo = Boolean(proposal && goEnabled && confirmedPreparation === goConfirmation(proposal));
   const penalty = proposal ? cancellationPenalty(proposal) : null;
+  const needsProfile = proposal?.workflow === 'create' && proposal.bookings.some(booking => booking.fields.profile_create_new === true && !booking.fields.guest_profile_id);
   const goLabels = {
     create: proposal && proposal.bookings.length>1 ? `Save all ${proposal.bookings.length} rooms in Infor?` : 'Save this booking in Infor?',
     amend: 'Save these changes in Infor?',
@@ -1045,7 +1095,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   };
   const stagePrimary = proposal && !isUncertain ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) ||
         cache.stagePending[proposal.id] !== undefined || !validSavedChildren(proposal),
-      onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
+      onStage: canStage && (!needsProfile || canGo) ? () => { if (needsProfile) void goProfile(proposal); else void operation('stage', proposal); } : undefined,
     }) : undefined;
   const primary = proposal && goEnabled
     ? confirmingGo ? undefined : {
@@ -1098,6 +1148,12 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || issue?.kind === 'conflict' || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={!issue ? id => { void openArtifact(proposal.id, proposal.revision, id); } : undefined}
         onLookupStay={canStage && !issue && !isUncertain ? lookup => { void operation('target', proposal, undefined, lookup); } : undefined}
         onSelectStay={canStage && !issue && !isUncertain ? (jobId, removeFields) => { void selectStay(proposal, jobId, removeFields); } : undefined}
+        createdStays={(snapshot?.proposals ?? []).filter(item => item.workflow === 'create').flatMap(item => (item.result?.rooms ?? []).flatMap(room => {
+          if (room.state !== 'saved') return [];
+          const confirmation = [room.reservation_id, room.confirmation].find(value => typeof value === 'string' && /^\d{6,10}-\d{1,10}$/.test(value));
+          const index = item.bookings.findIndex(booking => booking.id === room.booking_id);
+          return confirmation && index >= 0 ? [{ bookingId: room.booking_id, confirmation, label: `Room ${index + 1} · ${confirmation}` }] : [];
+        }))}
         onSelectGuest={proposal.workflow === 'create' && !issue ? (candidate,index) => { void selectGuest(proposal, candidate,index); } : undefined}
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         onSubmitQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { cache.autoQuotes.add(proposal.id); setPendingQuote({ proposalId: proposal.id, quoteId }); } : undefined}

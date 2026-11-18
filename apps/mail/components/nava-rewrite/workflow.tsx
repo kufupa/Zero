@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { QuoteDraftBinding } from '@/components/reservation-pane/use-quote-output';
+import type { QuoteDraftBinding } from './quote-output-bridge';
 import { PaneField } from './field';
 import { quoteArtifactIds } from './quote-draft';
 import type { PaneFieldProps } from './field';
@@ -38,6 +38,7 @@ export type WorkflowProps = {
   onSelectGuest?: (candidate: GuestCandidate, roomIndex: number) => void;
   onLookupStay?: (lookup: StayLookup) => void;
   onSelectStay?: (jobId: string, removeFields: string[]) => void;
+  createdStays?: { bookingId: string; confirmation: string; label: string }[];
   attachmentsChecked: boolean;
   attachmentsAttention: boolean;
   attachmentsBusy: boolean;
@@ -827,7 +828,7 @@ function GuestRoomChoices({proposal,drafts,busy,index,onSelectGuest}: Pick<Workf
   </PaneSection>;
 }
 
-function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowProps) {
+function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays}:WorkflowProps) {
   const booking=proposal.bookings[0];
   const [surname,setSurname]=useState('');
   const [confirmation,setConfirmation]=useState(booking?.reservation_id ?? '');
@@ -848,6 +849,9 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowPro
   const exact=/^\d{6,10}-\d{1,10}$/;
   return <PaneSection title="Find the stay in Infor">
     <p>Search uses this mailbox’s hotel.</p>
+    {proposal.workflow === 'filing' && createdStays && createdStays.length > 0 && <PaneField label="Created stay from this email" control="select" value="" disabled={locked}
+      placeholder="Choose a created stay" options={createdStays.map(stay => ({ value: stay.bookingId, label: stay.label }))}
+      onChange={value => { const stay = createdStays.find(item => item.bookingId === value); if (stay) { setConfirmation(stay.confirmation); setArrivalDate(''); setChanged(true); } }} />}
     {proposal.stay_target_selected && <p>Selected: {booking.reservation_id} · {String(booking.current_state?.first_name ?? '')} {String(booking.current_state?.last_name ?? '')} · arrival {String(booking.current_state?.arrival_date ?? '')}</p>}
     {!proposal.stay_target_selected && booking.reservation_id && <p>Confirmation from the request: {booking.reservation_id}. Check and select the stay below.</p>}
     <PaneField label="Guest surname" control="text" value={surname} disabled={locked} onChange={value=>{setSurname(value);setChanged(true);}} />
@@ -977,7 +981,7 @@ export function Workflow(props: WorkflowProps) {
     <StayTarget key={proposal.id} {...props} />
     {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
     <GuestChoices {...props} busy={locked} />
-    {proposal.workflow==='create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) && <PaneMessage>Review the matching profiles, name, mobile and email. The next button creates the new Guest Profile, even if Infor asks about the same name, then checks the price. The profile is Active; consent is off. If an email is supplied, its type is Primary.</PaneMessage>}
+    {proposal.workflow==='create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) && <PaneMessage>Review the matching profiles, name, mobile and email. Go creates the new Guest Profile, then checks the price. The booking needs a separate Go.</PaneMessage>}
     {proposal.workflow !== 'quote' && proposal.field_specs.length > 0 && <PaneSection title="Details">
       {proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}
       {proposal.workflow === 'filing' && !proposal.field_specs.some(spec => /^\/actions\/(?:0|[1-9]\d*)\/details\/attachment_id$/.test(spec.path) && spec.editable) && <PaneMessage>PDF selection is unavailable for this request. Handle it using your usual process.</PaneMessage>}
@@ -1041,6 +1045,6 @@ export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onRecon
   if (proposal.workflow !== 'triage' && (proposal.disposition !== 'propose' || !hasWorkflowAction(proposal))) return undefined;
   if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && !proposal.stay_target_selected) return undefined;
   if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing') && proposal.stage?.state === 'target') return undefined;
-  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Create Guest Profile and check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
+  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Go: Create Guest Profile & check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }
