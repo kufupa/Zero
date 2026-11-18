@@ -18,7 +18,7 @@ import { selectStayTarget } from './edit.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote'|'target';
 type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
-type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;confirmPenalty?:true;lookup?:z.infer<typeof targetLookup>};
+type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;confirmPenalty?:true;createProfile?:true;lookup?:z.infer<typeof targetLookup>};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
 // transaction; a separate claimGo transaction would deadlock on the same row.
@@ -37,6 +37,7 @@ class OperationError extends Error {
   constructor(readonly code:OperationFailure|'REAL_GUEST_GO_UNAVAILABLE'|'HISTORICAL_UNAVAILABLE',readonly details:unknown=null) { super(code); }
 }
 const workflows:Workflow[]=['triage','quote','create','amend','cancel','filing'];
+const staffGoInput=goInput.extend({create_profile:z.literal(true).optional()}).strict();
 const labtestSource = z.object({source: z.enum(['outlook','webmail','corpus','eval']), mailbox_id: z.string().min(1), source_thread_id: z.string().min(1), selected_message_id: z.string().min(1)});
 const labtestSeed = z.object({thread:threadInput, target:manualLabtestTarget}).strict();
 export function createApp(operations:ProposalOperations|undefined=createPilotOperations()) {
@@ -139,7 +140,7 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
   const principal=c.get('principal');
   if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
   if(operation==='go' && !hmsSaveEnabled() && !createGoEnabled()) return c.json({error:{code:'SAVE_DISABLED',message:'Only unsaved Prepare is available.',details:null}},403);
-  const input=(operation==='go'?goInput:operation==='quote'?requoteInput:operation==='target'?targetInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
+  const input=(operation==='go'?staffGoInput:operation==='quote'?requoteInput:operation==='target'?targetInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
   if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid operation input',details:input.error.flatten()}},400);
   try {
     const result=await sql.begin(async tx=>{
@@ -180,10 +181,11 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
       }
       const preparedJobId='prepared_job_id' in input.data && typeof input.data.prepared_job_id==='string'?input.data.prepared_job_id:undefined;
       const confirmPenalty='confirm_penalty' in input.data && input.data.confirm_penalty===true?true:undefined;
+      const createProfile='create_profile' in input.data && input.data.create_profile===true?true:undefined;
       const lookup=targetLookup.safeParse('lookup' in input.data?input.data.lookup:undefined).data;
-      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId,preparedJobId,confirmPenalty,lookup});
+      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId,preparedJobId,confirmPenalty,createProfile,lookup});
       if(!accepted.ok) throw new OperationError(accepted.code,accepted.details ?? null);
-      const expectedPhase=operation==='stage'||operation==='quote'||operation==='target'?'staging':operation==='go'?'saving':'uncertain';
+      const expectedPhase=operation==='stage'||operation==='quote'||operation==='target'||createProfile?'staging':operation==='go'?'saving':'uncertain';
       if(accepted.phase!==expectedPhase) throw new OperationError('UNAVAILABLE');
       if(operation==='quote' && (!accepted.jobId || !quoteId)) throw new OperationError('UNAVAILABLE');
       if(operation==='quote' && accepted.replayed) return {job_id:accepted.jobId,proposal_id:p.id,revision:p.revision,quote_id:quoteId,phase:accepted.phase};

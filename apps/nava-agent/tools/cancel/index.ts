@@ -311,7 +311,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return { ...error('CANCEL_PENALTY_UNAVAILABLE', 'HMS reported a penalty but did not provide its text. Review the reservation in HMS.'),
         data: { cancellation_fee: { state: 'review_required', text: null } } };
     }
-    if (currentNotice !== shownNotice) {
+    if (currentNotice !== shownNotice && !(currentNotice === null && native?.commitPenaltyText === shownNotice && input.confirmPenalty === true)) {
       return { ...error('CANCEL_PENALTY_CHANGED', 'The cancellation penalty changed. Review it and run Prepare again.'),
         data: { cancellation_fee: fee(currentNotice) } };
     }

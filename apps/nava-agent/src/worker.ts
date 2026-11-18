@@ -229,13 +229,25 @@ async function parkFailedSession(sessionId:string):Promise<string|null> {
   return sql.begin(async tx=>{
     const [s]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${sessionId} AND (lease_until IS NULL OR lease_until<clock_timestamp()) FOR NO KEY UPDATE`;
     if(!s) return null;
+    await tx`UPDATE nava_agent.proposal SET phase='uncertain',
+      execution=COALESCE(execution,'{}'::jsonb)||jsonb_build_object('profile_uncertain',stage->'profile_dispatch','error',${json(uncertain)}::jsonb),stage=NULL,updated_at=now()
+      WHERE session_id=${sessionId} AND phase='staging' AND stage->>'state'='queued' AND stage ? 'profile_dispatch'`;
     await tx`UPDATE nava_agent.proposal SET phase=COALESCE(stage->>'previous_phase','ready'),stage=NULL,
       execution=COALESCE(execution,'{}'::jsonb)||${json({error:failed})}::jsonb,updated_at=now()
       WHERE session_id=${sessionId} AND phase='staging' AND stage->>'state'='queued'`;
-    await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go')||jsonb_build_object('last_go',execution->'go','error',${json(uncertain)}::jsonb),updated_at=now()
-      WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' AND execution->'go'->>'dispatch'<>'pending'`;
-    await tx`UPDATE nava_agent.proposal SET phase='ready',execution=(execution-'go')||jsonb_build_object('last_go',execution->'go','error',${json(failed)}::jsonb),updated_at=now()
-      WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' AND execution->'go'->>'dispatch'='pending'`;
+    const saves=await tx`SELECT id,execution,result FROM nava_agent.proposal WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' FOR UPDATE`;
+    for(const proposal of saves) {
+      const go=proposal.execution.go;
+      const dispatched=go.dispatch!=='pending';
+      const rooms=Array.isArray(go.rooms) ? go.rooms.map((room:Record<string,unknown>)=>room.state==='dispatched'?{...room,state:'uncertain'}:room) : undefined;
+      const partial=rooms?.some((room:Record<string,unknown>)=>room.state==='saved') ?? false;
+      const phase=dispatched?'uncertain':partial?'error':'ready';
+      const error=dispatched?uncertain:partial?{...failed,message:'Some rooms were saved. Review the completed rooms before continuing.',recovery:'Check Infor before taking further action.'}:failed;
+      const execution={...proposal.execution,last_go:{...go,...(rooms?{rooms}:{}),state:dispatched?'uncertain':'failed'},error};
+      delete execution.go;
+      const result=rooms?{...(proposal.result ?? {}),confirmation:null,reservation_id:null,readback:null,rooms}:proposal.result;
+      await tx`UPDATE nava_agent.proposal SET phase=${phase},result=${json(result)},execution=${json(execution)},updated_at=now() WHERE id=${proposal.id}`;
+    }
     await tx`UPDATE nava_agent.agent_event SET payload=jsonb_set(payload,'{delivered}','true'::jsonb)
       WHERE session_id=${sessionId} AND kind IN ('mail_pending','context_pending') AND payload->>'delivered'='false'`;
     await tx`UPDATE nava_agent.agent_session SET status='idle',updated_at=now() WHERE id=${sessionId} AND status='running'`;

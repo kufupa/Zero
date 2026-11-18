@@ -46,6 +46,7 @@ const queuedStage = z.object({
   workflow:proposalDraft.shape.workflow.optional(), source:stageSource.optional(), quote_id:z.string().optional(),
   profile_dispatch:z.object({booking_id:z.string(),attempt_id:z.string()}).optional(),
   profile_created:z.array(z.object({booking_id:z.string(),native_id:z.string()})).optional(),
+  profile_go:z.literal(true).optional(),
   lookup:targetLookup.optional(),
 }).strict();
 
@@ -133,8 +134,8 @@ export function createPilotOperations(): ProposalOperations | undefined {
         JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id WHERE p.id=${request.proposalId}`;
       if (!p) return {ok:false,code:'NOT_FOUND'};
       if(staffPrepareOnly()) {
-        if(request.operation==='go') return p.config?.replay_id ? {ok:false,code:'UNAVAILABLE'} : submitStaffGo(tx,p,request);
-        if(request.mode!=='live' || (request.operation!=='stage' && request.operation!=='quote' && request.operation!=='target')) return {ok:false,code:'UNAVAILABLE'};
+        if(request.operation==='go' && !request.createProfile) return p.config?.replay_id ? {ok:false,code:'UNAVAILABLE'} : submitStaffGo(tx,p,request);
+        if(request.mode!=='live' || (request.operation!=='stage' && request.operation!=='quote' && request.operation!=='target' && !(request.operation==='go' && request.createProfile))) return {ok:false,code:'UNAVAILABLE'};
         const source=await selectedStageSource(tx,p.session_id);
         if(!source.success || source.data.mailbox_id!==request.mailboxId) return {ok:false,code:'FORBIDDEN'};
         const draft=proposalDraft.safeParse(p.current);
@@ -146,6 +147,9 @@ export function createPilotOperations(): ProposalOperations | undefined {
         if(request.operation==='stage' && !hasBoundTarget(input,p.execution)) return {ok:false,code:'INVALID_INPUT'};
         if(input.workflow==='create' && draft.success && draft.data.bookings.some(booking=>!hasBoundCreateGuest(booking,p.execution))) return {ok:false,code:invalidGuestSelection.code};
         if(input.workflow==='create' && draft.success) {
+          const needsProfile=draft.data.bookings.some(booking=>booking.fields.profile_create_new===true && booking.fields.guest_profile_id==null);
+          if(needsProfile && !request.createProfile) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Go: Create Guest Profile and check price']}};
+          if(request.createProfile && (!needsProfile || !request.idempotencyKey || p.config?.replay_id)) return {ok:false,code:'UNAVAILABLE'};
           const missing=draft.data.bookings.flatMap((_,index)=>fieldLabels(draft.data,missingCreateFields(draft.data,'stage',index),index).map(label=>draft.data.bookings.length===1 ? label : `Room ${index+1}: ${label}`));
           if(missing.length) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:missing}};
           for(const [index,booking] of draft.data.bookings.entries()) {
@@ -156,6 +160,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
               return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:[draft.data.bookings.length===1?'Review New Guest Profile and enter mobile':`Room ${index+1}: review New Guest Profile and enter mobile`]}};
           }
         }
+        if(request.createProfile && input.workflow!=='create') return {ok:false,code:'INVALID_INPUT'};
         const key=request.idempotencyKey===null?null:createHash('sha256').update(request.idempotencyKey).digest('hex');
         if(key) {
           const [prior]=await tx`SELECT payload FROM nava_agent.agent_event WHERE session_id=${p.session_id} AND kind='stage_queued'
@@ -171,7 +176,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
           return {ok:false,code:attachmentsUnconfirmed.code};
         }
         const stage=queuedStage.parse({job_id:uid('stage'),revision:request.expectedRevision,actor:request.actor,previous_phase:p.phase,state:'queued',
-          workflow:request.workflow,source:source.data,...(request.quoteId?{quote_id:request.quoteId}:{}),...(request.lookup?{lookup:request.lookup}:{})});
+          workflow:request.workflow,source:source.data,...(request.quoteId?{quote_id:request.quoteId}:{}),...(request.lookup?{lookup:request.lookup}:{}),...(request.createProfile?{profile_go:true}:{})});
         await tx`UPDATE nava_agent.proposal SET phase='staging',stage=${json(stage)},execution=COALESCE(execution,'{}'::jsonb)-'error',updated_at=now()
           WHERE id=${p.id}`;
         await writeEvent(tx,p.session_id,'stage_queued',{proposal_id:p.id,job_id:stage.job_id,revision:stage.revision,
@@ -288,13 +293,25 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
     const {p,go}=await lockedProposal(tx,lease,proposalId,executionId);
     const uncertain=!result.ok && (result.error?.outcome==='uncertain' || go.dispatch==='dispatched');
     const completion={...go,state:result.ok?'saved':uncertain?'uncertain':'failed',error:result.error ?? null};
+    const penaltyResult=z.object({cancellation_fee:observedPenalty}).safeParse(result.data);
     if(result.ok) {
       const data=z.object({confirmation:z.string().nullable(),reservation_id:z.string().nullable(),readback:z.unknown()}).passthrough().parse(result.data);
-      await tx`UPDATE nava_agent.proposal SET phase='done',result=${json({confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback})},
+      const draft=proposalDraft.safeParse(go.snapshot);
+      const rooms=draft.success && draft.data.workflow==='create' && draft.data.bookings.length===1
+        ? [{booking_id:draft.data.bookings[0].id,state:'saved',confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback}] : undefined;
+      await tx`UPDATE nava_agent.proposal SET phase='done',result=${json({confirmation:data.confirmation,reservation_id:data.reservation_id,readback:data.readback,...(rooms?{rooms}:{})})},
         execution=(execution-'go') || ${json({last_go:completion})}::jsonb,updated_at=now() WHERE id=${p.id}`;
     } else if(uncertain) {
       await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go') || ${json({last_go:completion,
         error:{...(result.error ?? {code:'SAVE_UNCERTAIN',message:'Save may have dispatched.',retryable:false}),outcome:'uncertain'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;
+    } else if(p.workflow==='cancel' && result.error?.code==='CANCEL_PENALTY_CHANGED' && penaltyResult.success) {
+      const penalty=penaltyResult.data.cancellation_fee;
+      const native=p.stage.native_result;
+      const stage={...p.stage,cancellation_fee:penalty,native_result:{...native,cancellation_fee:penalty,
+        native:{...native.native,penaltyText:penalty.text,commitPenaltyText:penalty.text}},
+        display_rows:(p.stage.display_rows ?? []).map((row:any)=>row.id==='cancel-fee'?{...row,value:penalty.text}:row)};
+      await tx`UPDATE nava_agent.proposal SET phase='ready',stage=${json(stage)},execution=(execution-'go') || ${json({last_go:completion,
+        error:{...result.error,operation:'staff_stage',message:'Infor showed a cancellation fee. Review it and press Go again.',recovery:'Review the fee before confirming.'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;
     } else {
       // Known refusal before dispatch: nothing was saved; staff may fix fields and Prepare again.
       await tx`UPDATE nava_agent.proposal SET phase='ready',execution=(execution-'go') || ${json({last_go:completion,
@@ -515,7 +532,7 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
     WHERE session_id=${lease.sessionId} AND (${staffPrepareOnly()} OR workflow='create') AND phase='staging' AND stage->>'state'='queued' ORDER BY updated_at LIMIT 1`;
   if (!p) return false;
   const job = queuedStage.parse(p.stage);
-  if(staffPrepareOnly() && job.workflow==='create' && !await prepareNewProfiles(lease,registry,context,p,job)) return true;
+  if(staffPrepareOnly() && job.workflow==='create' && job.profile_go && !await prepareNewProfiles(lease,registry,context,p,job)) return true;
   const [latest]=await sql`SELECT current,stage FROM nava_agent.proposal WHERE id=${p.id}`;
   const profileCreated=Array.isArray(latest?.stage?.profile_created) && latest.stage.profile_created.length>0;
   const draft=proposalDraft.safeParse(latest?.current ?? p.current);
