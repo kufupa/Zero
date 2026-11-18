@@ -92,7 +92,8 @@ export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: 
       Number.isSafeInteger(file.size) && file.size > 5 && file.size <= 10 * 1024 * 1024)
       .map(file => ({ id: file.id, name: file.name, mime_type: 'application/pdf', size: file.size, handle: file.id, extracted_text: null }));
     // Both clients open the same synced mail and share its workflow identity.
-    return { ...input, source: 'outlook' as const, messages: canonicalMessages.map(item =>
+    const selectedIndex = canonicalMessages.findIndex(item => item.id === input.selected_message_id);
+    return { ...input, source: 'outlook' as const, messages: canonicalMessages.slice(0, selectedIndex + 1).map(item =>
       item.id === input.selected_message_id ? { ...item, attachments: pdfs } : item) };
   }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
 }
