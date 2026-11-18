@@ -53,8 +53,11 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
     const selected=matches.length===1 && groupedQuoteRequest.safeParse(matches[0].details);
     return selected && selected.success && selected.data.property_code===property ? {workflow,request:selected.data} : null;
   }
-  if(draft.actions.length!==1) return null;
-  const [action]=draft.actions;
+  const actions=workflow==='create'
+    ? draft.actions.filter(action=>action.type!=='invoice_request')
+    : draft.actions;
+  if(actions.length!==1) return null;
+  const [action]=actions;
   if(workflow==='triage') {
     if(!['propose','staff_review'].includes(draft.disposition) || action.type!=='triage') return null;
     const [booking]=draft.bookings;
