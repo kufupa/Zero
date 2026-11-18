@@ -16,8 +16,8 @@ export type { QuoteOutput, QuoteOutputArtifact, QuoteOutputResult } from '@/lib/
 type Confirm = () => boolean | Promise<boolean>;
 type OutlookReplyInput = {
   html: string; confirmUnknown?: Confirm;
-} & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean } |
-  { output: QuoteOutput; isCurrentSnapshot: () => boolean });
+} & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean; verifyCurrentSnapshot?: () => Promise<boolean> } |
+  { output: QuoteOutput; isCurrentSnapshot: () => boolean; verifyCurrentSnapshot: () => Promise<boolean> });
 export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] } };
 
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
@@ -201,13 +201,14 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
   };
 
   const createOutlookReplyLocked = async (input: OutlookReplyInput): Promise<OutlookReplyResult> => {
-    const { html, confirmUnknown, isCurrentSnapshot } = input;
+    const { html, confirmUnknown, isCurrentSnapshot, verifyCurrentSnapshot } = input;
     if (busy.current) return { status: 'error', message: 'A reply is already being prepared.' };
     busy.current = true; setSaving(true); setError(null); beginMutation();
     let submitted = false;
     try {
       let output: QuoteOutput;
       if ('output' in input) {
+        if(typeof verifyCurrentSnapshot!=='function') throw new Error('The quote connection is unavailable. Review the quote again.');
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
         const artifacts=input.output.artifacts;
         if (!completeQuotePackage(input.output) || input.output.inventoryDecline || !html.trim() || artifacts.length!==2 ||
@@ -231,6 +232,13 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (source.internetMessageId && canonicalMessageId(email.internetMessageId) !== canonicalMessageId(source.internetMessageId)) throw new Error('The selected Outlook email changed. Select it again.');
       const recipient = output.cover!.to.trim(), subject = replySubject(source.subject);
       if (!z.string().email().safeParse(recipient).success) throw new Error('Enter a recipient email address.');
+      const verifyBeforeMutation=async()=>{
+        if(!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
+        let verified=false;
+        try { verified=!verifyCurrentSnapshot || await verifyCurrentSnapshot(); } catch { /* Fail closed on a disconnected signed check. */ }
+        if(!verified || !current() || isCurrentSnapshot && !isCurrentSnapshot())
+          throw new Error('The quote changed or its connection was lost. Review it again.');
+      };
       const fingerprint = await fingerprintFor(source, email, output, html);
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
       const completionKey = 'output' in input ? await completedKey(source,email,output) : null;
@@ -272,6 +280,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       };
       if(completed) {
         submitted=true;
+        await verifyBeforeMutation();
         const readback=await inspectDraft(completed.location,output,html);
         return {...report('created','Quote saved in Outlook Drafts. Review it there before sending.'),readback};
       }
@@ -305,6 +314,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       if (!attempt.location) {
         const selected = await host.sendCommand<Record<string, never>, WorkstationEmailPayload | null>('GET_ACTIVE_EMAIL', {});
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot() || !sameEmail(selected, attempt.email) || !sameEmail(live.current.bridge?.activeEmail ?? null, attempt.email)) throw new Error('The selected Outlook email changed. Select it again.');
+        await verifyBeforeMutation();
         if (!persistAttempt(attempt)) throw new Error('Outlook retry protection is unavailable. Reopen the pane and try again.');
         submitted = true;
         const location = await host.sendCommand<typeof attempt.create, MailLocation>('CREATE_REPLY_DRAFT', attempt.create);
@@ -322,6 +332,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       const identity = { entryId: location.entryId, storeId: location.storeId, folderEntryId: location.folderEntryId };
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
       const recipientUpdate = { ...identity, operationId: attempt.recipientOperationId, to: recipient, cc: '', bcc: '', subject };
+      await verifyBeforeMutation();
       submitted = true;
       const updated = await host.sendCommand<typeof recipientUpdate, MailLocation>('UPDATE_DRAFT', recipientUpdate);
       if (!updated || updated.entryId !== identity.entryId || updated.storeId !== identity.storeId ||
@@ -345,6 +356,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
         if (await matchesArtifact(attempt.output.artifacts[index]!, await readMetadata())) { attempt.completed = index + 1; continue; }
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return report('unknown', 'The reply may be incomplete. Check Outlook Drafts before continuing.');
+        await verifyBeforeMutation();
         submitted = true;
         const attachment = attempt.attachments[index]!;
         const added = await host.sendCommand<typeof attachment, boolean>('ADD_ATTACHMENT_TO_DRAFT', attachment);
