@@ -230,6 +230,7 @@ export async function prepareCloudPaneAttach(input, { openSession = withCloudWri
     return { outcome: 'refused_input' };
   }
   const code = documentCodeForUuid(randomUUID());
+  const uploadName = `${code}.pdf`;
   const root = await mkdtemp(join(tmpdir(), 'pane-cloud-attach-prepare-'));
   const native = { current: null }, approvedNative = { current: null };
   const ownedPage = { current: null };
@@ -243,7 +244,7 @@ export async function prepareCloudPaneAttach(input, { openSession = withCloudWri
       if (!expected) return { outcome: 'refused', issue: 'APPROVED_STAY_MISMATCH' };
       approvedNative.current = snapshotApprovedNativeIdentity(record.nativePreimage);
       native.current = record.nativePreimage;
-      return attach(page, expected, { name: input.documentName, documentCode: code,
+      return attach(page, expected, { name: uploadName, documentCode: code,
         description: input.documentDescription ?? input.documentName, mimeType: 'application/pdf', bytes: input.bytes },
       { evidenceRoot: root, expectedDocumentContext: input.approvedSnapshot,
         strictNetwork: true, cloudGuarded: true, prepareOnly: true, timeoutMs: 5 * 60_000 });
@@ -257,8 +258,8 @@ export async function prepareCloudPaneAttach(input, { openSession = withCloudWri
         getNative: () => native.current, getApprovedNativeIdentity: () => approvedNative.current,
       }) });
     return result?.outcome === 'prepared' && result.documentCode === code &&
-      result.documentName === input.documentName && result.description === (input.documentDescription ?? input.documentName)
-      ? { outcome: 'prepared', documentCode: code } : { outcome: 'refused', issue: result?.issue };
+      result.documentName === uploadName && result.description === (input.documentDescription ?? input.documentName)
+      ? { outcome: 'prepared', documentCode: code, documentName: uploadName } : { outcome: 'refused', issue: result?.issue };
   } catch {
     return { outcome: 'refused', issue: 'DOCUMENT_PREPARE_UNAVAILABLE' };
   } finally {

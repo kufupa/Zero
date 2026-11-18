@@ -40,7 +40,7 @@ export const filingPrepared = z.object({
   source: z.object({ message_id: id, attachment_id: id }).strict(),
   document: z.object({
     name: text(150), mime_type: z.literal('application/pdf'), sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    document_code: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/), description: text(200),
+    document_code: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/), upload_name: text(150), description: text(200),
   }).strict(),
 }).passthrough();
 

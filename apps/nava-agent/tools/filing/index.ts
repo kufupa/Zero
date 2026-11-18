@@ -55,7 +55,7 @@ type NativeModules = {
   installPaneAttachReadGuard: (context: unknown, options: Record<string, unknown>) => Promise<void>;
   filingSnapshot: (record: NativeRecord) => { cmsSend: boolean } | null;
   approvedDocumentDispatch: (record: NativeRecord, stay: Record<string, unknown>, snapshot: { cmsSend: boolean }) => unknown;
-  prepareCloudPaneAttach: (input: Record<string, unknown>) => Promise<{ outcome?: string; issue?: string; documentCode?: string }>;
+  prepareCloudPaneAttach: (input: Record<string, unknown>) => Promise<{ outcome?: string; issue?: string; documentCode?: string; documentName?: string }>;
   runCloudPaneAttach: (input: Record<string, unknown>) => Promise<{
     outcome?: string; uploadSent?: boolean; documentCode?: string; listed?: boolean;
     nativeReadback?: unknown; cleanupRoot?: string;
@@ -281,7 +281,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       confirmation: prepared.target.confirmation, arrival: prepared.target.native_stay.arrival,
       guestName: `${prepared.target.native_stay.firstName} ${prepared.target.native_stay.lastName}`,
       approvedStay: prepared.target.native_stay, approvedSnapshot: prepared.target.native_snapshot,
-      allowRealGuest: context.mode === 'live', documentName: prepared.document.name,
+      allowRealGuest: context.mode === 'live', documentName: prepared.document.upload_name,
       documentDescription: prepared.document.description, documentCode: prepared.document.document_code,
       pdfSha256: prepared.document.sha256, file, beforeDispatch: allowed, captureLabtest: labtest,
       finalAuthority: async (code: string) => code === prepared.document.document_code && await allowed(),
@@ -302,7 +302,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         result.documentCode === prepared.document.document_code && object(readback) &&
         readback.confirmation === prepared.target.confirmation && readback.nativeStayId === prepared.target.native_stay.nativeStayId &&
         readback.nativeGuestId === prepared.target.native_stay.nativeGuestId && readback.documentCode === prepared.document.document_code &&
-        readback.documentName === prepared.document.name && readback.documentDescription === prepared.document.description &&
+        readback.documentName === prepared.document.upload_name && readback.documentDescription === prepared.document.description &&
         readback.uniqueFreshListing === true) {
       return { ok: true, data: { confirmation: prepared.target.confirmation,
         reservation_id: prepared.target.reservation_stay_id, readback }, error: null };
@@ -363,7 +363,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       approvedSnapshot: target.snapshot, allowRealGuest: context.mode === 'live', documentName: attachment.name,
       documentDescription: request.description ?? attachment.name, bytes, pdfSha256: sha256 });
     context.signal?.throwIfAborted();
-    if (staged.outcome !== 'prepared' || !text(staged.documentCode, 40)) {
+    if (staged.outcome !== 'prepared' || !text(staged.documentCode, 40) || !text(staged.documentName, 150)) {
       const code = text(staged.issue, 80) && /^[A-Z][A-Z0-9_]+$/.test(staged.issue) ? staged.issue : 'NATIVE_PREPARE_UNAVAILABLE';
       return { ...failure(code, 'The native document form could not be verified without submitting.', true),
         data: { outcome: 'documents_read', ...documents } };
@@ -376,10 +376,12 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
         reservation_id: target.identity.reservationId, reservation_stay_id: target.identity.reservationStayId,
         native_status: target.identity.status, native_stay: target.stay, native_snapshot: target.snapshot },
       source: { message_id: reference.messageId, attachment_id: reference.attachmentId },
-      document: { name: attachment.name, mime_type: 'application/pdf', sha256, document_code: staged.documentCode, description },
+      document: { name: attachment.name, mime_type: 'application/pdf', sha256, document_code: staged.documentCode,
+        upload_name: staged.documentName, description },
       ...documents, observed_fields: ['document_code', 'description', 'file'],
       display_rows: [row('filing-target', 'HMS confirmation', target.identity.confirmation, '/target/confirmation'),
         row('filing-file', 'Selected PDF', attachment.name, '/document/name'),
+        row('filing-upload-name', 'HMS file name', staged.documentName, '/document/upload_name'),
         row('filing-description', 'Description', description, '/document/description'),
         row('filing-code', 'Document code', staged.documentCode, '/document/document_code'),
         row('filing-coverage', 'Existing documents', `${target.documents.coverage.loadedDocuments} loaded; full list unverified.`, '/coverage/loadedDocuments')],
