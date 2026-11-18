@@ -11,7 +11,7 @@ import { jsonSchema } from './wire';
 import type { Capabilities, Change, FieldSpec, Json, Proposal, QuoteSelection, ThreadInput, Workflow as WorkflowName } from './wire';
 
 export type QuoteDraftRequest = {
-  quoteId: string; jobId: string; body: string;
+  proposalId: string; revision: number; quoteId: string; jobId: string; body: string;
   artifacts: NonNullable<NonNullable<Proposal['stage']>['artifacts']>;
   isCurrentSnapshot: () => boolean;
 };
@@ -671,7 +671,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     operationRef.current = active;
     setBusy(true);
     try {
-      const result = await saveQuoteDraft({ quoteId, jobId, body, artifacts, isCurrentSnapshot: () => {
+      const result = await saveQuoteDraft({ proposalId: proposal.id, revision: proposal.revision, quoteId, jobId, body, artifacts, isCurrentSnapshot: () => {
         const current = currentQuote(proposal, quoteId, jobId);
         return !signal.aborted && operationRef.current === active && Boolean(current?.stage?.artifacts &&
           refs.length === current.stage.artifacts.length && refs.every((id, index) => current.stage?.artifacts?.[index]?.id === id));

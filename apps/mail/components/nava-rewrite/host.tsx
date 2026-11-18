@@ -140,13 +140,13 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
         artifacts.push({ kind, fileName: item.name, mimeType: item.mime_type, sizeBytes: bytes.length, sha256, bytesBase64: btoa(binary) });
       }
       if (!request.isCurrentSnapshot() || !isCurrentSource(source)) throw new Error('The selected email or quote changed. Review it again.');
-      const prepared: QuoteOutput = { requestId: request.quoteId, operationId: request.jobId, observationRef: request.jobId,
+      const prepared: QuoteOutput = { requestId: request.quoteId, operationId: JSON.stringify([request.proposalId, request.revision, request.jobId]), observationRef: request.jobId,
         cover: { to: selectedMail.from.email, subject: source.subject, body: request.body }, artifacts,
         failures: [], issues: [], stale: false, inventoryDecline: false };
       const result = await output.createOutlookReply({ output: prepared, html: quoteCoverHtml(request.body), isCurrentSnapshot: request.isCurrentSnapshot,
         confirmUnknown: () => window.confirm('An earlier reply may exist. Check Outlook Drafts first. Continue only if you verified there is no duplicate.') });
       if (result.status !== 'created' || !result.readback) return result;
-      return { ...result, message: `Draft saved in Outlook Drafts, not sent. Subject: ${result.readback.subject}. Files: ${result.readback.attachmentNames.join(', ')}.` };
+      return { ...result, message: `Draft available in Outlook Drafts, not sent. Review its cover there. Subject: ${result.readback.subject}. Files: ${result.readback.attachmentNames.join(', ')}.` };
     } catch (error) {
       return { status: 'error', message: error instanceof Error ? error.message : 'Could not prepare the quote draft. Try again.' };
     }
