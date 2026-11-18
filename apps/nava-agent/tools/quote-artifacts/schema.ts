@@ -32,8 +32,8 @@ const capturedRoom = z.object({ room_id: id, native_result: z.object({
   request: z.object({ quantity: z.number().int().positive(), adults: z.number().int().positive(), children: z.number().int().nonnegative(), childAges: z.array(z.number().int().nonnegative()),
     required: z.object({roomCodes:z.array(id).optional(),rateCodes:z.array(id).optional()}).passthrough().optional() }).passthrough(),
   options: z.array(z.unknown()),
-}).passthrough() }).passthrough();
-const capturedGroup = z.object({ group_id: id, arrival_date: date, departure_date: date, status: z.literal('complete'),
+}).passthrough().nullable() }).passthrough();
+const capturedGroup = z.object({ group_id: id, arrival_date: date, departure_date: date, status: z.string(),
   rooms: z.array(capturedRoom).min(1) }).passthrough();
 
 // Snapshot is provided only by the server's authorization and revision resolver.

@@ -1,6 +1,7 @@
 import { quoteInput, quoteSchema, type QuoteInput } from './schema.js';
 import { quoteDisplayRows, zeroNativeQuotePrice, type DisplayRow } from './display.js';
 import { staffSlotCount } from '../../src/hms-mode.js';
+import { option as quoteOption } from '../quote-artifacts/schema.js';
 
 export type ToolContext = {sessionId:string; mode:'live'|'labtest'|'historical'; signal?:AbortSignal; credentialLease?:unknown};
 export type ToolResult = {ok:boolean; data:unknown; error:{code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'}|null};
@@ -58,7 +59,13 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
       searches.push({property_code:request.property_code,arrival_date:batch.arrival_date,departure_date:batch.departure_date,identities:batch.identities,native_result:native});
       const nativeGroups=array(native.groups);
       const displayIdentities=nativeGroups.map(value=>batch.identities.find(identity=>identity.native_id===record(value).id));
-      const complete=['quote','no_match','unavailable'].includes(native.outcome);
+      const partialOptions=native.outcome==='partial' && native.allocation?.status==='not_selected' &&
+        batch.identities.every(identity=>nativeGroups.some(value=>{
+          const group=record(value), completeness=record(group.completeness);
+          return group.id===identity.native_id && group.outcome==='quote' &&
+            completeness.search==='complete' && completeness.requiredFacts==='complete' && array(group.options).length>0;
+        }));
+      const complete=['quote','no_match','unavailable'].includes(native.outcome) || partialOptions;
       for(const identity of batch.identities) {
         const group=groups[identity.group_id], room=group.rooms.find(item=>item.room_id===identity.room_id);
         const nativeIndex=nativeGroups.findIndex(item=>record(item).id===identity.native_id);
@@ -77,11 +84,19 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
         failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote incomplete; inspect retained captures and group status.',retryable:native.outcome==='execution_failure',outcome:'known'};
         break;
       }
+      if(partialOptions && batch!==batches[batches.length-1]) {
+        failure ??= {code:'NATIVE_INCOMPLETE',message:'Native quote returned room options; later date groups were not checked.',retryable:false,outcome:'known'};
+        break;
+      }
     } catch {
       for(const identity of batch.identities) groups[identity.group_id].status=context.signal?.aborted?'aborted':'search_failed';
       failure ??= {code:context.signal?.aborted?'ABORTED':'NATIVE_FAILURE',message:context.signal?.aborted?'Quote was cancelled; retained captures are incomplete.':'Native quote failed before a complete capture.',retryable:!context.signal?.aborted,outcome:'known'};
       break;
     }
+  }
+  if(failure && Object.values(groups).some(group=>group.rooms.some(room=>
+    array(record(room.native_result).options).some(option=>quoteOption.safeParse(option).success)))) {
+    return {ok:true,data:{...data,partial_error:failure.code},error:null};
   }
   return failure ? {ok:false,data,error:failure} : {ok:true,data,error:null};
 }

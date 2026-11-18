@@ -8,6 +8,7 @@ import type { SelectedEmail } from './pane';
 import type { QuoteDraftBinding } from './quote-output-bridge';
 import { Workflow, hasActionToPrepare, quoteCheckIssue, workflowPrimaryAction } from './workflow';
 import { quoteArtifactIds } from './quote-draft';
+import { defaultQuoteSelections } from './quote-defaults';
 import type { DraftValue, GuestCandidate } from './workflow';
 import type { StayLookup } from './api';
 import { jsonSchema } from './wire';
@@ -46,6 +47,7 @@ type Cache = {
   stagePending: Record<string, number>;
   quoteAttempts: Record<string, string>;
   autoQuotes: Set<string>;
+  autoQuoteArtifacts: Set<string>;
   attachmentNeedsRecheck: Record<string, boolean>;
   operationStarts: Record<string, { phase: Proposal['phase']; at: number }>;
   selectedId: string | null;
@@ -54,7 +56,7 @@ type Cache = {
 };
 
 function emptyCache(): Cache {
-  return { drafts: {}, issues: {}, goLocks: {}, goUncertainAfter: {}, stagePending: {}, quoteAttempts: {}, autoQuotes: new Set(), attachmentNeedsRecheck: {}, operationStarts: {}, selectedId: null, nextVersion: 0, inFlightEdit: null };
+  return { drafts: {}, issues: {}, goLocks: {}, goUncertainAfter: {}, stagePending: {}, quoteAttempts: {}, autoQuotes: new Set(), autoQuoteArtifacts: new Set(), attachmentNeedsRecheck: {}, operationStarts: {}, selectedId: null, nextVersion: 0, inFlightEdit: null };
 }
 
 function pointer(root: unknown, path: string): { exists: boolean; value?: unknown } {
@@ -755,7 +757,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit || !jobId) return;
     const current = currentQuote(proposal, quoteId, jobId);
     const options = current?.stage?.quote_options ?? [];
-    if (!current || current.stage?.artifacts?.length || !selections.length ||
+    if (!current || !selections.length ||
         new Set(selections.map(item => JSON.stringify([item.group_id, item.room_id]))).size !== selections.length ||
         selections.some(item => options.filter(option => option.group_id === item.group_id && option.room_id === item.room_id && option.option_index === item.option_index).length !== 1)) return;
     const active: ActiveOperation = { kind: 'quote_artifacts', proposalId: current.id, signal };
@@ -1098,6 +1100,18 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     cache.autoQuotes.add(proposal.id);
     void operation('quote', proposal, quoteId);
   }, [proposal, canQuote, busy, pendingQuote, authenticationExpired, version]);
+  useEffect(() => {
+    const stage=proposal?.stage;
+    if (!proposal || !canQuote || busy || operationRef.current || cache.inFlightEdit || authenticationExpired || proposal.phase!=='ready' ||
+        !stage?.quote_id || !stage.job_id || stage.artifacts?.length || cache.issues[proposal.id] ||
+        cache.goLocks[proposal.id] || cache.stagePending[proposal.id]!==undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length) return;
+    const key=JSON.stringify([proposal.id,proposal.revision,stage.quote_id,stage.job_id]);
+    if (cache.autoQuoteArtifacts.has(key)) return;
+    const selections=defaultQuoteSelections(proposal);
+    if (!selections.length) return;
+    cache.autoQuoteArtifacts.add(key);
+    void generateQuoteArtifacts(proposal,stage.quote_id,selections);
+  }, [proposal, canQuote, busy, authenticationExpired, version]);
   const goEnabled = Boolean(proposal && canGo && goReady(proposal) && !busy && !isUncertain && !lock && !issue && !authenticationExpired &&
     cache.stagePending[proposal.id] === undefined && Object.keys(drafts).length === 0);
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];

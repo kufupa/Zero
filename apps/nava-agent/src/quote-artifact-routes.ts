@@ -67,7 +67,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     if (!row || !principal.mailboxes.includes(row.mailbox_id)) return c.json(responseError('NOT_FOUND','Quote not found.'),404);
     const ready = stage.safeParse(row.stage);
     if (row.mode !== 'live' || row.phase !== 'ready' || row.revision !== input.expected_revision || !ready.success ||
-        ready.data.revision !== row.revision || ready.data.artifacts?.length) {
+        ready.data.revision !== row.revision) {
       return c.json(responseError('QUOTE_REVISION_UNAVAILABLE','Run and select options from the current staff quote recheck.'),409);
     }
     const draft = actions.safeParse(row.current);
@@ -81,11 +81,6 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     if (matching.length !== 1 || !quote || quote.property_code !== row.property_code || native === undefined || !selected.success) {
       return c.json(responseError('QUOTE_CAPTURE_UNAVAILABLE','No matching native quote capture for this revision.'),409);
     }
-    const searches=ready.data.native_result.searches;
-    if(searches.some((search,i)=>search.native_result.outcome!=='quote' ||
-      searches.slice(0,i).some(prior=>prior.arrival_date<search.departure_date && search.arrival_date<prior.departure_date))) {
-      return c.json(responseError('QUOTE_ALLOCATION_UNVERIFIED','Choose a quote with verified prices and availability for all requested nights.'),409);
-    }
     const options=quoteOptions(quote,ready.data.native_result);
     const selectedOptions=input.selections.map(selection=>options.find(option=>option.group_id===selection.group_id &&
       option.room_id===selection.room_id && option.option_index===selection.option_index));
@@ -96,6 +91,10 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     const result = await createQuoteArtifacts({
       resolveQuote:async()=>({quote_id:quote.quote_id,proposal_id:proposalId,revision:row.revision,property_code:quote.property_code,
         authored_date:authoredDate(),groups:quote.groups,capture:native,selections:input.selections,
+        ...(input.selections.length < quote.groups.reduce((sum,group)=>sum+group.rooms.length,0)
+          ? {note:'Some requested room groups could not be priced. Availability for all rooms together is subject to confirmation.'}
+          : ready.data.native_result.searches.length > 1 || ready.data.native_result.searches.some(search=>search.native_result.outcome==='partial')
+            ? {note:'Availability for all room groups together is subject to confirmation.'} : {}),
         header:{attention:selected.data.from.name??'',organization:'',clientEmail:selected.data.from.email,clientTelephone:'',signerName:'',signerEmail:''}}),
       convertWorkbook:gotenbergConverter(converter),
       writePair:async({pdf,workbook,signal})=>{
@@ -116,7 +115,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
           await sql.begin(async tx=>{
             const saved = await tx`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions})}::jsonb,updated_at=now()
               FROM nava_agent.mail_thread t WHERE p.thread_id=t.id AND p.id=${proposalId} AND p.revision=${input.expected_revision}
-              AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)='[]'::jsonb AND p.workflow='quote'
+              AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)=${json(ready.data.artifacts ?? [])}::jsonb AND p.workflow='quote'
               AND t.mailbox_id=${row.mailbox_id} AND t.mode='live' RETURNING p.id`;
             if (saved.length !== 1) throw new Error('QUOTE_REVISION_CHANGED');
             await writeEvent(tx,row.session_id,'quote_artifacts_ready',{proposal_id:proposalId,revision:input.expected_revision,

@@ -50,16 +50,13 @@ function checkScope(quote: QuoteScope): void {
   }
 }
 
-function roomLines(quote:QuoteScope,group:QuoteGroup,room:QuoteRoom,capturedRoom:CapturedRoom,index:number,requireJointSelection=true): WorkbookLine[] {
-      const request = capturedRoom.native_result.request;
+function roomLines(quote:QuoteScope,group:QuoteGroup,room:QuoteRoom,capturedRoom:CapturedRoom,index:number): WorkbookLine[] {
+      const native=capturedRoom.native_result;
+      if (!native) throw new Error('room not checked');
+      const request = native.request;
       if (request.quantity !== room.quantity || request.adults !== room.adults || request.children !== room.children ||
           request.childAges.length !== room.child_ages.length || request.childAges.some((age, i) => age !== room.child_ages[i])) throw new Error('occupancy changed');
-      const selected = option.parse(capturedRoom.native_result.options[index]);
-      if(requireJointSelection && request.required && Object.keys(request.required).length>0 && selected.matchStatus!=='match') throw new Error('required selection changed');
-      const sameSearch = quote.groups.filter(item=>item.arrival_date===group.arrival_date && item.departure_date===group.departure_date);
-      if(requireJointSelection && sameSearch.reduce((sum,item)=>sum+item.rooms.length,0)>1 &&
-         (request.required?.roomCodes?.length!==1 || request.required.roomCodes[0]!==selected.room.code ||
-          request.required.rateCodes?.length!==1 || request.required.rateCodes[0]!==selected.rate.code)) throw new Error('allocation selection changed');
+      const selected = option.parse(native.options[index]);
       const meal = typeof selected.mealPlan === 'string' ? selected.mealPlan : selected.mealPlan?.label || selected.mealPlan?.code || '';
       if (room.child_ages.length !== room.children) throw new Error('child ages');
       const label = (code: string, meaning?: string | null) => meaning && meaning !== code ? `${code} (${meaning})` : code;
@@ -88,10 +85,11 @@ function linesFor(quote: ReturnType<typeof snapshot.parse>): WorkbookLine[] {
   const lines: WorkbookLine[] = [];
   let rooms = 0;
   for (const group of quote.groups) for (const room of group.rooms) {
-    rooms++;
     const capturedRoom=quote.capture.groups[group.group_id].rooms.find(item=>item.room_id===room.id);
     const index=selections.get(JSON.stringify([group.group_id,room.id]));
-    if (!capturedRoom || index === undefined) throw new Error('missing selected room');
+    if (index === undefined) continue;
+    if (!capturedRoom) throw new Error('missing selected room');
+    rooms++;
     lines.push(...roomLines(quote,group,room,capturedRoom,index));
   }
   if (rooms !== selections.size) throw new Error('extra selection');
@@ -111,12 +109,10 @@ export function quoteArtifactBlockReason(native: unknown): 'overlapping_date_sea
   return captured.success && hasOverlappingSearches(captured.data.searches) ? 'overlapping_date_searches' : null;
 }
 
-export function quoteOptions(request:unknown, native:unknown, requireJointSelection=true) {
+export function quoteOptions(request:unknown, native:unknown, _requireJointSelection=true) {
   const parsedRequest=quoteInput.safeParse(request), captured=quoteCapture.safeParse(native);
   if (!parsedRequest.success || !captured.success) return [];
-  const q=parsedRequest.data, searches=captured.data.searches;
-  if(searches.some(search=>search.native_result.outcome!=='quote') ||
-      (requireJointSelection && hasOverlappingSearches(searches))) return [];
+  const q=parsedRequest.data;
   const parsed=scopeSchema.safeParse({quote_id:q.quote_id,property_code:q.property_code,groups:q.groups,
     capture:captured.data.quotes[q.quote_id]});
   if(!parsed.success) return [];
@@ -124,11 +120,11 @@ export function quoteOptions(request:unknown, native:unknown, requireJointSelect
   try { checkScope(quote); } catch { return []; }
   return quote.groups.flatMap(group=>group.rooms.flatMap(room=>{
     const capturedRoom=quote.capture.groups[group.group_id].rooms.find(item=>item.room_id===room.id);
-    if(!capturedRoom) return [];
+    if(!capturedRoom?.native_result) return [];
     return capturedRoom.native_result.options.flatMap((value,option_index)=>{
       const selected=option.safeParse(value);
       if(!selected.success) return [];
-      try { roomLines(quote,group,room,capturedRoom,option_index,requireJointSelection); } catch { return []; }
+      try { roomLines(quote,group,room,capturedRoom,option_index); } catch { return []; }
       const item=selected.data;
       return [{group_id:group.group_id,room_id:room.id,option_index,room:{code:item.room.code,label:item.room.label ?? null},
         rate:{code:item.rate.code,label:item.rate.label ?? null},meal_plan:item.mealPlan ?? null,nightly:item.nightly,

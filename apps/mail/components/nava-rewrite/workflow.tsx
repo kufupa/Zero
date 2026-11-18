@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { QuoteDraftBinding } from './quote-output-bridge';
 import { PaneField } from './field';
 import { quoteArtifactIds } from './quote-draft';
+import { defaultQuoteSelections } from './quote-defaults';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
 import type { FieldSpec, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
@@ -676,7 +677,8 @@ function quoteRooms(proposal: Proposal, quoteId: string) {
 
 function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProps) {
   const [selected, setSelected] = useState<Record<string, number>>(() => Object.fromEntries(
-    (proposal.stage?.quote_selected_options ?? []).map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
+    (proposal.stage?.quote_selected_options?.length ? proposal.stage.quote_selected_options : defaultQuoteSelections(proposal))
+      .map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
   const stage = proposal.stage;
   if (!stage?.quote_id || !stage.job_id || !stage.quote_options || !onGenerateQuoteArtifacts) return null;
   const rooms = quoteRooms(proposal, stage.quote_id);
@@ -688,19 +690,19 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
       ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
   });
   return <PaneSection title="Choose quote options">
-    <p>Choose one verified option for each room. Prices and availability are from the latest Infor check.</p>
-    {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor has not confirmed availability across these overlapping dates together. Use your usual process to complete this quote.</p>}
+    <p>Prices and availability are from the latest Infor check. Review the selected options; combined availability is not confirmed.</p>
+    {selections.length < rooms.length && <p>Some room groups could not be priced and are not included in the quote.</p>}
+    {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor checked these overlapping dates separately.</p>}
     {rooms.map(room => {
       const key = JSON.stringify([room.groupId, room.roomId]);
-      const sourceOptions = stage.artifacts?.length ? stage.quote_selected_options ?? [] : stage.quote_options;
-      const options = sourceOptions?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
-      const picked = stage.artifacts?.length ? options[0] : options.find(option => option.option_index === selected[key]);
+      const options = stage.quote_options?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
+      const picked = options.find(option => option.option_index === selected[key]);
       const format = (code: string, meaning: string | null) => meaning && meaning !== code ? `${code} — ${meaning}` : code;
       return <fieldset key={key} className={quoteStyles.stay}>
         <legend>{room.label}</legend>
         {options.length ? <>
           <label className={styles.field}>Option
-            <select value={picked ? String(picked.option_index) : ''} disabled={busy || Boolean(stage.artifacts?.length)}
+            <select value={picked ? String(picked.option_index) : ''} disabled={busy}
               onChange={event => {
                 const next = event.target.value;
                 setSelected(current => {
@@ -723,14 +725,12 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
               <p>{[picked.meal_plan.code, picked.meal_plan.label].filter(value => typeof value === 'string' && value).join(' · ')}</p>}
             <ul>{picked.nightly.map(night => <li key={night.date}>{night.date}: {night.price.currency} {night.price.amount} per room · {night.inventory} available</li>)}</ul>
           </div>}
-        </> : <p>{stage.artifacts?.length ? 'The selected option is unavailable for these files. Check Infor again to make a new quote.'
-          : stage.quote_choices?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)
+        </> : <p>{stage.quote_choices?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)
           ? 'Choose a room type and rate above, then check Infor again before making the files.'
           : 'No verified options for this room. Check the details and run Infor again.'}</p>}
       </fieldset>;
     })}
-    {!stage.artifacts?.length && <button type="button" disabled={busy || selections.length !== rooms.length} onClick={() => onGenerateQuoteArtifacts(stage.quote_id!, selections)}>Create PDF and Excel</button>}
-    {stage.artifacts?.length ? <p>To change these options, check the quote again.</p> : null}
+    <button type="button" disabled={busy || selections.length === 0} onClick={() => onGenerateQuoteArtifacts(stage.quote_id!, selections)}>{stage.artifacts?.length ? 'Update PDF and Excel' : 'Create PDF and Excel'}</button>
   </PaneSection>;
 }
 
@@ -742,6 +742,8 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
   const [checking, setChecking] = useState(Boolean(onFindQuoteDraft));
   const [opened, setOpened] = useState<{ subject: string; body: string; files: string[]; to?: string; cc?: string } | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const autoDraftAttempted = useRef(false);
+  const [checkedBinding, setCheckedBinding] = useState<string | null>(null);
   const artifacts = proposal.stage?.artifacts ?? [];
   const pdf = artifacts.find(item => item.mime_type === 'application/pdf');
   const workbook = artifacts.find(item => item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -749,17 +751,30 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
   const artifactIds = quoteArtifactIds(artifacts);
   const binding: QuoteDraftBinding = { proposalId: proposal.id, revision: proposal.revision, quoteId: quoteId ?? '', jobId: jobId ?? '', artifactIds: artifactIds ?? ['', ''] };
   const bindingKey = JSON.stringify(binding);
+  const currentBinding = useRef(bindingKey);
+  currentBinding.current = bindingKey;
   useEffect(() => {
     let active = true;
-    setSaved(false); setOpened(null);
+    setSaved(false); setOpened(null); setCheckedBinding(null);
     if (onFindQuoteDraft && quoteConnectionReady !== false && quoteId && jobId && artifactIds && Object.keys(drafts).length === 0) {
       setChecking(true);
-      void onFindQuoteDraft(JSON.parse(bindingKey)).then(found => { if (active) setSaved(found); })
+      void onFindQuoteDraft(JSON.parse(bindingKey)).then(found => {
+        if (active) { setSaved(found); setCheckedBinding(bindingKey); if (found) autoDraftAttempted.current=true; }
+      })
         .catch(() => { if (active) setMessage('Could not check the saved draft. Try again.'); })
         .finally(() => { if (active) setChecking(false); });
     } else setChecking(false);
     return () => { active = false; };
   }, [bindingKey, refresh, quoteConnectionReady, Object.keys(drafts).length]);
+  useEffect(() => {
+    if (checkedBinding!==bindingKey || busy || saving || checking || saved || quoteConnectionReady===false || autoDraftAttempted.current || !onSaveQuoteDraft || !body.trim()) return;
+    autoDraftAttempted.current=true;
+    setSaving(true); setMessage(null);
+    void onSaveQuoteDraft(body).then(result => {
+      if (currentBinding.current===bindingKey) { setMessage(result.message); if (result.status==='created') setSaved(true); }
+    }).catch(() => { if (currentBinding.current===bindingKey) setMessage('Could not confirm the draft. Check Drafts before trying again.'); })
+      .finally(() => setSaving(false));
+  }, [bindingKey,checkedBinding,busy,saving,checking,saved,body,onSaveQuoteDraft,quoteConnectionReady]);
   if (!pdf || !workbook || !artifactIds) return null;
   return <PaneSection title="Cover email and quote files">
     {!saved && <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving} onChange={value => { setBody(value); setMessage(null); }} />}
