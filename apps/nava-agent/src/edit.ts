@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
+import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
 import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedCreateGuest, staffAttachmentsChecked } from './attachment-gate.js';
 import { staffPrepareOnly } from './hms-mode.js';
@@ -54,7 +55,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(p.revision!==input.expected_revision) throw new Error('STALE_REVISION');
     if(p.phase!=='ready' && p.phase!=='waiting_go') throw new Error('NOT_EDITABLE');
     const stored=proposalDraft.parse(structuredClone(p.current));
-    const draft=p.phase==='ready' ? withQuoteStaffFields(withCreateNativeFields(stored)) : stored;
+    const draft=p.phase==='ready' ? withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(stored))) : stored;
     const identities=JSON.stringify(quoteIdentities(draft));
     const quoteActions=p.workflow==='quote'?structuredClone(draft.actions):null;
     const changes: {change:Change;before:unknown;before_present:boolean;after:unknown;after_present:boolean}[]=[];

@@ -38,7 +38,7 @@ const error = (code: string, message: string, outcome: 'known' | 'uncertain' = '
   ({ ok: false, data: null, error: { code, message, retryable: false, outcome } });
 const success = (data: unknown): ToolResult => ({ ok: true, data, error: null });
 
-export function withCancelReviewFields(draft: ProposalDraft): ProposalDraft {
+export function withCancelReviewFields(draft: ProposalDraft, nativeReasons: unknown = null): ProposalDraft {
   if (draft.workflow !== 'cancel' || draft.disposition !== 'propose' || draft.actions.length !== 1) return draft;
   const action = draft.actions[0];
   if (action.type !== 'cancel' || action.booking_ids.length !== 1 ||
@@ -50,12 +50,14 @@ export function withCancelReviewFields(draft: ProposalDraft): ProposalDraft {
   const details = object(action.details) ? { ...action.details } : {};
   const fields = { ...booking.fields };
   const specs = [...draft.field_specs];
+  const reasonOptions = Array.isArray(nativeReasons) ? nativeReasons.flatMap(item =>
+    object(item) && text(item.display) && text(item.value) ? [{ value: item.display, label: item.display, meaning: item.value }] : []) : [];
   const definitions = [
     { target: details, key: 'requested_scope', path: '/actions/0/details/requested_scope', label: 'Cancellation scope', control: 'select' as const,
       options: [{ value: 'whole_stay', label: 'Whole stay', meaning: null },
         { value: 'specific_room', label: 'Specific room', meaning: null },
         { value: 'unspecified', label: 'Unspecified', meaning: null }] },
-    { target: details, key: 'cancellation_reason', path: '/actions/0/details/cancellation_reason', label: 'Cancellation reason', control: 'text' as const, options: [] },
+    { target: details, key: 'cancellation_reason', path: '/actions/0/details/cancellation_reason', label: 'Cancellation reason', control: reasonOptions.length ? 'select' as const : 'text' as const, options: reasonOptions },
     { target: details, key: 'cancellation_note', path: '/actions/0/details/cancellation_note', label: 'Cancellation note', control: 'text' as const, options: [] },
     { target: fields, key: 'guest_name', path: `/bookings/${index}/fields/guest_name`, label: 'Guest name', control: 'text' as const, options: [] },
     { target: fields, key: 'arrival_date', path: `/bookings/${index}/fields/arrival_date`, label: 'Arrival date', control: 'date' as const, options: [] },
