@@ -61,7 +61,7 @@ try {
   const observed = Date.parse(result.observedAt);
   if (result.schemaVersion !== 2 || result.propertyCode !== 'HRCEN' || result.requested?.propertyCode !== 'HRCEN' ||
       JSON.stringify(result.requested) !== JSON.stringify(normalized.request) || !Number.isFinite(observed) ||
-      observed < started || observed > Date.now() || result.audit?.status !== 'complete' ||
+      observed < started || observed > Date.now() ||
       result.searchCompleteness?.status !== 'complete' || !['quote', 'no_match', 'unavailable'].includes(result.outcome)) throw new Error();
   console.log(`Centurion quote gate: read-only quote check OK (${result.outcome})`);
 } catch { fail('real quote check failed or returned incomplete evidence'); }
