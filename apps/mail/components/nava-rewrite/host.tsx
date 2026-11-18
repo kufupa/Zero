@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { parseOneAddress } from 'email-addresses';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
 import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progress';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -76,9 +77,10 @@ function RewriteWithWebmail({ email, threadId, source, onSourceNotEligible }: Ex
       const match = await trpcClient.reservationWorkflowV2.resolveSource.query({
         internetMessageId: selected.rfc_message_id, selection: { kind: 'web', threadId, messageId: selected.id },
       }, { ...inMailbox(input.mailbox_id), signal: request.signal });
+      const sender = match.status === 'ok' && match.sourceSender ? parseOneAddress(match.sourceSender) : null;
       if (match.status !== 'ok' || match.propertyCode !== input.property_code || match.source.propertyId !== input.property_code ||
-          match.source.threadId !== threadId || match.source.messageId !== selected.id ||
-          match.sourceSubject !== selected.subject || match.sourceSender?.trim().toLowerCase() !== selected.from.email.trim().toLowerCase() ||
+          match.source.threadId !== threadId || match.source.messageId !== selected.id || match.sourceSubject !== selected.subject ||
+          sender?.type !== 'mailbox' || sender.address.trim().toLowerCase() !== selected.from.email.trim().toLowerCase() ||
           canonicalMessageId(match.internetMessageId) !== canonicalMessageId(selected.rfc_message_id)) {
         return { status: 'error', message: 'The selected guest email could not be verified for this draft.' };
       }
