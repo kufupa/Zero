@@ -219,13 +219,13 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
 
 // After repeated worker failures, leave every queued step in a visible terminal state so staff see it and the session
 // stops being picked. A Save whose dispatch marker was written may have been clicked: it becomes uncertain, never retried.
-async function parkFailedSession(sessionId:string) {
+async function parkFailedSession(sessionId:string):Promise<string|null> {
   const failed={code:'WORKER_FAILED',message:'Nava could not finish this step. Nothing new was saved; run Prepare again.',
     recovery:'Run Prepare again.',retryable:false,outcome:'known',operation:'staff_stage'};
   const uncertain={code:'SAVE_UNCERTAIN',message:'Save may have dispatched; check HMS before any retry.',retryable:false,outcome:'uncertain'};
-  await sql.begin(async tx=>{
+  return sql.begin(async tx=>{
     const [s]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${sessionId} AND (lease_until IS NULL OR lease_until<clock_timestamp()) FOR NO KEY UPDATE`;
-    if(!s) return;
+    if(!s) return null;
     await tx`UPDATE nava_agent.proposal SET phase=COALESCE(stage->>'previous_phase','ready'),stage=NULL,
       execution=COALESCE(execution,'{}'::jsonb)||${json({error:failed})}::jsonb,updated_at=now()
       WHERE session_id=${sessionId} AND phase='staging' AND stage->>'state'='queued'`;
@@ -237,11 +237,10 @@ async function parkFailedSession(sessionId:string) {
       WHERE session_id=${sessionId} AND kind IN ('mail_pending','context_pending') AND payload->>'delivered'='false'`;
     await tx`UPDATE nava_agent.agent_session SET status='idle',updated_at=now() WHERE id=${sessionId} AND status='running'`;
     await writeEvent(tx,sessionId,'worker_parked',{reason:'repeated_worker_failure'});
+    // writeEvent holds the per-session event lock until commit, so any later staff event gets a higher sequence.
+    const [row]=await tx`SELECT max(sequence)::text AS n FROM nava_agent.agent_event WHERE session_id=${sessionId}`;
+    return row.n as string;
   });
-}
-async function lastSequence(sessionId:string):Promise<string> {
-  const [row]=await sql`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${sessionId}`;
-  return row?.n ?? '0';
 }
 
 export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<void> {
@@ -276,8 +275,8 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         failures.set(row.id,count);
         console.error(JSON.stringify({event:count>=3?'worker_gave_up':'worker_error',session_id:row.id,attempt:count,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));
         if(count>=3) {
-          await parkFailedSession(row.id).catch(()=>{});
-          parked.set(row.id,await lastSequence(row.id).catch(()=>String(Number.MAX_SAFE_INTEGER)));
+          const sequence=await parkFailedSession(row.id).catch(()=>null);
+          if(sequence) parked.set(row.id,sequence);
         }
       }).finally(()=>active.delete(row.id));
     }
