@@ -511,14 +511,19 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     const text = shown ?? '';
     const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id|track)$/.test(spec.path);
     const createCode = proposal.workflow === 'create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/(rate_plan|room_type|track)$/.exec(spec.path) : null;
-    const rates = createCode?.[2] === 'rate_plan' ? nativeRateOptions(proposal, drafts, Number(createCode[1])) : [];
+    const quotedRates = createCode?.[2] === 'rate_plan' ? (proposal.quoted_rate_choices ?? []).map(choice => ({
+      value: choice.rate.code, label: choice.rate.code,
+      meaning: ['Previous quote', `${choice.arrival_date} – ${choice.departure_date}`,
+        [choice.room.code, choice.room.label].filter(Boolean).join(' — '), choice.rate.label].filter(Boolean).join(' · '),
+    })) : [];
+    const rates = createCode?.[2] === 'rate_plan' ? [...nativeRateOptions(proposal, drafts, Number(createCode[1])), ...quotedRates] : [];
     const rooms = createCode?.[2] === 'room_type' ? nativeRoomOptions(proposal, drafts, Number(createCode[1])) : [];
     const tracks = createCode?.[2] === 'track' ? nativeTrackOptions(proposal, drafts, Number(createCode[1])) : [];
     const options = nativeCode ? [...rates, ...rooms, ...tracks] : spec.options;
     if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0) {
       control = nativeCode && options.length === 0
         ? <PaneField {...common} control="text" value={text} onChange={next => onEdit(spec.path, next)} />
-        : <PaneField {...common} hint={rates.length || rooms.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
+        : <PaneField {...common} hint={rates.length ? 'Choose an Infor or previous quote rate, or type a code. Check the price in Infor.' : rooms.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
     } else {
       const quoteDate = proposal.workflow === 'quote' && /\/groups\/(?:0|[1-9]\d*)\/(?:arrival_date|departure_date)$/.test(spec.path);
       const date = quoteDate ? 'text' : spec.control === 'date' && (!text || isDateValue(text)) ? 'date' : spec.control === 'date' ? 'text' : spec.control;

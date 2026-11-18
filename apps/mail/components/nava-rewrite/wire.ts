@@ -94,6 +94,11 @@ export const proposalSchema = z.object({
   staff_attachments_checked: z.boolean().default(false),
   profile_reviews:z.array(z.object({booking_id:id,first_name:z.string(),last_name:z.string(),guest_email:z.string().nullable(),choices:jsonSchema})).default([]),
   profile_outcome:z.object({booking_id:z.string().optional(),native_id:z.string().nullable().optional()}).nullable().default(null),
+  quoted_rate_choices:z.array(z.object({
+    source_message_id:id, quote_proposal_id:id, quote_revision:revision, quote_id:id, group_id:id, room_id:id,
+    arrival_date:z.string(), departure_date:z.string(),
+    room:z.object({code:id,label:z.string().nullable()}), rate:z.object({code:id,label:z.string().nullable()}),
+  })).optional(),
   stay_target_selected: z.boolean().default(false),
   stage: z.object({
     revision, state: z.string().optional(), job_id: id.optional(), quote_id: id.optional(), quote_options: z.array(quoteOptionSchema).optional(),
