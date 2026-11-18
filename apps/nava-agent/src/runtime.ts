@@ -186,7 +186,10 @@ export function projectQuotedRateChoices(rows:unknown[]) {
 
 export async function priorQuotedRateChoices(tx:TransactionSql,threadId:string) {
   const rows=await tx`SELECT prior_mail.source_message_id,p.id AS quote_proposal_id,p.revision AS quote_revision,e.payload->>'quote_id' AS quote_id,
-      prior.property_code,p.current,p.stage
+      prior.property_code,p.current,
+      CASE WHEN p.stage->'quote_sets' ? (e.payload->>'quote_id') THEN
+        jsonb_build_object('revision',p.stage->'revision','quote_selected_options',p.stage->'quote_sets'->(e.payload->>'quote_id')->'quote_selected_options')
+        ELSE p.stage END AS stage
     FROM nava_agent.mail_thread current_thread
     JOIN nava_agent.mail_message current_mail ON current_mail.thread_id=current_thread.id
       AND current_mail.source_message_id=current_thread.selected_message_id
@@ -198,8 +201,10 @@ export async function priorQuotedRateChoices(tx:TransactionSql,threadId:string) 
       AND prior_mail.source_message_id=COALESCE(p.stage->'source'->>'source_message_id',prior.selected_message_id)
     JOIN nava_agent.agent_event e ON e.session_id=p.session_id AND e.kind='quote_artifacts_ready'
       AND e.payload->>'proposal_id'=p.id AND e.payload->>'revision'=p.revision::text
-      AND e.payload->>'job_id'=p.stage->>'job_id'
-      AND e.payload->'artifact_ids'=jsonb_build_array(p.stage->'artifacts'->0->>'id',p.stage->'artifacts'->1->>'id')
+      AND e.payload->>'job_id'=COALESCE(p.stage->'quote_sets'->(e.payload->>'quote_id')->>'job_id',p.stage->>'job_id')
+      AND e.payload->'artifact_ids'=CASE WHEN p.stage->'quote_sets' ? (e.payload->>'quote_id') THEN
+        jsonb_build_array(p.stage->'quote_sets'->(e.payload->>'quote_id')->'artifacts'->0->>'id',p.stage->'quote_sets'->(e.payload->>'quote_id')->'artifacts'->1->>'id')
+        ELSE jsonb_build_array(p.stage->'artifacts'->0->>'id',p.stage->'artifacts'->1->>'id') END
     WHERE current_thread.id=${threadId} AND prior_mail.source_message_id<>current_mail.source_message_id
       AND prior_mail.received_at<=current_mail.received_at
       AND p.stage->>'state'='prepared' AND p.stage->>'revision'=p.revision::text
@@ -243,6 +248,20 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
       quote_artifact_block_reason:quote.length===1 ? quoteArtifactBlockReason(p.stage.native_result) : null,
       quote_selected_options:Array.isArray(p.stage.quote_selected_options) ? p.stage.quote_selected_options : [],
     });
+  }
+  if(stage && p.workflow==='quote' && p.stage.quote_sets && draft?.success) {
+    const sets=p.stage.quote_sets as Record<string,any>;
+    Object.assign(stage,{quote_sets:draft.data.actions.flatMap(action=>{
+      if(action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details) ||
+          typeof action.details.quote_id!=='string') return [];
+      const quoteId=action.details.quote_id, set=sets[quoteId];
+      if(!set || typeof set.job_id!=='string') return [];
+      return [{quote_id:quoteId,job_id:set.job_id,state:set.state,display_rows:set.display_rows ?? [],
+        quote_options:set.state==='prepared'?quoteOptions(action.details,set.native_result):[],
+        quote_choices:set.state==='prepared'?quoteOptions(action.details,set.native_result,false):[],
+        quote_artifact_block_reason:set.state==='prepared'?quoteArtifactBlockReason(set.native_result):null,
+        quote_selected_options:set.quote_selected_options ?? [],artifacts:set.artifacts ?? []}];
+    })});
   }
   const result=p.result && (p.phase==='done' || (p.workflow==='create' && Array.isArray(p.result.rooms))) ? {
     confirmation:typeof p.result.confirmation==='string'?p.result.confirmation:null,

@@ -724,7 +724,8 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
   function currentQuote(proposal: Proposal, quoteId: string, jobId: string) {
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     return current && cache.selectedId === current.id && current.workflow === 'quote' && current.revision === proposal.revision &&
-      current.phase === 'ready' && current.stage?.revision === current.revision && current.stage.quote_id === quoteId &&
+      current.phase === 'ready' && current.stage?.revision === current.revision &&
+      (current.stage.quote_id === quoteId || Boolean(current.stage.quote_sets?.some(set=>set.quote_id===quoteId))) &&
       current.stage.job_id === jobId && !cache.issues[current.id] && !cache.goLocks[current.id] &&
       cache.stagePending[current.id] === undefined && Object.keys(cache.drafts[current.id] ?? {}).length === 0 ? current : undefined;
   }
@@ -759,10 +760,10 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
 
   async function generateQuoteArtifacts(proposal: Proposal, quoteId: string, selections: QuoteSelection[]) {
     const signal = controllerRef.current?.signal;
-    const jobId = proposal.stage?.job_id;
+    const jobId = snapshotRef.current?.proposals.find(item=>item.id===proposal.id)?.stage?.job_id;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit || !jobId) return;
     const current = currentQuote(proposal, quoteId, jobId);
-    const options = current?.stage?.quote_options ?? [];
+    const options = current?.stage?.quote_sets?.find(set=>set.quote_id===quoteId)?.quote_options ?? current?.stage?.quote_options ?? [];
     if (!current || !selections.length ||
         new Set(selections.map(item => JSON.stringify([item.group_id, item.room_id]))).size !== selections.length ||
         selections.some(item => options.filter(option => option.group_id === item.group_id && option.room_id === item.room_id && option.option_index === item.option_index).length !== 1)) return;
@@ -1109,7 +1110,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
   useEffect(() => {
     const stage=proposal?.stage;
     if (!proposal || !canQuote || busy || operationRef.current || cache.inFlightEdit || authenticationExpired || proposal.phase!=='ready' ||
-        !stage?.quote_id || !stage.job_id || stage.artifacts?.length || cache.issues[proposal.id] ||
+        !stage?.quote_id || !stage.job_id || (stage.quote_sets?.find(set=>set.quote_id===stage.quote_id)?.artifacts.length ?? stage.artifacts?.length) || cache.issues[proposal.id] ||
         cache.goLocks[proposal.id] || cache.stagePending[proposal.id]!==undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length) return;
     const key=JSON.stringify([proposal.id,proposal.revision,stage.quote_id,stage.job_id]);
     if (cache.autoQuoteArtifacts.has(key)) return;
@@ -1118,6 +1119,25 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     cache.autoQuoteArtifacts.add(key);
     void generateQuoteArtifacts(proposal,stage.quote_id,selections);
   }, [proposal, canQuote, busy, authenticationExpired, version]);
+  useEffect(() => {
+    const stage=proposal?.stage;
+    if(!proposal || !canQuote || busy || operationRef.current || cache.inFlightEdit || authenticationExpired || proposal.phase!=='ready' ||
+        proposal.error || !stage?.quote_id || stage.state!=='prepared' || !stage.quote_sets ||
+        !stage.quote_sets.find(set=>set.quote_id===stage.quote_id) || cache.issues[proposal.id] ||
+        cache.goLocks[proposal.id] || cache.stagePending[proposal.id]!==undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length) return;
+    const activeSet=stage.quote_sets.find(set=>set.quote_id===stage.quote_id)!;
+    if(!activeSet.artifacts.length && activeSet.quote_options.length) return;
+    const next=proposal.actions.find(action=>action.type==='quote' && action.details && typeof action.details==='object' &&
+      !Array.isArray(action.details) && typeof action.details.quote_id==='string' &&
+      !stage.quote_sets!.some(set=>set.quote_id===(action.details as Record<string, unknown>).quote_id));
+    const details=next?.details;
+    const quoteId=details && typeof details==='object' && !Array.isArray(details) && typeof details.quote_id==='string' ? details.quote_id : null;
+    if(!quoteId || quoteCheckIssue(proposal,quoteId)) return;
+    const key=JSON.stringify([proposal.id,proposal.revision,quoteId]);
+    if(cache.autoQuotes.has(key)) return;
+    cache.autoQuotes.add(key);
+    void operation('quote',proposal,quoteId);
+  }, [proposal,canQuote,busy,authenticationExpired,version]);
   const goEnabled = Boolean(proposal && canGo && goReady(proposal) && !busy && !isUncertain && !lock && !issue && !authenticationExpired &&
     cache.stagePending[proposal.id] === undefined && Object.keys(drafts).length === 0);
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];

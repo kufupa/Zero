@@ -9,7 +9,7 @@
 - Q07 / R8: ≥10 rooms to book → rooming-list/group review (confirmed-create sample N=222, tail to 10). Keep supported read-only quote and independent tasks. Attendees ≠ rooms; quote does not authorize group booking.
 - Q08 Special requests/rooming lists/docs bound to correct stay. “Attached” ≠ file captured; read supplied file before using contents. Connecting/cot/dinner/transport requests not guaranteed by note.
 - Q09 / R2: clarify missing dates/occupancy/party or board that remains unclear after Q05. Decline only demonstrated native unavailability; tool errors or missing rows never become “fully booked.” Decline 1–3 sentences; give exact available nights/rooms and offer to quote, no automatic substitution (6/12 declines offered alternative; only 2/12 one-liners). Sister hotel only if staff adds it (1/12). Current existing-stay check → don't quote anew.
-- Q10 / R1: greet requester by known first name; omit Organization name in body by default (0/33 inline priced replies named sender company; 1/96 corporate threads exception). Soft style, not a hard ban; keep native party selection for pricing.
+- Q10 / R1: greet requester by known first name; do not name the company in the reply. Keep native party selection for pricing.
 - Q11 / R4: cover draft + ready-to-send signable PDF + editable Excel (owner 2026-11-17; 44/338 outbounds used attachment template, 23/338 inline prices, 0/338 named PDF/Excel; attachment contents unobserved). Simple single-room/night price may appear inline in cover. After publish call `quote_artifacts` with quote ID when registered. Current output may be PDF only; surface missing Excel/PDF, keep cover draft, claim only returned files. No workbook from guessed values.
 
 ## Field order

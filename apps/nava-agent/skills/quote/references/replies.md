@@ -6,7 +6,7 @@ R4: cover + signable PDF + editable Excel (owner 2026-11-17; attachment wording 
 
 ## General draft
 
-R1: greet “Hi [verified first name],” when known; normally omit organization from body (sender company named in 0/33 inline priced replies; exception in 1/96 corporate threads). Style default; never invent a name.
+R1: greet “Hi [verified first name],” when known; do not name the company in the reply. Never invent a name.
 
 R4: simple single-room/night price may go inline in cover (23/338 outbounds included inline prices). “For [arrival] to [departure], we can offer [quantity, room type, occupancy] with [meal plan] at [verified price, currency, unit]. This quotation does not reserve or hold rooms. Please let us know if you would like to proceed.”
 

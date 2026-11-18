@@ -19,7 +19,7 @@ type OutlookReplyInput = {
 } & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean; verifyCurrentSnapshot?: () => Promise<boolean> } |
   { output: QuoteOutput; isCurrentSnapshot: () => boolean; verifyCurrentSnapshot: () => Promise<boolean> });
 export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] }; location?: MailLocation };
-export type QuoteDraftBinding = { proposalId: string; revision: number; quoteId: string; jobId: string; artifactIds: [string, string] };
+export type QuoteDraftBinding = { proposalId: string; revision: number; quoteId: string; jobId: string; artifactIds: string[] };
 
 const MARKER = 'nava_v2_quote_unresolved_reply_v1';
 const COMPLETED_PREFIX = 'nava_quote_completed_reply_v1:';
@@ -238,9 +238,9 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
         if(typeof verifyCurrentSnapshot!=='function') throw new Error('The quote connection is unavailable. Review the quote again.');
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
         const artifacts=input.output.artifacts;
-        if (!completeQuotePackage(input.output) || input.output.inventoryDecline || !html.trim() || artifacts.length!==2 ||
-            !artifacts.some(item=>item.kind==='pdf_quote' && item.fileName==='Quotation.pdf' && item.mimeType==='application/pdf') ||
-            !artifacts.some(item=>item.kind==='xlsx_quote' && item.fileName==='Quotation.xlsx' && item.mimeType==='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
+        if (!completeQuotePackage(input.output) || input.output.inventoryDecline || !html.trim() || !artifacts.length || artifacts.length%2 ||
+            !artifacts.every((item,index)=>index%2===0 ? item.kind==='pdf_quote' && item.mimeType==='application/pdf' :
+              item.kind==='xlsx_quote' && item.mimeType==='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
           throw new Error('Review the cover reply and generate the PDF and Excel files first.');
         await verifyAttachments(input.output.artifacts);
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');

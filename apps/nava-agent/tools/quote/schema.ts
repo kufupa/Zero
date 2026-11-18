@@ -13,7 +13,7 @@ const room = z.object({
 }).strict();
 const group = z.object({ group_id:id, arrival_date:id, departure_date:id, rooms:z.array(room).min(1) }).strict();
 export const quoteInput = z.object({
-  quote_id:id, property_code:id, groups:z.array(group).min(1),
+  quote_id:id, party_name:z.string().trim().optional(), property_code:id, groups:z.array(group).min(1),
   search:z.object({sales_strategy:id.optional(),include_restricted:z.boolean().optional(),include_alternatives:z.boolean().optional()}).strict().optional(),
   details:z.enum(['summary','full']).optional(), max_options_per_group:z.number().int().min(1).max(200).optional(),
 }).strict();
@@ -28,7 +28,7 @@ const constraintsSchema = { type:'object', additionalProperties:false, propertie
 const roomSchema = {type:'object',additionalProperties:false,properties:{id:string,quantity:{type:'integer',minimum:1},adults:{type:'integer',minimum:1},children:{type:'integer',minimum:0},child_ages:{type:'array',items:{type:'integer',minimum:0,maximum:99}},required:constraintsSchema,preferred:constraintsSchema},required:['id','quantity','adults','children','child_ages']};
 const groupSchema = {type:'object',additionalProperties:false,properties:{group_id:string,arrival_date:{type:'string',format:'date'},departure_date:{type:'string',format:'date'},rooms:{type:'array',minItems:1,items:roomSchema}},required:['group_id','arrival_date','departure_date','rooms']};
 export const quoteSchema = {
-  type:'object',additionalProperties:false,properties:{quote_id:string,property_code:string,groups:{type:'array',minItems:1,items:groupSchema},
+  type:'object',additionalProperties:false,properties:{quote_id:string,party_name:string,property_code:string,groups:{type:'array',minItems:1,items:groupSchema},
     search:{type:'object',additionalProperties:false,properties:{sales_strategy:string,include_restricted:{type:'boolean'},include_alternatives:{type:'boolean'}}},
     details:{type:'string',enum:['summary','full']},max_options_per_group:{type:'integer',minimum:1,maximum:200}},
   required:['quote_id','property_code','groups'],

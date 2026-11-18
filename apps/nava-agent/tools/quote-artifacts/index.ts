@@ -162,8 +162,9 @@ export function createQuoteArtifacts(ports: Ports) {
     } catch { return context.signal?.aborted ? fail('ABORTED', 'Artifact generation was cancelled.') :
       fail('PDF_CONVERTER_UNAVAILABLE', 'The configured PDF converter could not generate a quotation.', true); }
     if (context.signal?.aborted) return fail('ABORTED', 'Artifact generation was cancelled.');
-    const pdf: Output = { name: 'Quotation.pdf', mime_type: 'application/pdf', bytes: pdfBytes };
-    const workbook: Output = { name: 'Quotation.xlsx', mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes };
+    const prefix=quote.file_prefix ?? 'Quotation';
+    const pdf: Output = { name: `${prefix}.pdf`, mime_type: 'application/pdf', bytes: pdfBytes };
+    const workbook: Output = { name: `${prefix}.xlsx`, mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', bytes };
     try {
       const refs = await ports.writePair({ sessionId: context.sessionId, quoteId: quote.quote_id,
         proposalId: quote.proposal_id, revision: quote.revision, pdf, workbook, signal: context.signal });

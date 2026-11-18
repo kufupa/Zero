@@ -121,7 +121,7 @@ function quoteGroups(proposal: Proposal) {
     if (!details || typeof details !== 'object' || Array.isArray(details)) return [];
     const quoteId = typeof details.quote_id === 'string' ? details.quote_id : undefined;
     if (!Array.isArray(details.groups)) return [];
-    const quote = quotes.length > 1 ? `Quote ${quotes.indexOf(action) + 1}` : undefined;
+    const quote = quotes.length > 1 ? typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : `Quote ${quotes.indexOf(action) + 1}` : undefined;
     return details.groups.map((group, groupIndex) => ({
       key: `${actionIndex}/${groupIndex}`,
       actionIndex,
@@ -611,8 +611,10 @@ function QuoteRequests({ proposal }: { proposal: Proposal }) {
     <summary>Requests in this email</summary>
     <ol>{proposal.actions.map((action, index) => {
       const count = groups.filter(group => group.actionIndex === index).length;
+      const details=action.details;
+      const name=details && typeof details==='object' && !Array.isArray(details) && typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : `Quote ${quotes.indexOf(action)+1}`;
       return <li key={action.id}>
-        <strong>{action.type === 'quote' ? quotes.length > 1 ? `Quote ${quotes.indexOf(action) + 1}` : 'Quote' : `Request ${index + 1}${action.type && ` · ${action.type.replace(/[_-]/g, ' ')}`}`}</strong>
+        <strong>{action.type === 'quote' ? quotes.length > 1 ? name : 'Quote' : `Request ${index + 1}${action.type && ` · ${action.type.replace(/[_-]/g, ' ')}`}`}</strong>
         {action.type === 'quote' && count > 0 && <p>{count} {count === 1 ? 'room group' : 'room groups'}</p>}
         {action.booking_ids.length > 0 && <ul>{action.booking_ids.map((id, bookingIndex) => <li key={`${id}-${bookingIndex}`}>{stayLabel(proposal, id)}</li>)}</ul>}
       </li>;
@@ -663,11 +665,12 @@ function QuoteChecks({ proposal, drafts, busy, onQuote, onSubmitQuote }: Workflo
     {quotes.map((action, index) => {
       const details = action.details;
       const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : undefined;
+      const name = details && typeof details === 'object' && !Array.isArray(details) && typeof details.party_name === 'string' && details.party_name.trim() ? details.party_name : `quote ${index+1}`;
       const issue = quoteId ? quoteCheckIssue(proposal, quoteId) : 'Quote details are unavailable. Review the request.';
       return <div key={action.id}>
         <button type="button" disabled={busy || (Object.keys(drafts).length === 0 && Boolean(issue)) || !['ready', 'waiting_go'].includes(proposal.phase)}
         onClick={() => { if (quoteId) (onSubmitQuote ?? onQuote)(quoteId); }}>
-        {quotes.length > 1 ? `Check quote ${index + 1} in Infor` : 'Check quote in Infor'}
+        {quotes.length > 1 ? `Check ${name} in Infor` : 'Check quote in Infor'}
         </button>
         {issue && Object.keys(drafts).length === 0 && <p>{issue}</p>}
       </div>;
@@ -691,7 +694,7 @@ function quoteRooms(proposal: Proposal, quoteId: string) {
   });
 }
 
-function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProps) {
+function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: WorkflowProps & {quoteLabel?:string}) {
   const [selected, setSelected] = useState<Record<string, number>>(() => Object.fromEntries(
     (proposal.stage?.quote_selected_options?.length ? proposal.stage.quote_selected_options : defaultQuoteSelections(proposal))
       .map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
@@ -705,7 +708,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
     return index !== undefined && stage.quote_options?.some(option => option.group_id === room.groupId && option.room_id === room.roomId && option.option_index === index)
       ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
   });
-  return <PaneSection title="Choose quote options">
+  return <PaneSection title={quoteLabel ? `Choose quote options · ${quoteLabel}` : 'Choose quote options'}>
     <p>Price set by HMS rate plan. Prices and availability are from the latest Infor check. Review the selected options; combined availability is not confirmed.</p>
     {selections.length < rooms.length && <p>Some room groups could not be priced and are not included in the quote.</p>}
     {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor checked these overlapping dates separately.</p>}
@@ -751,7 +754,8 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
 }
 
 function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft, onOpenQuoteDraft, quoteConnectionReady, quoteDraftTarget = 'outlook' }: WorkflowProps) {
-  const [body, setBody] = useState(proposal.reply_draft || 'Good day,\n\nPlease find the quotation attached.\n\nKind regards');
+  const quoteCount=proposal.actions.filter(action=>action.type==='quote').length;
+  const [body, setBody] = useState(`Good day,\n\nPlease find the ${quoteCount===1?'quotation':'quotations'} attached.\n\nKind regards`);
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -764,7 +768,7 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
   const pdf = artifacts.find(item => item.mime_type === 'application/pdf');
   const workbook = artifacts.find(item => item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   const quoteId = proposal.stage?.quote_id, jobId = proposal.stage?.job_id;
-  const artifactIds = quoteArtifactIds(artifacts);
+  const artifactIds = quoteCount>0 && artifacts.length===quoteCount*2 ? quoteArtifactIds(artifacts) : null;
   const binding: QuoteDraftBinding = { proposalId: proposal.id, revision: proposal.revision, quoteId: quoteId ?? '', jobId: jobId ?? '', artifactIds: artifactIds ?? ['', ''] };
   const bindingKey = JSON.stringify(binding);
   const currentBinding = useRef(bindingKey);
@@ -794,7 +798,7 @@ function QuoteCover({ proposal, busy, drafts, onSaveQuoteDraft, onFindQuoteDraft
   if (!pdf || !workbook || !artifactIds) return null;
   return <PaneSection title="Cover email and quote files">
     {!saved && <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving} onChange={value => { setBody(value); setMessage(null); }} />}
-    <p>Files: {pdf.name}, {workbook.name}</p>
+    <p>Files: {artifacts.map(item=>item.name).join(', ')}</p>
     {onSaveQuoteDraft && !saved && quoteConnectionReady === false && <p>Reconnect to Nava before saving the draft.</p>}
     {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || checking || Object.keys(drafts).length > 0 || !body.trim() || quoteConnectionReady === false} onClick={() => {
       setSaving(true); setMessage(null);
@@ -1094,7 +1098,15 @@ export function Workflow(props: WorkflowProps) {
       <NativeRows rows={proposal.display_rows} proposal={proposal} />
     </PaneSection>}
     {proposal.stage && !stageCurrent && <PaneMessage>{proposal.phase === 'staging' ? 'A new check is in progress; earlier results are hidden.' : 'Details have changed since the last check. Check again for current Infor results.'}</PaneMessage>}
-    {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
+    {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && (proposal.stage.quote_sets?.length
+      ? proposal.stage.quote_sets.map((set,index)=>{
+        const action=proposal.actions.find(item=>item.type==='quote' && item.details && typeof item.details==='object' && !Array.isArray(item.details) && item.details.quote_id===set.quote_id);
+        const details=action?.details;
+        const name=details && typeof details==='object' && !Array.isArray(details) && typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : `Quote ${index+1}`;
+        return <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${set.job_id}`} {...props}
+          proposal={{...proposal,stage:{...proposal.stage!,...set}}} quoteLabel={proposal.actions.filter(item=>item.type==='quote').length>1?name:undefined} />;
+      })
+      : <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />)}
     {proposal.stage && stageCurrent && proposal.stage.state !== 'target' && <PaneSection title="Checked details">
       {proposal.workflow === 'create' && <p>Price set by HMS rate plan.</p>}
       {proposal.workflow === 'cancel' && <CancelPolicy prepared={proposal.stage.native_result} />}

@@ -109,6 +109,9 @@ export const proposalSchema = z.object({
     display_rows: z.array(nativeDisplayRowSchema), coverage: jsonSchema.optional(),
     observed_fields: jsonSchema.optional(), cancellation_fee: jsonSchema.optional(),
     artifacts: z.array(artifactSchema).optional(),
+    quote_sets: z.array(z.object({quote_id:id,job_id:id,state:z.string(),display_rows:z.array(nativeDisplayRowSchema),
+      quote_options:z.array(quoteOptionSchema),quote_choices:z.array(quoteOptionSchema),
+      quote_selected_options:z.array(quoteOptionSchema),quote_artifact_block_reason:z.string().nullable(),artifacts:z.array(artifactSchema)})).optional(),
   }).nullable(),
   result: z.object({
     confirmation: z.string().nullable(), reservation_id: z.string().nullable(),

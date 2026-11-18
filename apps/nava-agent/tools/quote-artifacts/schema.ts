@@ -39,7 +39,7 @@ const capturedGroup = z.object({ group_id: id, arrival_date: date, departure_dat
 // Snapshot is provided only by the server's authorization and revision resolver.
 export const snapshot = z.object({
   quote_id: id, proposal_id: id, revision: z.number().int().positive().safe(), property_code: id,
-  authored_date: date,
+  authored_date: date, file_prefix: z.string().regex(/^Quotation(?: [1-9][0-9]*)?$/).optional(),
   header: z.object({ attention: z.string(), organization: z.string(), clientEmail: z.string(), clientTelephone: z.string(),
     signerName: z.string(), signerEmail: z.string(), displayBookingAgency: z.string().optional() }).strict(),
   note: z.string().optional(),

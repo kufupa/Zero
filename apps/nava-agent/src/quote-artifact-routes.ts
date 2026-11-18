@@ -16,11 +16,13 @@ const request = z.object({expected_revision:z.number().int().positive().safe(),q
   selections:z.array(z.object({group_id:id,room_id:id,option_index:z.number().int().nonnegative().safe()}).strict()).min(1).max(80)}).strict();
 const source = z.object({direction:z.literal('inbound'),from:z.object({name:z.string().nullable(),email:z.string()})});
 const capture = z.object({quotes:z.record(z.unknown()),searches:z.array(z.object({arrival_date:id,departure_date:id,
-  native_result:z.object({outcome:z.string(),audit:z.object({status:z.string()})})})).min(1)});
-const stage = z.object({revision:z.number().int(),job_id:id,native_result:capture,artifacts:z.array(z.unknown()).optional()});
+  native_result:z.object({outcome:z.string(),audit:z.object({status:z.string()}).passthrough()}).passthrough()}).passthrough()).min(1)}).passthrough();
+const stage = z.object({revision:z.number().int(),job_id:id,native_result:z.unknown(),artifacts:z.array(z.unknown()).optional(),
+  quote_id:id.optional(),quote_sets:z.record(z.unknown()).optional()});
+const quoteSet = z.object({revision:z.number().int(),job_id:id,native_result:capture,artifacts:z.array(z.unknown()).optional()}).passthrough();
 const actions = z.object({actions:z.array(z.object({type:z.string(),details:z.unknown()}))});
 const fileId = z.string().uuid();
-const artifact = z.object({id:fileId,name:z.enum(['Quotation.pdf','Quotation.xlsx']),
+const artifact = z.object({id:fileId,name:z.string().regex(/^Quotation(?: [1-9][0-9]*)?\.(?:pdf|xlsx)$/),
   mime_type:z.enum(['application/pdf','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),url:z.string()});
 const limit = 20 * 1024 * 1024;
 const quoteCalendar = new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Johannesburg',year:'numeric',month:'2-digit',day:'2-digit'});
@@ -77,25 +79,31 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
       return a.type === 'quote' && quote.success && quote.data.quote_id === input.quote_id ? [quote.data] : [];
     }) : [];
     const [quote] = matching;
-    const native = Object.hasOwn(ready.data.native_result.quotes,input.quote_id) ? ready.data.native_result.quotes[input.quote_id] : undefined;
-    if (matching.length !== 1 || !quote || quote.property_code !== row.property_code || native === undefined || !selected.success) {
+    const currentSet=quoteSet.safeParse(ready.data.quote_sets?.[input.quote_id] ??
+      (ready.data.quote_id===input.quote_id ? row.stage : null));
+    const native = currentSet.success && Object.hasOwn(currentSet.data.native_result.quotes,input.quote_id)
+      ? currentSet.data.native_result.quotes[input.quote_id] : undefined;
+    if (matching.length !== 1 || !quote || quote.property_code !== row.property_code || native === undefined || !selected.success || !currentSet.success) {
       return c.json(responseError('QUOTE_CAPTURE_UNAVAILABLE','No matching native quote capture for this revision.'),409);
     }
-    const options=quoteOptions(quote,ready.data.native_result);
+    const options=quoteOptions(quote,currentSet.data.native_result);
     const selectedOptions=input.selections.map(selection=>options.find(option=>option.group_id===selection.group_id &&
       option.room_id===selection.room_id && option.option_index===selection.option_index));
     if(selectedOptions.some(option=>!option)) return c.json(responseError('QUOTE_NOT_RENDERABLE','The selected quote is incomplete or cannot be represented by the quotation template.'),409);
     const converter = converterUrl();
     if (!converter || !process.env.NAVA_QUOTE_ARTIFACT_DIR) return c.json(responseError('ARTIFACTS_UNAVAILABLE','Private quote artifact service unavailable.'),503);
     const job = ready.data.job_id;
+    const quoteActions=draft.success ? draft.data.actions.filter(action=>action.type==='quote') : [];
+    const quoteIndex=quoteActions.findIndex(action=>quoteInput.safeParse(action.details).data?.quote_id===input.quote_id);
+    const prefix=quoteActions.length>1 ? `Quotation ${quoteIndex+1}` : 'Quotation';
     const result = await createQuoteArtifacts({
       resolveQuote:async()=>({quote_id:quote.quote_id,proposal_id:proposalId,revision:row.revision,property_code:quote.property_code,
-        authored_date:authoredDate(),groups:quote.groups,capture:native,selections:input.selections,
+        authored_date:authoredDate(),file_prefix:prefix,groups:quote.groups,capture:native,selections:input.selections,
         ...(input.selections.length < quote.groups.reduce((sum,group)=>sum+group.rooms.length,0)
           ? {note:'Some requested room groups could not be priced. Availability for all rooms together is subject to confirmation.'}
-          : ready.data.native_result.searches.length > 1 || ready.data.native_result.searches.some(search=>search.native_result.outcome==='partial')
+          : currentSet.data.native_result.searches.length > 1 || currentSet.data.native_result.searches.some(search=>search.native_result.outcome==='partial')
             ? {note:'Availability for all room groups together is subject to confirmation.'} : {}),
-        header:{attention:selected.data.from.name??'',organization:'',clientEmail:selected.data.from.email,clientTelephone:'',signerName:'',signerEmail:''}}),
+        header:{attention:quote.party_name ?? '',organization:'',clientEmail:selected.data.from.email,clientTelephone:'',signerName:'',signerEmail:''}}),
       convertWorkbook:gotenbergConverter(converter),
       writePair:async({pdf,workbook,signal})=>{
         const root = await artifactDir();
@@ -112,14 +120,22 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
         try {
           const pdfRef = await write(pdf), workbookRef = await write(workbook);
           signal?.throwIfAborted();
+          const sets={...(ready.data.quote_sets ?? {}),[input.quote_id]:{...currentSet.data,artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions}};
+          const artifacts=quoteActions.flatMap(action=>{
+            const request=quoteInput.safeParse(action.details);
+            const set=request.success ? quoteSet.safeParse(sets[request.data.quote_id]) : null;
+            return set?.success ? set.data.artifacts ?? [] : [];
+          });
           await sql.begin(async tx=>{
-            const saved = await tx`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions})}::jsonb,updated_at=now()
+            const saved = await tx`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts,quote_sets:sets,
+              ...(ready.data.quote_id===input.quote_id?{quote_selected_options:selectedOptions}:{})})}::jsonb,updated_at=now()
               FROM nava_agent.mail_thread t WHERE p.thread_id=t.id AND p.id=${proposalId} AND p.revision=${input.expected_revision}
-              AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)=${json(ready.data.artifacts ?? [])}::jsonb AND p.workflow='quote'
+              AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)=${json(ready.data.artifacts ?? [])}::jsonb
+              AND COALESCE(p.stage->'quote_sets','{}'::jsonb)=${json(ready.data.quote_sets ?? {})}::jsonb AND p.workflow='quote'
               AND t.mailbox_id=${row.mailbox_id} AND t.mode='live' RETURNING p.id`;
             if (saved.length !== 1) throw new Error('QUOTE_REVISION_CHANGED');
             await writeEvent(tx,row.session_id,'quote_artifacts_ready',{proposal_id:proposalId,revision:input.expected_revision,
-              job_id:job,quote_id:quote.quote_id,artifact_ids:[pdfRef.id,workbookRef.id]});
+              job_id:currentSet.data.job_id,quote_id:quote.quote_id,artifact_ids:[pdfRef.id,workbookRef.id]});
           });
           return {pdf:pdfRef,workbook:workbookRef};
         } catch (error) {

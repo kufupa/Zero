@@ -142,6 +142,7 @@ export function missingCreateFields(draft: ProposalDraft, operation: 'stage' | '
 export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='quote') return draft;
   const fieldSpecs=[...draft.field_specs];
+  const separateQuotes=draft.actions.filter(action=>action.type==='quote').length>1;
   const actions=draft.actions.map((action,actionIndex)=>{
     if(action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details)) return action;
     const add=(path:string,label:string,control:'date'|'number'|'text',required:boolean)=>{
@@ -150,6 +151,10 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
       else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
     };
     const details={...action.details};
+    if(separateQuotes || typeof details.party_name==='string') {
+      if(typeof details.party_name!=='string') details.party_name='';
+      add(`/actions/${actionIndex}/details/party_name`,'Guest or party name','text',false);
+    }
     if(!Object.hasOwn(details,'property_code')) details.property_code=null;
     add(`/actions/${actionIndex}/details/property_code`,'Property','text',true);
     if(!Array.isArray(details.groups)) return {...action,details};

@@ -254,11 +254,10 @@ function outlookDraftKey(source: ReservationSourceContext, binding: QuoteDraftBi
 }
 
 async function readQuoteOutput(request: QuoteDraftRequest, recipient: string, subject: string, isCurrentSource = () => true): Promise<QuoteOutput> {
-  const pdf = request.artifacts.find(item => item.name === 'Quotation.pdf' && item.mime_type === 'application/pdf');
-  const xlsx = request.artifacts.find(item => item.name === 'Quotation.xlsx' && item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  if (!pdf || !xlsx || request.artifacts.length !== 2) throw new Error('The PDF and Excel files are not both available. Check the quote again.');
+  if (!quoteArtifactIds(request.artifacts)) throw new Error('The PDF and Excel files are not both available. Check the quote again.');
   const artifacts: QuoteOutputArtifact[] = [];
-  for (const [kind, item] of [['pdf_quote', pdf], ['xlsx_quote', xlsx]] as const) {
+  for (const [index, item] of request.artifacts.entries()) {
+    const kind = index%2===0 ? 'pdf_quote' : 'xlsx_quote';
     if (!request.isCurrentSnapshot() || !isCurrentSource()) throw new Error('The selected email or quote changed. Review it again.');
     const response = await api.getArtifact(item.id, { signal: request.signal });
     const bytes = new Uint8Array(await response.arrayBuffer());

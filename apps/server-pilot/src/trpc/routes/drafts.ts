@@ -2090,9 +2090,12 @@ export const draftsRouter = tRouter({
       if (replyParent.threadId !== input.threadId || (input.quoteBinding && replyParent.direction !== 'inbound')) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
       }
-      if (input.quoteBinding && (input.replyKind !== 'quote' || decodedAttachments.length !== 2 ||
-          !decodedAttachments.some(({ file }) => file.name === 'Quotation.pdf' && file.type === 'application/pdf') ||
-          !decodedAttachments.some(({ file }) => file.name === 'Quotation.xlsx' && file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))) {
+      if (input.quoteBinding && (input.replyKind !== 'quote' || decodedAttachments.length !== input.quoteBinding.artifactIds.length ||
+          !decodedAttachments.every(({file},index)=>{
+            const ext=index%2===0?'pdf':'xlsx';
+            const filename=decodedAttachments.length===2 ? `Quotation.${ext}` : `Quotation ${Math.floor(index/2)+1}.${ext}`;
+            return file.name===filename && file.type===(index%2===0?'application/pdf':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+          }))) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
       }
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
@@ -2153,10 +2156,10 @@ export const draftsRouter = tRouter({
             transportId,
             draftId,
             updateInPlace ? prior.attachments : [],
-          )).map(attachment => {
+          )).map((attachment,index) => {
             const { quoteBinding: _previous, quoteArtifactId: _previousId, ...rest } = attachment as typeof attachment & { quoteBinding?: unknown; quoteArtifactId?: unknown };
             return input.quoteBinding ? { ...rest, quoteBinding: input.quoteBinding,
-              quoteArtifactId: input.quoteBinding.artifactIds[attachment.filename === 'Quotation.pdf' ? 0 : 1] } : rest;
+              quoteArtifactId: input.quoteBinding.artifactIds[index] } : rest;
           });
           const content = {
             threadId: input.threadId,

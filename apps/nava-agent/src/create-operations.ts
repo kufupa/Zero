@@ -45,6 +45,7 @@ function isSeededLabtest(value: unknown, fields: Record<string, unknown>) {
 const queuedStage = z.object({
   job_id:z.string(), revision:z.number().int().positive(), actor:z.string(), previous_phase:z.enum(['ready','waiting_go']), state:z.literal('queued'),
   workflow:proposalDraft.shape.workflow.optional(), source:stageSource.optional(), quote_id:z.string().optional(),
+  quote_sets:z.record(z.unknown()).optional(),
   profile_dispatch:z.object({booking_id:z.string(),attempt_id:z.string()}).optional(),
   profile_created:z.array(z.object({booking_id:z.string(),native_id:z.string()})).optional(),
   profile_go:z.literal(true).optional(),
@@ -187,8 +188,21 @@ export function createPilotOperations(): ProposalOperations | undefined {
         if(requiresStaffAttachmentCheck(request.workflow) && !await staffAttachmentsChecked(tx,p.id,p.revision)) {
           return {ok:false,code:attachmentsUnconfirmed.code};
         }
+        const quoteSets=request.workflow==='quote' && p.stage?.revision===p.revision
+          ? {...(p.stage.quote_sets ?? {}),...(p.stage.state==='prepared' && p.stage.quote_id && !p.stage.quote_sets?.[p.stage.quote_id]
+            ? {[p.stage.quote_id]:p.stage} : {})} : {};
+        const quotes=draft.success ? draft.data.actions.filter(action=>action.type==='quote') : [];
+        if(quotes.length>1) quotes.forEach((action,index)=>{
+          const parsed=z.object({quote_id:z.string()}).safeParse(action.details);
+          const set=parsed.success ? quoteSets[parsed.data.quote_id] : undefined;
+          if(!parsed.success || !set || !Array.isArray(set.artifacts)) return;
+          quoteSets[parsed.data.quote_id]={...set,artifacts:set.artifacts.map((item:any)=>
+            item?.name==='Quotation.pdf' ? {...item,name:`Quotation ${index+1}.pdf`} :
+            item?.name==='Quotation.xlsx' ? {...item,name:`Quotation ${index+1}.xlsx`} : item)};
+        });
+        if(request.quoteId) delete quoteSets[request.quoteId];
         const stage=queuedStage.parse({job_id:uid('stage'),revision:request.expectedRevision,actor:request.actor,previous_phase:p.phase,state:'queued',
-          workflow:request.workflow,source:source.data,...(request.quoteId?{quote_id:request.quoteId}:{}),...(request.lookup?{lookup:request.lookup}:{}),...(request.createProfile?{profile_go:true}:{})});
+          workflow:request.workflow,source:source.data,...(request.quoteId?{quote_id:request.quoteId,quote_sets:quoteSets}:{}),...(request.lookup?{lookup:request.lookup}:{}),...(request.createProfile?{profile_go:true}:{})});
         await tx`UPDATE nava_agent.proposal SET phase='staging',stage=${json(stage)},execution=COALESCE(execution,'{}'::jsonb)-'error',updated_at=now()
           WHERE id=${p.id}`;
         await writeEvent(tx,p.session_id,'stage_queued',{proposal_id:p.id,job_id:stage.job_id,revision:stage.revision,
@@ -643,7 +657,7 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   const bookingId=(input && 'booking' in input ? input.booking?.id : legacy?.booking.id) ?? null;
   const first=captures?.[0];
   const failed=captures?.find(capture=>capture.error);
-  const {stage,error}=captures && first ? {
+  let {stage,error}=captures && first ? {
     stage:{...first.stage,state:failed?'incomplete':'prepared',revision:job.revision,job_id:job.job_id,
       summary:[failed?'Some rooms could not be checked. No booking saved.':'All rooms checked in Infor. No booking saved.'],
       native_result:{...z.record(z.unknown()).parse(first.stage?.native_result ?? {}),rooms:captures.map(capture=>({
@@ -652,6 +666,17 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
       display_rows:captures.flatMap((capture,index)=>(capture.stage?.display_rows ?? []).map(row=>({...row,id:`room-${index+1}-${row.id}`})))},
     error:failed?.error ?? null,
   } : stageFeedback({result,workflow,bookingId,revision:job.revision,jobId:job.job_id,quoteId:job.quote_id});
+  if(workflow==='quote' && job.quote_id) {
+    if(!stage) stage={state:'incomplete',revision:job.revision,job_id:job.job_id,quote_id:job.quote_id,
+      summary:['HMS native read incomplete. Nothing saved.'],native_result:null,display_rows:[]};
+    const quoteSets={...job.quote_sets,[job.quote_id]:{...stage}};
+    const artifacts=(draft.success ? draft.data.actions : []).flatMap(action=>{
+      const quote=z.object({quote_id:z.string()}).safeParse(action.details);
+      const set=quote.success ? z.object({artifacts:z.array(z.unknown()).optional()}).safeParse(quoteSets[quote.data.quote_id]) : null;
+      return set?.success ? set.data.artifacts ?? [] : [];
+    });
+    Object.assign(stage,{quote_sets:quoteSets,artifacts});
+  }
   if(profileCreated && stage) stage.summary=['Guest Profile created in Infor. Booking not saved.',...stage.summary.map(text=>text.replace('Nothing saved.','No booking saved.'))];
   if(stage && job.lookup) Object.assign(stage,{state:'target',source:job.source});
   const autoBound:Array<{booking_id:string;native_id:string}>=[];
