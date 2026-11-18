@@ -19,7 +19,7 @@ export const patch = z.object({
   last_name: text(100).min(1).optional(),
   booker_name: text(200).optional(),
   booker_contact: text(200).optional(),
-  reservation_note: text(2000).optional(),
+  reservation_note: z.string().max(2000).regex(/^(?:[^\p{Cc}]|\r?\n)*$/u).optional(),
 }).strict();
 
 export const prepareEnvelope = z.object({
