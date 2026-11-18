@@ -24,7 +24,7 @@ export function amendNativeRequestDigest(request, phase) {
       if (url.pathname !== CHILD_PATH || url.search) return null;
     } else if (phase === 'availability') {
       if (url.pathname !== AVAILABILITY_PATH || url.search) return null;
-    } else if (['save', 'retain', 'extend'].includes(phase)) {
+    } else if (['save', 'retain', 'extend', 'addon'].includes(phase)) {
       if (url.pathname !== SAVE_PATH || [...url.searchParams].length !== 1 ||
           url.searchParams.get('pageaction') !== 'SAVE') return null;
     } else return null;
@@ -51,7 +51,7 @@ export function createLabtestAmendDispatch({ operationDigest, requiresAvailabili
     throw new Error('AMEND_DISPATCH_INPUT_INVALID');
   }
   let handle = null, busy = false, closed = false;
-  let guaranteeDone = false, childrenDone = false, availabilityDone = false, saveDone = false, retainDone = false, extendDone = false;
+  let guaranteeDone = false, childrenDone = false, availabilityDone = false, saveDone = false, retainDone = false, extendDone = false, addonDone = false;
 
   const dispatch = async (phase, request, proceed) => {
     const eligible = !closed && !busy && isEnabled() && typeof proceed === 'function' &&
@@ -60,7 +60,7 @@ export function createLabtestAmendDispatch({ operationDigest, requiresAvailabili
         phase === 'availability' ? requiresAvailability && !availabilityDone && !saveDone &&
           (!requiresGuarantee || guaranteeDone) && (!requiresChildren || childrenDone) :
         phase === 'save' ? !saveDone && (!requiresGuarantee || guaranteeDone) && (!requiresChildren || childrenDone) && (!requiresAvailability || availabilityDone) :
-          phase === 'retain' ? saveDone && !retainDone :
+          phase === 'retain' ? saveDone && !retainDone : phase === 'addon' ? saveDone && !addonDone :
             phase === 'extend' && allowsExtendOverrideRate && saveDone && retainDone && !extendDone);
     const requestDigest = eligible ? amendNativeRequestDigest(request, phase) : null;
     if (!eligible || !requestDigest) {
@@ -89,6 +89,7 @@ export function createLabtestAmendDispatch({ operationDigest, requiresAvailabili
       else if (phase === 'availability') availabilityDone = true;
       else if (phase === 'save') saveDone = true;
       else if (phase === 'retain') retainDone = true;
+      else if (phase === 'addon') addonDone = true;
       else extendDone = true;
     } catch (error) {
       closed = true;
@@ -105,6 +106,7 @@ export function createLabtestAmendDispatch({ operationDigest, requiresAvailabili
     save: (request, proceed) => dispatch('save', request, proceed),
     retain: (request, proceed) => dispatch('retain', request, proceed),
     extend: (request, proceed) => dispatch('extend', request, proceed),
+    addon: (request, proceed) => dispatch('addon', request, proceed),
     holdId: () => handle?.holdId ?? null,
     close: () => { closed = true; },
   });

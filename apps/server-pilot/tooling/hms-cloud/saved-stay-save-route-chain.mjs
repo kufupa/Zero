@@ -147,12 +147,13 @@ export async function installLabtestSaveRouteChain(page, {
   availability = null,
   secondSave = null,
   thirdSave = null,
+  fourthSave = null,
   onCandidate,
   onDispatch,
   onBlocked,
 } = {}) {
   if (![SAVE_PATH, '/web/base/OSSTWZ.UpdateStayWizard'].includes(savePath) ||
-      (savePath !== SAVE_PATH && (availability || secondSave || thirdSave || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate || partyStageGate)) ||
+      (savePath !== SAVE_PATH && (availability || secondSave || thirdSave || fourthSave || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate || partyStageGate)) ||
       !page || typeof page.route !== 'function' || typeof page.context !== 'function' || !frame ||
       typeof fence?.isQuarantined !== 'function' || typeof scope?.allow !== 'function' ||
       typeof isArmed !== 'function' || typeof matches !== 'function' ||
@@ -160,10 +161,11 @@ export async function installLabtestSaveRouteChain(page, {
       (dispatchCandidate !== undefined && typeof dispatchCandidate !== 'function') ||
       (onAuthorizationAttempt !== undefined && typeof onAuthorizationAttempt !== 'function') ||
       typeof isChildStageActive !== 'function' ||
-      [availability, secondSave, thirdSave].some((phase) => phase !== null && (!phase ||
+      [availability, secondSave, thirdSave, fourthSave].some((phase) => phase !== null && (!phase ||
         typeof phase.isArmed !== 'function' || typeof phase.matches !== 'function' ||
         typeof phase.dispatchCandidate !== 'function')) ||
       (thirdSave !== null && secondSave === null) ||
+      (fourthSave !== null && thirdSave === null) ||
       (childStageGate !== null && !isSavedChildStageRequestGate(childStageGate)) ||
       typeof canDispatchChild !== 'function' ||
       (dispatchChildCandidate !== undefined && typeof dispatchChildCandidate !== 'function') ||
@@ -187,6 +189,7 @@ export async function installLabtestSaveRouteChain(page, {
   let availabilityRequest = null, continuedAvailability = null;
   let secondRequest = null, continuedSecond = null, primarySucceeded = false;
   let thirdRequest = null, continuedThird = null, secondarySucceeded = false;
+  let fourthRequest = null, continuedFourth = null, tertiarySucceeded = false;
   const pendingCallbacks = new Set();
   const trackCallback = (callback) => {
     const pending = Promise.resolve().then(callback);
@@ -201,10 +204,11 @@ export async function installLabtestSaveRouteChain(page, {
   const partyReads = new WeakSet(), partyCandidates = new WeakSet(), continuedParties = new WeakSet();
   let finishDispatch;
   const dispatchFinished = new Promise((resolve) => { finishDispatch = resolve; });
-  let finishAvailability, finishSecond, finishThird;
+  let finishAvailability, finishSecond, finishThird, finishFourth;
   const availabilityFinished = new Promise((resolve) => { finishAvailability = resolve; });
   const secondFinished = new Promise((resolve) => { finishSecond = resolve; });
   const thirdFinished = new Promise((resolve) => { finishThird = resolve; });
+  const fourthFinished = new Promise((resolve) => { finishFourth = resolve; });
   const observeBlocked = (request) => {
     try { onBlocked?.(request); } catch { /* Diagnostics cannot weaken the route decision. */ }
   };
@@ -236,8 +240,9 @@ export async function installLabtestSaveRouteChain(page, {
     const isAvailability = availability && availabilityRequest === request && continuedAvailability !== request;
     const isSecond = secondSave && secondRequest === request && continuedSecond !== request;
     const isThird = thirdSave && thirdRequest === request && continuedThird !== request;
-    const phase = isAvailability ? availability : isThird ? thirdSave : isSecond ? secondSave : { isArmed, dispatchCandidate, onDispatch };
-    if (active && !dispatching && (isAvailability || isSecond || isThird ||
+    const isFourth = fourthSave && fourthRequest === request && continuedFourth !== request;
+    const phase = isAvailability ? availability : isFourth ? fourthSave : isThird ? thirdSave : isSecond ? secondSave : { isArmed, dispatchCandidate, onDispatch };
+    if (active && !dispatching && (isAvailability || isSecond || isThird || isFourth ||
         (candidateRequest === request && continuedRequest !== request)) &&
         isSameFrame(request) && phase.isArmed() && !fence.isQuarantined()) {
       dispatching = true;
@@ -253,11 +258,13 @@ export async function installLabtestSaveRouteChain(page, {
           if (wrapperFinished || attempted || !active || !phase.isArmed() || fence.isQuarantined() || !isSameFrame(request) ||
               (isAvailability && !availability.matches(request, frame)) ||
               (isSecond && (!primarySucceeded || !secondSave.matches(request, frame))) ||
-              (isThird && (!secondarySucceeded || !thirdSave.matches(request, frame)))) {
+              (isThird && (!secondarySucceeded || !thirdSave.matches(request, frame))) ||
+              (isFourth && (!tertiarySucceeded || !fourthSave.matches(request, frame)))) {
             throw new Error('SAVE_DISPATCH_NOT_AUTHORIZED');
           }
           attempted = true;
           if (isAvailability) continuedAvailability = request;
+          else if (isFourth) continuedFourth = request;
           else if (isThird) continuedThird = request;
           else if (isSecond) continuedSecond = request;
           else continuedRequest = request;
@@ -277,7 +284,7 @@ export async function installLabtestSaveRouteChain(page, {
       continueOnce.proveNeverDispatched = () => {
         // Create has no effectful child route. Once disarmed, this exact Save
         // and any pending continuation are unable to reach route.fallback().
-        if (isAvailability || isSecond || isThird || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate || partyStageGate ||
+        if (isAvailability || isSecond || isThird || isFourth || childStageGate || roomStageGate || rateStageGate || guaranteeStageGate || partyStageGate ||
             wrapperFinished || attempted || continuedRequest || noDispatchProved) return null;
         active = false;
         noDispatchProved = true;
@@ -306,7 +313,8 @@ export async function installLabtestSaveRouteChain(page, {
         // A native response can arrive before the server wrapper completes.
         // Surface its eventual result without an unhandled rejection.
         if (isAvailability) finishAvailability(wrapperSucceeded);
-        else if (isThird) finishThird(wrapperSucceeded);
+        else if (isFourth) finishFourth(wrapperSucceeded);
+        else if (isThird) { tertiarySucceeded = wrapperSucceeded; finishThird(wrapperSucceeded); }
         else if (isSecond) { secondarySucceeded = wrapperSucceeded; finishSecond(wrapperSucceeded); }
         else { primarySucceeded = wrapperSucceeded; finishDispatch(wrapperSucceeded); }
       }
@@ -485,6 +493,16 @@ export async function installLabtestSaveRouteChain(page, {
     if (safeRead) return route.fallback();
 
     if (url.pathname === savePath) {
+      if (active && fourthSave && tertiarySucceeded && fourthRequest === null && fourthSave.isArmed() &&
+          !fence.isQuarantined() && isSameFrame(request) && fourthSave.matches(request, frame)) {
+        let allowed = false;
+        try { allowed = scope.allow(request); } catch { /* The lifetime fence remains closed. */ }
+        if (allowed) {
+          fourthRequest = request;
+          try { fourthSave.onCandidate?.(request); } catch { /* The request stays fenced. */ }
+        } else observeBlocked(request);
+        return route.fallback();
+      }
       if (active && thirdSave && secondarySucceeded && thirdRequest === null && thirdSave.isArmed() &&
           !fence.isQuarantined() && isSameFrame(request) && thirdSave.matches(request, frame)) {
         let allowed = false;
@@ -568,6 +586,7 @@ export async function installLabtestSaveRouteChain(page, {
     waitForAvailability: () => availabilityFinished,
     waitForSecond: () => secondFinished,
     waitForThird: () => thirdFinished,
+    waitForFourth: () => fourthFinished,
     disarm: () => { active = false; },
     async drain({ timeoutMs = 5_000 } = {}) {
       active = false;

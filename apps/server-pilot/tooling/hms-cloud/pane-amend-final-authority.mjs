@@ -26,12 +26,13 @@ export function createFinalGoCallbackAuthority({ operationDigest, sourceDigest, 
     throw new Error('AMEND_FINAL_AUTHORITY_INVALID');
   }
   phases = Object.freeze([...phases]);
-  let next = 0, handle = null, busy = false, closed = false, saveArmed = false, armUsed = false, possiblyPersisted = false;
+  let next = 0, handle = null, busy = false, closed = false, saveArmed = false, armUsed = false, possiblyPersisted = false, addonDone = false;
   const active = () => !closed && isEnabled();
   const digest = (request, phase) => partyPhases.includes(phase)
     ? callbackPartyRequestDigest(request, phase) : amendNativeRequestDigest(request, phase);
-  const eligible = (request, phase) => active() && !busy && phases[next] === phase &&
-    (!['save', 'retain'].includes(phase) || saveArmed) && digest(request, phase);
+  const eligible = (request, phase) => active() && !busy &&
+    (phase === 'addon' ? saveArmed && !addonDone && next >= phases.indexOf('retain') : phases[next] === phase) &&
+    (!['save', 'retain', 'addon'].includes(phase) || saveArmed) && digest(request, phase);
   const dispatch = async (phase, request, proceed) => {
     const requestDigest = eligible(request, phase);
     if (!requestDigest || typeof proceed !== 'function') {
@@ -40,18 +41,18 @@ export function createFinalGoCallbackAuthority({ operationDigest, sourceDigest, 
     }
     busy = true;
     try {
-      if (['save', 'retain'].includes(phase) && await verifyDispatch(phase, request) !== true) throw new Error('AMEND_FINAL_REVIEW_UNVERIFIED');
+      if (['save', 'retain', 'addon'].includes(phase) && await verifyDispatch(phase, request) !== true) throw new Error('AMEND_FINAL_REVIEW_UNVERIFIED');
       if (!handle) {
         const result = await authorizeFirst({ operationDigest, sourceDigest, targetDigest, approvedPlanDigest, reviewDigest,
           phase: partyPhases.includes(phase) ? `amend.party.${phase}` : `amend.${phase}`, requestDigest });
         if (!UUID.test(result?.holdId || '') || !HASH.test(result?.ownerToken || '')) throw new Error('AMEND_FINAL_CLAIM_UNVERIFIED');
         handle = Object.freeze({ holdId: result.holdId, ownerToken: result.ownerToken });
       }
-      if (['save', 'retain'].includes(phase) && await verifyDispatch(phase, request) !== true) throw new Error('AMEND_FINAL_REVIEW_UNVERIFIED');
+      if (['save', 'retain', 'addon'].includes(phase) && await verifyDispatch(phase, request) !== true) throw new Error('AMEND_FINAL_REVIEW_UNVERIFIED');
       if (!active() || digest(request, phase) !== requestDigest) throw new Error('AMEND_FINAL_DISPATCH_UNAUTHORIZED');
       if (phase !== 'availability') possiblyPersisted = true;
       await proceed();
-      next += 1;
+      if (phase === 'addon') addonDone = true; else next += 1;
     } catch (error) {
       closed = true;
       throw error;
@@ -67,6 +68,7 @@ export function createFinalGoCallbackAuthority({ operationDigest, sourceDigest, 
     dispatchAvailability: (request, proceed) => dispatch('availability', request, proceed),
     dispatchSave: (request, proceed) => dispatch('save', request, proceed),
     dispatchRetain: (request, proceed) => dispatch('retain', request, proceed),
+    dispatchAddon: (request, proceed) => dispatch('addon', request, proceed),
     callbacksComplete: () => active() && !busy && phases[next] === 'availability',
     mayAttemptSave: () => active() && saveArmed,
     possiblyPersisted: () => possiblyPersisted,

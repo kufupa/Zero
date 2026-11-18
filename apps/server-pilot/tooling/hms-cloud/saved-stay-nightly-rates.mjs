@@ -64,7 +64,10 @@ export function parseNativePricingJson(raw) {
         if (raw[j] === '"') break;
       }
       if (j === raw.length) throw new Error('NATIVE_PRICE_RESPONSE_INVALID');
-      const token = raw.slice(i, j + 1);
+      // HMS also escapes hyphens in message text (for example "Add\\-Ons"),
+      // which JSON does not recognize as an escape.
+      const token = raw.slice(i, j + 1).replace(/\\+-/g, match =>
+        (match.length - 1) % 2 === 1 ? match.slice(1) : match);
       if (top?.kind === 'object' && top.key) {
         const key = JSON.parse(token).toLowerCase();
         if (top.keys.has(key)) throw new Error('NATIVE_PRICE_RESPONSE_DUPLICATE');

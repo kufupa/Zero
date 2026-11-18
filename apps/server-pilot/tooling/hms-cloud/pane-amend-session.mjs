@@ -286,7 +286,7 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
   try {
     const original = baseline ?? snapshot, state = { partyPreimage: beforeParties, allowRealGuest, verifiedChildAges,
       expectedGuarantee: { code: guaranteeCode } };
-    if (!['save', 'retain', 'extend'].includes(phase) || typeof beforeNote !== 'string' ||
+    if (!['save', 'retain', 'extend', 'addon'].includes(phase) || typeof beforeNote !== 'string' ||
         String(original?.data?.reservationnote ?? '') !== beforeNote ||
         !matchesAmendBusiness(snapshot, selected, changes, original, state)) return false;
     const url = new URL(request.url()), body = new URLSearchParams(request.postData() || ''), data = snapshot.data;
@@ -327,6 +327,11 @@ export function matchesCloudPaneAmendSave(request, frame, snapshot,
     if (phase === 'extend') {
       if (changes.retainRates !== 'yes') return false;
       required.confirmextendoverriderate = 'confirmed';
+    }
+    if (phase === 'addon') {
+      required.confirmenhexpadjustdates = 'confirmed';
+      if (body.get('confirmretainrate')) required.confirmretainrate = changes.retainRates === 'yes' ? 'confirmed' : 'not_needed';
+      if (body.get('confirmextendoverriderate')) required.confirmextendoverriderate = 'confirmed';
     }
     // A stale confirmation could skip the native question and its approved choice.
     for (const key of ['confirmretainrate', 'confirmextendoverriderate']) {
@@ -685,7 +690,9 @@ export function confirmedCloudAmendResult(saved, fresh, writerSessionClosed) {
     return { outcome: 'uncertain', issue: 'AMEND_READBACK_UNVERIFIED' };
   }
   return { outcome: 'amended', dispatchCallbacksDrained: true, writerSessionClosed: true,
-    businessFieldsMatched: true, readback: fresh.readback };
+    businessFieldsMatched: true, readback: { ...fresh.readback,
+      ...(saved.addonAlignmentChoice ? { addonAlignmentChoice: saved.addonAlignmentChoice } : {}),
+      ...(saved.nativeWarnings?.length ? { nativeWarnings: saved.nativeWarnings } : {}) } };
 }
 
 /** The saved-stay control may have text instead of a tooltip; ambiguity refuses. */
@@ -1279,6 +1286,18 @@ export function cloudPaneAmendRunOptions({ page, input, expected, authorization,
       matches: (request, frame, prepared, _staged, observed) =>
         matchesCloudPaneAmendSave(request, frame, observed, saveOptions(prepared, 'retain')),
       dispatchCandidate: callbackFinal ? callbackAuthority.dispatchRetain : (request, proceed) => dispatchSave('retain', request, proceed),
+    } } : {}),
+    ...(!prepareOnly && !callbackReviewOnly ? { addonRate: {
+      snapshot: async (bounded, prepared) => {
+        const observed = await bounded(snapshot(prepared.frame));
+        if (!valid(observed, prepared)) throw new Error('AMEND_DRAFT_CHANGED');
+        checkPrice(observed, prepared);
+        checkMealPlan(observed);
+        return observed;
+      },
+      matches: (request, frame, prepared, _staged, observed) =>
+        matchesCloudPaneAmendSave(request, frame, observed, saveOptions(prepared, 'addon')),
+      dispatchCandidate: callbackFinal ? callbackAuthority.dispatchAddon : (request, proceed) => dispatchSave('addon', request, proceed),
     } } : {}),
     ...(!prepareOnly && !callbackReviewOnly && allowsExtendOverrideRate ? { extendRate: {
       snapshot: async (bounded, prepared) => {

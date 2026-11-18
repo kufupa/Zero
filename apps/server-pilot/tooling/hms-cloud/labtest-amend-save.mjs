@@ -126,6 +126,8 @@ export function labtestAmendOutcome({
 /** One observed HMS question, not generic permission to answer any dialog. */
 const RETAIN_QUESTION = 'Retain the current rates?';
 const EXTEND_OVERRIDE_QUESTION = 'Extend the Rate Overrides to the new Dates?';
+const ADDON_QUESTION = 'Adjust Add-Ons that align with stay dates to the new dates?';
+const ADDON_WARNING = 'Add-Ons for stay thru dates are not adjusted.';
 function isNativeRateQuestion(body, handler, message) {
   const data = body?.pageData, messages = data?.messages;
   if (!data || data.success !== false || !Array.isArray(messages) || messages.length !== 1) return false;
@@ -136,13 +138,15 @@ function isNativeRateQuestion(body, handler, message) {
 }
 export const isRetainRatesQuestion = body => isNativeRateQuestion(body, 'confirmRetainRates', RETAIN_QUESTION);
 export const isExtendOverrideRatesQuestion = body => isNativeRateQuestion(body, 'confirmExtendOverrideRate', EXTEND_OVERRIDE_QUESTION);
+export const isAddonDateQuestion = body => isNativeRateQuestion(body, 'confirmEnhExpAdjustDates', ADDON_QUESTION);
 
 export function isRetainRatesSaveSuccess(body) {
   const data = body?.pageData;
   const messages = data?.messages;
-  const saved = Array.isArray(messages) && messages.length === 1 && messages[0] &&
-    typeof messages[0] === 'object' && !Array.isArray(messages[0]) &&
-    messages[0].type === 'confirm' && messages[0].msg === 'The record was successfully saved.';
+  const saved = Array.isArray(messages) && messages.every(message => message &&
+    typeof message === 'object' && !Array.isArray(message) &&
+    (message.type === 'confirm' && message.msg === 'The record was successfully saved.' ||
+     message.type === 'warning' && message.msg === ADDON_WARNING));
   return Boolean(data && data.success === true && (messages === undefined ||
     (Array.isArray(messages) && messages.length === 0) || saved));
 }
@@ -189,8 +193,8 @@ async function nativeRateQuestionButton(frame, choice, bounded, questionText) {
  * or between pointer-down and click. An unverified event is cancelled.
  */
 async function clickNativeRateQuestionButton(frame, choice, bounded, questionText) {
-  if (!['yes', 'no'].includes(choice) || ![RETAIN_QUESTION, EXTEND_OVERRIDE_QUESTION].includes(questionText) ||
-      (questionText === EXTEND_OVERRIDE_QUESTION && choice !== 'yes')) throw new Error('RETAIN_DIALOG_UNVERIFIED');
+  if (!['yes', 'no'].includes(choice) || ![RETAIN_QUESTION, EXTEND_OVERRIDE_QUESTION, ADDON_QUESTION].includes(questionText) ||
+      ([EXTEND_OVERRIDE_QUESTION, ADDON_QUESTION].includes(questionText) && choice !== 'yes')) throw new Error('RETAIN_DIALOG_UNVERIFIED');
   const button = await nativeRateQuestionButton(frame, choice, bounded, questionText);
   const installed = await bounded(frame.evaluate(({ selected, questionText }) => {
     const key = '__navaRetainRatesClickGuard';
@@ -262,6 +266,7 @@ export async function runLabtestAmendSave(page, {
   availability,
   retainRate,
   extendRate,
+  addonRate,
   stageDetails = () => ({}),
 } = {}) {
   let returnedResult;
@@ -298,7 +303,7 @@ export async function runLabtestAmendSave(page, {
         availability.recipient.length > 1000 || /[\p{Cc}]/u.test(availability.recipient))))) {
     return result('input_gap', { issue: 'AMEND_AVAILABILITY_CALLBACKS_INVALID' });
   }
-  if (callbackReviewOnly && (!availability || retainRate !== undefined || extendRate !== undefined ||
+  if (callbackReviewOnly && (!availability || retainRate !== undefined || extendRate !== undefined || addonRate !== undefined ||
       !isFirstGoCallbackAuthority(callbackAuthority) || !callbackAuthority.isActive() ||
       availability.dispatchCandidate !== callbackAuthority.dispatchAvailability ||
       (dispatchChildCandidate !== undefined && dispatchChildCandidate !== callbackAuthority.dispatchChildren))) {
@@ -326,14 +331,19 @@ export async function runLabtestAmendSave(page, {
       typeof extendRate.matches !== 'function' || typeof extendRate.dispatchCandidate !== 'function')) {
     return result('input_gap', { issue: 'AMEND_EXTEND_CALLBACKS_INVALID' });
   }
+  if (addonRate !== undefined && (!addonRate || typeof addonRate !== 'object' || prepareOnly || !retainRate ||
+      typeof addonRate.snapshot !== 'function' || typeof addonRate.matches !== 'function' ||
+      typeof addonRate.dispatchCandidate !== 'function')) {
+    return result('input_gap', { issue: 'AMEND_ADDON_CALLBACKS_INVALID' });
+  }
 
   let armed = false, possiblyDispatched = false, dispatched = false, blockedAtDispatch = 0;
   let blocked = 0, sendRequests = 0, blockedCardEntry = 0, blockedTaxValues = 0, nativeDialog = null, response = null, authorizedRequest = null;
   let stopReason = null, scope, fence, routeChain, prepared, staged, inStage = false, childStageGate = null, roomStageGate = null, rateStageGate = null, guaranteeStageGate = null, partyStageGate = null;
   let routeSetupSettled = true;
   let availabilityArmed = false, availabilityRequest = null, availabilityDispatched = false, availabilitySnapshot = null;
-  let retainArmed = false, retainRequest = null, retainDispatched = false, retainSnapshot = null;
-  let extendArmed = false, extendRequest = null, extendDispatched = false, extendSnapshot = null;
+  let continuationArmed = false, continuationRequest = null, continuationDispatched = false, continuationSnapshot = null;
+  let continuationPhase = null, continuationIndex = 0, addonAlignmentChoice = null, nativeWarnings = [];
   let nativeStep = 'prepare';
   const blockedTargets = new Set();
   let signalStop;
@@ -342,8 +352,7 @@ export async function runLabtestAmendSave(page, {
     stopReason ||= reason;
     armed = false;
     availabilityArmed = false;
-    retainArmed = false;
-    extendArmed = false;
+    continuationArmed = false;
     inStage = false;
     childStageGate?.close();
     roomStageGate?.close();
@@ -370,6 +379,8 @@ export async function runLabtestAmendSave(page, {
     blockedCardEntryRequests: blockedCardEntry,
     ...(blockedTaxValues ? { blockedTaxMetadataReadRequests: blockedTaxValues } : {}),
     nativeDialog,
+    ...(addonAlignmentChoice ? { addonAlignmentChoice } : {}),
+    ...(nativeWarnings.length ? { nativeWarnings } : {}),
   });
   const details = () => {
     try {
@@ -419,6 +430,15 @@ export async function runLabtestAmendSave(page, {
       ...(rateStageGate ? SAVED_RATE_STAGE_PATHS : []), ...(guaranteeStageGate ? [SAVED_GUARANTEE_PATH] : []), ...(partyStageGate ? SAVED_PARTY_STAGE_PATHS : [])]));
     scope = fence.open();
     routeSetupSettled = false;
+    const continuations = { retain: retainRate, extend: extendRate, addon: addonRate };
+    const continuation = (index) => ({
+      isArmed: () => continuationArmed && continuationIndex === index && withinDeadline(),
+      matches: (request, requestFrame) => staged !== undefined && continuationSnapshot !== null &&
+        continuations[continuationPhase]?.matches(request, requestFrame, prepared, staged, continuationSnapshot, retainRate?.choice),
+      dispatchCandidate: (request, proceed) => continuations[continuationPhase].dispatchCandidate(request, proceed),
+      onCandidate: (request) => { continuationRequest = request; possiblyDispatched = true; },
+      onDispatch: () => { continuationDispatched = true; continuationArmed = false; },
+    });
     const routeSetup = installLabtestSaveRouteChain(page, {
       frame: prepared.frame,
       fence,
@@ -444,22 +464,9 @@ export async function runLabtestAmendSave(page, {
         onCandidate: (request) => { availabilityRequest = request; if (!prepareOnly) possiblyDispatched = true; },
         onDispatch: () => { availabilityDispatched = true; },
       } : null,
-      secondSave: retainRate ? {
-        isArmed: () => retainArmed && withinDeadline(),
-        matches: (request, requestFrame) => staged !== undefined && retainSnapshot !== null &&
-          retainRate.matches(request, requestFrame, prepared, staged, retainSnapshot, retainRate.choice),
-        dispatchCandidate: retainRate.dispatchCandidate,
-        onCandidate: (request) => { retainRequest = request; possiblyDispatched = true; },
-        onDispatch: () => { retainDispatched = true; retainArmed = false; },
-      } : null,
-      thirdSave: extendRate ? {
-        isArmed: () => extendArmed && withinDeadline(),
-        matches: (request, requestFrame) => staged !== undefined && extendSnapshot !== null &&
-          extendRate.matches(request, requestFrame, prepared, staged, extendSnapshot),
-        dispatchCandidate: extendRate.dispatchCandidate,
-        onCandidate: (request) => { extendRequest = request; possiblyDispatched = true; },
-        onDispatch: () => { extendDispatched = true; extendArmed = false; },
-      } : null,
+      secondSave: retainRate ? continuation(1) : null,
+      thirdSave: retainRate && (extendRate || addonRate) ? continuation(2) : null,
+      fourthSave: retainRate && extendRate && addonRate ? continuation(3) : null,
       matches: (request, requestFrame) => staged !== undefined &&
         matches(request, requestFrame, prepared, staged),
       onCandidate: (request) => {
@@ -599,37 +606,40 @@ export async function runLabtestAmendSave(page, {
       if (!dispatched || !response || response.status() !== 200 || blocked !== blockedAtDispatch || nativeDialog) {
         throw new Error('RETAIN_QUESTION_UNVERIFIED');
       }
-      const firstResponse = response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json());
-      if (!isRetainRatesQuestion(firstResponse) && !isRetainRatesSaveSuccess(firstResponse)) throw new Error('RETAIN_QUESTION_UNVERIFIED');
-      if (isRetainRatesQuestion(firstResponse)) {
-      retainSnapshot = structuredClone(await bounded(retainRate.snapshot(bounded, prepared, staged, { fence, scope })));
-      if (!withinDeadline() || blocked !== blockedAtDispatch || nativeDialog) throw new Error('RETAIN_QUESTION_UNVERIFIED');
-      const pendingRetain = page.waitForResponse((item) => item.request() === retainRequest, { timeout: timeoutMs })
-        .catch(() => null);
-      retainArmed = true;
-      await clickRetainRatesButton(prepared.frame, retainRate.choice, bounded);
-      response = await bounded(pendingRetain);
-      retainArmed = false;
-      if (!retainDispatched || !response || response.status() !== 200 ||
-          !(await bounded(routeChain.waitForSecond())) || !withinDeadline()) throw new Error('RETAIN_SAVE_UNVERIFIED');
-      const retainResponse = response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json());
-      if (extendRate && isExtendOverrideRatesQuestion(retainResponse)) {
-        await nativeRateQuestionButton(prepared.frame, 'yes', bounded, EXTEND_OVERRIDE_QUESTION);
-        extendSnapshot = structuredClone(await bounded(extendRate.snapshot(bounded, prepared, staged, { fence, scope })));
-        if (!withinDeadline() || blocked !== blockedAtDispatch || nativeDialog) throw new Error('EXTEND_OVERRIDE_QUESTION_UNVERIFIED');
-        const pendingExtend = page.waitForResponse(item => item.request() === extendRequest, { timeout: timeoutMs }).catch(() => null);
-        extendArmed = true;
-        await clickExtendOverrideRatesButton(prepared.frame, bounded);
-        response = await bounded(pendingExtend);
-        extendArmed = false;
-        if (!extendDispatched || !response || response.status() !== 200 ||
-            !(await bounded(routeChain.waitForThird())) || !withinDeadline() ||
-            !isRetainRatesSaveSuccess(response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json()))) throw new Error('EXTEND_OVERRIDE_SAVE_UNVERIFIED');
-      } else if (!isRetainRatesSaveSuccess(retainResponse)) throw new Error('RETAIN_SAVE_UNVERIFIED');
-      // No further dialog is positively expected; keep the absence window.
+      let body = response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json());
+      const answered = new Set();
+      while (!isRetainRatesSaveSuccess(body)) {
+        const phase = isRetainRatesQuestion(body) ? 'retain' : isExtendOverrideRatesQuestion(body) ? 'extend' :
+          isAddonDateQuestion(body) ? 'addon' : null;
+        const option = phase && continuations[phase];
+        if (!option || answered.has(phase)) throw new Error('RETAIN_QUESTION_UNVERIFIED');
+        answered.add(phase);
+        continuationPhase = phase;
+        continuationIndex += 1;
+        continuationRequest = null;
+        continuationDispatched = false;
+        continuationSnapshot = structuredClone(await bounded(option.snapshot(bounded, prepared, staged, { fence, scope })));
+        if (!withinDeadline() || blocked !== blockedAtDispatch || nativeDialog) throw new Error('RETAIN_QUESTION_UNVERIFIED');
+        const pendingContinuation = page.waitForResponse(item => item.request() === continuationRequest, { timeout: timeoutMs }).catch(() => null);
+        continuationArmed = true;
+        await clickNativeRateQuestionButton(prepared.frame, phase === 'retain' ? retainRate.choice : 'yes', bounded,
+          phase === 'retain' ? RETAIN_QUESTION : phase === 'extend' ? EXTEND_OVERRIDE_QUESTION : ADDON_QUESTION);
+        response = await bounded(pendingContinuation);
+        continuationArmed = false;
+        const waitFor = [null, 'waitForSecond', 'waitForThird', 'waitForFourth'][continuationIndex];
+        if (!continuationDispatched || !response || response.status() !== 200 || !waitFor ||
+            !(await bounded(routeChain[waitFor]())) || !withinDeadline()) throw new Error('RETAIN_SAVE_UNVERIFIED');
+        if (phase === 'addon') addonAlignmentChoice = 'yes';
+        body = response.text ? parseNativePricingJson(await bounded(response.text())) : await bounded(response.json());
+      }
+      nativeWarnings = (body.pageData.messages ?? []).filter(message => message.type === 'warning').map(message => message.msg);
+      if (nativeWarnings.includes(ADDON_WARNING)) {
+        const dialog = prepared.frame.locator('.x-window:visible:not(.x-menu)').filter({ hasText: ADDON_WARNING });
+        await bounded(dialog.waitFor({ state: 'visible', timeout: 5_000 }));
+        await bounded(dialog.locator('a.x-btn:visible').filter({ hasText: /^\s*OK\s*$/i }).click({ timeout: 5_000 }));
+      }
       await bounded(page.waitForTimeout(500));
       if (!withinDeadline()) throw new Error(stopReason || 'AMEND_TIMEOUT');
-      }
     }
     const dialogs = await bounded(prepared.frame.locator('.x-window:visible:not(.x-menu)').count());
     const blockedAfterDispatch = Math.max(0, blocked - blockedAtDispatch);
@@ -650,8 +660,7 @@ export async function runLabtestAmendSave(page, {
     return result(outcome, outcomeDetails);
   } catch (error) {
     armed = false;
-    retainArmed = false;
-    extendArmed = false;
+    continuationArmed = false;
     routeChain?.disarm();
     if (possiblyDispatched) fence?.quarantine();
     // A click can fail after native continuation but before the server wrapper
@@ -665,13 +674,12 @@ export async function runLabtestAmendSave(page, {
       try { await bounded(routeChain.waitForAvailability()); withinDeadline(); }
       catch { /* The rate hold or response may still be in flight. */ }
     }
-    if (retainDispatched && routeChain && withinDeadline()) {
-      try { await bounded(routeChain.waitForSecond()); withinDeadline(); }
-      catch { /* The continuation can still be in flight; retain uncertainty. */ }
-    }
-    if (extendDispatched && routeChain && withinDeadline()) {
-      try { await bounded(routeChain.waitForThird()); withinDeadline(); }
-      catch { /* Keep the same hold uncertain while its final continuation is pending. */ }
+    if (continuationDispatched && routeChain && withinDeadline()) {
+      try {
+        const waitFor = [null, 'waitForSecond', 'waitForThird', 'waitForFourth'][continuationIndex];
+        if (waitFor) await bounded(routeChain[waitFor]());
+        withinDeadline();
+      } catch { /* The continuation can still be in flight; retain uncertainty. */ }
     }
     return result(possiblyDispatched ? 'uncertain' : 'not_dispatched', {
       issue: stopReason || labtestAmendIssue(error),
