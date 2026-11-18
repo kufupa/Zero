@@ -530,7 +530,7 @@ export async function createReservation(input, options = {}) {
         const listed = await listTrack(page, { propertyCode });
         const rows = Array.isArray(listed?.candidates) ? listed.candidates : [];
         if (!commit) {
-          if (listed?.cleanupRequired || listed?.issue === 'TRACK_FORM_CHANGED') {
+          if (listed?.outcome !== 'ok' || listed.cleanupRequired) {
             stop('uncertain', 'native_track_lookup_unverified', { field: 'track' });
           }
           const coverage = listed?.coverage;
