@@ -8,7 +8,7 @@ import { groupedQuoteRequest, proposalDraft, type ProposalDraft, type Workflow }
 import { createGoEnabled, createGoRealGuests, createPilotRequested, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly, staffSlotCount } from './hms-mode.js';
 import { missingCreateFields } from './proposal-fields.js';
 import { stageFeedback } from './prepare-feedback.js';
-import { attachmentsUnconfirmed, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedStageSource, stageSource, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentsUnconfirmed, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedStageSource, stageSource, staffAttachmentsChecked, type StaffJobBinding } from './attachment-gate.js';
 import { installedStaffTools, type LeaseFence, type RegistryContext, type StaffNativeInput, type ToolRegistry, type ToolResult } from './tool-registry.js';
 
 export const manualLabtestTarget = z.object({
