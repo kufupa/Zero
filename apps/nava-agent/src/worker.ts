@@ -11,6 +11,7 @@ import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent
 import { event, json, sql, uid } from './db.js';
 import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
 import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffStage } from './create-operations.js';
+import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
@@ -216,13 +217,38 @@ export async function runSession(sessionId:string,deps:WorkerDeps):Promise<void>
   } finally {clearInterval(timer);abort.abort();await deps.store.release(lease);}
 }
 
+// After repeated worker failures, leave every queued step in a visible terminal state so staff see it and the session
+// stops being picked. A Save whose dispatch marker was written may have been clicked: it becomes uncertain, never retried.
+async function parkFailedSession(sessionId:string) {
+  const failed={code:'WORKER_FAILED',message:'Nava could not finish this step. Nothing new was saved; run Prepare again.',
+    recovery:'Run Prepare again.',retryable:false,outcome:'known',operation:'staff_stage'};
+  const uncertain={code:'SAVE_UNCERTAIN',message:'Save may have dispatched; check HMS before any retry.',retryable:false,outcome:'uncertain'};
+  await sql.begin(async tx=>{
+    const [s]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${sessionId} AND (lease_until IS NULL OR lease_until<clock_timestamp()) FOR NO KEY UPDATE`;
+    if(!s) return;
+    await tx`UPDATE nava_agent.proposal SET phase=COALESCE(stage->>'previous_phase','ready'),stage=NULL,
+      execution=COALESCE(execution,'{}'::jsonb)||${json({error:failed})}::jsonb,updated_at=now()
+      WHERE session_id=${sessionId} AND phase='staging' AND stage->>'state'='queued'`;
+    await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go')||jsonb_build_object('last_go',execution->'go','error',${json(uncertain)}::jsonb),updated_at=now()
+      WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' AND execution->'go'->>'dispatch'<>'pending'`;
+    await tx`UPDATE nava_agent.proposal SET phase='ready',execution=(execution-'go')||jsonb_build_object('last_go',execution->'go','error',${json(failed)}::jsonb),updated_at=now()
+      WHERE session_id=${sessionId} AND phase='saving' AND execution->'go'->>'staff'='true' AND execution->'go'->>'dispatch'='pending'`;
+    await tx`UPDATE nava_agent.agent_event SET payload=jsonb_set(payload,'{delivered}','true'::jsonb)
+      WHERE session_id=${sessionId} AND kind IN ('mail_pending','context_pending') AND payload->>'delivered'='false'`;
+    await tx`UPDATE nava_agent.agent_session SET status='idle',updated_at=now() WHERE id=${sessionId} AND status='running'`;
+    await writeEvent(tx,sessionId,'worker_parked',{reason:'repeated_worker_failure'});
+  });
+}
+
 export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<void> {
   const active=new Set<string>();
   // Consecutive failures per session: after 3, stop picking it up (and stop a stuck model turn) instead of retrying forever.
   const failures=new Map<string,number>();
   const limit=configuredSlots().requested;
   while(!signal?.aborted) {
-    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now()) AND (
+    const parked=[...failures].filter(([,count])=>count>=3).map(([id])=>id);
+    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now())
+      AND NOT (s.id::text = ANY(${sql.array(parked)}::text[])) AND (
       ((s.pending_tool_use_id IS NULL OR ${hmsSaveEnabled()}) AND (
         EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.kind IN ('mail_pending','context_pending') AND e.payload->>'delivered'='false')
         OR s.status='running'))
@@ -240,8 +266,7 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         const count=(failures.get(row.id) ?? 0)+1;
         failures.set(row.id,count);
         console.error(JSON.stringify({event:count>=3?'worker_gave_up':'worker_error',session_id:row.id,attempt:count,error:/^[A-Z_:-]+$/.test(message)?message:error instanceof Error?error.name:'unknown'}));
-        if(count>=3) await sql`UPDATE nava_agent.agent_session SET status='idle',updated_at=now() WHERE id=${row.id} AND status='running'
-          AND (lease_until IS NULL OR lease_until<clock_timestamp())`.catch(()=>{});
+        if(count>=3) await parkFailedSession(row.id).catch(()=>{});
       }).finally(()=>active.delete(row.id));
     }
     await delay(3000,undefined,{signal}).catch(()=>{});
