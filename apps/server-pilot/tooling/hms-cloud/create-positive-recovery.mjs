@@ -63,7 +63,7 @@ export async function provePositiveCreateRecovery(intent, options = {}) {
         (request.billingReference !== undefined && !request.parties?.arAccount)) return blocked('intent_unverified');
     const preimage = recovery.preimage;
     if (preimage?.arrival !== stay.arrival || preimage?.departure !== stay.departure ||
-        !Array.isArray(preimage.sameArrival) || blockingCreateMatches(preimage.sameArrival).length > 7 ||
+        !Array.isArray(preimage.sameArrival) || blockingCreateMatches(preimage.sameArrival.filter(row => row.departure === stay.departure)).length > 7 ||
         preimage.coverage?.complete !== true || !Number.isSafeInteger(preimage.coverage.displayed) ||
         preimage.coverage.displayed < preimage.sameArrival.length || preimage.coverage.displayed !== preimage.coverage.total ||
         preimage.searchedDateRange?.from > stay.arrival || preimage.searchedDateRange?.to < stay.arrival ||
@@ -71,9 +71,9 @@ export async function provePositiveCreateRecovery(intent, options = {}) {
       return blocked('preimage_unverified');
     }
     // Retain every prior identity, including cancelled stays, for attribution.
-    // Active prior rows are independently verified siblings, not new inserts.
+    // Active rows for these exact dates are verified siblings, not new inserts.
     const prior = preimage.sameArrival;
-    const siblings = blockingCreateMatches(prior);
+    const siblings = blockingCreateMatches(prior.filter(row => row.departure === stay.departure));
     const sameIdentity = (left, right) => left?.confirmation === right?.confirmation &&
       left?.firstName === right?.firstName && left?.lastName === right?.lastName &&
       left?.arrival === right?.arrival && left?.departure === right?.departure && left?.status === right?.status;
@@ -90,7 +90,7 @@ export async function provePositiveCreateRecovery(intent, options = {}) {
             return bound.outcome !== 'ok' || bound.normalizedRequestDigest !== item?.requestDigest;
           })) return blocked('preimage_unverified');
       const matching = manifest.filter((item) => sameCreateGuest(item.approvedRequest.guest, guest) &&
-        item.approvedRequest.stay.arrival === stay.arrival);
+        item.approvedRequest.stay.arrival === stay.arrival && item.approvedRequest.stay.departure === stay.departure);
       if (matching.length !== siblings.length || siblings.some((row) => !matching.some((item) => item.confirmation === row.confirmation))) {
         return blocked('preimage_unverified');
       }

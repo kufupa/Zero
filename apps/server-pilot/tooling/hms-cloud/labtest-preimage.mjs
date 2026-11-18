@@ -244,7 +244,7 @@ export async function searchLabtestPreimage(page, { arrival, departure, property
       throw new Error('SEARCH_RESULTS_INCOMPLETE');
     }
     const sameArrival = candidates.filter((row) => sameCreateGuest(row, guest) && row.arrival === arrival);
-    const blockingMatches = blockingCreateMatches(sameArrival);
+    const blockingMatches = blockingCreateMatches(sameArrival.filter((row) => row.departure === departure));
     const result = { outcome: blockingMatches.length ? 'existing_matches' : 'clear', propertyCode, firstName, lastName, arrival, departure,
       searchedDateRange: window, coverage: { displayed: found.displayed, total: found.total, complete: true }, candidates, sameArrival };
     if (blockingMatches.length && !verifyExisting) return result;

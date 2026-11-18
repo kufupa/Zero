@@ -17,9 +17,10 @@ export function censusMatchesApprovedSiblings(census, siblings, { propertyCode =
       const binding = digestCloudCreateRequest(sibling.approvedRequest), request = binding.request;
       if (binding.outcome !== 'ok' || binding.normalizedRequestDigest !== sibling.requestDigest ||
           request.propertyCode !== propertyCode || !/^\d{1,100}$/.test(sibling.nativeStayId || '')) return false;
-      if (sameCreateGuest(request.guest, target) && request.stay.arrival === census.arrival) matching.push({ sibling, request });
+      if (sameCreateGuest(request.guest, target) && request.stay.arrival === census.arrival &&
+          request.stay.departure === census.departure) matching.push({ sibling, request });
     }
-    if (blockingCreateMatches(census.sameArrival).length !== matching.length) return false;
+    if (blockingCreateMatches(census.sameArrival.filter(row => row.departure === census.departure)).length !== matching.length) return false;
     return matching.every(({ sibling, request }) => {
       const row = census.sameArrival.find(item => item.confirmation === sibling.confirmation);
       return Boolean(row && sameCreateGuest(row, request.guest) && row.status === 'Reserved' &&
@@ -50,8 +51,8 @@ async function verifySiblings(census, siblings, {
           !Array.isArray(census.sameArrival) || new Set(census.sameArrival.map(item => item.confirmation)).size !== census.sameArrival.length ||
           !(cloudTargetKey ?? createCloudTargetKey(target, census.arrival, propertyCode))) return false;
       matching = siblings.filter(({ approvedRequest: request }) =>
-        sameCreateGuest(request?.guest, target) && request?.stay?.arrival === census.arrival);
-      if (blockingCreateMatches(census.sameArrival).length !== matching.length) return false;
+        sameCreateGuest(request?.guest, target) && request?.stay?.arrival === census.arrival && request?.stay?.departure === census.departure);
+      if (blockingCreateMatches(census.sameArrival.filter(row => row.departure === census.departure)).length !== matching.length) return false;
     }
     for (const sibling of siblings) {
       const { confirmation, approvedRequest, requestDigest } = sibling;
