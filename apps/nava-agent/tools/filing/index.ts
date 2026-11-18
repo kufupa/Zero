@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { filingBooking, filingPrepare, filingSave } from './schema.js';
+import { filingBooking, filingDescription, filingPrepare, filingSave } from './schema.js';
 
 export const maxFilingPdfBytes = 10 * 1024 * 1024;
 
@@ -244,7 +244,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   if (prepared.booking_id !== request.bookingId || prepared.target.property_code !== request.propertyCode ||
       prepared.target.confirmation !== request.confirmation || prepared.source.message_id !== reference.messageId ||
       prepared.source.attachment_id !== reference.attachmentId ||
-      prepared.document.description !== (request.description ?? prepared.document.name)) {
+      prepared.document.description !== filingDescription.parse(request.description ?? prepared.document.name)) {
     return failure('PREPARED_FILING_CHANGED', 'The selected stay or PDF changed; prepare again.');
   }
   let markerStarted = false;
@@ -355,20 +355,20 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (!matchesAttachment(reference, attachment)) return failure('ATTACHMENT_UNAVAILABLE', 'The selected session attachment is not an available PDF.');
     const bytes = attachment.bytes;
     const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const description = filingDescription.parse(request.description ?? attachment.name);
     if (!await authorize(context, request)) return failure('TARGET_NOT_AUTHORIZED', 'The selected booking is outside the session scope.');
     const staged = await native.prepareCloudPaneAttach({ target: { propertyCode: request.propertyCode },
       transportId: property.mailboxTransportId, credentialLease: context.credentialLease, signal: context.signal,
       confirmation: target.identity.confirmation, arrival: target.identity.arrival,
       guestName: `${target.identity.firstName} ${target.identity.lastName}`, approvedStay: target.stay,
       approvedSnapshot: target.snapshot, allowRealGuest: context.mode === 'live', documentName: attachment.name,
-      documentDescription: request.description ?? attachment.name, bytes, pdfSha256: sha256 });
+      documentDescription: description, bytes, pdfSha256: sha256 });
     context.signal?.throwIfAborted();
     if (staged.outcome !== 'prepared' || !text(staged.documentCode, 40) || !text(staged.documentName, 150)) {
       const code = text(staged.issue, 80) && /^[A-Z][A-Z0-9_]+$/.test(staged.issue) ? staged.issue : 'NATIVE_PREPARE_UNAVAILABLE';
       return { ...failure(code, 'The native document form could not be verified without submitting.', true),
         data: { outcome: 'documents_read', ...documents } };
     }
-    const description = request.description ?? attachment.name;
     const row = (id: string, label: string, value: string, native_path: string) =>
       ({ id, booking_id: request.bookingId, kind: 'text', label, value, native_path });
     return { ok: true, data: { outcome: 'prepared', unsaved: true, booking_id: request.bookingId,

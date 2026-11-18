@@ -2,9 +2,9 @@ import { z } from 'zod';
 
 const text = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/\p{Cc}/u.test(value));
 const id = text(256);
-const descriptionLimit = 200;
+const nativeDescriptionLimit = 80;
 export const filingDescription = z.string().min(1).refine(value => value === value.trim() && !/\p{Cc}/u.test(value))
-  .transform(value => value.slice(0, descriptionLimit).replace(/[\uD800-\uDBFF]$/, '').trimEnd());
+  .transform(value => value.slice(0, nativeDescriptionLimit).replace(/[\uD800-\uDBFF]$/, '').trimEnd());
 
 export const filingBooking = z.object({
   id,
@@ -43,7 +43,7 @@ export const filingPrepared = z.object({
   source: z.object({ message_id: id, attachment_id: id }).strict(),
   document: z.object({
     name: text(150), mime_type: z.literal('application/pdf'), sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    document_code: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/), upload_name: text(150), description: text(descriptionLimit),
+    document_code: z.string().regex(/^NAVA[A-Z2-7]{25}[AEIMQUY4]$/), upload_name: text(150), description: text(200),
   }).strict(),
 }).passthrough();
 
