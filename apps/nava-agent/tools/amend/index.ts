@@ -1,11 +1,16 @@
 import { z } from 'zod';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { day, patch, prepareEnvelope, prepareManifest } from './schema.js';
 
-type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; credentialLease?: unknown };
+export type ToolContext = { sessionId: string; mode: 'live' | 'labtest' | 'historical'; signal?: AbortSignal; credentialLease?: unknown };
+export type SaveContext = ToolContext & { markDispatched(details: unknown): Promise<void> };
 type ToolResult =
   | { ok: true; data: unknown; error: null }
-  | { ok: false; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' } };
+  | { ok: false; data: unknown; error: { code: string; message: string; retryable: boolean; outcome: 'known' | 'uncertain' } };
 
 const refuse = (code: string, message: string, data: unknown = null): ToolResult =>
   ({ ok: false, data, error: { code, message, retryable: false, outcome: 'known' } });
@@ -48,7 +53,7 @@ const major = (cents: string) => {
   const padded = cents.padStart(3, '0');
   return `${padded.slice(0, -2)}.${padded.slice(-2)}`;
 };
-const prepared = z.object({
+const nativePrepared = z.object({
   nativeDigest: z.string().regex(/^[a-f0-9]{64}$/),
   approvedPrices: z.object({
     version: z.literal(2),
@@ -60,9 +65,16 @@ const prepared = z.object({
       currency: z.string().regex(/^[A-Z]{3}$/),
       nightly: z.array(z.object({ date: day, amountCents: minor })),
     })).max(100),
-  }),
-  preserved: z.object({ cmsSend: z.boolean() }),
+  }).passthrough(),
+  preserved: z.object({ cmsSend: z.boolean(), cmsRecipient: z.string() }).passthrough(),
 });
+export const preparedAmend = nativePrepared.extend({
+  request: prepareEnvelope,
+  selected: selectedStay,
+  changes: z.record(z.unknown()),
+  childAgePreimage: z.array(z.number().int().min(0).max(17)).max(9),
+});
+export type PreparedAmend = z.infer<typeof preparedAmend>;
 
 type Property = { propertyCode: string; origin: string; active: boolean; mailboxTransportId: string; transportIds: string[] };
 type ReadTool = (input: {
@@ -70,17 +82,21 @@ type ReadTool = (input: {
 }) => Promise<unknown>;
 type NativeStay = z.infer<typeof selectedStay>;
 const fieldMap = {
-  arrival_date: 'arrival', departure_date: 'departure', adults: 'adults', room_type: 'roomType', rate_plan: 'ratePlan',
-  first_name: 'firstName', last_name: 'lastName', booker_name: 'bookerName',
-  booker_contact: 'bookerContact', reservation_note: 'reservationNote',
+  arrival_date: 'arrival', departure_date: 'departure', adults: 'adults', room_type: 'roomType',
+  room_type_for_charge: 'roomTypeForCharge', rate_plan: 'ratePlan', first_name: 'firstName', last_name: 'lastName',
+  guest_email: 'guestEmail', booker_name: 'bookerName', booker_contact: 'bookerContact',
+  billing_reference: 'billingReference', reservation_note: 'reservationNote', cms_send: 'cmsSend',
+  cms_message_id: 'cmsMessageId', cms_recipient: 'cmsRecipient',
 } satisfies Record<keyof z.infer<typeof patch>, string>;
 const stayFields = {
   arrival_date: 'arrival', departure_date: 'departure', adults: 'adults', room_type: 'roomType', rate_plan: 'ratePlan',
   first_name: 'firstName', last_name: 'lastName',
 } satisfies Partial<Record<keyof z.infer<typeof patch>, keyof NativeStay>>;
-const recordFields = { booker_name: 'caller', booker_contact: 'udfchar06', reservation_note: 'reservationnote' };
+const recordFields = { room_type_for_charge: 'roomtypecharge', guest_email: 'emailaddress', booker_name: 'caller',
+  booker_contact: 'udfchar06', billing_reference: 'billingreference', reservation_note: 'reservationnote',
+  cms_message_id: 'udfchar09', cms_recipient: 'udfchar13' };
 const nativeNoteLineEndings = (value: string) => value.replace(/\r\n/g, '\n');
-const priceFields = ['arrival_date', 'departure_date', 'adults', 'room_type', 'rate_plan'] as const;
+const priceFields = ['arrival_date', 'departure_date', 'adults', 'room_type', 'room_type_for_charge', 'rate_plan'] as const;
 
 function nativeRefusal(raw: unknown, fallback: string, message: string): ToolResult {
   const result = nativeStatus.safeParse(raw);
@@ -166,18 +182,22 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       }
     }
     const cms = record.details.fields.filter(field => field.name === 'udfchkbox04');
-    if (cms.length !== 1 || cms[0]?.type !== 'checkbox' || cms[0].value !== false) {
-      return refuse('AMEND_CMS_PRESERVATION_UNSUPPORTED', 'CMS send must be observed off before this preview; the current setting was not changed.');
+    const currentCmsSend = cms[0]?.value;
+    if (cms.length !== 1 || cms[0]?.type !== 'checkbox' || typeof currentCmsSend !== 'boolean') {
+      return refuse('AMEND_CMS_UNVERIFIED', 'HMS did not show the current CMS setting.');
     }
-    const before = {
+    const before: Record<string, unknown> = {
       ...Object.fromEntries(Object.entries(stayFields).map(([key, native]) => [key, selected[native]])),
       ...Object.fromEntries(Object.entries(recordFields).map(([key, native]) => {
         const fields = record.details.fields.filter(field => field.name === native);
         if (fields.length !== 1) return [key, null];
         const value = key === 'reservation_note' ? fields[0]?.rawValue : fields[0]?.value;
         return [key, typeof value === 'string' ? value : null];
-      })),
+      })), cms_send: currentCmsSend,
     };
+    if (typeof before.cms_message_id !== 'string' || typeof before.cms_recipient !== 'string') {
+      return refuse('AMEND_CMS_UNVERIFIED', 'HMS did not show the current CMS message and recipient.');
+    }
     const changedKeys = patch.keyof().options.filter(key => {
       const previous = before[key];
       return requested[key] !== undefined
@@ -192,52 +212,39 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     }
     const needsAvailability = priceFields.some(key => requested[key] !== undefined && requested[key] !== before[key]);
     const retainRates = action.details.retain_rates ?? !needsAvailability;
-    if (retainRates === needsAvailability) {
-      return refuse('AMEND_RATE_POLICY_UNSUPPORTED', needsAvailability
-        ? 'This adapter cannot stage a retained price for dates, occupancy, room, or rate changes.'
-        : 'Repricing without a date, occupancy, room, or rate change is unsupported.');
-    }
 
     phase = 'native_prepare';
-    const native: { prepareCloudPaneAmend(input: {
+    const native: { readCloudSavedChildAges(input: Record<string, unknown>): Promise<unknown>;
+      prepareCloudPaneAmend(input: {
       target: Property; selected: NativeStay; confirmation: string; arrival: string; changes: Record<string, unknown>;
-      discoveryOnly: true; allowRealGuest: true; transportId: string; signal: AbortSignal; credentialLease: unknown;
-    }, dependencies: { current: (...args: unknown[]) => Promise<unknown>;
-      stageGuest: (context: unknown, fields: Record<string, unknown>) => Promise<unknown> }): Promise<unknown> } = await import(nativePath('pane-amend-session'));
-    const recordModule: { currentLabtestRecord(...args: unknown[]): Promise<unknown> } = await import(nativePath('labtest-record'));
-    const contactModule: { stageSavedGuestFieldsForComposition(context: unknown, fields: Record<string, unknown>): Promise<unknown> } =
-      await import(nativePath('guest-stay-amend-contact'));
+      childAgePreimage: number[]; allowRealGuest: boolean; transportId: string; signal: AbortSignal; credentialLease: unknown;
+    }): Promise<unknown> } = await import(nativePath('pane-amend-session'));
+    const common = { target: property, selected, confirmation: selected.confirmation, arrival: selected.arrival,
+      allowRealGuest: context.mode === 'live', transportId: property.mailboxTransportId, signal, credentialLease: context.credentialLease };
+    const ageRead = z.object({ outcome: z.literal('ok'), ages: z.array(z.number().int().min(0).max(17)).max(9) })
+      .safeParse(await native.readCloudSavedChildAges(common));
+    if (!ageRead.success || ageRead.data.ages.length !== selected.children ||
+        (Array.isArray(selected.childAges) && !isDeepStrictEqual([...selected.childAges].sort((a, b) => a - b),
+          [...ageRead.data.ages].sort((a, b) => a - b)))) {
+      return refuse('AMEND_CHILD_AGES_UNVERIFIED', 'HMS could not confirm the current child ages.');
+    }
+    const childAgePreimage = ageRead.data.ages;
     const changes = {
       ...Object.fromEntries(changedKeys.map(key => [fieldMap[key], requested[key]])),
       retainRates: retainRates ? 'yes' : 'no',
-      cmsSend: false, cmsMessageId: '', cmsRecipient: '',
+      cmsSend: requested.cms_send ?? currentCmsSend,
+      cmsMessageId: requested.cms_message_id ?? before.cms_message_id,
+      cmsRecipient: requested.cms_recipient ?? before.cms_recipient,
     };
     const response = await native.prepareCloudPaneAmend({
-      target: property, selected, confirmation: selected.confirmation, arrival: selected.arrival,
-      changes, discoveryOnly: true, allowRealGuest: true, transportId: property.mailboxTransportId, signal, credentialLease: context.credentialLease,
-    }, {
-      current: async (...args) => {
-        const current = await recordModule.currentLabtestRecord(...args);
-        if (!z.object({ cmsSend: z.literal(false) }).passthrough().safeParse(current).success) {
-          throw new Error('AMEND_CMS_PRESERVATION_UNSUPPORTED');
-        }
-        return current;
-      },
-      stageGuest: async (stageContext, fields) => {
-        const { cmsSend, ...otherFields } = fields;
-        if (cmsSend !== false) throw new Error('AMEND_CMS_PRESERVATION_UNSUPPORTED');
-        return contactModule.stageSavedGuestFieldsForComposition(stageContext, otherFields);
-      },
+      ...common, changes, childAgePreimage,
     });
     signal.throwIfAborted();
     if (nativeStatus.safeParse(response).data?.outcome !== 'prepared') {
       return nativeRefusal(response, 'AMEND_STAGE_UNVERIFIED', 'HMS did not verify the unsaved amendment.');
     }
-    const staged = prepared.safeParse(response);
+    const staged = nativePrepared.safeParse(response);
     if (!staged.success) return refuse('AMEND_STAGE_UNVERIFIED', 'Native stage did not return a verified price and form binding.');
-    if (staged.data.preserved.cmsSend) {
-      return refuse('AMEND_CMS_PRESERVATION_UNSUPPORTED', 'Current CMS send setting cannot be preserved by this preview.');
-    }
     phase = 'target_read';
     const rereadRaw = await reader.withSavedStayAgentSession(({ runTool }) => runTool({
       tool: 'read', confirmation: selected.confirmation, arrivalDate: selected.arrival, includeNativePreimage: true,
@@ -252,7 +259,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     }
     const afterFields = reread.data.record.details.fields;
     const afterCms = afterFields.filter(field => field.name === 'udfchkbox04');
-    if (afterCms.length !== 1 || afterCms[0]?.type !== 'checkbox' || afterCms[0].value !== false ||
+    if (afterCms.length !== 1 || afterCms[0]?.type !== 'checkbox' || afterCms[0].value !== currentCmsSend ||
         changedKeys.some(key => {
           if (!Object.hasOwn(recordFields, key)) return false;
           const native = recordFields[key as keyof typeof recordFields];
@@ -288,8 +295,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       current_state: { ...before, children: selected.children, child_ages: selected.childAges },
       fields: requested, changed_fields: changedKeys,
       original_stay_unchanged: true,
-      cms_send: false, current_cms_send: staged.data.preserved.cmsSend,
+      cms_send: changes.cmsSend, current_cms_send: staged.data.preserved.cmsSend,
       native_digest: staged.data.nativeDigest,
+      native: { request: envelope.data, selected, changes, childAgePreimage, nativeDigest: staged.data.nativeDigest,
+        approvedPrices: staged.data.approvedPrices, preserved: staged.data.preserved },
       availability: { status: needsAvailability ? 'native_check_passed' : 'not_checked' },
       price: { basis: retainRates ? 'saved_stay' : 'staged_stay', currency: price.currency,
         total_cents: price.totalCents, average_nightly_cents: price.averageCents,
@@ -313,6 +322,84 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const code = error instanceof Error && safeCodes.includes(error.message) ? error.message : 'AMEND_NATIVE_UNAVAILABLE';
     return signal.aborted ? refuse('AMEND_ABORTED', 'Amendment preparation was aborted or timed out.')
       : refuse(code, 'Native amend session could not be opened or completed.', { phase });
+  }
+}
+
+const saveEnvelope = prepareEnvelope.extend({
+  executionId: z.string().min(1).max(200),
+  prepared: z.union([preparedAmend, z.object({ native: preparedAmend }).passthrough()]).optional(),
+}).strict();
+
+export async function save(input: unknown, context: SaveContext): Promise<ToolResult> {
+  const parsed = saveEnvelope.safeParse(input);
+  if (!parsed.success) return refuse('AMEND_INPUT_INVALID', 'Supply the reviewed amendment and execution ID.');
+  if (context.mode === 'historical') return refuse('HISTORICAL_HMS_UNAVAILABLE', 'Historical sessions cannot contact HMS.');
+  if (context.signal?.aborted) return refuse('AMEND_ABORTED', 'Amendment was aborted before dispatch.');
+  if (!context.credentialLease || typeof context.markDispatched !== 'function') {
+    return refuse('HMS_SHARED_LEASE_REQUIRED', 'The host must supply the exclusive HMS lease and dispatch marker.');
+  }
+  const { executionId, prepared: snapshot, ...request } = parsed.data;
+  const reviewed = snapshot && 'native' in snapshot ? snapshot.native : snapshot;
+  if (!reviewed) return refuse('AMEND_PREPARE_REQUIRED', 'Prepare the amendment and review its HMS price before Save.');
+  if (!isDeepStrictEqual(request, reviewed.request) || reviewed.selected.propertyCode !== request.booking.property_code ||
+      request.action.booking_ids[0] !== request.booking.id) {
+    return refuse('AMEND_PREPARE_CHANGED', 'The amendment changed after Prepare. Prepare it again.');
+  }
+  let markerStarted = false;
+  let directory: string | undefined;
+  const uncertain = (): ToolResult => ({ ok: false, data: null, error: {
+    code: 'AMEND_OUTCOME_UNCERTAIN', message: 'Read the stay in HMS before retrying this amendment.',
+    retryable: false, outcome: 'uncertain',
+  } });
+  try {
+    const registry: { getPropertyRegistration(code: string): Property | undefined } = await import(nativePath('property-registry'));
+    const property = registry.getPropertyRegistration(request.booking.property_code);
+    if (!property?.active || !property.transportIds.includes(property.mailboxTransportId)) {
+      return refuse('AMEND_PROPERTY_UNSUPPORTED', 'Property has no active native adapter.');
+    }
+    const native: { commitCloudPaneAmend(input: Record<string, unknown>, authorization: Record<string, unknown>): Promise<unknown> } =
+      await import(nativePath('pane-amend-session'));
+    directory = await mkdtemp(join(tmpdir(), 'nava-amend-'));
+    const beforeScreenshot = join(directory, 'before.png');
+    const afterScreenshot = join(directory, 'after.png');
+    const operationDigest = createHash('sha256').update(JSON.stringify(reviewed)).digest('hex');
+    const response = await native.commitCloudPaneAmend({
+      target: property, transportId: property.mailboxTransportId, credentialLease: context.credentialLease,
+      selected: reviewed.selected, confirmation: reviewed.selected.confirmation, arrival: reviewed.selected.arrival,
+      changes: reviewed.changes, childAgePreimage: reviewed.childAgePreimage,
+      nativeDigest: reviewed.nativeDigest, approvedPrices: reviewed.approvedPrices,
+      preserved: reviewed.preserved, allowRealGuest: context.mode === 'live', beforeScreenshot, afterScreenshot,
+      signal: context.signal,
+    }, {
+      operationDigest,
+      isEnabled: () => !context.signal?.aborted,
+      sealBeforeEvidence: async () => ({ eventId: randomUUID(),
+        sha256: createHash('sha256').update(await readFile(beforeScreenshot)).digest('hex') }),
+      authorizeFirst: async (step: { phase: string; requestDigest: string }) => {
+        if (markerStarted || context.signal?.aborted) throw new Error('AMEND_DISPATCH_DISARMED');
+        markerStarted = true;
+        await context.markDispatched({ workflow: 'amend', executionId, phase: step.phase, requestDigest: step.requestDigest });
+        context.signal?.throwIfAborted();
+        return { holdId: randomUUID(), ownerToken: randomBytes(32).toString('hex') };
+      },
+    });
+    const result = z.object({ outcome: z.string(), issue: z.string().optional(),
+      writerSessionClosed: z.boolean().optional(), dispatchCallbacksDrained: z.boolean().optional(),
+      businessFieldsMatched: z.boolean().optional(), readback: z.object({ confirmation: z.string(),
+        nativeStayId: nativeId }).passthrough().optional() }).safeParse(response);
+    if (markerStarted && result.success && result.data.outcome === 'amended' && result.data.writerSessionClosed &&
+        result.data.dispatchCallbacksDrained && result.data.businessFieldsMatched && result.data.readback &&
+        result.data.readback.confirmation === reviewed.selected.confirmation &&
+        result.data.readback.nativeStayId === reviewed.selected.reservationStayId) {
+      return { ok: true, data: { confirmation: result.data.readback.confirmation,
+        reservation_id: result.data.readback.nativeStayId, readback: result.data.readback }, error: null };
+    }
+    if (markerStarted) return uncertain();
+    return nativeRefusal(response, 'AMEND_SAVE_REFUSED', 'HMS did not save the amendment.');
+  } catch {
+    return markerStarted ? uncertain() : refuse('AMEND_SAVE_UNAVAILABLE', 'Native amendment stopped before dispatch.');
+  } finally {
+    if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
   }
 }
 

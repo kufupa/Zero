@@ -14,12 +14,18 @@ export const patch = z.object({
   departure_date: day.optional(),
   adults: z.number().int().min(1).max(16).optional(),
   room_type: code.optional(),
+  room_type_for_charge: code.optional(),
   rate_plan: code.optional(),
   first_name: text(100).min(1).optional(),
   last_name: text(100).min(1).optional(),
+  guest_email: text(254).optional(),
   booker_name: text(200).optional(),
   booker_contact: text(200).optional(),
+  billing_reference: text(50).optional(),
   reservation_note: z.string().max(2000).regex(/^(?:[^\p{Cc}]|\r?\n)*$/u).optional(),
+  cms_send: z.boolean().optional(),
+  cms_message_id: text(1000).optional(),
+  cms_recipient: text(1000).optional(),
 }).strict();
 
 export const prepareEnvelope = z.object({
