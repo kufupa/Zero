@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
 import { client, cmaServerConfigured, deliverPending, environmentId, mirrorEvent, runtimeProvider, startPending } from './runtime.js';
 import { event, json, sql, uid } from './db.js';
-import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
+import { discoverToolPacks, ToolRegistry, type LeaseFence, type Mode, type MutationInput, type NativeAdmission, type NativeLease, type NativeTiming, type ToolDefinition, type ToolResult, type SkillConfig } from './tool-registry.js';
 import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffReconcile, runStaffStage } from './create-operations.js';
 import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
@@ -76,27 +76,30 @@ class Semaphore {
   constructor(private readonly limit:number) {}
   async run<T>(signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T> {
     signal?.throwIfAborted();
-    while(this.used>=this.limit) {
+    if(this.used>=this.limit) {
       await new Promise<void>((resolve,reject)=>{
         const wake=()=>{signal?.removeEventListener('abort',abort);resolve();};
         const abort=()=>{const i=this.waiting.indexOf(wake);if(i>=0)this.waiting.splice(i,1);reject(signal?.reason);};
         this.waiting.push(wake); signal?.addEventListener('abort',abort,{once:true});
         if(signal?.aborted) abort();
       });
-      signal?.throwIfAborted();
-    }
-    this.used++;
-    try { return await work(); } finally { this.used--;this.waiting.shift()?.(); }
+    } else this.used++;
+    try { signal?.throwIfAborted();return await work(); }
+    finally { const next=this.waiting.shift();if(next) next();else this.used--; }
   }
 }
 
 export function createNativeAdmission():NativeAdmission {
   const semaphore=new Semaphore(configuredSlots().local);
-  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote'):Promise<T> {
+  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming):Promise<T> {
     if(!process.env.HMS_CREDENTIAL_SESSION_CAP) throw new Error('HMS_CREDENTIAL_SESSION_CAP_REQUIRED');
     const databaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     if(!databaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
-    return semaphore.run(signal,async()=>{
+    const bounded=readOnly ? AbortSignal.any([AbortSignal.timeout(120_000),...(signal?[signal]:[])]) : signal;
+    const started=performance.now();
+    let admitted=false;
+    try { return await semaphore.run(bounded,async()=>{
+      admitted=true;timing?.('local_wait',performance.now()-started);
       const bundledQuote=fileURLToPath(new URL('../tools/quote/native/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
       let nativePath=process.env.NAVA_HMS_SESSION_MODULE ?? fileURLToPath(new URL('../../server-pilot/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
       if(scope==='quote') { try { await access(bundledQuote);nativePath=bundledQuote; } catch { /* quote uses the shared native module */ } }
@@ -104,13 +107,13 @@ export function createNativeAdmission():NativeAdmission {
       if(typeof cloud.withCloudCredentialLease!=='function') throw new Error('NATIVE_ADMISSION_UNAVAILABLE');
       return cloud.withCloudCredentialLease(propertyCode,async(lease:NativeLease)=>{
         lease.signal.throwIfAborted();
-        const result=await work(lease);
-        lease.signal.throwIfAborted();
-        return result;
-      },{databaseUrl,readOnly,priority:'staff',signal});
-    });
+        const workStarted=performance.now();
+        try { const result=await work(lease);lease.signal.throwIfAborted();return result; }
+        finally { timing?.('lease_work',performance.now()-workStarted); }
+      },{databaseUrl,readOnly,priority:'staff',signal:bounded,onTiming:timing});
+    }); } finally { if(!admitted) timing?.('local_wait',performance.now()-started); }
   }
-  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope)=>withLease(property,signal,true,work,scope),withSave:async(property,signal,work)=>{
+  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing)=>withLease(property,signal,true,work,scope,timing),withSave:async(property,signal,work)=>{
     if(!nativeSaveAllowed()) throw new Error('SAVE_DISABLED');
     return withLease(property,signal,false,work);
   }};

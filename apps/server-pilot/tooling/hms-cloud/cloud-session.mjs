@@ -1122,13 +1122,21 @@ export async function withCloudCredentialLease(propertyCode, operation, options 
     inherited.signal.throwIfAborted();
     return result;
   }
-  const lease = await acquireCloudCredentialLease(propertyCode, options);
+  const acquireStarted = performance.now();
+  let lease;
+  try { lease = await acquireCloudCredentialLease(propertyCode, options); }
+  finally { options.onTiming?.('credential_acquire', performance.now() - acquireStarted); }
+  credentialLeases.get(lease).onTiming = options.onTiming;
   try {
     const result = await credentialScope.run(lease, () => operation(lease));
     options.signal?.throwIfAborted();
     lease.signal.throwIfAborted();
     return result;
-  } finally { await lease.release(); }
+  } finally {
+    const releaseStarted = performance.now();
+    try { await lease.release(); }
+    finally { options.onTiming?.('credential_release', performance.now() - releaseStarted); }
+  }
 }
 
 /** Fresh browser/context per operation; a caller-owned lease can span sequential sessions. */
@@ -1161,7 +1169,9 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
   let browser;
   let browserServer;
   let writerIdentity;
+  let readerIdentity;
   let writerGroupGone = false;
+  let readerGroupGone = false;
   let credentialWriterHeld = false;
   let callbacksDrained = true;
   let operationTask;
@@ -1174,6 +1184,12 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
   let result;
   let failure;
   let failed = false;
+  const sessionStarted = performance.now();
+  let setupRecorded = false;
+  let operationStarted;
+  const recordSetup = () => {
+    if (!setupRecorded) { setupRecorded = true; leaseState?.onTiming?.('session_setup', performance.now() - sessionStarted); }
+  };
   const closeResource = (resource) => Promise.race([
     resource.close(), delay(15_000, undefined, { ref: false }).then(() => { throw new Error('HMS_SESSION_CLEANUP_TIMEOUT'); }),
   ]);
@@ -1189,8 +1205,9 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       try { await closeResource(server); }
       catch {
         resourceCloseError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
-        if (writerIdentity && cloudWriterCurrent(writerIdentity)) {
-          try { process.kill(-writerIdentity.browser.pid, 'SIGKILL'); await delay(250); }
+        const identity = writerIdentity ?? readerIdentity;
+        if (identity && cloudWriterCurrent(identity)) {
+          try { process.kill(-identity.browser.pid, 'SIGKILL'); await delay(250); }
           catch { /* Unconfirmed termination preserves the target hold and lease. */ }
         }
       }
@@ -1242,7 +1259,11 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       holdCredentialWriter(propertyCode, writerIdentity, leaseState.readOnly);
       credentialWriterHeld = true;
       browser = await chromium.connect(browserServer.wsEndpoint());
-    } else browser = await chromium.launch(launch);
+    } else {
+      browserServer = await chromium.launchServer(launch);
+      readerIdentity = { ...hostIdentity(), node: processIdentity(process.pid), browser: processIdentity(browserServer.process().pid, true) };
+      browser = await chromium.connect(browserServer.wsEndpoint());
+    }
     sessionSignal?.throwIfAborted();
     context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, serviceWorkers: 'block', acceptDownloads: false });
     sessionSignal?.throwIfAborted();
@@ -1277,6 +1298,8 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       state.identity = Object.freeze({ ...identity, landingPropertyCode: property.landingPropertyCode });
     }
     sessionSignal?.throwIfAborted();
+    recordSetup();
+    operationStarted = performance.now();
     result = await runUntilAborted(async () => {
       await leaseState?.assertRunLive?.();
       operationTask = Promise.resolve().then(() => credentialScope.run(lease, () => operation(page, Object.freeze({ ...identity,
@@ -1295,6 +1318,9 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       failure = new Error(safe);
     }
   } finally {
+    recordSetup();
+    if (operationStarted !== undefined) leaseState?.onTiming?.('session_operation', performance.now() - operationStarted);
+    const cleanupStarted = performance.now();
     sessionSignal?.removeEventListener('abort', onAbort);
     await abortClose;
     await close();
@@ -1311,7 +1337,14 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
         if (!writerGroupGone) cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
       } catch (error) { cleanupError ??= error; }
     }
-    if (resourceCloseError && !(writerIdentity && writerGroupGone && callbacksDrained)) cleanupError ??= resourceCloseError;
+    if (readerIdentity) {
+      try {
+        readerGroupGone = await waitForOwnedWriterGroupGone(readerIdentity);
+        if (!readerGroupGone) cleanupError ??= new Error('HMS_SESSION_CLEANUP_FAILED');
+      }
+      catch (error) { cleanupError ??= error; }
+    }
+    if (resourceCloseError && !(writerIdentity && writerGroupGone && callbacksDrained) && !(readerIdentity && readerGroupGone)) cleanupError ??= resourceCloseError;
     if (writerIdentity && writerGroupGone && callbacksDrained) {
       closedWriters.add(writerKey(writerIdentity));
       if (closedWriters.size > 4096) closedWriters.delete(closedWriters.values().next().value);
@@ -1321,12 +1354,13 @@ async function withCloudSession(operation, { propertyCode, transportId, signal, 
       catch (error) { cleanupError ??= error; }
     }
     if (writerIdentity && cleanupError) for (const alias of aliases) holdCloudWriter(propertyCode, alias, writerIdentity);
-    if (cleanupError) {
+    if (cleanupError && (writer || (readerIdentity ? !readerGroupGone : Boolean(resourceCloseError)))) {
       if (lease) retainedLeases.add(lease);
     } else {
       if (borrowed) leaseState.borrowers -= 1;
       if (ownedLease) try { await lease.release(); } catch (error) { cleanupError = error; }
     }
+    leaseState?.onTiming?.('session_cleanup', performance.now() - cleanupStarted);
   }
   if (cleanupError) throw cleanupError;
   if (failed) throw failure;

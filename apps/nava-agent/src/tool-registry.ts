@@ -22,7 +22,8 @@ type SaveInput = MutationInput & {executionId:string;expectedPrice?:unknown;prep
 type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>};
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
-export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
+export type NativeTiming = (phase:string, elapsedMs:number)=>void;
+export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
@@ -381,6 +382,7 @@ export class ToolRegistry {
       if(name.startsWith('hms_')) {
         const request=z.object({property_code:z.string().min(1)}).passthrough().safeParse(input);
         if(!request.success || (staffPrepareOnly() ? context.propertyCode!==request.data.property_code : (context.propertyCode && context.propertyCode!==request.data.property_code))) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
+        const timings:Record<string,number[]>={};
         response=await this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,async lease=>{
           if(staffPrepareOnly()) {
             const fence=context.fence;
@@ -393,7 +395,8 @@ export class ToolRegistry {
           }
           lease.signal.throwIfAborted();
           return pack.run(input,{...context,credentialLease:lease,signal:lease.signal});
-        },name==='hms_quote'?'quote':undefined));
+        },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms))));
+        await this.deps.emit(context.sessionId,'native_timing',{tool:name,tool_event_id:context.toolUseId,stages_ms:timings});
       } else response=await this.nativeResult(()=>pack.run(input,context));
       if(name==='hms_quote') {
         await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,input,response});
