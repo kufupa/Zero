@@ -6,6 +6,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { Principal } from './auth.js';
 import { json, sql } from './db.js';
+import { writeEvent } from './session-store.js';
 import { createQuoteArtifacts, quoteOptions, type Artifact } from '../tools/quote-artifacts/index.js';
 import { gotenbergConverter } from '../tools/quote-artifacts/converter.js';
 import { quoteInput } from '../tools/quote/schema.js';
@@ -112,11 +113,15 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
         try {
           const pdfRef = await write(pdf), workbookRef = await write(workbook);
           signal?.throwIfAborted();
-          const saved = await sql`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions})}::jsonb,updated_at=now()
-            FROM nava_agent.mail_thread t WHERE p.thread_id=t.id AND p.id=${proposalId} AND p.revision=${input.expected_revision}
-            AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)='[]'::jsonb AND p.workflow='quote'
-            AND t.mailbox_id=${row.mailbox_id} AND t.mode='live' RETURNING p.id`;
-          if (saved.length !== 1) throw new Error('QUOTE_REVISION_CHANGED');
+          await sql.begin(async tx=>{
+            const saved = await tx`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions})}::jsonb,updated_at=now()
+              FROM nava_agent.mail_thread t WHERE p.thread_id=t.id AND p.id=${proposalId} AND p.revision=${input.expected_revision}
+              AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)='[]'::jsonb AND p.workflow='quote'
+              AND t.mailbox_id=${row.mailbox_id} AND t.mode='live' RETURNING p.id`;
+            if (saved.length !== 1) throw new Error('QUOTE_REVISION_CHANGED');
+            await writeEvent(tx,row.session_id,'quote_artifacts_ready',{proposal_id:proposalId,revision:input.expected_revision,
+              job_id:job,quote_id:quote.quote_id,artifact_ids:[pdfRef.id,workbookRef.id]});
+          });
           return {pdf:pdfRef,workbook:workbookRef};
         } catch (error) {
           await Promise.allSettled(files.map(file=>unlink(file)));
