@@ -223,9 +223,71 @@ export async function readReservation(input: unknown, context: ToolContext): Pro
 }
 
 const catalogueKinds: Record<string, string> = { room_type: 'roomTypes', rate_plan: 'ratePlans', source_of_business: 'sourceBusiness', track: 'trackSubsegment', guarantee_type: 'guaranteeTypes', organization: 'organizations', agency: 'agencies' };
+const catalogueTtlMs = 30 * 60 * 1000;
+const catalogueCache = new Map<string, Map<string, { section: unknown; expires: number }>>();
+const cataloguePending = new Map<string, Promise<ToolResult>>();
+
+function catalogueRequest(input: unknown): input is { property_code: string; kinds: string[]; arrival_date?: string; departure_date?: string } {
+  return obj(input) && keys(input, ['property_code', 'kinds', 'arrival_date', 'departure_date']) && str(input.property_code) &&
+    Array.isArray(input.kinds) && input.kinds.length > 0 &&
+    input.kinds.every(kind => typeof kind === 'string' && (Object.hasOwn(catalogueKinds, kind) || kind === 'meal_plan')) &&
+    (input.arrival_date === undefined || date(input.arrival_date)) && (input.departure_date === undefined || date(input.departure_date));
+}
+
+async function waitForCatalogue(pending: Promise<ToolResult>, signal?: AbortSignal): Promise<ToolResult> {
+  if (!signal) return pending;
+  if (signal.aborted) return fail('ABORTED', 'HMS read aborted.');
+  return new Promise((resolve, reject) => {
+    const abort = () => resolve(fail('ABORTED', 'HMS read aborted.'));
+    signal.addEventListener('abort', abort, { once: true });
+    pending.then(value => { signal.removeEventListener('abort', abort); resolve(value); }, error => {
+      signal.removeEventListener('abort', abort); reject(error);
+    });
+  });
+}
+
+export async function cachedCatalogue(input: unknown, context: ToolContext, load: (input: unknown) => Promise<ToolResult>): Promise<ToolResult> {
+  if (!catalogueRequest(input)) return fail('INVALID_INPUT', 'Property and supported catalogue kinds are required.');
+  if (context.mode === 'historical') return fail('HISTORICAL_HMS_DISABLED', 'Live HMS is unavailable in historical mode.');
+  if (context.signal?.aborted) return fail('ABORTED', 'HMS read aborted.');
+  const key = JSON.stringify([input.property_code, input.arrival_date ?? null, input.departure_date ?? null]);
+  const now = Date.now();
+  for (const [scope, entries] of catalogueCache) {
+    for (const [kind, entry] of entries) if (entry.expires <= now) entries.delete(kind);
+    if (!entries.size) catalogueCache.delete(scope);
+  }
+  const observed: Record<string, unknown> = {};
+  for (;;) {
+    const cached = catalogueCache.get(key);
+    for (const kind of input.kinds) {
+      const entry = cached?.get(kind);
+      if (entry && entry.expires > Date.now()) observed[kind] = entry.section;
+    }
+    const missing = input.kinds.filter(kind => !Object.hasOwn(observed, kind));
+    if (!missing.length) return ok({ property_code: input.property_code, sections: observed });
+    let pending = cataloguePending.get(key);
+    if (!pending) {
+      pending = load({ ...input, kinds: missing });
+      cataloguePending.set(key, pending);
+      void pending.finally(() => { if (cataloguePending.get(key) === pending) cataloguePending.delete(key); }).catch(() => {});
+    }
+    const result = await waitForCatalogue(pending, context.signal);
+    if (context.signal?.aborted) return fail('ABORTED', 'HMS read aborted.');
+    if (!result.ok || !obj(result.data) || !obj(result.data.sections)) return result;
+    const entries = catalogueCache.get(key) ?? new Map<string, { section: unknown; expires: number }>();
+    for (const [kind, section] of Object.entries(result.data.sections)) {
+      if (input.kinds.includes(kind)) observed[kind] = section;
+      if (obj(section) && (['available', 'partial', 'unsupported'].includes(String(section.status)) ||
+          (section.status === 'unavailable' && ['kind_not_captured', 'catalog_path_or_property_missing'].includes(String(section.reason))))) {
+        entries.set(kind, { section, expires: Date.now() + catalogueTtlMs });
+      }
+    }
+    if (entries.size) catalogueCache.set(key, entries);
+  }
+}
+
 export async function readCatalogue(input: unknown, context: ToolContext): Promise<ToolResult> {
-  if (!obj(input) || !keys(input, ['property_code', 'kinds']) || !str(input.property_code) || !Array.isArray(input.kinds) || !input.kinds.length ||
-      input.kinds.some(kind => typeof kind !== 'string' || !Object.hasOwn(catalogueKinds, kind) && kind !== 'meal_plan')) return fail('INVALID_INPUT', 'Property and supported catalogue kinds are required.');
+  if (!catalogueRequest(input)) return fail('INVALID_INPUT', 'Property and supported catalogue kinds are required.');
   const property = input.property_code, kinds: string[] = input.kinds;
   return execute(context, async () => {
     const { loadHmsNativeCatalog, nativeCatalogReadOptions } = await native('hms-native-catalog.mjs');

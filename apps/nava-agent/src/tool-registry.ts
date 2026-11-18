@@ -8,7 +8,7 @@ import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft,
 import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
-import { withTriageLookupFields } from '../tools/triage/index.js';
+import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, targetLookup } from './stay-target.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
@@ -26,7 +26,7 @@ type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>}
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
 export type NativeTiming = (phase:string, elapsedMs:number)=>void;
-export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming, budget?:'short'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
+export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming, budget?:'short', priority?:'background'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
@@ -435,20 +435,31 @@ export class ToolRegistry {
         const request=z.object({property_code:z.string().min(1)}).passthrough().safeParse(input);
         if(!request.success || (staffPrepareOnly() ? context.propertyCode!==request.data.property_code : (context.propertyCode && context.propertyCode!==request.data.property_code))) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
         const timings:Record<string,number[]>={};
-        response=await this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,async lease=>{
-          if(staffPrepareOnly()) {
-            const fence=context.fence;
-            const verified=fence && await sql.begin('isolation level repeatable read read only',async tx=>{
-              const [owned]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${context.sessionId} AND worker_id=${fence.workerId} AND lease_epoch=${fence.epoch}::bigint AND lease_until>clock_timestamp()`;
-              const source=owned && await selectedStageSource(tx,context.sessionId);
-              return source?.success && source.data.property_code===request.data.property_code;
-            });
-            if(!verified) return failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
-          }
+        const verifySource=async()=>{
+          if(!staffPrepareOnly()) return true;
+          const fence=context.fence;
+          return Boolean(fence && await sql.begin('isolation level repeatable read read only',async tx=>{
+            const [owned]=await tx`SELECT id FROM nava_agent.agent_session WHERE id=${context.sessionId} AND worker_id=${fence.workerId} AND lease_epoch=${fence.epoch}::bigint AND lease_until>clock_timestamp()`;
+            const source=owned && await selectedStageSource(tx,context.sessionId);
+            return source?.success && source.data.property_code===request.data.property_code;
+          }));
+        };
+        const load=async(toolInput:unknown)=>this.nativeResult(()=>this.deps.native.withRead(request.data.property_code,context.signal,async lease=>{
+          if(!await verifySource()) return failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
           lease.signal.throwIfAborted();
-          return pack.run(input,{...context,credentialLease:lease,signal:lease.signal});
+          return pack.run(toolInput,{...context,credentialLease:lease,signal:lease.signal});
         },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)),
         ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined));
+        if(name==='hms_read_catalogue') {
+          if(!await verifySource()) response=failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
+          else {
+            let loaded=false;
+            const cacheStarted=performance.now();
+            response=await this.nativeResult(()=>cachedCatalogue(input,context,async toolInput=>{loaded=true;return load(toolInput);}));
+            if(response.ok && !await verifySource()) response=failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
+            if(!loaded) timings.catalogue_cache=[Math.round(performance.now()-cacheStarted)];
+          }
+        } else response=await load(input);
         await this.deps.emit(context.sessionId,'native_timing',{tool:name,tool_event_id:context.toolUseId,stages_ms:timings});
       } else response=await this.nativeResult(()=>pack.run(input,context));
       if(name==='hms_quote') {

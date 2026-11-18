@@ -14,6 +14,7 @@ import { createPilotEnabled, manualLabtestTarget, runStaffGo, runStaffReconcile,
 import { writeEvent } from './session-store.js';
 import { createGoEnabled, createPilotRequested, hmsSaveEnabled, maxStaffHmsSlots, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
 import { initialSkillContext } from './initial-skill-context.js';
+import { cachedCatalogue, readCatalogue, type ToolContext as CatalogueContext } from '../tools/triage/index.js';
 
 export type RuntimeBlock = {type:string;[key:string]:unknown};
 export type RuntimeMessage = {role:'user'|'assistant';content:RuntimeBlock[];stop_reason?:string|null};
@@ -91,10 +92,11 @@ class Semaphore {
 
 export function createNativeAdmission():NativeAdmission {
   const semaphore=new Semaphore(configuredSlots().local);
-  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming,budget?:'short'):Promise<T> {
+  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming,budget?:'short',priority?:'background'):Promise<T> {
     if(!process.env.HMS_CREDENTIAL_SESSION_CAP) throw new Error('HMS_CREDENTIAL_SESSION_CAP_REQUIRED');
-    const databaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
-    if(!databaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
+    const leaseDatabaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
+    if(!leaseDatabaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
+    const databaseUrl=priority==='background' ? process.env.DATABASE_URL ?? leaseDatabaseUrl : leaseDatabaseUrl;
     const deadline=AbortSignal.timeout(readOnly && budget==='short'?120_000:300_000);
     const bounded=AbortSignal.any([deadline,...(signal?[signal]:[])]);
     const started=performance.now();
@@ -112,7 +114,7 @@ export function createNativeAdmission():NativeAdmission {
         const workStarted=performance.now();
         try { const value=await work(lease);completed.push({value});return value; }
         finally { timing?.('lease_work',performance.now()-workStarted); }
-      },{databaseUrl,readOnly,priority:'staff',signal:bounded,onTiming:timing}); }
+      },{databaseUrl,readOnly,priority:priority ?? 'staff',signal:bounded,onTiming:timing}); }
       catch(error) {
         const result=completed[0];
         if(readOnly && result && deadline.aborted && !signal?.aborted && error===deadline.reason) return result.value;
@@ -120,7 +122,7 @@ export function createNativeAdmission():NativeAdmission {
       }
     }); } finally { if(!admitted) timing?.('local_wait',performance.now()-started); }
   }
-  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing,budget)=>withLease(property,signal,true,work,scope,timing,budget),withSave:async(property,signal,work)=>{
+  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing,budget,priority)=>withLease(property,signal,true,work,scope,timing,budget,priority),withSave:async(property,signal,work)=>{
     if(!nativeSaveAllowed()) throw new Error('SAVE_DISABLED');
     return withLease(property,signal,false,work);
   }};
@@ -448,6 +450,13 @@ async function runCma(native:NativeAdmission):Promise<void> {
 async function main():Promise<void> {
   if(!process.env.DATABASE_URL) throw new Error('DATABASE_URL_REQUIRED');
   const native=createNativeAdmission();
+  if(native.available?.()) {
+    const input={property_code:'HRCEN',kinds:['room_type','rate_plan','source_of_business','track','guarantee_type','organization','agency','meal_plan']};
+    const context:CatalogueContext={sessionId:'catalogue_warm',mode:'live'};
+    void cachedCatalogue(input,context,request=>native.withRead(input.property_code,undefined,
+      lease=>readCatalogue(request,{...context,credentialLease:lease,signal:lease.signal}),undefined,undefined,'short','background'))
+      .catch(error=>console.error(JSON.stringify({event:'catalogue_warm_failed',error:error instanceof Error?error.name:'unknown'})));
+  }
   if(runtimeProvider()==='cma') return runCma(native);
   if((process.env.AWS_REGION ?? 'eu-west-1')!=='eu-west-1') throw new Error('BEDROCK_REGION_INVALID');
   const storePath='./session-store.js',runtimePath='./agent-runtime/index.js';

@@ -21,7 +21,7 @@ export const schemas = {
     departure_date: { ...string, format: 'date', description: 'Known departure (YYYY-MM-DD); verify it against the native stay.' },
     last_name: { ...string, description: 'Exact guest surname only, including all words in a compound surname.' },
   }, ['property_code', 'reservation_id']),
-  hms_read_catalogue: object({ property_code: string, kinds: { type: 'array', minItems: 1,
+  hms_read_catalogue: object({ property_code: string, arrival_date: { ...string, format: 'date' }, departure_date: { ...string, format: 'date' }, kinds: { type: 'array', minItems: 1,
     items: { type: 'string', enum: ['room_type', 'rate_plan', 'meal_plan', 'source_of_business', 'track', 'guarantee_type', 'organization', 'agency'] } } }, ['property_code', 'kinds']),
   hms_search_parties: object({ property_code: string,
     kind: { type: 'string', enum: ['guest', 'organization', 'agency', 'ar_account'] },
