@@ -23,3 +23,15 @@ export function matchesQuoteDraftBinding(attachments: readonly unknown[], bindin
       saved.artifactIds[0] === binding.artifactIds[0] && saved.artifactIds[1] === binding.artifactIds[1];
   }).length === 1);
 }
+
+export function matchesQuoteDraftJob(attachments: readonly unknown[], binding: QuoteDraftBinding): boolean {
+  for (const attachment of attachments) {
+    if (!attachment || typeof attachment !== 'object' || !('quoteBinding' in attachment)) continue;
+    const parsed = quoteDraftBindingSchema.safeParse(attachment.quoteBinding);
+    if (!parsed.success) continue;
+    const saved = parsed.data;
+    if (saved.proposalId === binding.proposalId && saved.revision === binding.revision &&
+        saved.quoteId === binding.quoteId && saved.jobId === binding.jobId && matchesQuoteDraftBinding(attachments, saved)) return true;
+  }
+  return false;
+}

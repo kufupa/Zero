@@ -48,7 +48,7 @@ import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFa
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
 import { hashAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
-import { matchesQuoteDraftBinding, quoteDraftBindingSchema } from './quote-draft-binding.js';
+import { matchesQuoteDraftBinding, matchesQuoteDraftJob, quoteDraftBindingSchema } from './quote-draft-binding.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
 import { draftRouteEnqueueLabels } from '../../ai/draft-route-factory.js';
 import { prepareOutboundHtml } from '../../mail/prepare-outbound-html.js';
@@ -2126,7 +2126,7 @@ export const draftsRouter = tRouter({
             untouchedSavedReply =
               latest?.id.startsWith(SAVED_REPLY_REVISION_PREFIX) === true &&
               latest.actorUserId === ctx.sessionUser.id && prior.replyToMessageId === input.replyToMessageId &&
-              (!input.quoteBinding || matchesQuoteDraftBinding(prior.attachments, input.quoteBinding));
+              (!input.quoteBinding || matchesQuoteDraftJob(prior.attachments, input.quoteBinding));
             // The confirm names the draft as staff saw it. Someone else's newer work since then asks again.
             const replaceToken = `${prior.id}:${latest?.id ?? ''}`;
             if (!untouchedSavedReply && input.replaceDraft === undefined) {
