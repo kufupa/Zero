@@ -18,7 +18,7 @@ export type ToolResult = { ok: boolean; data: unknown; error: {code:string;messa
 export type ToolDefinition = { name:string; description:string; input_schema:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:boolean} };
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
-type SaveInput = MutationInput & {executionId:string;expectedPrice?:unknown;prepared?:unknown;confirmPenalty?:true};
+type SaveInput = MutationInput & {executionId:string;expectedPrice?:unknown;prepared?:unknown;confirmPenalty?:true;priorRooms?:unknown[]};
 type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>};
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
@@ -408,7 +408,7 @@ export class ToolRegistry {
       if(!marked && parsed.data.ok) return failureObject('DISPATCH_MARKER_MISSING','Writer did not record dispatch.');
       if(marked && !parsed.data.ok && parsed.data.error?.outcome!=='uncertain') return uncertain;
       if(marked && parsed.data.ok) {
-        const readback=z.object({confirmation:z.string().nullable(),reservation_id:z.string().nullable(),readback:z.unknown()}).strict().safeParse(parsed.data.data);
+        const readback=z.object({confirmation:z.string().nullable(),reservation_id:z.string().nullable(),readback:z.unknown()}).passthrough().safeParse(parsed.data.data);
         if(!readback.success || readback.data.readback==null) return uncertain;
       }
       return {ok:parsed.data.ok,data:parsed.data.data,error:parsed.data.error};

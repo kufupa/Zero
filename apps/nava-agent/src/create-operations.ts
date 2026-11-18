@@ -45,6 +45,21 @@ const queuedStage = z.object({
   workflow:proposalDraft.shape.workflow.optional(), source:stageSource.optional(), quote_id:z.string().optional(),
 }).strict();
 
+type CreateNativeInput=Extract<StaffNativeInput,{workflow:'create'|'amend'|'cancel'|'filing'}> & {workflow:'create'};
+function createInputs(draft:ProposalDraft, property:string): CreateNativeInput[] | null {
+  if(draft.workflow!=='create' || draft.disposition!=='propose' || draft.bookings.length<1 || draft.bookings.length>8) return null;
+  if(new Set(draft.bookings.map(booking=>booking.id)).size!==draft.bookings.length) return null;
+  const actions=draft.actions.filter(action=>action.type!=='invoice_request');
+  const inputs:CreateNativeInput[]=[];
+  for(const booking of draft.bookings) {
+    const matching=actions.filter(action=>action.type==='create' && action.booking_ids.includes(booking.id));
+    if(matching.length!==1 || booking.property_code!==property || booking.reservation_id!==null) return null;
+    inputs.push({workflow:'create',booking,action:{...matching[0],booking_ids:[booking.id]}});
+  }
+  if(actions.some(action=>action.type!=='create' || action.booking_ids.some(id=>!draft.bookings.some(booking=>booking.id===id)))) return null;
+  return inputs;
+}
+
 function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteId:string|null):StaffNativeInput|null {
   if(draft.workflow!==workflow) return null;
   if(workflow==='quote') {
@@ -53,9 +68,8 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
     const selected=matches.length===1 && groupedQuoteRequest.safeParse(matches[0].details);
     return selected && selected.success && selected.data.property_code===property ? {workflow,request:selected.data} : null;
   }
-  const actions=workflow==='create'
-    ? draft.actions.filter(action=>action.type!=='invoice_request')
-    : draft.actions;
+  if(workflow==='create') return createInputs(draft,property)?.[0] ?? null;
+  const actions=draft.actions;
   if(actions.length!==1) return null;
   const [action]=actions;
   if(workflow==='triage') {
@@ -76,7 +90,7 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
     const {property_code:_nested,...fields}=booking.fields;
     return {workflow,booking:{...booking,fields,property_code:property},action};
   }
-  if(action.type!==workflow || booking.property_code!==property || (workflow==='create' && booking.reservation_id!==null)) return null;
+  if(action.type!==workflow || booking.property_code!==property) return null;
   return {workflow,booking,action};
 }
 
@@ -106,10 +120,10 @@ export function createPilotOperations(): ProposalOperations | undefined {
         const draft=proposalDraft.safeParse(p.current);
         const input=draft.success && p.workflow===request.workflow ? stageInput(draft.data,request.workflow,source.data.property_code,request.quoteId) : null;
         if(!input) return {ok:false,code:'INVALID_INPUT'};
-        if(input.workflow==='create' && !hasBoundCreateGuest(input.booking,p.execution)) return {ok:false,code:invalidGuestSelection.code};
+        if(input.workflow==='create' && draft.success && draft.data.bookings.some(booking=>!hasBoundCreateGuest(booking,p.execution))) return {ok:false,code:invalidGuestSelection.code};
         if(input.workflow==='create' && draft.success) {
-          const missing=missingCreateFields(draft.data,'stage');
-          if(missing.length) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:fieldLabels(draft.data,missing)}};
+          const missing=draft.data.bookings.flatMap((_,index)=>fieldLabels(draft.data,missingCreateFields(draft.data,'stage',index),index).map(label=>draft.data.bookings.length===1 ? label : `Room ${index+1}: ${label}`));
+          if(missing.length) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:missing}};
         }
         const key=request.idempotencyKey===null?null:createHash('sha256').update(request.idempotencyKey).digest('hex');
         if(key) {
@@ -161,8 +175,8 @@ type SubmitRequest = Parameters<ProposalOperations['submit']>[1];
 type SubmitResult = Awaited<ReturnType<ProposalOperations['submit']>>;
 type ProposalRow = Record<string, any>;
 
-function fieldLabels(draft: ProposalDraft, keys: string[]) {
-  return keys.map(key=>draft.field_specs.find(spec=>spec.path.replace(/^\//,'')===`bookings/0/fields/${key}`)?.label ?? key);
+function fieldLabels(draft: ProposalDraft, keys: string[], index=0) {
+  return keys.map(key=>draft.field_specs.find(spec=>spec.path.replace(/^\//,'')===`bookings/${index}/fields/${key}`)?.label ?? key);
 }
 
 const staffGo = z.object({
@@ -170,6 +184,9 @@ const staffGo = z.object({
   snapshot:z.unknown(), dispatch:z.enum(['pending','dispatched']), state:z.enum(['queued','running']), staff:z.literal(true), details:z.unknown().optional(),
   expectedPrice:z.object({averageRate:z.string().min(1),totalRate:z.string().min(1),currency:z.string().min(1)}).strict().optional(),
   prepareJobId:z.string().optional(),confirmPenalty:z.literal(true).optional(),
+  rooms:z.array(z.object({booking_id:z.string(),state:z.enum(['unattempted','dispatched','saved','failed','uncertain']),
+    expectedPrice:z.object({averageRate:z.string(),totalRate:z.string(),currency:z.string()}).strict(),
+    confirmation:z.string().nullable().optional(),reservation_id:z.string().nullable().optional(),readback:z.unknown().optional(),sibling:z.unknown().optional()})).optional(),
 }).strict();
 const shownPrice = z.object({averageRate:z.string().trim().min(1),totalRate:z.string().trim().min(1),currency:z.string().trim().min(1)});
 const observedPenalty = z.object({state:z.literal('review_required'),text:z.string().trim().min(1)});
@@ -197,22 +214,25 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   if(!await staffAttachmentsChecked(tx,p.id,p.revision)) return {ok:false,code:attachmentsUnconfirmed.code};
   let expectedPrice:z.infer<typeof shownPrice>|undefined;
   if(input.workflow==='create') {
-    if(!hasBoundCreateGuest(input.booking,p.execution)) return {ok:false,code:invalidGuestSelection.code};
-    const fields=input.booking.fields;
-    const labtest=fields.first_name==='Proof' && fields.last_name==='Labtest' && typeof fields.arrival_date==='string'
-      && fields.arrival_date>='2027-01-01' && fields.cms_send!==true;
-    if(!labtest && !createGoRealGuests()) return {ok:false,code:'REAL_GUEST_GO_UNAVAILABLE'};
-    const missing=missingCreateFields(draft.data,'go');
-    if(missing.length) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:fieldLabels(draft.data,missing)}};
+    if(draft.data.bookings.some(booking=>!hasBoundCreateGuest(booking,p.execution))) return {ok:false,code:invalidGuestSelection.code};
+    const hasRealGuest=draft.data.bookings.some(({fields})=>!(fields.first_name==='Proof' && fields.last_name==='Labtest' && typeof fields.arrival_date==='string'
+      && fields.arrival_date>='2027-01-01' && fields.cms_send!==true));
+    if(hasRealGuest && !createGoRealGuests()) return {ok:false,code:'REAL_GUEST_GO_UNAVAILABLE'};
+    const missing=draft.data.bookings.flatMap((_,index)=>fieldLabels(draft.data,missingCreateFields(draft.data,'go',index),index).map(label=>draft.data.bookings.length===1 ? label : `Room ${index+1}: ${label}`));
+    if(missing.length) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:missing}};
     const price=shownPrice.safeParse(p.stage?.native_result?.native?.ratePlanAvailability);
     if(!price.success) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Infor price (run Prepare again)']}};
     expectedPrice=price.data;
   }
   const fee=input.workflow==='cancel' && observedPenalty.safeParse(p.stage.cancellation_fee ?? p.stage.native_result?.cancellation_fee).success;
   if(fee!==Boolean(request.confirmPenalty) || (fee && !request.preparedJobId)) return {ok:false,code:'INVALID_PHASE'};
+  const rooms=input.workflow==='create' && draft.data.bookings.length>1 ? draft.data.bookings.map((booking,index)=>({
+    booking_id:booking.id,state:'unattempted',expectedPrice:shownPrice.safeParse(p.stage?.native_result?.rooms?.[index]?.native?.ratePlanAvailability).data,
+  })) : undefined;
+  if(rooms?.some(room=>!room.expectedPrice)) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Infor price for every room (run Prepare again)']}};
   const go=staffGo.parse({executionId:uid('execution'),revision:p.revision,idempotencyKey:request.idempotencyKey,actor:request.actor,
     snapshot:p.current,dispatch:'pending',state:'queued',staff:true,
-    expectedPrice,prepareJobId:p.stage.job_id,confirmPenalty:request.confirmPenalty});
+    expectedPrice,rooms,prepareJobId:p.stage.job_id,confirmPenalty:request.confirmPenalty});
   const [seq]=await tx`SELECT COALESCE(max(sequence),0)+1 AS n FROM nava_agent.staff_edit WHERE proposal_id=${p.id}`;
   await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,who,snapshot)
     VALUES (${uid('edit')},${seq.n},${p.id},${p.session_id},${p.workflow},'staff_final',${p.revision},${request.actor},${json(p.current)})`;
@@ -266,11 +286,16 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
     await tx`UPDATE nava_agent.proposal SET execution=jsonb_set(execution,'{go,state}','"running"'::jsonb),updated_at=now() WHERE id=${p.id}`;
     return {p,go,source:await selectedStageSource(tx,p.session_id),resume:true};
   });
+  if(!claimed.resume && claimed.go.rooms) {
+    await finishCreateRoom(lease,row.id,executionId,{ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; check HMS before any retry.',retryable:false,outcome:'uncertain'}});
+    return true;
+  }
   if(!claimed.resume) {
     await finishStaffGo(lease,row.id,executionId,{ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; check HMS before any retry.',retryable:false,outcome:'uncertain'}});
     return true;
   }
   const {p,go,source}=claimed;
+  if(go.rooms) { await runCreateRooms(lease,registry,context,p,go,source); return true; }
   const draft=proposalDraft.safeParse(go.snapshot);
   const input=draft.success && source?.success && isWriteWorkflow(draft.data.workflow)
     ? stageInput(draft.data,draft.data.workflow,source.data.property_code,null) : null;
@@ -298,6 +323,63 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
   return true;
 }
 
+async function finishCreateRoom(lease:LeaseFence,proposalId:string,executionId:string,result:ToolResult) {
+  return sql.begin(async tx=>{
+    const {p,go}=await lockedProposal(tx,lease,proposalId,executionId);
+    if(!go.rooms) throw new Error('ROOMS_MISSING');
+    const index=go.rooms.findIndex(room=>room.state==='dispatched' || room.state==='unattempted');
+    if(index<0) throw new Error('ROOMS_COMPLETE');
+    const rooms=go.rooms.map(room=>({...room}));
+    const uncertain=!result.ok && (go.dispatch==='dispatched' || result.error?.outcome==='uncertain');
+    if(result.ok) {
+      const saved=z.object({confirmation:z.string().nullable(),reservation_id:z.string().nullable(),readback:z.unknown(),sibling:z.unknown()}).parse(result.data);
+      rooms[index]={...rooms[index],...saved,state:'saved'};
+    } else rooms[index]={...rooms[index],state:uncertain?'uncertain':'failed'};
+    const complete=rooms.every(room=>room.state==='saved');
+    const partial=rooms.some(room=>room.state==='saved');
+    const next={...go,rooms,dispatch:'pending' as const};
+    const view={confirmation:null,reservation_id:null,readback:complete?rooms.map(room=>room.readback):null,rooms};
+    const error=result.error ? {...result.error,operation:'staff_stage'} : null;
+    const phase=complete?'done':result.ok?'saving':uncertain?'uncertain':partial?'error':'ready';
+    await tx`UPDATE nava_agent.proposal SET phase=${phase},result=${json(view)},
+      execution=${phase==='saving' ? json({...p.execution,go:next}) : json({...p.execution,go:undefined,last_go:{...next,state:complete?'saved':uncertain?'uncertain':'failed'},error})},updated_at=now() WHERE id=${proposalId}`;
+    await writeEvent(tx,lease.sessionId,'create_room_finished',{proposal_id:proposalId,execution_id:executionId,booking_id:rooms[index].booking_id,
+      outcome:rooms[index].state,confirmation:rooms[index].confirmation ?? null,reservation_id:rooms[index].reservation_id ?? null});
+    return phase==='saving';
+  });
+}
+
+async function runCreateRooms(lease:LeaseFence,registry:ToolRegistry,context:{sessionId:string;mode:'live'|'labtest'|'historical';signal:AbortSignal},
+  p:ProposalRow,go:z.infer<typeof staffGo>,source:Awaited<ReturnType<typeof selectedStageSource>>|null) {
+  const draft=proposalDraft.safeParse(go.snapshot);
+  const inputs=draft.success && source?.success ? createInputs(draft.data,source.data.property_code) : null;
+  if(!inputs || !source?.success || p.revision!==go.revision || p.stage?.state!=='prepared' || p.stage.revision!==go.revision || p.stage.job_id!==go.prepareJobId) {
+    await finishCreateRoom(lease,p.id,go.executionId,{ok:false,data:null,error:{code:'INVALID_INPUT',message:'The booking changed before Save.',retryable:false,outcome:'known'}});
+    return;
+  }
+  while(true) {
+    const [latest]=await sql`SELECT execution FROM nava_agent.proposal WHERE id=${p.id}`;
+    const current=staffGo.parse(latest.execution.go);
+    const index=current.rooms?.findIndex(room=>room.state==='unattempted') ?? -1;
+    if(index<0 || !current.rooms || !inputs[index] || current.rooms[index].booking_id!==inputs[index].booking.id) throw new Error('ROOMS_CHANGED');
+    const staffStage:StaffJobBinding={proposalId:p.id,revision:go.revision,jobId:p.stage.job_id,workerId:lease.workerId,epoch:lease.epoch,
+      workflow:'create',source:source.data};
+    const priorRooms=current.rooms.slice(0,index).map(room=>room.sibling);
+    const result=await registry.save({...inputs[index],executionId:go.executionId,expectedPrice:current.rooms[index].expectedPrice,priorRooms},
+      {sessionId:context.sessionId,mode:context.mode,signal:context.signal,staffStage,staffGo:{executionId:go.executionId},
+        markDispatched:async details=>{
+          await sql.begin(async tx=>{
+            const {p:locked,go:active}=await lockedProposal(tx,lease,p.id,go.executionId);
+            if(active.dispatch!=='pending' || active.state!=='running' || locked.revision!==active.revision || active.rooms?.[index]?.state!=='unattempted') throw new Error('ALREADY_DISPATCHED');
+            const rooms=active.rooms.map((room,i)=>i===index?{...room,state:'dispatched' as const}:room);
+            await tx`UPDATE nava_agent.proposal SET execution=jsonb_set(execution,'{go}',${json({...active,rooms,dispatch:'dispatched',details})}::jsonb),updated_at=now() WHERE id=${p.id}`;
+            await writeEvent(tx,lease.sessionId,'save_dispatched',{proposal_id:p.id,execution_id:go.executionId,booking_id:rooms[index].booking_id,details,staff:true});
+          });
+        }});
+    if(!await finishCreateRoom(lease,p.id,go.executionId,result)) return;
+  }
+}
+
 export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, context: Omit<RegistryContext,'toolUseId'>) {
   const [p] = await sql`SELECT id,revision,workflow,stage,current FROM nava_agent.proposal
     WHERE session_id=${lease.sessionId} AND (${staffPrepareOnly()} OR workflow='create') AND phase='staging' AND stage->>'state'='queued' ORDER BY updated_at LIMIT 1`;
@@ -309,15 +391,35 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
     ? stageInput(draft.data,job.workflow,job.source.property_code,job.quote_id ?? null) : null;
   const binding={proposalId:p.id,revision:job.revision,jobId:job.job_id,workerId:lease.workerId,epoch:lease.epoch};
   let result:ToolResult|null=null;
+  let captures:ReturnType<typeof stageFeedback>[]|undefined;
   if(staffPrepareOnly() && draft.success && input && job.source && job.workflow) {
-    result=await registry.runStaffStage(input,draft.data,{...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id},context);
+    const inputs=input.workflow==='create' ? createInputs(draft.data,job.source.property_code) : null;
+    if(inputs && inputs.length>1) {
+      captures=[];
+      for(const room of inputs) {
+        const answer=await registry.runStaffStage(room,draft.data,{...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id},context);
+        captures.push(stageFeedback({result:answer,workflow:'create',bookingId:room.booking.id,revision:job.revision,jobId:job.job_id}));
+      }
+    } else {
+      result=await registry.runStaffStage(input,draft.data,{...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id},context);
+    }
   } else if(legacy) {
     const answer=await registry.run('hms_prepare',legacy,{...context,toolUseId:job.job_id,staffStage:binding});
     if(answer.kind==='result') result=answer.result;
   }
   const workflow=job.workflow ?? 'create';
   const bookingId=(input && 'booking' in input ? input.booking?.id : legacy?.booking.id) ?? null;
-  const {stage,error}=stageFeedback({result,workflow,bookingId,revision:job.revision,jobId:job.job_id,quoteId:job.quote_id});
+  const first=captures?.[0];
+  const failed=captures?.find(capture=>capture.error);
+  const {stage,error}=captures && first ? {
+    stage:{...first.stage,state:failed?'incomplete':'prepared',revision:job.revision,job_id:job.job_id,
+      summary:[failed?'Some rooms could not be checked. No booking saved.':'All rooms checked in Infor. No booking saved.'],
+      native_result:{...z.record(z.unknown()).parse(first.stage?.native_result ?? {}),rooms:captures.map(capture=>({
+        ...z.record(z.unknown()).parse(capture.stage?.native_result ?? {}),state:capture.stage?.state ?? 'incomplete',
+        observed_fields:capture.stage?.observed_fields ?? null,summary:capture.stage?.summary ?? []}))},
+      display_rows:captures.flatMap((capture,index)=>(capture.stage?.display_rows ?? []).map(row=>({...row,id:`room-${index+1}-${row.id}`})))},
+    error:failed?.error ?? null,
+  } : stageFeedback({result,workflow,bookingId,revision:job.revision,jobId:job.job_id,quoteId:job.quote_id});
   await sql.begin(async tx => {
     const [owner] = await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;

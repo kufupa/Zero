@@ -36,7 +36,7 @@ export type StaffJobBinding = StaffStage & {workflow:Workflow;source:StageSource
 
 const guestIdentity=z.object({booking_id:z.string().min(1),native_id:z.string().regex(/^\d{1,100}$/),
   first_name:z.string().trim().min(1),last_name:z.string().trim().min(1)}).strict();
-const guestBinding=z.object({staff_guest_selection:guestIdentity});
+const guestBinding=z.object({staff_guest_selection:guestIdentity.optional(),staff_guest_selections:z.array(guestIdentity).optional()});
 type Booking=ProposalDraft['bookings'][number];
 export function selectedCreateGuest(booking:Booking) {
   if(booking.fields.guest_email!=null) return null;
@@ -46,7 +46,8 @@ export function selectedCreateGuest(booking:Booking) {
 export function hasBoundCreateGuest(booking:Booking,execution:unknown):boolean {
   if(booking.fields.guest_profile_id==null) return true;
   const selected=selectedCreateGuest(booking);
-  return selected!==null && isDeepStrictEqual(selected,guestBinding.safeParse(execution).data?.staff_guest_selection);
+  const binding=guestBinding.safeParse(execution).data;
+  return selected!==null && (isDeepStrictEqual(selected,binding?.staff_guest_selection) || !!binding?.staff_guest_selections?.some(value=>isDeepStrictEqual(value,selected)));
 }
 
 export async function selectedStageSource(db: TransactionSql, sessionId: string) {
@@ -75,7 +76,7 @@ export async function confirmedQueuedStaffStage(job: StaffJobBinding, sessionId:
     const source = await selectedStageSource(tx,sessionId);
     if (!source.success || !isDeepStrictEqual(source.data,job.source)) return 'STAFF_SOURCE_CHANGED';
     if (requiresStaffAttachmentCheck(job.workflow) && !await staffAttachmentsChecked(tx,job.proposalId,job.revision)) return attachmentsUnconfirmed.code;
-    if (job.workflow==='create' && (draft.bookings.length!==1 || !hasBoundCreateGuest(draft.bookings[0],proposal.execution))) return 'INVALID_GUEST_SELECTION';
+    if (job.workflow==='create' && draft.bookings.some(booking=>!hasBoundCreateGuest(booking,proposal.execution))) return 'INVALID_GUEST_SELECTION';
     return null;
   });
 }

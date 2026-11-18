@@ -43,6 +43,11 @@ function createChildFields(draft: ProposalDraft): ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
+    if(index===0) {
+      fields.room_count=draft.bookings.length;
+      const path='/bookings/0/fields/room_count';
+      if(!fieldSpecs.some(spec=>spec.path===path)) fieldSpecs.unshift({path,label:'Number of rooms (1–8)',editable:true,required:true,control:'number',provenance:'staff',error:null,options:[],evidence:[]});
+    }
     const root=`/bookings/${index}/fields`;
     // Unknown children stay blank and required: staff must enter them before Prepare/Go (never a silent 0 or []).
     if(fields.child_count==null) fields.child_count=typeof fields.children==='number' ? fields.children : Array.isArray(fields.child_ages) ? fields.child_ages.length : null;
@@ -50,8 +55,8 @@ function createChildFields(draft: ProposalDraft): ProposalDraft {
     delete fields.children;
     for(const [key,label,control] of [['child_count','Children','number'],['child_ages','Child ages','text']] as const) {
       const path=`${root}/${key}`;
-      const paths=[path,path.slice(1),...(key==='child_count'?[`${root}/children`,`${root}/children`.slice(1)]:[])];
-      const existing=fieldSpecs.findIndex(spec=>paths.includes(spec.path));
+      const paths=new Set([path,path.slice(1),...(key==='child_count'?[`${root}/children`,`${root}/children`.slice(1)]:[])]);
+      const existing=fieldSpecs.findIndex(spec=>paths.has(spec.path));
       const unknown=fields[key]==null;
       if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control,required:true,...(unknown?{provenance:'unknown' as const}:{})};
       else fieldSpecs.push({path,label,control,editable:true,provenance:'unknown',required:true,error:null,options:[],evidence:[]});

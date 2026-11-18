@@ -97,7 +97,7 @@ function buildRequest(input: CreateInput): { request: NativeRequest; unknown: st
   const unknown: string[] = [];
   const assigned = new Set<string>();
   for (const [field, value] of Object.entries(booking.fields)) {
-    if (value === null) continue;
+    if (field === 'room_count' || value === null) continue;
     const path = Object.hasOwn(fieldPaths, field) ? fieldPaths[field] : undefined;
     if (!path) { unknown.push(field); continue; }
     const key = path.join('.');
@@ -314,6 +314,14 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     if (!target) return fail('INVALID_CREATE_TARGET', 'Native create target is invalid.');
     const realGuest = !labtest;
     const write = async (lease: Lease) => {
+      const priorRooms=parsed.data.priorRooms;
+      const siblingTools=priorRooms?.length ? await import(new URL('../../../server-pilot/tooling/hms-cloud/batch-sibling-readback.mjs',import.meta.url).href) as {
+        verifyApprovedBatchSiblings(siblings:unknown[],options:unknown):Promise<boolean>;
+        censusMatchesApprovedSiblings(census:unknown,siblings:unknown[],options:unknown):boolean;
+      } : null;
+      if(siblingTools && !await siblingTools.verifyApprovedBatchSiblings(priorRooms ?? [],{
+        propertyCode:request.propertyCode,transportId,signal:lease.signal,credentialLease:lease,
+      })) return fail('CREATE_PREVIOUS_ROOM_UNVERIFIED','Check the completed rooms in Infor before continuing.');
       const options = { credentialLease: lease, signal: lease.signal, expectedGuest, cloudTargetKey: target, transportId,
         ...(realGuest ? { allowRealGuest: true, requireExplicitGuestSelection: true } : {}) };
       const stage = await loadNativeResult(api, { ...request, mode: 'prepare' }, options);
@@ -345,6 +353,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         expectedRequestDigest: stage.requestBinding.digest,
         ...(price ? { expectedRateAvailability: price } : {}),
         ...(stage.requestBinding.arAccountProfileId ? { expectedArProfileId: stage.requestBinding.arAccountProfileId } : {}),
+        ...(siblingTools ? { verifyLabtestMatches: async (census:unknown) => siblingTools.censusMatchesApprovedSiblings(census,priorRooms ?? [],{propertyCode:request.propertyCode}) } : {}),
         authorizeCandidate: async () => !lease.signal.aborted && !markerAttempted,
         dispatchCandidate: async (_candidate: unknown, proceed: () => Promise<unknown>) => {
           if (markerAttempted || lease.signal.aborted) throw new Error('DISPATCH_NOT_AUTHORIZED');
@@ -359,7 +368,11 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
           typeof saved.confirmation === 'string' && /^\d+-\d+$/.test(saved.confirmation) &&
           typeof saved.nativeStayId === 'string' && /^\d+$/.test(saved.nativeStayId) &&
           Array.isArray(saved.readback?.mismatches) && saved.readback.mismatches.length === 0) {
-        return success(bounded({ confirmation: saved.confirmation, reservation_id: saved.nativeStayId, readback: saved.readback }));
+        return success(bounded({ confirmation: saved.confirmation, reservation_id: saved.nativeStayId, readback: saved.readback,
+          ...(priorRooms ? {sibling:{confirmation:saved.confirmation,nativeStayId:saved.nativeStayId,approvedRequest:binding.data,
+            requestDigest:stage.requestBinding.digest,ratePlanAvailability:expectedPrice,
+            ...(saved.save?.checkedPricing !== undefined ? {checkedPricing:saved.save.checkedPricing} : {}),
+            ...(stage.requestBinding.arAccountProfileId ? {arProfileId:stage.requestBinding.arAccountProfileId} : {})}} : {}) }));
       }
       return fail(markerAttempted ? 'CREATE_SAVE_UNCERTAIN' : 'CREATE_SAVE_REFUSED', saved.issue ?? 'Native Save was not verified.', markerAttempted ? 'uncertain' : 'known', bounded({ native: saved }));
     };

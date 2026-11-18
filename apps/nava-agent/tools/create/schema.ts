@@ -17,7 +17,12 @@ const action = z.object({
 
 export const prepareInput = z.object({ workflow: z.literal('create'), booking, action }).strict();
 const stagedPrice = z.object({ averageRate: z.string().min(1), totalRate: z.string().min(1), currency: z.string().min(1) }).strict();
-export const saveInput = prepareInput.extend({ executionId: z.string().min(1).max(200), expectedPrice: stagedPrice.optional() }).strict();
+const savedSibling = z.object({
+  confirmation:z.string(),nativeStayId:z.string(),approvedRequest:z.record(z.unknown()),requestDigest:z.string(),
+  ratePlanAvailability:stagedPrice,checkedPricing:z.unknown().optional(),arProfileId:z.string().optional(),
+}).strict();
+export const saveInput = prepareInput.extend({ executionId: z.string().min(1).max(200), expectedPrice: stagedPrice.optional(),
+  priorRooms:z.array(savedSibling).max(7).optional() }).strict();
 export type CreateInput = z.infer<typeof prepareInput>;
 
 const nullableString = { anyOf: [{ type: 'string' }, { type: 'null' }] };

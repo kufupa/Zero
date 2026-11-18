@@ -66,6 +66,32 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       spec.provenance='staff';
       changes.push({change:item,...modified});
     }
+    const countChange=input.changes.find(change=>change.path==='/bookings/0/fields/room_count');
+    const clonedFromFirst:string[]=[];
+    if(countChange && p.workflow==='create') {
+      const count=draft.bookings[0]?.fields.room_count;
+      if(typeof count!=='number' || !Number.isInteger(count) || count<1 || count>8 || !draft.bookings[0]) throw new Error('INVALID_INPUT');
+      const first=draft.bookings[0];
+      while(draft.bookings.length<count) {
+        const index=draft.bookings.length, id=uid('booking');
+        const fields={...structuredClone(first.fields)};
+        delete fields.room_count;
+        draft.bookings.push({...structuredClone(first),id,fields});
+        clonedFromFirst.push(id);
+        for(const spec of draft.field_specs.filter(field=>field.path.startsWith('/bookings/0/fields/') && !field.path.endsWith('/room_count'))) {
+          draft.field_specs.push({...structuredClone(spec),path:spec.path.replace('/bookings/0/',`/bookings/${index}/`)});
+        }
+        const action=draft.actions.find(item=>item.type==='create' && item.booking_ids.includes(first.id));
+        if(!action) throw new Error('INVALID_INPUT');
+        action.booking_ids.push(id);
+      }
+      if(draft.bookings.length>count) {
+        const removed=new Set(draft.bookings.slice(count).map(booking=>booking.id));
+        draft.bookings=draft.bookings.slice(0,count);
+        draft.actions=draft.actions.map(action=>({...action,booking_ids:action.booking_ids.filter(id=>!removed.has(id))})).filter(action=>action.type!=='create' || action.booking_ids.length>0);
+        draft.field_specs=draft.field_specs.filter(spec=>{const match=/^\/bookings\/(\d+)\//.exec(spec.path);return !match || Number(match[1])<count;});
+      }
+    }
     const valid=proposalDraft.parse(draft), revision=p.revision+1;
     if(JSON.stringify(quoteIdentities(valid))!==identities) throw new Error('INVALID_PATH');
     if(quoteActions && !isDeepStrictEqual(quoteActions,valid.actions)) {
@@ -73,19 +99,22 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       if(!input.changes.some(change=>change.path==='/reply_draft')) valid.reply_draft=null;
     }
     const bindCreateGuest=p.workflow==='create' && staffPrepareOnly();
-    let guestSelection:ReturnType<typeof selectedCreateGuest>=null;
+    const guestSelections:NonNullable<ReturnType<typeof selectedCreateGuest>>[]=[];
     if(bindCreateGuest) {
-      const candidates=nativeGuestCandidates.safeParse(p.stage?.revision===p.revision?p.stage.native_result?.guest_candidates:null);
-      const selectsGuest=input.changes.some(change=>change.path==='/bookings/0/fields/guest_profile_id' && change.op!=='remove');
-      for(const booking of valid.bookings) {
+      for(const [index,booking] of valid.bookings.entries()) {
         if(booking.fields.guest_profile_id==null) continue;
         const selected=selectedCreateGuest(booking);
-        if(!selected || valid.bookings.length!==1) throw new Error(invalidGuestSelection.code);
-        if(!hasBoundCreateGuest(booking,p.execution) && !(selectsGuest && candidates.success && candidates.data.items.some(candidate=>
-          candidate.native_id===selected.native_id && candidate.first_name===selected.first_name && candidate.last_name===selected.last_name))) {
+        const native=p.stage?.revision===p.revision?p.stage.native_result:null;
+        const choices=stored.bookings.length===1 ? native?.guest_candidates : native?.rooms?.[index]?.guest_candidates;
+        const candidates=nativeGuestCandidates.safeParse(choices);
+        const selectsGuest=input.changes.some(change=>change.path===`/bookings/${index}/fields/guest_profile_id` && change.op!=='remove');
+        const cloned=selected!==null && clonedFromFirst.includes(booking.id) && guestSelections.some(first=>first.booking_id===valid.bookings[0]?.id &&
+          first.native_id===selected.native_id && first.first_name===selected.first_name && first.last_name===selected.last_name);
+        if(!selected || (!hasBoundCreateGuest(booking,p.execution) && !cloned && !(selectsGuest && candidates.success && candidates.data.items.some(candidate=>
+          candidate.native_id===selected.native_id && candidate.first_name===selected.first_name && candidate.last_name===selected.last_name)))) {
           throw new Error(invalidGuestSelection.code);
         }
-        guestSelection=selected;
+        guestSelections.push(selected);
       }
     }
     if(p.workflow==='create') for(const change of input.changes) {
@@ -107,8 +136,9 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(execution) {
       if(stageError) delete execution.error;
       if(bindCreateGuest) {
-        if(guestSelection) execution.staff_guest_selection=guestSelection;
-        else delete execution.staff_guest_selection;
+        delete execution.staff_guest_selection;
+        if(guestSelections.length) execution.staff_guest_selections=guestSelections;
+        else delete execution.staff_guest_selections;
       }
     }
     await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,

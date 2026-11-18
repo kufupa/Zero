@@ -108,7 +108,7 @@ function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName, p
   if (spec.control === 'checkbox' && !quoteChildCount) return typeof draft === 'boolean'
     ? { ok: true, value: draft } : { ok: false, message: `${spec.label}: choose yes or no.` };
   if (typeof draft !== 'string') return { ok: false, message: `${spec.label}: check this value.` };
-  if (workflow === 'create' && spec.path === '/bookings/0/fields/guest_profile_id' && draft === '') return { ok: true, value: null };
+  if (workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/guest_profile_id$/.test(spec.path) && draft === '') return { ok: true, value: null };
   if (spec.control === 'number' || quoteChildCount || quoteNumber) {
     if (!draft.trim()) return { ok: true, value: null };
     const value = Number(draft);
@@ -594,29 +594,30 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     }
   }
 
-  async function selectGuest(proposal: Proposal, candidate: GuestCandidate) {
+  async function selectGuest(proposal: Proposal, candidate: GuestCandidate, roomIndex: number) {
     const signal = controllerRef.current?.signal;
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit ||
-        !current || cache.selectedId !== current.id || current.revision !== proposal.revision || current.workflow !== 'create' || current.bookings.length !== 1 ||
+        !current || cache.selectedId !== current.id || current.revision !== proposal.revision || current.workflow !== 'create' || !current.bookings[roomIndex] ||
         !['ready', 'waiting_go'].includes(current.phase) || current.stage?.revision !== current.revision ||
         cache.goLocks[current.id] || cache.issues[current.id] || cache.stagePending[current.id] !== undefined ||
         Object.keys(cache.drafts[current.id] ?? {}).length) return;
     const native = current.stage.native_result;
-    const choices = native && typeof native === 'object' && !Array.isArray(native) ? native.guest_candidates : null;
+    const room = native && typeof native === 'object' && !Array.isArray(native) ? (current.bookings.length===1 ? native : Array.isArray(native.rooms) ? native.rooms[roomIndex] : null) : null;
+    const choices = room && typeof room==='object' && !Array.isArray(room) ? room.guest_candidates : null;
     const items = choices && typeof choices === 'object' && !Array.isArray(choices) && choices.status !== 'unavailable' && Array.isArray(choices.items) ? choices.items : [];
     if (!/^\d{1,100}$/.test(candidate.nativeId) || !candidate.firstName.trim() || !candidate.lastName.trim() ||
         items.filter(item => item && typeof item === 'object' && !Array.isArray(item) &&
           item.native_id === candidate.nativeId && item.first_name === candidate.firstName && item.last_name === candidate.lastName).length !== 1) return;
     const changes: Change[] = [];
     for (const [field, value] of [['guest_profile_id', candidate.nativeId], ['first_name', candidate.firstName], ['last_name', candidate.lastName]] as const) {
-      const path = `/bookings/0/fields/${field}`;
+      const path = `/bookings/${roomIndex}/fields/${field}`;
       if (!current.field_specs.some(spec => spec.path === path && spec.editable)) {
         setMessage('Guest profile fields are unavailable. Refresh the proposal.'); return;
       }
       changes.push({ op: pointer(current, path).exists ? 'replace' : 'add', path, value });
     }
-    const emailPath = '/bookings/0/fields/guest_email';
+    const emailPath = `/bookings/${roomIndex}/fields/guest_email`;
     if (pointer(current, emailPath).exists) {
       if (!current.field_specs.some(spec => spec.path === emailPath && spec.editable)) {
         setMessage('The guest email lookup cannot be cleared here. Review this proposal in Infor.'); return;
@@ -946,7 +947,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const confirmingGo = Boolean(proposal && goEnabled && confirmedPreparation === goConfirmation(proposal));
   const penalty = proposal ? cancellationPenalty(proposal) : null;
   const goLabels = {
-    create: 'Save this booking in Infor?',
+    create: proposal && proposal.bookings.length>1 ? `Save all ${proposal.bookings.length} rooms in Infor?` : 'Save this booking in Infor?',
     amend: 'Save these changes in Infor?',
     cancel: 'Cancel this booking in Infor?',
     filing: 'File this PDF in the stay’s Infor Documents?',
@@ -1006,7 +1007,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       </PaneMessage>}
       {Object.keys(drafts).length > 0 && !issue && <PaneMessage>Edits are waiting to be saved.</PaneMessage>}
       <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || issue?.kind === 'conflict' || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={!issue ? id => { void openArtifact(proposal.id, proposal.revision, id); } : undefined}
-        onSelectGuest={proposal.workflow === 'create' && !issue ? candidate => { void selectGuest(proposal, candidate); } : undefined}
+        onSelectGuest={proposal.workflow === 'create' && !issue ? (candidate,index) => { void selectGuest(proposal, candidate,index); } : undefined}
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections) => { void generateQuoteArtifacts(proposal, quoteId, selections); } : undefined}
         quoteDraftTarget={quoteDraftTarget}

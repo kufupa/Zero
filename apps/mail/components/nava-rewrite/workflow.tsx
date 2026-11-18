@@ -30,7 +30,7 @@ export type WorkflowProps = {
   quoteConnectionReady?: boolean;
   savedQuoteDraftMessage?: string;
   onAddContext?: (text: string) => Promise<string>;
-  onSelectGuest?: (candidate: GuestCandidate) => void;
+  onSelectGuest?: (candidate: GuestCandidate, roomIndex: number) => void;
   attachmentsChecked: boolean;
   attachmentsAttention: boolean;
   attachmentsBusy: boolean;
@@ -180,6 +180,15 @@ function fieldText(value: unknown): string | null {
 function ObservedFields({ proposal }: { proposal: Proposal }) {
   const stage = proposal.stage;
   if (!stage) return null;
+  if (proposal.workflow === 'create' && stage.native_result && typeof stage.native_result === 'object' && !Array.isArray(stage.native_result) && Array.isArray(stage.native_result.rooms)) {
+    return <div>{stage.native_result.rooms.map((room,index)=>{
+      if (!room || typeof room!=='object' || Array.isArray(room)) return null;
+      const observed=room.observed_fields && typeof room.observed_fields==='object' && !Array.isArray(room.observed_fields) ? room.observed_fields : {};
+      const rows=Object.entries(observedLabels).flatMap(([key,label])=>{const value=fieldText(observed[key]); return value===null?[]:[{key,label,value}];});
+      return <div key={proposal.bookings[index]?.id ?? index}><p>Room {index+1}: {room.state==='prepared'?'checked in Infor':'check incomplete'}</p>
+        <dl className={styles.nativeRows}>{rows.map(row=><div className={styles.nativeRow} key={row.key}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl></div>;
+    })}</div>;
+  }
   if (proposal.workflow === 'create' && stage.observed_fields && typeof stage.observed_fields === 'object' && !Array.isArray(stage.observed_fields)) {
     const observed = stage.observed_fields;
     const rows = Object.entries(observedLabels).flatMap(([key, label]) => {
@@ -257,8 +266,15 @@ function currentNativeResult(proposal: Proposal, drafts: WorkflowProps['drafts']
   return value && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
 }
 
-function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) {
-  const choices = currentNativeResult(proposal, drafts)?.rate_choices;
+function currentNativeRoom(proposal: Proposal, drafts: WorkflowProps['drafts'], index: number) {
+  const native=currentNativeResult(proposal,drafts);
+  if(proposal.bookings.length===1) return native;
+  const room=Array.isArray(native?.rooms) ? native.rooms[index] : null;
+  return room && typeof room==='object' && !Array.isArray(room) ? room : undefined;
+}
+
+function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], index: number) {
+  const choices = currentNativeRoom(proposal, drafts, index)?.rate_choices;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status === 'unavailable' || !Array.isArray(choices.items)) return [];
   return choices.items.flatMap(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.value !== 'string' || !item.value || typeof item.label !== 'string') return [];
@@ -272,10 +288,10 @@ function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) 
   });
 }
 
-function nativeTrackOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) {
-  const choices = currentNativeResult(proposal, drafts)?.track_choices;
+function nativeTrackOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], index: number) {
+  const choices = currentNativeRoom(proposal, drafts, index)?.track_choices;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status !== 'available' ||
-      choices.property_code !== proposal.bookings[0]?.property_code || !Array.isArray(choices.items)) return [];
+      choices.property_code !== proposal.bookings[index]?.property_code || !Array.isArray(choices.items)) return [];
   return choices.items.flatMap(item => {
     if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.value !== 'string' || !item.value || typeof item.label !== 'string') return [];
     return [{ value: item.value, label: item.label, meaning: typeof item.meaning === 'string' ? item.meaning : null }];
@@ -448,8 +464,9 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
     const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id|track)$/.test(spec.path);
-    const rates = proposal.workflow === 'create' && proposal.bookings.length === 1 && spec.path === '/bookings/0/fields/rate_plan' ? nativeRateOptions(proposal, drafts) : [];
-    const tracks = proposal.workflow === 'create' && proposal.bookings.length === 1 && spec.path === '/bookings/0/fields/track' ? nativeTrackOptions(proposal, drafts) : [];
+    const createCode = proposal.workflow === 'create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/(rate_plan|track)$/.exec(spec.path) : null;
+    const rates = createCode?.[2] === 'rate_plan' ? nativeRateOptions(proposal, drafts, Number(createCode[1])) : [];
+    const tracks = createCode?.[2] === 'track' ? nativeTrackOptions(proposal, drafts, Number(createCode[1])) : [];
     const options = nativeCode ? [...rates, ...tracks] : spec.options;
     if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0) {
       control = nativeCode && options.length === 0
@@ -705,8 +722,12 @@ function StaffContext({ busy, onAddContext }: WorkflowProps) {
 }
 
 function GuestChoices({ proposal, drafts, busy, onSelectGuest }: WorkflowProps) {
-  if (proposal.workflow !== 'create' || proposal.bookings.length !== 1 || !onSelectGuest) return null;
-  const choices = currentNativeResult(proposal, drafts)?.guest_candidates;
+  if (proposal.workflow !== 'create' || !onSelectGuest) return null;
+  return <>{proposal.bookings.map((booking,index)=><GuestRoomChoices key={booking.id} proposal={proposal} drafts={drafts} busy={busy} index={index} onSelectGuest={onSelectGuest} />)}</>;
+}
+
+function GuestRoomChoices({proposal,drafts,busy,index,onSelectGuest}: Pick<WorkflowProps,'proposal'|'drafts'|'busy'> & {index:number;onSelectGuest:(candidate:GuestCandidate,roomIndex:number)=>void}) {
+  const choices = currentNativeRoom(proposal,drafts,index)?.guest_candidates;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices)) return null;
   if (choices.status === 'unavailable') return <PaneMessage>Guest profile choices are unavailable. Check the profile in Infor.</PaneMessage>;
   if (!Array.isArray(choices.items)) return null;
@@ -718,13 +739,13 @@ function GuestChoices({ proposal, drafts, busy, onSelectGuest }: WorkflowProps) 
   });
   const coverage = choices.coverage;
   const complete = coverage && typeof coverage === 'object' && !Array.isArray(coverage) && coverage.complete === true && coverage.possibly_truncated === false && coverage.truncated === false;
-  return <PaneSection title="Choose a guest profile">
+  return <PaneSection title={proposal.bookings.length>1 ? `Choose guest profile · Room ${index+1}` : 'Choose a guest profile'}>
     {!complete && <p>Search coverage may be incomplete. Check the profile details in Infor.</p>}
     {candidates.length > 0 ? <PaneField label="Guest profile" control="select" value="" disabled={busy} placeholder="Choose a profile"
       options={candidates.map(candidate => ({ value: candidate.nativeId, label: `${candidate.firstName} ${candidate.lastName}`, meaning: candidate.location || null }))}
       onChange={value => {
         const matches = candidates.filter(candidate => candidate.nativeId === value);
-        if (matches.length === 1 && matches[0]) onSelectGuest(matches[0]);
+        if (matches.length === 1 && matches[0]) onSelectGuest(matches[0],index);
       }} /> : <p>No guest profiles were returned.</p>}
   </PaneSection>;
 }
@@ -823,7 +844,8 @@ export function Workflow(props: WorkflowProps) {
     </PaneSection>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
-      {proposal.result.readback !== null && <p role="status">{
+      {proposal.result.rooms && <ul>{proposal.result.rooms.map((room,index)=><li key={room.booking_id}>Room {index+1}: {room.state==='saved' ? `confirmed${room.confirmation ? ` · Confirmation ${room.confirmation}` : ''}${room.reservation_id ? ` · Reservation ${room.reservation_id}` : ''}` : room.state==='unattempted' ? 'not attempted' : room.state==='dispatched' || room.state==='uncertain' ? 'outcome unconfirmed; check Infor' : 'not saved'}</li>)}</ul>}
+      {proposal.result.readback !== null && proposal.phase === 'done' && <p role="status">{
         proposal.workflow === 'cancel' ? 'Infor confirms the booking is cancelled.'
           : proposal.workflow === 'filing' ? 'Infor confirms the PDF is in the stay’s Documents.'
           : proposal.workflow === 'amend' ? 'Infor confirms the changes were saved.'

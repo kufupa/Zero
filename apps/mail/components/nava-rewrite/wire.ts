@@ -87,6 +87,7 @@ export const proposalSchema = z.object({
   result: z.object({
     confirmation: z.string().nullable(), reservation_id: z.string().nullable(),
     readback: jsonSchema, display_rows: z.array(nativeDisplayRowSchema), artifacts: z.array(artifactSchema),
+    rooms: z.array(z.object({booking_id:id,state:z.enum(['unattempted','dispatched','saved','failed','uncertain']),confirmation:z.string().nullable(),reservation_id:z.string().nullable()})).optional(),
   }).nullable(),
   error: z.object({ code: z.string(), message: z.string(), outcome: z.enum(['known', 'uncertain']), recovery: z.string().nullable() }).nullable(),
 });

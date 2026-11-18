@@ -187,11 +187,12 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
       quote_selected_options:Array.isArray(p.stage.quote_selected_options) ? p.stage.quote_selected_options : [],
     });
   }
-  const result=p.phase==='done' && p.result ? {
+  const result=p.result && (p.phase==='done' || (p.workflow==='create' && Array.isArray(p.result.rooms))) ? {
     confirmation:typeof p.result.confirmation==='string'?p.result.confirmation:null,
     reservation_id:typeof p.result.reservation_id==='string'?p.result.reservation_id:null,
     readback:p.result.readback??null,display_rows:Array.isArray(p.result.display_rows)?p.result.display_rows:[],
     artifacts:Array.isArray(p.result.artifacts)?p.result.artifacts:[],
+    ...(Array.isArray(p.result.rooms)?{rooms:p.result.rooms.map((room:any)=>({booking_id:room.booking_id,state:room.state,confirmation:room.confirmation??null,reservation_id:room.reservation_id??null}))}:{}),
   } : null;
   const rawError=p.execution?.error ?? p.execution?.go?.completion?.toolResult?.error;
   const uncertain=p.phase==='uncertain' || rawError?.outcome==='uncertain';
