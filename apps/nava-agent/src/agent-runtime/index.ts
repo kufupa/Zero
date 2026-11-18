@@ -7,6 +7,8 @@ export type { AgentRuntime, RuntimeBlock, RuntimeDeps, RuntimeMessage, RuntimeSt
 
 const REGION = 'eu-west-1';
 const MODEL = 'global.anthropic.claude-haiku-5-5';
+const THINKING_BINDING_BETA = 'thinking-binding-controls-2026-08-01';
+const thinking = { type: 'adaptive' as const, block_binding: { prefix_mismatch_behavior: 'drop_block' as const } };
 
 function strictCompatible(value: unknown): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
@@ -59,14 +61,14 @@ export class BedrockRuntime implements AgentRuntime {
       const response = await client.messages.create({
         model: MODEL,
         max_tokens: maxTokens,
-        thinking: { type: 'adaptive' },
+        thinking,
         messages: request.messages.map(({ role, content }) => ({ role, content })) as unknown as MessageParam[],
         ...(request.system ? { system: [{ type: 'text' as const, text: request.system, cache_control: { type: 'ephemeral' as const } }] } : {}),
         ...(request.tools.length ? {
           tools: request.tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.input_schema, ...(strictCompatible(tool.input_schema) ? { strict: true } : {}) })),
           tool_choice: { type: 'auto' as const, disable_parallel_tool_use: true },
         } : {}),
-      });
+      }, { headers: { 'anthropic-beta': THINKING_BINDING_BETA } });
       return {
         content: response.content as unknown as RuntimeBlock[],
         stop_reason: response.stop_reason,
