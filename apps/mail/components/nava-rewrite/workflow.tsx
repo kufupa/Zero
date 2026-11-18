@@ -366,6 +366,14 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
       <FieldEvidence spec={spec} label="Rate plan" /></div>;
   }
 
+  const quotePreference = proposal.workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/preferred\/(?:roomCodes|rateCodes|bedTypes|mealPlanBases)$/.test(spec.path);
+  if (quotePreference) {
+    const text = typeof shown === 'string' ? shown : Array.isArray(shown) && shown.every(item => typeof item === 'string') ? shown.join(', ') : shown == null ? '' : null;
+    return <div>{text === null ? <PaneMessage>{label}: this value cannot be displayed. Check the source.</PaneMessage>
+      : <PaneField {...common} control="text" value={text} hint="Separate multiple preferences with commas." onChange={next => onEdit(spec.path, next)} />}
+      <FieldEvidence spec={spec} label={label} /></div>;
+  }
+
   const agesPath = childFieldPath(spec.path, 'child_ages', proposal.workflow);
   const countPath = childFieldPath(spec.path, 'child_count', proposal.workflow);
   const agesSpec = agesPath ? proposal.field_specs.find(item => item.path === agesPath) : undefined;
@@ -455,7 +463,8 @@ function QuoteFields(props: WorkflowProps & { locked: boolean }) {
   const groups = quoteGroups(props.proposal);
   const sections: { key: string; label?: string; fields: FieldSpec[] }[] = [];
   const grouped = new Map<string, { key: string; label?: string; fields: FieldSpec[] }>();
-  for (const spec of props.proposal.field_specs) {
+  const specs = [...props.proposal.field_specs].sort((a, b) => Number(!/\/details\/property_code$/.test(a.path)) - Number(!/\/details\/property_code$/.test(b.path)));
+  for (const spec of specs) {
     const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)(?:\/|$)/.exec(spec.path);
     const group = match && groups.find(item => item.actionIndex === Number(match[1]) && item.groupIndex === Number(match[2]));
     const legacyStay = /^\/bookings\/(0|[1-9]\d*)\//.exec(spec.path) && fieldContext(props.proposal, spec.path);

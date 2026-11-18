@@ -85,6 +85,10 @@ function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName, p
     const parsed = jsonSchema.safeParse(required);
     return parsed.success ? { ok: true, value: parsed.data } : { ok: false, message: 'Could not update the rate code. Refresh the quote.' };
   }
+  if (workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/preferred\/(?:roomCodes|rateCodes|bedTypes|mealPlanBases)$/.test(spec.path)) {
+    return typeof draft === 'string' ? { ok: true, value: draft.split(',').map(item => item.trim()).filter(Boolean) }
+      : { ok: false, message: `${spec.label}: enter preferences separated by commas.` };
+  }
   if (Array.isArray(draft)) {
     const createAges = workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/child_ages$/.test(spec.path);
     const quoteAges = workflow === 'quote' && /^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*)\/child_ages$/.test(spec.path);
