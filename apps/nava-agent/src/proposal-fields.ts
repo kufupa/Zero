@@ -63,7 +63,7 @@ function createChildFields(draft: ProposalDraft): ProposalDraft {
 }
 
 export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
-  if(draft.workflow!=='create' || draft.disposition!=='propose') return draft;
+  if(draft.workflow!=='create' || !['propose','needs_info','staff_review'].includes(draft.disposition)) return draft;
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};

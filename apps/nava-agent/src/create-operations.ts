@@ -52,7 +52,7 @@ const queuedStage = z.object({
 
 type CreateNativeInput=Extract<StaffNativeInput,{workflow:'create'|'amend'|'cancel'|'filing'}> & {workflow:'create'};
 function createInputs(draft:ProposalDraft, property:string): CreateNativeInput[] | null {
-  if(draft.workflow!=='create' || draft.disposition!=='propose' || draft.bookings.length<1 || draft.bookings.length>8) return null;
+  if(draft.workflow!=='create' || !['propose','needs_info','staff_review'].includes(draft.disposition) || draft.bookings.length<1 || draft.bookings.length>8) return null;
   if(new Set(draft.bookings.map(booking=>booking.id)).size!==draft.bookings.length) return null;
   const actions=draft.actions.filter(action=>action.type!=='invoice_request');
   const inputs:CreateNativeInput[]=[];
