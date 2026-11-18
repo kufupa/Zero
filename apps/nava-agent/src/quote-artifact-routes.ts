@@ -6,7 +6,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import type { Principal } from './auth.js';
 import { json, sql } from './db.js';
-import { createQuoteArtifacts, type Artifact } from '../tools/quote-artifacts/index.js';
+import { createQuoteArtifacts, quoteOptions, type Artifact } from '../tools/quote-artifacts/index.js';
 import { gotenbergConverter } from '../tools/quote-artifacts/converter.js';
 import { quoteInput } from '../tools/quote/schema.js';
 
@@ -85,6 +85,10 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
       searches.slice(0,i).some(prior=>prior.arrival_date<search.departure_date && search.arrival_date<prior.departure_date))) {
       return c.json(responseError('QUOTE_ALLOCATION_UNVERIFIED','Choose a quote with verified prices and availability for all requested nights.'),409);
     }
+    const options=quoteOptions(quote,ready.data.native_result);
+    const selectedOptions=input.selections.map(selection=>options.find(option=>option.group_id===selection.group_id &&
+      option.room_id===selection.room_id && option.option_index===selection.option_index));
+    if(selectedOptions.some(option=>!option)) return c.json(responseError('QUOTE_NOT_RENDERABLE','The selected quote is incomplete or cannot be represented by the quotation template.'),409);
     const converter = converterUrl();
     if (!converter || !process.env.NAVA_QUOTE_ARTIFACT_DIR) return c.json(responseError('ARTIFACTS_UNAVAILABLE','Private quote artifact service unavailable.'),503);
     const job = ready.data.job_id;
@@ -108,7 +112,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
         try {
           const pdfRef = await write(pdf), workbookRef = await write(workbook);
           signal?.throwIfAborted();
-          const saved = await sql`UPDATE nava_agent.proposal p SET stage=jsonb_set(p.stage,'{artifacts}',${json([pdfRef,workbookRef])}),updated_at=now()
+          const saved = await sql`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions})}::jsonb,updated_at=now()
             FROM nava_agent.mail_thread t WHERE p.thread_id=t.id AND p.id=${proposalId} AND p.revision=${input.expected_revision}
             AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)='[]'::jsonb AND p.workflow='quote'
             AND t.mailbox_id=${row.mailbox_id} AND t.mode='live' RETURNING p.id`;

@@ -182,6 +182,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
       quote_options:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result) : [],
       quote_choices:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result,false) : [],
       quote_artifact_block_reason:quote.length===1 ? quoteArtifactBlockReason(p.stage.native_result) : null,
+      quote_selected_options:Array.isArray(p.stage.quote_selected_options) ? p.stage.quote_selected_options : [],
     });
   }
   const result=p.phase==='done' && p.result ? {
