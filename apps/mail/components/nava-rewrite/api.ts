@@ -14,6 +14,7 @@ export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 export type RequestOptions = { signal?: AbortSignal };
 type EventOptions = RequestOptions & { onConnected?: () => void };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
+export type StayLookup = { kind: 'surname'; surname: string } | { kind: 'confirmation'; confirmation: string };
 export type NavaApi = {
   upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getThread: (id: string, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
@@ -25,6 +26,8 @@ export type NavaApi = {
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
   quoteArtifacts: (request: RevisionRequest & { quoteId: string; selections: QuoteSelection[] }) => Promise<void>;
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
+  lookupStay: (request: RevisionRequest & { lookup: StayLookup }) => Promise<AcceptedStage>;
+  selectStay: (request: RevisionRequest & { jobId: string; removeFields: string[] }) => Promise<Proposal>;
   go: (request: RevisionRequest & { idempotencyKey: string; preparedJobId?: string; confirmPenalty?: true }) => Promise<AcceptedGo>;
   reconcile: (request: RevisionRequest) => Promise<void>;
   sendContext: (request: RequestOptions & { threadId: string; text: string; proposalId?: string }) => Promise<void>;
@@ -184,6 +187,15 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
       }
       return parsed.data;
     },
+    lookupStay: async requestValue => {
+      const response = await request(`${proposalPath(requestValue.proposalId)}/target`, body({ expected_revision: requestValue.expectedRevision, lookup: requestValue.lookup }, requestValue.signal));
+      const parsed = acceptedStageSchema.safeParse(await response.json().catch(() => null));
+      if (response.status !== 202 || !parsed.success || parsed.data.proposal_id !== requestValue.proposalId || parsed.data.revision !== requestValue.expectedRevision || !parsed.data.job_id)
+        throw new NavaApiError('Nava returned an invalid search response.', 'invalid_response', response.status);
+      return parsed.data;
+    },
+    selectStay: requestValue => json(`${proposalPath(requestValue.proposalId)}/target/select`, proposalSchema,
+      body({ expected_revision: requestValue.expectedRevision, job_id: requestValue.jobId, remove_fields: requestValue.removeFields }, requestValue.signal)),
     go: async requestValue => {
       const response = await request(`${proposalPath(requestValue.proposalId)}/go`, body({
         expected_revision: requestValue.expectedRevision, idempotency_key: requestValue.idempotencyKey,

@@ -17,7 +17,7 @@ const refuse = (code: string, message: string, data: unknown = null): ToolResult
 
 const nativePath = (file: string) => new URL(`../../../server-pilot/tooling/hms-cloud/${file}.mjs`, import.meta.url).href;
 const nativeId = z.string().regex(/^\d{1,100}$/);
-const selectedStay = z.object({
+export const selectedStay = z.object({
   source: z.literal('record_view_ext_model'),
   propertyCode: z.string(),
   confirmation: z.string().regex(/^\d{6,10}-\d{1,10}$/),
@@ -175,6 +175,10 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       return refuse('AMEND_TARGET_MISMATCH', 'Fresh read did not match the requested stay identity.');
     }
     if (selected.status !== 'Reserved') return refuse('AMEND_STATUS_UNSUPPORTED', 'Only Reserved stays can be staged by this adapter.');
+    for (const [key, native] of Object.entries({native_stay_id:'reservationStayId',guest_id:'guestId',reservation_id:'reservationId',record_id:'recordId'} as const)) {
+      const expected=booking.current_state?.[key];
+      if(expected!==undefined && expected!==selected[native]) return refuse('AMEND_PREIMAGE_CHANGED', 'The selected stay changed. Read it again before preparing.');
+    }
     for (const [key, native] of Object.entries(stayFields)) {
       const expected = booking.current_state?.[key];
       if (expected !== undefined && expected !== null && expected !== selected[native]) {

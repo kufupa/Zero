@@ -13,10 +13,12 @@ import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInpu
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
 import { createGoEnabled, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly } from './hms-mode.js';
 import { attachmentsUnconfirmed, invalidGuestSelection } from './attachment-gate.js';
+import { targetInput, targetLookup } from './stay-target.js';
+import { selectStayTarget } from './edit.js';
 
-type Operation = 'stage'|'go'|'reconcile'|'quote';
+type Operation = 'stage'|'go'|'reconcile'|'quote'|'target';
 type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
-type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;confirmPenalty?:true};
+type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;confirmPenalty?:true;lookup?:z.infer<typeof targetLookup>};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
 // transaction; a separate claimGo transaction would deadlock on the same row.
@@ -133,11 +135,11 @@ app.post('/threads/:id/messages',async c=>{
   await event(s.id,'context_pending',{text:body.text,proposal_id:body.proposal_id ?? null,who:principal.kind==='staff'?principal.id:null,delivered:false});
   void (s.managed_session_id?deliverPending(s.id):startPending(s.id)).catch(()=>{}); return c.json({accepted:true},202);
 });
-for (const operation of ['stage','go','reconcile','undo','redo','quote'] as const) app.post(`/proposals/:id/${operation}`,async c=>{
+for (const operation of ['stage','go','reconcile','undo','redo','quote','target'] as const) app.post(`/proposals/:id/${operation}`,async c=>{
   const principal=c.get('principal');
   if(principal.kind!=='staff') return c.json({error:{code:'STAFF_IDENTITY_REQUIRED',message:'Signed staff identity required',details:null}},403);
   if(operation==='go' && !hmsSaveEnabled() && !createGoEnabled()) return c.json({error:{code:'SAVE_DISABLED',message:'Only unsaved Prepare is available.',details:null}},403);
-  const input=(operation==='go'?goInput:operation==='quote'?requoteInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
+  const input=(operation==='go'?goInput:operation==='quote'?requoteInput:operation==='target'?targetInput:revisionInput).safeParse(await c.req.json().catch(()=>null));
   if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Invalid operation input',details:input.error.flatten()}},400);
   try {
     const result=await sql.begin(async tx=>{
@@ -154,17 +156,18 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       if(p.mode==='historical') throw new OperationError('HISTORICAL_UNAVAILABLE');
       if(p.mode!=='live' && p.mode!=='labtest') throw new OperationError('UNAVAILABLE');
       const staffGo=operation==='go' && createGoEnabled();
-      if((operation==='stage' || operation==='quote' || staffGo) && staffPrepareOnly()
+      if((operation==='stage' || operation==='quote' || operation==='target' || staffGo) && staffPrepareOnly()
           && (p.mode!=='live' || !p.selection_key.startsWith('prepare:'))) throw new OperationError('UNAVAILABLE');
       const workflow=proposalDraft.shape.workflow.safeParse(p.workflow);
       if(!workflow.success) throw new OperationError('UNAVAILABLE');
       if(operation==='go' && p.mode==='live' && !(staffGo && isWriteWorkflow(workflow.data))) throw new OperationError('REAL_GUEST_GO_UNAVAILABLE');
       const installed=await operations?.installed?.();
       const capability=(installed?.capabilities ?? operations?.capabilities)?.[workflow.data];
-      if(!operations || !(operation==='go'?(staffGo?capability?.go:capability?.go_labtest):capability?.[operation])) throw new OperationError('UNAVAILABLE');
+      if(!operations || !(operation==='go'?(staffGo?capability?.go:capability?.go_labtest):operation==='target'?capability?.stage:capability?.[operation])) throw new OperationError('UNAVAILABLE');
       if((operation==='stage' && p.phase!=='ready' && p.phase!=='waiting_go') ||
          (operation==='go' && p.phase!==(staffGo?'ready':'waiting_go') && p.phase!=='saving') ||
          (operation==='quote' && p.phase!=='ready' && p.phase!=='staging') ||
+         (operation==='target' && p.phase!=='ready') ||
          (operation==='reconcile' && p.phase!=='uncertain')) throw new OperationError('INVALID_PHASE');
       const idempotencyKey='idempotency_key' in input.data && typeof input.data.idempotency_key==='string'?input.data.idempotency_key:null;
       const quoteId='quote_id' in input.data && typeof input.data.quote_id==='string'?input.data.quote_id:null;
@@ -177,9 +180,10 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
       }
       const preparedJobId='prepared_job_id' in input.data && typeof input.data.prepared_job_id==='string'?input.data.prepared_job_id:undefined;
       const confirmPenalty='confirm_penalty' in input.data && input.data.confirm_penalty===true?true:undefined;
-      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId,preparedJobId,confirmPenalty});
+      const lookup=targetLookup.safeParse('lookup' in input.data?input.data.lookup:undefined).data;
+      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId,preparedJobId,confirmPenalty,lookup});
       if(!accepted.ok) throw new OperationError(accepted.code,accepted.details ?? null);
-      const expectedPhase=operation==='stage'||operation==='quote'?'staging':operation==='go'?'saving':'uncertain';
+      const expectedPhase=operation==='stage'||operation==='quote'||operation==='target'?'staging':operation==='go'?'saving':'uncertain';
       if(accepted.phase!==expectedPhase) throw new OperationError('UNAVAILABLE');
       if(operation==='quote' && (!accepted.jobId || !quoteId)) throw new OperationError('UNAVAILABLE');
       if(operation==='quote' && accepted.replayed) return {job_id:accepted.jobId,proposal_id:p.id,revision:p.revision,quote_id:quoteId,phase:accepted.phase};
@@ -200,6 +204,18 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote'] as cons
     if(code===attachmentsUnconfirmed.code) return c.json({error:{...attachmentsUnconfirmed,details:null}},409);
     if(code==='STALE_REVISION'||code==='NOT_EDITABLE'||code==='INVALID_PHASE'||code==='IDEMPOTENCY_CONFLICT') return c.json({error:{code,message:'Proposal revision or phase changed',details:null}},409);
     return c.json({error:{code,message:'This operation is not supported.',details:null}},501);
+  }
+});
+app.post('/proposals/:id/target/select',async c=>{
+  const principal=c.get('principal');
+  if(principal.kind!=='staff') return c.json({error:{code:'FORBIDDEN',message:'Signed staff identity required',details:null}},403);
+  const input=z.object({expected_revision:z.number().int().positive(),job_id:z.string().min(1),remove_fields:z.array(z.string().min(1)).max(100)}).strict().safeParse(await c.req.json().catch(()=>null));
+  if(!input.success) return c.json({error:{code:'INVALID_INPUT',message:'Choose a checked stay.',details:null}},400);
+  try { return c.json(await selectStayTarget(c.req.param('id'),principal.mailboxes,principal.id,input.data)); }
+  catch(error) {
+    const code=error instanceof Error?error.message:'UNAVAILABLE';
+    const status=code==='FORBIDDEN'?403:code==='NOT_FOUND'?404:409;
+    return c.json({error:{code,message:status===409?'The stay result or request changed. Search again.':'Stay selection unavailable.',details:null}},status);
   }
 });
 app.patch('/proposals/:id',async c=>{

@@ -78,6 +78,7 @@ export const proposalSchema = z.object({
   staff_attachments_checked: z.boolean().default(false),
   profile_reviews:z.array(z.object({booking_id:id,first_name:z.string(),last_name:z.string(),guest_email:z.string().nullable(),choices:jsonSchema})).default([]),
   profile_outcome:z.object({booking_id:z.string().optional(),native_id:z.string().nullable().optional()}).nullable().default(null),
+  stay_target_selected: z.boolean().default(false),
   stage: z.object({
     revision, state: z.string().optional(), job_id: id.optional(), quote_id: id.optional(), quote_options: z.array(quoteOptionSchema).optional(),
     quote_choices: z.array(quoteOptionSchema).optional(), quote_selected_options: z.array(quoteOptionSchema).optional(),

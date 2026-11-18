@@ -10,6 +10,7 @@ import { missingCreateFields } from './proposal-fields.js';
 import { stageFeedback } from './prepare-feedback.js';
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, hasBoundCreateGuest, invalidGuestSelection, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, stageSource, staffAttachmentsChecked, type StaffJobBinding } from './attachment-gate.js';
 import { installedStaffTools, type LeaseFence, type RegistryContext, type StaffNativeInput, type ToolRegistry, type ToolResult } from './tool-registry.js';
+import { targetLookup, targetIsBound } from './stay-target.js';
 
 export const manualLabtestTarget = z.object({
   arrival_date: z.string().date(), departure_date: z.string().date(),
@@ -45,6 +46,7 @@ const queuedStage = z.object({
   workflow:proposalDraft.shape.workflow.optional(), source:stageSource.optional(), quote_id:z.string().optional(),
   profile_dispatch:z.object({booking_id:z.string(),attempt_id:z.string()}).optional(),
   profile_created:z.array(z.object({booking_id:z.string(),native_id:z.string()})).optional(),
+  lookup:targetLookup.optional(),
 }).strict();
 
 type CreateNativeInput=Extract<StaffNativeInput,{workflow:'create'|'amend'|'cancel'|'filing'}> & {workflow:'create'};
@@ -60,6 +62,11 @@ function createInputs(draft:ProposalDraft, property:string): CreateNativeInput[]
   }
   if(actions.some(action=>action.type!=='create' || action.booking_ids.some(id=>!draft.bookings.some(booking=>booking.id===id)))) return null;
   return inputs;
+}
+
+function hasBoundTarget(input:StaffNativeInput,execution:unknown) {
+  if(input.workflow!=='amend' && input.workflow!=='cancel') return true;
+  return targetIsBound(input.booking,execution);
 }
 
 function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteId:string|null):StaffNativeInput|null {
@@ -96,6 +103,15 @@ function stageInput(draft:ProposalDraft,workflow:Workflow,property:string,quoteI
   return {workflow,booking,action};
 }
 
+function targetStageInput(draft:ProposalDraft,workflow:Workflow,property:string):StaffNativeInput|null {
+  if((workflow!=='amend' && workflow!=='cancel') || draft.workflow!==workflow || draft.disposition!=='propose' ||
+    draft.bookings.length!==1 || draft.actions.length!==1) return null;
+  const [booking]=draft.bookings, [action]=draft.actions;
+  if(action.type!==workflow || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
+    (booking.property_code!==null && booking.property_code!==property)) return null;
+  return {workflow,booking:{...booking,property_code:property},action};
+}
+
 export function createPilotOperations(): ProposalOperations | undefined {
   if (!createPilotEnabled()) return;
   let installed: ReturnType<typeof installedStaffTools> | undefined;
@@ -116,12 +132,16 @@ export function createPilotOperations(): ProposalOperations | undefined {
       if (!p) return {ok:false,code:'NOT_FOUND'};
       if(staffPrepareOnly()) {
         if(request.operation==='go') return p.config?.replay_id ? {ok:false,code:'UNAVAILABLE'} : submitStaffGo(tx,p,request);
-        if(request.mode!=='live' || (request.operation!=='stage' && request.operation!=='quote')) return {ok:false,code:'UNAVAILABLE'};
+        if(request.mode!=='live' || (request.operation!=='stage' && request.operation!=='quote' && request.operation!=='target')) return {ok:false,code:'UNAVAILABLE'};
         const source=await selectedStageSource(tx,p.session_id);
         if(!source.success || source.data.mailbox_id!==request.mailboxId) return {ok:false,code:'FORBIDDEN'};
         const draft=proposalDraft.safeParse(p.current);
-        const input=draft.success && p.workflow===request.workflow ? stageInput(draft.data,request.workflow,source.data.property_code,request.quoteId) : null;
+        const input=draft.success && p.workflow===request.workflow ? request.operation==='target'
+          ? targetStageInput(draft.data,request.workflow,source.data.property_code)
+          : stageInput(draft.data,request.workflow,source.data.property_code,request.quoteId) : null;
         if(!input) return {ok:false,code:'INVALID_INPUT'};
+        if(request.operation==='target' && (!request.lookup || !['amend','cancel'].includes(input.workflow))) return {ok:false,code:'INVALID_INPUT'};
+        if(request.operation==='stage' && !hasBoundTarget(input,p.execution)) return {ok:false,code:'INVALID_INPUT'};
         if(input.workflow==='create' && draft.success && draft.data.bookings.some(booking=>!hasBoundCreateGuest(booking,p.execution))) return {ok:false,code:invalidGuestSelection.code};
         if(input.workflow==='create' && draft.success) {
           const missing=draft.data.bookings.flatMap((_,index)=>fieldLabels(draft.data,missingCreateFields(draft.data,'stage',index),index).map(label=>draft.data.bookings.length===1 ? label : `Room ${index+1}: ${label}`));
@@ -149,7 +169,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
           return {ok:false,code:attachmentsUnconfirmed.code};
         }
         const stage=queuedStage.parse({job_id:uid('stage'),revision:request.expectedRevision,actor:request.actor,previous_phase:p.phase,state:'queued',
-          workflow:request.workflow,source:source.data,...(request.quoteId?{quote_id:request.quoteId}:{})});
+          workflow:request.workflow,source:source.data,...(request.quoteId?{quote_id:request.quoteId}:{}),...(request.lookup?{lookup:request.lookup}:{})});
         await tx`UPDATE nava_agent.proposal SET phase='staging',stage=${json(stage)},execution=COALESCE(execution,'{}'::jsonb)-'error',updated_at=now()
           WHERE id=${p.id}`;
         await writeEvent(tx,p.session_id,'stage_queued',{proposal_id:p.id,job_id:stage.job_id,revision:stage.revision,
@@ -217,6 +237,7 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   const draft=proposalDraft.safeParse(p.current);
   const input=draft.success ? stageInput(draft.data,request.workflow,source.data.property_code,null) : null;
   if(!draft.success || !input || input.workflow==='quote' || input.workflow==='triage') return {ok:false,code:'INVALID_INPUT'};
+  if(!hasBoundTarget(input,p.execution)) return {ok:false,code:'INVALID_INPUT'};
   if(p.status!=='idle' || p.pending_tool_use_id!==null || p.phase!=='ready' || p.revision!==request.expectedRevision
       || p.stage?.state!=='prepared' || p.stage?.revision!==p.revision
       || (request.preparedJobId!==undefined && p.stage?.job_id!==request.preparedJobId)) return {ok:false,code:'INVALID_PHASE'};
@@ -310,7 +331,7 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
   const input=draft.success && source?.success && isWriteWorkflow(draft.data.workflow)
     ? stageInput(draft.data,draft.data.workflow,source.data.property_code,null) : null;
   let result:ToolResult;
-  if(!input || input.workflow==='quote' || input.workflow==='triage' || !source?.success || p.revision!==go.revision
+  if(!input || input.workflow==='quote' || input.workflow==='triage' || !hasBoundTarget(input,p.execution) || !source?.success || p.revision!==go.revision
       || p.stage?.state!=='prepared' || p.stage.revision!==go.revision || (go.prepareJobId && p.stage.job_id!==go.prepareJobId)) {
     result={ok:false,data:null,error:{code:'INVALID_INPUT',message:'The booking changed before Save.',retryable:false,outcome:'known'}};
   } else {
@@ -498,7 +519,8 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   const draft=proposalDraft.safeParse(latest?.current ?? p.current);
   const legacy=staffPrepareOnly()?null:createInput(p.current);
   const input=draft.success && job.source && job.workflow && job.workflow===p.workflow
-    ? stageInput(draft.data,job.workflow,job.source.property_code,job.quote_id ?? null) : null;
+    ? job.lookup ? targetStageInput(draft.data,job.workflow,job.source.property_code)
+      : stageInput(draft.data,job.workflow,job.source.property_code,job.quote_id ?? null) : null;
   const binding={proposalId:p.id,revision:job.revision,jobId:job.job_id,workerId:lease.workerId,epoch:lease.epoch};
   let result:ToolResult|null=null;
   let captures:ReturnType<typeof stageFeedback>[]|undefined;
@@ -511,7 +533,10 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
         captures.push(stageFeedback({result:answer,workflow:'create',bookingId:room.booking.id,revision:job.revision,jobId:job.job_id}));
       }
     } else {
-      result=await registry.runStaffStage(input,draft.data,{...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id},context);
+      const jobBinding={...binding,workflow:job.workflow,source:job.source,quoteId:job.quote_id};
+      result=job.lookup && 'booking' in input && input.booking
+        ? await registry.runStayLookup(job.lookup,input.booking.id,draft.data,jobBinding,context)
+        : await registry.runStaffStage(input,draft.data,jobBinding,context);
     }
   } else if(legacy) {
     const answer=await registry.run('hms_prepare',legacy,{...context,toolUseId:job.job_id,staffStage:binding});
@@ -531,6 +556,7 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
     error:failed?.error ?? null,
   } : stageFeedback({result,workflow,bookingId,revision:job.revision,jobId:job.job_id,quoteId:job.quote_id});
   if(profileCreated && stage) stage.summary=['Guest Profile created in Infor. Booking not saved.',...stage.summary.map(text=>text.replace('Nothing saved.','No booking saved.'))];
+  if(stage && job.lookup) Object.assign(stage,{state:'target',source:job.source});
   await sql.begin(async tx => {
     const [owner] = await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;

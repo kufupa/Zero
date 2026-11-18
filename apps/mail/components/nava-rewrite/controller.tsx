@@ -9,6 +9,7 @@ import type { QuoteDraftBinding } from '@/components/reservation-pane/use-quote-
 import { Workflow, hasWorkflowAction, quoteCheckIssue, workflowPrimaryAction } from './workflow';
 import { quoteArtifactIds } from './quote-draft';
 import type { DraftValue, GuestCandidate } from './workflow';
+import type { StayLookup } from './api';
 import { jsonSchema } from './wire';
 import type { Capabilities, Change, FieldSpec, Json, Proposal, QuoteSelection, ThreadInput, Workflow as WorkflowName } from './wire';
 
@@ -37,7 +38,7 @@ type Draft = { value: DraftValue; version: number; base: { exists: boolean; valu
 type Drafts = Record<string, Record<string, Draft>>;
 type Issue = { kind: 'conflict' | 'error'; message: string };
 type GoLock = 'accepted' | 'uncertain' | 'reconciling';
-type ActiveOperation = { kind: 'stage' | 'quote' | 'go' | 'reconcile' | 'refresh' | 'attachments' | 'quote_artifacts' | 'quote_draft' | 'context'; proposalId: string; signal: AbortSignal };
+type ActiveOperation = { kind: 'stage' | 'target' | 'quote' | 'go' | 'reconcile' | 'refresh' | 'attachments' | 'quote_artifacts' | 'quote_draft' | 'context'; proposalId: string; signal: AbortSignal };
 type Cache = {
   drafts: Drafts;
   issues: Record<string, Issue>;
@@ -901,7 +902,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     }
   }
 
-  async function operation(kind: 'stage' | 'quote' | 'reconcile', proposal: Proposal, quoteId?: string) {
+  async function operation(kind: 'stage' | 'target' | 'quote' | 'reconcile', proposal: Proposal, quoteId?: string, lookup?: StayLookup) {
     const signal = controllerRef.current?.signal;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit) return;
     if (kind !== 'reconcile' && (cache.stagePending[proposal.id] !== undefined || Object.keys(cache.drafts[proposal.id] ?? {}).length)) return;
@@ -911,6 +912,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     if (kind === 'stage' && !validSavedChildren(current)) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
+    if (kind === 'target' && (!lookup || !['amend', 'cancel'].includes(current.workflow) || !advertised(capabilities, current.workflow, 'stage'))) return;
     if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !hasWorkflowAction(current))) return;
     if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || quoteCheckIssue(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
     if (kind === 'reconcile' && !reconcileSupported) return;
@@ -928,8 +930,9 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     refreshVersion();
     const request = { proposalId: proposal.id, expectedRevision: proposal.revision, signal };
     try {
-      if (kind === 'stage' || kind === 'quote') {
+      if (kind === 'stage' || kind === 'quote' || kind === 'target') {
         const accepted = kind === 'stage' ? await api.stage(request)
+          : kind === 'target' && lookup ? await api.lookupStay({ ...request, lookup })
           : quoteId && idempotencyKey ? await api.quote({ ...request, quoteId, idempotencyKey }) : null;
         if (!accepted) return;
         if (!signal.aborted) {
@@ -946,11 +949,11 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         const threadId = snapshotRef.current.id;
         try {
           const latest = await api.getThread(threadId, { signal });
-          if (!signal.aborted) applySnapshot(latest, true, kind === 'stage' || kind === 'quote' ? proposal.id : undefined);
+          if (!signal.aborted) applySnapshot(latest, true, kind === 'stage' || kind === 'quote' || kind === 'target' ? proposal.id : undefined);
         } catch (error) {
           if (!signal.aborted && !expireAuthentication(error, signal)) setStreamMessage('Could not refresh Nava. Reconnecting to check the latest status.');
         }
-        if ((kind === 'stage' || kind === 'quote') && !signal.aborted && cache.stagePending[proposal.id] === sequenceBeforeOperation) {
+        if ((kind === 'stage' || kind === 'quote' || kind === 'target') && !signal.aborted && cache.stagePending[proposal.id] === sequenceBeforeOperation) {
           void recoverStage(threadId, proposal.id, sequenceBeforeOperation, signal);
         }
       }
@@ -962,6 +965,31 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         : `Could not ${kind === 'stage' ? 'check in Infor' : 'check the Save outcome'}. Try again.`));
     } finally {
       if (operationRef.current === currentOperation) operationRef.current = null;
+      if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
+    }
+  }
+
+  async function selectStay(proposal: Proposal, jobId: string, removeFields: string[]) {
+    const signal = controllerRef.current?.signal;
+    const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
+    if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit || !current ||
+      cache.selectedId !== current.id || current.revision !== proposal.revision || current.phase !== 'ready' ||
+      current.stage?.state !== 'target' || current.stage.job_id !== jobId || current.stage.revision !== current.revision ||
+      cache.goLocks[current.id] || cache.issues[current.id] || cache.stagePending[current.id] !== undefined ||
+      Object.keys(cache.drafts[current.id] ?? {}).length) return;
+    const active: ActiveOperation = { kind: 'target', proposalId: current.id, signal };
+    operationRef.current = active; setBusy(true); setMessage(null);
+    try {
+      const updated = await api.selectStay({ proposalId: current.id, expectedRevision: current.revision, jobId, removeFields, signal });
+      if (!signal.aborted) applyProposal(updated);
+    } catch (error) {
+      if (!signal.aborted && !expireAuthentication(error, signal)) {
+        setMessage(safeOperationError(error) ?? 'The stay result changed. Search again.');
+        const threadId = snapshotRef.current?.id;
+        if (threadId) { const latest = await api.getThread(threadId, { signal }).catch(() => null); if (latest && !signal.aborted) applySnapshot(latest); }
+      }
+    } finally {
+      if (operationRef.current === active) operationRef.current = null;
       if (!signal.aborted && mounted.current) { setBusy(false); refreshVersion(); }
     }
   }
@@ -1040,6 +1068,8 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       </PaneMessage>}
       {Object.keys(drafts).length > 0 && !issue && <PaneMessage>Edits are waiting to be saved.</PaneMessage>}
       <Workflow proposal={proposal} drafts={drafts} onEdit={(path, value) => edit(proposal.id, path, value)} busy={busy || authenticationExpired || issue?.kind === 'conflict' || Boolean(lock) || cache.stagePending[proposal.id] !== undefined} operationStartedAt={cache.operationStarts[proposal.id]?.at} onOpenArtifact={!issue ? id => { void openArtifact(proposal.id, proposal.revision, id); } : undefined}
+        onLookupStay={canStage && !issue && !isUncertain ? lookup => { void operation('target', proposal, undefined, lookup); } : undefined}
+        onSelectStay={canStage && !issue && !isUncertain ? (jobId, removeFields) => { void selectStay(proposal, jobId, removeFields); } : undefined}
         onSelectGuest={proposal.workflow === 'create' && !issue ? (candidate,index) => { void selectGuest(proposal, candidate,index); } : undefined}
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections) => { void generateQuoteArtifacts(proposal, quoteId, selections); } : undefined}

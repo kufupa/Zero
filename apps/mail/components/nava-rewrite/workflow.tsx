@@ -8,6 +8,7 @@ import { quoteArtifactIds } from './quote-draft';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
 import type { FieldSpec, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
+import type { StayLookup } from './api';
 import styles from './pane.module.css';
 import quoteStyles from './quote.module.css';
 
@@ -34,6 +35,8 @@ export type WorkflowProps = {
   onOpenQuoteDraft?: (binding: QuoteDraftBinding) => Promise<{ subject: string; body: string; files: string[]; to?: string; cc?: string } | null>;
   onAddContext?: (text: string) => Promise<string>;
   onSelectGuest?: (candidate: GuestCandidate, roomIndex: number) => void;
+  onLookupStay?: (lookup: StayLookup) => void;
+  onSelectStay?: (jobId: string, removeFields: string[]) => void;
   attachmentsChecked: boolean;
   attachmentsAttention: boolean;
   attachmentsBusy: boolean;
@@ -802,6 +805,56 @@ function GuestRoomChoices({proposal,drafts,busy,index,onSelectGuest}: Pick<Workf
   </PaneSection>;
 }
 
+function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowProps) {
+  const booking=proposal.bookings[0];
+  const [surname,setSurname]=useState('');
+  const [confirmation,setConfirmation]=useState(booking?.reservation_id ?? '');
+  const [changed,setChanged]=useState(false);
+  const [previousJob,setPreviousJob]=useState<string | null>(null);
+  const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries(
+    ['guest_name','group_name','guest_names','confirmation_number','guest_last_name','guest_first_name','guest_names_hint','reservation_hint','confirmation_hint'].map(key=>[key,true])));
+  if(!['amend','cancel'].includes(proposal.workflow) || proposal.disposition!=='propose' || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
+  const stage=proposal.stage;
+  const native=stage?.state==='target' && stage.revision===proposal.revision && proposal.phase==='ready' &&
+    stage.job_id!==previousJob && !changed && Object.keys(drafts).length===0 ? stage.native_result : null;
+  const result=native && typeof native==='object' && !Array.isArray(native) ? native : null;
+  const selection=result?.selection && typeof result.selection==='object' && !Array.isArray(result.selection) ? result.selection : null;
+  const state=selection?.current_state && typeof selection.current_state==='object' && !Array.isArray(selection.current_state) ? selection.current_state : null;
+  const candidates=result?.kind==='surname' && Array.isArray(result.candidates) ? result.candidates : [];
+  const locked=busy || proposal.phase!=='ready' || Object.keys(drafts).length>0;
+  const exact=/^\d{6,10}-\d{1,10}$/;
+  return <PaneSection title="Find the stay in Infor">
+    <p>Search uses this mailbox’s hotel.</p>
+    {proposal.stay_target_selected && <p>Selected: {booking.reservation_id} · {String(booking.current_state?.first_name ?? '')} {String(booking.current_state?.last_name ?? '')} · arrival {String(booking.current_state?.arrival_date ?? '')}</p>}
+    {!proposal.stay_target_selected && booking.reservation_id && <p>Confirmation from the request: {booking.reservation_id}. Check and select the stay below.</p>}
+    <PaneField label="Guest surname" control="text" value={surname} disabled={locked} onChange={value=>{setSurname(value);setChanged(true);}} />
+    <button type="button" disabled={locked || !surname.trim()} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'surname',surname:surname.trim()});}}>Search by surname</button>
+    <PaneField label="Exact confirmation number" control="text" value={confirmation} disabled={locked} hint="Include the suffix, for example 1234567890-1." onChange={value=>{setConfirmation(value);setChanged(true);}} />
+    <button type="button" disabled={locked || !exact.test(confirmation.trim())} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:confirmation.trim()});}}>Check confirmation</button>
+    {stage?.state==='target' && (changed || stage.job_id===previousJob || Object.keys(drafts).length>0) && <p>Search details changed. Previous results are out of date; search again.</p>}
+    {result?.kind==='surname' && <>
+      <p>{candidates.length>1 ? 'More than one stay matched. Choose a confirmation to check.' : 'Choose a confirmation to check.'} Search covers a limited date range; additional stays may exist.</p>
+      {candidates.length===0 && <p>No matching stays were returned. Check the surname or use an exact confirmation.</p>}
+      <ul>{candidates.map((candidate,index)=>{
+        if(!candidate || typeof candidate!=='object' || Array.isArray(candidate) || typeof candidate.confirmation!=='string' || !exact.test(candidate.confirmation)) return null;
+        const id=candidate.confirmation;
+        return <li key={`${id}:${index}`}><button type="button" disabled={locked} onClick={()=>{setConfirmation(id);setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:id});}}>
+          {id} · {String(candidate.firstName ?? '')} {String(candidate.lastName ?? '')} · {String(candidate.arrival ?? '')} – {String(candidate.departure ?? '')}
+        </button></li>;
+      })}</ul>
+    </>}
+    {result?.kind==='confirmation' && selection && state && stage?.job_id && <>
+      <p>Infor found: {String(selection.property_code)} · {String(selection.confirmation)} · {String(state.first_name)} {String(state.last_name)} · {String(state.arrival_date)} – {String(state.departure_date)} · {String(result.status)}</p>
+      {proposal.workflow==='amend' && Object.keys(booking.fields).length>0 && <div>
+        <p>Mark lookup clues that should not be sent as changes:</p>
+        {Object.entries(booking.fields).map(([key,value])=><PaneField key={key} control="checkbox" label={`Remove ${proposal.field_specs.find(spec=>spec.path===`/bookings/0/fields/${key}`)?.label ?? key.replace(/_/g,' ')}: ${String(typeof value==='string'?value:JSON.stringify(value)).slice(0,100)} from changes`} value={removed[key]===true} disabled={locked}
+          onChange={checked=>setRemoved(current=>({...current,[key]:checked}))} />)}
+      </div>}
+      <button type="button" disabled={locked} onClick={()=>onSelectStay(stage.job_id!,proposal.workflow==='amend'?Object.keys(booking.fields).filter(key=>removed[key]):[])}>Use this stay</button>
+    </>}
+  </PaneSection>;
+}
+
 function useLongWait(proposal: Proposal, operationStartedAt: number | undefined) {
   const [longWait, setLongWait] = useState(false);
   useEffect(() => {
@@ -869,6 +922,7 @@ export function Workflow(props: WorkflowProps) {
         onChange={props.onAttachmentsCheckedChange} />
     </PaneSection>}
     {proposal.workflow !== 'quote' && <ActionContext proposal={proposal} />}
+    <StayTarget key={proposal.id} {...props} />
     {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
     <GuestChoices {...props} busy={locked} />
     {proposal.workflow==='create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) && <PaneMessage>Review the matching profiles, name, mobile and email. The next button creates the new Guest Profile, even if Infor asks about the same name, then checks the price. The profile is Active; consent is off. If an email is supplied, its type is Primary.</PaneMessage>}
@@ -884,7 +938,7 @@ export function Workflow(props: WorkflowProps) {
     </PaneSection>}
     {proposal.stage && !stageCurrent && <PaneMessage>{proposal.phase === 'staging' ? 'A new check is in progress; earlier results are hidden.' : 'Details have changed since the last check. Check again for current Infor results.'}</PaneMessage>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
-    {proposal.stage && stageCurrent && <PaneSection title="Checked details">
+    {proposal.stage && stageCurrent && proposal.stage.state !== 'target' && <PaneSection title="Checked details">
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
         <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{item}</li>)}</ul>
@@ -932,6 +986,8 @@ export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onRecon
   const mutableWorkflow = proposal.workflow === 'triage' || proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
   if (proposal.workflow !== 'triage' && (proposal.disposition !== 'propose' || !hasWorkflowAction(proposal))) return undefined;
+  if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && !proposal.stay_target_selected) return undefined;
+  if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && proposal.stage?.state === 'target') return undefined;
   if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Create Guest Profile and check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }

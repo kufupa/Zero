@@ -23,6 +23,7 @@ type Parsed = {
   scope: 'whole_stay' | 'specific_room' | 'unspecified';
   note: string;
   reason?: string;
+  currentState?: Record<string, unknown>;
 };
 
 type NativeResult = Record<string, unknown>;
@@ -100,6 +101,7 @@ function parse(input: unknown): Parsed | null {
     ...(typeof fields.guest_name === 'string' ? { guestName: fields.guest_name } : {}),
     ...(typeof fields.arrival_date === 'string' ? { arrival: fields.arrival_date } : {}),
     scope, note, ...(typeof reason === 'string' ? { reason } : {}),
+    ...(object(booking.current_state) ? {currentState:booking.current_state} : {}),
   };
 }
 
@@ -216,6 +218,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     if (!identity || !date(identity.arrival) || identity.confirmation !== target.confirmation ||
         identity.propertyCode !== target.propertyCode || (target.arrival && identity.arrival !== target.arrival)) {
       return error('CANCEL_TARGET_UNVERIFIED', 'The reservation target or arrival could not be verified.');
+    }
+    for (const [key,native] of Object.entries({first_name:'firstName',last_name:'lastName',arrival_date:'arrival',departure_date:'departure',
+      native_stay_id:'reservationStayId',guest_id:'guestId',reservation_id:'reservationId',record_id:'recordId'})) {
+      const expected=target.currentState?.[key];
+      if(expected!==undefined && expected!==identity[native]) return error('CANCEL_TARGET_CHANGED', 'The selected stay changed. Read it again before preparing.');
     }
     const stage = await preview(target, identity.arrival, property.mailboxTransportId, context, cancel);
     const expected = object(stage.expected) ? stage.expected : null;

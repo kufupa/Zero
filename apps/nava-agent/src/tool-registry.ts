@@ -10,6 +10,7 @@ import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, 
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { withTriageLookupFields } from '../tools/triage/index.js';
+import { lookupStay, targetLookup } from './stay-target.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -314,6 +315,17 @@ export class ToolRegistry {
       credentialLease.signal.throwIfAborted();
       return parseResult(await handler(input.workflow==='quote'?input.request:input,{...trusted,...ports}));
     },job.workflow==='quote'?'quote':undefined));
+  }
+
+  async runStayLookup(lookup:z.infer<typeof targetLookup>, bookingId:string, draft:ProposalDraft, job:StaffJobBinding, context:Omit<RegistryContext,'toolUseId'>):Promise<ToolResult> {
+    if(!staffPrepareOnly() || context.mode!=='live' || context.propertyCode!==job.source.property_code ||
+      !['amend','cancel'].includes(job.workflow) || draft.workflow!==job.workflow) return failureObject('STAFF_JOB_CHANGED','The request changed. Search again.');
+    return this.nativeResult(()=>this.deps.native.withRead(job.source.property_code,context.signal,async credentialLease=>{
+      const denied=await confirmedQueuedStaffStage(job,context.sessionId,draft);
+      if(denied) return failureObject(denied,'The request changed. Search again.');
+      const staffStage={...job,mailboxId:job.source.mailbox_id,sourceMessageId:job.source.source_message_id,sourceThreadId:job.source.source_thread_id};
+      return lookupStay(lookup,bookingId,{...context,propertyCode:job.source.property_code,credentialLease,signal:credentialLease.signal,staffStage});
+    }));
   }
 
   async run(name:string,input:unknown,context:RegistryContext):Promise<{kind:'result';result:ToolResult}|{kind:'pause';proposalId:string;revision:number}> {

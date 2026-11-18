@@ -5,8 +5,53 @@ import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
-import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profileReview, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profileReview, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, staffAttachmentsChecked } from './attachment-gate.js';
 import { staffPrepareOnly } from './hms-mode.js';
+import { targetSelection } from './stay-target.js';
+
+export async function selectStayTarget(id:string,mailboxIds:string[],actor:string,input:{expected_revision:number;job_id:string;remove_fields:string[]}) {
+  return sql.begin(async tx=>{
+    const [ref]=await tx`SELECT p.session_id,t.mailbox_id FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${id}`;
+    if(!ref) throw new Error('NOT_FOUND');
+    if(!mailboxIds.includes(ref.mailbox_id)) throw new Error('FORBIDDEN');
+    await tx`SELECT id FROM nava_agent.agent_session WHERE id=${ref.session_id} FOR NO KEY UPDATE`;
+    const [p]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id} AND session_id=${ref.session_id} FOR UPDATE`;
+    if(!p) throw new Error('NOT_FOUND');
+    if(p.revision!==input.expected_revision || p.phase!=='ready' || p.stage?.revision!==p.revision ||
+      p.stage?.state!=='target' || p.stage?.job_id!==input.job_id || p.stage?.native_result?.kind!=='confirmation') throw new Error('STALE_REVISION');
+    const source=await selectedStageSource(tx,p.session_id);
+    const selection=targetSelection.safeParse(p.stage.native_result.selection);
+    const draft=proposalDraft.parse(p.current);
+    const booking=draft.bookings[0],action=draft.actions[0];
+    if(!source.success || !isDeepStrictEqual(source.data,p.stage?.source) || source.data.mailbox_id!==ref.mailbox_id || !selection.success ||
+      !['amend','cancel'].includes(draft.workflow) || draft.bookings.length!==1 || draft.actions.length!==1 ||
+      !booking || !action || action.type!==draft.workflow || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
+      selection.data.booking_id!==booking.id || (booking.property_code!==null && selection.data.property_code!==booking.property_code) ||
+      selection.data.property_code!==source.data.property_code) throw new Error('STALE_REVISION');
+    const before=structuredClone(booking);
+    booking.reservation_id=selection.data.confirmation;
+    booking.property_code=selection.data.property_code;
+    booking.current_state=selection.data.current_state;
+    if(draft.workflow==='amend') {
+      if(input.remove_fields.some(key=>!Object.hasOwn(booking.fields,key))) throw new Error('STALE_REVISION');
+      for(const key of input.remove_fields) delete booking.fields[key];
+      draft.field_specs=draft.field_specs.filter(spec=>!input.remove_fields.some(key=>spec.path===`/bookings/0/fields/${key}` || spec.path===`bookings/0/fields/${key}`));
+      if(action.details && typeof action.details==='object' && !Array.isArray(action.details) && 'confirmation_number' in action.details)
+        action.details.confirmation_number=selection.data.confirmation;
+    } else if(input.remove_fields.length) throw new Error('STALE_REVISION');
+    const revision=p.revision+1;
+    const execution:Record<string,unknown>={...z.record(z.unknown()).safeParse(p.execution).data,staff_stay_selection:selection.data};
+    delete execution.error;
+    const valid=proposalDraft.parse(draft);
+    await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,execution=${json(execution)},updated_at=now() WHERE id=${id}`;
+    const [seq]=await tx`SELECT COALESCE(max(sequence),0)+1 AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
+    await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,who,snapshot)
+      VALUES (${uid('edit')},${seq.n},${id},${p.session_id},${p.workflow},'stay_selected',${revision},${actor},${json({selection:selection.data,before,removed_fields:input.remove_fields})})`;
+    await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,revision,change:'stay_selected'})})`;
+    const [updated]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id}`;
+    return {...proposalWire(updated),source_message_id:source.data.source_message_id};
+  });
+}
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
   if(x.op!=='remove' && !Object.hasOwn(x,'value')) ctx.addIssue({code:z.ZodIssueCode.custom,message:'value required'});
