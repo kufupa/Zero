@@ -40,6 +40,17 @@ export const fieldSpecSchema = z.object({
   evidence: z.array(z.object({ message_id: id, attachment_id: z.string().nullable(), quote: z.string().nullable() })),
 });
 const artifactSchema = z.object({ id, name: z.string(), mime_type: z.string(), url: z.string() });
+const quoteOptionSchema = z.object({
+  group_id: id, room_id: id, option_index: z.number().int().nonnegative().safe(),
+  room: z.object({ code: id, label: z.string().nullable() }),
+  rate: z.object({ code: id, label: z.string().nullable() }),
+  meal_plan: jsonSchema,
+  nightly: z.array(z.object({
+    date: z.string(), price: z.object({ amount: z.string(), currency: z.string() }),
+    inventory: z.number().int().nonnegative(), restricted: z.boolean(), rateAvailable: z.boolean(),
+  })),
+  availability: z.literal('available'), eligibility: z.literal('verified'), match_status: z.string(),
+});
 const nativeDisplayBase = {
   id, booking_id: z.string().nullable(), label: z.string(), native_path: z.string(),
   quote_id: id.optional(), group_id: id.optional(),
@@ -66,7 +77,8 @@ export const proposalSchema = z.object({
   created_at: z.string(), updated_at: z.string(), display_rows: z.array(nativeDisplayRowSchema),
   staff_attachments_checked: z.boolean().default(false),
   stage: z.object({
-    revision, job_id: id.optional(), summary: z.array(z.string()), native_result: jsonSchema,
+    revision, job_id: id.optional(), quote_id: id.optional(), quote_options: z.array(quoteOptionSchema).optional(),
+    quote_choices: z.array(quoteOptionSchema).optional(), quote_artifact_block_reason: z.string().nullable().optional(), summary: z.array(z.string()), native_result: jsonSchema,
     display_rows: z.array(nativeDisplayRowSchema), coverage: jsonSchema.optional(),
     observed_fields: jsonSchema.optional(), cancellation_fee: jsonSchema.optional(),
     artifacts: z.array(artifactSchema).optional(),
@@ -104,6 +116,8 @@ export type Email = z.infer<typeof emailSchema>;
 export type ThreadInput = z.infer<typeof threadInputSchema>;
 export type FieldSpec = z.infer<typeof fieldSpecSchema>;
 export type NativeDisplayRow = z.infer<typeof nativeDisplayRowSchema>;
+export type QuoteOption = z.infer<typeof quoteOptionSchema>;
+export type QuoteSelection = Pick<QuoteOption, 'group_id' | 'room_id' | 'option_index'>;
 export type Proposal = z.infer<typeof proposalSchema>;
 export type ThreadSnapshot = z.infer<typeof threadSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;

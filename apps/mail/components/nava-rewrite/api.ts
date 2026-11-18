@@ -4,7 +4,7 @@ import {
   proposalSchema, threadInputSchema, threadSnapshotSchema,
 } from './wire';
 import type {
-  AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, ThreadInput,
+  AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, QuoteSelection, ThreadInput,
 } from './wire';
 
 const boundProposalSchema = proposalSchema.extend({ source_message_id: z.string().min(1).nullable().optional() });
@@ -22,6 +22,7 @@ export type NavaApi = {
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
+  quoteArtifacts: (request: RevisionRequest & { quoteId: string; selections: QuoteSelection[] }) => Promise<void>;
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
   reconcile: (request: RevisionRequest) => Promise<void>;
   sendContext: (request: RequestOptions & { threadId: string; text: string; proposalId?: string }) => Promise<void>;
@@ -164,6 +165,12 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
         throw new NavaApiError('Nava returned an invalid quote response.', 'invalid_response', response.status);
       }
       return parsed.data;
+    },
+    quoteArtifacts: async ({ proposalId, expectedRevision, quoteId, selections, signal }) => {
+      const response = await request(`${proposalPath(proposalId)}/quote-artifacts`, body({
+        expected_revision: expectedRevision, quote_id: quoteId, selections,
+      }, signal));
+      if (response.status !== 201) throw new NavaApiError('Nava did not confirm the quote files.', 'invalid_response', response.status);
     },
     stage: async requestValue => {
       const response = await request(`${proposalPath(requestValue.proposalId)}/stage`, revisionBody(requestValue));

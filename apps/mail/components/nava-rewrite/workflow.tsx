@@ -5,11 +5,11 @@ import type { ReactNode } from 'react';
 import { PaneField } from './field';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
-import type { FieldSpec, NativeDisplayRow, Proposal, ThreadInput } from './wire';
+import type { FieldSpec, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
 import styles from './pane.module.css';
 import quoteStyles from './quote.module.css';
 
-export type DraftValue = string | boolean | string[];
+export type DraftValue = string | boolean | string[] | { roomCode: string; rateCode: string };
 type ReviewControl = { checked: boolean; actionLabel: string; disabled?: boolean };
 export type GuestCandidate = { nativeId: string; firstName: string; lastName: string };
 
@@ -24,6 +24,10 @@ export type WorkflowProps = {
   onReview?: (path: string, checked: boolean) => void;
   onOpenArtifact?: (artifactId: string) => void;
   onQuote?: (quoteId: string) => void;
+  onGenerateQuoteArtifacts?: (quoteId: string, selections: QuoteSelection[]) => void;
+  onSaveQuoteDraft?: (body: string) => Promise<{ status: string; message: string }>;
+  savedQuoteDraftMessage?: string;
+  onAddContext?: (text: string) => Promise<string>;
   onSelectGuest?: (candidate: GuestCandidate) => void;
   attachmentsChecked: boolean;
   attachmentsAttention: boolean;
@@ -153,6 +157,57 @@ function NativeRows({ rows, proposal }: { rows: NativeDisplayRow[]; proposal: Pr
   })}</dl>;
 }
 
+const observedLabels: Record<string, string> = {
+  arrival: 'Arrival', departure: 'Departure', adults: 'Adults', childAges: 'Child ages',
+  roomType: 'Room type', roomTypeForCharge: 'Room type for charge', ratePlan: 'Rate plan',
+  guaranteeType: 'Guarantee type', sourceOfBusiness: 'Booking source', track: 'Track', mealPlan: 'Meal plan',
+};
+const amendLabels: Record<string, string> = {
+  arrival_date: 'Arrival', departure_date: 'Departure', adults: 'Adults', children: 'Children', child_ages: 'Child ages',
+  room_type: 'Room type', room_type_for_charge: 'Room type for charge', rate_plan: 'Rate plan',
+  reservation_note: 'Reservation note', billing_reference: 'Billing reference',
+};
+function fieldText(value: unknown): string | null {
+  if (typeof value === 'string') return value || '(empty)';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value) && value.every(item => typeof item === 'number' || typeof item === 'string')) return value.length ? value.join(', ') : 'None';
+  return null;
+}
+
+function ObservedFields({ proposal }: { proposal: Proposal }) {
+  const stage = proposal.stage;
+  if (!stage) return null;
+  if (proposal.workflow === 'create' && stage.observed_fields && typeof stage.observed_fields === 'object' && !Array.isArray(stage.observed_fields)) {
+    const observed = stage.observed_fields;
+    const rows = Object.entries(observedLabels).flatMap(([key, label]) => {
+      const value = fieldText(observed[key]);
+      return value === null ? [] : [{ key, label, value }];
+    });
+    if (!rows.length) return null;
+    return <div><p>{proposal.error ? 'Check incomplete. Infor showed these values before it stopped.' : 'Values shown by Infor during this check.'}</p>
+      <dl className={styles.nativeRows}>{rows.map(row => <div className={styles.nativeRow} key={row.key}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+    </div>;
+  }
+  if (proposal.workflow !== 'amend' || !stage.native_result || typeof stage.native_result !== 'object' || Array.isArray(stage.native_result)) return null;
+  const native = stage.native_result;
+  const before = native.current_state && typeof native.current_state === 'object' && !Array.isArray(native.current_state) ? native.current_state : {};
+  const after = native.fields && typeof native.fields === 'object' && !Array.isArray(native.fields) ? native.fields : {};
+  const changed = Array.isArray(native.changed_fields) ? native.changed_fields : [];
+  const rows = changed.flatMap(key => {
+    if (typeof key !== 'string' || !Object.hasOwn(amendLabels, key)) return [];
+    const oldValue = fieldText(before[key]), newValue = fieldText(after[key]);
+    return oldValue === null || newValue === null ? [] : [{ key, label: amendLabels[key], oldValue, newValue }];
+  });
+  if (!rows.length && native.original_stay_unchanged !== true) return null;
+  return <div><p>Changes prepared in Infor:</p><dl className={styles.nativeRows}>{rows.map(row => <div className={styles.nativeRow} key={row.key}>
+    <dt>{row.label}</dt><dd>{row.oldValue} → {row.newValue}</dd>
+  </div>)}</dl>
+    {native.original_stay_unchanged === true && <p>The saved reservation remains unchanged.</p>}
+    {native.current_cms_send === false && <p>CMS sending remained off during this check.</p>}
+  </div>;
+}
+
 function fieldContext(proposal: Proposal, path: string) {
   const match = /^\/(bookings|actions)\/(0|[1-9]\d*)\//.exec(path);
   if (!match) return undefined;
@@ -215,6 +270,36 @@ function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) 
   });
 }
 
+function nativeTrackOptions(proposal: Proposal, drafts: WorkflowProps['drafts']) {
+  const choices = currentNativeResult(proposal, drafts)?.track_choices;
+  if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status !== 'available' ||
+      choices.property_code !== proposal.bookings[0]?.property_code || !Array.isArray(choices.items)) return [];
+  return choices.items.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.value !== 'string' || !item.value || typeof item.label !== 'string') return [];
+    return [{ value: item.value, label: item.label, meaning: typeof item.meaning === 'string' ? item.meaning : null }];
+  });
+}
+
+function quoteCodeOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], path: string, kind: 'room' | 'rate') {
+  const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)\/rooms\/(0|[1-9]\d*)\/required$/.exec(path);
+  const stage = proposal.stage;
+  if (!match || !stage?.quote_id || stage.revision !== proposal.revision || proposal.phase === 'staging' || Object.keys(drafts).length) return [];
+  const action = proposal.actions[Number(match[1])];
+  const details = action?.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details) || details.quote_id !== stage.quote_id || !Array.isArray(details.groups)) return [];
+  const group = details.groups[Number(match[2])];
+  if (!group || typeof group !== 'object' || Array.isArray(group) || typeof group.group_id !== 'string' || !Array.isArray(group.rooms)) return [];
+  const room = group.rooms[Number(match[3])];
+  if (!room || typeof room !== 'object' || Array.isArray(room) || typeof room.id !== 'string') return [];
+  const seen = new Set<string>();
+  return (stage.quote_choices ?? stage.quote_options ?? []).flatMap(option => {
+    const code = option[kind];
+    if (option.group_id !== group.group_id || option.room_id !== room.id || seen.has(code.code)) return [];
+    seen.add(code.code);
+    return [{ value: code.code, label: code.code, meaning: code.label }];
+  });
+}
+
 function FieldEvidence({ spec, label }: { spec: FieldSpec; label: string }) {
   if (!spec.evidence.some(item => item.quote)) return null;
   return <details>
@@ -261,6 +346,25 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     return <div>{control ?? <PaneMessage>PDF selection is unavailable. Reopen the request.</PaneMessage>}<FieldEvidence spec={spec} label={label} /></div>;
   }
   if (proposal.workflow === 'filing' && /^\/actions\/(?:0|[1-9]\d*)\/details\/message_id$/.test(spec.path)) return null;
+
+  const quoteRequired = proposal.workflow === 'quote' && /^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(?:0|[1-9]\d*)\/required$/.test(spec.path);
+  if (quoteRequired) {
+    const saved: Record<string, unknown> = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const roomCodes = Array.isArray(saved.roomCodes) ? saved.roomCodes.filter((code): code is string => typeof code === 'string') : [];
+    const rateCodes = Array.isArray(saved.rateCodes) ? saved.rateCodes.filter((code): code is string => typeof code === 'string') : [];
+    const chosen = draft && typeof draft === 'object' && !Array.isArray(draft) ? draft : { roomCode: roomCodes[0] ?? '', rateCode: rateCodes[0] ?? '' };
+    const rooms = quoteCodeOptions(proposal, drafts, spec.path, 'room');
+    const rates = quoteCodeOptions(proposal, drafts, spec.path, 'rate');
+    const roomNote = roomCodes.length > 1 ? 'Changing the room replaces the current list of room codes.'
+      : rooms.length ? 'Choices from the latest Infor check. Check again after changing.' : 'Type a room code, or check Infor to load choices.';
+    const rateNote = rateCodes.length > 1 ? 'Changing the rate replaces the current list of rate codes.'
+      : rates.length ? 'Choices from the latest Infor check. Check again after changing.' : 'Type a rate code, or check Infor to load choices.';
+    return <div><PaneField {...common} review={chosen.roomCode ? review : undefined} label={context ? `Room type · ${context}` : 'Room type'} control="combobox" value={chosen.roomCode}
+      options={rooms} placeholder="Type a room code" hint={roomNote} onChange={next => onEdit(spec.path, { ...chosen, roomCode: next })} />
+      <PaneField {...common} review={chosen.rateCode ? review : undefined} label={context ? `Rate plan · ${context}` : 'Rate plan'} control="combobox" value={chosen.rateCode}
+        options={rates} placeholder="Type a rate code" hint={rateNote} onChange={next => onEdit(spec.path, { ...chosen, rateCode: next })} />
+      <FieldEvidence spec={spec} label="Rate plan" /></div>;
+  }
 
   const agesPath = childFieldPath(spec.path, 'child_ages', proposal.workflow);
   const countPath = childFieldPath(spec.path, 'child_count', proposal.workflow);
@@ -319,21 +423,23 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     } else if (typeof shown === 'boolean') {
       control = <PaneField {...common} control="checkbox" value={shown} onChange={next => onEdit(spec.path, next)} />;
     }
-  } else if (spec.control === 'number') {
+  } else if (spec.control === 'number' || proposal.workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/(?:quantity|adults)$/.test(spec.path)) {
     if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string' && hasDraft) {
       control = <PaneField {...common} control="number" value={shown === null || shown === undefined ? '' : String(shown)} onChange={next => onEdit(spec.path, next)} />;
     }
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
-    const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id)$/.test(spec.path);
+    const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id|track)$/.test(spec.path);
     const rates = proposal.workflow === 'create' && proposal.bookings.length === 1 && spec.path === '/bookings/0/fields/rate_plan' ? nativeRateOptions(proposal, drafts) : [];
-    const options = nativeCode ? rates : spec.options;
+    const tracks = proposal.workflow === 'create' && proposal.bookings.length === 1 && spec.path === '/bookings/0/fields/track' ? nativeTrackOptions(proposal, drafts) : [];
+    const options = nativeCode ? [...rates, ...tracks] : spec.options;
     if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0) {
       control = nativeCode && options.length === 0
         ? <PaneField {...common} control="text" value={text} onChange={next => onEdit(spec.path, next)} />
-        : <PaneField {...common} hint={rates.length ? 'Choices from the last Infor check; coverage may be incomplete.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
+        : <PaneField {...common} hint={rates.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
     } else {
-      const date = spec.control === 'date' && text && !isDateValue(text) ? 'text' : spec.control;
+      const quoteDate = proposal.workflow === 'quote' && /\/groups\/(?:0|[1-9]\d*)\/(?:arrival_date|departure_date)$/.test(spec.path);
+      const date = (spec.control === 'date' || quoteDate) && (!text || isDateValue(text)) ? 'date' : spec.control === 'date' ? 'text' : spec.control;
       control = <PaneField {...common} control={date} value={text} onChange={next => onEdit(spec.path, next)} />;
     }
   }
@@ -371,10 +477,22 @@ function QuoteFields(props: WorkflowProps & { locked: boolean }) {
     {sections.map(section => section.label
       ? <fieldset className={quoteStyles.stay} key={section.key}>
         <legend>{section.label}</legend>
-        {section.fields.map(spec => <Field key={spec.path} {...props} spec={spec} showContext={false} />)}
+        {[...section.fields].sort((left, right) => quoteFieldOrder(left.path) - quoteFieldOrder(right.path))
+          .map(spec => <Field key={spec.path} {...props} spec={spec} showContext={false} />)}
       </fieldset>
       : <div key={section.key}>{section.fields.map(spec => <Field key={spec.path} {...props} spec={spec} />)}</div>)}
   </PaneSection>;
+}
+
+function quoteFieldOrder(path: string) {
+  const room = /\/rooms\/(0|[1-9]\d*)\//.exec(path);
+  const key = path.split('/').at(-1);
+  const order: Record<string, number> = {
+    arrival_date: 0, departure_date: 1, quantity: 0, adults: 1, children: 2, child_ages: 3,
+    roomCodes: 4, bedTypes: 5, rateCodes: 6, required: 6, mealPlanBases: 7,
+  };
+  const rank = key ? order[key] ?? 9 : 9;
+  return room ? 10 + Number(room[1]) * 10 + rank : rank;
 }
 
 function QuoteRequests({ proposal }: { proposal: Proposal }) {
@@ -411,6 +529,25 @@ export function validQuoteChildren(proposal: Proposal, quoteId: string): boolean
   });
 }
 
+export function quoteCheckIssue(proposal: Proposal, quoteId: string): string | null {
+  const matching = proposal.actions.filter(action => action.type === 'quote' && action.details &&
+    typeof action.details === 'object' && !Array.isArray(action.details) && action.details.quote_id === quoteId);
+  const details = matching.length === 1 ? matching[0]?.details : null;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return 'Quote details are unavailable. Review the request.';
+  if (typeof details.property_code !== 'string' || !details.property_code.trim()) return 'Enter the hotel before checking Infor.';
+  if (!Array.isArray(details.groups) || !details.groups.length) return 'Add the room details before checking Infor.';
+  for (const group of details.groups) {
+    if (!group || typeof group !== 'object' || Array.isArray(group) || typeof group.arrival_date !== 'string' ||
+        typeof group.departure_date !== 'string' || !isDateValue(group.arrival_date) || !isDateValue(group.departure_date) || group.departure_date <= group.arrival_date)
+      return 'Enter valid arrival and departure dates for each group.';
+    if (!Array.isArray(group.rooms) || !group.rooms.length || group.rooms.some(room => !room || typeof room !== 'object' || Array.isArray(room) ||
+        typeof room.quantity !== 'number' || !Number.isSafeInteger(room.quantity) || room.quantity < 1 ||
+        typeof room.adults !== 'number' || !Number.isSafeInteger(room.adults) || room.adults < 1))
+      return 'Enter the number of rooms and adults for each group.';
+  }
+  return validQuoteChildren(proposal, quoteId) ? null : 'Enter a child count and an age for each child.';
+}
+
 function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
   if (!onQuote) return null;
   const quotes = proposal.actions.filter(action => action.type === 'quote');
@@ -418,15 +555,126 @@ function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
     {quotes.map((action, index) => {
       const details = action.details;
       const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : undefined;
+      const issue = quoteId ? quoteCheckIssue(proposal, quoteId) : 'Quote details are unavailable. Review the request.';
       return <div key={action.id}>
-        <button type="button" disabled={busy || Object.keys(drafts).length > 0 || !quoteId || !validQuoteChildren(proposal, quoteId) || !['ready', 'waiting_go'].includes(proposal.phase)}
+        <button type="button" disabled={busy || Object.keys(drafts).length > 0 || Boolean(issue) || !['ready', 'waiting_go'].includes(proposal.phase)}
         onClick={() => { if (quoteId) onQuote(quoteId); }}>
         {quotes.length > 1 ? `Check quote ${index + 1} in Infor` : 'Check quote in Infor'}
         </button>
-        {(!quoteId || !validQuoteChildren(proposal, quoteId)) && <p>Complete the room details and enter an age for each child before checking.</p>}
+        {issue && <p>{issue}</p>}
       </div>;
     })}
     {quotes.length === 0 && <p>Quote details are unavailable.</p>}
+  </PaneSection>;
+}
+
+function quoteRooms(proposal: Proposal, quoteId: string) {
+  const actions = proposal.actions.filter(action => action.type === 'quote' && action.details &&
+    typeof action.details === 'object' && !Array.isArray(action.details) && action.details.quote_id === quoteId);
+  if (actions.length !== 1) return [];
+  const details = actions[0]?.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details) || !Array.isArray(details.groups)) return [];
+  return details.groups.flatMap((group, groupIndex) => {
+    if (!group || typeof group !== 'object' || Array.isArray(group) || typeof group.group_id !== 'string' || !Array.isArray(group.rooms)) return [];
+    return group.rooms.flatMap((room, roomIndex) => {
+      if (!room || typeof room !== 'object' || Array.isArray(room) || typeof room.id !== 'string') return [];
+      return [{ groupId: group.group_id as string, roomId: room.id, label: `Room group ${groupIndex + 1} · Room ${roomIndex + 1}` }];
+    });
+  });
+}
+
+function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProps) {
+  const [selected, setSelected] = useState<Record<string, number>>({});
+  const stage = proposal.stage;
+  if (!stage?.quote_id || !stage.job_id || !stage.quote_options || !onGenerateQuoteArtifacts) return null;
+  const rooms = quoteRooms(proposal, stage.quote_id);
+  if (!rooms.length) return <PaneMessage>Room details are unavailable. Check the quote again.</PaneMessage>;
+  const selections = rooms.flatMap(room => {
+    const key = JSON.stringify([room.groupId, room.roomId]);
+    const index = selected[key];
+    return index !== undefined && stage.quote_options?.some(option => option.group_id === room.groupId && option.room_id === room.roomId && option.option_index === index)
+      ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
+  });
+  return <PaneSection title="Choose quote options">
+    <p>Choose one verified option for each room. Prices and availability are from the latest Infor check.</p>
+    {stage.quote_artifact_block_reason === 'overlapping_date_searches' && <p>Infor has not confirmed availability across these overlapping dates together. Use your usual process to complete this quote.</p>}
+    {rooms.map(room => {
+      const key = JSON.stringify([room.groupId, room.roomId]);
+      const options = stage.quote_options?.filter(option => option.group_id === room.groupId && option.room_id === room.roomId) ?? [];
+      const picked = options.find(option => option.option_index === selected[key]);
+      const format = (code: string, meaning: string | null) => meaning && meaning !== code ? `${code} — ${meaning}` : code;
+      return <fieldset key={key} className={quoteStyles.stay}>
+        <legend>{room.label}</legend>
+        {options.length ? <>
+          <label className={styles.field}>Option
+            <select value={selected[key] === undefined ? '' : String(selected[key])} disabled={busy || Boolean(stage.artifacts?.length)}
+              onChange={event => {
+                const next = event.target.value;
+                setSelected(current => {
+                  const updated = { ...current };
+                  if (next === '') delete updated[key];
+                  else updated[key] = Number(next);
+                  return updated;
+                });
+              }}>
+              <option value="">Choose an option</option>
+              {options.map(option => <option key={option.option_index} value={option.option_index}>
+                {format(option.room.code, option.room.label)} · {format(option.rate.code, option.rate.label)}
+              </option>)}
+            </select>
+          </label>
+          {picked && <div className={quoteStyles.optionDetail}>
+            <strong>{format(picked.room.code, picked.room.label)} · {format(picked.rate.code, picked.rate.label)}</strong>
+            {typeof picked.meal_plan === 'string' && picked.meal_plan && <p>{picked.meal_plan}</p>}
+            {picked.meal_plan && typeof picked.meal_plan === 'object' && !Array.isArray(picked.meal_plan) &&
+              <p>{[picked.meal_plan.code, picked.meal_plan.label].filter(value => typeof value === 'string' && value).join(' · ')}</p>}
+            <ul>{picked.nightly.map(night => <li key={night.date}>{night.date}: {night.price.currency} {night.price.amount} per room · {night.inventory} available</li>)}</ul>
+          </div>}
+        </> : <p>{stage.quote_choices?.some(option => option.group_id === room.groupId && option.room_id === room.roomId)
+          ? 'Choose a room type and rate above, then check Infor again before making the files.'
+          : 'No verified options for this room. Check the details and run Infor again.'}</p>}
+      </fieldset>;
+    })}
+    {!stage.artifacts?.length && <button type="button" disabled={busy || selections.length !== rooms.length} onClick={() => onGenerateQuoteArtifacts(stage.quote_id!, selections)}>Create PDF and Excel</button>}
+    {stage.artifacts?.length ? <p>To change these options, check the quote again.</p> : null}
+  </PaneSection>;
+}
+
+function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage }: WorkflowProps) {
+  const [body, setBody] = useState('Good day,\n\nPlease find the quotation attached.\n\nKind regards');
+  const [message, setMessage] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(Boolean(savedQuoteDraftMessage));
+  const artifacts = proposal.stage?.artifacts ?? [];
+  const pdf = artifacts.find(item => item.mime_type === 'application/pdf');
+  const workbook = artifacts.find(item => item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  if (!pdf || !workbook) return null;
+  return <PaneSection title="Cover email and quote files">
+    <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving || saved} onChange={value => { setBody(value); setMessage(null); }} />
+    <p>Files: {pdf.name}, {workbook.name}</p>
+    {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || !body.trim()} onClick={() => {
+      setSaving(true); setMessage(null);
+      void onSaveQuoteDraft(body).then(result => { setMessage(result.message); if (result.status === 'created') setSaved(true); })
+        .catch(() => setMessage('Could not confirm the draft. Check Outlook Drafts before trying again.')).finally(() => setSaving(false));
+    }}>{saving ? 'Saving draft…' : 'Save unsent Outlook draft'}</button>}
+    {(message || savedQuoteDraftMessage) && <p role="status">{message || savedQuoteDraftMessage}</p>}
+  </PaneSection>;
+}
+
+function StaffContext({ busy, onAddContext }: WorkflowProps) {
+  const [text, setText] = useState('');
+  const [message, setMessage] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  if (!onAddContext) return null;
+  return <PaneSection title="Add missing details">
+    <p>Tell Nava what is missing or needs correction. This updates the request; no email is sent.</p>
+    <PaneField label="Details for Nava" control="textarea" value={text} disabled={busy || pending} onChange={value => { setText(value); setMessage(null); }} />
+    <button type="button" disabled={busy || pending || !text.trim()} onClick={() => {
+      setPending(true); setMessage(null);
+      void onAddContext(text.trim()).then(result => { setMessage(result); if (result.startsWith('Nava is reviewing')) setText(''); })
+        .catch(() => setMessage('Could not confirm the update. Check the request before trying again.')).finally(() => setPending(false));
+    }}>{pending ? 'Updating request…' : 'Update request'}</button>
+    {message && <p role="status">{message}</p>}
   </PaneSection>;
 }
 
@@ -508,6 +756,7 @@ export function Workflow(props: WorkflowProps) {
     {proposal.reason && <PaneMessage>{proposal.reason}</PaneMessage>}
     {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{proposal.missing.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
     {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
+    {['needs_info', 'staff_review'].includes(proposal.disposition) && <StaffContext key={proposal.id} {...props} />}
     {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <PaneSection title="Check attachments">
       <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}Check the attachments in the selected email and each earlier email listed below in Outlook. Include all relevant attachment details in this proposal, then confirm.</p>
       {props.attachmentMessages.length > 0 ? <ul>{props.attachmentMessages.map(message => <li key={message.id}>
@@ -532,17 +781,21 @@ export function Workflow(props: WorkflowProps) {
       <NativeRows rows={proposal.display_rows} proposal={proposal} />
     </PaneSection>}
     {proposal.stage && !stageCurrent && <PaneMessage>{proposal.phase === 'staging' ? 'A new check is in progress; earlier results are hidden.' : 'Details have changed since the last check. Check again for current Infor results.'}</PaneMessage>}
+    {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.stage && stageCurrent && <PaneSection title="Checked details">
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
         <ul>{proposal.stage.summary.map((item, index) => <li key={index}>{item}</li>)}</ul>
       </div>}
-      {proposal.stage.display_rows.length > 0 ? <NativeRows rows={proposal.stage.display_rows} proposal={proposal} /> : <p>No Infor details were provided for this check.</p>}
+      <ObservedFields proposal={proposal} />
+      {proposal.workflow === 'quote' && proposal.stage.quote_options?.length ? null
+        : proposal.stage.display_rows.length > 0 ? <NativeRows rows={proposal.stage.display_rows} proposal={proposal} /> : <p>No price or availability details were provided for this check.</p>}
       {proposal.workflow === 'quote' && proposal.stage.artifacts?.map(artifact => <p key={artifact.id}>
         {props.onOpenArtifact ? <button type="button" onClick={() => props.onOpenArtifact?.(artifact.id)}>{artifact.name}</button> : artifact.name}
       </p>)}
       {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <p>This check did not save changes in Infor.</p>}
     </PaneSection>}
+    {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
       {proposal.result.confirmation && <p>Confirmation: {proposal.result.confirmation}</p>}
       {proposal.result.reservation_id && <p>Reservation: {proposal.result.reservation_id}</p>}
@@ -564,6 +817,7 @@ export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onRecon
   if (uncertain(proposal)) return onReconcile ? { label: 'Check Infor', disabled: busy, onClick: onReconcile } : undefined;
   const mutableWorkflow = proposal.workflow === 'triage' || proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
+  if (proposal.workflow !== 'triage' && (proposal.disposition !== 'propose' || !proposal.actions.some(action => action.type === proposal.workflow))) return undefined;
   if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }

@@ -10,11 +10,12 @@ import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type { WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
+import type { ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
 import { htmlToPlainText } from '../../../../server-pilot/src/mail/inbound-reaction-parser';
 
 type Source =
-  | { status: 'ready'; input: ThreadInput }
+  | { status: 'ready'; input: ThreadInput; draftSource: ReservationSourceContext }
   | { status: 'loading'; reason: string }
   | { status: 'fallback' };
 
@@ -85,7 +86,13 @@ function OutlookRewriteSelection({ bridge, owner, email, storeId, mailboxId }: {
         const mapped = webThreadInput({ thread, requestedThreadId: match.source.threadId,
           selectedMessageId: match.source.messageId, connectionId: mailboxId, isDemo: false });
         setSource(mapped.status === 'ready'
-          ? { status: 'ready', input: { ...mapped.input, source: 'outlook', property_code: match.propertyCode } }
+          ? { status: 'ready', input: { ...mapped.input, source: 'outlook', property_code: match.propertyCode }, draftSource: {
+            mailboxId, propertyId: match.propertyCode, messageId: match.source.messageId, threadId: match.source.threadId,
+            sourceHash: match.source.sourceHash, arrivedAt: match.source.arrivedAt, internetMessageId: match.internetMessageId,
+            selectionEpoch: 0, subject: match.sourceSubject, sender: match.sourceSender, attachments: match.attachments.filter(item => !item.isInline).map(item => ({
+              sourceRef: item.id, name: item.filename, mimeType: item.mimeType, size: item.sizeBytes, uploadability: 'unknown' as const,
+            })),
+          } }
           : { status: 'fallback' });
       } catch {
         if (live) setSource({ status: 'fallback' });
