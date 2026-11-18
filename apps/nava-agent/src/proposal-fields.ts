@@ -83,31 +83,40 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
   return {...draft,bookings,field_specs:fieldSpecs};
 }
 
-function withQuoteOccupancyFields(draft: ProposalDraft): ProposalDraft {
+export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
+  if(draft.workflow!=='quote') return draft;
   const fieldSpecs=[...draft.field_specs];
-  for(const [actionIndex,action] of draft.actions.entries()) {
-    if(action.type!=='quote') continue;
+  const actions=draft.actions.map((action,actionIndex)=>{
+    if(action.type!=='quote') return action;
     const parsed=groupedQuoteRequest.safeParse(action.details);
-    if(!parsed.success) continue;
-    for(const [groupIndex,group] of parsed.data.groups.entries()) for(const [roomIndex,room] of group.rooms.entries()) {
-      if(room.child_ages.length!==room.children) continue;
-      const root=`/actions/${actionIndex}/details/groups/${groupIndex}/rooms/${roomIndex}`;
-      for(const [key,label,control] of [
-        ['adults','Adults','number'], ['children','Children','number'], ['child_ages','Child ages','text'],
-      ] as const) {
-        const path=`${root}/${key}`;
-        const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
-        if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
-        else fieldSpecs.push({path,label,editable:true,required:false,control,provenance:'unknown',error:null,options:[],evidence:[]});
-      }
-    }
-  }
-  return {...draft,field_specs:fieldSpecs};
+    if(!parsed.success) return action;
+    const add=(path:string,label:string,control:'date'|'number'|'text',required:boolean)=>{
+      const existing=fieldSpecs.findIndex(spec=>spec.path===path || spec.path===path.slice(1));
+      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control};
+      else fieldSpecs.push({path,label,editable:true,required,control,provenance:'unknown',error:null,options:[],evidence:[]});
+    };
+    const groups=parsed.data.groups.map((group,groupIndex)=>{
+      const groupRoot=`/actions/${actionIndex}/details/groups/${groupIndex}`;
+      add(`${groupRoot}/arrival_date`,'Arrival','date',true);
+      add(`${groupRoot}/departure_date`,'Departure','date',true);
+      const rooms=group.rooms.map((room,roomIndex)=>{
+        const root=`${groupRoot}/rooms/${roomIndex}`;
+        for(const [key,label,control,required] of [
+          ['quantity','Rooms','number',true], ['adults','Adults','number',true], ['children','Children','number',false],
+          ['child_ages','Child ages','text',false], ['required','Required room and rate','text',false],
+        ] as const) add(`${root}/${key}`,label,control,required);
+        return {...room,required:room.required ?? {}};
+      });
+      return {...group,rooms};
+    });
+    return {...action,details:{...parsed.data,groups}};
+  });
+  return {...draft,actions,field_specs:fieldSpecs};
 }
 
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
   if(draft.workflow==='create') draft=withCreateNativeFields(createChildFields(draft));
-  if(draft.workflow==='quote') draft=withQuoteOccupancyFields(draft);
+  if(draft.workflow==='quote') draft=withQuoteStaffFields(draft);
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
     id: 'quote-input', type: 'quote', booking_ids: [],

@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { sql, uid, json, event } from './db.js';
 import { proposalDraft, tools, type ThreadInput } from './schema.js';
-import { withCreateNativeFields } from './proposal-fields.js';
+import { withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
+import { quoteOptions } from '../tools/quote-artifacts/index.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
 import { describePrepareRejection, prepareRejection } from './prepare-feedback.js';
@@ -165,14 +166,23 @@ export async function snapshot(threadId:string) {
   });
 }
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
-  const draft=p.phase==='ready' && p.workflow==='create' ? proposalDraft.safeParse(p.current) : null;
-  const current=draft?.success ? withCreateNativeFields(draft.data) : p.current;
+  const draft=p.phase==='ready' && (p.workflow==='create' || p.workflow==='quote') ? proposalDraft.safeParse(p.current) : null;
+  const current=draft?.success ? withQuoteStaffFields(withCreateNativeFields(draft.data)) : p.current;
   const stage=p.stage && p.stage.state!=='queued' && p.stage.revision===p.revision ? {
     revision:p.stage.revision,summary:Array.isArray(p.stage.summary)?p.stage.summary:[],native_result:p.stage.native_result??null,
     display_rows:Array.isArray(p.stage.display_rows)?p.stage.display_rows:[],
     ...Object.fromEntries(['job_id','quote_id','observed_fields','coverage','cancellation_fee','artifacts']
       .filter(key=>p.stage[key]!==undefined).map(key=>[key,p.stage[key]])),
   } : null;
+  if(stage && p.workflow==='quote' && p.stage.state==='prepared' && typeof p.stage.quote_id==='string') {
+    const quote=draft?.success ? draft.data.actions.filter(action=>action.type==='quote' &&
+      typeof action.details==='object' && action.details!==null && !Array.isArray(action.details) &&
+      action.details.quote_id===p.stage.quote_id) : [];
+    Object.assign(stage,{
+      quote_options:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result) : [],
+      quote_choices:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result,false) : [],
+    });
+  }
   const result=p.phase==='done' && p.result ? {
     confirmation:typeof p.result.confirmation==='string'?p.result.confirmation:null,
     reservation_id:typeof p.result.reservation_id==='string'?p.result.reservation_id:null,
