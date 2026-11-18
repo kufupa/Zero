@@ -50,7 +50,7 @@ Result envelope: `ok`, `data`, `error` (`code`, `message`, `retryable`, `outcome
 - Action: `{id,type,booking_ids,details}`. Stable opaque `id`; `booking_ids` refer only to listed bookings. Preserve multi-guest/document/action association; never infer room scope from array position.
 - `field_specs[]` ordered in staff task order. Every item: `path`, `label`, `provenance`, `editable`, `required`, `error`, `control`, `options`, `evidence`.
 - `path`: RFC6901 JSON Pointer into proposal, e.g. `/bookings/0/fields/arrival_date`. Distinct array indices with stable booking IDs; never reuse another guest's pointer.
-- `provenance`: `ai|staff|hms|unknown`; `control`: `text|number|date|checkbox|select|combobox|textarea`. Staff edits preserve `staff`, not AI.
+- `provenance`: `ai|hms|default|unknown`. Use `ai` for values you infer from mail or staff messages. Only a signed staff edit can mark a field `staff`. `control`: `text|number|date|checkbox|select|combobox|textarea`.
 - `options[]`: `{value,label,meaning}` from native choices, not historical hard-coded lists. `evidence[]`: `{message_id,attachment_id,quote}`; attachment ID/quote nullable. Cite available current/earlier source only.
 - `native_result`: original native price/availability/staging evidence; distinguish staff override from native price. `missing`/`warnings`: concrete strings, not invented policy.
 - Backend adds proposal/session/thread IDs, integer revision, phase/stage/result/error. Never supply invented confirmation number or backend-owned fields to `proposal_publish`.
