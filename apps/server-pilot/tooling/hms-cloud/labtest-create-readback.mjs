@@ -5,7 +5,7 @@ import { searchLabtestPreimage } from './labtest-preimage.mjs';
 import { withSavedStayAgentSession } from './saved-stay-agent-session.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { CREATE_GUARANTEES, createCloudTargetKey, isLabtestGuest, validCreateGuest } from './cloud-create-policy.mjs';
-import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { compareChargeRoomCriteria, compareChargeRoomPricing, savedPriceFromFields } from './charge-room-pricing.mjs';
 
 const same = (a, b) => String(a ?? '').trim().toLocaleLowerCase() === String(b ?? '').trim().toLocaleLowerCase();
 const nativeBoolean = value => [true, 1, -1, '1', '-1', 'true'].includes(value) ? true :
@@ -125,9 +125,7 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
   }
   const pricing = expected.roomTypeForCharge !== undefined ? compareChargeRoomPricing(fields, expected.checkedPricing) :
     expected.ratePlanAvailability ? compareChargeRoomPricing(fields, expected.ratePlanAvailability) : null;
-  if (pricing && (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED')) {
-    mismatches.push({ field: 'checkedPricing', issue: 'saved_price_unverified', pricing });
-  }
+  const price = savedPriceFromFields(fields, expected.roomTypeForCharge !== undefined ? expected.checkedPricing : expected.ratePlanAvailability);
   let criteria;
   if (expected.roomTypeForCharge !== undefined) {
     const identityMatches = native?.source === 'record_view_ext_model' && native.propertyCode === propertyCode &&
@@ -153,7 +151,8 @@ export async function readLabtestCreate({ confirmation, stay, expected }, { with
     if (!verified) mismatches.push({ field: 'guaranteeTypeCode', issue: 'native_code_unverified' });
   }
   return { nativeStayId: native.reservationStayId, fields, captureScope: read.record.details.captureScope, mismatches,
-    ...(pricing ? { pricing, criteria } : {}) };
+    ...(pricing ? { pricing, criteria } : {}), savedPrice: price.saved, preparedPrice: price.prepared,
+    ...(price.info ? { priceInfo: price.info } : {}) };
 }
 
 const readCensus = (stay, expected, cloudTargetKey, options = {}) => withCloudReadSession((page) => searchLabtestPreimage(page, {

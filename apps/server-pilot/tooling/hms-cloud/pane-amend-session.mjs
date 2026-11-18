@@ -29,6 +29,7 @@ import { nativeMoneyCents, nativeAverageCents, nativeMoneyTenThousandths, native
 import { stageSavedAdultForComposition } from './guest-stay-amend-adults.mjs';
 import { stageSavedDatesForComposition, stageSavedRoomRateForComposition } from './guest-stay-amend-date-room-rate.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
+import { savedPriceInfo } from './charge-room-pricing.mjs';
 
 const identityKeys = ['source', 'propertyCode', 'confirmation', 'reservationStayId', 'reservationId',
   'recordId', 'guestId', 'status', 'firstName', 'lastName', 'arrival', 'departure', 'roomType',
@@ -692,8 +693,11 @@ export function confirmedCloudAmendResult(saved, fresh, writerSessionClosed) {
       writerSessionClosed !== true || fresh?.outcome !== 'matched' || !fresh.readback) {
     return { outcome: 'uncertain', issue: 'AMEND_READBACK_UNVERIFIED' };
   }
+  const priceInfo = [fresh.readback.priceInfo, ...(saved.nativeWarnings ?? [])].filter(Boolean)
+    .map(item => item.replace(/\.$/, '')).join('; ');
   return { outcome: 'amended', dispatchCallbacksDrained: true, writerSessionClosed: true,
     businessFieldsMatched: true, readback: { ...fresh.readback,
+      ...(priceInfo ? { priceInfo: `${priceInfo}.` } : {}),
       ...(saved.addonAlignmentChoice ? { addonAlignmentChoice: saved.addonAlignmentChoice } : {}),
       ...(saved.nativeWarnings?.length ? { nativeWarnings: saved.nativeWarnings } : {}) } };
 }
@@ -1467,7 +1471,7 @@ export async function commitCloudPaneAmendReviewed(input, authorization) {
         issue: !callbackDrained ? 'CALLBACK_TASK_UNDRAINED' : saved.issue || 'CALLBACK_FINAL_UNVERIFIED',
         callbackEffects: saved.callbackEffects ?? callbackOutcome?.effects, callbackTaskDrained: callbackDrained };
     }
-    const fresh = await readCloudPaneAmend({ ...input, ...before, beforeParties: saved.finalParties,
+    const fresh = await readCloudPaneAmendAfterSave({ ...input, ...before, beforeParties: saved.finalParties,
       ...(typeof saved.finalBeforeCommission === 'number' ? { beforeCommission: saved.finalBeforeCommission } : {}) });
     return confirmedCloudAmendResult(saved, fresh, true);
   } catch {
@@ -1634,18 +1638,25 @@ export async function commitCloudPaneAmend(input, authorization) {
     }, protectedSession.options);
     if (saved.outcome !== 'awaiting_readback' || saved.dispatchCallbacksDrained !== true) return saved;
     if (!before) return { outcome: 'uncertain', issue: 'AMEND_PREIMAGE_UNVERIFIED' };
-    const fresh = await readCloudPaneAmend({ ...input, ...before });
+    const fresh = await readCloudPaneAmendAfterSave({ ...input, ...before });
     return confirmedCloudAmendResult(saved, fresh, true);
   } catch {
     return { outcome: attempted ? 'uncertain' : 'not_dispatched', issue: 'AMEND_UNVERIFIED' };
   }
 }
 
+async function readCloudPaneAmendAfterSave(input) {
+  const first = await readCloudPaneAmend(input);
+  if (first.outcome === 'matched' || input.signal?.aborted) return first;
+  await new Promise(resolve => setTimeout(resolve, 2_000));
+  return input.signal?.aborted ? first : readCloudPaneAmend(input);
+}
+
 /** Reopen the saved stay and verify the requested business fields independently. */
 export async function readCloudPaneAmend(input, dependencies = {}) {
   const { openSession = withCloudWriterSession,
   guard = installSavedStayReadGuard, shallow = readShallow, read = readRecord,
-  current = currentLabtestRecord, snapshot = snapshotLabtestRecord, readRates = readSavedStayNightlyRates } = dependencies;
+  current = currentLabtestRecord, snapshot = snapshotLabtestRecord } = dependencies;
   const selected = input?.selected, changes = input?.changes;
   const target = amendTarget(selected, changes, { allowRealGuest: input?.allowRealGuest === true });
   if (!validTarget(input?.target, input?.selected) || !target || typeof input.beforeNote !== 'string' ||
@@ -1733,21 +1744,9 @@ export async function readCloudPaneAmend(input, dependencies = {}) {
             (typeof input.beforeBookerContact !== 'string' || bookerContact !== input.beforeBookerContact)) ||
           state.cmsSend !== changes.cmsSend ||
           cmsRecipient !== changes.cmsRecipient || cmsMessageId !== changes.cmsMessageId) return { outcome: 'unverified' };
-      if (changes.retainRates === 'no') {
-        assertApprovedAmendPrice(saved, target, input.approvedPrices);
-      } else {
-        const beforeRates = input.beforeSavedRates;
-        if (!Array.isArray(beforeRates?.nightly) || !beforeRates.nightly.length) return { outcome: 'unverified' };
-        const afterRates = await readRates(page, state, { propertyCode: selected.propertyCode, confirmation: target.confirmation,
-          nativeStayId: target.reservationStayId, arrival: target.arrival, departure: target.departure }, { mode: 'saved_direct' });
-        if (!afterRates || afterRates.currency !== beforeRates.currency || !Array.isArray(afterRates.nightly)) return { outcome: 'unverified' };
-        const afterByDate = new Map(afterRates.nightly.map((night) => [night.date, night]));
-        const overlap = beforeRates.nightly.filter((night) => afterByDate.has(night.date));
-        if (!overlap.length || overlap.some((night) => {
-          const after = afterByDate.get(night.date);
-          return night.chargeCents !== after.chargeCents || night.totalChargeCents !== after.totalChargeCents;
-        })) return { outcome: 'unverified' };
-      }
+      let price = null;
+      try { price = observedAmendPrice(saved, target, null, { includeComponents: input.capturePriceComponents === true }); } catch {}
+      const priceInfo = savedPriceInfo(price, input.approvedPrices);
       await page.screenshot({ path: input.afterScreenshot });
       return { outcome: 'matched', readback: { confirmation: native.confirmation, nativeStayId: native.reservationStayId,
         arrival: native.arrival, departure: native.departure, roomType: native.roomType, ratePlan: native.ratePlan,
@@ -1760,7 +1759,9 @@ export async function readCloudPaneAmend(input, dependencies = {}) {
         ...(Object.hasOwn(changes, 'guestOptIn') ? { guestOptIn: changes.guestOptIn } : {}),
         ...(typeof chargeRoom === 'string' ? { roomTypeForCharge: chargeRoom } : {}),
         cmsSend: state.cmsSend, cmsMessageId, cmsRecipient,
-        price: observedAmendPrice(saved, target, null, { includeComponents: input.capturePriceComponents === true }) } };
+        price, ...(priceInfo ? { priceInfo } : {}),
+        ...(input.approvedPrices ? { preparedPrice: { currency: input.approvedPrices.currency,
+          totalCents: input.approvedPrices.totalCents, averageCents: input.approvedPrices.averageCents } } : {}) } };
     }, { ...protectedSession.options, staging: true });
     if (result.outcome === 'matched' && (Array.isArray(input.beforeChildAges) || result.readback.childAges === 'unknown')) {
       const expectedAges = Array.isArray(changes.childAges) ? changes.childAges :

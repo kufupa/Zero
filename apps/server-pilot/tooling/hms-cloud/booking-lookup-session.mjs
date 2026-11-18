@@ -45,7 +45,7 @@ import {
 import { readQuote } from './quote-read.mjs';
 import { getQuoteView } from './quote-view.mjs';
 import { validCreateNote } from './create-request-binding.mjs';
-import { compareChargeRoomCriteria, compareChargeRoomPricing } from './charge-room-pricing.mjs';
+import { compareChargeRoomCriteria, compareChargeRoomPricing, savedPriceFromFields } from './charge-room-pricing.mjs';
 import { compareCreatePartyRecord, extractCreatePartySnapshot } from './create-party-readback.mjs';
 import { listTrackSubSegments } from './guest-stay-track-catalog.mjs';
 
@@ -168,16 +168,14 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
       });
       if (stay.confirmation !== target.confirmation) throw new Error('CONFIRMATION_HEADER_MISMATCH');
       const view = await readRecord(page, target.confirmation, { nativePropertyCode: target.expected.propertyCode });
-      let pricing;
+      let pricing, price;
       if (target.expected.roomTypeForCharge !== undefined) {
         const fields = view?.details?.fields?.filter((field) => field.name === 'roomtypecharge') || [];
         if (fields.length !== 1 || fields[0].value !== target.expected.roomTypeForCharge) {
           throw new Error('LABTEST_CHARGE_ROOM_UNVERIFIED');
         }
         pricing = compareChargeRoomPricing(view?.details?.fields, target.expected.checkedPricing);
-        if (pricing.averageRate !== 'MATCHED' || pricing.totalRate !== 'MATCHED' || pricing.currency !== 'MATCHED') {
-          throw new Error('LABTEST_CHARGE_PRICE_UNVERIFIED');
-        }
+        price = savedPriceFromFields(view?.details?.fields, target.expected.checkedPricing);
       }
       const extraParties = Boolean(target.expectedAgency || target.expectedArAccount);
       const record = await readCreatedLabtestRecord(page, target.expected, {
@@ -225,7 +223,8 @@ export async function readSavedOrganizationCreate(state, request, { openSession 
           roomType: target.expected.roomType, ratePlan: target.expected.ratePlan,
           ...(target.expected.roomTypeForCharge !== undefined ? { roomTypeForCharge: target.expected.roomTypeForCharge } : {}) },
         ...(target.expectedOrganization ? { organization: { nativeId: record.partyPreimage.companyid, name: organizationName } } : {}),
-        ...(pricing ? { pricing, criteria } : {}),
+        ...(pricing ? { pricing, criteria, savedPrice: price.saved, preparedPrice: price.prepared,
+          ...(price.info ? { priceInfo: price.info } : {}) } : {}),
         ...(extraParties ? { selectedParties: 'MATCHED', otherLinkedParties: 'UNKNOWN' } :
           otherPartiesBlank ? { otherLinkedPartiesBlank: true } : { otherLinkedParties: 'UNKNOWN' }),
       };

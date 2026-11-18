@@ -16,6 +16,33 @@ const unique = (fields, name) => {
   return found.length === 1 ? found[0].value : null;
 };
 
+export function savedPriceInfo(saved, prepared) {
+  const code = currency(saved?.currency), raw = saved?.totalCents;
+  if (!code || typeof raw !== 'string' || !/^\d+$/.test(raw)) return null;
+  const format = cents => {
+    const digits = cents.toString().padStart(3, '0');
+    return `${digits.slice(0, -2)}.${digits.slice(-2)}`;
+  };
+  const total = BigInt(raw), prior = prepared?.totalCents;
+  let info = `HMS saved ${code}${format(total)}`;
+  if (currency(prepared?.currency) === code && typeof prior === 'string' && /^\d+$/.test(prior)) {
+    const difference = total - BigInt(prior);
+    if (difference) info += `, ${code}${format(difference < 0n ? -difference : difference)} ${difference < 0n ? 'less' : 'more'} than at Prepare`;
+  }
+  return `${info}.`;
+}
+
+export function savedPriceFromFields(fields, prepared) {
+  if (!Array.isArray(fields)) return { saved: null, prepared: null, info: null };
+  const cents = value => {
+    const exact = amount(value);
+    return exact === null || BigInt(exact) % 100n !== 0n ? null : (BigInt(exact) / 100n).toString();
+  };
+  const saved = { currency: currency(unique(fields, 'totalratecurr')), totalCents: cents(unique(fields, 'totalrate')) };
+  const before = prepared ? { currency: currency(prepared.currency), totalCents: cents(prepared.totalRate) } : null;
+  return { saved, prepared: before, info: savedPriceInfo(saved, before) };
+}
+
 /** Missing or ambiguous readback never becomes a successful price match. */
 export function compareChargeRoomPricing(fields, checked) {
   if (!Array.isArray(fields)) fields = [];
