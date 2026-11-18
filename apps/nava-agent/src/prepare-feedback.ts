@@ -68,7 +68,10 @@ const createObserved=z.object({
 }).optional().catch(undefined);
 const envelope = z.object({native_result:z.unknown(),display_rows:z.array(z.unknown()).optional(),
   observed_fields:z.unknown(),coverage:z.unknown(),cancellation_fee:z.unknown(),
-  native:z.object({ratePlanAvailability:nativePrice.nullable().optional(),applied:createObserved}).optional(),
+  native:z.object({ratePlanAvailability:nativePrice.nullable().optional(),applied:createObserved,
+    stage:optionalIdentifier,issue:optionalIdentifier,
+    detail:z.object({issue:optionalIdentifier}).optional().catch(undefined),
+  }).optional(),
   rate_choices:z.unknown(),guest_candidates:z.unknown(),
 }).passthrough();
 
@@ -77,6 +80,8 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
 }) {
   const capture=envelope.safeParse(result?.data).data;
   const rate=capture?.native?.ratePlanAvailability;
+  const failedStep=workflow==='create' && !result?.ok ? capture?.native?.stage : undefined;
+  const detailIssue=workflow==='create' && !result?.ok ? capture?.native?.detail?.issue ?? capture?.native?.issue : undefined;
   const observed=capture?.observed_fields ?? (workflow==='create'?capture?.native?.applied:undefined);
   const rows=(capture?.display_rows ?? []).flatMap(value=>{
     const row=displayRow.safeParse(value);
@@ -90,7 +95,10 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     }
   }
   const native=workflow==='create' ? {
-    native:rate ? {ratePlanAvailability:rate} : null,rate_choices:capture?.rate_choices ?? null,guest_candidates:capture?.guest_candidates ?? null,
+    native:rate || failedStep || detailIssue ? {
+      ...(rate?{ratePlanAvailability:rate}:{}),...(failedStep?{stage:failedStep}:{}),...(detailIssue?{detail:{issue:detailIssue}}:{}),
+    } : null,
+    rate_choices:capture?.rate_choices ?? null,guest_candidates:capture?.guest_candidates ?? null,
   } : capture?.native_result ?? result?.data ?? null;
   const bounded=native===null || Buffer.byteLength(JSON.stringify(native) ?? '')<=2_000_000;
   const code=bounded?result?.error?.code ?? 'STAFF_JOB_CHANGED':'NATIVE_RESULT_TOO_LARGE';
@@ -109,12 +117,13 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     recovery:attachmentsBlocked?attachmentsUnconfirmed.message:`Review the proposal and run ${action} again.`,
     ...(hasCreateFeedback?{prepare}:{}),
   };
-  const hasCapture=workflow==='create' ? !!rate || observed!==undefined || capture?.guest_candidates!=null
+  const hasCapture=workflow==='create' ? !!rate || !!failedStep || !!detailIssue || observed!==undefined || capture?.guest_candidates!=null
     || capture?.rate_choices!=null
     : native!==null;
   const stage=bounded && (ok || hasCapture) ? {
     state:ok?'prepared':'incomplete',revision,job_id:jobId,...(quoteId?{quote_id:quoteId}:{}),
-    summary:[ok?`HMS ${action} complete. Nothing saved.`:`HMS ${action} incomplete. Nothing saved.`],
+    summary:[ok?`HMS ${action} complete. Nothing saved.`:`HMS ${action} incomplete. Nothing saved.`,
+      ...(failedStep?[`Infor stopped at ${failedStep}${detailIssue?` (${detailIssue})`:''}.`]:[])],
     native_result:native,display_rows:rows,
     ...(observed!==undefined?{observed_fields:observed}:{}),
     ...(capture?.coverage!==undefined?{coverage:capture.coverage}:{}),
