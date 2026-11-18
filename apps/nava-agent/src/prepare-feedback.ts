@@ -71,6 +71,8 @@ const envelope = z.object({native_result:z.unknown(),display_rows:z.array(z.unkn
   native:z.object({ratePlanAvailability:nativePrice.nullable().optional(),applied:createObserved,
     stage:optionalIdentifier,issue:optionalIdentifier,
     detail:z.object({issue:optionalIdentifier}).optional().catch(undefined),
+    ratePlanIssue:z.object({issue:optionalIdentifier,rateAvailability:nativePrice.nullable().optional(),
+      priceComparison:z.object({averageRate:z.string(),totalRate:z.string(),currency:z.string()}).nullable().optional()}).optional().catch(undefined),
   }).optional(),
   rate_choices:z.unknown(),room_choices:z.unknown(),guest_candidates:z.unknown(),track_choices:z.unknown(),
 }).passthrough();
@@ -82,6 +84,7 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
   const rate=capture?.native?.ratePlanAvailability;
   const failedStep=workflow==='create' && !result?.ok ? capture?.native?.stage : undefined;
   const detailIssue=workflow==='create' && !result?.ok ? capture?.native?.detail?.issue ?? capture?.native?.issue : undefined;
+  const rateIssue=workflow==='create' && !result?.ok ? capture?.native?.ratePlanIssue : undefined;
   const observed=capture?.observed_fields ?? (workflow==='create'?capture?.native?.applied:undefined);
   const cancellation=workflow==='cancel'?z.object({
     cancellation_fee:z.unknown(),display_rows:z.array(z.unknown()).optional(),
@@ -98,8 +101,8 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     }
   }
   const native=workflow==='create' ? {
-    native:rate || failedStep || detailIssue ? {
-      ...(rate?{ratePlanAvailability:rate}:{}),...(failedStep?{stage:failedStep}:{}),...(detailIssue?{detail:{issue:detailIssue}}:{}),
+    native:rate || failedStep || detailIssue || rateIssue ? {
+      ...(rate?{ratePlanAvailability:rate}:{}),...(failedStep?{stage:failedStep}:{}),...(detailIssue?{detail:{issue:detailIssue}}:{}),...(rateIssue?{ratePlanIssue:rateIssue}:{}),
     } : null,
     rate_choices:capture?.rate_choices ?? null,room_choices:capture?.room_choices ?? null,guest_candidates:capture?.guest_candidates ?? null,
     track_choices:capture?.track_choices ?? null,

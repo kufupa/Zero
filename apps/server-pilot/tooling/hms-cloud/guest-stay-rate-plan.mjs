@@ -531,7 +531,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       throw new Error('RATE_READBACK_UNVERIFIED');
     }
     if (!proofsCurrent(page,dates)) throw new Error('DRAFT_IDENTITY_CHANGED');
-    let rateAvailability = null, priceUnconfirmed = false;
+    let rateAvailability = null, priceUnconfirmed = false, priceComparison = null;
     if (requireM1CreateAvailability) {
       const controls = page.locator('a.x-btn:visible').filter({ hasText: /^Check Availability$/ });
       const matches = [];
@@ -618,8 +618,8 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
         const values = nativeAvailability.values;
         const responseFields = values && typeof values === 'object' && !Array.isArray(values)
           ? Object.entries(values).map(([name, value]) => ({ name: name.toLowerCase(), value })) : [];
-        const returnedPrice = compareChargeRoomPricing(responseFields, { averageRate, totalRate, currency });
-        if (Object.values(returnedPrice).some(value => value !== 'MATCHED')) priceUnconfirmed = true;
+        priceComparison = compareChargeRoomPricing(responseFields, { averageRate, totalRate, currency });
+        if (Object.values(priceComparison).some(value => value !== 'MATCHED')) priceUnconfirmed = true;
       }
       rateAvailability = { responseStatus:availabilityResponse.status(), averageRate, totalRate, currency };
       after = checked;
@@ -629,7 +629,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     }
     if (priceUnconfirmed) {
       selectedOnPage.delete(page);
-      return {outcome:'criteria_unavailable',issue:'RATE_PRICE_UNCONFIRMED'};
+      return {outcome:'criteria_unavailable',issue:'RATE_PRICE_UNCONFIRMED',rateAvailability,priceComparison};
     }
     const fields = rateAvailability ? chargePriceFields(after) : null;
     const chargePrice = fields && chargeRoomRevision(page) === revision && fields.roomtypecharge &&
