@@ -108,7 +108,7 @@ export async function importThread(input:ThreadInput, key:string, sourceInput?:u
     const createSession = !session;
     if (session && input.mode==='historical' && (session.config?.input_cutoff !== (input.input_cutoff ?? null) || session.config?.decision_id !== (input.decision_id ?? null))) throw new Error('HISTORICAL_CONTEXT_CONFLICT');
     if (options && (input.mode!=='labtest' || session || before)) throw new Error('LABTEST_SEED_CONFLICT');
-    if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null,...(options ? {manual_create_labtest:options.manualCreateLabtest} : {})})}) RETURNING *`;
+    if (!session) [session]=await tx`INSERT INTO nava_agent.agent_session(id,thread_id,status,mode,config) VALUES (${uid('session')},${thread.id},'pending',${input.mode},${json({decision_id:input.decision_id ?? null,input_cutoff:input.input_cutoff ?? null,...(input.replay_id ? {replay_id:input.replay_id} : {}),...(options ? {manual_create_labtest:options.manualCreateLabtest} : {})})}) RETURNING *`;
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+session.id},0))`;
     await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'import',${json({key_hash:keyHash,request_hash:requestHash})})`;
     if(sourceInput !== undefined) await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${session.id},'train_source',${json(sourceInput)})`;

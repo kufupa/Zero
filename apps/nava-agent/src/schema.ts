@@ -6,8 +6,16 @@ const json: z.ZodType<null | boolean | number | string | unknown[] | Record<stri
 const person = z.object({name:z.string().nullable(),email:z.string()}).strict();
 const attachment = z.object({id, name:z.string(), mime_type:z.string(), size:z.number().int().nonnegative(), handle:z.string(), extracted_text:z.string().nullable()}).strict();
 const email = z.object({id, rfc_message_id:z.string().nullable(), direction:z.enum(['inbound','outbound']), from:person, to:z.array(person), cc:z.array(person), received_at:z.string().datetime({offset:true}), subject:z.string(), body_text:z.string(), body_html:z.string().nullable(), attachment_status:z.enum(['complete','unknown','has_unread']).optional(), attachments:z.array(attachment)}).strict();
-export const threadInput = z.object({source:z.enum(['outlook','webmail','corpus','eval']), source_thread_id:id, mailbox_id:id, selected_message_id:id, property_code:z.string().nullable(), mode:z.enum(['live','labtest','historical']), messages:z.array(email).min(1), decision_id:z.string().optional(), input_cutoff:z.string().optional()}).strict().superRefine((v,ctx)=>{
+export const threadInput = z.object({source:z.enum(['outlook','webmail','corpus','eval']), source_thread_id:id, mailbox_id:id, selected_message_id:id, property_code:z.string().nullable(), mode:z.enum(['live','labtest','historical']), messages:z.array(email).min(1), decision_id:z.string().optional(), input_cutoff:z.string().optional(), replay_id:z.string().uuid().optional()}).strict().superRefine((v,ctx)=>{
   if(!v.messages.some(m=>m.id===v.selected_message_id)) ctx.addIssue({code:z.ZodIssueCode.custom,message:'selected message missing'});
+  if(v.replay_id) {
+    const cutoff=Date.parse(v.input_cutoff ?? '');
+    const selected=v.messages.find(m=>m.id===v.selected_message_id);
+    if(v.mode!=='live' || v.source!=='outlook' || selected?.direction!=='inbound' ||
+        cutoff!==Date.parse(selected.received_at) || v.messages.some(m=>Date.parse(m.received_at)>cutoff)) {
+      ctx.addIssue({code:z.ZodIssueCode.custom,message:'live replay requires the exact selected inbound cutoff'});
+    }
+  }
   if(v.mode==='historical') {
     const cutoff=v.input_cutoff ? Date.parse(v.input_cutoff) : NaN;
     if(!Number.isFinite(cutoff)) ctx.addIssue({code:z.ZodIssueCode.custom,message:'historical input_cutoff required'});

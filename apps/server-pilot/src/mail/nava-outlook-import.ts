@@ -14,13 +14,14 @@ const address = z.object({ name: z.string().nullable(), email: z.string() }).str
 const paneImport = z.object({
   source: z.enum(['outlook', 'webmail']), mode: z.literal('live'), property_code: z.literal('HRCEN'),
   mailbox_id: z.string(), source_thread_id: z.string(), selected_message_id: z.string(),
+  replay_id: z.string().uuid().optional(), input_cutoff: z.string().datetime({ offset: true }).optional(),
   messages: z.array(z.object({
     id: z.string(), rfc_message_id: z.string().nullable(), direction: z.enum(['inbound', 'outbound']),
     from: address, to: z.array(address), cc: z.array(address), received_at: z.string(),
     subject: z.string(), body_text: z.string(), body_html: z.string().nullable(),
     attachment_status: z.enum(['complete', 'unknown', 'has_unread']).optional(), attachments: z.array(z.never()),
   }).strict()).min(1),
-}).strict();
+}).strict().refine(input => Boolean(input.replay_id) === Boolean(input.input_cutoff));
 
 function sourceAddress(value: { name?: string; email: string }) {
   const localPart = value.email.trim().split('@')[0];
@@ -48,9 +49,16 @@ export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: 
     if (!selected || selected.provenance?.attention != null) return null;
     const scope = await loadConversationMetaForThread(tx, mailboxId, selected.threadId);
     if (scope.conversationId !== input.source_thread_id) return null;
-    const rows = await tx.select().from(message).where(and(eq(message.transportId, mailboxId),
+    const conversation = await tx.select().from(message).where(and(eq(message.transportId, mailboxId),
       inArray(message.threadId, [selected.threadId, ...scope.linkedThreadIds])))
       .orderBy(asc(message.receivedAt), asc(message.id));
+    const cutoff = input.input_cutoff;
+    const rows = cutoff === undefined ? conversation : conversation.filter(row =>
+      Date.parse(toParsedMessage(row).receivedOn) <= Date.parse(cutoff));
+    if (cutoff !== undefined) {
+      const inbound = rows.find(row => row.id === input.selected_message_id);
+      if (!inbound || Date.parse(toParsedMessage(inbound).receivedOn) !== Date.parse(cutoff)) return null;
+    }
     if (rows.length !== imported.size) return null;
 
     const files = await tx.select({ id: attachment.id, messageId: attachment.messageId, name: attachment.filename,

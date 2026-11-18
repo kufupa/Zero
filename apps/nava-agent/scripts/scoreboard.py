@@ -2,8 +2,8 @@
 """Replay pane inputs and score them later, without sending or saving.
 
 replay inputs: JSONL {id, input_cutoff, eligibility, thread}; thread is the
-full, exact pane POST body for a synced source. Export it through the authorized
-pane, including all conversation messages; the gateway independently checks it.
+exact pane POST body through the selected inbound timestamp. Export the full
+conversation through the authorized pane; the gateway independently checks the cutoff.
 For B/C eligibility is human_inbound, ota, automated, internal, or unknown.
 Tier C uses historical model-only inputs and requires gateway support.
 For C, legacy model-safe JSONL rows can be used with --historical-mailbox-id;
@@ -103,7 +103,7 @@ def catalog_case(row):
             raise ValueError('conversation_invalid')
         ids.add(m['id'])
         if timestamp(m['receivedOn']) > timestamp(row['input_cutoff']):
-            raise ValueError('conversation_after_cutoff')
+            continue
         if m['body'] == m['processedHtml'] and re.search(r'<[a-z][\s\S]*>', m['body'], re.I):
             raise ValueError('html_only_requires_pane_mapper')
         mapped.append({'id': m['id'], 'rfc_message_id': m.get('messageId'), 'direction': m['direction'],
@@ -112,7 +112,7 @@ def catalog_case(row):
                        'subject': m['subject'], 'body_text': m['body'], 'body_html': None,
                        'attachment_status': m.get('attachmentStatus') or 'unknown', 'attachments': []})
     selected = [m for m in mapped if m['id'] == row['message_id'] and m['direction'] == 'inbound']
-    if len(selected) != 1 or not selected[0]['body_text'].strip():
+    if len(selected) != 1 or not selected[0]['body_text'].strip() or timestamp(selected[0]['received_at']) != timestamp(row['input_cutoff']):
         raise ValueError('selected_inbound_missing')
     return {'id': row['id'], 'input_cutoff': row['input_cutoff'], 'eligibility': row.get('eligibility', 'unknown'),
             'thread': {'source': 'outlook', 'source_thread_id': thread['conversationId'], 'mailbox_id': row['mailbox_id'],
@@ -194,7 +194,7 @@ def historical_thread(case, mailbox):
             'messages': [email(e['message']) for e in events] + [email(selected)]}
 
 
-def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', historical_mailbox=None):
+def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', historical_mailbox=None, run_id=None):
     result = {'id': case['id'], 'input_cutoff': case['input_cutoff'], 'status': 'unknown',
               'tier': tier, 'reason': None, 'wall_ms': None, 'proposals': [], 'events': [], 'prepare': []}
     monotonic = time.monotonic()
@@ -220,6 +220,8 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         selected = [m for m in messages if m['id'] == thread['selected_message_id']]
         if len(selected) != 1 or selected[0]['direction'] != 'inbound':
             raise ValueError('selected_inbound_missing')
+        if tier != 'C':
+            thread = {**thread, 'replay_id': run_id or str(uuid.uuid4()), 'input_cutoff': case['input_cutoff']}
         result['source'] = {'message_id': selected[0]['id'], 'subject': selected[0].get('subject', ''),
                             'body_text': selected[0].get('body_text', '')}
         if tier == 'C' and not time.time() - 30 * 86400 <= timestamp(selected[0]['received_at']) <= time.time():
@@ -817,6 +819,7 @@ def main():
     replay.add_argument('--origin', required=True, help='trusted browser Origin')
     replay.add_argument('--out', required=True, help='new private output JSON path')
     replay.add_argument('--concurrency', type=int, default=4)
+    replay.add_argument('--run-id', type=uuid.UUID, default=None, help='optional unique UUID to record for this run')
     replay.add_argument('--timeout', type=int, default=300)
     replay.add_argument('--no-prepare', action='store_true')
     replay.add_argument('--quote-first', action='store_true', help='create quote artifacts using first eligible option per room; no draft or send')
@@ -855,11 +858,12 @@ def main():
         if args.concurrency > limit:
             raise ValueError('requested concurrency exceeds effective limit ' + str(limit))
         started = time.monotonic()
+        run_id = str(args.run_id or uuid.uuid4())
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
             results = list(pool.map(lambda c: run_case(gateway, c, not args.no_prepare, args.timeout, args.quote_first,
-                                                      args.tier, args.historical_mailbox_id), cases))
+                                                      args.tier, args.historical_mailbox_id, run_id), cases))
         elapsed_ms = round((time.monotonic() - started) * 1000)
-        run = {'tier': args.tier, 'concurrency': args.concurrency, 'effective_limit': limit,
+        run = {'tier': args.tier, 'run_id': run_id, 'concurrency': args.concurrency, 'effective_limit': limit,
                'elapsed_ms': elapsed_ms, 'results': results}
         save_private(args.out, run)
         print(json.dumps({'tier': args.tier, 'cases': len(results), 'status': dict(Counter(r['status'] for r in results)),

@@ -99,7 +99,7 @@ export function createPilotOperations(): ProposalOperations | undefined {
         JOIN nava_agent.agent_session s ON s.id=p.session_id AND s.thread_id=p.thread_id WHERE p.id=${request.proposalId}`;
       if (!p) return {ok:false,code:'NOT_FOUND'};
       if(staffPrepareOnly()) {
-        if(request.operation==='go') return submitStaffGo(tx,p,request);
+        if(request.operation==='go') return p.config?.replay_id ? {ok:false,code:'UNAVAILABLE'} : submitStaffGo(tx,p,request);
         if(request.mode!=='live' || (request.operation!=='stage' && request.operation!=='quote')) return {ok:false,code:'UNAVAILABLE'};
         const source=await selectedStageSource(tx,p.session_id);
         if(!source.success || source.data.mailbox_id!==request.mailboxId) return {ok:false,code:'FORBIDDEN'};
