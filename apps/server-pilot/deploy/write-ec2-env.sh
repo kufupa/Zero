@@ -102,6 +102,27 @@ if [[ "${MAIL_TRANSPORT_MODE:-fixture}" == "real" ]]; then
 fi
 
 ENV_PATH="/home/ubuntu/repos/zero/apps/server-pilot/.env.production"
+# Preserve an operator-aligned admission DB across later environment refreshes.
+if [[ -f $ENV_PATH && ! -L $ENV_PATH ]]; then
+  for key in HMS_CREDENTIAL_LEASE_DATABASE_URL HMS_CREDENTIAL_SESSION_CAP; do
+    if [[ ! -v $key ]]; then
+      value=$(node --input-type=module - "$ENV_PATH" "$key" <<'NODE'
+import { readFileSync } from 'node:fs';
+const [path,key]=process.argv.slice(2);
+const lines=readFileSync(path,'utf8').split('\n').filter(line=>line.startsWith(`${key}=`));
+if (lines.length>1) throw Error('duplicate admission setting');
+if (lines.length) {
+  const match=/^[A-Z][A-Z0-9_]*='((?:[^']|'\\'')*)'$/.exec(lines[0]);
+  if (!match) throw Error('invalid admission setting');
+  process.stdout.write(match[1].replace(/'\\''/g,"'"));
+}
+NODE
+      )
+      printf -v "$key" '%s' "$value"
+    fi
+  done
+  unset key value
+fi
 ENV_TMP="$(mktemp "${ENV_PATH}.tmp.XXXXXX")"
 cleanup_env_tmp() { rm -f -- "$ENV_TMP"; }
 trap cleanup_env_tmp EXIT
@@ -190,6 +211,8 @@ append_env HMS_HEALTH_STATUS_PATH "${HMS_HEALTH_STATUS_PATH:-/tmp/nava-zero-hms-
 append_env HMS_EXPECTED_TENANT "${HMS_EXPECTED_TENANT:-THECENTURION_PRD}"
 append_env HMS_EXPECTED_PROPERTY_CODE "${HMS_EXPECTED_PROPERTY_CODE:-HRCEN}"
 append_env HMS_EXPECTED_TRANSPORT_ID "${HMS_EXPECTED_TRANSPORT_ID:-transport-centurion}"
+append_env HMS_CREDENTIAL_LEASE_DATABASE_URL "${HMS_CREDENTIAL_LEASE_DATABASE_URL:-}"
+append_env HMS_CREDENTIAL_SESSION_CAP "${HMS_CREDENTIAL_SESSION_CAP:-}"
 append_env HMS_RUN_DEADLINE_MS "${HMS_RUN_DEADLINE_MS:-}"
 append_env HMS_CIRCUIT_COOLDOWN_MS "${HMS_CIRCUIT_COOLDOWN_MS:-}"
 append_env HMS_READ_GATE_VERSION "${HMS_READ_GATE_VERSION:-1}"

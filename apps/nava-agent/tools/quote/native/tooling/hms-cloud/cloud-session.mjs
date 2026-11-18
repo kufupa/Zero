@@ -892,6 +892,8 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
   const state = { ref: property.credentialSecretRef, released: false, borrowers: 0, readOnly, priority };
   let client;
   let connection;
+  let queueClient;
+  let queueConnection;
   let timer;
   let heartbeat;
   let acquired = false;
@@ -909,10 +911,17 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
     entry.credentialSecretRef === property.credentialSecretRef).flatMap(entry => [...entry.transportIds]))];
   try {
     {
-      if (!databaseUrl) throw new Error('HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED');
-      client = postgres(databaseUrl, { max: 1, idle_timeout: 0, connect_timeout: 10,
+      const lockDatabaseUrl = process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL || databaseUrl;
+      if (!databaseUrl || !lockDatabaseUrl) throw new Error('HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED');
+      client = postgres(lockDatabaseUrl, { max: 1, idle_timeout: 0, connect_timeout: 10,
         onclose: fail });
       connection = await runUntilAborted(() => client.reserve(), acquisitionSignal);
+      // Keep the pilot's queue and run fences on its application DB while all
+      // processes take credential locks on the same configured admission DB.
+      if ((priority === 'background' || runFence) && lockDatabaseUrl !== databaseUrl) {
+        queueClient = postgres(databaseUrl, { max: 1, idle_timeout: 0, connect_timeout: 10, onclose: fail });
+        queueConnection = await runUntilAborted(() => queueClient.reserve(), acquisitionSignal);
+      } else queueConnection = connection;
       // Staff mark themselves waiting before competing for a read slot or the
       // main lock. Background can only attempt admission while no staff waits.
       await runUntilAborted(() => connection.unsafe("SELECT set_config('lock_timeout', $1, false)",
@@ -955,22 +964,22 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
         if (released[0]?.released !== true) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
       };
       if (priority === 'staff') {
-        await runUntilAborted(() => credentialRunPromoted(connection, runFence), acquisitionSignal);
+        await runUntilAborted(() => credentialRunPromoted(queueConnection, runFence), acquisitionSignal);
         await enterStaff();
       } else {
         phase = 'contention';
-        admissionKey = await runUntilAborted(() => registerCredentialAdmission(connection, key, runFence), acquisitionSignal);
+        admissionKey = await runUntilAborted(() => registerCredentialAdmission(queueConnection, key, runFence), acquisitionSignal);
         while (!acquired) {
-          if (await runUntilAborted(() => credentialRunPromoted(connection, runFence), acquisitionSignal)) {
+          if (await runUntilAborted(() => credentialRunPromoted(queueConnection, runFence), acquisitionSignal)) {
             await enterStaff();
-          } else if (await runUntilAborted(() => credentialAdmissionHead(connection, key, transportIds), acquisitionSignal) === admissionKey) {
+          } else if (await runUntilAborted(() => credentialAdmissionHead(queueConnection, key, transportIds), acquisitionSignal) === admissionKey) {
             const marker = await runUntilAborted(() => connection.unsafe('SELECT pg_try_advisory_lock($1::bigint) AS acquired', [waiterKey]), acquisitionSignal);
             if (marker[0]?.acquired === true) {
               if (await trySlot()) {
                 const rows = await runUntilAborted(() => connection.unsafe(tryLockSql, [key]), acquisitionSignal);
                 acquired = rows[0]?.acquired === true;
                 // New eligible waiters can appear between our head check and lock.
-                if (acquired && await runUntilAborted(() => credentialAdmissionHead(connection, key, transportIds), acquisitionSignal) !== admissionKey) {
+                if (acquired && await runUntilAborted(() => credentialAdmissionHead(queueConnection, key, transportIds), acquisitionSignal) !== admissionKey) {
                   const relinquished = await runUntilAborted(() => connection.unsafe(unlockSql, [key]), acquisitionSignal);
                   if (relinquished[0]?.released !== true) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
                   acquired = false;
@@ -986,27 +995,31 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
             await delay(250, undefined, { signal: acquisitionSignal });
           }
         }
-        await runUntilAborted(() => connection.unsafe(`UPDATE hms_credential_admission SET owner_pid = pg_backend_pid(),
+        await runUntilAborted(() => queueConnection.unsafe(`UPDATE hms_credential_admission SET owner_pid = pg_backend_pid(),
           owner_started_at = (SELECT backend_start FROM pg_stat_activity WHERE pid = pg_backend_pid()) WHERE operation_key = $1`,
           [admissionKey]), acquisitionSignal);
       }
-      await runUntilAborted(() => credentialRunPromoted(connection, runFence), acquisitionSignal);
+      await runUntilAborted(() => credentialRunPromoted(queueConnection, runFence), acquisitionSignal);
       signal?.throwIfAborted();
       phase = 'connection';
       const rows = await runUntilAborted(() => connection.unsafe('SELECT pg_backend_pid() AS pid'), acquisitionSignal);
       const pid = rows[0]?.pid;
       if (!Number.isInteger(pid) || loss.signal.aborted) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
+      const queuePid = queueConnection === connection ? pid :
+        (await runUntilAborted(() => queueConnection.unsafe('SELECT pg_backend_pid() AS pid'), acquisitionSignal))[0]?.pid;
+      if (!Number.isInteger(queuePid)) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
       phase = 'quiescence';
       await assertCredentialWriterQuiesced(propertyCode, !readOnly);
-      state.assertRunLive = () => runUntilAborted(() => credentialRunPromoted(connection, runFence),
+      state.assertRunLive = () => runUntilAborted(() => credentialRunPromoted(queueConnection, runFence),
         AbortSignal.any([loss.signal, AbortSignal.timeout(10000)]));
       timer = setInterval(() => {
         if (heartbeat || closing) return;
         heartbeat = Promise.race([
-          connection.unsafe('SELECT pg_backend_pid() AS pid'),
+          Promise.all([connection.unsafe('SELECT pg_backend_pid() AS pid'),
+            ...(queueConnection === connection ? [] : [queueConnection.unsafe('SELECT pg_backend_pid() AS pid')])]),
           delay(10000, undefined, { ref: false }).then(() => { throw new Error('HMS_CREDENTIAL_LEASE_TIMEOUT'); }),
-        ]).then((result) => {
-          if (result[0]?.pid !== pid) fail();
+        ]).then((results) => {
+          if (results[0][0]?.pid !== pid || (results[1] && results[1][0]?.pid !== queuePid)) fail();
         }, fail).finally(() => { heartbeat = undefined; });
       }, 5000);
       timer.unref?.();
@@ -1026,7 +1039,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
         try {
           if (heartbeat) await bounded(heartbeat);
           if (admissionKey && !failed) {
-            if (runFence) await bounded(connection.unsafe(`WITH fulfilled AS (
+            if (runFence) await bounded(queueConnection.unsafe(`WITH fulfilled AS (
               UPDATE ai_workflow_run SET metrics = coalesce(metrics, '{}'::jsonb) || '{"credentialPending":false}'::jsonb
               WHERE id = $1 AND claim_owner = $2 AND claim_token = $3 AND run_kind = 'reservation_prefill'
                 AND coalesce(metrics->>'phase', 'generation') <> 'native_checks'
@@ -1036,7 +1049,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
                   AND item.state->'reservationWorkflowV2'->'prefill'->>'status' = 'running') RETURNING id)
               DELETE FROM hms_credential_admission WHERE run_id IN (SELECT id FROM fulfilled)`,
               [runFence.runId, runFence.claimOwner, runFence.claimToken]));
-            await bounded(connection.unsafe(runId
+            await bounded(queueConnection.unsafe(runId
               ? 'UPDATE hms_credential_admission SET owner_pid = NULL, owner_started_at = NULL WHERE operation_key = $1'
               : 'DELETE FROM hms_credential_admission WHERE operation_key = $1', [admissionKey]));
           }
@@ -1051,6 +1064,7 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
             if (rows[0]?.released !== true) failed = true;
           }
         } catch { failed = true; }
+        try { await queueClient?.end({ timeout: 5 }); } catch { failed = true; }
         try { await client?.end({ timeout: 5 }); } catch { failed = true; }
         if (failed) throw new Error('HMS_CREDENTIAL_LEASE_RELEASE_FAILED');
       },
@@ -1060,7 +1074,10 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
   } catch (error) {
     closing = true;
     if (timer) clearInterval(timer);
-    try { await client?.end({ timeout: 5 }); } catch { throw new Error('HMS_CREDENTIAL_LEASE_RELEASE_FAILED'); }
+    let cleanupFailed = false;
+    try { await queueClient?.end({ timeout: 5 }); } catch { cleanupFailed = true; }
+    try { await client?.end({ timeout: 5 }); } catch { cleanupFailed = true; }
+    if (cleanupFailed) throw new Error('HMS_CREDENTIAL_LEASE_RELEASE_FAILED');
     if (signal?.aborted) signal.throwIfAborted();
     if (['HMS_CREDENTIAL_LEASE_DATABASE_REQUIRED', 'HMS_CREDENTIAL_RUN_STALE', 'HMS_CREDENTIAL_ADMISSION_SCOPE_INVALID', 'HMS_CREDENTIAL_LEASE_CONTENDED'].includes(error?.message)) throw error;
     throw new Error(phase === 'quiescence' ? 'HMS_CREDENTIAL_LEASE_QUIESCENCE_FAILED' :

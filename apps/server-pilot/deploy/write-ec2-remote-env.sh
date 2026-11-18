@@ -21,6 +21,8 @@ REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
 # HTTP-only controls. Intentionally excludes Better Auth, POP3, HMS credentials, and Google keys.
 REMOTE_COMMON_ALLOWLIST=(
   DATABASE_URL
+  HMS_CREDENTIAL_LEASE_DATABASE_URL
+  HMS_CREDENTIAL_SESSION_CAP
   AWS_REGION
   S3_BUCKET
   MAIL_TRANSPORT_MODE
@@ -188,7 +190,7 @@ import { pathToFileURL } from "node:url";
 const [path, kind, policyPath] = process.argv.slice(2);
 const { SCOPED_RUNTIME_CONTROL_KEYS, validateRuntimeControl } = await import(pathToFileURL(policyPath).href);
 const common = new Set([
-  "NODE_ENV", "DATABASE_URL", "AWS_REGION", "S3_BUCKET", "MAIL_TRANSPORT_MODE",
+  "NODE_ENV", "DATABASE_URL", "HMS_CREDENTIAL_LEASE_DATABASE_URL", "HMS_CREDENTIAL_SESSION_CAP", "AWS_REGION", "S3_BUCKET", "MAIL_TRANSPORT_MODE",
   "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE", "SMTP_USER", "SMTP_PASSWORD",
   "SMTP_SECRET_ARN", "MAIL_TLS_REJECT_UNAUTHORIZED", "UNDO_SEND_SECONDS",
   "INGEST_MAX_MESSAGE_BYTES", "INGEST_MAX_ATTACHMENT_BYTES",

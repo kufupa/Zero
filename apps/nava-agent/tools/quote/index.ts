@@ -1,5 +1,6 @@
 import { quoteInput, quoteSchema, type QuoteInput } from './schema.js';
 import { quoteDisplayRows, zeroNativeQuotePrice, type DisplayRow } from './display.js';
+import { staffSlotCount } from '../../src/hms-mode.js';
 
 export type ToolContext = {sessionId:string; mode:'live'|'labtest'|'historical'; signal?:AbortSignal; credentialLease?:unknown};
 export type ToolResult = {ok:boolean; data:unknown; error:{code:string;message:string;retryable:boolean;outcome:'known'|'uncertain'}|null};
@@ -16,7 +17,7 @@ export async function quote(input:unknown, context:ToolContext):Promise<ToolResu
   if(context.mode==='historical') return fail('HISTORICAL_HMS_UNAVAILABLE','Historical sessions cannot access live HMS.');
   if(context.signal?.aborted) return fail('ABORTED','Quote was cancelled.');
   const configuredCap=process.env.HMS_CREDENTIAL_SESSION_CAP;
-  if(configuredCap!==undefined && (!/^[1-8]$/.test(configuredCap))) return fail('HMS_SESSION_CAP_INVALID','Native shared read cap must be an integer from 1 to 8.');
+  if(configuredCap!==undefined && !staffSlotCount(configuredCap)) return fail('HMS_SESSION_CAP_INVALID','Native shared read cap must be an integer from 1 to 12.');
   const parsed=quoteInput.safeParse(input);
   if(!parsed.success) return fail('INVALID_INPUT','Invalid quote request.');
   const request=parsed.data, seen=new Set<string>();
