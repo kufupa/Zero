@@ -167,9 +167,10 @@ function cancellationPolicyFacts(policy) {
     facts.push(`HMS allows policy override: ${policy.allowCancelPolicyOverride ? 'Yes' : 'No'}`);
   }
   for (const [key, value] of Object.entries(policy)) {
-    if (!/penalty|fee|charge/i.test(key) || !['string', 'number'].includes(typeof value)) continue;
-    const text = String(value).trim();
-    if (!text || text.length > 200 || /[\p{Cc}]/u.test(text)) continue;
+    if (!/penalty|fee|charge/i.test(key) && !(/policy/i.test(key) && typeof value === 'string')) continue;
+    if (!['string', 'number'].includes(typeof value)) continue;
+    const text = String(value).replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 2000 || /[\p{Cc}]/u.test(text)) continue;
     const label = key.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim();
     facts.push(`${label}: ${text}`);
     if (facts.length === 12) break;
@@ -847,7 +848,8 @@ export async function confirmLabtestCancellation(page, expected = {}, { cancella
   } })();
   try {
     const result = await Promise.race([work, action.interrupted]);
-    return { ...result, penaltyAmount: cancellationPenaltyNotice(result.penaltyText)?.amount ?? null,
+    const notice = cancellationPenaltyNotice(result.penaltyText);
+    return { ...result, penaltyAmount: notice?.amount ?? null, penaltyCurrency: notice?.currency ?? null,
       penaltyTiming, penaltyNoticeAcknowledged };
   }
   finally { action.finish(); }

@@ -241,11 +241,15 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       }
       const record = object(read.record) ? read.record : {};
       const identity = object(record.nativePreimage) ? record.nativePreimage : null;
-      return { result, identity };
+      const fields = object(record.details) && Array.isArray(record.details.fields) ? record.details.fields : [];
+      const policyFacts = fields.flatMap((field: unknown) => object(field) && typeof field.value === 'string' &&
+        field.value.trim() && /(?:cancel|rate).*policy|policy.*(?:cancel|rate)/i.test(`${field.name ?? ''} ${field.label ?? ''}`)
+        ? [field.value.trim()] : []);
+      return { result, identity, policyFacts };
     }, { propertyCode: target.propertyCode, transportId: property.mailboxTransportId,
       confirmation: target.confirmation, signal: context.signal, credentialLease: context.credentialLease });
     if (readResult.failure) return readResult.failure;
-    const { result, identity } = readResult;
+    const { result, identity, policyFacts } = readResult;
     if (!identity || !date(identity.arrival) || identity.confirmation !== target.confirmation ||
         identity.propertyCode !== target.propertyCode || (target.arrival && identity.arrival !== target.arrival)) {
       return error('CANCEL_TARGET_UNVERIFIED', 'The reservation target or arrival could not be verified.');
@@ -267,7 +271,8 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const data = { ...result, native: { expected, reason, guestName: target.guestName ?? null,
       arrivalHint: target.arrival ?? null, cancellationNote: target.note, penaltyText: notice,
       feeDialogPending: stage.feeDialogPending === true },
-      reasons: stage.reasons ?? [], policy_facts: stage.policyFacts ?? [],
+      reasons: stage.reasons ?? [], policy_facts: [...new Set([...(Array.isArray(stage.policyFacts)
+        ? stage.policyFacts.filter((value: unknown): value is string => typeof value === 'string') : []), ...(policyFacts ?? [])])],
       display_rows: [...preflightDisplay(result, target.bookingId).filter(row => row.id !== 'fee'),
         { id: 'cancel-reason', booking_id: target.bookingId, label: 'Cancellation reason', native_path: '/native/reason/label', kind: 'text' as const, value: reason?.label ?? null },
         { id: 'cancel-reason-options', booking_id: target.bookingId, label: 'HMS cancellation reasons', native_path: '/reasons', kind: 'text' as const,
@@ -390,6 +395,9 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     const readback = result.nativeReadback;
     const resultNotice = feeText(result) ?? (typeof result.zeroPenaltyNotice === 'string' ? result.zeroPenaltyNotice : null);
     const fee_info = resultNotice && resultNotice !== shownNotice ? 'HMS reported a different cancellation fee after saving.' : null;
+    const post_save_fee = result.penaltyTiming === 'after_save' && result.chargeDispatched === false &&
+      typeof result.penaltyAmount === 'string' ? { amount: result.penaltyAmount,
+        currency: typeof result.penaltyCurrency === 'string' ? result.penaltyCurrency : null } : null;
     if (markerStarted && result.requestDispatched === true &&
         object(readback) && readback.confirmation === expected.confirmation &&
         readback.nativeStayId === expected.nativeStayId && readback.nativeGuestId === expected.guestId &&
@@ -397,7 +405,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         readback.reasonCode === reason.code && readback.cancellationNote === target.note) {
       const cancellation_fee = fee(resultNotice ?? currentNotice ?? shownNotice);
       return success({ confirmation: target.confirmation, reservation_id: readback.nativeStayId,
-        readback: { ...readback, cancellation_fee, ...(fee_info ? { fee_info } : {}) }, cancellation_fee });
+        readback: { ...readback, cancellation_fee, ...(fee_info ? { fee_info } : {}), ...(post_save_fee ? { post_save_fee } : {}) }, cancellation_fee });
     }
     if (markerStarted || result.requestDispatched === true) {
       const observed = await readCancelled(target, expected, property.mailboxTransportId, context);
@@ -405,7 +413,7 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         const cancellation_fee = fee(resultNotice ?? currentNotice ?? shownNotice);
         return success({ confirmation: target.confirmation, reservation_id: observed.nativeStayId,
           cancellation_number: observed.cancellationNumber,
-          readback: { ...observed, cancellation_fee, ...(fee_info ? { fee_info } : {}) }, cancellation_fee });
+          readback: { ...observed, cancellation_fee, ...(fee_info ? { fee_info } : {}), ...(post_save_fee ? { post_save_fee } : {}) }, cancellation_fee });
       }
       return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain'),
         data: { cancellation_fee: fee(feeText(result) ?? currentNotice ?? shownNotice), readback: readback ?? null } };
