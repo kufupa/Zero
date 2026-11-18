@@ -18,7 +18,7 @@ const routes: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: 'GET', path: /^\/api\/nava\/v1\/capabilities$/ },
   { method: 'GET', path: /^\/api\/nava\/v1\/eligibility$/ },
   { method: 'PATCH', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}$`) },
-  { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|quote-artifacts|stage|go|reconcile)$`) },
+  { method: 'POST', path: new RegExp(`^/api/nava/v1/proposals/${resourceId}/(?:undo|redo|quote|quote-artifacts|stage|go|reconcile|target|target/select)$`) },
   { method: 'GET', path: new RegExp(`^/api/nava/v1/artifacts/${resourceId}$`) },
   { method: 'POST', path: /^\/api\/nava\/v1\/internal\/filing-pdf$/ },
 ];
