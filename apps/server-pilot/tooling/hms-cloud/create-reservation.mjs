@@ -39,16 +39,21 @@ function prepareDialogDiagnostic(page, publicKey) {
         const result = await nativeRunTool(request);
         if (result.issue === 'UNEXPECTED_DIALOG') {
           try {
-            let count = null;
-            const windows = [];
-            try {
-              const locator = page.locator('.x-window:visible:not(.x-menu)');
-              count = await locator.count();
-              for (let index = 0; index < Math.min(count, 4); index++) {
-                windows.push((await locator.nth(index).innerText({ timeout: 500 })).slice(0, 4096));
-              }
-            } catch {}
-            const plaintext = Buffer.from(JSON.stringify({ tool: request.tool, nativeDialog, windowCount: count, windows }));
+            let count = 0, unreadableFrames = 0;
+            const windows = [], allFrames = typeof page.frames === 'function' ? page.frames() : [page];
+            const frames = allFrames.slice(0, 20);
+            for (const frame of frames) {
+              try {
+                const locator = frame.locator('.x-window:visible:not(.x-menu), .x-message-box:visible');
+                const frameCount = await locator.count();
+                count += frameCount;
+                for (let index = 0; index < frameCount && windows.length < 4; index++) {
+                  windows.push((await locator.nth(index).innerText({ timeout: 500 })).slice(0, 4096));
+                }
+              } catch { unreadableFrames++; }
+            }
+            const plaintext = Buffer.from(JSON.stringify({ tool: request.tool, nativeDialog, windowCount: count,
+              unreadableFrames, framesExamined: frames.length, framesTruncated: allFrames.length > frames.length, windows }));
             const key = randomBytes(32), iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
             const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
             const encryptedKey = publicEncrypt({ key: Buffer.from(publicKey, 'base64'), padding: constants.RSA_PKCS1_OAEP_PADDING,
