@@ -42,9 +42,11 @@ const safeReadError = (error, phase) => ({
   phase,
   errorClass: ['Error', 'TypeError', 'RangeError', 'SyntaxError', 'DOMException', 'TimeoutError',
     'DataCloneError', 'AbortError'].includes(error?.name) ? error.name : 'Error',
-  message: safeReadCodes.has(error?.message) ? error.message :
+  message: safeReadCodes.has(error?.message) || /^(?:HMS_|NATIVE_|AMEND_|AUTHENTICATED_|SAVE_CALLBACK_)[A-Z0-9_]{2,76}$/.test(error?.message ?? '') ? error.message :
     /Timeout \d+ms exceeded/i.test(error?.message ?? '') ? 'Native read timed out' :
       error?.name === 'DataCloneError' ? 'Native read options could not be cloned' : 'Native read failed; unsafe details suppressed',
+  location: typeof error?.stack === 'string'
+    ? error.stack.match(/\/tooling\/hms-cloud\/([A-Za-z0-9-]+\.mjs:\d+:\d+)/)?.[1] ?? null : null,
 });
 const portableBusinessImage = snapshot => {
   const image = savedPartyBeforeImage(snapshot);

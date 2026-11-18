@@ -48,7 +48,8 @@ const freshRead = z.object({
   }),
 });
 const nativeStatus = z.object({ outcome: z.string(), issue: z.string().regex(/^[A-Z][A-Z_0-9]{2,80}$/).optional(),
-  diagnostic: z.object({ phase: z.enum(['credential_lease', 'party_preimage', 'nightly_quote', 'native_prepare']) }).optional() });
+  diagnostic: z.object({ phase: z.enum(['credential_lease', 'party_preimage', 'nightly_quote', 'native_prepare']),
+    errorClass:z.string().optional(),message:z.string().optional(),location:z.string().nullable().optional() }).optional() });
 const minor = z.string().regex(/^\d{1,24}$/);
 const major = (cents: string) => {
   const padded = cents.padStart(3, '0');
@@ -105,8 +106,11 @@ function nativeRefusal(raw: unknown, fallback: string, message: string): ToolRes
   if (issue === 'RATE_NOT_AVAILABLE') {
     return refuse(issue, 'HMS did not offer the requested rate.', { availability: { status: 'unavailable' } });
   }
-  return refuse(issue ?? fallback, message, result.success && result.data.diagnostic
-    ? { phase: result.data.diagnostic.phase } : null);
+  const diagnostic = result.success ? result.data.diagnostic : undefined;
+  if (diagnostic) return { ok:false, data:{phase:diagnostic.phase}, error:{code:issue ?? fallback, message,
+    retryable:false,outcome:'known',native_error:{error_class:diagnostic.errorClass ?? 'Error',message:diagnostic.message ?? 'Native read failed',
+      native_step:diagnostic.phase,stack:diagnostic.location ?? null}} };
+  return refuse(issue ?? fallback, message);
 }
 
 export async function prepare(input: unknown, context: ToolContext): Promise<ToolResult> {
