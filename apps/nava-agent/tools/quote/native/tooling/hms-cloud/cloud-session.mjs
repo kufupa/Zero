@@ -1064,6 +1064,12 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
             if (rows[0]?.released !== true) failed = true;
           }
         } catch { failed = true; }
+        if (!failed) {
+          try {
+            if (queueConnection !== connection) queueConnection?.release();
+            connection?.release();
+          } catch { failed = true; }
+        }
         try { await queueClient?.end({ timeout: 5 }); } catch { failed = true; }
         try { await client?.end({ timeout: 5 }); } catch { failed = true; }
         if (failed) throw new Error('HMS_CREDENTIAL_LEASE_RELEASE_FAILED');
