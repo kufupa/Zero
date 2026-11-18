@@ -5,7 +5,7 @@ description: Use when an inbound hotel email needs routing, including multiple g
 
 # Triage
 
-Read the selected message and relevant earlier context. Load `../references/common.md`, `../references/tools-and-proposal.md` and `references/rules.md` using `skill_read`.
+Read the selected message and relevant earlier context. Treat the selected message as current and ignore later thread messages. If it answers a staff clarification for an unresolved quote, continue the Quote using the earlier request and the answer. Load `../references/common.md`, `../references/tools-and-proposal.md` and `references/rules.md` using `skill_read`.
 
 Route each current request separately, preserving its guest, stay, dates, document and other known fields. Then load the relevant skill and publish its editable proposal. The current body takes precedence over an old subject or quoted request. An existing-confirmation or pre-stay notice is about an existing stay; retain any separate new request. Mixed work is common: 590/1,439 model-labelled decisions had multiple workflow labels.
 
