@@ -37,6 +37,11 @@ export type StaffJobBinding = StaffStage & {workflow:Workflow;source:StageSource
 const guestIdentity=z.object({booking_id:z.string().min(1),native_id:z.string().regex(/^\d{1,100}$/),
   first_name:z.string().trim().min(1),last_name:z.string().trim().min(1)}).strict();
 const guestBinding=z.object({staff_guest_selection:guestIdentity.optional(),staff_guest_selections:z.array(guestIdentity).optional()});
+export const profileReview=z.object({booking_id:z.string(),first_name:z.string(),last_name:z.string(),guest_email:z.string().nullable(),choices:z.object({status:z.literal('available'),items:z.array(z.unknown()),coverage:z.unknown()}).passthrough()});
+export function profileReviewFor(booking:ProposalDraft['bookings'][number],execution:unknown) {
+  const records=z.object({staff_profile_reviews:z.array(profileReview)}).safeParse(execution).data?.staff_profile_reviews ?? [];
+  return records.find(record=>record.booking_id===booking.id && record.first_name===booking.fields.first_name && record.last_name===booking.fields.last_name && record.guest_email===(booking.fields.guest_email??null));
+}
 type Booking=ProposalDraft['bookings'][number];
 export function selectedCreateGuest(booking:Booking) {
   if(booking.fields.guest_email!=null) return null;

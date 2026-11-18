@@ -327,6 +327,12 @@ function FieldEvidence({ spec, label }: { spec: FieldSpec; label: string }) {
 }
 
 function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, attachmentMessages, selectedMessageId, showContext = true }: WorkflowProps & { spec: FieldSpec; locked: boolean; showContext?: boolean }) {
+  if(proposal.workflow==='create' && /\/fields\/(profile_mobile|profile_email)$/.test(spec.path)) {
+    const flagPath=spec.path.replace(/\/(profile_mobile|profile_email)$/, '/profile_create_new');
+    const flag=Object.prototype.hasOwnProperty.call(drafts,flagPath) ? drafts[flagPath] : resolvePointer(proposal,flagPath);
+    const enabled=flag && typeof flag==='object' && 'kind' in flag ? flag.kind==='value' && flag.value===true : flag===true;
+    if(!enabled) return null;
+  }
   const roomMatch = proposal.workflow === 'quote' ? /^\/actions\/(?:0|[1-9]\d*)\/details\/groups\/(?:0|[1-9]\d*)\/rooms\/(0|[1-9]\d*)\//.exec(spec.path) : null;
   const context = roomMatch ? `Room ${Number(roomMatch[1]) + 1}` : showContext ? fieldContext(proposal, spec.path) : undefined;
   const label = context ? `${spec.label} · ${context}` : spec.label;
@@ -349,10 +355,18 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     if (sendValue === false) return null;
   }
   const guestProfile = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/guest_profile_id$/.test(spec.path);
-  const hint = guestProfile ? 'Clear the selected profile before changing the guest name or email. Run Prepare to load verified Infor profiles.'
+  const newProfileMatch=proposal.workflow==='create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/profile_create_new$/.exec(spec.path) : null;
+  const profileIndex=newProfileMatch ? Number(newProfileMatch[1]) : -1;
+  const booking=proposal.bookings[profileIndex];
+  const stageChoices=currentNativeRoom(proposal,drafts,profileIndex)?.guest_candidates;
+  const hasChoices=stageChoices && typeof stageChoices==='object' && !Array.isArray(stageChoices) && stageChoices.status==='available';
+  const hasReviewed=proposal.profile_reviews.some(item=>item.booking_id===booking?.id && item.first_name===booking.fields.first_name && item.last_name===booking.fields.last_name && item.guest_email===(booking.fields.guest_email??null));
+  const searchFirst=!!newProfileMatch && !hasChoices && !hasReviewed && shown!==true;
+  const selectedProfile=!!newProfileMatch && !!booking?.fields.guest_profile_id;
+  const hint = searchFirst ? 'Check Infor for matching profiles first.' : selectedProfile ? 'An existing profile is selected.' : guestProfile ? 'Run Prepare to load verified Infor profiles.'
     : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
   const requiredEmpty = spec.required && (shown === null || shown === undefined || typeof shown === 'string' && shown.trim() === '');
-  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
+  const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile || searchFirst || selectedProfile, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
   let control: ReactNode;
 
   const filingField = proposal.workflow === 'filing' && /^(\/actions\/(?:0|[1-9]\d*)\/details\/)attachment_id$/.exec(spec.path);
@@ -727,7 +741,9 @@ function GuestChoices({ proposal, drafts, busy, onSelectGuest }: WorkflowProps) 
 }
 
 function GuestRoomChoices({proposal,drafts,busy,index,onSelectGuest}: Pick<WorkflowProps,'proposal'|'drafts'|'busy'> & {index:number;onSelectGuest:(candidate:GuestCandidate,roomIndex:number)=>void}) {
-  const choices = currentNativeRoom(proposal,drafts,index)?.guest_candidates;
+  const booking=proposal.bookings[index];
+  const review=proposal.profile_reviews.find(item=>item.booking_id===booking.id && item.first_name===booking.fields.first_name && item.last_name===booking.fields.last_name && item.guest_email===(booking.fields.guest_email??null));
+  const choices = currentNativeRoom(proposal,drafts,index)?.guest_candidates ?? review?.choices;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices)) return null;
   if (choices.status === 'unavailable') return <PaneMessage>Guest profile choices are unavailable. Check the profile in Infor.</PaneMessage>;
   if (!Array.isArray(choices.items)) return null;
@@ -737,12 +753,19 @@ function GuestRoomChoices({proposal,drafts,busy,index,onSelectGuest}: Pick<Workf
     return [{ nativeId: item.native_id, firstName: item.first_name, lastName: item.last_name,
       location: [item.city, item.country].filter((part): part is string => typeof part === 'string' && part.length > 0).join(', ') }];
   });
+  const score=(candidate:{firstName:string;lastName:string})=>{
+    const first=typeof booking.fields.first_name==='string'?booking.fields.first_name.trim().toLowerCase():'';
+    const last=typeof booking.fields.last_name==='string'?booking.fields.last_name.trim().toLowerCase():'';
+    const candidateFirst=candidate.firstName.trim().toLowerCase(), candidateLast=candidate.lastName.trim().toLowerCase();
+    return (last && candidateLast===last ? 2 : 0) + (first && candidateFirst===first ? 2 : first && candidateFirst.startsWith(first) ? 1 : 0);
+  };
+  candidates.sort((a,b)=>score(b)-score(a));
   const coverage = choices.coverage;
   const complete = coverage && typeof coverage === 'object' && !Array.isArray(coverage) && coverage.complete === true && coverage.possibly_truncated === false && coverage.truncated === false;
   return <PaneSection title={proposal.bookings.length>1 ? `Choose guest profile · Room ${index+1}` : 'Choose a guest profile'}>
     {!complete && <p>Search coverage may be incomplete. Check the profile details in Infor.</p>}
-    {candidates.length > 0 ? <PaneField label="Guest profile" control="select" value="" disabled={busy} placeholder="Choose a profile"
-      options={candidates.map(candidate => ({ value: candidate.nativeId, label: `${candidate.firstName} ${candidate.lastName}`, meaning: candidate.location || null }))}
+    {candidates.length > 0 ? <PaneField label="Guest profile" control="select" value="" disabled={busy || uncertain(proposal) || ['prefilling', 'staging', 'saving', 'done'].includes(proposal.phase)} placeholder="Choose a profile"
+      options={candidates.map(candidate => ({ value: candidate.nativeId, label: `${candidate.firstName} ${candidate.lastName} · ${candidate.nativeId}`, meaning: candidate.location || null }))}
       onChange={value => {
         const matches = candidates.filter(candidate => candidate.nativeId === value);
         if (matches.length === 1 && matches[0]) onSelectGuest(matches[0],index);
@@ -780,7 +803,8 @@ function errorMessage(proposal: Proposal) {
 export function Workflow(props: WorkflowProps) {
   const { proposal } = props;
   const longWait = useLongWait(proposal, props.operationStartedAt);
-  const locked = props.busy || uncertain(proposal) || ['prefilling', 'staging', 'saving', 'done'].includes(proposal.phase);
+  const locked = props.busy || uncertain(proposal) || ['prefilling', 'staging', 'saving', 'done'].includes(proposal.phase) ||
+    (proposal.workflow === 'create' && proposal.phase === 'error' && Boolean(proposal.result?.rooms));
   const phaseMessage = proposal.phase === 'prefilling' ? proposal.workflow === 'quote' ? 'Nava is preparing the quote.' : 'Nava is reading the email.'
     : proposal.phase === 'staging' ? 'Checking in Infor…'
     : proposal.phase === 'saving' ? 'Saving in Infor… this can take up to 2 minutes.' : null;
@@ -794,6 +818,7 @@ export function Workflow(props: WorkflowProps) {
 
   return <>
     {phaseMessage && <PaneMessage><span role="status">{phaseMessage}{longWait && (proposal.workflow === 'quote' && proposal.phase === 'prefilling' ? ' This is taking longer than expected. Nava is still working on the quote.' : ' This is taking longer than expected. Please wait.')}</span></PaneMessage>}
+    {proposal.profile_outcome && <PaneMessage>Guest Profile creation is unconfirmed. Check Infor before trying again.{proposal.profile_outcome.native_id ? ` Guest Profile ID: ${proposal.profile_outcome.native_id}.` : ''}</PaneMessage>}
     {uncertain(proposal) && !proposal.error && <PaneMessage>Infor has not confirmed the outcome. Check Infor before trying again.</PaneMessage>}
     {proposal.error && <PaneMessage tone="error">
       {errorMessage(proposal)}
@@ -816,12 +841,13 @@ export function Workflow(props: WorkflowProps) {
     </PaneSection>}
     {proposal.workflow !== 'quote' && <ActionContext proposal={proposal} />}
     {proposal.workflow === 'quote' && proposal.field_specs.length > 0 && <QuoteFields {...props} locked={locked} />}
+    <GuestChoices {...props} busy={locked} />
+    {proposal.workflow==='create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) && <PaneMessage>Review the matching profiles, name, mobile and email. The next button creates the new Guest Profile, even if Infor asks about the same name, then checks the price. The profile is Active; consent is off. If an email is supplied, its type is Primary.</PaneMessage>}
     {proposal.workflow !== 'quote' && proposal.field_specs.length > 0 && <PaneSection title="Details">
       {proposal.field_specs.map(spec => <Field key={spec.path} {...props} spec={spec} locked={locked} />)}
       {proposal.workflow === 'filing' && !proposal.field_specs.some(spec => /^\/actions\/(?:0|[1-9]\d*)\/details\/attachment_id$/.test(spec.path) && spec.editable) && <PaneMessage>PDF selection is unavailable for this request. Handle it using your usual process.</PaneMessage>}
     </PaneSection>}
     {rateChoicesUnavailable && <PaneMessage>Infor rate choices are unavailable for these stay details. Verify the rate code in Infor.</PaneMessage>}
-    <GuestChoices {...props} />
     {proposal.workflow === 'quote' && <QuoteRequests proposal={proposal} />}
     {proposal.workflow === 'quote' && <QuoteChecks {...props} />}
     {proposal.workflow !== 'quote' && proposal.display_rows.length > 0 && <PaneSection title="Infor details">
@@ -840,7 +866,7 @@ export function Workflow(props: WorkflowProps) {
       {proposal.workflow === 'quote' && proposal.stage.artifacts?.map(artifact => <p key={artifact.id}>
         {props.onOpenArtifact ? <button type="button" onClick={() => props.onOpenArtifact?.(artifact.id)}>{artifact.name}</button> : artifact.name}
       </p>)}
-      {proposal.phase !== 'done' && ['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <p>This check did not save changes in Infor.</p>}
+      {proposal.phase !== 'done' && ['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <p>{proposal.workflow==='create' ? 'This check did not save a booking in Infor.' : 'This check did not save changes in Infor.'}</p>}
     </PaneSection>}
     {proposal.workflow === 'quote' && stageCurrent && proposal.stage?.job_id && <QuoteCover key={`cover:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />}
     {proposal.result && proposal.workflow !== 'quote' && <PaneSection title="Infor result">
@@ -872,6 +898,6 @@ export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onRecon
   const mutableWorkflow = proposal.workflow === 'triage' || proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
   if (proposal.workflow !== 'triage' && (proposal.disposition !== 'propose' || !proposal.actions.some(action => action.type === proposal.workflow))) return undefined;
-  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
+  if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Create Guest Profile and check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
   return undefined;
 }

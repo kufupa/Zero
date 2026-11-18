@@ -77,6 +77,8 @@ export function withCreateNativeFields(draft: ProposalDraft): ProposalDraft {
       ['guarantee_type','Guarantee type',true,'text'], ['guest_profile_id','Guest profile ID',false,'text'],
       ['first_name','Guest first name',true,'text'], ['last_name','Guest last name',true,'text'],
       ['guest_email','Guest email',false,'text'],
+      ['profile_create_new','Create a new Guest Profile, even if Infor finds the same name',false,'checkbox'],
+      ['profile_mobile','New Guest Profile mobile',false,'text'], ['profile_email','New Guest Profile email',false,'text'],
       ['agency_name','Booking agency',false,'text'], ['agency_id','Booking agency ID',false,'text'],
       ['organization_name','Company',false,'text'], ['organization_id','Company ID',false,'text'],
       ['ar_account_name','A/R account',false,'text'], ['ar_account_id','A/R account ID',false,'text'],
@@ -108,7 +110,8 @@ function createFieldDefault(key: string, fields: Record<string, unknown>): strin
   if(key==='cms_send') return !isLabtestGuest(fields);
   if(key==='cms_message_id') return '03';
   if(key==='cms_recipient') return typeof fields.guest_email==='string' && fields.guest_email ? fields.guest_email : null;
-  if(key==='guest_opt_in') return false;
+  if(key==='guest_opt_in' || key==='profile_create_new') return false;
+  if(key==='profile_email') return typeof fields.guest_email==='string' ? fields.guest_email : null;
   return null;
 }
 

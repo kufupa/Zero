@@ -5,7 +5,7 @@ import { proposalDraft } from './schema.js';
 import { proposalWire } from './runtime.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
-import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, requiresStaffAttachmentCheck, selectedCreateGuest, staffAttachmentsChecked } from './attachment-gate.js';
+import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profileReview, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, staffAttachmentsChecked } from './attachment-gate.js';
 import { staffPrepareOnly } from './hms-mode.js';
 
 const change=z.object({op:z.enum(['add','replace','remove']),path:z.string(),value:z.unknown().optional()}).strict().superRefine((x,ctx)=>{
@@ -100,13 +100,27 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     }
     const bindCreateGuest=p.workflow==='create' && staffPrepareOnly();
     const guestSelections:NonNullable<ReturnType<typeof selectedCreateGuest>>[]=[];
+    const reviews:z.infer<typeof profileReview>[]=[];
     if(bindCreateGuest) {
+      for(const booking of valid.bookings) {
+        const old=clonedFromFirst.includes(booking.id) ? stored.bookings[0] : stored.bookings.find(item=>item.id===booking.id);
+        if(!old || old.fields.first_name!==booking.fields.first_name || old.fields.last_name!==booking.fields.last_name || (old.fields.guest_email??null)!==(booking.fields.guest_email??null)) continue;
+        const oldIndex=stored.bookings.findIndex(item=>item.id===old.id);
+        const native=p.stage?.revision===p.revision ? p.stage.native_result : null;
+        const choices=stored.bookings.length===1 ? native?.guest_candidates : native?.rooms?.[oldIndex]?.guest_candidates;
+        const candidate=profileReview.safeParse({booking_id:booking.id,first_name:booking.fields.first_name,last_name:booking.fields.last_name,guest_email:booking.fields.guest_email??null,choices});
+        const previous=profileReviewFor(old,p.execution);
+        if(candidate.success) reviews.push(candidate.data); else if(previous) reviews.push({...previous,booking_id:booking.id});
+      }
       for(const [index,booking] of valid.bookings.entries()) {
         if(booking.fields.guest_profile_id==null) continue;
         const selected=selectedCreateGuest(booking);
         const native=p.stage?.revision===p.revision?p.stage.native_result:null;
-        const choices=stored.bookings.length===1 ? native?.guest_candidates : native?.rooms?.[index]?.guest_candidates;
-        const candidates=nativeGuestCandidates.safeParse(choices);
+        const old=clonedFromFirst.includes(booking.id) ? stored.bookings[0] : stored.bookings.find(item=>item.id===booking.id);
+        const oldIndex=old ? stored.bookings.findIndex(item=>item.id===old.id) : index;
+        const choices=stored.bookings.length===1 ? native?.guest_candidates : native?.rooms?.[oldIndex]?.guest_candidates;
+        const priorReview=old ? profileReviewFor(old,p.execution) : null;
+        const candidates=nativeGuestCandidates.safeParse(choices ?? priorReview?.choices);
         const selectsGuest=input.changes.some(change=>change.path===`/bookings/${index}/fields/guest_profile_id` && change.op!=='remove');
         const cloned=selected!==null && clonedFromFirst.includes(booking.id) && guestSelections.some(first=>first.booking_id===valid.bookings[0]?.id &&
           first.native_id===selected.native_id && first.first_name===selected.first_name && first.last_name===selected.last_name);
@@ -136,6 +150,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(execution) {
       if(stageError) delete execution.error;
       if(bindCreateGuest) {
+        execution.staff_profile_reviews=reviews;
         delete execution.staff_guest_selection;
         if(guestSelections.length) execution.staff_guest_selections=guestSelections;
         else delete execution.staff_guest_selections;

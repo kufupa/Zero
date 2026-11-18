@@ -182,7 +182,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         if(staffPrepareOnly() && staffDraft.workflow==='create') {
           staffDraft={...staffDraft,
             bookings:staffDraft.bookings.map(booking=>Object.hasOwn(booking.fields,'guest_profile_id') ?
-              {...booking,fields:{...booking.fields,guest_profile_id:null}} : booking),
+              {...booking,fields:{...booking.fields,guest_profile_id:null,profile_create_new:false}} : {...booking,fields:{...booking.fields,profile_create_new:false}}),
             field_specs:staffDraft.field_specs.map(field=>/^\/?bookings\/\d+\/fields\/guest_profile_id$/.test(field.path) ?
               {...field,provenance:'unknown',options:[],evidence:[]} : field),
           };
@@ -384,6 +384,35 @@ export class ToolRegistry {
       return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await this.deps.native.withRead(request.data.property_code,context.signal,lease=>baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,lease.signal))))};
     }
     return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal)))};
+  }
+
+  async createGuestProfile(input:{propertyCode:string;guest:{firstName:string;lastName:string;mobile:string;email?:string};attemptId:string},
+    context:{signal:AbortSignal;authorize:()=>Promise<boolean>;markDispatched:()=>Promise<void>}):Promise<ToolResult> {
+    const base=new URL('../../server-pilot/tooling/hms-cloud/',import.meta.url);
+    try {
+      return await this.deps.native.withSave(input.propertyCode,context.signal,async credentialLease=>{
+        const [native,properties]=await Promise.all([import(new URL('guest-profile-runner.mjs',base).href),import(new URL('property-registry.mjs',base).href)]);
+        const transportId=properties.getPropertyRegistration(input.propertyCode)?.mailboxTransportId;
+        const runner=native.createGuestProfileRunner({sessionOptions:{propertyCode:input.propertyCode,transportId,credentialLease,signal:credentialLease.signal},
+          authorizeStaffWrite:async()=>!credentialLease.signal.aborted && await context.authorize(),
+          dispatchStaffWrite:async(_candidate:unknown,proceed:()=>Promise<unknown>)=>{await context.markDispatched(); credentialLease.signal.throwIfAborted(); return proceed();}});
+        const business={propertyCode:input.propertyCode,guest:input.guest,confirmDuplicateName:true};
+        const preview=await runner.prepareGuestProfile(business);
+        if(preview.outcome!=='ready') return failureObject('PROFILE_PREPARE_FAILED','Infor could not prepare the Guest Profile.');
+        const saved=await runner.createGuestProfile({...business,attemptId:input.attemptId,expectedPreviewDigest:preview.previewDigest,
+          ...(preview.review?{expectedReview:preview.review}:{})});
+        if(saved.outcome!=='created' || typeof saved.nativeId!=='string' || !/^\d+$/.test(saved.nativeId)) {
+          return {ok:false,data:saved,error:{code:'PROFILE_CREATE_FAILED',message:'Infor did not confirm the new Guest Profile.',retryable:false,outcome:saved.dispatched===false?'known':'uncertain'}};
+        }
+        const fresh=await runner.readGuestProfile({propertyCode:input.propertyCode,nativeId:saved.nativeId,attemptId:input.attemptId});
+        if(fresh.outcome!=='read' || fresh.nativeId!==saved.nativeId || fresh.reconciliation?.outcome!=='created') {
+          return {ok:false,data:saved,error:{code:'PROFILE_READBACK_UNCONFIRMED',message:'Check the Guest Profile in Infor before retrying.',retryable:false,outcome:'uncertain'}};
+        }
+        return {ok:true,data:{nativeId:saved.nativeId,readback:fresh},error:null};
+      });
+    } catch {
+      return {ok:false,data:null,error:{code:'PROFILE_CREATE_UNAVAILABLE',message:'Infor could not confirm the Guest Profile.',retryable:false,outcome:'uncertain'}};
+    }
   }
 
   async save(input:SaveInput,context:SaveContext):Promise<ToolResult> {

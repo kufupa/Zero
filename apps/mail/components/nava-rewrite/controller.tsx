@@ -599,12 +599,15 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit ||
         !current || cache.selectedId !== current.id || current.revision !== proposal.revision || current.workflow !== 'create' || !current.bookings[roomIndex] ||
-        !['ready', 'waiting_go'].includes(current.phase) || current.stage?.revision !== current.revision ||
+        !['ready', 'waiting_go'].includes(current.phase) ||
         cache.goLocks[current.id] || cache.issues[current.id] || cache.stagePending[current.id] !== undefined ||
         Object.keys(cache.drafts[current.id] ?? {}).length) return;
-    const native = current.stage.native_result;
+    const booking=current.bookings[roomIndex];
+    const review=current.profile_reviews.find(item=>item.booking_id===booking.id && item.first_name===booking.fields.first_name && item.last_name===booking.fields.last_name && item.guest_email===(booking.fields.guest_email??null));
+    if(!review && current.stage?.revision!==current.revision) return;
+    const native = current.stage?.revision===current.revision ? current.stage.native_result : null;
     const room = native && typeof native === 'object' && !Array.isArray(native) ? (current.bookings.length===1 ? native : Array.isArray(native.rooms) ? native.rooms[roomIndex] : null) : null;
-    const choices = room && typeof room==='object' && !Array.isArray(room) ? room.guest_candidates : null;
+    const choices = (room && typeof room==='object' && !Array.isArray(room) ? room.guest_candidates : null) ?? review?.choices;
     const items = choices && typeof choices === 'object' && !Array.isArray(choices) && choices.status !== 'unavailable' && Array.isArray(choices.items) ? choices.items : [];
     if (!/^\d{1,100}$/.test(candidate.nativeId) || !candidate.firstName.trim() || !candidate.lastName.trim() ||
         items.filter(item => item && typeof item === 'object' && !Array.isArray(item) &&
@@ -617,6 +620,8 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       }
       changes.push({ op: pointer(current, path).exists ? 'replace' : 'add', path, value });
     }
+    const newPath = `/bookings/${roomIndex}/fields/profile_create_new`;
+    if(pointer(current,newPath).value===true) changes.push({op:'replace',path:newPath,value:false});
     const emailPath = `/bookings/${roomIndex}/fields/guest_email`;
     if (pointer(current, emailPath).exists) {
       if (!current.field_specs.some(spec => spec.path === emailPath && spec.editable)) {
@@ -995,7 +1000,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       ? 'Nava cannot verify which email this proposal belongs to. Reopen the email or contact support.'
       : 'Nava is reading this email. Actions will appear here when available.'}</PaneMessage>}
     {proposal && <>
-      {isUncertain && <PaneMessage tone="error">Infor may have saved this booking. Check HMS before trying again.</PaneMessage>}
+      {isUncertain && <PaneMessage tone="error">{proposal.profile_outcome ? "Infor may have created the Guest Profile. Check Infor before trying again." : "Infor may have saved this booking. Check HMS before trying again."}</PaneMessage>}
       {issue && <PaneMessage tone="error">{issue.message}
         <ul>{Object.keys(drafts).map(path => {
           const field = proposal.field_specs.find(spec => spec.path === path);
