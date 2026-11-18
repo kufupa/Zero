@@ -349,7 +349,9 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     });
     const readback = result.nativeReadback;
     const resultNotice = feeText(result);
-    const confirmedResultFee = !resultNotice || (shownNotice !== null && input.confirmPenalty === true &&
+    const verifiedZeroNotice = result.outcome === 'cancelled' &&
+      result.zeroPenaltyNotice === 'Cancellation Penalty of 0.00 may be added to account.';
+    const confirmedResultFee = !resultNotice || verifiedZeroNotice || (shownNotice !== null && input.confirmPenalty === true &&
       resultNotice === shownNotice);
     if (markerStarted && result.outcome === 'cancelled' && result.requestDispatched === true && confirmedResultFee &&
         object(readback) && readback.confirmation === expected.confirmation &&
