@@ -26,7 +26,7 @@ type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>}
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
 export type NativeTiming = (phase:string, elapsedMs:number)=>void;
-export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
+export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming, budget?:'short'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
@@ -447,7 +447,8 @@ export class ToolRegistry {
           }
           lease.signal.throwIfAborted();
           return pack.run(input,{...context,credentialLease:lease,signal:lease.signal});
-        },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms))));
+        },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)),
+        ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined));
         await this.deps.emit(context.sessionId,'native_timing',{tool:name,tool_event_id:context.toolUseId,stages_ms:timings});
       } else response=await this.nativeResult(()=>pack.run(input,context));
       if(name==='hms_quote') {
@@ -463,7 +464,7 @@ export class ToolRegistry {
     if(name==='hms_quote') {
       const request=schemas.hms_quote.safeParse(input);
       if(!request.success || (context.propertyCode && context.propertyCode!==request.data.property_code)) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
-      return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await this.deps.native.withRead(request.data.property_code,context.signal,lease=>baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,lease.signal))))};
+      return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await this.deps.native.withRead(request.data.property_code,context.signal,lease=>baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,lease.signal),undefined,undefined,'short')))};
     }
     return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal)))};
   }

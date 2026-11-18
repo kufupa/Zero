@@ -91,11 +91,12 @@ class Semaphore {
 
 export function createNativeAdmission():NativeAdmission {
   const semaphore=new Semaphore(configuredSlots().local);
-  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming):Promise<T> {
+  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming,budget?:'short'):Promise<T> {
     if(!process.env.HMS_CREDENTIAL_SESSION_CAP) throw new Error('HMS_CREDENTIAL_SESSION_CAP_REQUIRED');
     const databaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     if(!databaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
-    const bounded=readOnly ? AbortSignal.any([AbortSignal.timeout(120_000),...(signal?[signal]:[])]) : signal;
+    const deadline=AbortSignal.timeout(readOnly && budget==='short'?120_000:300_000);
+    const bounded=AbortSignal.any([deadline,...(signal?[signal]:[])]);
     const started=performance.now();
     let admitted=false;
     try { return await semaphore.run(bounded,async()=>{
@@ -105,15 +106,21 @@ export function createNativeAdmission():NativeAdmission {
       if(scope==='quote') { try { await access(bundledQuote);nativePath=bundledQuote; } catch { /* quote uses the shared native module */ } }
       const cloud=await import(pathToFileURL(nativePath).href);
       if(typeof cloud.withCloudCredentialLease!=='function') throw new Error('NATIVE_ADMISSION_UNAVAILABLE');
-      return cloud.withCloudCredentialLease(propertyCode,async(lease:NativeLease)=>{
+      const completed:{value:T}[]=[];
+      try { return await cloud.withCloudCredentialLease(propertyCode,async(lease:NativeLease)=>{
         lease.signal.throwIfAborted();
         const workStarted=performance.now();
-        try { const result=await work(lease);lease.signal.throwIfAborted();return result; }
+        try { const value=await work(lease);completed.push({value});return value; }
         finally { timing?.('lease_work',performance.now()-workStarted); }
-      },{databaseUrl,readOnly,priority:'staff',signal:bounded,onTiming:timing});
+      },{databaseUrl,readOnly,priority:'staff',signal:bounded,onTiming:timing}); }
+      catch(error) {
+        const result=completed[0];
+        if(readOnly && result && deadline.aborted && !signal?.aborted && error===deadline.reason) return result.value;
+        throw error;
+      }
     }); } finally { if(!admitted) timing?.('local_wait',performance.now()-started); }
   }
-  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing)=>withLease(property,signal,true,work,scope,timing),withSave:async(property,signal,work)=>{
+  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing,budget)=>withLease(property,signal,true,work,scope,timing,budget),withSave:async(property,signal,work)=>{
     if(!nativeSaveAllowed()) throw new Error('SAVE_DISABLED');
     return withLease(property,signal,false,work);
   }};
