@@ -109,6 +109,21 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     if(!mailboxIds.includes(p.mailbox_id)) throw new Error('FORBIDDEN');
     if(p.revision!==input.expected_revision) throw new Error('STALE_REVISION');
     if(p.phase!=='ready' && p.phase!=='waiting_go') throw new Error('NOT_EDITABLE');
+    if(input.changes.length===0 && input.staff_attachments_checked!==undefined) {
+      if(!requiresStaffAttachmentCheck(p.workflow)) throw new Error('INVALID_PATH');
+      const [previous]=await tx`SELECT after = 'true'::jsonb AS checked FROM nava_agent.staff_edit
+        WHERE proposal_id=${id} AND revision=${p.revision} AND kind='edit' AND path=${attachmentCheckPath}
+        ORDER BY sequence DESC LIMIT 1`;
+      const before=previous?.checked===true, after=input.staff_attachments_checked;
+      const [last]=await tx`SELECT COALESCE(max(sequence),0)::int AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'nava:events:'+p.session_id},0))`;
+      const editId=uid('edit');
+      const [saved]=await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,path,before,after,before_present,after_present,who)
+        VALUES (${editId},${last.n+1},${id},${p.session_id},${p.workflow},'edit',${p.revision},${attachmentCheckPath},${json(before)},${json(after)},true,true,${actor}) RETURNING at`;
+      await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,edit_id:editId,revision:p.revision,path:attachmentCheckPath,before,after,before_present:true,after_present:true,who:actor,at:saved.at})})`;
+      const quotedRates=p.workflow==='create' ? await priorQuotedRateChoices(tx,p.thread_id) : [];
+      return {...proposalWire(p,null,quotedRates),staff_attachments_checked:after};
+    }
     const stored=proposalDraft.parse(structuredClone(p.current));
     const draft=p.phase==='ready' ? withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(stored))) : stored;
     const editable=p.phase==='ready' ? withAmendRoomTypeField(draft,p.execution) : draft;

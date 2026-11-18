@@ -1048,7 +1048,7 @@ export function Workflow(props: WorkflowProps) {
     {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{[...new Set(proposal.warnings)].map(item => <li key={item}>{item}</li>)}</ul></PaneSection>}
     {['needs_info', 'staff_review'].includes(proposal.disposition) && <StaffContext key={proposal.id} {...props} />}
     {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <PaneSection title="Check attachments">
-      <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}Check the attachments in the selected email and each earlier email listed below in Outlook. Include all relevant attachment details in this proposal, then confirm.</p>
+      <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}If the selected email or an earlier email has attachments, check them in Outlook and include relevant details in this proposal.</p>
       {props.attachmentMessages.length > 0 ? <ul>{props.attachmentMessages.map(message => <li key={message.id}>
         {message.subject || '(No subject)'} · {message.from.name || message.from.email} · <time dateTime={message.received_at}>{message.received_at}</time>
         {message.attachment_status === 'has_unread' ? ' · Attachments not read by Nava' : message.attachment_status !== 'complete' ? ' · Attachment status unknown' : ''}
