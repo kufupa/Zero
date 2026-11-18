@@ -79,6 +79,7 @@ const stayFields = {
   first_name: 'firstName', last_name: 'lastName',
 } satisfies Partial<Record<keyof z.infer<typeof patch>, keyof NativeStay>>;
 const recordFields = { booker_name: 'caller', booker_contact: 'udfchar06', reservation_note: 'reservationnote' };
+const nativeNoteLineEndings = (value: string) => value.replace(/\r\n/g, '\n');
 const priceFields = ['arrival_date', 'departure_date', 'adults', 'room_type', 'rate_plan'] as const;
 
 function nativeRefusal(raw: unknown, fallback: string, message: string): ToolResult {
@@ -107,6 +108,7 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
       : refuse('AMEND_FIELDS_INVALID', 'Requested fields do not match the amend field types.');
   }
   const requested = delta.data;
+  if (requested.reservation_note !== undefined) requested.reservation_note = nativeNoteLineEndings(requested.reservation_note);
   if (!Object.keys(requested).length) return refuse('AMEND_CHANGE_REQUIRED', 'Supply at least one requested change.');
   if (typeof booking.current_state?.first_name !== 'string' || !booking.current_state.first_name.trim() ||
       typeof booking.current_state?.last_name !== 'string' || !booking.current_state.last_name.trim() ||
@@ -176,7 +178,11 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
         return [key, typeof value === 'string' ? value : null];
       })),
     };
-    const changedKeys = patch.keyof().options.filter(key => requested[key] !== undefined && before[key] !== requested[key]);
+    const changedKeys = patch.keyof().options.filter(key => {
+      const previous = before[key];
+      return requested[key] !== undefined
+        && (key === 'reservation_note' && typeof previous === 'string' ? nativeNoteLineEndings(previous) : previous) !== requested[key];
+    });
     if (!changedKeys.length) return refuse('AMEND_UNCHANGED', 'Requested fields already match HMS.');
     if (changedKeys.some(key => Object.hasOwn(recordFields, key) && before[key] === null)) {
       return refuse('AMEND_PREIMAGE_UNVERIFIED', 'The current value of a requested field was not observed.');
