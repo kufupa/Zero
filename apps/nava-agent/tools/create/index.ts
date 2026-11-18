@@ -154,24 +154,24 @@ function guestChoices(result: NativeResult) {
 
 // Use the native rate shop for the same stay and party; its rows are observations,
 // not a claim that a particular rate is the customer's contract.
-async function scopedRateChoices(request: NativeRequest, lease: Lease, transportId: string) {
+async function scopedRateChoices(request: NativeRequest, lease: Lease, transportId: string, roomType?: string) {
   const unavailable = {status:'unavailable',items:[],coverage:null};
+  const noChoices = {rateChoices:unavailable,roomChoices:unavailable};
   const {arrival, departure, adults, childCount, childAges} = request.stay;
   if (typeof arrival !== 'string' || typeof departure !== 'string' ||
       !Number.isInteger(adults) || !Number.isInteger(childCount) || !Array.isArray(childAges) ||
-      childAges.length !== childCount || !childAges.every(Number.isInteger)) return unavailable;
+      childAges.length !== childCount || !childAges.every(Number.isInteger)) return noChoices;
   const parties = object(request.parties) ? request.parties : {};
-  if (parties.arAccountId != null || parties.arAccountName != null) return unavailable;
+  if (parties.arAccountId != null || parties.arAccountName != null) return noChoices;
   const rateContext: Record<string, {nativeId:string;name:string}> = {};
   for (const [kind,idKey,nameKey] of [
     ['bookingAgency','agencyId','agencyName'], ['organization','organizationId','organizationName'],
   ] as const) {
     const id = parties[idKey], name = parties[nameKey];
     if (id == null && name == null) continue;
-    if (typeof id !== 'string' || !/^\d+$/.test(id) || typeof name !== 'string' || !name.trim()) return unavailable;
+    if (typeof id !== 'string' || !/^\d+$/.test(id) || typeof name !== 'string' || !name.trim()) return noChoices;
     rateContext[kind] = {nativeId:id,name:name.trim()};
   }
-  const roomType = typeof request.room.roomType === 'string' && request.room.roomType.trim() ? request.room.roomType : undefined;
   const shopRequest = {schemaVersion:2,propertyCode:request.propertyCode,arrivalDate:arrival,departureDate:departure,
     rooms:[{id:'create',quantity:1,adults,children:childCount,childAges,
       ...(roomType ? {required:{roomCodes:[roomType]}} : {})}],
@@ -184,21 +184,22 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
       credentialLease:lease,signal:lease.signal});
     lease.signal.throwIfAborted();
     if (!object(quote) || quote.outcome !== 'quote' || !object(quote.audit) || quote.audit.status !== 'complete' ||
-        !Array.isArray(quote.groups) || quote.groups.length !== 1 || !object(quote.groups[0])) return unavailable;
+        !Array.isArray(quote.groups) || quote.groups.length !== 1 || !object(quote.groups[0])) return noChoices;
     const group = quote.groups[0], completeness = group.completeness;
     if (group.id !== 'create' || !object(completeness) || completeness.search !== 'complete' ||
         completeness.requiredFacts !== 'complete' || !Array.isArray(group.options) || !Array.isArray(group.applied) ||
-        !group.applied.length || !object(group.resolvedContext)) return unavailable;
+        !group.applied.length || !object(group.resolvedContext)) return noChoices;
     for (const [kind,idKey] of [['bookingAgency','travelAgencyID'],['organization','organizationID']] as const) {
       const expected = rateContext[kind]?.nativeId ?? '';
       const resolved = group.resolvedContext[kind];
-      if (expected && (!object(resolved) || resolved.id !== expected)) return unavailable;
-      if (group.applied.some(row => !object(row) || String(row[idKey] ?? '') !== expected)) return unavailable;
+      if (expected && (!object(resolved) || resolved.id !== expected)) return noChoices;
+      if (group.applied.some(row => !object(row) || String(row[idKey] ?? '') !== expected)) return noChoices;
     }
     if (group.applied.some(row => !object(row) || row.propertyCodes !== request.propertyCode ||
         row.adultCount !== adults || row.childCount !== childCount ||
-        JSON.stringify(row.childAges === undefined && childCount === 0 ? [] : row.childAges) !== JSON.stringify(childAges))) return unavailable;
+        JSON.stringify(row.childAges === undefined && childCount === 0 ? [] : row.childAges) !== JSON.stringify(childAges))) return noChoices;
     const choices = new Map<string,{value:string;label:string;meaning:string;room_type:string;rate_scope:string;eligibility:string;availability:string}>();
+    const rooms = new Map<string,{value:string;label:string;meaning:string}>();
     for (const option of group.options) {
       if (!object(option) || !object(option.rate) || !object(option.room) || option.eligibility !== 'verified' ||
           typeof option.rate.code !== 'string' || !/^[A-Z0-9_-]{1,100}$/.test(option.rate.code) ||
@@ -211,15 +212,38 @@ async function scopedRateChoices(request: NativeRequest, lease: Lease, transport
       const choice = {value,label:value,meaning,room_type:option.room.code,rate_scope:String(option.rateScope),eligibility:option.eligibility,
         availability:String(option.availability)};
       choices.set(JSON.stringify(choice),choice);
+      if (/^[A-Z0-9]{1,12}$/.test(option.room.code)) {
+        const name = typeof option.room.label === 'string' ? option.room.label.trim() : '';
+        rooms.set(option.room.code,{value:option.room.code,label:option.room.code,meaning:name});
+      }
     }
     const all = [...choices.values()], items = all.slice(0,50);
     const truncated = completeness.optionsTruncated !== false || completeness.matchingRowsUnseen !== false || items.length !== all.length;
-    return {status:'available',items,coverage:{complete:!truncated,possibly_truncated:truncated,
-      returned:items.length,source_options:completeness.sourceOptions,examined_options:completeness.examinedOptions}};
+    const roomItems = [...rooms.values()].slice(0,50);
+    return {rateChoices:{status:'available',items,coverage:{complete:!truncated,possibly_truncated:truncated,
+      returned:items.length,source_options:completeness.sourceOptions,examined_options:completeness.examinedOptions}},
+      roomChoices:{status:'available',items:roomItems,coverage:{complete:!truncated && roomItems.length === rooms.size,
+        possibly_truncated:truncated || roomItems.length !== rooms.size,returned:roomItems.length}}};
   } catch (error) {
     if (lease.signal.aborted) throw error;
-    return unavailable;
+    return noChoices;
   }
+}
+
+function nativeRoomChoices(result: NativeResult, shop: Awaited<ReturnType<typeof scopedRateChoices>>['roomChoices']) {
+  const choices = new Map<string,{value:string;label:string;meaning:string}>();
+  if (result.issue === 'room_type_not_unique' && Array.isArray(result.roomCandidates)) {
+    for (const candidate of result.roomCandidates) {
+      if (!object(candidate) || typeof candidate.code !== 'string' || !/^[A-Z0-9]{1,12}$/.test(candidate.code) ||
+          typeof candidate.nativeId !== 'string' || !candidate.nativeId || !object(candidate.gridData)) continue;
+      const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
+      choices.set(candidate.code,{value:candidate.code,label:candidate.code,meaning:name});
+    }
+  }
+  for (const choice of shop.items) choices.set(choice.value,choice);
+  if (!choices.size) return shop;
+  const items = [...choices.values()].slice(0,50);
+  return {status:'available',items,coverage:{complete:false,possibly_truncated:true,returned:items.length}};
 }
 
 async function loadNativeResult(api: NativeApi, request: NativeRequest, options: Record<string, unknown>): Promise<NativeResult> {
@@ -258,17 +282,19 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
         allowRealGuest: context.mode === 'live' && arrival >= new Date().toISOString().slice(0, 10),
       });
       const needsRate = result.outcome === 'needs_input' && !!result.applied && !!result.appliedVerification && !built.unknown.length &&
-        (!request.room.ratePlan || object(result.ratePlanIssue) ||
+        (result.issue === 'room_type_not_unique' || !request.room.ratePlan || object(result.ratePlanIssue) ||
         (Array.isArray(result.missing) && result.missing.some(field => typeof field === 'string' && field.startsWith('room.rate'))));
-      const rateChoices = needsRate ? await scopedRateChoices(request,lease,transportId) : {status:'unavailable',items:[],coverage:null};
-      return {result,rateChoices};
+      const roomType = typeof result.applied?.roomType === 'string' ? result.applied.roomType : undefined;
+      const choices = needsRate ? await scopedRateChoices(request,lease,transportId,roomType) :
+        {rateChoices:{status:'unavailable',items:[],coverage:null},roomChoices:{status:'unavailable',items:[],coverage:null}};
+      return {result,rateChoices:choices.rateChoices,roomChoices:nativeRoomChoices(result,choices.roomChoices)};
     };
-    const {result,rateChoices} = context.credentialLease ? await run(context.credentialLease) :
+    const {result,rateChoices,roomChoices} = context.credentialLease ? await run(context.credentialLease) :
       await api.withCloudCredentialLease(request.propertyCode, run, { databaseUrl: leaseDatabase(), readOnly: true, signal: context.signal });
     const trackChoices = object(result.trackChoices) && result.trackChoices.property_code === request.propertyCode
       ? result.trackChoices : {status:'unavailable',property_code:request.propertyCode,items:[],coverage:null};
     const data = bounded({ native: result, unsupportedFields: built.unknown, guest_candidates:guestChoices(result),
-      rate_choices:rateChoices, track_choices:trackChoices });
+      rate_choices:rateChoices, room_choices:roomChoices, track_choices:trackChoices });
     if (built.unknown.length || result.outcome !== 'prepared') return fail('CREATE_PREPARE_INCOMPLETE', result.issue ?? 'Native create is incomplete.', 'known', data);
     return success(data);
   } catch (error) {

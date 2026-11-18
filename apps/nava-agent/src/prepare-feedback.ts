@@ -72,7 +72,7 @@ const envelope = z.object({native_result:z.unknown(),display_rows:z.array(z.unkn
     stage:optionalIdentifier,issue:optionalIdentifier,
     detail:z.object({issue:optionalIdentifier}).optional().catch(undefined),
   }).optional(),
-  rate_choices:z.unknown(),guest_candidates:z.unknown(),track_choices:z.unknown(),
+  rate_choices:z.unknown(),room_choices:z.unknown(),guest_candidates:z.unknown(),track_choices:z.unknown(),
 }).passthrough();
 
 export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}:{
@@ -101,7 +101,7 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     native:rate || failedStep || detailIssue ? {
       ...(rate?{ratePlanAvailability:rate}:{}),...(failedStep?{stage:failedStep}:{}),...(detailIssue?{detail:{issue:detailIssue}}:{}),
     } : null,
-    rate_choices:capture?.rate_choices ?? null,guest_candidates:capture?.guest_candidates ?? null,
+    rate_choices:capture?.rate_choices ?? null,room_choices:capture?.room_choices ?? null,guest_candidates:capture?.guest_candidates ?? null,
     track_choices:capture?.track_choices ?? null,
   } : capture?.native_result ?? result?.data ?? null;
   const bounded=native===null || Buffer.byteLength(JSON.stringify(native) ?? '')<=2_000_000;
@@ -122,7 +122,7 @@ export function stageFeedback({result,workflow,bookingId,revision,jobId,quoteId}
     ...(hasCreateFeedback?{prepare}:{}),
   };
   const hasCapture=workflow==='create' ? !!rate || !!failedStep || !!detailIssue || observed!==undefined || capture?.guest_candidates!=null
-    || capture?.rate_choices!=null || capture?.track_choices!=null
+    || capture?.rate_choices!=null || capture?.room_choices!=null || capture?.track_choices!=null
     : native!==null;
   const stage=bounded && (ok || hasCapture) ? {
     state:ok?'prepared':'incomplete',revision,job_id:jobId,...(quoteId?{quote_id:quoteId}:{}),

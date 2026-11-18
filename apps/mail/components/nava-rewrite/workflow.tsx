@@ -294,6 +294,15 @@ function nativeRateOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], 
   });
 }
 
+function nativeRoomOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], index: number) {
+  const choices = currentNativeRoom(proposal, drafts, index)?.room_choices;
+  if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status !== 'available' || !Array.isArray(choices.items)) return [];
+  return choices.items.flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.value !== 'string' || !item.value || typeof item.label !== 'string') return [];
+    return [{ value: item.value, label: item.label, meaning: typeof item.meaning === 'string' ? item.meaning : null }];
+  });
+}
+
 function nativeTrackOptions(proposal: Proposal, drafts: WorkflowProps['drafts'], index: number) {
   const choices = currentNativeRoom(proposal, drafts, index)?.track_choices;
   if (!choices || typeof choices !== 'object' || Array.isArray(choices) || choices.status !== 'available' ||
@@ -484,14 +493,15 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
     const nativeCode = /\/(rate_plan|room_type|room_type_for_charge|guest_profile_id|track)$/.test(spec.path);
-    const createCode = proposal.workflow === 'create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/(rate_plan|track)$/.exec(spec.path) : null;
+    const createCode = proposal.workflow === 'create' ? /^\/bookings\/(0|[1-9]\d*)\/fields\/(rate_plan|room_type|track)$/.exec(spec.path) : null;
     const rates = createCode?.[2] === 'rate_plan' ? nativeRateOptions(proposal, drafts, Number(createCode[1])) : [];
+    const rooms = createCode?.[2] === 'room_type' ? nativeRoomOptions(proposal, drafts, Number(createCode[1])) : [];
     const tracks = createCode?.[2] === 'track' ? nativeTrackOptions(proposal, drafts, Number(createCode[1])) : [];
-    const options = nativeCode ? [...rates, ...tracks] : spec.options;
+    const options = nativeCode ? [...rates, ...rooms, ...tracks] : spec.options;
     if (spec.control === 'select' || spec.control === 'combobox' || nativeCode && options.length > 0) {
       control = nativeCode && options.length === 0
         ? <PaneField {...common} control="text" value={text} onChange={next => onEdit(spec.path, next)} />
-        : <PaneField {...common} hint={rates.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
+        : <PaneField {...common} hint={rates.length || rooms.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
     } else {
       const quoteDate = proposal.workflow === 'quote' && /\/groups\/(?:0|[1-9]\d*)\/(?:arrival_date|departure_date)$/.test(spec.path);
       const date = (spec.control === 'date' || quoteDate) && (!text || isDateValue(text)) ? 'date' : spec.control === 'date' ? 'text' : spec.control;
