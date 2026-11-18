@@ -6,6 +6,15 @@ export const jsonSchema: z.ZodType<Json> = z.lazy(() => z.union([
   z.null(), z.string(), z.number().finite(), z.boolean(), z.array(jsonSchema), z.record(jsonSchema),
 ]));
 
+const amendPriceSchema = z.object({
+  currency: z.string(), totalCents: z.string(), averageCents: z.string().nullable().optional(),
+});
+export const amendReadbackSchema = z.object({
+  arrival: z.string().optional(), departure: z.string().optional(),
+  price: amendPriceSchema.nullish(), preparedPrice: amendPriceSchema.nullish(), priceWarning: z.string().optional(),
+  addonAlignmentChoice: z.string().optional(), nativeWarnings: z.array(z.string()).optional(),
+});
+
 const id = z.string().min(1);
 const revision = z.number().int().positive();
 export const workflowSchema = z.enum(['triage', 'quote', 'create', 'amend', 'cancel', 'filing']);

@@ -8,7 +8,8 @@ import { quoteArtifactIds } from './quote-draft';
 import { defaultQuoteSelections } from './quote-defaults';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
-import type { FieldSpec, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
+import { amendReadbackSchema } from './wire';
+import type { FieldSpec, Json, NativeDisplayRow, Proposal, QuoteSelection, ThreadInput } from './wire';
 import type { StayLookup } from './api';
 import styles from './pane.module.css';
 import quoteStyles from './quote.module.css';
@@ -964,6 +965,26 @@ function TriageLookupResult({ proposal }: { proposal: Proposal }) {
   return <p>Infor did not return lookup details.</p>;
 }
 
+function AmendReadback({ readback }: { readback: Json }) {
+  const parsed = amendReadbackSchema.safeParse(readback);
+  if (!parsed.success) return null;
+  const { arrival, departure, price, preparedPrice, priceWarning, addonAlignmentChoice, nativeWarnings } = parsed.data;
+  const money = (currency: string, cents: string) => {
+    const digits = cents.padStart(3, '0');
+    return `${currency} ${digits.slice(0, -2)}.${digits.slice(-2)}`;
+  };
+  return <>
+    {arrival && departure && <p>Saved stay: {arrival} – {departure}</p>}
+    {priceWarning && <p role="alert">{priceWarning}</p>}
+    {preparedPrice && <p>Prepared total: {money(preparedPrice.currency, preparedPrice.totalCents)}
+      {preparedPrice.averageCents != null && ` · Average per night: ${money(preparedPrice.currency, preparedPrice.averageCents)}`}</p>}
+    {price && <p>Saved HMS total: {money(price.currency, price.totalCents)}
+      {price.averageCents != null && ` · Average per night: ${money(price.currency, price.averageCents)}`}</p>}
+    {addonAlignmentChoice === 'yes' && <p>Adjust add-ons aligned with the stay dates: Yes.</p>}
+    {nativeWarnings && nativeWarnings.length > 0 && <ul>{nativeWarnings.map((warning, index) => <li key={`${index}:${warning}`}>{warning}</li>)}</ul>}
+  </>;
+}
+
 export function Workflow(props: WorkflowProps) {
   const { proposal } = props;
   const longWait = useLongWait(proposal, props.operationStartedAt);
@@ -1046,6 +1067,7 @@ export function Workflow(props: WorkflowProps) {
           : proposal.workflow === 'amend' ? 'Infor confirms the changes were saved.'
           : 'Infor confirms the booking was saved.'
       }</p>}
+      {proposal.workflow === 'amend' && proposal.phase === 'done' && <AmendReadback readback={proposal.result.readback} />}
       {proposal.result.confirmation && <p style={{ fontSize: '1.25em', fontWeight: 600 }}>Confirmation: {proposal.result.confirmation}</p>}
       {proposal.result.reservation_id && <p>Reservation: {proposal.result.reservation_id}</p>}
       {proposal.result.display_rows.length > 0 && <NativeRows rows={proposal.result.display_rows} proposal={proposal} />}
