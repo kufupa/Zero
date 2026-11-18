@@ -260,7 +260,7 @@ async function selectGuest(runTool, guest, commit, requireExplicitGuestSelection
     stop('needs_input', issue,
       { guestSearchOutcome: found.outcome, guestCandidates: all.map(candidate), guestCoverage: found.coverage, guestCorrelation: found.correlation });
   }
-  if (!commit && requireExplicitGuestSelection && field !== 'profileId') {
+  if (!commit && requireExplicitGuestSelection && field !== 'profileId' && !text(guest.search?.firstName)) {
     stop('needs_input', 'guest_choice_required', {
       guestSearchOutcome: found.outcome, guestCandidates: matches.map(candidate),
       guestCoverage: found.coverage, guestCorrelation: found.correlation,

@@ -666,11 +666,22 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
   } : stageFeedback({result,workflow,bookingId,revision:job.revision,jobId:job.job_id,quoteId:job.quote_id});
   if(profileCreated && stage) stage.summary=['Guest Profile created in Infor. Booking not saved.',...stage.summary.map(text=>text.replace('Nothing saved.','No booking saved.'))];
   if(stage && job.lookup) Object.assign(stage,{state:'target',source:job.source});
-  const selections=draft.success && workflow==='create' && stage ? draft.data.bookings.flatMap((booking,index)=>{
+  const autoBound:Array<{booking_id:string;native_id:string}>=[];
+  const editableDraft=draft.success ? draft.data : null;
+  const selections=editableDraft && workflow==='create' && stage ? editableDraft.bookings.flatMap((booking,index)=>{
+    const observed=captures ? guestCaptures[index] : result?.data;
+    const guest=z.object({native:z.object({applied:z.object({guest:z.object({nativeId:z.string().regex(/^\d{1,100}$/),firstName:z.string(),lastName:z.string()})})})}).safeParse(observed);
+    const first=booking.fields.first_name, last=booking.fields.last_name;
+    if(booking.fields.guest_profile_id==null && guest.success && typeof first==='string' && typeof last==='string' &&
+      guest.data.native.applied.guest.firstName.trim().toLowerCase()===first.trim().toLowerCase() &&
+      guest.data.native.applied.guest.lastName.trim().toLowerCase()===last.trim().toLowerCase()) {
+      booking.fields.guest_profile_id=guest.data.native.applied.guest.nativeId;
+      const field=editableDraft.field_specs.find(spec=>spec.path===`/bookings/${index}/fields/guest_profile_id`);
+      if(field) field.provenance='hms';
+      autoBound.push({booking_id:booking.id,native_id:guest.data.native.applied.guest.nativeId});
+    }
     const selected=selectedCreateGuest(booking);
     if(!selected) return [];
-    const observed=captures ? guestCaptures[index] : result?.data;
-    const guest=z.object({native:z.object({applied:z.object({guest:z.object({nativeId:z.string(),firstName:z.string(),lastName:z.string()})})})}).safeParse(observed);
     const match=guest.success && guest.data.native.applied.guest.nativeId===selected.native_id &&
       guest.data.native.applied.guest.firstName.trim().toLowerCase()===selected.first_name.trim().toLowerCase() &&
       guest.data.native.applied.guest.lastName.trim().toLowerCase()===selected.last_name.trim().toLowerCase();
@@ -680,12 +691,12 @@ export async function runStaffStage(lease: LeaseFence, registry: ToolRegistry, c
     const [owner] = await tx`SELECT id FROM nava_agent.agent_session WHERE id=${lease.sessionId} AND worker_id=${lease.workerId}
       AND lease_epoch=${lease.epoch}::bigint AND lease_until>clock_timestamp() FOR NO KEY UPDATE`;
     if (!owner) throw new Error('LEASE_LOST');
-    const updated = await tx`UPDATE nava_agent.proposal SET phase=${job.previous_phase},stage=${json(stage)},
+    const updated = await tx`UPDATE nava_agent.proposal SET phase=${job.previous_phase},stage=${json(stage)},current=${json(editableDraft && autoBound.length ? editableDraft : latest?.current ?? p.current)},
       execution=COALESCE(execution,'{}'::jsonb)||${json({error,...(selections.length?{staff_guest_selections:selections}:{})})}::jsonb,updated_at=now()
       WHERE id=${p.id} AND revision=${job.revision} AND phase='staging' AND stage->>'job_id'=${job.job_id} RETURNING id`;
     if (!updated.length) throw new Error('STAGE_CHANGED');
     await writeEvent(tx,lease.sessionId,'stage_finished',{proposal_id:p.id,job_id:job.job_id,revision:job.revision,
-      workflow,...(job.quote_id?{quote_id:job.quote_id}:{}),ok:!error,error});
+      workflow,...(job.quote_id?{quote_id:job.quote_id}:{}),...(autoBound.length?{auto_bound_guests:autoBound}:{}),ok:!error,error});
   });
   return true;
 }
