@@ -1582,7 +1582,9 @@ export async function readCloudCallbackReviewState(input) {
       return { native, effects, price, partyPreimage: state.partyPreimage, partyImage, guarantee, savedMealPlan };
     }, protectedSession.options);
     if (!result) return { outcome: 'unverified' };
-    const child = await readCloudSavedChildAges({ ...readInput, selected: result.native, arrival: result.native.arrival });
+    const child = result.native.children === 0 && Array.isArray(result.native.childAges) && result.native.childAges.length === 0
+      ? { outcome: 'ok', ages: [] }
+      : await readCloudSavedChildAges({ ...readInput, selected: result.native, arrival: result.native.arrival });
     if (child.outcome !== 'ok' || !Array.isArray(child.ages)) return { outcome: 'unverified' };
     if (plan.children) {
       const confirmed = sameChildAgeMultiset(child.ages, plan.children.nextAges);
@@ -1761,9 +1763,11 @@ export async function readCloudPaneAmend(input, dependencies = {}) {
       const expectedAges = Array.isArray(changes.childAges) ? changes.childAges :
         Array.isArray(input.beforeChildAges) ? input.beforeChildAges : target.childAges;
       if (!Array.isArray(expectedAges)) return { outcome: 'unverified' };
-      const childRead = await readCloudSavedChildAges({ ...input, allowRealGuest: input.allowRealGuest === true ||
-        (input.allowChangedLabGuarantee === true && isLabtest(selected) && selected.arrival >= '2027-01-01'), selected: savedNative,
-        confirmation: savedNative.confirmation, arrival: savedNative.arrival });
+      const childRead = savedNative.children === 0 && Array.isArray(savedNative.childAges) && savedNative.childAges.length === 0
+        ? { outcome: 'ok', ages: [] }
+        : await readCloudSavedChildAges({ ...input, allowRealGuest: input.allowRealGuest === true ||
+          (input.allowChangedLabGuarantee === true && isLabtest(selected) && selected.arrival >= '2027-01-01'), selected: savedNative,
+          confirmation: savedNative.confirmation, arrival: savedNative.arrival });
       if (childRead.outcome !== 'ok' || !sameChildAgeMultiset(childRead.ages, expectedAges)) return { outcome: 'unverified' };
       result.readback.childAges = childRead.ages;
     }

@@ -227,7 +227,8 @@ export async function prepare(input: unknown, context: ToolContext): Promise<Too
     const common = { target: property, selected, confirmation: selected.confirmation, arrival: selected.arrival,
       allowRealGuest: context.mode === 'live', transportId: property.mailboxTransportId, signal, credentialLease: context.credentialLease };
     const ageRead = z.object({ outcome: z.literal('ok'), ages: z.array(z.number().int().min(0).max(17)).max(9) })
-      .safeParse(await native.readCloudSavedChildAges(common));
+      .safeParse(selected.children === 0 && Array.isArray(selected.childAges) && selected.childAges.length === 0
+        ? { outcome: 'ok', ages: [] } : await native.readCloudSavedChildAges(common));
     if (!ageRead.success || ageRead.data.ages.length !== selected.children ||
         (Array.isArray(selected.childAges) && !isDeepStrictEqual([...selected.childAges].sort((a, b) => a - b),
           [...ageRead.data.ages].sort((a, b) => a - b)))) {
