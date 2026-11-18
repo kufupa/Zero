@@ -6,7 +6,7 @@ import { NavaApiError } from './api';
 import { NavaPane, PaneMessage } from './pane';
 import type { SelectedEmail } from './pane';
 import type { QuoteDraftBinding } from './quote-output-bridge';
-import { Workflow, hasWorkflowAction, quoteCheckIssue, workflowPrimaryAction } from './workflow';
+import { Workflow, hasActionToPrepare, quoteCheckIssue, workflowPrimaryAction } from './workflow';
 import { quoteArtifactIds } from './quote-draft';
 import type { DraftValue, GuestCandidate } from './workflow';
 import type { StayLookup } from './api';
@@ -197,7 +197,8 @@ function missingRequired(proposal: Proposal): string[] {
 }
 
 function goReady(proposal: Proposal): boolean {
-  return proposal.phase === 'ready' && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
+  return (proposal.workflow !== 'create' || hasActionToPrepare(proposal)) &&
+    proposal.phase === 'ready' && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
     proposal.stage.revision === proposal.revision &&
     (!proposal.error || proposal.workflow === 'cancel' && proposal.error.code === 'CANCEL_PENALTY_CHANGED' && Boolean(cancellationPenalty(proposal))) &&
     missingRequired(proposal).length === 0;
@@ -969,7 +970,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
     if (kind === 'target' && (!lookup || !['amend', 'cancel', 'filing'].includes(current.workflow) || !advertised(capabilities, current.workflow, 'stage'))) return;
-    if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !hasWorkflowAction(current))) return;
+    if (kind === 'stage' && current.workflow !== 'triage' && !hasActionToPrepare(current)) return;
     if (kind === 'quote' && (current.workflow !== 'quote' || !quoteId || !hasQuote(current, quoteId) || quoteCheckIssue(current, quoteId) || !advertised(capabilities, current.workflow, 'quote'))) return;
     if (kind === 'reconcile' && (current.phase !== 'uncertain' || !advertised(capabilities, current.workflow, 'reconcile'))) return;
     const attemptKey = kind === 'quote' ? JSON.stringify([proposal.id, proposal.revision, quoteId]) : null;

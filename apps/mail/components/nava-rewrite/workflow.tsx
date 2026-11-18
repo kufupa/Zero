@@ -1040,12 +1040,17 @@ export function hasWorkflowAction(proposal: Proposal) {
     proposal.workflow === 'filing' && ['attach_document', 'voucher_submission', 'payment_proof_submission'].includes(action.type));
 }
 
+export function hasActionToPrepare(proposal: Proposal) {
+  return hasWorkflowAction(proposal) && (proposal.disposition === 'propose' ||
+    proposal.workflow === 'create' && ['needs_info', 'staff_review'].includes(proposal.disposition));
+}
+
 export function workflowPrimaryAction({ proposal, drafts, busy, onStage, onReconcile }: WorkflowFooterProps) {
   const dirty = Object.keys(drafts).length > 0;
   if (uncertain(proposal)) return onReconcile ? { label: 'Check Infor', disabled: busy, onClick: onReconcile } : undefined;
   const mutableWorkflow = proposal.workflow === 'triage' || proposal.workflow === 'create' || proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing';
   if (!mutableWorkflow) return undefined;
-  if (proposal.workflow !== 'triage' && (proposal.disposition !== 'propose' || !hasWorkflowAction(proposal))) return undefined;
+  if (proposal.workflow !== 'triage' && !hasActionToPrepare(proposal)) return undefined;
   if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel') && !proposal.stay_target_selected) return undefined;
   if ((proposal.workflow === 'amend' || proposal.workflow === 'cancel' || proposal.workflow === 'filing') && proposal.stage?.state === 'target') return undefined;
   if ((proposal.phase === 'ready' || proposal.phase === 'waiting_go') && onStage) return { label: proposal.workflow === 'triage' ? 'Look up in Infor' : proposal.workflow === 'create' && proposal.bookings.some(booking=>booking.fields.profile_create_new===true && !booking.fields.guest_profile_id) ? 'Go: Create Guest Profile & check price' : 'Prepare in Infor', disabled: dirty || busy, onClick: onStage };
