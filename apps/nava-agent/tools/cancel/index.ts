@@ -154,6 +154,37 @@ async function preview(target: Parsed, arrival: string, transportId: string, con
     ...(target.reason ? { previewStage: { reasonLabel: target.reason, cancellationNote: target.note } } : {}) });
 }
 
+async function readCancelled(target: Parsed, expected: NativeResult, transportId: string, context: ToolContext) {
+  try {
+    const root = new URL('../../../server-pilot/tooling/hms-cloud/', import.meta.url);
+    const { withSavedStayAgentSession } = await import(new URL('saved-stay-agent-session.mjs', root).href);
+    const signal = context.signal ? AbortSignal.any([context.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000);
+    const result: unknown = await withSavedStayAgentSession(({ runTool }: { runTool: (input: unknown) => Promise<unknown> }) => runTool({
+      tool: 'read', confirmation: target.confirmation, view: 'record', includeNativePreimage: true,
+      guestName: `${expected.firstName} ${expected.lastName}`, arrivalDate: expected.arrival, departureDate: expected.departure,
+    }), { propertyCode: target.propertyCode, transportId, readOnly: true, readOnlyConfirmation: target.confirmation,
+      credentialLease: context.credentialLease, signal });
+    if (!object(result) || result.outcome !== 'ok' || !object(result.record) || !object(result.record.nativePreimage)) return null;
+    const native = result.record.nativePreimage;
+    if (native.source !== 'record_view_ext_model' || native.propertyCode !== target.propertyCode ||
+        native.confirmation !== expected.confirmation || native.reservationStayId !== expected.nativeStayId ||
+        native.guestId !== expected.guestId || native.firstName !== expected.firstName || native.lastName !== expected.lastName ||
+        native.arrival !== expected.arrival || native.departure !== expected.departure ||
+        typeof native.status !== 'string' || !/^cancel(?:l)?ed$/i.test(native.status)) return null;
+    const record = object(result.record.details) && Array.isArray(result.record.details.fields) ? result.record.details.fields : [];
+    const cms = record.filter((item: unknown) => object(item) && item.name === 'udfchkbox04');
+    if (cms.length !== 1 || !object(cms[0]) || cms[0].value !== expected.cmsSend) return null;
+    const shallow = object(result.shallow) && object(result.shallow.details) && Array.isArray(result.shallow.details.cards)
+      ? result.shallow.details.cards : [];
+    const statuses = shallow.flatMap((card: unknown) => object(card) && Array.isArray(card.fields) ? card.fields : [])
+      .filter((item: unknown) => object(item) && item.name === 'status');
+    const status = statuses.length === 1 && object(statuses[0]) && typeof statuses[0].value === 'string' ? statuses[0].value : '';
+    const cancellationNumber = /^cancel(?:l)?ed\s+(\d+)\s*$/i.exec(status)?.[1] ?? null;
+    return { confirmation: native.confirmation, nativeStayId: native.reservationStayId, nativeGuestId: native.guestId,
+      status: native.status, cancellationNumber, cmsSend: cms[0].value };
+  } catch { return null; }
+}
+
 function selectedReason(stage: NativeResult, reason: string | undefined): { code: string; label: string } | null {
   if (!reason || !Array.isArray(stage.reasons)) return null;
   const matches = stage.reasons.filter(item => object(item) && item.display === reason && text(item.value));
@@ -296,10 +327,12 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
   let feeChanged = false;
   let cancellationReleased = false;
   let chargeReleased = false;
+  let transportId: string | undefined;
   try {
     const { cancel, registry } = await nativeWriterModules();
     const property = registry.getPropertyRegistration(target.propertyCode);
     if (!property?.active || !text(property.mailboxTransportId)) return error('HMS_PROPERTY_UNSUPPORTED', 'Property is not supported.');
+    transportId = property.mailboxTransportId;
     const stage = await preview(target, expected.arrival, property.mailboxTransportId, context, cancel);
     const freshExpected = object(stage.expected) ? stage.expected : null;
     const freshReason = selectedReason(stage, target.reason);
@@ -368,6 +401,9 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return success({ confirmation: target.confirmation, reservation_id: readback.nativeStayId, readback });
     }
     if (markerStarted || result.requestDispatched === true) {
+      const observed = await readCancelled(target, expected, property.mailboxTransportId, context);
+      if (observed) return success({ confirmation: target.confirmation, reservation_id: observed.nativeStayId,
+        cancellation_number: observed.cancellationNumber, readback: observed, cancellation_fee: fee(feeText(result) ?? currentNotice ?? shownNotice) });
       return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain'),
         data: { cancellation_fee: fee(feeText(result) ?? currentNotice ?? shownNotice), readback: readback ?? null } };
     }
@@ -377,8 +413,13 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     }
     return nativeFailure(result);
   } catch (cause) {
-    if (markerStarted) return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation in a fresh session before retrying.', 'uncertain'),
-      data: { cancellation_fee: fee(currentNotice ?? shownNotice) } };
+    if (markerStarted) {
+      const observed = transportId ? await readCancelled(target, expected, transportId, context) : null;
+      if (observed) return success({ confirmation: target.confirmation, reservation_id: observed.nativeStayId,
+        cancellation_number: observed.cancellationNumber, readback: observed, cancellation_fee: fee(currentNotice ?? shownNotice) });
+      return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation in a fresh session before retrying.', 'uncertain'),
+        data: { cancellation_fee: fee(currentNotice ?? shownNotice) } };
+    }
     if (context.signal?.aborted) return error('ABORTED', 'Cancellation was aborted before dispatch.');
     const code = cause instanceof Error && /^[A-Z][A-Z0-9_]{2,80}$/.test(cause.message) ? cause.message : 'HMS_CANCEL_FAILED';
     return error(code, 'Native cancellation failed before dispatch.');
