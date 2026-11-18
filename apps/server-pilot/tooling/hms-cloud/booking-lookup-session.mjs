@@ -580,6 +580,9 @@ export async function runBookingLookupTool({ page, memory, memoryIssue, labtestP
       if (tool === 'selectGuestStayRatePlan') {
         delete options?.requireM1CreateAvailability;
         delete options?.authorizeM1CreateAvailabilityRequest;
+        delete options?.stageM1CreateRate;
+        const rateStage = createAuthority?.m1CreateRateSelectionOptions?.();
+        if (rateStage) Object.assign(options, rateStage);
         const availability = createAuthority?.m1CreateRateAvailabilityOptions?.();
         if (availability) Object.assign(options, availability);
         else if (state.chargeRoom && request.createDraft && createAuthority?.withM1CreateRateAvailability) {
@@ -700,6 +703,7 @@ export async function withBookingLookupSession(operation, { memory, memorySource
       (cloudTargetKey !== undefined && typeof cloudTargetKey !== 'string')) {
     throw new Error('SAVE_GUARD_CALLBACKS_INVALID');
   }
+  const activeCreateRateSelection = new WeakSet();
   const activeCreateRateAvailability = new WeakSet();
   const usedCreateRateAvailability = new WeakSet();
   const currentCreateRateAvailability = new WeakSet();
@@ -707,6 +711,15 @@ export async function withBookingLookupSession(operation, { memory, memorySource
     ...(cloudTargetKey ? { cloudTargetKey } : {}) };
   Object.defineProperties(createAuthority, {
     __m1CreateFlowAuthority: { value: true },
+    withM1CreateRateSelection: { value: async (operation) => {
+      if (createAuthority.__m1CreateFlowAuthority !== true || typeof operation !== 'function' ||
+          activeCreateRateSelection.has(createAuthority)) throw new Error('CREATE_RATE_AUTHORITY_INVALID');
+      activeCreateRateSelection.add(createAuthority);
+      try { return await operation(); }
+      finally { activeCreateRateSelection.delete(createAuthority); }
+    } },
+    m1CreateRateSelectionOptions: { value: () => activeCreateRateSelection.has(createAuthority)
+      ? { stageM1CreateRate: true } : null },
     withM1CreateRateAvailability: { value: async (operation) => {
       if (createAuthority.__m1CreateFlowAuthority !== true || typeof operation !== 'function' ||
           activeCreateRateAvailability.has(createAuthority)) throw new Error('CREATE_AVAILABILITY_AUTHORITY_INVALID');

@@ -577,7 +577,7 @@ export async function createReservation(input, options = {}) {
         if (selected.selectedField?.value !== room.roomType) stop('uncertain', 'requested_field_not_staged', { field: 'room.roomType' });
         output.applied.roomType = selected.selectedField.value;
       }
-      if (state.track && formValue((await call(runTool, 'readGuestStayForm', { propertyCode })).fields, 'track') !== state.track.display) {
+      if (commit && state.track && formValue((await call(runTool, 'readGuestStayForm', { propertyCode })).fields, 'track') !== state.track.display) {
         await selectTrack(page, state.track.lookupCode, { propertyCode });
       }
       if (text(input.sourceOfBusiness)) {
@@ -591,6 +591,21 @@ export async function createReservation(input, options = {}) {
           Object.assign(output, error.result); missing.push('guest'); await call(runTool, 'closeGuestProfilePicker', {}, ['closed_unsaved']);
           state.guestNameDraft = await stageUnresolvedGuestName(runTool, propertyCode, input.guest?.search, error.result);
         }
+      }
+      // The native Create flow types the rate before selecting track and guarantee.
+      if (!commit && state.guest && typeof createAuthority?.withM1CreateRateSelection === 'function' &&
+          code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
+        const selected = await createAuthority.withM1CreateRateSelection(() => call(runTool, 'selectGuestStayRatePlan', {
+          code: room.ratePlan, guestProfileId: String(state.guest.selected.nativeId),
+        }, ['selected_unsaved', 'criteria_unavailable']));
+        if (selected.outcome === 'criteria_unavailable') {
+          missing.push('room.ratePlanCriteria'); output.ratePlanIssue = selected; state.rateCriteriaUnavailable = true;
+        } else if (selected.code !== room.ratePlan) {
+          stop('uncertain', 'requested_field_not_staged', { field: 'room.ratePlan' });
+        }
+      }
+      if (!commit && state.track && formValue((await call(runTool, 'readGuestStayForm', { propertyCode })).fields, 'track') !== state.track.display) {
+        await selectTrack(page, state.track.lookupCode, { propertyCode });
       }
       if (commit && (input.parties?.organizationId != null || text(input.parties?.organizationName))) {
         state.organization = await selectOrganization(runTool, input.parties);
@@ -616,6 +631,7 @@ export async function createReservation(input, options = {}) {
             stop('uncertain', 'requested_field_not_staged', { field: 'guaranteeType' });
           }
           output.applied.guaranteeType = state.guarantee.actual.display;
+          if (!commit && state.rateAvailabilityRequired) await new Promise(resolve => setTimeout(resolve, 1000));
         }
       } else if (!commit && isSupportedLabtestGuarantee(input.guaranteeType)) {
         missing.push('guaranteeType.staging');
@@ -694,8 +710,8 @@ export async function createReservation(input, options = {}) {
         if (selected.selectedField?.value !== room.roomTypeForCharge) stop('uncertain', 'requested_field_not_staged', { field: 'room.roomTypeForCharge' });
         output.applied.roomTypeForCharge = selected.selectedField.value;
       }
-      // Select rates only after the final guest, track and party context is staged.
-      if (state.guest && code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
+      // Check the staged rate against the final guest, track and party context.
+      if (!state.rateCriteriaUnavailable && state.guest && code(room.ratePlan, 100) && date(stay.arrival) && date(stay.departure) && stay.arrival < stay.departure) {
         const selectRatePlan = () => call(runTool, 'selectGuestStayRatePlan', {
           code: room.ratePlan,
           ...(state.guest ? { guestProfileId: String(state.guest.selected.nativeId) } : {}),

@@ -370,6 +370,7 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     return {outcome:'input_gap',issue:'RATE_CODE_REQUIRED'};
   }
   const requireM1CreateAvailability = createAuthority.requireM1CreateAvailability === true;
+  const stageM1CreateRate = createAuthority.stageM1CreateRate === true && !requireM1CreateAvailability;
   const approveM1CreateAvailabilityRequest = createAuthority.authorizeM1CreateAvailabilityRequest;
   if (requireM1CreateAvailability && (typeof approveM1CreateAvailabilityRequest !== 'function' || !createDraft)) {
     return {outcome:'input_gap',issue:'CREATE_AVAILABILITY_AUTHORITY_REQUIRED'};
@@ -427,29 +428,41 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
     const previousRateEvidence = !previousCode ? 'blank' : prior?.code === previousCode && prior.fingerprint === draftFingerprint(before)
       ? 'selected_by_this_tool_same_page' : 'observed_on_draft';
     if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    const search = await searchRatePlans(page,{query:code,limit:100});
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    const close = await closeRoomRatePicker(page);
-    if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
-    if (close.outcome !== 'closed_unsaved') throw new Error('RATE_CATALOG_CLOSE_UNVERIFIED');
-    const inquiry = sessions.filter(item => item.kind === 'inquiry'), cancel = sessions.filter(item => item.kind === 'cancel');
-    if (inquiry.length !== 1 || cancel.length !== 1 || !inquiry[0].id || inquiry[0].id !== cancel[0].id ||
-        inquiry[0].status !== 200 || cancel[0].status !== 200 ||
-        (dates.session && inquiry[0].id !== dates.session)) throw new Error('BOOKING_SESSION_UNVERIFIED');
-    const sessionId = inquiry[0].id;
-    const ready = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
-    const readyProof = await bounded(checkedDraft(ready,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
-    const businessNames = ['guestid','firstname','lastname','arrivaldate','departuredate','adults','children',
-      ...new Set(before.fields.filter(field => /^child\d+$/.test(field.name)).map(field => field.name)),'roomtype','track','guaranteetype','sourceofbusinessdesc','reservationnote',
-      'udfchkbox04','udfchar09','udfchar13','ta1','company','araccountname'];
-    if (businessNames.some(name => fieldValue(ready.fields,name) !== fieldValue(before.fields,name)) ||
-        JSON.stringify(readyProof) !== JSON.stringify(dates)) {
-      throw new Error('DRAFT_CHANGED_DURING_SEARCH');
+    let ready = before, sessionId;
+    const stagedCreate = requireM1CreateAvailability && prior?.stagedCreate;
+    if (stageM1CreateRate || stagedCreate) {
+      if (!dates.session || (stageM1CreateRate && previousCode === code) ||
+          (stagedCreate && (prior.code !== code || previousCode !== code ||
+            JSON.stringify({...stagedCreate.proof,ar:null}) !== JSON.stringify({...dates,ar:null}) ||
+            stagedCreate.roomType !== fieldValue(before.fields,'roomtype')))) {
+        throw new Error('STAGED_RATE_UNVERIFIED');
+      }
+      sessionId = dates.session;
+    } else {
+      const search = await searchRatePlans(page,{query:code,limit:100});
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      const close = await closeRoomRatePicker(page);
+      if (nativeDialog) throw new Error('UNEXPECTED_DIALOG');
+      if (close.outcome !== 'closed_unsaved') throw new Error('RATE_CATALOG_CLOSE_UNVERIFIED');
+      const inquiry = sessions.filter(item => item.kind === 'inquiry'), cancel = sessions.filter(item => item.kind === 'cancel');
+      if (inquiry.length !== 1 || cancel.length !== 1 || !inquiry[0].id || inquiry[0].id !== cancel[0].id ||
+          inquiry[0].status !== 200 || cancel[0].status !== 200 ||
+          (dates.session && inquiry[0].id !== dates.session)) throw new Error('BOOKING_SESSION_UNVERIFIED');
+      sessionId = inquiry[0].id;
+      ready = await bounded(readDraft(page),10000,'DRAFT_READ_TIMEOUT');
+      const readyProof = await bounded(checkedDraft(ready,guestId,page,createAuthority),10000,'DRAFT_IDENTITY_PROOF_TIMEOUT');
+      const businessNames = ['guestid','firstname','lastname','arrivaldate','departuredate','adults','children',
+        ...new Set(before.fields.filter(field => /^child\d+$/.test(field.name)).map(field => field.name)),'roomtype','track','guaranteetype','sourceofbusinessdesc','reservationnote',
+        'udfchkbox04','udfchar09','udfchar13','ta1','company','araccountname'];
+      if (businessNames.some(name => fieldValue(ready.fields,name) !== fieldValue(before.fields,name)) ||
+          JSON.stringify(readyProof) !== JSON.stringify(dates)) {
+        throw new Error('DRAFT_CHANGED_DURING_SEARCH');
+      }
+      if (search.outcome === 'criteria_unavailable') return { ...search, cleanupRequired: false, cleanup: close.outcome };
+      if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
+          search.coverage.returned !== search.coverage.matchingLoaded ||
+          search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
     }
-    if (search.outcome === 'criteria_unavailable') return { ...search, cleanupRequired: false, cleanup: close.outcome };
-    if (search.outcome !== 'matches' || search.coverage?.complete !== true ||
-        search.coverage.returned !== search.coverage.matchingLoaded ||
-        search.candidates.filter(candidate => candidate.code === code).length !== 1) throw new Error('CURRENT_RATE_CODE_UNVERIFIED');
     // A room or party change may clear pricing while leaving the same rate
     // selected. HMS does not emit a rate-change response for that same value;
     // verify the existing selection and run its native availability check.
@@ -623,9 +636,12 @@ export async function selectGuestStayRatePlan(page, { code, guestProfileId, crea
       ? { revision, fields, identity: after.identity, guarantee: clean(after.guaranteeValue),
         chargeRoom: fields.roomtypecharge, roomType: fields.roomtype, ratePlan: code,
         arrival: dates.arrival.iso, departure: dates.departure.iso, currency: rateAvailability.currency } : null;
-    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice});
+    selectedOnPage.set(page,{code,fingerprint:draftFingerprint(after),chargePrice,
+      ...(stageM1CreateRate ? {stagedCreate:{proof:dates,roomType:fieldValue(after.fields,'roomtype')}} : {})});
     return {outcome:'selected_unsaved',code,previousCode,previousRateEvidence,propertyCode:propertyCode,arrivalDate:dates.arrival.iso,departureDate:dates.departure.iso,
-      nativeCodeEvidence:recheckExistingRate ? 'validated_row_and_existing_draft' : 'validated_row_and_draft_change_response',
+      nativeCodeEvidence:stagedCreate ? 'validated_code_and_staged_draft' : stageM1CreateRate
+        ? 'validated_code_and_draft_change_response' : recheckExistingRate
+          ? 'validated_row_and_existing_draft' : 'validated_row_and_draft_change_response',
       nativeRatePlanId:'unsupported',
       identityReadback:{guestProfileId:guestId || null,arAccount:dates.ar ? {accountId:dates.ar.accountId,
         profileId:dates.ar.profileId,displayName:after.arAccountName,nativeName:after.arAccountNativeName} : null},
