@@ -389,13 +389,13 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
     });
     const readback = result.nativeReadback;
     const resultNotice = feeText(result) ?? (typeof result.zeroPenaltyNotice === 'string' ? result.zeroPenaltyNotice : null);
+    const fee_info = resultNotice && resultNotice !== shownNotice ? 'HMS reported a different cancellation fee after saving.' : null;
     if (markerStarted && result.requestDispatched === true &&
         object(readback) && readback.confirmation === expected.confirmation &&
         readback.nativeStayId === expected.nativeStayId && readback.nativeGuestId === expected.guestId &&
         typeof readback.status === 'string' && /^cancel(?:l)?ed$/i.test(readback.status) &&
         readback.reasonCode === reason.code && readback.cancellationNote === target.note) {
       const cancellation_fee = fee(resultNotice ?? currentNotice ?? shownNotice);
-      const fee_info = resultNotice && resultNotice !== shownNotice ? 'HMS reported a different cancellation fee after saving.' : null;
       return success({ confirmation: target.confirmation, reservation_id: readback.nativeStayId,
         readback: { ...readback, cancellation_fee, ...(fee_info ? { fee_info } : {}) }, cancellation_fee });
     }
@@ -404,7 +404,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       if (observed) {
         const cancellation_fee = fee(resultNotice ?? currentNotice ?? shownNotice);
         return success({ confirmation: target.confirmation, reservation_id: observed.nativeStayId,
-          cancellation_number: observed.cancellationNumber, readback: { ...observed, cancellation_fee }, cancellation_fee });
+          cancellation_number: observed.cancellationNumber,
+          readback: { ...observed, cancellation_fee, ...(fee_info ? { fee_info } : {}) }, cancellation_fee });
       }
       return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain'),
         data: { cancellation_fee: fee(feeText(result) ?? currentNotice ?? shownNotice), readback: readback ?? null } };
