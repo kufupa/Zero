@@ -198,11 +198,19 @@ function missingRequired(proposal: Proposal): string[] {
   }).map(spec => spec.label);
 }
 
+function remainingCreateRooms(proposal: Proposal) {
+  const rooms = proposal.result?.rooms;
+  if (proposal.workflow !== 'create' || proposal.phase !== 'error' || proposal.error?.outcome !== 'known' ||
+      !rooms?.some(room => room.state === 'saved') || !rooms.some(room => room.state === 'failed') ||
+      rooms.some(room => room.state === 'dispatched' || room.state === 'uncertain')) return null;
+  return rooms.filter(room => room.state === 'failed' || room.state === 'unattempted');
+}
+
 function goReady(proposal: Proposal): boolean {
   return (proposal.workflow !== 'create' || hasActionToPrepare(proposal)) &&
-    proposal.phase === 'ready' && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
+    (proposal.phase === 'ready' || remainingCreateRooms(proposal) !== null) && proposal.stage?.state === 'prepared' && !!proposal.stage.job_id &&
     proposal.stage.revision === proposal.revision &&
-    (!proposal.error || proposal.workflow === 'cancel' && proposal.error.code === 'CANCEL_PENALTY_CHANGED' && Boolean(cancellationPenalty(proposal))) &&
+    (!proposal.error || remainingCreateRooms(proposal) !== null || proposal.workflow === 'cancel' && proposal.error.code === 'CANCEL_PENALTY_CHANGED' && Boolean(cancellationPenalty(proposal))) &&
     missingRequired(proposal).length === 0;
 }
 
@@ -215,7 +223,7 @@ function cancellationPenalty(proposal: Proposal): string | null {
 }
 
 function goConfirmation(proposal: Proposal) {
-  return JSON.stringify([proposal.id, proposal.revision, proposal.stage?.job_id]);
+  return JSON.stringify([proposal.id, proposal.revision, proposal.stage?.job_id, remainingCreateRooms(proposal)?.map(room => room.booking_id)]);
 }
 
 function goStorageKey(proposalId: string) { return `nava-pending-go:${proposalId}`; }
@@ -325,7 +333,11 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
         const serverTime = Date.parse(latest.updated_at);
         cache.operationStarts[latest.id] = { phase: latest.phase, at: Number.isFinite(serverTime) ? serverTime : Date.now() };
       }
-      if (latest.phase === 'done' || authoritative && latest.workflow === 'create' && latest.phase === 'error' && latest.error?.outcome === 'known' && latest.result?.rooms) {
+      let remainingGoPending = false;
+      try { remainingGoPending = window.sessionStorage.getItem(goStorageKey(latest.id))?.startsWith('remaining:') === true; } catch { /* storage unavailable */ }
+      const finishedRemainingGo = old?.phase === 'saving' && previous && next.event_sequence > previous.event_sequence;
+      if (latest.phase === 'done' || authoritative && latest.workflow === 'create' && latest.phase === 'error' && latest.error?.outcome === 'known' && latest.result?.rooms &&
+          (!remainingGoPending || finishedRemainingGo)) {
         delete cache.goLocks[latest.id]; delete cache.goUncertainAfter[latest.id]; clearPendingGo(latest.id);
       }
       else {
@@ -889,7 +901,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     if (!advertised(capabilities, current.workflow, 'go') || !goReady(current) ||
         confirmedPreparation !== goConfirmation(current)) return;
     let idempotencyKey: string;
-    try { idempotencyKey = crypto.randomUUID(); window.sessionStorage.setItem(goStorageKey(current.id), idempotencyKey); }
+    try { idempotencyKey = crypto.randomUUID(); window.sessionStorage.setItem(goStorageKey(current.id), remainingCreateRooms(current) ? `remaining:${idempotencyKey}` : idempotencyKey); }
     catch { setMessage('Could not start the Save. Reload the pane and try again.'); return; }
     const currentOperation = { kind: 'go' as const, proposalId: current.id, signal };
     operationRef.current = currentOperation;
@@ -1117,9 +1129,15 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];
   const confirmingGo = Boolean(proposal && goEnabled && confirmedPreparation === goConfirmation(proposal));
   const penalty = proposal ? cancellationPenalty(proposal) : null;
+  const remainingRooms = proposal ? remainingCreateRooms(proposal) : null;
+  const remainingLabels = proposal && remainingRooms ? remainingRooms.map(room => {
+    const index = proposal.bookings.findIndex(booking => booking.id === room.booking_id);
+    return index < 0 ? room.booking_id : `Room ${index + 1}`;
+  }) : [];
   const needsProfile = proposal?.workflow === 'create' && proposal.bookings.some(booking => booking.fields.profile_create_new === true && !booking.fields.guest_profile_id);
   const goLabels = {
-    create: proposal && proposal.bookings.length>1 ? `Save all ${proposal.bookings.length} rooms in Infor?` : 'Save this booking in Infor?',
+    create: remainingRooms ? `Save ${remainingLabels.join(', ')} in Infor? Confirmed rooms will not be saved again.`
+      : proposal && proposal.bookings.length>1 ? `Save all ${proposal.bookings.length} rooms in Infor?` : 'Save this booking in Infor?',
     amend: 'Save these changes in Infor?',
     cancel: 'Cancel this booking in Infor?',
     filing: 'File this PDF in the stay’s Infor Documents?',
@@ -1132,7 +1150,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     }) : undefined;
   const primary = proposal && goEnabled
     ? confirmingGo ? undefined : {
-      label: proposal.workflow === 'cancel' ? 'Go — cancel in Infor' : proposal.workflow === 'filing' ? 'Go — file PDF' : 'Go — save in Infor',
+      label: remainingRooms ? 'Go — save remaining rooms' : proposal.workflow === 'cancel' ? 'Go — cancel in Infor' : proposal.workflow === 'filing' ? 'Go — file PDF' : 'Go — save in Infor',
       onClick: () => setConfirmedPreparation(goConfirmation(proposal)),
     }
     : proposal && isUncertain
