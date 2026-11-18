@@ -46,6 +46,7 @@ type Cache = {
   goUncertainAfter: Record<string, number>;
   stagePending: Record<string, number>;
   quoteAttempts: Record<string, string>;
+  autoQuotes: Set<string>;
   attachmentNeedsRecheck: Record<string, boolean>;
   operationStarts: Record<string, { phase: Proposal['phase']; at: number }>;
   selectedId: string | null;
@@ -54,7 +55,7 @@ type Cache = {
 };
 
 function emptyCache(): Cache {
-  return { drafts: {}, issues: {}, goLocks: {}, goUncertainAfter: {}, stagePending: {}, quoteAttempts: {}, attachmentNeedsRecheck: {}, operationStarts: {}, selectedId: null, nextVersion: 0, inFlightEdit: null };
+  return { drafts: {}, issues: {}, goLocks: {}, goUncertainAfter: {}, stagePending: {}, quoteAttempts: {}, autoQuotes: new Set(), attachmentNeedsRecheck: {}, operationStarts: {}, selectedId: null, nextVersion: 0, inFlightEdit: null };
 }
 
 function pointer(root: unknown, path: string): { exists: boolean; value?: unknown } {
@@ -244,6 +245,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const [selectedId, setSelectedId] = useState(cache.selectedId);
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [pendingQuote, setPendingQuote] = useState<{ proposalId: string; quoteId: string } | null>(null);
   const [confirmedPreparation, setConfirmedPreparation] = useState<string | null>(null);
   const [openingLong, setOpeningLong] = useState(false);
   const [openAttempt, setOpenAttempt] = useState(0);
@@ -464,7 +466,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
 
   useEffect(() => {
     if (!snapshot || busy || authenticationExpired || operationRef.current || cache.inFlightEdit) return;
-    const proposal = snapshot.proposals.find(item => Object.keys(cache.drafts[item.id] ?? {}).length > 0 && !cache.issues[item.id] && !cache.goLocks[item.id]);
+    const proposal = snapshot.proposals.find(item => item.workflow !== 'quote' && Object.keys(cache.drafts[item.id] ?? {}).length > 0 && !cache.issues[item.id] && !cache.goLocks[item.id]);
     if (!proposal) return;
     const timer = window.setTimeout(() => { void saveDraft(proposal.id); }, 450);
     return () => window.clearTimeout(timer);
@@ -1002,6 +1004,32 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const canStage = Boolean(proposal && proposal.workflow !== 'quote' && advertised(capabilities, proposal.workflow, 'stage'));
   const canQuote = Boolean(proposal && proposal.workflow === 'quote' && advertised(capabilities, proposal.workflow, 'quote'));
   const canGo = Boolean(proposal && advertised(capabilities, proposal.workflow, 'go'));
+  useEffect(() => {
+    if (!pendingQuote || busy || authenticationExpired || operationRef.current || cache.inFlightEdit) return;
+    const current = snapshotRef.current?.proposals.find(item => item.id === pendingQuote.proposalId);
+    if (!current || cache.selectedId !== current.id || cache.issues[current.id] || !advertised(capabilities, 'quote', 'quote')) {
+      setPendingQuote(null); return;
+    }
+    if (Object.keys(cache.drafts[current.id] ?? {}).length) {
+      void saveDraft(current.id); return;
+    }
+    const issue = quoteCheckIssue(current, pendingQuote.quoteId);
+    setPendingQuote(null);
+    if (issue) { setMessage(issue); return; }
+    void operation('quote', current, pendingQuote.quoteId);
+  }, [pendingQuote, snapshot, busy, authenticationExpired, version, capabilities]);
+  useEffect(() => {
+    if (!proposal || !canQuote || busy || pendingQuote || authenticationExpired || proposal.phase !== 'ready' ||
+        !['propose', 'staff_review', 'needs_info'].includes(proposal.disposition) || proposal.stage || proposal.error ||
+        cache.autoQuotes.has(proposal.id) || cache.issues[proposal.id] || Object.keys(cache.drafts[proposal.id] ?? {}).length) return;
+    const action = proposal.actions.find(item => item.type === 'quote' && item.details && typeof item.details === 'object' &&
+      !Array.isArray(item.details) && typeof item.details.quote_id === 'string');
+    const details = action?.details;
+    const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : null;
+    if (!quoteId || quoteCheckIssue(proposal, quoteId)) return;
+    cache.autoQuotes.add(proposal.id);
+    void operation('quote', proposal, quoteId);
+  }, [proposal, canQuote, busy, pendingQuote, authenticationExpired, version]);
   const goEnabled = Boolean(proposal && canGo && goReady(proposal) && !busy && !isUncertain && !lock && !issue && !authenticationExpired &&
     cache.stagePending[proposal.id] === undefined && Object.keys(drafts).length === 0);
   const goMissing = proposal && canGo && proposal.phase === 'ready' && proposal.stage?.state === 'prepared' ? missingRequired(proposal) : [];
@@ -1072,6 +1100,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         onSelectStay={canStage && !issue && !isUncertain ? (jobId, removeFields) => { void selectStay(proposal, jobId, removeFields); } : undefined}
         onSelectGuest={proposal.workflow === 'create' && !issue ? (candidate,index) => { void selectGuest(proposal, candidate,index); } : undefined}
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
+        onSubmitQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { cache.autoQuotes.add(proposal.id); setPendingQuote({ proposalId: proposal.id, quoteId }); } : undefined}
         onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections) => { void generateQuoteArtifacts(proposal, quoteId, selections); } : undefined}
         quoteDraftTarget={quoteDraftTarget}
         onSaveQuoteDraft={saveQuoteDraft && !issue && !isUncertain ? body => saveCurrentQuoteDraft(proposal, body) : undefined}

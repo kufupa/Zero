@@ -27,6 +27,7 @@ export type WorkflowProps = {
   onReview?: (path: string, checked: boolean) => void;
   onOpenArtifact?: (artifactId: string) => void;
   onQuote?: (quoteId: string) => void;
+  onSubmitQuote?: (quoteId: string) => void;
   onGenerateQuoteArtifacts?: (quoteId: string, selections: QuoteSelection[]) => void;
   quoteDraftTarget?: 'webmail' | 'outlook';
   onSaveQuoteDraft?: (body: string) => Promise<{ status: string; message: string }>;
@@ -447,7 +448,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
       {Array.from({ length: visibleCount }, (_, index) => {
         const age = ages[index] ?? '';
         const valid = /^\d+$/.test(age) && Number(age) <= ageMax;
-        return <PaneField key={index} label={`Child ${index + 1} age${context ? ` · ${context}` : ''}`} control="number"
+        return <PaneField key={index} label={`Child ${index + 1} age${context ? ` · ${context}` : ''}`} control={proposal.workflow === 'quote' ? 'text' : 'number'}
           value={age} min="0" max={String(ageMax)} step="1" required disabled={locked || !spec.editable}
           error={valid ? undefined : `Enter an age from 0 to ${ageMax}.`}
           review={aiFilled && index < ages.length ? { provenance: 'ai', kind: 'marker' } : undefined}
@@ -468,7 +469,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     const resolvedAges = resolvePointer(proposal, agesPath);
     const ages = ageInputs(Object.prototype.hasOwnProperty.call(drafts, agesPath) ? drafts[agesPath] : resolvedAges.kind === 'value' ? resolvedAges.value : undefined);
     if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string') {
-      control = <PaneField {...common} disabled={common.disabled || !agesSpec?.editable} control="number" value={shown === null || shown === undefined ? '' : String(shown)}
+      control = <PaneField {...common} disabled={common.disabled || !agesSpec?.editable} control={proposal.workflow === 'quote' ? 'text' : 'number'} value={shown === null || shown === undefined ? '' : String(shown)}
         min="0" max={proposal.workflow === 'create' ? '16' : undefined} step="1" error={spec.error || common.error || (shown !== null && shown !== undefined && count === undefined ? proposal.workflow === 'quote' ? 'Enter a non-negative whole number of children.' : 'Enter a child count from 0 to 16.' : undefined)}
         hint={!agesSpec?.editable ? 'Child ages are unavailable to edit. Refresh the proposal.' : hint}
         onChange={next => {
@@ -488,7 +489,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     }
   } else if (spec.control === 'number' || proposal.workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/(?:quantity|adults)$/.test(spec.path)) {
     if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string' && hasDraft) {
-      control = <PaneField {...common} control="number" value={shown === null || shown === undefined ? '' : String(shown)} onChange={next => onEdit(spec.path, next)} />;
+      control = <PaneField {...common} control={proposal.workflow === 'quote' ? 'text' : 'number'} value={shown === null || shown === undefined ? '' : String(shown)} onChange={next => onEdit(spec.path, next)} />;
     }
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
@@ -504,7 +505,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
         : <PaneField {...common} hint={rates.length || rooms.length ? 'Choices from the last Infor check; coverage may be incomplete.' : tracks.length ? 'Choices from the last Infor check for this hotel.' : common.hint} control={nativeCode ? 'combobox' : spec.control === 'select' ? 'select' : 'combobox'} value={text} options={options} onChange={next => onEdit(spec.path, next)} />;
     } else {
       const quoteDate = proposal.workflow === 'quote' && /\/groups\/(?:0|[1-9]\d*)\/(?:arrival_date|departure_date)$/.test(spec.path);
-      const date = (spec.control === 'date' || quoteDate) && (!text || isDateValue(text)) ? 'date' : spec.control === 'date' ? 'text' : spec.control;
+      const date = quoteDate ? 'text' : spec.control === 'date' && (!text || isDateValue(text)) ? 'date' : spec.control === 'date' ? 'text' : spec.control;
       control = <PaneField {...common} control={date} value={text} onChange={next => onEdit(spec.path, next)} />;
     }
   }
@@ -518,8 +519,8 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
 
 function QuoteFields(props: WorkflowProps & { locked: boolean }) {
   const groups = quoteGroups(props.proposal);
-  const sections: { key: string; label?: string; fields: FieldSpec[] }[] = [];
-  const grouped = new Map<string, { key: string; label?: string; fields: FieldSpec[] }>();
+  const sections: { key: string; label?: string; quoteId?: string; fields: FieldSpec[] }[] = [];
+  const grouped = new Map<string, { key: string; label?: string; quoteId?: string; fields: FieldSpec[] }>();
   const specs = [...props.proposal.field_specs].sort((a, b) => Number(!a.path.endsWith('/details/property_code')) - Number(!b.path.endsWith('/details/property_code')));
   for (const spec of specs) {
     if (/\/rooms\/(?:0|[1-9]\d*)\/preferred\/roomCodes$/.test(spec.path)) continue;
@@ -533,21 +534,32 @@ function QuoteFields(props: WorkflowProps & { locked: boolean }) {
     }
     let section = grouped.get(key);
     if (!section) {
-      section = { key, label: group?.label || legacyStay || undefined, fields: [] };
+      section = { key, label: group?.label || legacyStay || undefined, quoteId: group?.quoteId, fields: [] };
       grouped.set(key, section);
       sections.push(section);
     }
     section.fields.push(spec);
   }
 
+  const quoteIds = props.proposal.actions.flatMap(action => action.type === 'quote' && action.details &&
+    typeof action.details === 'object' && !Array.isArray(action.details) && typeof action.details.quote_id === 'string'
+    ? [action.details.quote_id] : []);
   return <PaneSection title="Quote details">
     {sections.map(section => section.label
-      ? <fieldset className={quoteStyles.stay} key={section.key}>
+      ? <fieldset className={quoteStyles.stay} key={section.key} onKeyDown={event => {
+        if (event.key === 'Enter' && event.target instanceof HTMLInputElement && props.onSubmitQuote && section.quoteId) {
+          event.preventDefault(); props.onSubmitQuote(section.quoteId);
+        }
+      }}>
         <legend>{section.label}</legend>
         {[...section.fields].sort((left, right) => quoteFieldOrder(left.path) - quoteFieldOrder(right.path))
           .map(spec => <Field key={spec.path} {...props} spec={spec} showContext={false} />)}
       </fieldset>
-      : <div key={section.key}>{section.fields.map(spec => <Field key={spec.path} {...props} spec={spec} />)}</div>)}
+      : <div key={section.key} onKeyDown={event => {
+        if (event.key === 'Enter' && event.target instanceof HTMLInputElement && props.onSubmitQuote && quoteIds.length === 1) {
+          event.preventDefault(); props.onSubmitQuote(quoteIds[0]);
+        }
+      }}>{section.fields.map(spec => <Field key={spec.path} {...props} spec={spec} />)}</div>)}
   </PaneSection>;
 }
 
@@ -615,7 +627,7 @@ export function quoteCheckIssue(proposal: Proposal, quoteId: string): string | n
   return validQuoteChildren(proposal, quoteId) ? null : 'Enter a child count and an age for each child.';
 }
 
-function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
+function QuoteChecks({ proposal, drafts, busy, onQuote, onSubmitQuote }: WorkflowProps) {
   if (!onQuote) return null;
   const quotes = proposal.actions.filter(action => action.type === 'quote');
   return <PaneSection title="Check availability and rates">
@@ -624,11 +636,11 @@ function QuoteChecks({ proposal, drafts, busy, onQuote }: WorkflowProps) {
       const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : undefined;
       const issue = quoteId ? quoteCheckIssue(proposal, quoteId) : 'Quote details are unavailable. Review the request.';
       return <div key={action.id}>
-        <button type="button" disabled={busy || Object.keys(drafts).length > 0 || Boolean(issue) || !['ready', 'waiting_go'].includes(proposal.phase)}
-        onClick={() => { if (quoteId) onQuote(quoteId); }}>
+        <button type="button" disabled={busy || (Object.keys(drafts).length === 0 && Boolean(issue)) || !['ready', 'waiting_go'].includes(proposal.phase)}
+        onClick={() => { if (quoteId) (onSubmitQuote ?? onQuote)(quoteId); }}>
         {quotes.length > 1 ? `Check quote ${index + 1} in Infor` : 'Check quote in Infor'}
         </button>
-        {issue && <p>{issue}</p>}
+        {issue && Object.keys(drafts).length === 0 && <p>{issue}</p>}
       </div>;
     })}
     {quotes.length === 0 && <p>Quote details are unavailable.</p>}
