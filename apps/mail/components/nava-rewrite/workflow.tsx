@@ -863,7 +863,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay,createdStays
   const [previousJob,setPreviousJob]=useState<string | null>(null);
   const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries(
     ['guest_name','group_name','guest_names','confirmation_number','guest_last_name','guest_first_name','guest_names_hint','reservation_hint','confirmation_hint'].map(key=>[key,true])));
-  if(!['amend','cancel','filing'].includes(proposal.workflow) || proposal.disposition!=='propose' || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
+  if(!['amend','cancel','filing'].includes(proposal.workflow) || (proposal.disposition!=='propose' && !(proposal.workflow==='filing' && proposal.disposition==='staff_review')) || proposal.bookings.length!==1 || !booking || !onLookupStay || !onSelectStay) return null;
   const stage=proposal.stage;
   const native=stage?.state==='target' && stage.revision===proposal.revision && proposal.phase==='ready' &&
     stage.job_id!==previousJob && !changed && Object.keys(drafts).length===0 ? stage.native_result : null;

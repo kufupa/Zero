@@ -41,6 +41,7 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
         action.details.confirmation_number=selection.data.confirmation;
     } else if(input.remove_fields.length) throw new Error('STALE_REVISION');
     if(draft.workflow==='filing') {
+      if(draft.disposition==='staff_review') draft.disposition='propose';
       const stay=selection.data.current_state;
       for(const [key,value] of Object.entries({confirmation_number:selection.data.confirmation,
         first_name:stay.first_name,guest_first_name:stay.first_name,last_name:stay.last_name,guest_last_name:stay.last_name,
