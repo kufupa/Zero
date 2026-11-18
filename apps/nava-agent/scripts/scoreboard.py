@@ -10,20 +10,32 @@ For C, legacy model-safe JSONL rows can be used with --historical-mailbox-id;
 add eligibility to each row. Rows with PDF metadata need an available attachment.
 
 score labels: JSONL {id, workflow, source, fields, labtest?}. Each field is
-{path, value, observed_at, evidence, basis, target: "real"}; path is a JSON pointer into the
-matching proposal. basis is staff_outbound or hms, never Labtest; observed_at
-must be later than input_cutoff. Each label has identity {target: "real",
+{path, value, observed_at, evidence, basis, target: "real", identity?}; path is
+a JSON pointer into the matching proposal. basis is staff_outbound or hms,
+never Labtest; observed_at must be later than input_cutoff. Each label has identity {target: "real",
 confirmation, evidence} or {target: "real", stay_id, match_evidence},
-independently matching the real stay. Triage does not
-require a stay. A write-workflow labtest is {kind: "labtest_save_readback",
-completed: true|false, evidence, guest: "Proof Labtest", arrival_date, cms: false,
-wall_ms?: number}; it is a separately labelled terminal Save + readback outcome,
-never inferred from real-guest Prepare. Identifiers must be opaque case IDs.
+independently matching the real stay. Multi-booking/room labels require identity
+on each field. Proposal identifiers must match; for an ID-less Quote/Create a
+field may instead carry source_binding {message_id, reference, proposal_path,
+evidence}, a unique stable reference present in that source and proposal scope.
+Triage does not require a stay. A write-workflow labtest is {kind:
+"labtest_save_readback", case_id, workflow, source_message_id, real_proposal_id,
+booking_id, execution_id, completed, evidence, guest: "Proof Labtest", arrival_date, cms:
+false, save: {confirmation or stay_id, evidence, at}, readback: {confirmation or
+stay_id, evidence, observed_at}, wall_ms?}. A completed Save and later matching
+readback are required, as is this proposal's real signed Prepare. Use labtests
+with one distinct Save/readback per booking for multi-booking proposals. Identifiers
+must be opaque case IDs.
 For triage, /classified_workflows compares the sorted proposed workflow names.
 
 prices: JSON {model, input, output, cache_read, cache_write, long_context_above,
 long_input, long_output, long_cache_read, long_cache_write}; USD per million.
 Omit prices when current rates are not established.
+
+catalog input JSONL: {id, input_cutoff, eligibility, thread_id, message_id,
+mailbox_id, thread}, where thread is an authorized mail.get response with
+mergeLinked=true. Output is a private pane-input JSONL; HTML-only rows are
+reported separately for the pane's own mapper to handle.
 """
 import argparse
 import concurrent.futures
@@ -32,6 +44,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 import urllib.error
@@ -56,11 +69,62 @@ def timestamp(s):
     return value.timestamp()
 
 
+def private_destination(path):
+    if pathlib.Path(path).resolve().is_relative_to(pathlib.Path(__file__).resolve().parents[3]):
+        raise ValueError('private output must be outside the repository')
+
+
 def save_private(path, value):
+    private_destination(path)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'w', encoding='utf-8') as f:
         json.dump(value, f, ensure_ascii=False, separators=(',', ':'))
         f.write('\n')
+
+
+def catalog_case(row):
+    thread = row['thread']
+    messages = thread['messages']
+    if (thread['id'] != row['thread_id'] or thread['transportId'] != row['mailbox_id']
+            or not thread['conversationId'] or thread['conversationMessageCount'] != len(messages) or not messages):
+        raise ValueError('conversation_incomplete')
+    thread_ids = {thread['id'], *thread['linkedThreadIds']}
+    ids = set()
+    mapped = []
+    def address(value):
+        email = value['email']
+        if not isinstance(email, str) or not email.strip():
+            raise ValueError('address_missing')
+        name = value.get('name')
+        return {'name': None if name == email.strip().split('@')[0] else name, 'email': email}
+    for m in messages:
+        if (not m['id'] or m['id'] in ids or m.get('threadId') not in thread_ids or m.get('isDraft')
+                or m.get('direction') not in ('inbound', 'outbound')):
+            raise ValueError('conversation_invalid')
+        ids.add(m['id'])
+        if timestamp(m['receivedOn']) > timestamp(row['input_cutoff']):
+            raise ValueError('conversation_after_cutoff')
+        if m['body'] == m['processedHtml'] and re.search(r'<[a-z][\s\S]*>', m['body'], re.I):
+            raise ValueError('html_only_requires_pane_mapper')
+        mapped.append({'id': m['id'], 'rfc_message_id': m.get('messageId'), 'direction': m['direction'],
+                       'from': address(m['sender']), 'to': [address(v) for v in m['to']],
+                       'cc': [address(v) for v in (m.get('cc') or [])], 'received_at': m['receivedOn'],
+                       'subject': m['subject'], 'body_text': m['body'], 'body_html': None,
+                       'attachment_status': m.get('attachmentStatus') or 'unknown', 'attachments': []})
+    selected = [m for m in mapped if m['id'] == row['message_id'] and m['direction'] == 'inbound']
+    if len(selected) != 1 or not selected[0]['body_text'].strip():
+        raise ValueError('selected_inbound_missing')
+    return {'id': row['id'], 'input_cutoff': row['input_cutoff'], 'eligibility': row.get('eligibility', 'unknown'),
+            'thread': {'source': 'outlook', 'source_thread_id': thread['conversationId'], 'mailbox_id': row['mailbox_id'],
+                       'selected_message_id': row['message_id'], 'property_code': 'HRCEN', 'mode': 'live', 'messages': mapped}}
+
+
+def save_jsonl_private(path, values):
+    private_destination(path)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        for value in values:
+            f.write(json.dumps(value, ensure_ascii=False, separators=(',', ':')) + '\n')
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -156,6 +220,8 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         selected = [m for m in messages if m['id'] == thread['selected_message_id']]
         if len(selected) != 1 or selected[0]['direction'] != 'inbound':
             raise ValueError('selected_inbound_missing')
+        result['source'] = {'message_id': selected[0]['id'], 'subject': selected[0].get('subject', ''),
+                            'body_text': selected[0].get('body_text', '')}
         if tier == 'C' and not time.time() - 30 * 86400 <= timestamp(selected[0]['received_at']) <= time.time():
             result.update(status='excluded', reason='outside_last_30_days')
             return result
@@ -226,19 +292,32 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                         result['prepare'].append({'workflow': workflow, 'status': 'unknown', 'reason': 'quote_id_missing'})
                         continue
                     body.update(quote_id=qid, idempotency_key=str(uuid.uuid4()))
-                entry = {'workflow': workflow, 'proposal_id': p['id'], 'status': 'unknown', 'reason': None, 'wall_ms': None}
+                entry = {'workflow': workflow, 'proposal_id': p['id'], 'revision': p['revision'],
+                         'status': 'unknown', 'reason': None, 'wall_ms': None}
                 result['prepare'].append(entry)
                 pstart = time.monotonic()
                 try:
                     # Dispatch exactly once. An uncertain response is recorded, never retried.
-                    gateway.json('/proposals/' + urllib.parse.quote(p['id'], safe='') + '/' + op, body)
+                    accepted = gateway.json('/proposals/' + urllib.parse.quote(p['id'], safe='') + '/' + op, body)
+                    if (accepted.get('proposal_id') != p['id'] or accepted.get('revision') != p['revision']
+                            or accepted.get('phase') != 'staging' or not accepted.get('job_id')):
+                        entry['reason'] = 'prepare_acceptance_unbound'
+                        continue
+                    entry['job_id'] = accepted['job_id']
+                    entry['accepted'] = True
                     while time.monotonic() - pstart < timeout:
                         current = gateway.json(path)
                         item = next((x for x in current.get('proposals', []) if x['id'] == p['id']), None)
                         if item and terminal_stage(item):
-                            entry['status'] = 'complete' if item.get('stage') and not item.get('error') else 'failed'
+                            stage = item.get('stage') or {}
+                            if stage.get('job_id') != entry['job_id'] or stage.get('revision') != entry['revision']:
+                                entry['reason'] = 'prepare_result_unbound'
+                                break
+                            entry['status'] = 'complete' if not item.get('error') else 'failed'
                             entry['reason'] = None if entry['status'] == 'complete' else 'operation_error'
-                            entry['stage'] = item.get('stage')
+                            entry['stage'] = stage
+                            entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
+                            entry['elapsed_from_post_ms'] = round((time.monotonic() - monotonic) * 1000)
                             entry['reply_draft_present'] = bool(item.get('reply_draft'))
                             if op == 'quote' and entry['status'] == 'complete' and quote_first:
                                 options = (item.get('stage') or {}).get('quote_options') or []
@@ -266,8 +345,11 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                         entry['reason'] = 'operation_timeout'
                 except Exception as exc:
                     entry['reason'] = str(exc) if isinstance(exc, RuntimeError) else 'operation_dispatch_or_read_unknown'
-                entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
-                entry['elapsed_from_post_ms'] = round((time.monotonic() - monotonic) * 1000)
+                    if isinstance(exc, RuntimeError) and re.fullmatch(r'http_4\d\d', str(exc)):
+                        entry['status'] = 'failed'
+                if entry['wall_ms'] is None:
+                    entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
+                    entry['elapsed_from_post_ms'] = round((time.monotonic() - monotonic) * 1000)
     except Exception as exc:
         known = {'pane_live_source_required', 'historical_source_required', 'historical_mailbox_required', 'historical_attachment_unavailable',
                  'conversation_after_cutoff', 'selected_inbound_missing', 'existing_session_not_fresh',
@@ -354,25 +436,183 @@ def percentile(values, p):
     return round(values[lo] + (values[min(lo + 1, len(values) - 1)] - values[lo]) * (pos - lo), 2)
 
 
-def real_identity(label):
-    identity = label.get('identity') or {}
-    labtest = label.get('labtest') or {}
+def labtest_evidences(label):
+    if 'labtests' in label:
+        return label['labtests'] if isinstance(label['labtests'], list) else []
+    return [label['labtest']] if isinstance(label.get('labtest'), dict) else []
+
+
+def real_identity(identity, label):
+    identity = identity or {}
     if identity.get('target') != 'real' or identity.get('guest') == 'Proof Labtest':
         return False
-    if any(identity.get(k) and identity.get(k) == labtest.get(k) for k in ('confirmation', 'stay_id')):
+    labtest_ids = [target for labtest in labtest_evidences(label) if isinstance(labtest, dict)
+                   for target in (labtest, labtest.get('save') or {}, labtest.get('readback') or {})]
+    if any(identity.get(k) and identity.get(k) == target.get(k)
+           for k in ('confirmation', 'stay_id') for target in labtest_ids):
         return False
     return bool((identity.get('confirmation') and identity.get('evidence')) or
                 (identity.get('stay_id') and identity.get('match_evidence')))
 
 
-def labtest_label(label):
-    evidence = label.get('labtest') or {}
+def booking_for_path(proposal, path):
+    bookings = proposal.get('bookings') or []
+    parts = path.split('/') if isinstance(path, str) else []
+    if len(parts) >= 3 and parts[1] == 'bookings' and re.fullmatch(r'0|[1-9]\d*', parts[2]):
+        index = int(parts[2])
+        return (index, bookings[index]) if index < len(bookings) else (None, None)
+    if len(parts) >= 3 and parts[1] == 'actions' and re.fullmatch(r'0|[1-9]\d*', parts[2]):
+        actions = proposal.get('actions') or []
+        index = int(parts[2])
+        if index >= len(actions):
+            return None, None
+        ids = actions[index].get('booking_ids') or []
+        matches = [(i, b) for i, b in enumerate(bookings) if b.get('id') in ids]
+        return matches[0] if len(ids) == len(matches) == 1 else (None, None)
+    return (0, bookings[0]) if len(bookings) == 1 else (None, None)
+
+
+def booking_identifiers(proposal, booking):
+    state = booking.get('current_state') or {}
+    fields = booking.get('fields') or {}
+    values = [booking.get('reservation_id')]
+    for item in (fields, state):
+        values.extend(item.get(key) for key in ('confirmation_number', 'confirmation', 'reservation_id',
+                                                'stay_id', 'native_stay_id', 'reservation_stay_id'))
+    for action in proposal.get('actions') or []:
+        details = action.get('details')
+        if action.get('booking_ids') == [booking.get('id')] and isinstance(details, dict):
+            values.append(details.get('confirmation_number'))
+    return {v for v in values if isinstance(v, str) and v.strip()}
+
+
+def source_binding(proposal, path, binding, source):
+    if not isinstance(binding, dict) or not isinstance(source, dict) or not binding.get('evidence'):
+        return False
+    token, ref_path = binding.get('reference'), binding.get('proposal_path')
+    if (binding.get('message_id') != source.get('message_id') or not isinstance(token, str)
+            or not re.fullmatch(r'[A-Za-z0-9_-]{5,}', token) or not re.search(r'[A-Za-z]', token)
+            or not re.search(r'\d', token) or re.search(r'\d{1,2}(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\d{2,4}', token, re.I)):
+        return False
+    # The reference must belong to the same booking or individual quote room.
+    scope = re.match(r'^(/bookings/(?:0|[1-9]\d*)/fields)(?:/|$)', path or '')
+    if not scope:
+        scope = re.match(r'^(/actions/(?:0|[1-9]\d*)/details/groups/(?:0|[1-9]\d*)/rooms/(?:0|[1-9]\d*))(?:/|$)', path or '')
+    if not scope or not isinstance(ref_path, str):
+        return False
+    if scope.group(1).startswith('/actions/'):
+        found, room = pointer(proposal, scope.group(1))
+        if not found or not isinstance(room, dict) or room.get('quantity') != 1:
+            return False
+    ref_fields = {'booking_reference', 'external_reference', 'source_reference', 'request_reference'}
+    if ref_path not in {scope.group(1) + '/' + name for name in ref_fields}:
+        return False
+    found, value = pointer(proposal, ref_path)
+    text = str(source.get('subject') or '') + '\n' + str(source.get('body_text') or '')
+    if not found or value != token or text.count(token) != 1:
+        return False
+    def count_refs(value):
+        if isinstance(value, list):
+            return sum(count_refs(v) for v in value)
+        if isinstance(value, dict):
+            return sum((1 if k in ref_fields and v == token else 0) + count_refs(v) for k, v in value.items())
+        return 0
+    return count_refs(proposal) == 1
+
+
+def conflicting_bindings(label):
+    by_reference, by_identity = {}, {}
+    for field in label.get('fields', []):
+        binding = field.get('source_binding') or {}
+        identity = field.get('identity') or label.get('identity') or {}
+        ref = (binding.get('message_id'), binding.get('reference'))
+        target = (identity.get('confirmation'), identity.get('stay_id'))
+        if all(ref) and any(target):
+            by_reference.setdefault(ref, set()).add(target)
+            by_identity.setdefault(target, set()).add(ref)
+    bad = {ref for ref, targets in by_reference.items() if len(targets) != 1}
+    for refs in by_identity.values():
+        if len(refs) != 1:
+            bad.update(refs)
+    return bad
+
+
+def field_identity(proposal, field, label, source, conflicts):
+    if not isinstance(proposal, dict):
+        return 'proposal_missing'
+    path = field.get('path')
+    index, booking = booking_for_path(proposal, path)
+    bookings = proposal.get('bookings') or []
+    quote_rooms = sum(max(1, room.get('quantity') if type(room.get('quantity')) is int else 1)
+                      for action in proposal.get('actions') or [] if isinstance(action.get('details'), dict)
+                      for group in action['details'].get('groups') or [] if isinstance(group, dict)
+                      for room in group.get('rooms') or [] if isinstance(room, dict))
+    multiple = len(bookings) > 1 or quote_rooms > 1
+    identity = field.get('identity') if multiple else field.get('identity', label.get('identity'))
+    if not real_identity(identity, label):
+        return 'staff_identity_missing'
+    actual = booking_identifiers(proposal, booking) if booking else set()
+    expected = {identity[k] for k in ('confirmation', 'stay_id') if isinstance(identity.get(k), str) and identity[k]}
+    if actual:
+        if not actual.issubset(expected) or not (actual & expected):
+            return 'proposal_identity_mismatch'
+        if sum(bool(booking_identifiers(proposal, b) & actual) for b in bookings) != 1:
+            return 'proposal_identity_ambiguous'
+        return None
+    if booking is None and bookings:
+        return 'booking_scope_ambiguous'
+    binding = field.get('source_binding') or {}
+    if proposal.get('workflow') in ('quote', 'create'):
+        if (binding.get('message_id'), binding.get('reference')) in conflicts:
+            return 'source_binding_ambiguous'
+        if source_binding(proposal, path, binding, source):
+            return None
+    return 'proposal_identity_unbound'
+
+
+def labtest_label(label, result, proposal, evidence, used_executions):
+    if not isinstance(evidence, dict):
+        return False
     try:
         year = dt.date.fromisoformat(evidence.get('arrival_date', '')).year
     except (ValueError, TypeError):
         return False
-    return bool(evidence.get('kind') == 'labtest_save_readback' and evidence.get('evidence')
-                and evidence.get('guest') == 'Proof Labtest' and evidence.get('cms') is False and year >= 2027)
+    execution = evidence.get('execution_id')
+    source_id = (result.get('source') or {}).get('message_id')
+    if not (evidence.get('kind') == 'labtest_save_readback' and evidence.get('evidence')
+            and evidence.get('guest') == 'Proof Labtest' and evidence.get('cms') is False and year >= 2027
+            and evidence.get('case_id') == label.get('id') and evidence.get('workflow') == label.get('workflow')
+            and isinstance(source_id, str) and source_id and evidence.get('source_message_id') == source_id
+            and proposal and evidence.get('real_proposal_id') == proposal.get('id')
+            and evidence.get('booking_id') and sum(b.get('id') == evidence['booking_id'] for b in proposal.get('bookings') or []) == 1
+            and isinstance(execution, str) and execution and used_executions[execution] == 1
+            and type(evidence.get('completed')) is bool):
+        return False
+    save = evidence.get('save') or {}
+    if not save.get('evidence'):
+        return False
+    if evidence['completed'] is False:
+        return True
+    readback = evidence.get('readback') or {}
+    ids = [key for key in ('confirmation', 'stay_id') if save.get(key) and readback.get(key)]
+    try:
+        ordered = timestamp(readback['observed_at']) >= timestamp(save['at'])
+    except (KeyError, ValueError, TypeError):
+        ordered = False
+    return bool(readback.get('evidence') and ids and ordered and all(save[key] == readback[key] for key in ids))
+
+
+def prepare_outcome(result, proposal, item):
+    if not proposal or result.get('status') != 'complete' or not (result.get('source') or {}).get('message_id'):
+        return 'unknown'
+    if (item.get('workflow') != proposal.get('workflow') or item.get('proposal_id') != proposal.get('id')
+            or item.get('revision') != proposal.get('revision')):
+        return 'unknown'
+    stage = item.get('stage') or {}
+    if (item.get('status') == 'complete' and item.get('accepted') is True and item.get('job_id')
+            and stage.get('job_id') == item['job_id'] and stage.get('revision') == item['revision']):
+        return 'complete'
+    return 'failed' if item.get('status') == 'failed' else 'unknown'
 
 
 def score(results, labels, prices):
@@ -380,6 +620,8 @@ def score(results, labels, prices):
     if len(by_id) != len(results):
         raise ValueError('duplicate replay id')
     groups = {w: [] for w in WORKFLOWS}
+    used_executions = Counter(evidence['execution_id'] for label in labels for evidence in labtest_evidences(label)
+                              if isinstance(evidence, dict) and evidence.get('execution_id'))
     seen = set()
     for label in labels:
         key = (label['id'], label['workflow'])
@@ -390,7 +632,7 @@ def score(results, labels, prices):
             groups[label['workflow']].append((label, by_id[label['id']]))
     report = {}
     for workflow, group in groups.items():
-        outcomes, reasons, field_counts, sources, prep, artifacts = Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
+        outcomes, reasons, field_counts, sources, prep, artifacts, labtests = Counter(), Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
         by_field = {}
         latencies, prepare_latencies, labtest_latencies, costs, per_email_cost = [], [], [], [], []
         labels_with_fields = 0
@@ -403,6 +645,8 @@ def score(results, labels, prices):
                                                                             if p.get('workflow') in WORKFLOWS and p.get('workflow') != 'triage'})}]
             p = candidates[0] if len(candidates) == 1 else None
             assertion_results = []
+            bound_bookings = set()
+            conflicts = conflicting_bindings(label)
             if label.get('fields'):
                 labels_with_fields += 1
             for field in label.get('fields', []):
@@ -410,7 +654,6 @@ def score(results, labels, prices):
                 try:
                     separated = ('value' in field and bool(field.get('evidence')) and field.get('target') == 'real'
                                  and field.get('basis') in ('staff_outbound', 'hms')
-                                 and (workflow == 'triage' or real_identity(label))
                                  and timestamp(field['observed_at']) > timestamp(r['input_cutoff']))
                 except (KeyError, ValueError, TypeError):
                     separated = False
@@ -419,6 +662,17 @@ def score(results, labels, prices):
                     field_score['unknown'] += 1
                     assertion_results.append(None)
                     continue
+                binding_reason = None if workflow == 'triage' else field_identity(p, field, label, r.get('source'), conflicts)
+                if binding_reason:
+                    field_counts['unknown'] += 1
+                    field_score['unknown'] += 1
+                    reasons['field:' + binding_reason] += 1
+                    assertion_results.append(None)
+                    continue
+                if workflow in WRITES:
+                    index, _ = booking_for_path(p, field.get('path'))
+                    if index is not None:
+                        bound_bookings.add(index)
                 found, actual = pointer(p, field.get('path')) if p else (False, None)
                 correct = found and same(actual, field.get('value'))
                 field_counts['correct' if correct else 'wrong'] += 1
@@ -428,11 +682,44 @@ def score(results, labels, prices):
                 outcome = 'unknown'
                 reasons['model_only_scope'] += 1
             elif workflow in WRITES:
-                evidence = label.get('labtest') or {}
-                completed = evidence.get('completed')
-                outcome = ('complete' if completed else 'failed') if type(completed) is bool and labtest_label(label) else 'unknown'
-                if outcome == 'unknown':
-                    reasons['labtest_terminal_evidence_missing'] += 1
+                evidence = labtest_evidences(label)
+                valid = [item for item in evidence if labtest_label(label, r, p, item, used_executions)]
+                booking_ids = [b.get('id') for b in (p.get('bookings') or [])] if p else []
+                covered_ids = [item['booking_id'] for item in valid]
+                if any(item['completed'] is False for item in valid):
+                    lab_outcome = 'failed'
+                elif (booking_ids and len(set(booking_ids)) == len(booking_ids) == len(covered_ids) == len(evidence)
+                      and set(covered_ids) == set(booking_ids)):
+                    lab_outcome = 'complete'
+                else:
+                    lab_outcome = 'unknown'
+                labtests[lab_outcome] += 1
+                matches = [e for e in r.get('prepare', []) if p and e.get('workflow') == workflow
+                           and e.get('proposal_id') == p.get('id') and e.get('revision') == p.get('revision')]
+                real_outcome = 'unknown'
+                if r['status'] == 'complete' and len(matches) == 1:
+                    item = matches[0]
+                    prepared = prepare_outcome(r, p, item)
+                    if prepared == 'complete':
+                        bookings = p.get('bookings') or []
+                        if bookings and bound_bookings == set(range(len(bookings))) and assertion_results and None not in assertion_results:
+                            real_outcome = 'complete'
+                        else:
+                            reasons['real_case_identity_unbound'] += 1
+                    elif prepared == 'failed':
+                        real_outcome = 'failed'
+                if real_outcome == 'failed' or lab_outcome == 'failed':
+                    outcome = 'failed'
+                elif real_outcome == lab_outcome == 'complete':
+                    outcome = 'complete'
+                else:
+                    outcome = 'unknown'
+                if real_outcome == 'unknown':
+                    reasons['real_prepare_unbound_or_missing'] += 1
+                if lab_outcome == 'unknown':
+                    reused = any(isinstance(item, dict) and item.get('execution_id') and used_executions[item['execution_id']] > 1 for item in evidence)
+                    reason = 'labtest_execution_reused' if reused else 'labtest_terminal_evidence_unbound_or_missing'
+                    reasons[reason] += 1
             elif r['status'] != 'complete':
                 outcome = 'unknown'
                 reasons[r.get('reason') or 'replay_unknown'] += 1
@@ -463,13 +750,16 @@ def score(results, labels, prices):
                 reasons['cost:' + why] += 1
             else:
                 costs.append(cost)
-            labtest_ms = (label.get('labtest') or {}).get('wall_ms')
-            if type(labtest_ms) in (int, float) and labtest_ms >= 0 and labtest_label(label):
-                labtest_latencies.append(labtest_ms)
+            evidences = labtest_evidences(label)
+            if len(evidences) == 1 and labtest_label(label, r, p, evidences[0], used_executions):
+                labtest_ms = evidences[0].get('wall_ms')
+                if type(labtest_ms) in (int, float) and labtest_ms >= 0:
+                    labtest_latencies.append(labtest_ms)
             for e in r.get('prepare', []):
                 if e.get('workflow') == workflow:
-                    prep[e['status']] += 1
-                    if e['status'] == 'complete':
+                    prepared = prepare_outcome(r, p, e)
+                    prep[prepared] += 1
+                    if prepared == 'complete' and type(e.get('elapsed_from_post_ms')) in (int, float):
                         prepare_latencies.append(e['elapsed_from_post_ms'])
                     if e.get('reason'):
                         reasons['prepare:' + e['reason']] += 1
@@ -493,7 +783,7 @@ def score(results, labels, prices):
             'post_to_prepare_ms': {'n': len(prepare_latencies), 'p50': percentile(prepare_latencies, .5), 'p95': percentile(prepare_latencies, .95)},
             'labtest_e2e_wall_ms': {'n': len(labtest_latencies), 'p50': percentile(labtest_latencies, .5), 'p95': percentile(labtest_latencies, .95)},
             'haiku_usd_per_email': {'n': len(costs), 'mean': sum(costs) / len(costs) if costs else None, 'emails': per_email_cost},
-            'real_unsaved_prepare': dict(prep), 'labtest_completion': dict(outcomes) if workflow in WRITES else None,
+            'real_unsaved_prepare': dict(prep), 'labtest_completion': dict(labtests) if workflow in WRITES else None,
             'quote_artifacts': dict(artifacts), 'label_sources': dict(sources), 'unknown_reasons': dict(reasons)}
     return {'pricing_model': prices.get('model') if prices else None,
             'pricing_source': prices.get('source') if prices else None, 'workflows': report,
@@ -516,6 +806,9 @@ def live_limit(capabilities):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
+    catalog = sub.add_parser('catalog', help='convert private, authorized mail.get exports into exact pane inputs')
+    catalog.add_argument('--responses', required=True, help='JSONL with selected synced mail.get responses')
+    catalog.add_argument('--out', required=True, help='new private JSONL path outside the repository')
     replay = sub.add_parser('replay', help='POST exact pane sources via staff gateway; no labels are read')
     replay.add_argument('--tier', required=True, choices=['A', 'B', 'C'])
     replay.add_argument('--inputs', required=True)
@@ -533,7 +826,21 @@ def main():
     scoring.add_argument('--labels', required=True)
     scoring.add_argument('--prices', help='JSON file with explicitly sourced current per-million rates')
     args = parser.parse_args()
-    if args.command == 'replay':
+    if args.command == 'catalog':
+        cases, rejected = [], Counter()
+        for row in rows(args.responses):
+            try:
+                cases.append(catalog_case(row))
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                allowed = {'conversation_incomplete', 'address_missing', 'conversation_invalid', 'conversation_after_cutoff',
+                           'html_only_requires_pane_mapper', 'selected_inbound_missing'}
+                rejected[str(exc) if str(exc) in allowed else 'input_invalid'] += 1
+        if len({c['id'] for c in cases}) != len(cases):
+            raise ValueError('duplicate case id')
+        save_jsonl_private(args.out, cases)
+        print(json.dumps({'cases': len(cases), 'rejected': dict(rejected), 'output': args.out}))
+    elif args.command == 'replay':
+        private_destination(args.out)
         cases = rows(args.inputs)
         if args.tier == 'C':
             for case in cases:
