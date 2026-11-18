@@ -8,7 +8,7 @@ import type { ProposalDraft } from './schema.js';
 const confirmation = z.string().regex(/^\d{6,10}-\d{1,10}$/);
 export const targetLookup = z.discriminatedUnion('kind', [
   z.object({kind:z.literal('surname'),surname:z.string().trim().min(1).max(256).regex(/^[^\r\n,]+$/)}).strict(),
-  z.object({kind:z.literal('confirmation'),confirmation}).strict(),
+  z.object({kind:z.literal('confirmation'),confirmation,arrival_date:z.string().date().optional()}).strict(),
 ]);
 export const targetInput = z.object({expected_revision:z.number().int().positive(),lookup:targetLookup}).strict();
 export const targetSelection = z.object({
@@ -45,7 +45,8 @@ export async function lookupStay(lookup:z.infer<typeof targetLookup>, bookingId:
   }
   const {withSavedStayAgentSession}=await import(new URL('../../server-pilot/tooling/hms-cloud/saved-stay-agent-session.mjs',import.meta.url).href);
   const raw=await withSavedStayAgentSession(
-    ({runTool}:{runTool:(input:Record<string,unknown>)=>Promise<unknown>})=>runTool({tool:'read',confirmation:lookup.confirmation,includeNativePreimage:true}),
+    ({runTool}:{runTool:(input:Record<string,unknown>)=>Promise<unknown>})=>runTool({tool:'read',confirmation:lookup.confirmation,
+      ...(lookup.arrival_date ? {arrivalDate:lookup.arrival_date} : {}),includeNativePreimage:true}),
     {propertyCode:context.propertyCode,readOnly:true,readOnlyConfirmation:lookup.confirmation,signal:context.signal,credentialLease:context.credentialLease});
   const read=z.object({outcome:z.literal('ok'),shallow:z.object({confirmation}),record:z.object({nativePreimage:selectedStay})}).safeParse(raw);
   if(!read.success || read.data.shallow.confirmation!==lookup.confirmation ||

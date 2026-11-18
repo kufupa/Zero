@@ -819,6 +819,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowPro
   const booking=proposal.bookings[0];
   const [surname,setSurname]=useState('');
   const [confirmation,setConfirmation]=useState(booking?.reservation_id ?? '');
+  const [arrivalDate,setArrivalDate]=useState('');
   const [changed,setChanged]=useState(false);
   const [previousJob,setPreviousJob]=useState<string | null>(null);
   const [removed,setRemoved]=useState<Record<string,boolean>>(()=>Object.fromEntries(
@@ -839,8 +840,9 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowPro
     {!proposal.stay_target_selected && booking.reservation_id && <p>Confirmation from the request: {booking.reservation_id}. Check and select the stay below.</p>}
     <PaneField label="Guest surname" control="text" value={surname} disabled={locked} onChange={value=>{setSurname(value);setChanged(true);}} />
     <button type="button" disabled={locked || !surname.trim()} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'surname',surname:surname.trim()});}}>Search by surname</button>
-    <PaneField label="Exact confirmation number" control="text" value={confirmation} disabled={locked} hint="Include the suffix, for example 1234567890-1." onChange={value=>{setConfirmation(value);setChanged(true);}} />
-    <button type="button" disabled={locked || !exact.test(confirmation.trim())} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:confirmation.trim()});}}>Check confirmation</button>
+    <PaneField label="Exact confirmation number" control="text" value={confirmation} disabled={locked} hint="Include the suffix, for example 1234567890-1." onChange={value=>{setConfirmation(value);setArrivalDate('');setChanged(true);}} />
+    <PaneField label="Current arrival date (optional)" control="date" value={arrivalDate} disabled={locked} onChange={value=>{setArrivalDate(value);setChanged(true);}} />
+    <button type="button" disabled={locked || !exact.test(confirmation.trim())} onClick={()=>{setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:confirmation.trim(),...(arrivalDate ? {arrival_date:arrivalDate} : {})});}}>Check confirmation</button>
     {stage?.state==='target' && (changed || stage.job_id===previousJob || Object.keys(drafts).length>0) && <p>Search details changed. Previous results are out of date; search again.</p>}
     {result?.kind==='surname' && <>
       <p>{candidates.length>1 ? 'More than one stay matched. Choose a confirmation to check.' : 'Choose a confirmation to check.'} Search covers a limited date range; additional stays may exist.</p>
@@ -848,7 +850,7 @@ function StayTarget({proposal,drafts,busy,onLookupStay,onSelectStay}:WorkflowPro
       <ul>{candidates.map((candidate,index)=>{
         if(!candidate || typeof candidate!=='object' || Array.isArray(candidate) || typeof candidate.confirmation!=='string' || !exact.test(candidate.confirmation)) return null;
         const id=candidate.confirmation;
-        return <li key={`${id}:${index}`}><button type="button" disabled={locked} onClick={()=>{setConfirmation(id);setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:id});}}>
+        return <li key={`${id}:${index}`}><button type="button" disabled={locked} onClick={()=>{setConfirmation(id);setArrivalDate('');setPreviousJob(stage?.job_id ?? '');setChanged(false);onLookupStay({kind:'confirmation',confirmation:id});}}>
           {id} · {String(candidate.firstName ?? '')} {String(candidate.lastName ?? '')} · {String(candidate.arrival ?? '')} – {String(candidate.departure ?? '')}
         </button></li>;
       })}</ul>
@@ -910,7 +912,7 @@ function TriageLookupResult({ proposal }: { proposal: Proposal }) {
       {candidates.length === 0 ? <p>No matching stays were returned.</p> : <ul>{candidates.map((candidate, index) => {
         if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
         const text = (key: string) => { const value = candidate[key]; return typeof value === 'string' ? value : ''; };
-        return <li key={index}>
+        return <li key={`${text('confirmation')}:${index}`}>
           Confirmation: {text('confirmation') || 'Not provided'} · {text('firstName')} {text('lastName')} · {text('arrival') || 'Arrival not provided'} – {text('departure') || 'Departure not provided'}
           {text('status') && <> · Search status: {text('status')}</>}
         </li>;

@@ -14,7 +14,7 @@ export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 export type RequestOptions = { signal?: AbortSignal };
 type EventOptions = RequestOptions & { onConnected?: () => void };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
-export type StayLookup = { kind: 'surname'; surname: string } | { kind: 'confirmation'; confirmation: string };
+export type StayLookup = { kind: 'surname'; surname: string } | { kind: 'confirmation'; confirmation: string; arrival_date?: string };
 export type NavaApi = {
   upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getThread: (id: string, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
