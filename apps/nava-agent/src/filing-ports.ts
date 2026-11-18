@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { sql } from './db.js';
 import { staffAttachmentsChecked, type StaffStage } from './attachment-gate.js';
 import { maxFilingPdfBytes, parseFilingRequest, type ToolContext } from '../tools/filing/index.js';
+import { filingDescription } from '../tools/filing/schema.js';
 import type { ProposalDraft } from './schema.js';
 
 const identifier = z.string().min(1).max(256).regex(/^[^\p{Cc}]+$/u);
@@ -52,9 +53,8 @@ export function withFilingSourceFields(draft: ProposalDraft, selectedMessagePayl
   const choices = selectedPdfs(source.data.attachments);
   const file = wrongMessage ? undefined : details.attachment_id == null && choices.length === 1
     ? choices[0] : choices.find(option => option.id === details.attachment_id);
-  const description = typeof details.description === 'string' && details.description.trim() === details.description &&
-    details.description.length > 0 && details.description.length <= 200 && !/\p{Cc}/u.test(details.description)
-    ? details.description : null;
+  const label = filingDescription.safeParse(details.description);
+  const description = label.success ? label.data : null;
   const fallback = action.type === 'voucher_submission' ? 'Booking voucher'
     : action.type === 'payment_proof_submission' ? 'Proof of payment' : 'Reservation document';
   const fieldSpecs = draft.field_specs.filter(spec => !/^\/?actions\/0\/details(?:\/|$)/.test(spec.path));
