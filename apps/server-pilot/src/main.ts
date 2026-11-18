@@ -49,7 +49,8 @@ app.get('/api/public/providers', (c) => {
 const auth = createAuth();
 app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => auth.handler(c.req.raw));
 
-const navaRewriteGateway = createNavaRewriteGateway(auth);
+const rewriteEventShutdown = new AbortController();
+const navaRewriteGateway = createNavaRewriteGateway(auth, rewriteEventShutdown.signal);
 app.on(['GET', 'POST', 'PATCH'], '/api/nava/v1/*', (c) => navaRewriteGateway(c.req.raw));
 
 // Native enrollment is a one-use, operator-approved pairing; no browser signup exists.
@@ -186,6 +187,7 @@ function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`);
   clearInterval(outlookRetentionTimer);
   clearInterval(quoteFollowupTimer);
+  rewriteEventShutdown.abort();
   server.close(() => {
     void Promise.allSettled([Promise.resolve().then(stopOutlookSyncDrain), background.drain()])
       .then(async ([sync]) => {

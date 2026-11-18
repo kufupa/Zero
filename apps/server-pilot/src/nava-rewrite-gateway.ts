@@ -137,15 +137,21 @@ function staffToken(userId: string, mailboxIds: string[], secret: string) {
   };
 }
 
-function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number) {
+function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number, shutdown?: AbortSignal) {
   const reader = body.getReader();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stop: (() => void) | undefined;
   let finished = false;
+
+  function cleanup() {
+    if (timer) clearTimeout(timer);
+    if (stop) shutdown?.removeEventListener('abort', stop);
+  }
 
   function close(controller: ReadableStreamDefaultController<Uint8Array>) {
     if (finished) return;
     finished = true;
-    if (timer) clearTimeout(timer);
+    cleanup();
     controller.close();
     void reader.cancel().catch(() => {});
   }
@@ -153,7 +159,9 @@ function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number
   return new ReadableStream<Uint8Array>({
     start(controller) {
       const remaining = expiresAtMs - Date.now();
-      if (remaining <= 0) return close(controller);
+      if (remaining <= 0 || shutdown?.aborted) return close(controller);
+      stop = () => close(controller);
+      shutdown?.addEventListener('abort', stop, { once: true });
       timer = setTimeout(() => close(controller), remaining);
       timer.unref();
     },
@@ -167,20 +175,20 @@ function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number
       } catch (error) {
         if (finished) return;
         finished = true;
-        if (timer) clearTimeout(timer);
+        cleanup();
         controller.error(error);
       }
     },
     async cancel(reason) {
       if (finished) return;
       finished = true;
-      if (timer) clearTimeout(timer);
+      cleanup();
       await reader.cancel(reason);
     },
   }, { highWaterMark: 0 });
 }
 
-export function createNavaRewriteGateway(auth: Auth) {
+export function createNavaRewriteGateway(auth: Auth, eventShutdown?: AbortSignal) {
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const match = routes
@@ -308,7 +316,7 @@ export function createNavaRewriteGateway(auth: Auth) {
         responseHeaders.set('X-Accel-Buffering', 'no');
       }
       const body = isEventStream && upstream.body
-        ? expireEventStream(upstream.body, staff.expiresAtMs)
+        ? expireEventStream(upstream.body, staff.expiresAtMs, eventShutdown)
         : upstream.body;
       return new Response(body, {
         status: upstream.status,
