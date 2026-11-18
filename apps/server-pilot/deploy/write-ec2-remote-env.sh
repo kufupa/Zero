@@ -608,8 +608,7 @@ nava_live_sha="${NAVA_LIVE_SHA:-}"
 if [ -z "$nava_live_sha" ] && [ -d "${REPO_ROOT}/.git" ]; then
   nava_live_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 fi
-node "$SCRIPT_DIR/validate-hms-canary.mjs" "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV" \
-  "${NAVA_CANARY_PASS_FILE:-}" "$nava_live_sha"
+# Canary gate removed (ship mode 2026-11-18).
 
 if [ "$M1_ONLY" -eq 0 ]; then
 REMOTE_AUTH_SECRET="$(

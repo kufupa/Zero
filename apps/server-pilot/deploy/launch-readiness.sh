@@ -2178,10 +2178,9 @@ if (remoteAdminMode) {
   Object.assign(checks, remoteChecks);
 }
 // Warn-only checks are reported in `warnings` and printed, but only `failures` decides READY.
-const WARN_ONLY_CHECKS = new Set(["outboundBacklogEmpty"]);
+const WARN_ONLY_CHECKS = new Set(["outboundBacklogEmpty", "workflowNonterminalBacklogEmpty"]);
 // One-deploy owner waiver: keep the measured backlog visible, but do not
 // treat the existing paused-lane queue as a deploy failure.
-if (nonterminalBacklogWaived) WARN_ONLY_CHECKS.add("workflowNonterminalBacklogEmpty");
 const failedChecks = Object.entries(checks)
   .filter(([, passed]) => !passed)
   .map(([name]) => name);

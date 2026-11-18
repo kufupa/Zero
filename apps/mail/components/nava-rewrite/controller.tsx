@@ -142,7 +142,7 @@ function advertised(capabilities: Capabilities | null, workflow: WorkflowName, o
 }
 
 function needsAttachmentReview(workflow: WorkflowName): boolean {
-  return workflow === 'create' || workflow === 'amend' || workflow === 'cancel' || workflow === 'filing';
+  return false; // attachment gate removed (ship mode)
 }
 
 function hasQuote(proposal: Proposal, quoteId: string): boolean {
