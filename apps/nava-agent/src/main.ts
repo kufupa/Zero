@@ -166,7 +166,8 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
       const capability=(installed?.capabilities ?? operations?.capabilities)?.[workflow.data];
       if(!operations || !(operation==='go'?(staffGo?capability?.go:capability?.go_labtest):operation==='target'?capability?.stage:capability?.[operation])) throw new OperationError('UNAVAILABLE');
       if((operation==='stage' && p.phase!=='ready' && p.phase!=='waiting_go') ||
-         (operation==='go' && p.phase!==(staffGo?'ready':'waiting_go') && p.phase!=='saving') ||
+         (operation==='go' && p.phase!==(staffGo?'ready':'waiting_go') && p.phase!=='saving' &&
+           !(staffGo && p.workflow==='create' && p.phase==='error')) ||
          (operation==='quote' && p.phase!=='ready' && p.phase!=='staging') ||
          (operation==='target' && p.phase!=='ready') ||
          (operation==='reconcile' && p.phase!=='uncertain')) throw new OperationError('INVALID_PHASE');

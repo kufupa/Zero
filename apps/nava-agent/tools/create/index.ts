@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { setTimeout as delay } from 'node:timers/promises';
 import { prepareInput, saveInput, type CreateInput } from './schema.js';
 import { createGoEnabled, createGoRealGuests, hmsSaveEnabled } from '../../src/hms-mode.js';
 import { attachmentsUnconfirmed, confirmedQueuedCreate, type StaffStage } from '../../src/attachment-gate.js';
@@ -345,9 +346,15 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
         verifyApprovedBatchSiblings(siblings:unknown[],options:unknown):Promise<boolean>;
         censusMatchesApprovedSiblings(census:unknown,siblings:unknown[],options:unknown):boolean;
       } : null;
-      if(siblingTools && !await siblingTools.verifyApprovedBatchSiblings(priorRooms ?? [],{
-        propertyCode:request.propertyCode,transportId,signal:lease.signal,credentialLease:lease,
-      })) return fail('CREATE_PREVIOUS_ROOM_UNVERIFIED','Check the completed rooms in Infor before continuing.');
+      if(siblingTools) {
+        const options={propertyCode:request.propertyCode,transportId,signal:lease.signal,credentialLease:lease};
+        let verified=await siblingTools.verifyApprovedBatchSiblings(priorRooms ?? [],options);
+        if(!verified && !lease.signal.aborted) {
+          await delay(1000,undefined,{signal:lease.signal});
+          verified=await siblingTools.verifyApprovedBatchSiblings(priorRooms ?? [],options);
+        }
+        if(!verified) return fail('CREATE_PREVIOUS_ROOM_UNVERIFIED','Check the completed rooms in Infor before continuing.');
+      }
       const options = { credentialLease: lease, signal: lease.signal, expectedGuest, cloudTargetKey: target, transportId,
         ...(realGuest ? { allowRealGuest: true, requireExplicitGuestSelection: true } : {}) };
       const stage = await loadNativeResult(api, { ...request, mode: 'prepare' }, options);

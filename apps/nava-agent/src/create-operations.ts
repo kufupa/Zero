@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
 import { z } from 'zod';
 import type { ProposalOperations } from './main.js';
@@ -256,8 +257,21 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   const input=draft.success ? stageInput(draft.data,request.workflow,source.data.property_code,null) : null;
   if(!draft.success || !input || input.workflow==='quote' || input.workflow==='triage') return {ok:false,code:'INVALID_INPUT'};
   if(!hasBoundTarget(input,p.execution)) return {ok:false,code:'INVALID_INPUT'};
-  if(p.status!=='idle' || p.pending_tool_use_id!==null || p.phase!=='ready' || p.revision!==request.expectedRevision
+  const last=p.execution?.last_go;
+  const previous=last?.state==='failed' ? staffGo.safeParse({...last,state:'queued'}) : null;
+  let remainingRooms:z.infer<typeof staffGo>['rooms'];
+  if(p.phase==='error' && input.workflow==='create' && previous?.success && previous.data.rooms &&
+      previous.data.revision===p.revision && previous.data.prepareJobId===p.stage?.job_id &&
+      isDeepStrictEqual(previous.data.snapshot,p.current) && previous.data.rooms.some(room=>room.state==='saved') &&
+      previous.data.rooms.some(room=>room.state==='failed') &&
+      previous.data.rooms.every(room=>['saved','failed','unattempted'].includes(room.state))) {
+    if(previous.data.idempotencyKey===request.idempotencyKey) return {ok:false,code:'IDEMPOTENCY_CONFLICT'};
+    remainingRooms=previous.data.rooms;
+  }
+  const remaining=remainingRooms!==undefined;
+  if(p.status!=='idle' || p.pending_tool_use_id!==null || (p.phase!=='ready' && !remaining) || p.revision!==request.expectedRevision
       || p.stage?.state!=='prepared' || p.stage?.revision!==p.revision
+      || (remaining && request.preparedJobId!==p.stage?.job_id)
       || (request.preparedJobId!==undefined && p.stage?.job_id!==request.preparedJobId)) return {ok:false,code:'INVALID_PHASE'};
   if(!await staffAttachmentsChecked(tx,p.id,p.revision)) return {ok:false,code:attachmentsUnconfirmed.code};
   let expectedPrice:z.infer<typeof shownPrice>|undefined;
@@ -274,7 +288,8 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   }
   const fee=input.workflow==='cancel' && observedPenalty.safeParse(p.stage.cancellation_fee ?? p.stage.native_result?.cancellation_fee).success;
   if(fee!==Boolean(request.confirmPenalty) || (fee && !request.preparedJobId)) return {ok:false,code:'INVALID_PHASE'};
-  const rooms=input.workflow==='create' && draft.data.bookings.length>1 ? draft.data.bookings.map((booking,index)=>({
+  const rooms=remainingRooms ? remainingRooms.map(room=>room.state==='saved' ? room : {...room,state:'unattempted' as const}) :
+    input.workflow==='create' && draft.data.bookings.length>1 ? draft.data.bookings.map((booking,index)=>({
     booking_id:booking.id,state:'unattempted',expectedPrice:shownPrice.safeParse(p.stage?.native_result?.rooms?.[index]?.native?.ratePlanAvailability).data,
   })) : undefined;
   if(rooms?.some(room=>!room.expectedPrice)) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Infor price for every room (run Prepare again)']}};
