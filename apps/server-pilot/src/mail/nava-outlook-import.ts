@@ -44,7 +44,7 @@ export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: 
     const [selected] = await tx.select({ threadId: message.threadId, provenance: message.sourceProvenance })
       .from(message).innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, mailboxId)))
       .where(and(eq(message.id, input.selected_message_id), eq(message.transportId, mailboxId),
-        eq(message.direction, 'inbound'), eq(message.historyOnly, false), eq(mailThread.historyOnly, false),
+        eq(message.direction, 'inbound'),
         isNull(mailThread.spamAt), isNull(mailThread.trashedAt))).limit(1);
     if (!selected || selected.provenance?.attention != null) return null;
     const scope = await loadConversationMetaForThread(tx, mailboxId, selected.threadId);
@@ -104,7 +104,7 @@ export async function isCenturionFilingSource(input: { mailboxId: string; conver
       const [selected] = await tx.select({ mail: message }).from(message)
         .innerJoin(mailThread, and(eq(mailThread.id, message.threadId), eq(mailThread.transportId, input.mailboxId)))
         .where(and(eq(message.id, input.messageId), eq(message.transportId, input.mailboxId),
-          eq(message.direction, 'inbound'), eq(message.historyOnly, false), eq(mailThread.historyOnly, false),
+          eq(message.direction, 'inbound'),
           isNull(mailThread.spamAt), isNull(mailThread.trashedAt))).limit(1);
       if (!selected || selected.mail.sourceProvenance?.attention != null || isDaVinciMailboxOrigin(selected.mail)) return false;
       const scope = await loadConversationMetaForThread(tx, input.mailboxId, selected.mail.threadId);
