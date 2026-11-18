@@ -216,6 +216,7 @@ export function useWebPreview({
 }): {
   selection: PreviewSelection;
   bridge: PaneBridge;
+  thread: IGetThreadResponse | undefined;
 } {
   const thread = useThread(threadId);
   const { data: connection } = useActiveConnection();
@@ -245,7 +246,7 @@ export function useWebPreview({
     [stableKey],
   );
   const bridge = useMemo(() => buildPreviewBridge(activeEmail), [activeEmail]);
-  return { selection, bridge };
+  return { selection, bridge, thread: thread.data };
 }
 
 /** PaneBridge for one thread in the /nava-preview viewer. */

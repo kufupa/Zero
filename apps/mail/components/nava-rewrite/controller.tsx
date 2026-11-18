@@ -13,6 +13,7 @@ import type { Capabilities, Change, FieldSpec, Json, Proposal, QuoteSelection, T
 export type QuoteDraftRequest = {
   proposalId: string; revision: number; quoteId: string; jobId: string; body: string;
   artifacts: NonNullable<NonNullable<Proposal['stage']>['artifacts']>;
+  signal: AbortSignal;
   isCurrentSnapshot: () => boolean;
   verifyCurrentSnapshot: () => Promise<boolean>;
 };
@@ -23,6 +24,8 @@ export type NavaControllerProps = {
   api: NavaApi;
   reconcileSupported?: boolean;
   onAuthenticationRequired?: () => void | Promise<void>;
+  onSourceNotEligible?: () => void;
+  quoteDraftTarget?: 'webmail' | 'outlook';
   saveQuoteDraft?: (request: QuoteDraftRequest) => Promise<{ status: string; message: string }>;
 };
 
@@ -216,7 +219,7 @@ export function NavaController(props: NavaControllerProps) {
 
 type ThreadControllerProps = Omit<NavaControllerProps, 'input' | 'email'> & { input: ThreadInput; email: SelectedEmail; cache: Cache };
 
-function ThreadController({ input, email, api, cache, reconcileSupported = false, onAuthenticationRequired, saveQuoteDraft }: ThreadControllerProps) {
+function ThreadController({ input, email, api, cache, reconcileSupported = false, onAuthenticationRequired, onSourceNotEligible, quoteDraftTarget = 'outlook', saveQuoteDraft }: ThreadControllerProps) {
   const [snapshot, setSnapshot] = useState<BoundThreadSnapshot | null>(null);
   const snapshotRef = useRef<BoundThreadSnapshot | null>(null);
   const inputKey = JSON.stringify(input);
@@ -429,7 +432,12 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
           }
         }
       } catch (error) {
-        if (!signal.aborted && !expireAuthentication(error, signal)) setMessage('Could not open this email in Nava. Check your connection and try again.');
+        if (signal.aborted || expireAuthentication(error, signal)) return;
+        if (error instanceof NavaApiError && error.code === 'source_not_eligible' && onSourceNotEligible) {
+          onSourceNotEligible();
+          return;
+        }
+        setMessage('Could not open this email in Nava. Check your connection and try again.');
       }
     }
     void start();
@@ -440,7 +448,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       cancelOwnedWork(signal);
       controller.abort();
     };
-  }, [api, cache, inputKey, openAttempt]);
+  }, [api, cache, inputKey, openAttempt, onSourceNotEligible]);
 
   useEffect(() => {
     if (!snapshot || busy || authenticationExpired || operationRef.current || cache.inFlightEdit) return;
@@ -651,6 +659,9 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       const response = await api.getArtifact(artifactId, { signal });
       const blob = await response.blob();
       if (signal.aborted) return;
+      if (blob.size === 0 || blob.type.split(';')[0]?.trim().toLowerCase() !== artifact.mime_type.toLowerCase()) {
+        throw new Error('Invalid artifact content');
+      }
       const latest = snapshotRef.current?.proposals.find(item => item.id === proposalId);
       if (!latest || latest.revision !== revision || latest.phase === 'staging' || cache.selectedId !== proposalId || Object.keys(cache.drafts[proposalId] ?? {}).length ||
           cache.issues[proposalId] || cache.stagePending[proposalId] !== undefined || operationRef.current || cache.inFlightEdit ||
@@ -742,7 +753,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
           return false;
         }
       };
-      const result = await saveQuoteDraft({ proposalId: proposal.id, revision: proposal.revision, quoteId, jobId, body, artifacts, isCurrentSnapshot, verifyCurrentSnapshot });
+      const result = await saveQuoteDraft({ proposalId: proposal.id, revision: proposal.revision, quoteId, jobId, body, artifacts, signal, isCurrentSnapshot, verifyCurrentSnapshot });
       if (result.status === 'created') cache.savedQuoteDrafts[JSON.stringify([proposal.id, proposal.revision, jobId])] = result.message;
       return result;
     } finally {
@@ -975,6 +986,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         onSelectGuest={proposal.workflow === 'create' && !issue ? candidate => { void selectGuest(proposal, candidate); } : undefined}
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections) => { void generateQuoteArtifacts(proposal, quoteId, selections); } : undefined}
+        quoteDraftTarget={quoteDraftTarget}
         onSaveQuoteDraft={saveQuoteDraft && !issue && !isUncertain ? body => saveCurrentQuoteDraft(proposal, body) : undefined}
         quoteConnectionReady={streamConnected}
         savedQuoteDraftMessage={proposal.stage?.job_id ? cache.savedQuoteDrafts[JSON.stringify([proposal.id, proposal.revision, proposal.stage.job_id])] : undefined}

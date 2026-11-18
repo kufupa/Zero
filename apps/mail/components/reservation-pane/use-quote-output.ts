@@ -123,6 +123,40 @@ function replaceToken(error: unknown): string | null {
   return item.data?.code === 'CONFLICT' && item.message?.startsWith(prefix) ? item.message.slice(prefix.length) : null;
 }
 
+export async function saveQuoteWebDraft({ source, output, html, to, confirmReplace, verifyCurrent }: {
+  source: Pick<ReservationSourceContext, 'mailboxId' | 'threadId' | 'messageId' | 'subject'>;
+  output: QuoteOutput;
+  html: string;
+  to?: string;
+  confirmReplace?: Confirm;
+  verifyCurrent: () => boolean | Promise<boolean>;
+}): Promise<QuoteOutputResult> {
+  try {
+    const recipient = (to ?? output.cover?.to ?? '').trim();
+    if (!source.threadId || !completeQuotePackage(output) || !html.trim()) {
+      throw new Error('Review the cover and complete quote before saving a draft.');
+    }
+    if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(recipient)) throw new Error('Enter a recipient email address.');
+    await verifyAttachments(output.artifacts);
+    if (!await verifyCurrent()) throw new Error('The selected email or quote changed. Review it again.');
+    const payload = { threadId: source.threadId, replyToMessageId: source.messageId, to: [recipient],
+      subject: replySubject(source.subject), html, replyKind: 'quote' as const,
+      attachments: output.artifacts.map((item) => ({ name: item.fileName, type: item.mimeType,
+        size: item.sizeBytes, lastModified: Date.now(), base64: item.bytesBase64 })) };
+    const options = inMailbox(source.mailboxId);
+    try { await trpcClient.drafts.saveReply.mutate(payload, options); }
+    catch (error) {
+      const token = replaceToken(error);
+      if (!token) throw error;
+      if (!confirmReplace) return { status: 'error', message: 'This thread has another draft. Confirm replacement before saving.' };
+      if (!await confirmReplace()) return { status: 'cancelled', message: 'The existing draft was kept.' };
+      if (!await verifyCurrent()) throw new Error('The selected email or quote changed. The existing draft was kept.');
+      await trpcClient.drafts.saveReply.mutate({ ...payload, replaceDraft: token }, options);
+    }
+    return { status: 'saved', message: 'The reviewed reply was saved as an unsent draft.' };
+  } catch (error) { return { status: 'error', message: failure(error) }; }
+}
+
 type Pending = {
   key: string; fingerprint: string; startedAt: number; output: QuoteOutput; html: string; email: WorkstationEmailPayload;
   recipientOperationId: string;
@@ -178,24 +212,14 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
     if (busy.current) return { status: 'error', message: 'A reply is already being prepared.' };
     busy.current = true; setSaving(true); setError(null); beginMutation();
     try {
-      const output = await getReady(requestId, html, snapshot, isCurrentSnapshot), recipient = (to ?? output.cover!.to).trim();
-      if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(recipient)) throw new Error('Enter a recipient email address.');
-      const payload = { threadId: source.threadId!, replyToMessageId: source.messageId, to: [recipient],
-        subject: replySubject(source.subject), html, replyKind: 'quote' as const,
-        attachments: output.artifacts.map((item) => ({ name: item.fileName, type: item.mimeType,
-          size: item.sizeBytes, lastModified: Date.now(), base64: item.bytesBase64 })) };
-      try { await trpcClient.drafts.saveReply.mutate(payload, inMailbox(source.mailboxId)); }
-      catch (error) {
-        const token = replaceToken(error);
-        if (!token) throw error;
-        if (!confirmReplace) return report('error', 'This thread has another draft. Confirm replacement before saving.');
-        if (!await confirmReplace()) return report('cancelled', 'The existing draft was kept.');
-        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. The existing draft was kept.');
+      const output = outputFor(snapshot, requestId);
+      if (!output) throw new Error('Generate the complete quote with PDF and Excel first.');
+      const result = await saveQuoteWebDraft({ source, output, html, to, confirmReplace, verifyCurrent: () => {
+        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return false;
         const latest = getQuotePackageOutput(source, snapshot, requestId, live.current.configuration);
-        if (!latest || latest.operationId !== output.operationId || latest.issues.length) throw new Error('The quote changed. Review the latest output.');
-        await trpcClient.drafts.saveReply.mutate({ ...payload, replaceDraft: token }, inMailbox(source.mailboxId));
-      }
-      return report('saved', 'The reviewed reply was saved as an unsent draft.');
+        return !!latest && latest.operationId === output.operationId && completeQuotePackage(latest);
+      } });
+      return report(result.status, result.message);
     } catch (error) { return report('error', failure(error)); }
     finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };

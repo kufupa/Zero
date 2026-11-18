@@ -5,7 +5,7 @@ import { readPaneFilingAttachment } from './ai/pane-filing-source.js';
 import { getDb } from './db/client.js';
 import { mailboxAccess, mailboxTransport } from './db/schema/mail.js';
 import { resolvePilotTrustedOrigins, type Auth } from './lib/auth.js';
-import { canonicalCenturionOutlookImport, isCenturionFilingSource } from './mail/nava-outlook-import.js';
+import { canonicalCenturionPaneImport, isCenturionFilingSource } from './mail/nava-outlook-import.js';
 import { getS3Storage } from './storage/s3.js';
 
 const resourceId = '([^/]+)';
@@ -191,7 +191,7 @@ export function createNavaRewriteGateway(auth: Auth) {
     if (match[1]) {
       try {
         const id = decodeURIComponent(match[1]);
-        if (id === '.' || id === '..' || /[\/\\%\x00-\x1f\x7f]/.test(id)) {
+        if (id === '.' || id === '..' || id.includes('/') || id.includes('\\') || id.includes('%') || /\p{Cc}/u.test(id)) {
           return error(404, 'not_found', 'Not found');
         }
       } catch {
@@ -269,15 +269,15 @@ export function createNavaRewriteGateway(auth: Auth) {
         signal: request.signal,
       };
       if (request.method === 'POST' && url.pathname === '/api/nava/v1/threads') {
-        if (!request.body) return error(400, 'invalid_input', 'An Outlook thread is required');
+        if (!request.body) return error(400, 'invalid_input', 'A selected mail thread is required');
         const body = await readImportBody(request.body);
-        if (body === null) return error(413, 'invalid_input', 'Outlook thread is too large');
+        if (body === null) return error(413, 'invalid_input', 'Mail thread is too large');
         let payload: unknown;
         try { payload = JSON.parse(body.toString('utf8')); }
-        catch { return error(400, 'invalid_input', 'Invalid Outlook thread'); }
-        const canonical = await canonicalCenturionOutlookImport(payload, cohortMailboxId);
+        catch { return error(400, 'invalid_input', 'Invalid mail thread'); }
+        const canonical = await canonicalCenturionPaneImport(payload, cohortMailboxId);
         if (!canonical) {
-          return error(403, 'source_not_eligible', 'This Outlook email is not an eligible Centurion source');
+          return error(403, 'source_not_eligible', 'This email is not an eligible Centurion source');
         }
         const canonicalBody = JSON.stringify(canonical);
         headers.set('idempotency-key', createHash('sha256').update(canonicalBody).digest('hex'));

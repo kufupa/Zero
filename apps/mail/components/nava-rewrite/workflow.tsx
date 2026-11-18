@@ -25,6 +25,7 @@ export type WorkflowProps = {
   onOpenArtifact?: (artifactId: string) => void;
   onQuote?: (quoteId: string) => void;
   onGenerateQuoteArtifacts?: (quoteId: string, selections: QuoteSelection[]) => void;
+  quoteDraftTarget?: 'webmail' | 'outlook';
   onSaveQuoteDraft?: (body: string) => Promise<{ status: string; message: string }>;
   quoteConnectionReady?: boolean;
   savedQuoteDraftMessage?: string;
@@ -305,7 +306,7 @@ function FieldEvidence({ spec, label }: { spec: FieldSpec; label: string }) {
   if (!spec.evidence.some(item => item.quote)) return null;
   return <details>
     <summary>Source for {label}</summary>
-    {spec.evidence.map((item, index) => item.quote && <p key={index} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.quote}</p>)}
+    {[...new Set(spec.evidence.map(item => item.quote))].map(quote => quote && <p key={quote} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{quote}</p>)}
   </details>;
 }
 
@@ -472,7 +473,7 @@ function QuoteFields(props: WorkflowProps & { locked: boolean }) {
   const groups = quoteGroups(props.proposal);
   const sections: { key: string; label?: string; fields: FieldSpec[] }[] = [];
   const grouped = new Map<string, { key: string; label?: string; fields: FieldSpec[] }>();
-  const specs = [...props.proposal.field_specs].sort((a, b) => Number(!/\/details\/property_code$/.test(a.path)) - Number(!/\/details\/property_code$/.test(b.path)));
+  const specs = [...props.proposal.field_specs].sort((a, b) => Number(!a.path.endsWith('/details/property_code')) - Number(!b.path.endsWith('/details/property_code')));
   for (const spec of specs) {
     if (/\/rooms\/(?:0|[1-9]\d*)\/preferred\/roomCodes$/.test(spec.path)) continue;
     const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)(?:\/|$)/.exec(spec.path);
@@ -662,7 +663,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
   </PaneSection>;
 }
 
-function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage, quoteConnectionReady }: WorkflowProps) {
+function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage, quoteConnectionReady, quoteDraftTarget = 'outlook' }: WorkflowProps) {
   const [body, setBody] = useState('Good day,\n\nPlease find the quotation attached.\n\nKind regards');
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -678,8 +679,10 @@ function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage, 
     {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || !body.trim() || quoteConnectionReady === false} onClick={() => {
       setSaving(true); setMessage(null);
       void onSaveQuoteDraft(body).then(result => { setMessage(result.message); if (result.status === 'created') setSaved(true); })
-        .catch(() => setMessage('Could not confirm the draft. Check Outlook Drafts before trying again.')).finally(() => setSaving(false));
-    }}>{saving ? 'Saving draft…' : 'Save unsent Outlook draft'}</button>}
+        .catch(() => setMessage(quoteDraftTarget === 'webmail'
+          ? 'Could not confirm the draft. Check Drafts before trying again.'
+          : 'Could not confirm the draft. Check Outlook Drafts before trying again.')).finally(() => setSaving(false));
+    }}>{saving ? 'Saving draft…' : quoteDraftTarget === 'webmail' ? 'Save unsent draft' : 'Save unsent Outlook draft'}</button>}
     {(message || savedQuoteDraftMessage) && <p role="status">{message || savedQuoteDraftMessage}</p>}
   </PaneSection>;
 }
@@ -777,8 +780,8 @@ export function Workflow(props: WorkflowProps) {
     </PaneMessage>}
     {dispositionMessage && <PaneMessage>{dispositionMessage}</PaneMessage>}
     {proposal.reason && <PaneMessage>{proposal.reason}</PaneMessage>}
-    {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{proposal.missing.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
-    {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{proposal.warnings.map((item, index) => <li key={index}>{item}</li>)}</ul></PaneSection>}
+    {proposal.missing.length > 0 && <PaneSection title="Information needed"><ul>{[...new Set(proposal.missing)].map(item => <li key={item}>{item}</li>)}</ul></PaneSection>}
+    {proposal.warnings.length > 0 && <PaneSection title="Check these details"><ul>{[...new Set(proposal.warnings)].map(item => <li key={item}>{item}</li>)}</ul></PaneSection>}
     {['needs_info', 'staff_review'].includes(proposal.disposition) && <StaffContext key={proposal.id} {...props} />}
     {['create', 'amend', 'cancel', 'filing'].includes(proposal.workflow) && <PaneSection title="Check attachments">
       <p>{props.attachmentsAttention ? "Nava couldn't read attachments from one or more emails. " : ''}Check the attachments in the selected email and each earlier email listed below in Outlook. Include all relevant attachment details in this proposal, then confirm.</p>
@@ -808,7 +811,7 @@ export function Workflow(props: WorkflowProps) {
     {proposal.stage && stageCurrent && <PaneSection title="Checked details">
       {proposal.stage.summary.length > 0 && <div className={styles.stageSummary}>
         <strong>Check notes</strong>
-        <ul>{proposal.stage.summary.map((item, index) => <li key={index}>{item}</li>)}</ul>
+        <ul>{[...new Set(proposal.stage.summary)].map(item => <li key={item}>{item}</li>)}</ul>
       </div>}
       <ObservedFields proposal={proposal} />
       {proposal.workflow === 'quote' && proposal.stage.quote_options?.length ? null

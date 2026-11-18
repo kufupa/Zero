@@ -6,11 +6,15 @@ import { OutlookSyncProgress } from '@/components/workstation/outlook-sync-progr
 import { useActiveConnection } from '@/hooks/use-connections';
 import { useSession } from '@/lib/auth-client';
 import { resolvePublicBackendUrl } from '@/lib/public-backend-url';
+import type { WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
-import { quoteCoverHtml, useQuoteOutput } from '@/components/reservation-pane/use-quote-output';
+import { quoteCoverHtml, saveQuoteWebDraft, useQuoteOutput } from '@/components/reservation-pane/use-quote-output';
 import type { QuoteOutput, QuoteOutputArtifact } from '@/lib/reservation-workflow/quote-output';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
+import { trpcClient } from '@/providers/query-provider';
+import { canonicalMessageId } from '../../../server-pilot/src/mail/ingest/message-id';
 import { createNavaApi } from './api';
 import { NavaController } from './controller';
 import type { QuoteDraftRequest } from './controller';
@@ -28,9 +32,8 @@ type Source =
   | { status: 'unavailable'; reason: string }
   | { status: 'loading'; reason: string };
 
-function selectedEmail(bridge: PaneBridge): SelectedEmail | null {
-  const email = bridge.activeEmail;
-  if (!email || bridge.selectionOutsideMailbox) return null;
+function selectedEmail(email: WorkstationEmailPayload | null): SelectedEmail | null {
+  if (!email) return null;
   const date = new Date(email.receivedTime);
   const validDate = !Number.isNaN(date.getTime());
   return {
@@ -41,12 +44,69 @@ function selectedEmail(bridge: PaneBridge): SelectedEmail | null {
   };
 }
 
-/** Host owns authentication, mailbox and native bridge; workflow calls use only the new API. */
-export function NavaRewriteHost({ bridge, source, preview = false }: {
-  bridge: PaneBridge;
-  source: Source;
-  preview?: boolean;
-}) {
+type HostProps = { bridge: PaneBridge; source: Source; preview?: boolean } | {
+  webmail: { email: WorkstationEmailPayload; threadId: string; source: Source; onSourceNotEligible: () => void };
+};
+
+/** Workflow calls use the same authenticated API in both mail clients. */
+export function NavaRewriteHost(props: HostProps) {
+  if ('webmail' in props) return <RewriteWithWebmail {...props.webmail} />;
+  return <RewriteWithOutlook {...props} />;
+}
+
+function RewriteWithWebmail({ email, threadId, source, onSourceNotEligible }: Extract<HostProps, { webmail: unknown }>['webmail']) {
+  const active = selectedEmail(email);
+  const selected = source.status === 'ready'
+    ? source.input.messages.find(message => message.id === source.input.selected_message_id) : undefined;
+  const selectedWarning = selected && selected.attachment_status !== 'complete'
+    ? selected.attachment_status === 'has_unread'
+      ? 'Check the selected email’s attachments. Nava has not read them all.'
+      : 'Nava could not verify which attachments the selected email has.'
+    : null;
+  const otherWarning = source.status === 'ready' &&
+    source.input.messages.some(message => message.id !== source.input.selected_message_id && message.attachment_status !== 'complete')
+    ? 'Open the other emails to review their attachments. Nava has only attachment status for those emails.' : null;
+  async function saveQuoteDraft(request: QuoteDraftRequest) {
+    if (source.status !== 'ready' || !selected || selected.direction !== 'inbound' ||
+        selected.id !== email.entryId || !selected.rfc_message_id || !request.isCurrentSnapshot()) {
+      return { status: 'error', message: 'The selected email or quote changed. Review it again.' };
+    }
+    const { input } = source;
+    try {
+      const match = await trpcClient.reservationWorkflowV2.resolveSource.query({
+        internetMessageId: selected.rfc_message_id, selection: { kind: 'web', threadId, messageId: selected.id },
+      }, { ...inMailbox(input.mailbox_id), signal: request.signal });
+      if (match.status !== 'ok' || match.propertyCode !== input.property_code || match.source.propertyId !== input.property_code ||
+          match.source.threadId !== threadId || match.source.messageId !== selected.id ||
+          match.sourceSubject !== selected.subject || match.sourceSender?.trim().toLowerCase() !== selected.from.email.trim().toLowerCase() ||
+          canonicalMessageId(match.internetMessageId) !== canonicalMessageId(selected.rfc_message_id)) {
+        return { status: 'error', message: 'The selected guest email could not be verified for this draft.' };
+      }
+      const prepared = await readQuoteOutput(request, selected.from.email, selected.subject);
+      const result = await saveQuoteWebDraft({
+        source: { mailboxId: input.mailbox_id, threadId, messageId: selected.id, subject: selected.subject },
+        output: prepared, html: quoteCoverHtml(request.body), verifyCurrent: request.verifyCurrentSnapshot,
+        // oxlint-disable-next-line no-alert
+        confirmReplace: () => window.confirm('Replace this thread’s existing unsent draft with the reviewed quotation?'),
+      });
+      return result.status === 'saved'
+        ? { status: 'created', message: 'Saved an unsent draft with the PDF and Excel files. Open Drafts to review it.' }
+        : result;
+    } catch (error) {
+      return { status: 'error', message: error instanceof Error ? error.message : 'Could not prepare the quote draft. Try again.' };
+    }
+  }
+
+  return <div data-nava-host={source.status === 'ready' ? 'webmail-rewrite' : 'webmail-checking'} className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-white">
+    {(selectedWarning || otherWarning) &&
+      <p role="status" className="shrink-0 px-3 py-2 text-sm text-slate-700">{[selectedWarning, otherWarning].filter(Boolean).join(' ')}</p>}
+    {source.status === 'ready'
+      ? <NavaController input={source.input} email={active} api={api} onSourceNotEligible={onSourceNotEligible} quoteDraftTarget="webmail" saveQuoteDraft={saveQuoteDraft} />
+      : <NavaPane email={active}><PaneMessage>{source.reason}</PaneMessage></NavaPane>}
+  </div>;
+}
+
+function RewriteWithOutlook({ bridge, source, preview = false }: Extract<HostProps, { bridge: PaneBridge }>) {
   const { data: session, isLoading: sessionLoading } = useSession();
   const { data: connection, isLoading: connectionLoading } = useActiveConnection();
   const [bridgeError, setBridgeError] = useState<string | null>(null);
@@ -66,7 +126,7 @@ export function NavaRewriteHost({ bridge, source, preview = false }: {
   if (sessionLoading || connectionLoading) return <p className="p-4 text-sm text-slate-600">Loading Nava…</p>;
   if (!session?.user || bridge.requiresRelogin) return <OutlookPaneSignIn />;
 
-  const email = selectedEmail(bridge);
+  const email = selectedEmail(bridge.selectionOutsideMailbox ? null : bridge.activeEmail);
   const bridgeUnavailable = !preview && (bridge.updateRequired || bridge.selectionOutsideMailbox || bridge.authorizationUnavailable || !bridge.workstationInfo?.paired);
   const sourceMessage = bridge.updateRequired ? 'Update the Outlook add-in to open email in Nava.'
     : bridge.selectionOutsideMailbox ? 'Select an email in the connected mailbox.'
@@ -122,29 +182,11 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
     const selectedMail = input.messages.find(message => message.id === input.selected_message_id && message.direction === 'inbound');
     if (!selectedMail || source.messageId !== input.selected_message_id || !request.isCurrentSnapshot())
       return { status: 'error', message: 'The selected email or quote changed. Review it again.' };
-    const pdf = request.artifacts.find(item => item.name === 'Quotation.pdf' && item.mime_type === 'application/pdf');
-    const xlsx = request.artifacts.find(item => item.name === 'Quotation.xlsx' && item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    if (!pdf || !xlsx || request.artifacts.length !== 2) return { status: 'error', message: 'The PDF and Excel files are not both available. Check the quote again.' };
     try {
-      const artifacts: QuoteOutputArtifact[] = [];
-      for (const [kind, item] of [['pdf_quote', pdf], ['xlsx_quote', xlsx]] as const) {
-        if (!request.isCurrentSnapshot() || !isCurrentSource(source)) throw new Error('The selected email or quote changed. Review it again.');
-        const response = await api.getArtifact(item.id);
-        const bytes = new Uint8Array(await response.arrayBuffer());
-        if (!bytes.length || bytes.length > 1_400_000 || response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== item.mime_type)
-          throw new Error('A quote file could not be verified for Outlook. Generate the quote again.');
-        const digest = await crypto.subtle.digest('SHA-256', bytes);
-        const sha256 = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
-        let binary = '';
-        for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-        artifacts.push({ kind, fileName: item.name, mimeType: item.mime_type, sizeBytes: bytes.length, sha256, bytesBase64: btoa(binary) });
-      }
-      if (!request.isCurrentSnapshot() || !isCurrentSource(source)) throw new Error('The selected email or quote changed. Review it again.');
-      const prepared: QuoteOutput = { requestId: request.quoteId, operationId: JSON.stringify([request.proposalId, request.revision, request.jobId]), observationRef: request.jobId,
-        cover: { to: selectedMail.from.email, subject: source.subject, body: request.body }, artifacts,
-        failures: [], issues: [], stale: false, inventoryDecline: false };
+      const prepared = await readQuoteOutput(request, selectedMail.from.email, source.subject, () => isCurrentSource(source));
       const result = await output.createOutlookReply({ output: prepared, html: quoteCoverHtml(request.body), isCurrentSnapshot: request.isCurrentSnapshot,
         verifyCurrentSnapshot: request.verifyCurrentSnapshot,
+        // oxlint-disable-next-line no-alert
         confirmUnknown: () => window.confirm('An earlier reply may exist. Check Outlook Drafts first. Continue only if you verified there is no duplicate.') });
       if (result.status !== 'created' || !result.readback) return result;
       return { ...result, message: `Draft available in Outlook Drafts, not sent. Review its cover there. Subject: ${result.readback.subject}. Files: ${result.readback.attachmentNames.join(', ')}.` };
@@ -154,4 +196,27 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
   }
 
   return <NavaController input={input} email={email} api={api} saveQuoteDraft={saveQuoteDraft} />;
+}
+
+async function readQuoteOutput(request: QuoteDraftRequest, recipient: string, subject: string, isCurrentSource = () => true): Promise<QuoteOutput> {
+  const pdf = request.artifacts.find(item => item.name === 'Quotation.pdf' && item.mime_type === 'application/pdf');
+  const xlsx = request.artifacts.find(item => item.name === 'Quotation.xlsx' && item.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  if (!pdf || !xlsx || request.artifacts.length !== 2) throw new Error('The PDF and Excel files are not both available. Check the quote again.');
+  const artifacts: QuoteOutputArtifact[] = [];
+  for (const [kind, item] of [['pdf_quote', pdf], ['xlsx_quote', xlsx]] as const) {
+    if (!request.isCurrentSnapshot() || !isCurrentSource()) throw new Error('The selected email or quote changed. Review it again.');
+    const response = await api.getArtifact(item.id, { signal: request.signal });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > 1_400_000 || response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== item.mime_type)
+      throw new Error('A quote file could not be verified. Generate the quote again.');
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const sha256 = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    artifacts.push({ kind, fileName: item.name, mimeType: item.mime_type, sizeBytes: bytes.length, sha256, bytesBase64: btoa(binary) });
+  }
+  if (!request.isCurrentSnapshot() || !isCurrentSource()) throw new Error('The selected email or quote changed. Review it again.');
+  return { requestId: request.quoteId, operationId: JSON.stringify([request.proposalId, request.revision, request.jobId]), observationRef: request.jobId,
+    cover: { to: recipient, subject, body: request.body }, artifacts,
+    failures: [], issues: [], stale: false, inventoryDecline: false };
 }

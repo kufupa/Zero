@@ -340,3 +340,18 @@ export function fileAttachmentPresence(
   if (persistedFile) return true;
   return attachmentEvidenceUnknown(sourceProvenance) ? undefined : false;
 }
+
+/** Completeness of the attachment evidence available to the reservation pane. */
+export function paneAttachmentStatus(persistedFile: boolean, provenance: Record<string, unknown> | null) {
+  if (persistedFile) return 'has_unread';
+  const evidence = provenance?.evidence;
+  const requiredRoles = evidence && typeof evidence === 'object' && 'requiredArtifactRoles' in evidence
+    ? evidence.requiredArtifactRoles : undefined;
+  const scopes = provenance?.linkedAttachmentScopes;
+  const enumerated = Array.isArray(scopes) && scopes.length > 0
+    ? scopes.every(scope => scope && typeof scope === 'object' && scope.enumerated === true)
+    : typeof provenance?.sourceId === 'string' && typeof provenance.sourceObservationId === 'string' &&
+      Array.isArray(requiredRoles) && !requiredRoles.includes(UNAVAILABLE_ROLE) &&
+      (Array.isArray(provenance.linkedOptionalMissing) || Array.isArray(provenance.optionalMissing));
+  return enumerated && !attachmentEvidenceUnknown(provenance) ? 'complete' : 'unknown';
+}

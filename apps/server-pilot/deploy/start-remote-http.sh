@@ -64,5 +64,14 @@ exec env -i \
     cleanup_snapshot
     trap - EXIT HUP INT TERM
     unset common_pane_brain_set common_pane_brain common_quote_llm_set common_quote_llm launch_build_commit writer snapshot REPO_ROOT ENV_FILE
+    gateway_env="${HOME:?HOME required}/.config/nava-agent/gateway.env"
+    if [ -e "$gateway_env" ] || [ -L "$gateway_env" ]; then
+      source "$SERVER_PILOT/deploy/nava-gateway-env.sh"
+      if ! nava_gateway_load "$gateway_env"; then
+        unset NAVA_AGENT_BASE_URL NAVA_STAFF_JWT_SECRET NAVA_REWRITE_COHORT_USER_ID NAVA_REWRITE_COHORT_MAILBOX_ID
+        echo "rewrite gateway config invalid; starting remote HTTP without rewrite" >&2
+      fi
+    fi
+    unset gateway_env
     exec node "$SERVER_PILOT/dist/main.js"
   '
