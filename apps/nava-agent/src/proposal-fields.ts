@@ -183,7 +183,25 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
 }
 
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
-  if(draft.workflow==='create') draft=withCreateNativeFields(createChildFields(draft));
+  if(draft.workflow==='create') {
+    draft=withCreateNativeFields(createChildFields(draft));
+    const fieldSpecs=[...draft.field_specs];
+    const bookings=draft.bookings.map((booking,index)=>{
+      if(booking.property_code!=='HRCEN') return booking;
+      const fields={...booking.fields};
+      for(const [key,value] of [['rate_plan','BAR'],['guarantee_type','NGI'],['track','BAR']] as const) {
+        const current=fields[key];
+        if(current!=null && (typeof current!=='string' || current.trim())) continue;
+        const path=`/bookings/${index}/fields/${key}`;
+        const spec=fieldSpecs.findIndex(field=>field.path===path);
+        if(spec>=0 && fieldSpecs[spec].provenance==='staff') continue;
+        fields[key]=value;
+        if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],provenance:'default',error:null,evidence:[]};
+      }
+      return {...booking,fields};
+    });
+    draft={...draft,bookings,field_specs:fieldSpecs};
+  }
   if(draft.workflow==='quote') draft=withQuoteStaffFields(draft);
   if(draft.workflow==='cancel') draft=withCancelReviewFields(draft);
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
