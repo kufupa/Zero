@@ -144,10 +144,6 @@ function advertised(capabilities: Capabilities | null, workflow: WorkflowName, o
     capabilities.workflow_capabilities?.[workflow]?.[operation] === true;
 }
 
-function needsAttachmentReview(workflow: WorkflowName): boolean {
-  return false; // attachment gate removed (ship mode)
-}
-
 function hasQuote(proposal: Proposal, quoteId: string): boolean {
   return proposal.actions.some(action => action.type === 'quote' && action.details !== null &&
     typeof action.details === 'object' && !Array.isArray(action.details) && action.details.quote_id === quoteId);
@@ -878,8 +874,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     const current = snapshotRef.current?.proposals.find(item => item.id === proposal.id);
     if (!current || current.revision !== proposal.revision || current.phase !== proposal.phase || cache.issues[current.id]) return;
     if (kind !== 'reconcile' && (cache.goLocks[current.id] || !['ready', 'waiting_go'].includes(current.phase))) return;
-    if (kind === 'stage' && needsAttachmentReview(current.workflow) &&
-        (!current.staff_attachments_checked || cache.attachmentNeedsRecheck[current.id] || !validSavedChildren(current))) return;
+    if (kind === 'stage' && !validSavedChildren(current)) return;
     const sequenceBeforeOperation = snapshotRef.current?.event_sequence ?? 0;
     if (kind === 'stage' && (current.workflow === 'quote' || !advertised(capabilities, current.workflow, 'stage'))) return;
     if (kind === 'stage' && current.workflow !== 'triage' && (current.disposition !== 'propose' || !current.actions.some(action => action.type === current.workflow))) return;
@@ -958,8 +953,8 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     triage: 'Save in Infor?',
     quote: 'Save in Infor?',
   };
-  const stagePrimary = proposal && !isUncertain ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) || cache.stagePending[proposal.id] !== undefined ||
-        (needsAttachmentReview(proposal.workflow) && (!proposal.staff_attachments_checked || Boolean(cache.attachmentNeedsRecheck[proposal.id]))) || !validSavedChildren(proposal),
+  const stagePrimary = proposal && !isUncertain ? workflowPrimaryAction({ proposal, drafts, busy: busy || Boolean(issue) || Boolean(lock) ||
+        cache.stagePending[proposal.id] !== undefined || !validSavedChildren(proposal),
       onStage: canStage ? () => { void operation('stage', proposal); } : undefined,
     }) : undefined;
   const primary = proposal && goEnabled

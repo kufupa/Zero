@@ -136,7 +136,7 @@ export function createFilingPorts({ sessionId, staffStage, staffGo }: {
       const scope = jobScope.safeParse(row);
       if (!scope.success || !await staffAttachmentsChecked(tx, stage.proposalId, stage.revision)) return null;
       signal.throwIfAborted();
-      const { payload, property_code, selected_message_id } = scope.data;
+      const { property_code, selected_message_id } = scope.data;
       const [booking] = scope.data.current.bookings;
       const [action] = scope.data.current.actions;
       const nestedProperty = booking.fields.property_code;
