@@ -237,7 +237,6 @@ const staffGo = z.object({
     confirmation:z.string().nullable().optional(),reservation_id:z.string().nullable().optional(),readback:z.unknown().optional(),sibling:z.unknown().optional()})).optional(),
 }).strict();
 const shownPrice = z.object({averageRate:z.string().trim().min(1),totalRate:z.string().trim().min(1),currency:z.string().trim().min(1)});
-const observedPenalty = z.object({state:z.literal('review_required'),text:z.string().trim().min(1)});
 
 // Staff Go queues durable work for the worker after a signed staff click on the current Prepare.
 // which re-stages, checks the binding, persists the dispatch marker, clicks Save once and reads back.
@@ -247,7 +246,7 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   if(existing) {
     const prior=staffGo.safeParse(existing);
     if(!prior.success || prior.data.idempotencyKey!==request.idempotencyKey || prior.data.actor!==request.actor ||
-        prior.data.revision!==request.expectedRevision || prior.data.confirmPenalty!==request.confirmPenalty ||
+        prior.data.revision!==request.expectedRevision ||
         (request.preparedJobId!==undefined && prior.data.prepareJobId!==request.preparedJobId)) return {ok:false,code:'IDEMPOTENCY_CONFLICT'};
     return p.phase==='saving' ? {ok:true,phase:'saving',replayed:true} : {ok:false,code:'INVALID_PHASE'};
   }
@@ -286,8 +285,6 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
     if(!price.success) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Infor price (run Prepare again)']}};
     expectedPrice=price.data;
   }
-  const fee=input.workflow==='cancel' && observedPenalty.safeParse(p.stage.cancellation_fee ?? p.stage.native_result?.cancellation_fee).success;
-  if(fee!==Boolean(request.confirmPenalty) || (fee && !request.preparedJobId)) return {ok:false,code:'INVALID_PHASE'};
   const rooms=remainingRooms ? remainingRooms.map(room=>room.state==='saved' ? room : {...room,state:'unattempted' as const}) :
     input.workflow==='create' && draft.data.bookings.length>1 ? draft.data.bookings.map((booking,index)=>({
     booking_id:booking.id,state:'unattempted',expectedPrice:shownPrice.safeParse(p.stage?.native_result?.rooms?.[index]?.native?.ratePlanAvailability).data,
@@ -295,7 +292,7 @@ async function submitStaffGo(tx: postgres.TransactionSql, p: ProposalRow, reques
   if(rooms?.some(room=>!room.expectedPrice)) return {ok:false,code:'REQUIRED_FIELDS_MISSING',details:{fields:['Infor price for every room (run Prepare again)']}};
   const go=staffGo.parse({executionId:uid('execution'),revision:p.revision,idempotencyKey:request.idempotencyKey,actor:request.actor,
     snapshot:p.current,dispatch:'pending',state:'queued',staff:true,
-    expectedPrice,rooms,prepareJobId:p.stage.job_id,confirmPenalty:request.confirmPenalty});
+    expectedPrice,rooms,prepareJobId:p.stage.job_id});
   const [seq]=await tx`SELECT COALESCE(max(sequence),0)+1 AS n FROM nava_agent.staff_edit WHERE proposal_id=${p.id}`;
   await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,who,snapshot)
     VALUES (${uid('edit')},${seq.n},${p.id},${p.session_id},${p.workflow},'staff_final',${p.revision},${request.actor},${json(p.current)})`;
@@ -338,7 +335,6 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
     const {p,go}=await lockedProposal(tx,lease,proposalId,executionId);
     const uncertain=!result.ok && (result.error?.outcome==='uncertain' || go.dispatch==='dispatched');
     const completion={...go,state:result.ok?'saved':uncertain?'uncertain':'failed',error:result.error ?? null};
-    const penaltyResult=z.object({cancellation_fee:observedPenalty}).safeParse(result.data);
     if(result.ok) {
       const data=z.object({confirmation:z.string().nullable(),reservation_id:z.string().nullable(),readback:z.unknown()}).passthrough().parse(result.data);
       const draft=proposalDraft.safeParse(go.snapshot);
@@ -350,14 +346,6 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
     } else if(uncertain) {
       await tx`UPDATE nava_agent.proposal SET phase='uncertain',execution=(execution-'go') || ${json({last_go:completion,
         error:{...(result.error ?? {code:'SAVE_UNCERTAIN',message:'Save may have dispatched.',retryable:false}),outcome:'uncertain'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;
-    } else if(p.workflow==='cancel' && result.error?.code==='CANCEL_PENALTY_CHANGED' && penaltyResult.success) {
-      const penalty=penaltyResult.data.cancellation_fee;
-      const native=p.stage.native_result;
-      const stage={...p.stage,cancellation_fee:penalty,native_result:{...native,cancellation_fee:penalty,
-        native:{...native.native,penaltyText:penalty.text,commitPenaltyText:penalty.text}},
-        display_rows:(p.stage.display_rows ?? []).map((row:any)=>row.id==='cancel-fee'?{...row,value:penalty.text}:row)};
-      await tx`UPDATE nava_agent.proposal SET phase='ready',stage=${json(stage)},execution=(execution-'go') || ${json({last_go:completion,
-        error:{...result.error,operation:'staff_stage',message:'Infor showed a cancellation fee. Review it and press Go again.',recovery:'Review the fee before confirming.'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;
     } else {
       // Known refusal before dispatch: nothing was saved; staff may fix fields and Prepare again.
       await tx`UPDATE nava_agent.proposal SET phase='ready',execution=(execution-'go') || ${json({last_go:completion,
@@ -403,7 +391,7 @@ export async function runStaffGo(lease: LeaseFence, registry: ToolRegistry, cont
     const staffStage:StaffJobBinding={proposalId:p.id,revision:go.revision,jobId:p.stage.job_id,workerId:lease.workerId,epoch:lease.epoch,
       workflow:input.workflow,source:source.data};
     const approved=input.workflow==='create' ? {expectedPrice:go.expectedPrice} : {prepared:p.stage.native_result};
-    result=await registry.save({...input,executionId,...approved,...(go.confirmPenalty?{confirmPenalty:go.confirmPenalty}:{})},
+    result=await registry.save({...input,executionId,...approved},
       {sessionId:context.sessionId,mode:context.mode,signal:context.signal,staffStage,staffGo:{executionId},
       markDispatched:async details=>{
         await sql.begin(async tx => {

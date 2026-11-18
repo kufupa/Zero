@@ -322,16 +322,14 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       preparedFee.text !== shownNotice || preparedFee.state !== fee(shownNotice).state) {
     return error('CANCEL_PREPARE_REQUIRED', 'Run Prepare for this reservation and reason before Go.');
   }
-  if (shownNotice && input.confirmPenalty !== true) {
-    return { ...error('CANCEL_PENALTY_CONFIRMATION_REQUIRED', 'Review the displayed cancellation penalty and confirm it before Go.'),
+  if (shownNotice) {
+    return { ...error('CANCEL_PENALTY_CONFIRMATION_REQUIRED', 'HMS requires fee approval before cancelling this stay. Review and cancel it in HMS.'),
       data: { cancellation_fee: fee(shownNotice) } };
   }
   const executionId = input.executionId;
   let markerStarted = false;
   let currentNotice: string | null = null;
-  let feeChanged = false;
   let cancellationReleased = false;
-  let chargeReleased = false;
   let transportId: string | undefined;
   try {
     const { cancel, registry } = await nativeWriterModules();
@@ -349,8 +347,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return { ...error('CANCEL_PENALTY_UNAVAILABLE', 'HMS reported a penalty but did not provide its text. Review the reservation in HMS.'),
         data: { cancellation_fee: { state: 'review_required', text: null } } };
     }
-    if (currentNotice !== shownNotice && !(currentNotice === null && native?.commitPenaltyText === shownNotice && input.confirmPenalty === true)) {
-      return { ...error('CANCEL_PENALTY_CHANGED', 'The cancellation penalty changed. Review it and run Prepare again.'),
+    if (currentNotice !== shownNotice) {
+      return { ...error('CANCEL_PENALTY_CHANGED', 'HMS now requires fee approval. Review and cancel the stay in HMS.'),
         data: { cancellation_fee: fee(currentNotice) } };
     }
     if (!freshReason || freshReason.code !== reason.code || freshReason.label !== reason.label ||
@@ -370,25 +368,11 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       commitBudgetMs: 20 * 60_000,
       continuationAllowed: () => !context.signal?.aborted,
       beforeDispatch: async () => !context.signal?.aborted,
-      awaitChargeApproval: async (dialog: { text?: unknown }) => {
-        const observed = typeof dialog.text === 'string' ? dialog.text : null;
-        currentNotice = observed;
-        feeChanged = observed !== shownNotice;
-        return !feeChanged && shownNotice !== null && input.confirmPenalty === true && !context.signal?.aborted;
-      },
-      prepareChargeWithAuthority: async () => {
-        if (!markerStarted) await mark({ workflow: 'cancel', executionId, propertyCode: target.propertyCode, action: 'penalty_acceptance' });
-      },
       dispatchWithAuthority: async (send: () => Promise<unknown>, digest: string) => {
         if (cancellationReleased) throw new Error('CANCEL_DISPATCH_DISARMED');
         if (!markerStarted) await mark({ workflow: 'cancel', executionId, requestDigest: digest });
         if (context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
         cancellationReleased = true;
-        return send();
-      },
-      dispatchChargeWithAuthority: async (send: () => Promise<unknown>) => {
-        if (!markerStarted || chargeReleased || context.signal?.aborted) throw new Error('CANCEL_DISPATCH_DISARMED');
-        chargeReleased = true;
         return send();
       },
     });
@@ -418,8 +402,8 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return { ...error('CANCEL_OUTCOME_UNCERTAIN', 'Reconcile the cancellation and any fee in a fresh session before retrying.', 'uncertain'),
         data: { cancellation_fee: fee(feeText(result) ?? currentNotice ?? shownNotice), readback: readback ?? null } };
     }
-    if (feeChanged || feeText(result)) {
-      return { ...error('CANCEL_PENALTY_CHANGED', 'The cancellation penalty changed. Review it and run Prepare again.'),
+    if (feeText(result)) {
+      return { ...error('CANCEL_PENALTY_CHANGED', 'HMS requires fee approval before cancelling this stay. Review and cancel it in HMS.'),
         data: { cancellation_fee: fee(currentNotice ?? feeText(result)) } };
     }
     return nativeFailure(result);

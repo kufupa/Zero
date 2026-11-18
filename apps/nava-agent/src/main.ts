@@ -18,7 +18,7 @@ import { selectStayTarget } from './edit.js';
 
 type Operation = 'stage'|'go'|'reconcile'|'quote'|'target';
 type OperationFailure = 'REAL_GUEST_GO_UNAVAILABLE'|'REQUIRED_FIELDS_MISSING'|'NOT_FOUND'|'FORBIDDEN'|'INVALID_INPUT'|'STALE_REVISION'|'NOT_EDITABLE'|'INVALID_PHASE'|'IDEMPOTENCY_CONFLICT'|'UNAVAILABLE'|typeof attachmentsUnconfirmed.code|typeof invalidGuestSelection.code;
-type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;confirmPenalty?:true;createProfile?:true;lookup?:z.infer<typeof targetLookup>};
+type OperationRequest = {proposalId:string;expectedRevision:number;actor:string;mailboxId:string;workflow:Workflow;mode:'live'|'labtest';operation:Operation;idempotencyKey:string|null;quoteId:string|null;preparedJobId?:string;createProfile?:true;lookup?:z.infer<typeof targetLookup>};
 
 // Called with session then proposal locked, matching core-db lock order. Only enqueue/claim durable work in this
 // transaction; a separate claimGo transaction would deadlock on the same row.
@@ -181,10 +181,9 @@ for (const operation of ['stage','go','reconcile','undo','redo','quote','target'
         if(!groupedQuoteRequest.safeParse(action.details).success) throw new OperationError('INVALID_INPUT');
       }
       const preparedJobId='prepared_job_id' in input.data && typeof input.data.prepared_job_id==='string'?input.data.prepared_job_id:undefined;
-      const confirmPenalty='confirm_penalty' in input.data && input.data.confirm_penalty===true?true:undefined;
       const createProfile='create_profile' in input.data && input.data.create_profile===true?true:undefined;
       const lookup=targetLookup.safeParse('lookup' in input.data?input.data.lookup:undefined).data;
-      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId,preparedJobId,confirmPenalty,createProfile,lookup});
+      const accepted=await operations.submit(tx,{proposalId:p.id,expectedRevision:input.data.expected_revision,actor:principal.id,mailboxId:p.mailbox_id,workflow:workflow.data,mode:p.mode,operation,idempotencyKey,quoteId,preparedJobId,createProfile,lookup});
       if(!accepted.ok) throw new OperationError(accepted.code,accepted.details ?? null);
       const expectedPhase=operation==='stage'||operation==='quote'||operation==='target'||createProfile?'staging':operation==='go'?'saving':'uncertain';
       if(accepted.phase!==expectedPhase) throw new OperationError('UNAVAILABLE');

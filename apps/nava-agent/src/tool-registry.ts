@@ -21,7 +21,7 @@ export type ToolResult = { ok: boolean; data: unknown; error: z.infer<typeof too
 export type ToolDefinition = { name:string; description:string; input_schema:{type:'object';properties:Record<string,unknown>;required?:string[];additionalProperties?:boolean} };
 export type PackTool = ToolDefinition & {run(input:unknown,context:ToolContext):Promise<ToolResult>};
 export type MutationInput = {workflow:string;booking:Record<string,unknown>;action:Record<string,unknown>};
-type SaveInput = MutationInput & {executionId:string;expectedPrice?:unknown;prepared?:unknown;confirmPenalty?:true;priorRooms?:unknown[]};
+type SaveInput = MutationInput & {executionId:string;expectedPrice?:unknown;prepared?:unknown;priorRooms?:unknown[]};
 type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>};
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
