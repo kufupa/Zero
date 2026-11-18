@@ -8,6 +8,9 @@ For B/C eligibility is human_inbound, ota, automated, internal, or unknown.
 Tier C uses historical model-only inputs and requires gateway support.
 For C, legacy model-safe JSONL rows can be used with --historical-mailbox-id;
 add eligibility to each row. Rows with PDF metadata need an available attachment.
+Use --timing-out for a separate private export containing only timing and usage
+fields. Its client times end at the observed terminal response; stage event
+timestamps include both worker wait and native execution.
 
 score labels: JSONL {id, workflow, source, fields, labtest?}. Each field is
 {path, value, observed_at, evidence, basis, target: "real", identity?}; path is
@@ -144,7 +147,7 @@ class Gateway:
         self.timeout = timeout
         self.opener = urllib.request.build_opener(NoRedirect())
 
-    def request(self, path, body=None, headers=None):
+    def request(self, path, body=None, headers=None, timeout=None):
         data = None if body is None else json.dumps(body, ensure_ascii=False, separators=(',', ':')).encode()
         h = dict(self.headers)
         h.update(headers or {})
@@ -152,7 +155,7 @@ class Gateway:
             h['Content-Type'] = 'application/json'
         req = urllib.request.Request(self.base + path, data=data, headers=h)
         try:
-            return self.opener.open(req, timeout=self.timeout)
+            return self.opener.open(req, timeout=self.timeout if timeout is None else timeout)
         except urllib.error.HTTPError as e:
             e.close()
             raise RuntimeError('http_' + str(e.code)) from None
@@ -172,6 +175,53 @@ def quote_id(proposal):
 
 def terminal_stage(p):
     return p.get('phase') not in ('staging',) and (p.get('stage') is not None or p.get('error') is not None)
+
+
+def capture_stage_events(gateway, path, after, through, entries):
+    """Read the finite, already-observed event range; never delay the measured path."""
+    by_job = {entry['job_id']: entry for entry in entries if entry.get('job_id')}
+    if not by_job or through <= after:
+        return True
+    with gateway.request(path + '/events?after_sequence=' + str(after),
+                         headers={'Accept': 'text/event-stream', 'Last-Event-ID': str(after)}, timeout=5) as stream:
+        data = []
+        while True:
+            raw = stream.readline()
+            if not raw:
+                break
+            line = raw.decode('utf-8').rstrip('\r\n')
+            if line.startswith('data:'):
+                data.append(line[5:].lstrip(' '))
+            elif not line and data:
+                event = json.loads('\n'.join(data))
+                data = []
+                payload = event.get('payload') or {}
+                entry = by_job.get(payload.get('job_id'))
+                if (entry and event.get('kind') in ('stage_queued', 'stage_finished')
+                        and payload.get('proposal_id') == entry['proposal_id']
+                        and payload.get('revision') == entry['revision']):
+                    entry.setdefault('stage_events', []).append({
+                        'kind': event['kind'], 'at': event.get('at'), 'job_id': entry['job_id']})
+                if event.get('sequence', 0) >= through:
+                    return True
+    return False
+
+
+def timing_result(result):
+    """Timing export excludes source, proposals, stage payloads and message bodies."""
+    return {
+        'id': result['id'], 'tier': result['tier'], 'status': result['status'],
+        'reason': result.get('reason'), 'wall_ms': result.get('wall_ms'),
+        'stage_events_error': result.get('stage_events_error'),
+        'model_calls': [{k: event['payload'].get(k) for k in (
+            'attempt_id', 'status', 'latency_ms', 'input_tokens', 'output_tokens',
+            'cache_read_input_tokens', 'cache_creation_input_tokens')}
+            for event in result.get('events', []) if event.get('kind') == 'model_call'],
+        'prepare': [{k: entry.get(k) for k in (
+            'workflow', 'proposal_id', 'revision', 'job_id', 'status', 'reason',
+            'wall_ms', 'elapsed_from_post_ms', 'stage_events')}
+            for entry in result.get('prepare', [])],
+    }
 
 
 def historical_thread(case, mailbox):
@@ -197,7 +247,7 @@ def historical_thread(case, mailbox):
 def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', historical_mailbox=None, run_id=None):
     result = {'id': case['id'], 'input_cutoff': case['input_cutoff'], 'status': 'unknown',
               'tier': tier, 'reason': None, 'wall_ms': None, 'proposals': [], 'events': [], 'prepare': []}
-    monotonic = time.monotonic()
+    monotonic = None
     try:
         cutoff = timestamp(case['input_cutoff'])
         if tier in ('B', 'C') and case.get('eligibility') != 'human_inbound':
@@ -228,7 +278,9 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
             result.update(status='excluded', reason='outside_last_30_days')
             return result
         payload = json.dumps(thread, ensure_ascii=False, separators=(',', ':')).encode()
-        with gateway.request('/threads', thread, {'Idempotency-Key': hashlib.sha256(payload).hexdigest()}) as response:
+        idempotency_key = hashlib.sha256(payload).hexdigest()
+        monotonic = time.monotonic()
+        with gateway.request('/threads', thread, {'Idempotency-Key': idempotency_key}) as response:
             status = response.status
             snap = json.load(response)
         result['wall_ms'] = round((time.monotonic() - monotonic) * 1000)
@@ -246,6 +298,7 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         # A 201 is a new thread, and mail_pending identifies its selected turn.
         found = False
         finished = False
+        model_end_sequence = 0
         with gateway.request(path + '/events?after_sequence=0', headers={'Accept': 'text/event-stream', 'Last-Event-ID': '0'}) as stream:
             data = []
             while time.monotonic() < deadline:
@@ -266,9 +319,10 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                         if event.get('kind') == 'model_call':
                             result['events'].append({'kind': 'model_call', 'payload': {k: p.get(k) for k in (
                                 'attempt_id', 'status', 'input_tokens', 'output_tokens', 'cache_read_input_tokens',
-                                'cache_creation_input_tokens', 'metadata')}})
+                                'cache_creation_input_tokens', 'latency_ms', 'metadata')}})
                         if event.get('kind') == 'turn_finished':
                             finished = True
+                            model_end_sequence = event.get('sequence', 0)
                             break
         result['wall_ms'] = round((time.monotonic() - monotonic) * 1000)
         if not found:
@@ -281,6 +335,7 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
         result['proposals'] = [p for p in snap.get('proposals', [])
                                if p.get('source_message_id') in (None, selected_id)]
         result['status'] = 'complete'
+        last_sequence = snap.get('event_sequence', model_end_sequence)
         if prepare:
             for p in result['proposals']:
                 workflow = p.get('workflow')
@@ -309,6 +364,7 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                     entry['accepted'] = True
                     while time.monotonic() - pstart < timeout:
                         current = gateway.json(path)
+                        last_sequence = current.get('event_sequence', last_sequence)
                         item = next((x for x in current.get('proposals', []) if x['id'] == p['id']), None)
                         if item and terminal_stage(item):
                             stage = item.get('stage') or {}
@@ -346,18 +402,31 @@ def run_case(gateway, case, prepare, timeout, quote_first=False, tier='A', histo
                     else:
                         entry['reason'] = 'operation_timeout'
                 except Exception as exc:
-                    entry['reason'] = str(exc) if isinstance(exc, RuntimeError) else 'operation_dispatch_or_read_unknown'
+                    timed_out = isinstance(exc, TimeoutError) or (isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, TimeoutError))
+                    entry['reason'] = ('operation_timeout' if timed_out else
+                                       str(exc) if isinstance(exc, RuntimeError) else 'operation_dispatch_or_read_unknown')
                     if isinstance(exc, RuntimeError) and re.fullmatch(r'http_4\d\d', str(exc)):
                         entry['status'] = 'failed'
-                if entry['wall_ms'] is None:
-                    entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
-                    entry['elapsed_from_post_ms'] = round((time.monotonic() - monotonic) * 1000)
+                finally:
+                    if entry['wall_ms'] is None:
+                        entry['wall_ms'] = round((time.monotonic() - pstart) * 1000)
+                        entry['elapsed_from_post_ms'] = round((time.monotonic() - monotonic) * 1000)
+            if any(entry.get('job_id') for entry in result['prepare']):
+                try:
+                    last_sequence = gateway.json(path).get('event_sequence', last_sequence)
+                except Exception:
+                    result['stage_events_error'] = 'event_snapshot_unavailable'
+            try:
+                if not capture_stage_events(gateway, path, model_end_sequence, last_sequence, result['prepare']):
+                    result['stage_events_error'] = 'event_capture_incomplete'
+            except Exception:
+                result['stage_events_error'] = 'event_capture_unavailable'
     except Exception as exc:
         known = {'pane_live_source_required', 'historical_source_required', 'historical_mailbox_required', 'historical_attachment_unavailable',
                  'conversation_after_cutoff', 'selected_inbound_missing', 'existing_session_not_fresh',
                  'session_mode_mismatch', 'fresh_mail_event_not_observed', 'turn_not_finished', 'selected_mail_changed'}
         result['reason'] = str(exc) if isinstance(exc, RuntimeError) or str(exc) in known else 'request_or_stream_error'
-        result['wall_ms'] = round((time.monotonic() - monotonic) * 1000)
+        result['wall_ms'] = round((time.monotonic() - monotonic) * 1000) if monotonic is not None else None
     return result
 
 
@@ -635,6 +704,7 @@ def score(results, labels, prices):
     report = {}
     for workflow, group in groups.items():
         outcomes, reasons, field_counts, sources, prep, artifacts, labtests = Counter(), Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
+        prepare_timing = Counter()
         by_field = {}
         latencies, prepare_latencies, labtest_latencies, costs, per_email_cost = [], [], [], [], []
         labels_with_fields = 0
@@ -761,6 +831,10 @@ def score(results, labels, prices):
                 if e.get('workflow') == workflow:
                     prepared = prepare_outcome(r, p, e)
                     prep[prepared] += 1
+                    timing_status = ('timed_out' if e.get('reason') == 'operation_timeout'
+                                     else 'failed' if e.get('status') == 'failed'
+                                     else 'complete' if prepared == 'complete' else 'unknown')
+                    prepare_timing[timing_status] += 1
                     if prepared == 'complete' and type(e.get('elapsed_from_post_ms')) in (int, float):
                         prepare_latencies.append(e['elapsed_from_post_ms'])
                     if e.get('reason'):
@@ -771,6 +845,7 @@ def score(results, labels, prices):
                         artifacts[e['artifacts']] += 1
             if r.get('tier') != 'C' and workflow in WRITES | {'quote'} and not any(e.get('workflow') == workflow for e in r.get('prepare', [])):
                 reasons['prepare:not_attempted'] += 1
+                prepare_timing['not_attempted'] += 1
         denom = len(group)
         scored = field_counts['correct'] + field_counts['wrong']
         report[workflow] = {'denominator': denom, 'e2e': dict(outcomes),
@@ -782,7 +857,9 @@ def score(results, labels, prices):
                                'fields': {name: dict(counts) for name, counts in by_field.items()}},
             'wall_ms': {'n': len(latencies), 'p50': percentile(latencies, .5), 'p95': percentile(latencies, .95),
                         'scope': 'pane POST to model turn finished; excludes Prepare'},
-            'post_to_prepare_ms': {'n': len(prepare_latencies), 'p50': percentile(prepare_latencies, .5), 'p95': percentile(prepare_latencies, .95)},
+            'post_to_prepare_ms': {'n': len(prepare_latencies), 'p50': percentile(prepare_latencies, .5), 'p95': percentile(prepare_latencies, .95),
+                                   'failed': prepare_timing['failed'], 'timed_out': prepare_timing['timed_out'],
+                                   'unknown': prepare_timing['unknown'], 'not_attempted': prepare_timing['not_attempted']},
             'labtest_e2e_wall_ms': {'n': len(labtest_latencies), 'p50': percentile(labtest_latencies, .5), 'p95': percentile(labtest_latencies, .95)},
             'haiku_usd_per_email': {'n': len(costs), 'mean': sum(costs) / len(costs) if costs else None, 'emails': per_email_cost},
             'real_unsaved_prepare': dict(prep), 'labtest_completion': dict(labtests) if workflow in WRITES else None,
@@ -818,6 +895,7 @@ def main():
     replay.add_argument('--cookie-file', required=True, help='private file containing authorized Better Auth Cookie header')
     replay.add_argument('--origin', required=True, help='trusted browser Origin')
     replay.add_argument('--out', required=True, help='new private output JSON path')
+    replay.add_argument('--timing-out', help='new private body-free timing JSON path')
     replay.add_argument('--concurrency', type=int, default=4)
     replay.add_argument('--run-id', type=uuid.UUID, default=None, help='optional unique UUID to record for this run')
     replay.add_argument('--timeout', type=int, default=300)
@@ -853,6 +931,10 @@ def main():
             raise ValueError('invalid concurrency, timeout, or duplicate id')
         if pathlib.Path(args.out).exists():
             raise ValueError('output already exists')
+        if args.timing_out:
+            private_destination(args.timing_out)
+            if pathlib.Path(args.timing_out).exists() or pathlib.Path(args.timing_out).resolve() == pathlib.Path(args.out).resolve():
+                raise ValueError('timing output already exists or matches replay output')
         gateway = Gateway(args.gateway, pathlib.Path(args.cookie_file).read_text(), args.origin, args.timeout)
         limit = 12 if args.tier == 'C' else live_limit(gateway.json('/capabilities'))
         if args.concurrency > limit:
@@ -866,6 +948,9 @@ def main():
         run = {'tier': args.tier, 'run_id': run_id, 'concurrency': args.concurrency, 'effective_limit': limit,
                'elapsed_ms': elapsed_ms, 'results': results}
         save_private(args.out, run)
+        if args.timing_out:
+            save_private(args.timing_out, {k: run[k] for k in ('tier', 'run_id', 'concurrency', 'effective_limit', 'elapsed_ms')}
+                         | {'results': [timing_result(result) for result in results]})
         print(json.dumps({'tier': args.tier, 'cases': len(results), 'status': dict(Counter(r['status'] for r in results)),
                           'concurrency': args.concurrency, 'effective_limit': limit, 'elapsed_ms': elapsed_ms, 'output': args.out}))
     else:
