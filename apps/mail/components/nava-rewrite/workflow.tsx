@@ -394,7 +394,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   const searchFirst=!!newProfileMatch && !hasChoices && !hasReviewed && shown!==true;
   const selectedProfile=!!newProfileMatch && !!booking?.fields.guest_profile_id;
   const createPrice = proposal.workflow === 'create' && /^\/bookings\/(?:0|[1-9]\d*)\/fields\/price$/.test(spec.path);
-  const hint = createPrice ? 'Price set by HMS rate plan.' : searchFirst ? 'Check Infor for matching profiles first.' : selectedProfile ? 'An existing profile is selected.' : guestProfile ? 'Run Prepare to load verified Infor profiles.'
+  const hint = createPrice ? 'Requested price. HMS sets the booking price from the rate plan.' : searchFirst ? 'Check Infor for matching profiles first.' : selectedProfile ? 'An existing profile is selected.' : guestProfile ? 'Run Prepare to load verified Infor profiles.'
     : resolved.kind === 'missing' || value === null ? 'No saved value.' : undefined;
   const requiredEmpty = spec.required && (shown === null || shown === undefined || typeof shown === 'string' && shown.trim() === '');
   const common = { label, required: spec.required, disabled: locked || !spec.editable || guestProfile || searchFirst || selectedProfile || createPrice, error: spec.error ?? (requiredEmpty && spec.control !== 'checkbox' ? 'Required — fill before Go.' : null), hint, review };
