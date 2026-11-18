@@ -278,7 +278,8 @@ async function finishStaffGo(lease: LeaseFence, proposalId: string, executionId:
         error:{...result.error,operation:'staff_stage'}})}::jsonb,updated_at=now() WHERE id=${p.id}`;
     }
     await writeEvent(tx,lease.sessionId,'go_finished',{proposal_id:p.id,execution_id:executionId,revision:go.revision,
-      outcome:completion.state,error:result.error ?? null,...(result.ok?{result:result.data}:{})});
+      outcome:completion.state,error:result.error ?? null,...(result.ok?{result:result.data}:
+        p.workflow==='filing' && !uncertain && result.data ? {native_diagnostics:result.data} : {})});
   });
 }
 

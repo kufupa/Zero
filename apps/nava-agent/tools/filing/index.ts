@@ -59,6 +59,8 @@ type NativeModules = {
   runCloudPaneAttach: (input: Record<string, unknown>) => Promise<{
     outcome?: string; uploadSent?: boolean; documentCode?: string; listed?: boolean;
     nativeReadback?: unknown; cleanupRoot?: string;
+    nativeDiagnostics?: { checkStatus?: number | null; uploadStatus?: number | null; refreshStatus?: number | null;
+      visibleDialogs?: number; blockedRequests?: number };
   }>;
   getPropertyRegistration: (propertyCode: string) => { active: boolean; mailboxTransportId: string } | null;
 };
@@ -303,8 +305,9 @@ export async function save(input: unknown, context: SaveContext): Promise<ToolRe
       return { ok: true, data: { confirmation: prepared.target.confirmation,
         reservation_id: prepared.target.reservation_stay_id, readback }, error: null };
     }
-    return markerStarted || result.uploadSent ? uncertain()
-      : failure('FILING_SAVE_FAILED', 'The document was not submitted; prepare again.');
+    if (markerStarted || result.uploadSent) return uncertain();
+    return { ...failure('FILING_SAVE_FAILED', 'The document was not submitted; prepare again.'),
+      data: { outcome: result.outcome ?? 'unknown', ...result.nativeDiagnostics } };
   } catch (error) {
     if (markerStarted) return uncertain();
     if (context.signal?.aborted) return failure('ABORTED', 'Filing was aborted before dispatch.');
