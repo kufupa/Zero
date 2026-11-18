@@ -14,6 +14,7 @@ export type QuoteDraftRequest = {
   proposalId: string; revision: number; quoteId: string; jobId: string; body: string;
   artifacts: NonNullable<NonNullable<Proposal['stage']>['artifacts']>;
   isCurrentSnapshot: () => boolean;
+  verifyCurrentSnapshot: () => Promise<boolean>;
 };
 
 export type NavaControllerProps = {
@@ -85,7 +86,7 @@ function editValue(spec: FieldSpec, draft: DraftValue, workflow: WorkflowName, p
     const parsed = jsonSchema.safeParse(required);
     return parsed.success ? { ok: true, value: parsed.data } : { ok: false, message: 'Could not update the rate code. Refresh the quote.' };
   }
-  if (workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/preferred\/(?:roomCodes|rateCodes|bedTypes|mealPlanBases)$/.test(spec.path)) {
+  if (workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/preferred\/(?:rateCodes|bedTypes|mealPlanBases)$/.test(spec.path)) {
     return typeof draft === 'string' ? { ok: true, value: draft.split(',').map(item => item.trim()).filter(Boolean) }
       : { ok: false, message: `${spec.label}: enter preferences separated by commas.` };
   }
@@ -199,6 +200,8 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [streamMessage, setStreamMessage] = useState<string | null>(null);
+  const [streamConnected, setStreamConnected] = useState(false);
+  const streamConnectedRef = useRef(false);
   const [bindingUnavailable, setBindingUnavailable] = useState(false);
   const [selectedId, setSelectedId] = useState(cache.selectedId);
   const [version, setVersion] = useState(0);
@@ -335,6 +338,8 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     const controller = new AbortController();
     controllerRef.current = controller;
     const signal = controller.signal;
+    streamConnectedRef.current = false;
+    setStreamConnected(false);
     setMessage(null);
     setBusy(false);
     setOpeningLong(false);
@@ -352,7 +357,9 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         applySnapshot(thread);
         while (!signal.aborted) {
           try {
-            for await (const event of api.events(thread.id, cursor, { signal })) {
+            for await (const event of api.events(thread.id, cursor, { signal, onConnected: () => {
+              if (!signal.aborted) { streamConnectedRef.current = true; setStreamConnected(true); setStreamMessage(null); }
+            } })) {
               if (signal.aborted) return;
               if (event.sequence <= cursor) continue;
               const next = await api.getThread(thread.id, { signal });
@@ -364,10 +371,14 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
               cursor = Math.max(event.sequence, next.event_sequence);
               setStreamMessage(null);
             }
+            streamConnectedRef.current = false;
             if (signal.aborted) return;
+            setStreamConnected(false);
             setStreamMessage('Connection interrupted. Reconnecting to Nava.');
           } catch (error) {
+            streamConnectedRef.current = false;
             if (signal.aborted) return;
+            setStreamConnected(false);
             if (expireAuthentication(error, signal)) return;
             setStreamMessage('Connection interrupted. Reconnecting to Nava.');
           }
@@ -378,7 +389,6 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
             if (signal.aborted) return;
             applySnapshot(next);
             cursor = Math.max(cursor, next.event_sequence);
-            setStreamMessage(null);
           } catch (error) {
             if (signal.aborted) return;
             if (expireAuthentication(error, signal)) return;
@@ -391,6 +401,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
     void start();
     return () => {
       mounted.current = false;
+      streamConnectedRef.current = false;
       window.clearTimeout(openingTimer);
       cancelOwnedWork(signal);
       controller.abort();
@@ -671,15 +682,33 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
       return { status: 'error', message: 'The quote changed. Review the latest files before saving a draft.' };
     }
     const active: ActiveOperation = { kind: 'quote_draft', proposalId: proposal.id, signal };
-    const refs = artifacts.map(item => item.id);
+    const refs = artifacts.map(item => [item.id, item.name, item.mime_type]);
     operationRef.current = active;
     setBusy(true);
     try {
-      const result = await saveQuoteDraft({ proposalId: proposal.id, revision: proposal.revision, quoteId, jobId, body, artifacts, isCurrentSnapshot: () => {
+      const isCurrentSnapshot = () => {
         const current = currentQuote(proposal, quoteId, jobId);
-        return !signal.aborted && operationRef.current === active && Boolean(current?.stage?.artifacts &&
-          refs.length === current.stage.artifacts.length && refs.every((id, index) => current.stage?.artifacts?.[index]?.id === id));
-      } });
+        return !signal.aborted && streamConnectedRef.current && operationRef.current === active && Boolean(current?.stage?.artifacts &&
+          sameValue(refs, current.stage.artifacts.map(item => [item.id, item.name, item.mime_type])));
+      };
+      const verifyCurrentSnapshot = async () => {
+        const thread = snapshotRef.current;
+        if (!thread || !isCurrentSnapshot()) return false;
+        try {
+          const fresh = await api.getThread(thread.id, { signal });
+          const current = fresh.proposals.find(item => item.id === proposal.id);
+          return isCurrentSnapshot() && fresh.id === thread.id && fresh.selected_message_id === input.selected_message_id &&
+            fresh.event_sequence >= (snapshotRef.current?.event_sequence ?? 0) && current?.source_message_id === input.selected_message_id &&
+            current.thread_id === thread.id && current.session_id === fresh.session?.id && current.workflow === 'quote' &&
+            current.revision === proposal.revision && current.phase === 'ready' && current.stage?.revision === current.revision &&
+            current.stage.quote_id === quoteId && current.stage.job_id === jobId && Boolean(current.stage.artifacts &&
+              sameValue(refs, current.stage.artifacts.map(item => [item.id, item.name, item.mime_type])));
+        } catch (error) {
+          if (!signal.aborted) expireAuthentication(error, signal);
+          return false;
+        }
+      };
+      const result = await saveQuoteDraft({ proposalId: proposal.id, revision: proposal.revision, quoteId, jobId, body, artifacts, isCurrentSnapshot, verifyCurrentSnapshot });
       if (result.status === 'created') cache.savedQuoteDrafts[JSON.stringify([proposal.id, proposal.revision, jobId])] = result.message;
       return result;
     } finally {
@@ -858,6 +887,7 @@ function ThreadController({ input, email, api, cache, reconcileSupported = false
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections) => { void generateQuoteArtifacts(proposal, quoteId, selections); } : undefined}
         onSaveQuoteDraft={saveQuoteDraft && !issue && !isUncertain ? body => saveCurrentQuoteDraft(proposal, body) : undefined}
+        quoteConnectionReady={streamConnected}
         savedQuoteDraftMessage={proposal.stage?.job_id ? cache.savedQuoteDrafts[JSON.stringify([proposal.id, proposal.revision, proposal.stage.job_id])] : undefined}
         onAddContext={!issue && !isUncertain ? text => addContext(proposal, text) : undefined}
         attachmentsChecked={proposal.staff_attachments_checked && !cache.attachmentNeedsRecheck[proposal.id]} attachmentsAttention={(snapshot?.messages ?? []).some(item => item.attachment_status !== 'complete')}

@@ -12,12 +12,13 @@ const boundThreadSnapshotSchema = threadSnapshotSchema.extend({ proposals: z.arr
 export type BoundThreadSnapshot = z.infer<typeof boundThreadSnapshotSchema>;
 
 export type RequestOptions = { signal?: AbortSignal };
+type EventOptions = RequestOptions & { onConnected?: () => void };
 export type RevisionRequest = RequestOptions & { proposalId: string; expectedRevision: number };
 export type NavaApi = {
   upsertThread: (input: ThreadInput, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getThread: (id: string, options?: RequestOptions) => Promise<BoundThreadSnapshot>;
   getCapabilities: (options?: RequestOptions) => Promise<Capabilities>;
-  events: (id: string, afterSequence: number, options?: RequestOptions) => AsyncGenerator<NavaEvent>;
+  events: (id: string, afterSequence: number, options?: EventOptions) => AsyncGenerator<NavaEvent>;
   patchProposal: (request: RevisionRequest & { changes: Change[]; staffAttachmentsChecked?: boolean }) => Promise<Proposal>;
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
@@ -90,11 +91,12 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
   const revisionBody = (request: RevisionRequest) => body({ expected_revision: request.expectedRevision }, request.signal);
   const proposalPath = (id: string) => `/proposals/${pathId(id)}`;
 
-  async function* events(threadId: string, afterSequence: number, options?: RequestOptions): AsyncGenerator<NavaEvent> {
+  async function* events(threadId: string, afterSequence: number, options?: EventOptions): AsyncGenerator<NavaEvent> {
     const response = await request(`/threads/${pathId(threadId)}/events?after_sequence=${encodeURIComponent(afterSequence)}`, {
       headers: { Accept: 'text/event-stream', 'Last-Event-ID': String(afterSequence) }, signal: options?.signal,
     });
     if (!response.body) throw new NavaApiError('Nava event stream is unavailable.', 'invalid_response');
+    options?.onConnected?.();
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';

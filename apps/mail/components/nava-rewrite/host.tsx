@@ -144,6 +144,7 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
         cover: { to: selectedMail.from.email, subject: source.subject, body: request.body }, artifacts,
         failures: [], issues: [], stale: false, inventoryDecline: false };
       const result = await output.createOutlookReply({ output: prepared, html: quoteCoverHtml(request.body), isCurrentSnapshot: request.isCurrentSnapshot,
+        verifyCurrentSnapshot: request.verifyCurrentSnapshot,
         confirmUnknown: () => window.confirm('An earlier reply may exist. Check Outlook Drafts first. Continue only if you verified there is no duplicate.') });
       if (result.status !== 'created' || !result.readback) return result;
       return { ...result, message: `Draft available in Outlook Drafts, not sent. Review its cover there. Subject: ${result.readback.subject}. Files: ${result.readback.attachmentNames.join(', ')}.` };

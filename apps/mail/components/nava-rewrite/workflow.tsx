@@ -26,6 +26,7 @@ export type WorkflowProps = {
   onQuote?: (quoteId: string) => void;
   onGenerateQuoteArtifacts?: (quoteId: string, selections: QuoteSelection[]) => void;
   onSaveQuoteDraft?: (body: string) => Promise<{ status: string; message: string }>;
+  quoteConnectionReady?: boolean;
   savedQuoteDraftMessage?: string;
   onAddContext?: (text: string) => Promise<string>;
   onSelectGuest?: (candidate: GuestCandidate) => void;
@@ -366,7 +367,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
       <FieldEvidence spec={spec} label="Rate plan" /></div>;
   }
 
-  const quotePreference = proposal.workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/preferred\/(?:roomCodes|rateCodes|bedTypes|mealPlanBases)$/.test(spec.path);
+  const quotePreference = proposal.workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/preferred\/(?:rateCodes|bedTypes|mealPlanBases)$/.test(spec.path);
   if (quotePreference) {
     const text = typeof shown === 'string' ? shown : Array.isArray(shown) && shown.every(item => typeof item === 'string') ? shown.join(', ') : shown == null ? '' : null;
     return <div>{text === null ? <PaneMessage>{label}: this value cannot be displayed. Check the source.</PaneMessage>
@@ -465,6 +466,7 @@ function QuoteFields(props: WorkflowProps & { locked: boolean }) {
   const grouped = new Map<string, { key: string; label?: string; fields: FieldSpec[] }>();
   const specs = [...props.proposal.field_specs].sort((a, b) => Number(!/\/details\/property_code$/.test(a.path)) - Number(!/\/details\/property_code$/.test(b.path)));
   for (const spec of specs) {
+    if (/\/rooms\/(?:0|[1-9]\d*)\/preferred\/roomCodes$/.test(spec.path)) continue;
     const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)(?:\/|$)/.exec(spec.path);
     const group = match && groups.find(item => item.actionIndex === Number(match[1]) && item.groupIndex === Number(match[2]));
     const legacyStay = /^\/bookings\/(0|[1-9]\d*)\//.exec(spec.path) && fieldContext(props.proposal, spec.path);
@@ -649,7 +651,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts }: WorkflowProp
   </PaneSection>;
 }
 
-function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage }: WorkflowProps) {
+function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage, quoteConnectionReady }: WorkflowProps) {
   const [body, setBody] = useState('Good day,\n\nPlease find the quotation attached.\n\nKind regards');
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -661,7 +663,8 @@ function QuoteCover({ proposal, busy, onSaveQuoteDraft, savedQuoteDraftMessage }
   return <PaneSection title="Cover email and quote files">
     <PaneField label="Cover email" control="textarea" value={body} disabled={busy || saving || saved} onChange={value => { setBody(value); setMessage(null); }} />
     <p>Files: {pdf.name}, {workbook.name}</p>
-    {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || !body.trim()} onClick={() => {
+    {onSaveQuoteDraft && !saved && quoteConnectionReady === false && <p>Reconnect to Nava before saving the draft.</p>}
+    {onSaveQuoteDraft && !saved && <button type="button" disabled={busy || saving || !body.trim() || quoteConnectionReady === false} onClick={() => {
       setSaving(true); setMessage(null);
       void onSaveQuoteDraft(body).then(result => { setMessage(result.message); if (result.status === 'created') setSaved(true); })
         .catch(() => setMessage('Could not confirm the draft. Check Outlook Drafts before trying again.')).finally(() => setSaving(false));
