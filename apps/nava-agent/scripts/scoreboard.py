@@ -35,6 +35,10 @@ quote_id, unsent_draft_reopened, pdf_download, xlsx_download, wall_ms?}.
 For a decline, replace the download observations with sold_out_verified.
 Observations hold evidence references from the signed pane probe.
 For triage, /classified_workflows compares the sorted proposed workflow names.
+An independently linked staff reply may label an action or selected document
+using source_reply evidence. This scores classification only, not stay identity
+or completion. Projection guest_name compares a printed full name to a booking's
+first and last names.
 
 prices: JSON {model, input, output, cache_read, cache_write, long_context_above,
 long_input, long_output, long_cache_read, long_cache_write}; USD per million.
@@ -48,6 +52,7 @@ reported separately for the pane's own mapper to handle.
 import argparse
 import concurrent.futures
 import datetime as dt
+import decimal
 import hashlib
 import http.client
 import json
@@ -564,6 +569,77 @@ def same(a, b):
     return type(a) is type(b) and a == b
 
 
+def projected_field(proposal, field):
+    found, actual = pointer(proposal, field.get('path'))
+    projection = field.get('projection')
+    if not projection:
+        return found, actual
+    if projection == 'guest_name' and found and isinstance(actual, dict):
+        parts = [actual.get('first_name'), actual.get('last_name')]
+        return (True, ' '.join(parts)) if all(isinstance(part, str) and part.strip() for part in parts) else (False, None)
+    if projection == 'filing_document_types' and found and isinstance(actual, list):
+        types = sorted({a.get('type') for a in actual if isinstance(a, dict) and a.get('type') in
+                        ('voucher_submission', 'payment_proof_submission', 'attach_document')})
+        return (None, None) if not types and proposal.get('disposition') in ('needs_info', 'staff_review') else (True, types)
+    if projection == 'action_types' and found and isinstance(actual, list):
+        types = sorted({a.get('type') for a in actual if isinstance(a, dict) and isinstance(a.get('type'), str)})
+        return (None, None) if not types and proposal.get('disposition') in ('needs_info', 'staff_review') else (True, types)
+    if projection == 'workflow_action_present' and found and isinstance(actual, list):
+        present = any(isinstance(a, dict) and a.get('type') == field.get('workflow_action') for a in actual)
+        return (None, None) if not present and proposal.get('disposition') in ('needs_info', 'staff_review') else (True, present)
+    if projection == 'native_option_label' and found:
+        if actual is None or actual == '':
+            return False, None
+        options = [option for spec in proposal.get('field_specs') or [] if spec.get('path') == field.get('path')
+                   for option in spec.get('options') or [] if option.get('value') == actual and option.get('label')]
+        labels = {option['label'] for option in options}
+        return (True, next(iter(labels))) if len(labels) == 1 else (None, None)
+    return False, None
+
+
+def comparable_same(actual, expected, comparison):
+    if comparison == 'number':
+        try:
+            if isinstance(actual, bool) or isinstance(expected, bool):
+                return False
+            a, b = decimal.Decimal(str(actual)), decimal.Decimal(str(expected))
+            return a.is_finite() and b.is_finite() and a == b
+        except decimal.InvalidOperation:
+            return False
+    return same(actual, expected)
+
+
+def source_reply_binding(workflow, proposal, field, source):
+    binding = field.get('source_reply') or {}
+    if not isinstance(binding, dict) or not isinstance(source, dict):
+        return False
+    selected_rfc = binding.get('selected_rfc_message_id')
+    reply_to = binding.get('staff_header_reference')
+    scoped = (workflow == 'filing' and field.get('path') == '/actions'
+              and field.get('projection') == 'filing_document_types') or (
+              workflow == 'cancel' and field.get('path') == '/actions'
+              and field.get('projection') == 'action_types') or (
+              workflow in ('quote', 'create', 'amend', 'cancel') and field.get('path') == '/actions'
+              and field.get('projection') == 'workflow_action_present' and field.get('workflow_action') == workflow) or (
+              workflow == 'triage' and field.get('path') == '/classified_workflows')
+    if workflow in ('amend', 'cancel', 'filing') and field.get('path') == '/bookings/0/reservation_id':
+        scoped = isinstance(proposal, dict) and len(proposal.get('bookings') or []) == 1
+    if workflow == 'quote' and isinstance(proposal, dict):
+        path = field.get('path') or ''
+        match = re.fullmatch(r'/actions/(\d+)/details/groups/0/(arrival_date|departure_date|rooms/0/(adults|children|quantity))', path)
+        quote_actions = [(i, a) for i, a in enumerate(proposal.get('actions') or []) if a.get('type') == 'quote']
+        if match and len(quote_actions) == 1 and int(match.group(1)) == quote_actions[0][0]:
+            groups = (quote_actions[0][1].get('details') or {}).get('groups') or []
+            scoped = len(groups) == 1 and len(groups[0].get('rooms') or []) == 1
+    return (scoped
+            and binding.get('selected_message_id') == source.get('message_id')
+            and binding.get('staff_header') in ('In-Reply-To', 'References')
+            and isinstance(selected_rfc, str) and bool(selected_rfc.strip())
+            and isinstance(reply_to, str) and selected_rfc.strip().strip('<>').casefold() == reply_to.strip().strip('<>').casefold()
+            and bool(binding.get('staff_message_id')) and bool(binding.get('staff_source_row_id'))
+            and bool(binding.get('evidence')))
+
+
 def percentile(values, p):
     if not values:
         return None
@@ -808,9 +884,12 @@ def score(results, labels, prices):
         outcomes, reasons, field_counts, sources, prep, artifacts, labtests = Counter(), Counter(), Counter(), Counter(), Counter(), Counter(), Counter()
         prepare_timing, funnel = Counter(), Counter()
         lookup_outcomes = Counter()
-        by_field = {}
+        by_field, by_kind = {}, {}
         latencies, prepare_latencies, labtest_latencies, quote_latencies, costs, per_email_cost = [], [], [], [], [], []
         labels_with_fields = 0
+        cases_with_scored_fields = 0
+        cases_with_scored_data = 0
+        cases_with_scored_classifications = 0
         for label, r in group:
             sources[label.get('source', 'unspecified')] += 1
             candidates = [p for p in r['proposals'] if p.get('workflow') == workflow]
@@ -832,12 +911,16 @@ def score(results, labels, prices):
             if r.get('error_code'):
                 reasons['import:' + r['error_code']] += 1
             assertion_results = []
+            scored_kinds = set()
             bound_bookings = set()
             conflicts = conflicting_bindings(label)
             if label.get('fields'):
                 labels_with_fields += 1
             for field in label.get('fields', []):
                 field_score = by_field.setdefault(field.get('path', '(missing)'), Counter())
+                kind = ('classification' if field.get('path') == '/classified_workflows' or field.get('projection') in
+                        ('filing_document_types', 'workflow_action_present', 'action_types') else 'data')
+                kind_score = by_kind.setdefault(kind, Counter())
                 try:
                     separated = ('value' in field and bool(field.get('evidence')) and field.get('target') == 'real'
                                  and field.get('basis') in ('staff_outbound', 'hms')
@@ -847,24 +930,41 @@ def score(results, labels, prices):
                 if not separated or r['status'] != 'complete' or len(candidates) > 1:
                     field_counts['unknown'] += 1
                     field_score['unknown'] += 1
+                    kind_score['unknown'] += 1
                     assertion_results.append(None)
                     continue
-                binding_reason = None if workflow == 'triage' else field_identity(p, field, label, r.get('source'), conflicts)
+                source_only = source_reply_binding(workflow, p, field, r.get('source'))
+                binding_reason = (None if workflow == 'triage' and not field.get('source_reply') or source_only
+                                  else field_identity(p, field, label, r.get('source'), conflicts))
                 if binding_reason:
                     field_counts['unknown'] += 1
                     field_score['unknown'] += 1
+                    kind_score['unknown'] += 1
                     reasons['field:' + binding_reason] += 1
                     assertion_results.append(None)
                     continue
-                if workflow in WRITES:
+                if workflow in WRITES and not source_only:
                     index, _ = booking_for_path(p, field.get('path'))
                     if index is not None:
                         bound_bookings.add(index)
-                found, actual = pointer(p, field.get('path')) if p else (False, None)
-                correct = found and same(actual, field.get('value'))
+                found, actual = projected_field(p, field) if p else (False, None)
+                if found is None:
+                    field_counts['unknown'] += 1
+                    field_score['unknown'] += 1
+                    kind_score['unknown'] += 1
+                    reasons['field:projection_unavailable'] += 1
+                    assertion_results.append(None)
+                    continue
+                correct = found and comparable_same(actual, field.get('value'), field.get('comparison'))
                 field_counts['correct' if correct else 'wrong'] += 1
                 field_score['correct' if correct else 'wrong'] += 1
+                kind_score['correct' if correct else 'wrong'] += 1
+                scored_kinds.add(kind)
                 assertion_results.append(correct)
+            if any(result is not None for result in assertion_results):
+                cases_with_scored_fields += 1
+            cases_with_scored_data += 'data' in scored_kinds
+            cases_with_scored_classifications += 'classification' in scored_kinds
             if r.get('tier') == 'C':
                 outcome = 'unknown'
                 reasons['model_only_scope'] += 1
@@ -890,7 +990,7 @@ def score(results, labels, prices):
                     if prepared == 'complete':
                         bookings = p.get('bookings') or []
                         if bookings and bound_bookings == set(range(len(bookings))) and assertion_results and None not in assertion_results:
-                            real_outcome = 'complete'
+                            real_outcome = 'complete' if all(assertion_results) else 'failed'
                         else:
                             reasons['real_case_identity_unbound'] += 1
                     elif prepared == 'failed':
@@ -924,6 +1024,9 @@ def score(results, labels, prices):
                 reasons['triage_classification_or_disposition_missing'] += 1
             elif not all(assertion_results):
                 outcome = 'failed'
+            elif workflow == 'quote' and 'data' not in scored_kinds:
+                outcome = 'unknown'
+                reasons['quote_comparable_data_missing'] += 1
             elif workflow == 'quote' and not quote_observed(label, r, p):
                 outcome = 'unknown'
                 reasons['quote_unsent_draft_not_observed'] += 1
@@ -990,9 +1093,17 @@ def score(results, labels, prices):
             'e2e_completion_pct_of_all': round(100 * outcomes['complete'] / denom, 2) if denom else None,
             'funnel': dict(funnel),
             'outcome_coverage': {'known': outcomes['complete'] + outcomes['failed'], 'unknown': outcomes['unknown']},
-            'label_coverage': {'with_fields': labels_with_fields, 'denominator': denom, 'scoreable_fields': scored, 'unknown_fields': field_counts['unknown']},
+            'label_coverage': {'with_fields': labels_with_fields, 'denominator': denom, 'scoreable_fields': scored,
+                               'cases_with_scored_fields': cases_with_scored_fields,
+                               'cases_without_scored_fields': denom - cases_with_scored_fields,
+                               'cases_with_scored_data_fields': cases_with_scored_data,
+                               'cases_with_scored_classifications': cases_with_scored_classifications,
+                               'unknown_fields': field_counts['unknown']},
             'field_accuracy': {'correct': field_counts['correct'], 'scored': scored, 'unknown': field_counts['unknown'],
                                'pct': round(100 * field_counts['correct'] / scored, 2) if scored else None,
+                               'comparison_kinds': {kind: {'correct': count['correct'], 'wrong': count['wrong'],
+                                                           'unknown': count['unknown']}
+                                                    for kind, count in by_kind.items()},
                                'fields': {name: dict(counts) for name, counts in by_field.items()}},
             'wall_ms': {'n': len(latencies), 'p50': percentile(latencies, .5), 'p95': percentile(latencies, .95),
                         'scope': 'pane POST to model turn finished; excludes Prepare'},
