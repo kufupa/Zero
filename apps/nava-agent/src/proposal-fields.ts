@@ -99,7 +99,7 @@ function isLabtestGuest(fields: Record<string, unknown>) {
   return fields.first_name==='Proof' && fields.last_name==='Labtest';
 }
 
-function createFieldDefault(key: string, fields: Record<string, unknown>): unknown {
+function createFieldDefault(key: string, fields: Record<string, unknown>): string | boolean | null {
   if(key==='cms_send') return !isLabtestGuest(fields);
   if(key==='cms_message_id') return '03';
   if(key==='cms_recipient') return typeof fields.guest_email==='string' && fields.guest_email ? fields.guest_email : null;
