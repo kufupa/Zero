@@ -3,8 +3,10 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import type { TransactionSql } from 'postgres';
 import { sql, uid, json, event } from './db.js';
-import { proposalDraft, tools, type ThreadInput } from './schema.js';
+import { groupedQuoteRequest, proposalDraft, tools, type ThreadInput } from './schema.js';
 import { withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
 import { quoteArtifactBlockReason, quoteOptions } from '../tools/quote-artifacts/index.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
@@ -155,6 +157,56 @@ export async function deliverPending(sessionId:string) {
     }
   });
 }
+const quotedSelection=z.object({group_id:z.string(),room_id:z.string(),
+  room:z.object({code:z.string(),label:z.string().nullable()}),rate:z.object({code:z.string(),label:z.string().nullable()})});
+const priorQuote=z.object({source_message_id:z.string(),quote_proposal_id:z.string(),quote_revision:z.number(),quote_id:z.string(),property_code:z.string(),
+  current:z.object({actions:z.array(z.object({type:z.string(),details:z.unknown()}))}),
+  stage:z.object({revision:z.number(),quote_selected_options:z.array(quotedSelection)})});
+
+export function projectQuotedRateChoices(rows:unknown[]) {
+  return rows.flatMap(row=>{
+    const parsed=priorQuote.safeParse(row);
+    if(!parsed.success || parsed.data.stage.revision!==parsed.data.quote_revision) return [];
+    const {current,stage,property_code,...source}=parsed.data;
+    const quotes=current.actions.flatMap(action=>{
+      const quote=groupedQuoteRequest.safeParse(action.details);
+      return action.type==='quote' && quote.success && quote.data.quote_id===source.quote_id && quote.data.property_code===property_code
+        ? [quote.data] : [];
+    });
+    if(quotes.length!==1) return [];
+    const quote=quotes[0]!;
+    return stage.quote_selected_options.flatMap(option=>{
+      const group=quote.groups.find(item=>item.group_id===option.group_id);
+      if(!group?.rooms.some(room=>room.id===option.room_id)) return [];
+      return [{...source,quote_id:quote.quote_id,group_id:option.group_id,room_id:option.room_id,
+        arrival_date:group.arrival_date,departure_date:group.departure_date,room:option.room,rate:option.rate}];
+    });
+  });
+}
+
+export async function priorQuotedRateChoices(tx:TransactionSql,threadId:string) {
+  const rows=await tx`SELECT prior_mail.source_message_id,p.id AS quote_proposal_id,p.revision AS quote_revision,e.payload->>'quote_id' AS quote_id,
+      prior.property_code,p.current,p.stage
+    FROM nava_agent.mail_thread current_thread
+    JOIN nava_agent.mail_message current_mail ON current_mail.thread_id=current_thread.id
+      AND current_mail.source_message_id=current_thread.selected_message_id
+    JOIN nava_agent.mail_thread prior ON prior.source=current_thread.source AND prior.mailbox_id=current_thread.mailbox_id
+      AND prior.source_thread_id=current_thread.source_thread_id AND prior.property_code=current_thread.property_code
+      AND prior.mode=current_thread.mode
+    JOIN nava_agent.proposal p ON p.thread_id=prior.id AND p.workflow='quote'
+    JOIN nava_agent.mail_message prior_mail ON prior_mail.thread_id=current_thread.id
+      AND prior_mail.source_message_id=COALESCE(p.stage->'source'->>'source_message_id',prior.selected_message_id)
+    JOIN nava_agent.agent_event e ON e.session_id=p.session_id AND e.kind='quote_artifacts_ready'
+      AND e.payload->>'proposal_id'=p.id AND e.payload->>'revision'=p.revision::text
+      AND e.payload->>'job_id'=p.stage->>'job_id'
+      AND e.payload->'artifact_ids'=jsonb_build_array(p.stage->'artifacts'->0->>'id',p.stage->'artifacts'->1->>'id')
+    WHERE current_thread.id=${threadId} AND prior_mail.source_message_id<>current_mail.source_message_id
+      AND prior_mail.received_at<=current_mail.received_at AND e.at<=current_mail.received_at
+      AND p.stage->>'state'='prepared' AND p.stage->>'revision'=p.revision::text
+    ORDER BY e.at DESC,p.id`;
+  return projectQuotedRateChoices(rows);
+}
+
 export async function snapshot(threadId:string) {
   return sql.begin('isolation level repeatable read read only',async tx=>{
     const [thread]=await tx`SELECT * FROM nava_agent.mail_thread WHERE id=${threadId}`;
@@ -167,10 +219,11 @@ export async function snapshot(threadId:string) {
       FROM nava_agent.proposal p WHERE p.thread_id=${threadId} ORDER BY p.created_at`;
     const [sequence]=session ? await tx`SELECT COALESCE(max(sequence),0)::text AS n FROM nava_agent.agent_event WHERE session_id=${session.id}` : [{n:'0'}];
     const sourceMessageId=thread.selection_key.startsWith('prepare:') ? thread.selected_message_id : null;
-    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire(proposal,sourceMessageId)),event_sequence:Number(sequence.n)};
+    const quotedRates=proposals.some(proposal=>proposal.workflow==='create') ? await priorQuotedRateChoices(tx,threadId) : [];
+    return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire(proposal,sourceMessageId,quotedRates)),event_sequence:Number(sequence.n)};
   });
 }
-export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null) {
+export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null,quotedRates:ReturnType<typeof projectQuotedRateChoices>=[]) {
   const draft=p.phase==='ready' && (p.workflow==='create' || p.workflow==='quote' || p.workflow==='cancel' || p.workflow==='amend') ? proposalDraft.safeParse(p.current) : null;
   const current=draft?.success ? withAmendRoomTypeField(withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(draft.data)),
     p.stage?.revision===p.revision ? p.stage.native_result?.reasons : null),p.execution) : p.current;
@@ -213,7 +266,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
     ...(prepare?.success ? { prepare:prepare.data } : {}),
   } : null;
   const stayTargetSelected=['amend','cancel','filing'].includes(p.workflow) && p.current?.bookings?.length===1 && targetIsBound(p.current.bookings[0],p.execution);
-  return {...current,profile_reviews:Array.isArray(p.execution?.staff_profile_reviews)?p.execution.staff_profile_reviews:[],profile_outcome:p.execution?.profile_uncertain ?? null,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,stay_target_selected:stayTargetSelected,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
+  return {...current,...(p.workflow==='create'?{quoted_rate_choices:quotedRates}:{}),profile_reviews:Array.isArray(p.execution?.staff_profile_reviews)?p.execution.staff_profile_reviews:[],profile_outcome:p.execution?.profile_uncertain ?? null,id:p.id,thread_id:p.thread_id,session_id:p.session_id,source_message_id:sourceMessageId,staff_attachments_checked:p.staff_attachments_checked===true,stay_target_selected:stayTargetSelected,revision:p.revision,phase:p.phase,display_rows:Array.isArray(p.current?.native_result?.display_rows)?p.current.native_result.display_rows:quoteDisplayRows(p.current?.native_result),created_at:p.created_at,updated_at:p.updated_at,stage,result,error};
 }
 export async function mirrorEvent(sessionId:string, value:unknown) {
   if (typeof value !== 'object' || value === null || !('id' in value) || typeof value.id !== 'string' || !('type' in value) || typeof value.type !== 'string') return;

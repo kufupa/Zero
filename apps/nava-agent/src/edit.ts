@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { isDeepStrictEqual } from 'node:util';
 import { sql, uid, json } from './db.js';
 import { proposalDraft } from './schema.js';
-import { proposalWire } from './runtime.js';
+import { priorQuotedRateChoices, proposalWire } from './runtime.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { editablePointer, pointerParts, validChildAges, withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
 import { attachmentCheckPath, hasBoundCreateGuest, invalidGuestSelection, profileReview, profileReviewFor, requiresStaffAttachmentCheck, selectedCreateGuest, selectedStageSource, staffAttachmentsChecked } from './attachment-gate.js';
@@ -224,6 +224,7 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
       await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,edit_id:editId,revision,path:item.change.path,before:item.before,after:item.after,before_present:item.before_present,after_present:item.after_present,who:actor,at:saved.at})})`;
     }
     const [updated]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id}`;
-    return {...proposalWire(updated),staff_attachments_checked:input.staff_attachments_checked===true};
+    const quotedRates=p.workflow==='create' ? await priorQuotedRateChoices(tx,p.thread_id) : [];
+    return {...proposalWire(updated,null,quotedRates),staff_attachments_checked:input.staff_attachments_checked===true};
   });
 }
