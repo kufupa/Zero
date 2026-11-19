@@ -5,8 +5,9 @@ Default output: $NAVA_BENCH_DATA_ROOT/gold-audit/{holdout-fresh,v1,dev-fresh}/go
 Loaded automatically by bench runner/rescore for those sets.
 
 Also marks booking gold no_gold when:
-- holdout-fresh + dev-fresh: synthetic Labtest/Proof/NAVAAI booking or unreadable
-  HMS conf (NOT_FOUND / HINT_MISMATCH / DETAILS_NOT_LOADED / AMBIGUOUS)
+- holdout-fresh + dev-fresh: synthetic Labtest/Proof/NAVAAI booking or still-
+  unreadable HMS conf (latest fresh-read has no stay: NOT_FOUND / HINT_MISMATCH /
+  DETAILS_NOT_LOADED / AMBIGUOUS). Recovered record_ok confs are un-tainted.
 - holdout-fresh + dev-fresh: CREATE whose gold booking has createdby=HRCEN
   (channel/GDS interface — not staff email create). Routing workflow kept.
 - all sets: cms_send (CMS Send Mail tick) — later HMS reads are false after CMS
@@ -94,27 +95,38 @@ def leaf(path: str) -> str:
 
 @lru_cache(maxsize=1)
 def unreadable_confs() -> frozenset[str]:
-  """Fail-retry seed + confs whose latest fresh-read never loaded a stay."""
-  out = set(UNREADABLE_CONFS_SEED)
+  """Confs whose *latest* fresh-read still has no stay loaded.
+
+  Fail-retry seed is only a candidate list — recovered record_ok confs
+  (reader fix #2277–#2285) are NOT unreadable anymore. Seed confs with no
+  re-read yet stay unreadable.
+  """
   reads = READS_ROOT / "reads-all.jsonl"
-  if not reads.exists():
-    return frozenset(out)
   latest: dict[str, dict] = {}
-  with reads.open() as f:
-    for line in f:
-      try:
-        o = json.loads(line)
-      except json.JSONDecodeError:
-        continue
-      conf = o.get("confirmation")
-      if conf:
-        latest[conf] = o
-  for conf, o in latest.items():
+  if reads.exists():
+    with reads.open() as f:
+      for line in f:
+        try:
+          o = json.loads(line)
+        except json.JSONDecodeError:
+          continue
+        conf = o.get("confirmation")
+        if conf:
+          latest[conf] = o
+  out: set[str] = set()
+  for conf in set(latest) | set(UNREADABLE_CONFS_SEED):
+    o = latest.get(conf)
+    if o and (o.get("record_view") or o.get("shallow")):
+      continue  # recovered / readable — do not taint as unreadable
+    if not o:
+      if conf in UNREADABLE_CONFS_SEED:
+        out.add(conf)
+      continue
     errs = " ".join(
       (e.get("error") if isinstance(e, dict) else str(e))
       for e in (o.get("errors") or [])
     )
-    if UNREAD_ERR_RE.search(errs) and not (o.get("record_view") or o.get("shallow")):
+    if UNREAD_ERR_RE.search(errs):
       out.add(conf)
   return frozenset(out)
 
