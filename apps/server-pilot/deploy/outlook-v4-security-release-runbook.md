@@ -3,7 +3,7 @@
 **Live status, 2 October 2026:** Ansh authorized production rollout. Server,
 additive migrations, device wrapping key and the exact 1.0.12 staff download
 below are now published and verified. See the
-[deployment record](../../../docs/production-readiness/2026-10-02-outlook-security-deployment.md)
+deployment record
 for evidence, resolved environment issues and the remaining real-Windows
 onboarding checks. The prerequisites below describe the original pre-release
 procedure; they are not a claim that this rollout is still unauthorized or
@@ -218,7 +218,7 @@ final DOMPurify boundary, while retaining normal web-mail functionality. This
 mitigation still requires real-browser/WebView2 payload and editor/history
 smoke tests; the generic web-mail CSP review is separate. Track that remaining
 verification in the
-[`outlook-web-mail-html-xss-follow-up.md`](../../../docs/production-readiness/outlook-web-mail-html-xss-follow-up.md)
+`outlook-web-mail-html-xss-follow-up.md`
 before pilot sign-off. Pane-only CSP does not govern other web routes. Do not
 claim generic web-mail CSP review or browser verification is complete.
 
