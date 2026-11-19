@@ -154,6 +154,36 @@ export function missingCreateFields(draft: ProposalDraft, operation: 'stage' | '
   return [...missing];
 }
 
+/** Amend booking.fields keys the native adapter can stage. Free-text invents like room_mix are stripped. */
+export const AMEND_SUPPORTED_FIELD_KEYS = new Set([
+  'arrival_date', 'departure_date', 'adults', 'child_count', 'room_type', 'rate_plan',
+  'first_name', 'last_name', 'booker_name', 'booker_contact', 'reservation_note', 'note',
+]);
+
+export function withAmendSupportedFields(draft: ProposalDraft): ProposalDraft {
+  if (draft.workflow !== 'amend') return draft;
+  const warnings = [...draft.warnings];
+  const bookings = draft.bookings.map(booking => {
+    const fields = {...booking.fields};
+    for (const key of Object.keys(fields)) {
+      if (AMEND_SUPPORTED_FIELD_KEYS.has(key)) continue;
+      if (key === 'room_mix' || /room/i.test(key)) {
+        warnings.push(`Unsupported amend field ${key}; map room changes to catalogue room_type via hms_read_catalogue.`);
+      } else {
+        warnings.push(`Dropped unsupported amend field ${key}.`);
+      }
+      delete fields[key];
+    }
+    return {...booking, fields};
+  });
+  const field_specs = draft.field_specs.filter(spec => {
+    const path = spec.path.startsWith('/') ? spec.path : `/${spec.path}`;
+    const match = path.match(/^\/bookings\/\d+\/fields\/([^/]+)$/);
+    return !match || AMEND_SUPPORTED_FIELD_KEYS.has(match[1]!);
+  });
+  return {...draft, bookings, field_specs, warnings};
+}
+
 export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
   if(draft.workflow!=='quote') return draft;
   const fieldSpecs=[...draft.field_specs];
@@ -224,6 +254,7 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
     draft={...draft,bookings,field_specs:fieldSpecs};
   }
   if(draft.workflow==='quote') draft=withQuoteStaffFields(draft);
+  if(draft.workflow==='amend') draft=withAmendSupportedFields(draft);
   if(draft.workflow==='cancel') draft=withCancelReviewFields(draft);
   const scaffold = draft.workflow === 'quote' && draft.disposition === 'needs_info' && !draft.actions.length && draft.field_specs.some(field => field.editable && field.path !== '/reply_draft' && field.path !== 'reply_draft');
   const actions = scaffold ? [{
