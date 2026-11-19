@@ -21,6 +21,8 @@ function strictCompatible(value: unknown): boolean {
   if (schema.format !== undefined && !['date-time', 'time', 'date', 'duration', 'email', 'hostname', 'uri', 'ipv4', 'ipv6', 'uuid'].includes(String(schema.format))) return false;
   if (schema.properties !== undefined) {
     if (typeof schema.properties !== 'object' || schema.properties === null || Array.isArray(schema.properties)) return false;
+    const keys = Object.keys(schema.properties);
+    if (!Array.isArray(schema.required) || schema.required.length !== keys.length || !keys.every(key => schema.required.includes(key))) return false;
     if (!Object.values(schema.properties).every(strictCompatible)) return false;
   }
   if (schema.items !== undefined && !strictCompatible(schema.items)) return false;
