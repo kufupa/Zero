@@ -561,28 +561,38 @@ function remapCreatePath(path: string, align: Map<number, number>): string | nul
   return `/bookings/${align.get(gi)}${m[2] ?? ''}`;
 }
 
+function selectedPdfRows(card: CaseCard): unknown[] {
+  const selected = card.selected_email as Record<string, unknown> | undefined;
+  return Array.isArray(selected?.pdf_attachments_text) ? selected.pdf_attachments_text : [];
+}
+
+/** pdf-N → real id when present; else keep pdf-N and accept filename/sha256. */
 function resolveAttachmentGold(gold: GoldMeta, card: CaseCard): {
-  expectation: GoldField['expectation'];
-  value: unknown;
-  basis: string;
+  expectation: GoldField['expectation']; value: unknown; basis: string; alts?: string[];
 } {
   const exp = String(gold.value ?? '');
   const m = /^pdf-(\d+)$/i.exec(exp);
-  if (!m) {
-    return {expectation: 'expected', value: gold.value, basis: gold.basis};
-  }
+  if (!m) return {expectation: 'expected', value: gold.value, basis: gold.basis};
+  const pdfs = selectedPdfRows(card);
   const idx = Number(m[1]);
-  const selected = card.selected_email as Record<string, unknown> | undefined;
-  const pdfs = selected?.pdf_attachments_text;
-  if (!Array.isArray(pdfs) || idx < 0 || idx >= pdfs.length || pdfs[idx] == null) {
+  if (idx < 0 || idx >= pdfs.length || pdfs[idx] == null) {
     return {expectation: 'no_gold', value: gold.value, basis: 'no_pdf_in_input'};
   }
   const row = pdfs[idx] as Record<string, unknown>;
   const id = row.attachment_id ?? row.id;
-  if (id == null || id === '') {
-    return {expectation: 'no_gold', value: gold.value, basis: 'no_pdf_in_input'};
-  }
-  return {expectation: 'expected', value: String(id), basis: gold.basis};
+  const alts = [exp, id, row.filename, row.sha256].filter(v => v != null && v !== '').map(String);
+  return {expectation: 'expected', value: id != null && id !== '' ? String(id) : exp, basis: gold.basis, alts};
+}
+
+/** CREATE: missing quantity → same-room_type booking count (else all bookings). */
+function createQuantityActual(proposal: unknown, digPath: string, actual: unknown): unknown {
+  if (actual != null && actual !== '' || !/\/bookings\/\d+\/fields\/quantity$/.test(digPath)) return actual;
+  const m = /^\/bookings\/(\d+)\//.exec(digPath);
+  const bookings = dig(proposal, '/bookings');
+  if (!m || !Array.isArray(bookings) || !bookings[Number(m[1])]) return actual;
+  const roomType = bookingFields(bookings[Number(m[1])]).room_type;
+  if (roomType == null || roomType === '') return bookings.length;
+  return bookings.filter(b => catalogueEquivMatch(roomType, bookingFields(b).room_type) || equalish(roomType, bookingFields(b).room_type)).length;
 }
 
 const workflowTools: Record<Workflow, string[]> = {
@@ -638,6 +648,7 @@ export function scoreCase(input: {
   const stayIdSpray = (workflow === 'amend' || workflow === 'cancel' || workflow === 'filing')
     && stayGoldIds.length > 0
     && stayPropIds.length > stayGoldIds.length;
+  const pdfCount = selectedPdfRows(card).length;
 
   for (const gold of (card.gold ?? []) as GoldMeta[]) {
     // Refuse /hms/* gold — proposal_publish has no such key (structural bug guard).
@@ -703,14 +714,35 @@ export function scoreCase(input: {
       continue;
     }
 
+    // Filing with zero PDFs: type + attachment_id unknowable → no_gold.
+    if (
+      workflow === 'filing' && pdfCount === 0
+      && (gold.path === '/actions/0/type' || gold.path === '/actions/0/details/attachment_id')
+    ) {
+      fields.push({
+        path: gold.path,
+        expectation: 'no_gold',
+        result: 'no_gold',
+        expected: gold.value,
+        actual: digPath == null ? undefined : dig(proposal, digPath),
+        basis: 'no_pdf_in_input',
+        tier,
+        priority,
+        source,
+      });
+      continue;
+    }
+
     let expectedValue = gold.value;
     let expectation: GoldField['expectation'] = 'expected';
     let basis = gold.basis;
+    let attachmentAlts: string[] | undefined;
     if (gold.path.endsWith('attachment_id')) {
       const resolved = resolveAttachmentGold(gold, card);
       expectation = resolved.expectation;
       expectedValue = resolved.value;
       basis = resolved.basis;
+      attachmentAlts = resolved.alts;
       if (expectation === 'no_gold') {
         fields.push({
           path: gold.path,
@@ -727,12 +759,15 @@ export function scoreCase(input: {
       }
     }
 
-    const actual = digPath == null ? undefined : dig(proposal, digPath);
+    let actual = digPath == null ? undefined : dig(proposal, digPath);
+    if (workflow === 'create' && digPath) actual = createQuantityActual(proposal, digPath, actual);
     const idPath = gold.path.endsWith('reservation_id') || gold.path.endsWith('confirmation_number');
     const partyPath = /organization_name$|agency_name$/.test(gold.path) || idPath;
     const guestPath = /\/fields\/(first_name|last_name)$/.test(gold.path);
     let hit = false;
-    if (idPath && (workflow === 'amend' || workflow === 'cancel' || workflow === 'filing')) {
+    if (attachmentAlts) {
+      hit = attachmentAlts.some(alt => equalish(alt, actual));
+    } else if (idPath && (workflow === 'amend' || workflow === 'cancel' || workflow === 'filing')) {
       // Hit iff gold id ∈ proposal stay ids AND proposal does not list more ids than gold.
       const inSet = stayPropIds.some(id => idsEqual(id, expectedValue));
       hit = inSet && stayPropIds.length <= stayGoldIds.length;
