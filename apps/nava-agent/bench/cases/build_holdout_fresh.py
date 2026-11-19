@@ -31,8 +31,10 @@ from rebuild_samples import (  # noqa: E402
 
 FRESH = Path("/home/orca/.local/share/zero/research/hms-fresh-reads-20261119")
 DATA = Path("/home/orca/.local/share/zero/bench/replay-bench-20261119")
-OUT = DATA / "cases" / "holdout-fresh"
+# Override with BENCH_FRESH_OUT for sibling sets (e.g. cases/dev-fresh). Default stays holdout-fresh.
+OUT = Path(os.environ.get("BENCH_FRESH_OUT") or str(DATA / "cases" / "holdout-fresh"))
 CATALOG = DATA / "catalog" / "catalog.json"
+HOLDOUT_DEFAULT_OUT = DATA / "cases" / "holdout-fresh"
 
 CONF_RE = re.compile(r"\b(\d{6,10}-1)\b")
 CONF_FILE_RE = re.compile(r"(\d{6,10}-1)")
@@ -75,6 +77,8 @@ TRIAGE_HINT_RE = re.compile(
 NEED = {"create": 23, "amend": 15, "cancel": 15, "filing": 12, "quote": 20, "triage": 15}  # sums to 100
 if os.environ.get("HOLDOUT_NEED_JSON"):
     NEED = json.loads(os.environ["HOLDOUT_NEED_JSON"])
+# Pad shortfall with create/quote/triage up to this n. 0 = no pad (dev-fresh).
+FILL_TARGET = int(os.environ.get("BENCH_FILL_TARGET", "100"))
 AMEND_CANCEL_START = "2026-10-08T00:00:00.000Z"  # 6-week window
 FRESH_START = "2026-10-29T00:00:00.000Z"  # create/quote/filing/triage stay in 3-week fresh window
 
@@ -114,10 +118,42 @@ def walk_collect_msgids(obj: Any, found: set[str]) -> None:
             walk_collect_msgids(item, found)
 
 
+def load_case_dir_exclusions(case_dir: Path) -> tuple[set[str], set[str], set[str]]:
+    """Message ids, thread ids, and confs from an existing case set (e.g. holdout-fresh)."""
+    msgids: set[str] = set()
+    threads: set[str] = set()
+    confs: set[str] = set()
+    if not case_dir.exists():
+        return msgids, threads, confs
+    for d in case_dir.iterdir():
+        if not d.is_dir() or not (d / "case.json").exists():
+            continue
+        card = json.loads((d / "case.json").read_text())
+        if card.get("real_confirmation"):
+            confs.add(str(card["real_confirmation"]))
+        walk_collect_msgids(card, msgids)
+        sel = card.get("selected_email") or {}
+        mid = norm_msgid(sel.get("message_id") or sel.get("message_id_header"))
+        if mid:
+            msgids.add(mid)
+        tid = sel.get("thread_id") or card.get("thread_id")
+        if tid:
+            threads.add(str(tid))
+        for msg in [sel] + list(card.get("context_before") or []):
+            tid2 = msg.get("thread_id")
+            if tid2:
+                threads.add(str(tid2))
+            mid2 = norm_msgid(msg.get("message_id") or msg.get("message_id_header"))
+            if mid2:
+                msgids.add(mid2)
+    return msgids, threads, confs
+
+
 def load_dev_blocklist() -> dict[str, Any]:
     """Block Message-IDs + confs already in the 200 v1/dev cases, plus Halloween∩fresh Message-IDs."""
     msgids: set[str] = set()
     confs: set[str] = set()
+    threads: set[str] = set()
     v1 = DATA / "cases" / "v1"
     if v1.exists():
         for d in v1.iterdir():
@@ -127,6 +163,10 @@ def load_dev_blocklist() -> dict[str, Any]:
             if card.get("real_confirmation"):
                 confs.add(str(card["real_confirmation"]))
             walk_collect_msgids(card, msgids)
+            sel = card.get("selected_email") or {}
+            tid = sel.get("thread_id")
+            if tid:
+                threads.add(str(tid))
     for p in (DATA / "gold").glob("*.jsonl"):
         for line in open(p):
             if not line.strip():
@@ -172,13 +212,33 @@ def load_dev_blocklist() -> dict[str, Any]:
 
     overlap = hall_msgids & fresh_msgids
     blocked_msgids = msgids | overlap
+    # Extra case dirs to exclude (comma-separated), e.g. holdout-fresh when building dev-fresh.
+    extra_dirs = [
+        Path(p.strip()) if Path(p.strip()).is_absolute() else DATA / "cases" / p.strip()
+        for p in (os.environ.get("BENCH_EXCLUDE_CASE_DIRS") or "").split(",")
+        if p.strip()
+    ]
+    extra_msg = extra_thr = extra_conf = 0
+    for ed in extra_dirs:
+        em, et, ec = load_case_dir_exclusions(ed)
+        blocked_msgids |= em
+        threads |= et
+        confs |= ec
+        extra_msg += len(em)
+        extra_thr += len(et)
+        extra_conf += len(ec)
     return {
         "blocked_confirmations": confs,
         "blocked_message_ids": blocked_msgids,
+        "blocked_thread_ids": threads,
         "halloween_fresh_msgid_overlap_n": len(overlap),
         "halloween_fresh_msgid_overlap": sorted(overlap),
         "v1_msgid_n": len(msgids),
         "v1_conf_n": len(confs),
+        "extra_exclude_dirs": [str(p) for p in extra_dirs],
+        "extra_exclude_msgids_n": extra_msg,
+        "extra_exclude_threads_n": extra_thr,
+        "extra_exclude_confs_n": extra_conf,
     }
 
 
@@ -467,8 +527,14 @@ def enrich_cross_thread_ranks_134(card: dict, idx: "FreshIndex") -> dict:
     return card
 
 
-def card_hits_dev_blocklist(card: dict, blocked_msgids: set[str], blocked_confs: set[str]) -> str | None:
-    """Return reason if case overlaps 200-dev Message-ID or confirmation."""
+def card_hits_dev_blocklist(
+    card: dict,
+    blocked_msgids: set[str],
+    blocked_confs: set[str],
+    blocked_threads: set[str] | None = None,
+) -> str | None:
+    """Return reason if case overlaps blocked Message-ID, thread, or confirmation."""
+    blocked_threads = blocked_threads or set()
     conf = card.get("real_confirmation")
     if conf and conf in blocked_confs:
         return f"dev_conf:{conf}"
@@ -476,6 +542,9 @@ def card_hits_dev_blocklist(card: dict, blocked_msgids: set[str], blocked_confs:
     for link in card.get("cross_thread_context") or []:
         msgs.extend(link.get("messages") or [])
     for msg in msgs:
+        tid = msg.get("thread_id")
+        if tid and str(tid) in blocked_threads:
+            return f"dev_thread:{tid}"
         mid = norm_msgid(msg.get("message_id_header") or msg.get("message_id"))
         if mid and mid in blocked_msgids:
             return f"dev_msgid:{mid}"
@@ -488,7 +557,9 @@ def gold_row_hits_dev_blocklist(
     blocked_confs: set[str],
     mail_by_id: dict,
     threads: dict[str, list[dict]],
+    blocked_threads: set[str] | None = None,
 ) -> str | None:
+    blocked_threads = blocked_threads or set()
     conf = row.get("real_confirmation")
     if conf and conf in blocked_confs:
         return f"dev_conf:{conf}"
@@ -502,9 +573,14 @@ def gold_row_hits_dev_blocklist(
             mid = norm_msgid(raw.get("message_id_header"))
             if mid and mid in blocked_msgids:
                 return f"dev_msgid:{mid}"
+            tid_raw = raw.get("thread_id")
+            if tid_raw and str(tid_raw) in blocked_threads:
+                return f"dev_thread:{tid_raw}"
     sel_id = src.get("selected_message_id")
     sel = mail_by_id.get(sel_id or "")
     tid = (sel or {}).get("thread_id") or src.get("thread_id")
+    if tid and str(tid) in blocked_threads:
+        return f"dev_thread:{tid}"
     for msg in threads.get(tid or "") or []:
         mid = norm_msgid(msg.get("message_id_header"))
         if mid and mid in blocked_msgids:
@@ -1617,13 +1693,15 @@ def select_mix(buckets: dict[str, list[dict]], need: dict[str, int]) -> tuple[li
         if len(take) < n:
             shifts["notes"].append(f"{wf}: wanted {n}, got {len(take)} (no weak pad)")
 
-    # Make up to 100 with Create/Quote/Triage only — never pad Amend/Cancel/Filing.
-    if len(selected) < 100:
+    # Optional pad with Create/Quote/Triage only — never pad Amend/Cancel/Filing.
+    # FILL_TARGET=0 disables pad (needed for sibling sets after holdout exclusion).
+    fill_target = FILL_TARGET
+    if fill_target > 0 and len(selected) < fill_target:
         used = {r["case_id"] for r in selected}
         used_msg = {(r.get("source") or {}).get("selected_message_id") for r in selected}
         for wf in ("create", "quote", "triage"):
             for row in dedupe_prefer(buckets.get(wf) or []):
-                if len(selected) >= 100:
+                if len(selected) >= fill_target:
                     break
                 mid = (row.get("source") or {}).get("selected_message_id")
                 if row["case_id"] in used:
@@ -1636,11 +1714,12 @@ def select_mix(buckets: dict[str, list[dict]], need: dict[str, int]) -> tuple[li
                     used_msg.add(mid)
                 got[wf] = got.get(wf, 0) + 1
                 shifts["notes"].append(f"fill +1 {wf} → {row['case_id']}")
-    # Freeze real counts — do not invent cases if under 100
+    # Freeze real counts — do not invent cases if under target
     shifts["final"] = dict(Counter(r["workflow"] for r in selected))
     shifts["n"] = len(selected)
-    if len(selected) < 100:
-        shifts["notes"].append(f"FROZEN under 100: n={len(selected)} (no pad)")
+    shifts["fill_target"] = fill_target
+    if fill_target > 0 and len(selected) < fill_target:
+        shifts["notes"].append(f"under fill_target: n={len(selected)} (no more pad fodder)")
     return selected, shifts
 
 
@@ -1654,21 +1733,31 @@ def main() -> None:
     block = load_dev_blocklist()
     blocked_msgids: set[str] = set(block["blocked_message_ids"])
     blocked_confs: set[str] = set(block["blocked_confirmations"])
+    blocked_threads: set[str] = set(block.get("blocked_thread_ids") or [])
     print(
         f"[holdout] blocked confs={len(blocked_confs)} msgids={len(blocked_msgids)} "
-        f"halloween∩fresh={block['halloween_fresh_msgid_overlap_n']}",
+        f"threads={len(blocked_threads)} halloween∩fresh={block['halloween_fresh_msgid_overlap_n']} "
+        f"extra={block.get('extra_exclude_dirs')}",
         flush=True,
     )
-    (FRESH / "holdout-dev-blocklist.json").write_text(json.dumps({
+    bl_path = OUT.parent / f"{OUT.name}-dev-blocklist.json"
+    bl_path.write_text(json.dumps({
         "halloween_fresh_msgid_overlap_n": block["halloween_fresh_msgid_overlap_n"],
         "halloween_fresh_msgid_overlap": block["halloween_fresh_msgid_overlap"],
         "v1_msgid_n": block["v1_msgid_n"],
         "v1_conf_n": block["v1_conf_n"],
+        "extra_exclude_dirs": block.get("extra_exclude_dirs"),
+        "extra_exclude_msgids_n": block.get("extra_exclude_msgids_n"),
+        "extra_exclude_threads_n": block.get("extra_exclude_threads_n"),
+        "extra_exclude_confs_n": block.get("extra_exclude_confs_n"),
         "blocked_message_ids_n": len(blocked_msgids),
         "blocked_confirmations_n": len(blocked_confs),
+        "blocked_thread_ids_n": len(blocked_threads),
         "blocked_confirmations": sorted(blocked_confs),
+        "blocked_thread_ids_sample": sorted(blocked_threads)[:50],
         "blocked_message_ids_sample": sorted(blocked_msgids)[:50],
     }, indent=2))
+    print(f"[holdout] wrote blocklist → {bl_path}", flush=True)
 
     code_maps = load_code_maps()
     anchors = idx.build_anchors()
@@ -1684,7 +1773,7 @@ def main() -> None:
     for wf, rows in buckets.items():
         for row in rows:
             hit = gold_row_hits_dev_blocklist(
-                row, blocked_msgids, blocked_confs, idx.mail_by_id, idx.threads,
+                row, blocked_msgids, blocked_confs, idx.mail_by_id, idx.threads, blocked_threads,
             )
             if hit:
                 dropped_pre.append({"case_id": row.get("case_id"), "workflow": wf, "reason": hit, "stage": "pre_build"})
@@ -1723,7 +1812,7 @@ def main() -> None:
         card = enrich_cross_thread_ranks_134(card, idx)
         card = strip_gold_conf_inputs(card)
         # Re-check blocklist on final shown messages (headers may appear only after build).
-        hit = card_hits_dev_blocklist(card, blocked_msgids, blocked_confs)
+        hit = card_hits_dev_blocklist(card, blocked_msgids, blocked_confs, blocked_threads)
         if hit:
             dropped_post.append({"case_id": card["case_id"], "workflow": card["workflow"], "reason": hit, "stage": "post_build"})
             return None
@@ -1743,8 +1832,9 @@ def main() -> None:
         (path / "case.md").write_text(render_md(card))
         built.append(card)
 
-    # Refill to 100 from Create/Quote/Triage only (never pad amend/cancel/filing).
-    if len(built) < 100:
+    # Optional refill from Create/Quote/Triage only (never pad amend/cancel/filing).
+    # FILL_TARGET=0 skips (dev-fresh after holdout exclusion must not quote-stuff).
+    if FILL_TARGET > 0 and len(built) < FILL_TARGET:
         used = {c["case_id"] for c in built}
         used_msg = {
             (c.get("selected_email") or {}).get("message_id")
@@ -1758,7 +1848,7 @@ def main() -> None:
                     continue
                 leftovers.append(row)
         for row in leftovers:
-            if len(built) >= 100:
+            if len(built) >= FILL_TARGET:
                 break
             mid = (row.get("source") or {}).get("selected_message_id")
             if mid and mid in used_msg:
@@ -2162,8 +2252,13 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] in ("refresh-gold", "gold-refresh", "--refresh-gold"):
         refresh_gold_frozen()
     else:
-        # Full rebuild is locked once FROZEN.json exists — refuse unless --force-rebuild.
-        if (OUT / "FROZEN.json").exists() and "--force-rebuild" not in sys.argv:
+        # Full rebuild locked for holdout-fresh once FROZEN.json exists — refuse unless --force-rebuild.
+        # Sibling outs (e.g. cases/dev-fresh via BENCH_FRESH_OUT) are not locked by holdout FROZEN.
+        if (
+            OUT.resolve() == HOLDOUT_DEFAULT_OUT.resolve()
+            and (OUT / "FROZEN.json").exists()
+            and "--force-rebuild" not in sys.argv
+        ):
             raise SystemExit(
                 "holdout-fresh is FROZEN (FROZEN.json). "
                 "Use: python3 build_holdout_fresh.py refresh-gold"
