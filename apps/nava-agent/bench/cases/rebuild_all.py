@@ -52,10 +52,11 @@ def _halloween_row(meta: dict, wf: str, hall_inputs: dict, *, force_wf: bool = F
     sm = inp["selected_message"]
     as_of = sm.get("timestamp") or inp["input_cutoff"]
     body, _ = strip_images(sm.get("body") or "")
-    # Align gold workflow with triage skill table (other_request often hides a create/quote).
+    # Skill-table route is a hint only — never rewrite gold from it (grading our own homework).
+    # Gold workflow for other_request stays triage/skip unless post-as_of staff evidence flips it.
     routed = route_from_email(sm.get("subject"), body)
     if not force_wf:
-        wf = routed
+        wf = "triage"
     conf = None
     match = CONF_RE.search((sm.get("subject") or "") + " " + body)
     if match:
