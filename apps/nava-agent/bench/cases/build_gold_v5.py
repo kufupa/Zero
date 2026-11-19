@@ -479,6 +479,66 @@ def email_adults_children(blob: str) -> tuple[int | None, int | None]:
   return adults, children
 
 
+def strip_quoted_reply(text: str) -> str:
+  """Drop quoted reply tails so amend/create parsers see the current ask only."""
+  lines: list[str] = []
+  for line in (text or "").splitlines():
+    s = line.strip()
+    if s.startswith(">"):
+      continue
+    if re.match(r"^On .+ wrote:\s*$", s, re.I):
+      break
+    if re.match(r"^From:\s+\S+", s, re.I) and lines:
+      break
+    if re.match(r"^-{2,}\s*Original Message\s*-{2,}$", s, re.I):
+      break
+    if re.match(r"^_{5,}$", s) and lines:
+      break
+    lines.append(line)
+  return "\n".join(lines)
+
+
+def email_guest_names(blob: str) -> tuple[str | None, str | None]:
+  """Best-effort first/last from current ask when stated (not HMS, not quoted thread)."""
+  blob = strip_quoted_reply(blob)
+  patterns = [
+    re.compile(
+      r"(?:reservation|booking|accommodation)\s+for\s+(?:Mr|Mrs|Ms|Miss|Dr)?\.?\s*"
+      r"([A-Z][A-Za-z'’-]+)\s+([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)?)",
+      re.I,
+    ),
+    re.compile(
+      r"(?:guest|traveller|traveler|official)\s*[:\-]\s*(?:Mr|Mrs|Ms|Miss|Dr)?\.?\s*"
+      r"([A-Z][A-Za-z'’-]+)\s+([A-Z][A-Za-z'’-]+)",
+      re.I,
+    ),
+  ]
+  for cre in patterns:
+    m = cre.search(blob)
+    if m:
+      return m.group(1).strip(), m.group(2).strip()
+  return None, None
+
+
+def norm_name(s: str | None) -> str:
+  return re.sub(r"[^a-z]", "", (s or "").lower())
+
+
+def names_conflict(email_first: str | None, email_last: str | None, h_first: str | None, h_last: str | None) -> bool:
+  """True when email states a name and HMS differs on first or last."""
+  if not (email_first or email_last):
+    return False
+  if not (h_first or h_last):
+    return False
+  ef, el = norm_name(email_first), norm_name(email_last)
+  hf, hl = norm_name(h_first), norm_name(h_last)
+  if ef and hf and ef != hf and ef not in hf and hf not in ef:
+    return True
+  if el and hl and el != hl and el not in hl and hl not in el:
+    return True
+  return False
+
+
 def email_quantity(blob: str) -> int | None:
   """Explicit room quantity only. Never default to 1."""
   m = ROOMS_RE.search(blob)
@@ -573,6 +633,7 @@ class GoldBuilder:
     self.rows: list[dict] = []
     self.seen: set[str] = set()
     self.notes: list[str] = []
+    self.stats: Counter[str] = Counter()
 
   def add(
     self,
@@ -610,6 +671,9 @@ class GoldBuilder:
     if hms_key:
       row["hms_key"] = hms_key
     self.rows.append(row)
+    if source == "heuristic" and basis == "email_hms_conflict":
+      self.stats["create_email_hms_conflict"] += 1
+      self.stats[f"create_email_hms_conflict:{leaf(path)}"] += 1
 
 
 def pick_filing_attachment(card: dict) -> tuple[str | None, str, str, str]:
@@ -666,6 +730,8 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
   edates = email_dates(blob)
   eroom = email_room(blob)
   e_adults, e_children = email_adults_children(blob)
+  # Names: selected ask only (avoid thread false positives).
+  e_first, e_last = email_guest_names(selected_blob(card) or blob)
   e_qty = email_quantity(blob)
 
   for n, booking in enumerate(bookings):
@@ -681,21 +747,20 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
       hms_key="confirmationnumber",
     )
 
-    # dates
+    # dates — HMS value kept on conflict, but source=heuristic (agent cannot know HMS)
     h_arr = parse_hms_date(fields.get("arrivaldate") or fields.get("arrival_date"))
     h_dep = parse_hms_date(fields.get("departuredate") or fields.get("departure_date"))
     if n == 0 and edates.get("arrival_date"):
-      # Prefer HMS when available (staff after-state); tag source carefully.
       if h_arr and h_arr != edates["arrival_date"]:
         b.add(
           f"/bookings/{n}/fields/arrival_date",
           "expected",
           value=h_arr,
-          basis="hms_after_state_differs_from_email",
-          source="hms_truth",
+          basis="email_hms_conflict",
+          source="heuristic",
           hms_key="arrivaldate",
         )
-        b.notes.append(f"arrival email={edates['arrival_date']} hms={h_arr}")
+        b.notes.append(f"arrival email={edates['arrival_date']} hms={h_arr} conflict")
       elif h_arr:
         b.add(
           f"/bookings/{n}/fields/arrival_date",
@@ -729,10 +794,11 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
           f"/bookings/{n}/fields/departure_date",
           "expected",
           value=h_dep,
-          basis="hms_after_state_differs_from_email",
-          source="hms_truth",
+          basis="email_hms_conflict",
+          source="heuristic",
           hms_key="departuredate",
         )
+        b.notes.append(f"departure email={edates['departure_date']} hms={h_dep} conflict")
       elif h_dep:
         b.add(
           f"/bookings/{n}/fields/departure_date",
@@ -762,13 +828,14 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
 
     # names
     first, last = names_from_hms(fields)
+    name_conflict = n == 0 and names_conflict(e_first, e_last, first, last)
     if first:
       b.add(
         f"/bookings/{n}/fields/first_name",
         "expected",
         value=first,
-        basis="hms_firstname",
-        source="hms_truth",
+        basis="email_hms_conflict" if name_conflict else "hms_firstname",
+        source="heuristic" if name_conflict else "hms_truth",
         hms_key="firstname",
       )
     if last:
@@ -776,23 +843,45 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
         f"/bookings/{n}/fields/last_name",
         "expected",
         value=last,
-        basis="hms_lastname",
-        source="hms_truth",
+        basis="email_hms_conflict" if name_conflict else "hms_lastname",
+        source="heuristic" if name_conflict else "hms_truth",
         hms_key="lastname",
       )
+    if name_conflict:
+      b.notes.append(f"name email={e_first} {e_last} hms={first} {last} conflict")
 
     # adults / children
     h_adults = parse_adults(fields.get("adults"))
     h_children = parse_children(fields.get("children"))
     if n == 0 and e_adults is not None:
-      b.add(
-        f"/bookings/{n}/fields/adults",
-        "expected",
-        value=e_adults if h_adults is None else h_adults,
-        basis="email_or_hms_adults",
-        source="email_explicit" if h_adults is None else "hms_truth",
-        hms_key="adults",
-      )
+      if h_adults is not None and h_adults != e_adults:
+        b.add(
+          f"/bookings/{n}/fields/adults",
+          "expected",
+          value=h_adults,
+          basis="email_hms_conflict",
+          source="heuristic",
+          hms_key="adults",
+        )
+        b.notes.append(f"adults email={e_adults} hms={h_adults} conflict")
+      elif h_adults is not None:
+        b.add(
+          f"/bookings/{n}/fields/adults",
+          "expected",
+          value=h_adults,
+          basis="hms_and_or_email_adults",
+          source="hms_truth",
+          hms_key="adults",
+        )
+      else:
+        b.add(
+          f"/bookings/{n}/fields/adults",
+          "expected",
+          value=e_adults,
+          basis="email_explicit_adults",
+          source="email_explicit",
+          hms_key="adults",
+        )
     elif h_adults is not None:
       b.add(
         f"/bookings/{n}/fields/adults",
@@ -804,14 +893,33 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
       )
 
     if n == 0 and e_children is not None:
-      b.add(
-        f"/bookings/{n}/fields/child_count",
-        "expected",
-        value=e_children if h_children is None else h_children,
-        basis="email_or_hms_children",
-        source="email_explicit" if h_children is None else "hms_truth",
-        hms_key="children",
-      )
+      if h_children is not None and h_children != e_children:
+        b.add(
+          f"/bookings/{n}/fields/child_count",
+          "expected",
+          value=h_children,
+          basis="email_hms_conflict",
+          source="heuristic",
+          hms_key="children",
+        )
+      elif h_children is not None:
+        b.add(
+          f"/bookings/{n}/fields/child_count",
+          "expected",
+          value=h_children,
+          basis="hms_and_or_email_children",
+          source="hms_truth",
+          hms_key="children",
+        )
+      else:
+        b.add(
+          f"/bookings/{n}/fields/child_count",
+          "expected",
+          value=e_children,
+          basis="email_explicit_children",
+          source="email_explicit",
+          hms_key="children",
+        )
     elif h_children is not None:
       b.add(
         f"/bookings/{n}/fields/child_count",
@@ -942,15 +1050,23 @@ def build_create(card: dict, wf: str, b: GoldBuilder) -> None:
       )
 
 
+def amend_ask_blob(card: dict) -> str:
+  """Current amend ask: selected + pre-as_of thread, quotes stripped, no PDF letter text."""
+  parts: list[str] = []
+  for msg in iter_mail_msgs(card):
+    parts.append(str(msg.get("subject") or ""))
+    parts.append(strip_quoted_reply(str(msg.get("body_text") or msg.get("body") or "")))
+  return "\n".join(parts)
+
+
 def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
+  """Amend gold: expected after-values ONLY when email/pre-as_of thread asks to change them."""
   conf = card.get("real_confirmation")
-  # known cancel-style? no — amend
-  blob = selected_blob(card) or mail_blob(card)
+  blob = amend_ask_blob(card)
   edates = email_dates(blob)
   eroom = email_room(blob)
   e_adults, e_children = email_adults_children(blob)
   fields, src, read_at = hms_truth_for(conf, card)
-  hms_ok_after = read_after_as_of(read_at, card.get("as_of"))
 
   bookings = list(card.get("group_bookings") or [])
   if not bookings:
@@ -969,65 +1085,56 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
         hms_key="confirmationnumber",
       )
 
-  # changed fields on primary booking when email states after-value
   n = 0
   h_arr = parse_hms_date(fields.get("arrivaldate"))
   h_dep = parse_hms_date(fields.get("departuredate"))
+  h_adults = parse_adults(fields.get("adults"))
+  h_children = parse_children(fields.get("children"))
+  h_room = room_value_from_hms(fields)
+  h_rate = rate_value_from_hms(fields)
 
+  # Only email-requested change fields are expected.
   if edates.get("arrival_date"):
-    val = edates["arrival_date"]
-    source = "email_explicit"
-    basis = "email_amend_arrival"
-    if hms_ok_after and h_arr:
-      val = h_arr
-      source = "hms_truth"
-      basis = "hms_after_as_of_arrival"
-    elif h_arr and h_arr != edates["arrival_date"] and not hms_ok_after:
-      # HMS may have drifted; keep email, mark note
-      b.notes.append(f"amend arrival email={edates['arrival_date']} hms={h_arr} (hms not post-as_of)")
     b.add(
       f"/bookings/{n}/fields/arrival_date",
       "expected",
-      value=val,
-      basis=basis,
-      source=source,
+      value=edates["arrival_date"],
+      basis="email_amend_arrival",
+      source="email_explicit",
       hms_key="arrivaldate",
     )
-  elif hms_ok_after and h_arr:
+    b.stats["amend_email_expected"] += 1
+  elif h_arr:
     b.add(
       f"/bookings/{n}/fields/arrival_date",
-      "expected",
+      "not_expected",
       value=h_arr,
-      basis="hms_after_as_of_arrival_no_email",
+      basis="unchanged_field_not_in_email_amend",
       source="heuristic",
       hms_key="arrivaldate",
     )
+    b.stats["amend_hms_only_demoted"] += 1
 
   if edates.get("departure_date"):
-    val = edates["departure_date"]
-    source = "email_explicit"
-    basis = "email_amend_departure"
-    if hms_ok_after and h_dep:
-      val = h_dep
-      source = "hms_truth"
-      basis = "hms_after_as_of_departure"
     b.add(
       f"/bookings/{n}/fields/departure_date",
       "expected",
-      value=val,
-      basis=basis,
-      source=source,
+      value=edates["departure_date"],
+      basis="email_amend_departure",
+      source="email_explicit",
       hms_key="departuredate",
     )
-  elif hms_ok_after and h_dep:
+    b.stats["amend_email_expected"] += 1
+  elif h_dep:
     b.add(
       f"/bookings/{n}/fields/departure_date",
-      "expected",
+      "not_expected",
       value=h_dep,
-      basis="hms_after_as_of_departure_no_email",
+      basis="unchanged_field_not_in_email_amend",
       source="heuristic",
       hms_key="departuredate",
     )
+    b.stats["amend_hms_only_demoted"] += 1
 
   if eroom:
     b.add(
@@ -1038,6 +1145,18 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
       source="email_explicit",
       hms_key="roomtype",
     )
+    b.stats["amend_email_expected"] += 1
+  elif h_room:
+    b.add(
+      f"/bookings/{n}/fields/room_type",
+      "not_expected",
+      value=h_room,
+      basis="unchanged_field_not_in_email_amend",
+      source="heuristic",
+      hms_key="roomtype",
+    )
+    b.stats["amend_hms_only_demoted"] += 1
+
   if e_adults is not None:
     b.add(
       f"/bookings/{n}/fields/adults",
@@ -1047,6 +1166,18 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
       source="email_explicit",
       hms_key="adults",
     )
+    b.stats["amend_email_expected"] += 1
+  elif h_adults is not None:
+    b.add(
+      f"/bookings/{n}/fields/adults",
+      "not_expected",
+      value=h_adults,
+      basis="unchanged_field_not_in_email_amend",
+      source="heuristic",
+      hms_key="adults",
+    )
+    b.stats["amend_hms_only_demoted"] += 1
+
   if e_children is not None:
     b.add(
       f"/bookings/{n}/fields/child_count",
@@ -1056,7 +1187,18 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
       source="email_explicit",
       hms_key="children",
     )
-  # rate when email mentions rate code
+    b.stats["amend_email_expected"] += 1
+  elif h_children is not None:
+    b.add(
+      f"/bookings/{n}/fields/child_count",
+      "not_expected",
+      value=h_children,
+      basis="unchanged_field_not_in_email_amend",
+      source="heuristic",
+      hms_key="children",
+    )
+    b.stats["amend_hms_only_demoted"] += 1
+
   rc = email_rate_code(blob)
   if rc:
     b.add(
@@ -1067,6 +1209,27 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
       source="email_explicit",
       hms_key="rateplan",
     )
+    b.stats["amend_email_expected"] += 1
+  elif h_rate:
+    b.add(
+      f"/bookings/{n}/fields/rate_plan",
+      "not_expected",
+      value=h_rate,
+      basis="unchanged_field_not_in_email_amend",
+      source="heuristic",
+      hms_key="rateplan",
+    )
+    b.stats["amend_hms_only_demoted"] += 1
+
+  # Count booking-field expecteds (excl reservation_id) for amend reporting.
+  for row in b.rows:
+    if row.get("expectation") != "expected":
+      continue
+    path = row.get("path") or ""
+    if path.endswith("reservation_id"):
+      continue
+    if "/fields/" in path or path.endswith("rate_plan"):
+      b.stats["amend_booking_field_expected"] += 1
 
 
 def build_cancel(card: dict, wf: str, b: GoldBuilder) -> None:
@@ -1217,23 +1380,28 @@ def build_triage(card: dict, wf: str, b: GoldBuilder) -> None:
 
 def apply_known_case_fixes(card: dict, wf: str, b: GoldBuilder) -> None:
   cid = card.get("case_id") or ""
-  # hf-2275: force HMS arrival 2026-11-02 when present
+  # hf-2275: HMS arrival 2026-11-02 conflicts with email/PDF 11-01 → heuristic
   if cid.startswith("hf-2275"):
     fields, _, _ = hms_truth_for(card.get("real_confirmation"), card)
     h_arr = parse_hms_date(fields.get("arrivaldate"))
     if h_arr:
-      # replace arrival row
+      # drop prior arrival so conflict tag wins (and recount conflict if re-added)
+      prior = [r for r in b.rows if r.get("path") == "/bookings/0/fields/arrival_date"]
+      for r in prior:
+        if r.get("basis") == "email_hms_conflict":
+          b.stats["create_email_hms_conflict"] -= 1
+          b.stats["create_email_hms_conflict:arrival_date"] -= 1
       b.rows = [r for r in b.rows if r.get("path") != "/bookings/0/fields/arrival_date"]
       b.seen.discard("/bookings/0/fields/arrival_date")
       b.add(
         "/bookings/0/fields/arrival_date",
         "expected",
         value=h_arr,
-        basis="audit_b_fix_hms_arrival",
-        source="hms_truth",
+        basis="email_hms_conflict",
+        source="heuristic",
         hms_key="arrivaldate",
       )
-      b.notes.append(f"hf-2275 arrival→{h_arr}")
+      b.notes.append(f"hf-2275 arrival→{h_arr} email_hms_conflict")
   # p4-amend-eba5: email "check in the 2nd … out the 4th"
   if cid.startswith("p4-amend-eba5"):
     b.rows = [
@@ -1309,10 +1477,32 @@ def build_case(card: dict, routing: dict | None) -> dict:
     "gold": b.rows,
     "n_gold": len(b.rows),
     "notes": b.notes,
+    "stats": dict(b.stats),
     # keep empty patches key for shape compatibility with gold-v4 overlays
     "gold_patches": [],
     "n_patches": 0,
   }
+
+
+def count_amend_booking_expected(overlay: dict) -> dict[str, int]:
+  """Booking-field expecteds on amend cases (excl reservation_id)."""
+  by_leaf: Counter[str] = Counter()
+  total = 0
+  cases = 0
+  for row in overlay.values():
+    if row.get("workflow") != "amend":
+      continue
+    cases += 1
+    for g in row.get("gold") or []:
+      if g.get("expectation") != "expected":
+        continue
+      path = g.get("path") or ""
+      if path.endswith("reservation_id"):
+        continue
+      if "/fields/" in path:
+        by_leaf[leaf(path)] += 1
+        total += 1
+  return {"amend_cases": cases, "booking_field_expected": total, "by_leaf": dict(by_leaf)}
 
 
 def effective_v4_gold(card: dict, overlay: dict | None) -> list[dict]:
@@ -1363,10 +1553,14 @@ def build_set(name: str) -> dict:
 
   v4_path = audit_dir / "gold-v4.json"
   v4 = json.loads(v4_path.read_text()) if v4_path.exists() else {}
+  prev_path = audit_dir / "gold-v5.json"
+  prev_overlay = json.loads(prev_path.read_text()) if prev_path.exists() else {}
+  amend_before = count_amend_booking_expected(prev_overlay)
 
   out: dict[str, dict] = {}
   wf_counts: Counter[str] = Counter()
   note_counts: Counter[str] = Counter()
+  rule_stats: Counter[str] = Counter()
 
   for case_dir in sorted(p for p in cases_dir.iterdir() if p.is_dir()):
     card_path = case_dir / "case.json"
@@ -1379,9 +1573,14 @@ def build_set(name: str) -> dict:
     row = build_case(card, routing)
     out[cid] = row
     wf_counts[row["workflow"]] += 1
+    for k, v in (row.get("stats") or {}).items():
+      rule_stats[k] += int(v)
+    # drop per-case stats from frozen overlay (keep meta rollup)
+    row.pop("stats", None)
     for n in row.get("notes") or []:
       note_counts[n.split(":")[0].split("→")[0][:40]] += 1
 
+  amend_after = count_amend_booking_expected(out)
   out_path = audit_dir / "gold-v5.json"
   out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False) + "\n")
   digest = sha256_file(out_path)
@@ -1394,6 +1593,18 @@ def build_set(name: str) -> dict:
     "workflows": dict(wf_counts),
     "counts_path_source_expectation": meta_counts(out),
     "notes_top": dict(note_counts.most_common(30)),
+    "rule_stats": {
+      "create_email_hms_conflict_rows": rule_stats.get("create_email_hms_conflict", 0),
+      "create_email_hms_conflict_by_leaf": {
+        k.split(":", 1)[1]: v
+        for k, v in rule_stats.items()
+        if k.startswith("create_email_hms_conflict:")
+      },
+      "amend_booking_field_expected_before": amend_before,
+      "amend_booking_field_expected_after": amend_after,
+      "amend_email_expected_rows": rule_stats.get("amend_email_expected", 0),
+      "amend_hms_only_demoted_rows": rule_stats.get("amend_hms_only_demoted", 0),
+    },
     "truth_sources": {
       "reads_all": str(READS / "reads-all.jsonl"),
       "stay360": str(STAY360),
@@ -1401,10 +1612,20 @@ def build_set(name: str) -> dict:
     },
     "blind": True,
     "version": "gold-v5",
+    "rules": [
+      "create_email_hms_conflict_dates_names_adults",
+      "amend_email_only_expected_after_values",
+    ],
   }
   meta_path = audit_dir / "gold-v5.meta.json"
   meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
-  print(json.dumps({"set": name, "n": len(out), "sha256": digest, "workflows": dict(wf_counts)}, indent=2))
+  print(json.dumps({
+    "set": name,
+    "n": len(out),
+    "sha256": digest,
+    "workflows": dict(wf_counts),
+    "rule_stats": meta["rule_stats"],
+  }, indent=2))
   return {"overlay": out, "meta": meta, "v4": v4}
 
 
