@@ -7,9 +7,10 @@ import {tools as baselineTools} from '../../src/schema.js';
 import {schemas as triageSchemas} from '../../tools/triage/schema.js';
 import {quoteSchema} from '../../tools/quote/schema.js';
 import {skillReadDefinition} from '../../tools/skills/schema.js';
+import {assignSplit} from '../split.js';
 import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
-import {buildScoreboard, scoreCase, type CaseScore} from './score.js';
+import {buildScoreboard, scoreCase, type CaseScore, type Scoreboard} from './score.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
 const SYSTEM = `Read the selected inbound with mail_read_thread. Use the pinned triage files supplied in the system context, or load triage/SKILL.md and its references with skill_read if they were not supplied. Load the relevant workflow skill and any references not already supplied with skill_read. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask. End after publishing the proposal. Save is disabled.`;
@@ -312,9 +313,30 @@ export async function runBench(options: {casesDir?: string; concurrency?: number
   });
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Date.now() - wallStarted;
+  const {dev, holdout, labels} = assignSplit(selected);
+  const devIds = new Set(dev.map(card => card.case_id));
+  const holdIds = new Set(holdout.map(card => card.case_id));
+  const devBoard = buildScoreboard(scores.filter(score => devIds.has(score.case_id)));
+  const holdBoard = buildScoreboard(scores.filter(score => holdIds.has(score.case_id)));
   await writeFile(join(outDir, 'scoreboard.json'), JSON.stringify(board, null, 2));
-  return {outDir, board};
+  await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(devBoard, null, 2));
+  await writeFile(join(outDir, 'scoreboard-holdout.json'), JSON.stringify(holdBoard, null, 2));
+  await writeFile(join(outDir, 'split.json'), JSON.stringify({
+    seed: 'replay-bench-20261119-v1',
+    n_dev: dev.length,
+    n_holdout: holdout.length,
+    labels,
+  }, null, 2));
+  return {outDir, board, devBoard, holdBoard, labels};
 }
+
+export type BenchResult = {
+  outDir: string;
+  board: Scoreboard;
+  devBoard: Scoreboard;
+  holdBoard: Scoreboard;
+  labels: Record<string, 'dev' | 'holdout'>;
+};
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const concurrency = Number(process.env.BENCH_CONCURRENCY ?? 20);

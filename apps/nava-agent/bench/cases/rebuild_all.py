@@ -18,6 +18,7 @@ from rebuild_samples import (
     render_md,
     strip_images,
 )
+from route_from_email import route_from_email
 
 OUT = DATA / "cases" / "v1"
 WORKERS = int(os.environ.get("BENCH_CASE_WORKERS", "24"))
@@ -43,7 +44,7 @@ def _build_one(row: dict) -> dict | None:
     return card
 
 
-def _halloween_row(meta: dict, wf: str, hall_inputs: dict) -> dict | None:
+def _halloween_row(meta: dict, wf: str, hall_inputs: dict, *, force_wf: bool = False) -> dict | None:
     did = meta["decision_id"]
     inp = hall_inputs.get(did)
     if not inp:
@@ -51,6 +52,10 @@ def _halloween_row(meta: dict, wf: str, hall_inputs: dict) -> dict | None:
     sm = inp["selected_message"]
     as_of = sm.get("timestamp") or inp["input_cutoff"]
     body, _ = strip_images(sm.get("body") or "")
+    # Align gold workflow with triage skill table (other_request often hides a create/quote).
+    routed = route_from_email(sm.get("subject"), body)
+    if not force_wf:
+        wf = routed
     conf = None
     match = CONF_RE.search((sm.get("subject") or "") + " " + body)
     if match:
@@ -64,6 +69,7 @@ def _halloween_row(meta: dict, wf: str, hall_inputs: dict) -> dict | None:
     return {
         "case_id": f"hall-{wf}-{did.replace(':', '')[:16]}",
         "workflow": wf,
+        "routed_from": routed,
         "real_confirmation": conf,
         "source": {
             "thread_id": sm.get("thread_id"),
@@ -124,7 +130,6 @@ def main() -> None:
             candidates.append(row)
     for wf, fname, need in [
         ("quote", "quote_request.jsonl", 40),
-        ("triage", "other_request.jsonl", 35),
         ("create", "create_request.jsonl", 40),
         ("cancel", "cancel_request.jsonl", 35),
         ("filing", "voucher_submission.jsonl", 26),
@@ -134,9 +139,14 @@ def main() -> None:
         if not path.exists():
             continue
         for meta in load_jsonl(path)[: need * 3]:
-            row = _halloween_row(meta, wf, hall_inputs)
+            row = _halloween_row(meta, wf, hall_inputs, force_wf=True)
             if row:
                 candidates.append(row)
+    # other_request: route by triage table so create/quote asks are not labelled triage.
+    for meta in load_jsonl(DATA / "inbound/halloween/workflows/other_request.jsonl")[:200]:
+        row = _halloween_row(meta, "triage", hall_inputs, force_wf=False)
+        if row:
+            candidates.append(row)
 
     buckets: dict[str, list[dict]] = defaultdict(list)
     errors = 0

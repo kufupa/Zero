@@ -4,6 +4,7 @@ import {readdir, readFile, writeFile, mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import type {CaseCard} from '../types.js';
+import {assignSplit} from '../split.js';
 import {buildScoreboard, scoreCase, type CaseScore} from './score.js';
 
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
@@ -16,8 +17,10 @@ export async function rescoreRun(options: {
   const casesDir = options.casesDir ?? join(DATA_ROOT, 'cases/v1');
   const outDir = options.outDir ?? join(options.runDir, 'rescored');
   await mkdir(outDir, {recursive: true});
-  const entries = (await readdir(options.runDir)).filter(name => name.endsWith('.json') && name !== 'scoreboard.json' && name !== 'tier-report.json');
+  const skip = new Set(['scoreboard.json', 'scoreboard-dev.json', 'scoreboard-holdout.json', 'split.json', 'tier-report.json']);
+  const entries = (await readdir(options.runDir)).filter(name => name.endsWith('.json') && !skip.has(name));
   const scores: CaseScore[] = [];
+  const cards: CaseCard[] = [];
   for (const name of entries) {
     const prior = JSON.parse(await readFile(join(options.runDir, name), 'utf8')) as CaseScore & {proposal?: unknown; tool_quality?: {calls?: Array<{name: string; ok: boolean}>}};
     const caseId = prior.case_id ?? name.replace(/\.json$/, '');
@@ -27,6 +30,7 @@ export async function rescoreRun(options: {
     } catch {
       continue;
     }
+    cards.push(card);
     const toolCalls = (prior.tool_quality?.calls ?? []).map(call => ({
       name: call.name,
       input: undefined,
@@ -52,8 +56,27 @@ export async function rescoreRun(options: {
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Math.max(...scores.map(s => s.wall_ms), 0);
   board.totals.cost_usd = scores.reduce((sum, s) => sum + s.cost_usd, 0);
+  // Prefer frozen labels from the run when present; else recompute stratified split.
+  let labels: Record<string, 'dev' | 'holdout'> = {};
+  try {
+    const split = JSON.parse(await readFile(join(options.runDir, 'split.json'), 'utf8')) as {labels?: Record<string, 'dev' | 'holdout'>};
+    if (split.labels) labels = split.labels;
+  } catch {
+    labels = assignSplit(cards).labels;
+  }
+  if (!Object.keys(labels).length) labels = assignSplit(cards).labels;
+  const devBoard = buildScoreboard(scores.filter(s => labels[s.case_id] === 'dev'));
+  const holdBoard = buildScoreboard(scores.filter(s => labels[s.case_id] === 'holdout'));
   await writeFile(join(outDir, 'scoreboard.json'), JSON.stringify(board, null, 2));
-  return {outDir, board, n: scores.length};
+  await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(devBoard, null, 2));
+  await writeFile(join(outDir, 'scoreboard-holdout.json'), JSON.stringify(holdBoard, null, 2));
+  await writeFile(join(outDir, 'split.json'), JSON.stringify({
+    seed: 'replay-bench-20261119-v1',
+    n_dev: Object.values(labels).filter(v => v === 'dev').length,
+    n_holdout: Object.values(labels).filter(v => v === 'holdout').length,
+    labels,
+  }, null, 2));
+  return {outDir, board, devBoard, holdBoard, n: scores.length};
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
