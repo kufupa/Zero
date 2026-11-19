@@ -18,6 +18,14 @@ Also marks booking gold no_gold when:
   hotel conf PDF). Amend gold is reservation_id + reviewed_amendment deltas only.
 - quote quantity: no_gold when value is not a sane room count (0, years like
   2026 from date misparse, non-int, or absurdly large).
+- quote rate code: a code copied from a linked stay is not a requested
+  constraint at decision time.
+- filing attachment: gold needs a replay-visible PDF of the submitted type.
+  A hotel confirmation letter is not the voucher or payment proof it references.
+- create: a later PDF cannot settle a room choice absent from a standalone
+  request, or override an explicit stay window in that request.
+
+Use --refresh-v4 <set> for a split supplied with a prebuilt gold-v4 overlay.
 
 Cases stay in the set.
 """
@@ -28,6 +36,7 @@ import os
 import re
 import sys
 from collections import Counter
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -313,6 +322,138 @@ def quote_quantity_no_gold(g: dict, *, wf: str) -> str | None:
   return "gold_v4_quote_qty_not_sane_room_count"
 
 
+ROOM_CHOICE = re.compile(
+  r"\b(?:twin|queen|king|suite|family|executive|luxury|deluxe|superior|classic|"
+  r"accessible|double|triple|studio|penthouse|connecting|terrace)\b|"
+  r"\b(?:STQN|STWN|SKNG|DLXTWN|DLXQN|DLXKNG|EXKNG|LUXKNG)\b",
+  re.I,
+)
+STAY_DATE_LINE = re.compile(
+  r"^[ \t]*[-*•]?[ \t]*(check[ -]?in|arrival|check[ -]?out|departure)"
+  r"(?:[ \t]+date)?(?:[ \t]*:[ \t]*|[ \t]+)(\S[^\r\n]*?)\s*$",
+  re.I | re.M,
+)
+
+
+def current_mail_text(mail: dict) -> tuple[str, str]:
+  body = re.split(r"^\s*(?:>|From:|On .+ wrote:|[- ]+Original Message)",
+                  mail.get("body_text") or "", maxsplit=1, flags=re.I | re.M)[0]
+  return f"{mail.get('subject') or ''}\n{body}", body
+
+
+def standalone_create_source(card: dict) -> tuple[str, dict[str, str]] | None:
+  """Return only clear current-inbound evidence when no other inputs apply."""
+  mail = card.get("selected_email") or {}
+  non_pdf_docs = any(
+    Path(att.get("filename") or "").suffix.lower() not in {".gif", ".png", ".jpg", ".jpeg"}
+    for att in mail.get("attachments_non_pdf") or []
+  )
+  if (card.get("context_before") or card.get("cross_thread_context")
+      or mail.get("pdf_attachments_text") or non_pdf_docs):
+    return None
+  text, body = current_mail_text(mail)
+  dates: dict[str, set[str]] = {"arrival_date": set(), "departure_date": set()}
+  for label, value in STAY_DATE_LINE.findall(body):
+    key = "arrival_date" if label.lower() == "arrival" or label.lower().endswith("in") else "departure_date"
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y", "%d-%m-%Y", "%d %B %Y", "%d %b %Y"):
+      try:
+        dates[key].add(datetime.strptime(value, fmt).date().isoformat())
+        break
+      except ValueError:
+        continue
+  stay = {k: next(iter(v)) for k, v in dates.items() if len(v) == 1}
+  if len(stay) != 2 or stay["arrival_date"] >= stay["departure_date"]:
+    stay = {}
+  return text, stay
+
+
+def filing_missing_document(mail: dict) -> str | None:
+  pdfs = mail.get("pdf_attachments_text") or []
+  if not pdfs:
+    return "gold_v4_filing_no_selected_pdf_in_replay"
+  if (all(re.match(r"^HRCEN_Confirmation_Letter_", p.get("filename") or "", re.I) for p in pdfs)
+      and re.search(r"\b(?:vouchers?|proof of payment|pop)\b", current_mail_text(mail)[0], re.I)):
+    return "gold_v4_filing_confirmation_pdf_is_not_submission"
+  return None
+
+
+ROOM_COUNT = re.compile(
+  r"\b(\d{1,2})\s*(?:x\s+)?"
+  r"(?:(?:standard|twin|double|single|queen|king|deluxe|family|executive|luxury)\s+)*rooms?\b",
+  re.I,
+)
+
+
+def quote_quantity_conflicts(mail: dict, value: object) -> bool:
+  if not sane_room_quantity(value):
+    return False  # handled by the existing invalid-quantity rule
+  text, _ = current_mail_text(mail)
+  counts = {int(n) for n in ROOM_COUNT.findall(text)}
+  room_indices = re.findall(r"\b(\d+)(?:st|nd|rd|th)\s+room\b", text, re.I)
+  # The old extractor writes a total to rooms[0], which is one room category.
+  return len(set(room_indices)) > 1 or bool(counts and int(value) not in counts)
+
+
+def blind_source_patches(card: dict, wf: str, patches: dict[str, dict]) -> None:
+  """Use only case inputs and gold provenance; never read proposals."""
+  mail = card.get("selected_email") or {}
+  create_source = standalone_create_source(card) if wf == "create" else None
+  filing_why = filing_missing_document(mail) if wf == "filing" else None
+  for g in card.get("gold") or []:
+    path = g["path"]
+    if g["expectation"] != "expected" or path in patches:
+      continue
+    why = None
+    if (wf == "quote" and leaf(path) == "rate_code"
+        and g.get("basis") == "staff_quote_or_linked_stay"):
+      why = "gold_v4_quote_rate_from_linked_stay"
+    elif (wf == "quote" and leaf(path) == "quantity"
+          and g.get("basis") == "selected_email_rooms"
+          and quote_quantity_conflicts(mail, g.get("value"))):
+      why = "gold_v4_quote_room_quantity_not_supported"
+    elif filing_why and leaf(path) == "attachment_id" and g.get("basis") == "bench_mail_attachment_id":
+      why = filing_why
+    elif create_source:
+      text, stay = create_source
+      field = leaf(path)
+      basis = g.get("basis") or ""
+      if field in stay and basis == "first_pdf" and stay[field] != g.get("value"):
+        why = "gold_v4_create_later_pdf_conflicts_with_requested_date"
+      elif (field == "room_type" and basis == "unique exact first-PDF description in saved complete catalogue"
+            and not ROOM_CHOICE.search(text)):
+        why = "gold_v4_create_later_pdf_room_not_requested"
+    if why:
+      patches[path] = {"path": path, "expectation": "no_gold", "basis": why}
+
+
+def refresh_v4(name: str) -> None:
+  path = DATA / "gold-audit" / name / "gold-v4.json"
+  overlay = json.loads(path.read_text())
+  counts: Counter[str] = Counter()
+  for cid, row in overlay.items():
+    card = json.loads((DATA / "cases" / name / cid / "case.json").read_text())
+    patches = {p["path"]: p for p in row.get("gold_patches", [])}
+    before = set(patches)
+    blind_source_patches(card, row.get("workflow") or card["workflow"], patches)
+    counts.update(p["basis"] for k, p in patches.items() if k not in before)
+    if patches.keys() != before:
+      row["gold_patches"] = list(patches.values())
+      row["n_patches"] = len(patches)
+  if counts:
+    path.write_text(json.dumps(overlay, indent=2, ensure_ascii=False))
+    summary_path = path.with_name("summary-v4.json")
+    summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
+    summary.update({
+      "set": name,
+      "n": len(overlay),
+      "cases_with_patches": sum(bool(row.get("gold_patches")) for row in overlay.values()),
+      "patch_total": sum(len(row.get("gold_patches", [])) for row in overlay.values()),
+      "patch_reasons": dict(Counter(summary.get("patch_reasons", {})) + counts),
+    })
+    summary_path.write_text(json.dumps(summary, indent=2))
+  print(json.dumps({"set": name, "added_patches": counts}, sort_keys=True))
+
+
 def build(name: str) -> dict:
   cases = DATA / "cases" / name
   audit = DATA / "gold-audit" / name
@@ -439,6 +580,11 @@ def build(name: str) -> dict:
       }
       patch_reasons[qty_basis] += 1
 
+    prior_paths = set(patches_by_path)
+    blind_source_patches(card, wf, patches_by_path)
+    for path in patches_by_path.keys() - prior_paths:
+      patch_reasons[patches_by_path[path]["basis"]] += 1
+
     patches = list(patches_by_path.values())
     out[cid] = {
       "workflow": wf,
@@ -472,6 +618,11 @@ def build(name: str) -> dict:
 
 def main() -> None:
   sets = sys.argv[1:] or ["holdout-fresh", "v1", "dev-fresh"]
+  if sets[0] == "--refresh-v4":
+    if len(sets) != 2:
+      raise SystemExit("usage: build_gold_v4.py --refresh-v4 SET")
+    refresh_v4(sets[1])
+    return
   for name in sets:
     build(name)
 
