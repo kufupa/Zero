@@ -16,8 +16,15 @@ def route_from_email(subject: str | None, body: str | None) -> str:
         ) or re.search(r"\.(pdf)\b", text):
             return "filing"
 
-    if re.search(r"\b(cancel|cancellation|please cancel)\b", text) and re.search(
-        r"\b(reservation|booking|confirmation|stay)\b", text
+    # Cancel: cancel wording + confirmation/booking ref (incl. fee/policy/refund asks).
+    if re.search(
+        r"\b(cancel|cancellation|cancelation|please cancel|kindly cancel|"
+        r"release (the )?(booking|reservation)|cancellation (fee|policy|refund))\b",
+        text,
+    ) and (
+        re.search(r"\b\d{6,10}-1\b", text)
+        or re.search(r"\bn[°º]\s*\d{6,10}", text)
+        or re.search(r"\b(reservation|booking|confirmation|stay)\b", text)
     ):
         return "cancel"
 
@@ -72,11 +79,15 @@ def route_from_email(subject: str | None, body: str | None) -> str:
     ):
         return "create"
 
-    # Quote: price/availability / accessibility questions without hard book
+    # Quote: price/availability without book/proceed/accept
     if re.search(
         r"\b(quote|quotation|rate for|best (concessional )?rate|availability|"
-        r"corporate rate|government rate|how much|price for|"
+        r"corporate rate|government rate|how much|price for|what (is|are) the rates?|"
         r"wheelchair accessible|looking for a room)\b",
+        text,
+    ) and not re.search(
+        r"\b(please book|kindly book|reserve|proceed|accept(ed)? (the )?(offer|quote|quotation)|"
+        r"make (a )?reservation|confirm (the )?booking)\b",
         text,
     ):
         return "quote"

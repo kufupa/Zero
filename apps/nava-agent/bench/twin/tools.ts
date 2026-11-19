@@ -108,6 +108,21 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
   return catalogueRecords(catalogs[key]).map(item => object(item));
 }
 
+/** HRCEN property defaults from 56 live pre-arrival fills. History overrides. */
+const HRCEN_PROPERTY_DEFAULTS = {
+  guarantee_type: 'DEPREQ',
+  agency_guarantee_type: 'GTDAGT',
+  room_type: 'STQN',
+  rate_plan: 'NCOR1B',
+  government_rate_plan: 'NGOVDB',
+  track: 'COR',
+  government_track: 'GOV',
+  source_of_business: 'EMA',
+  billing_note: 'BB to Agent, extras direct',
+  government_billing_note:
+    'DBB to Agent, extras direct \nDinner Gov inclusive of R210.00 + 2 s/drink',
+} as const;
+
 /** Modal defaults from anchors created/sent BEFORE as_of for this party name. */
 function partyDefaultsBeforeAsOf(
   world: TwinWorld,
@@ -123,6 +138,7 @@ function partyDefaultsBeforeAsOf(
     guarantee_type: new Map(),
     track: new Map(),
     source_of_business: new Map(),
+    billing_note: new Map(),
   };
   const fieldKey =
     kind === 'agency' ? 'ta1' :
@@ -149,28 +165,39 @@ function partyDefaultsBeforeAsOf(
     const guarantee = String(fields.guaranteetype ?? fields.guarantee_type ?? '');
     const track = String(fields.track ?? fields.subsegment ?? '');
     const source = String(fields.sourceofbusiness ?? fields.source_of_business ?? '');
+    const note = String(fields.reservationnote ?? fields.note ?? '');
     if (room) counts.room_type!.set(room, (counts.room_type!.get(room) ?? 0) + 1);
     if (rate) counts.rate_plan!.set(rate, (counts.rate_plan!.get(rate) ?? 0) + 1);
     if (guarantee) counts.guarantee_type!.set(guarantee, (counts.guarantee_type!.get(guarantee) ?? 0) + 1);
     if (track) counts.track!.set(track, (counts.track!.get(track) ?? 0) + 1);
     if (source) counts.source_of_business!.set(source, (counts.source_of_business!.get(source) ?? 0) + 1);
+    if (note) counts.billing_note!.set(note, (counts.billing_note!.get(note) ?? 0) + 1);
   }
   const mode = (map: Map<string, number> | undefined): string | null => {
     if (!map || !map.size) return null;
     return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
   };
-  const defaults = {
+  const hist = {
     room_type: mode(counts.room_type),
     rate_plan: mode(counts.rate_plan),
     guarantee_type: mode(counts.guarantee_type),
     track: mode(counts.track),
     source_of_business: mode(counts.source_of_business),
-    billing_note: null as string | null,
+    billing_note: mode(counts.billing_note),
   };
-  if (!defaults.room_type && !defaults.rate_plan && !defaults.guarantee_type && !defaults.track && !defaults.source_of_business) {
-    return null;
-  }
-  return defaults;
+  const govHint = /gov|ngov|defence|defense|military|embassy|department of/i.test(needle);
+  return {
+    room_type: hist.room_type ?? HRCEN_PROPERTY_DEFAULTS.room_type,
+    rate_plan: hist.rate_plan ?? (govHint ? HRCEN_PROPERTY_DEFAULTS.government_rate_plan : HRCEN_PROPERTY_DEFAULTS.rate_plan),
+    guarantee_type:
+      hist.guarantee_type ??
+      (kind === 'agency' ? HRCEN_PROPERTY_DEFAULTS.agency_guarantee_type : HRCEN_PROPERTY_DEFAULTS.guarantee_type),
+    track: hist.track ?? (govHint ? HRCEN_PROPERTY_DEFAULTS.government_track : HRCEN_PROPERTY_DEFAULTS.track),
+    source_of_business: hist.source_of_business ?? HRCEN_PROPERTY_DEFAULTS.source_of_business,
+    billing_note:
+      hist.billing_note ??
+      (govHint ? HRCEN_PROPERTY_DEFAULTS.government_billing_note : HRCEN_PROPERTY_DEFAULTS.billing_note),
+  };
 }
 
 function tokenOverlap(a: string, b: string): boolean {
