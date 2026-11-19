@@ -8,7 +8,8 @@ export const schemas = {
     property_code: string,
     criteria: object({
       reservation_id: string,
-      guest_name: { ...string, description: 'Guest surname only. For Proof Labtest use Labtest, not Proof Labtest. Preserve the full compound surname if known.' },
+      guest_name: { ...string, description: 'Guest surname, or voucher name SURNAME/FIRST to search both name orders. Preserve the full compound surname when known.' },
+      guest_first_name: { ...string, description: 'Given name, if available, used as an alternate surname when the first surname search is empty.' },
       guest_name_is_surname: { type: 'boolean', description: 'Required true for a surname containing spaces, and only when the source identifies the entire value as the surname (e.g. De Koker).' },
       arrival_date: string,
       departure_date: string,

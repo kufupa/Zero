@@ -10,6 +10,7 @@ import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, 
 import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, targetLookup } from './stay-target.js';
+import { samePartyName } from './party-matching.js';
 
 export type Mode = 'live' | 'labtest' | 'historical';
 export type SkillConfig = {root:string;pin:{version:string;files:Record<string,string>}};
@@ -100,42 +101,48 @@ const partyRead=z.object({
     candidates:z.array(z.object({nativeId:z.string().min(1),name:z.string().min(1)})),
   })})}),
 });
-function readPartyChoice(booking:Booking,values:unknown[],kind:'agency'|'organization'):{nativeId:string;name:string}|null {
-  const name=booking.fields[`${kind}_name`];
+function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],kind:'agency'|'organization'):{nativeId:string;name:string}|null {
   if(typeof name!=='string' || !name.trim()) return null;
-  const norm=(value:string)=>value.trim().replace(/\s+/g,' ').toLowerCase();
   const choices=new Map<string,{nativeId:string;name:string}>();
   for(const value of values) {
     const read=partyRead.safeParse(value);
-    if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==booking.property_code) continue;
+    if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==propertyCode) continue;
     const {input,response}=read.data, native=response.data.native;
-    if(norm(input.query)!==norm(native.criteria.query) || native.candidates.length!==1) continue;
+    if(!samePartyName(input.query,native.criteria.query,kind) || native.candidates.length!==1) continue;
     const candidate=native.candidates[0];
-    if(norm(name)!==norm(input.query) && norm(name)!==norm(candidate.name)) continue;
+    if(!samePartyName(name,input.query,kind) && !samePartyName(name,candidate.name,kind)) continue;
     choices.set(candidate.nativeId,candidate);
   }
   return choices.size===1 ? [...choices.values()][0] : null;
 }
 function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
-  const bookings=draft.bookings.map((booking,index)=>{
-    const fields={...booking.fields};
+  const bind=(original:Record<string,unknown>,propertyCode:string|null,root:string)=>{
+    const fields={...original};
     for(const kind of ['agency','organization'] as const) {
       if(fields[`${kind}_id`] != null && fields[`${kind}_id`]!=='') continue;
-      const choice=readPartyChoice(booking,values,kind);
+      const choice=readPartyChoice(propertyCode,fields[`${kind}_name`],values,kind);
       if(!choice) continue;
       fields[`${kind}_id`]=choice.nativeId;
       fields[`${kind}_name`]=choice.name;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
-        const path=`/bookings/${index}/fields/${kind}_${suffix}`;
+        const path=`${root}/${kind}_${suffix}`;
         const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
         if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],path,provenance:'hms',editable:true,error:null};
         else fieldSpecs.push({path,label,provenance:'hms',editable:true,required:false,error:null,control:'text',options:[],evidence:[]});
       }
     }
-    return {...booking,fields};
+    return fields;
+  };
+  const bookings=draft.bookings.map((booking,index)=>({
+    ...booking,fields:bind(booking.fields,booking.property_code,`/bookings/${index}/fields`),
+  }));
+  const actions=draft.actions.map((action,index)=>{
+    if(draft.workflow!=='quote' || action.type!=='quote' || !action.details || typeof action.details!=='object' || Array.isArray(action.details)) return action;
+    const property=typeof action.details.property_code==='string'?action.details.property_code:null;
+    return {...action,details:bind(action.details,property,`/actions/${index}/details`)};
   });
-  return {...draft,bookings,field_specs:fieldSpecs};
+  return {...draft,bookings,actions,field_specs:fieldSpecs};
 }
 function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{native:unknown;incomplete:boolean} {
   const latest=new Map<string,{data:z.infer<typeof groupedCaptureSchema>;ok:boolean;input:unknown}>();
@@ -247,14 +254,14 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
         }
         const incomplete=draft.workflow==='quote' && merged.incomplete;
         let staffDraft=proposalDraft.parse({...draft,native_result:native,...(incomplete && (draft.disposition==='propose'||draft.disposition==='decline')?{disposition:'staff_review',warnings:[...draft.warnings,'Native quote was not completed; staff review required.']}: {})});
-        if(staffPrepareOnly() && staffDraft.workflow==='create') {
+        if(staffPrepareOnly() && ['create','quote'].includes(staffDraft.workflow)) {
           const reads=await tx`SELECT c.payload->'input' AS input,r.payload->'result' AS response
             FROM nava_agent.agent_event r JOIN nava_agent.agent_event c ON c.session_id=r.session_id
               AND c.kind='tool_call' AND c.payload->>'tool_use_id'=r.payload->>'tool_event_id'
             WHERE r.session_id=${session.id} AND r.kind='tool_result' AND r.payload->>'tool'='hms_search_parties'
               AND r.sequence > COALESCE((SELECT max(sequence) FROM nava_agent.agent_event WHERE session_id=${session.id} AND kind IN ('mail_pending','context_pending')),0)
             ORDER BY r.sequence`;
-          staffDraft={...staffDraft,
+          if(staffDraft.workflow==='create') staffDraft={...staffDraft,
             bookings:staffDraft.bookings.map(booking=>({...booking,fields:{...booking.fields,
               guest_profile_id:booking.fields.guest_profile_id ?? readProfileId(booking,reads),profile_create_new:false}})),
           };
