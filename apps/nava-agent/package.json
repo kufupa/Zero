@@ -11,7 +11,8 @@
     "worker": "tsx src/worker.ts",
     "migrate": "tsx src/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "import-train": "tsx src/import-train.ts"
+    "import-train": "tsx src/import-train.ts",
+    "bench": "tsx bench/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/bedrock-sdk": "1.1.2",

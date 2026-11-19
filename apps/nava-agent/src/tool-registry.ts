@@ -28,7 +28,13 @@ export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Pro
 export type NativeLease = {signal:AbortSignal};
 export type NativeTiming = (phase:string, elapsedMs:number)=>void;
 export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming, budget?:'short', priority?:'background'|'prefill'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>,timing?:NativeTiming):Promise<T>};
-export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
+export type TwinDispatch = (name:string,input:unknown,context:RegistryContext)=>Promise<ToolResult>;
+export type RegistryDeps = {
+  native:NativeAdmission;
+  emit(sessionId:string,kind:string,payload:unknown):Promise<void>;
+  /** Bench HMS twin: intercepts hms_* before live/historical paths. */
+  twinDispatch?:TwinDispatch;
+};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
 type Booking = ProposalDraft['bookings'][number];
@@ -456,6 +462,14 @@ export class ToolRegistry {
       const request=saveInput.safeParse(input);
       if(!request.success) return {kind:'result',result:failureObject('INVALID_INPUT','Invalid Save request.')};
       return {kind:'pause',proposalId:request.data.proposal_id,revision:request.data.expected_revision};
+    }
+    const twinMode=process.env.NAVA_HMS_MODE==='twin' || Boolean(this.deps.twinDispatch);
+    if(name.startsWith('hms_') && twinMode && this.deps.twinDispatch) {
+      await this.deps.emit(context.sessionId,'tool_started',{tool:name,tool_event_id:context.toolUseId});
+      const response=await this.deps.twinDispatch(name,input,context);
+      if(name==='hms_quote') await this.deps.emit(context.sessionId,'native_quote',{tool_event_id:context.toolUseId,input,response});
+      await this.deps.emit(context.sessionId,'tool_result',{tool:name,tool_event_id:context.toolUseId,result:response});
+      return {kind:'result',result:response};
     }
     if(name.startsWith('hms_') && context.mode==='historical') return {kind:'result',result:failureObject('HISTORICAL_HMS_UNAVAILABLE','Historical sessions cannot access live HMS.')};
     const pack=this.packTools.get(name);
