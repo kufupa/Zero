@@ -45,9 +45,6 @@ import type { AiRunFence } from './run-ledger.js';
 import { PANE_PREVIEW_TTL_MS, PANE_SAVE_UNCONFIRMED, paneStayCreateTarget, paneStayDigest, paneStayModeRefusal,
   paneStayCloudTargetLock, paneStaySaveLoaders, registerPaneRun, type PaneStay, type PaneStayResult } from './pane-stay-save.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { reservationWorkflowV2DraftSchema, type ReservationWorkflowV2Observation } from './reservation-workflow-v2-contract.js';
-import { lockReservationWorkflowV2Source, RESERVATION_WORKFLOW_V2_STATE_KEY,
-  reservationWorkflowV2DraftOf, withReservationWorkflowV2Draft } from './reservation-workflow-v2-state.js';
 
 const cloudPreviewSource = z.object({ messageId: z.string().trim().min(1).max(200),
   threadId: z.string().trim().min(1).max(200), sourceHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
@@ -907,11 +904,10 @@ export async function commitPaneCloud(db: DB, input: Input, previewDigest: strin
               // Once v2 owns this email, an old pane cannot start a separate Create.
               // The same transaction lock serializes this check with v2 seeding/Go.
               await lockCanonicalMailbox(tx as unknown as DB, input.transportId);
-              await lockReservationWorkflowV2Source(tx, input.transportId, input.selection.source.messageId);
               const [v2] = await tx.select({ id: workItem.id }).from(workItem).where(and(
                 eq(workItem.transportId, input.transportId), eq(workItem.threadId, input.selection.source.threadId),
                 eq(workItem.sourceMessageId, input.selection.source.messageId),
-                sql`${workItem.state} ? ${RESERVATION_WORKFLOW_V2_STATE_KEY}`)).limit(1);
+                sql`${workItem.state} ? 'reservationWorkflowV2'`)).limit(1);
               if (v2) throw new Error('cloud_create_scope_changed');
               await lockCreateSource(tx, key, async (lockedTx, source) => {
               const current = await checkSource(lockedTx, source, input, grant.accessId);
@@ -1205,46 +1201,8 @@ export async function recordRecoveredCreate(tx: CreateFenceTransaction, intent: 
   // Partial v2 markers fail closed instead of falling through to legacy recovery.
   const recovery = intent.recovery;
   const v2Intent = ['requestId', 'allocationId', 'operationId'].some((key) => Object.hasOwn(recovery, key));
-  if (v2Intent) {
-    const draft = reservationWorkflowV2DraftOf(current.state);
-    const requestId = typeof recovery.requestId === 'string' ? recovery.requestId : '';
-    const allocationId = typeof recovery.allocationId === 'string' ? recovery.allocationId : '';
-    const operationId = typeof recovery.operationId === 'string' ? recovery.operationId : '';
-    const prior = draft?.operationResults.find((result) => result.id === operationId && result.workflow === 'create' &&
-      result.requestId === requestId && result.allocationId === allocationId && result.status === 'unknown');
-    if (!draft || !requestId || !allocationId || !operationId ||
-        intent.grantId !== operationId.toLowerCase() || intent.stayId !== `${requestId}_${allocationId}` ||
-        intent.transportId !== draft.transportId || intent.propertyCode !== draft.propertyCode ||
-        intent.sourceDigest !== draft.source.sourceHash || !prior || proof.confirmation.length > 40 ||
-        !proof.nativeReadback || proof.nativeReadback.confirmation !== proof.confirmation) {
-      throw new Error('reservation_workflow_v2_create_recovery_scope_changed');
-    }
-    const observation: ReservationWorkflowV2Observation = {
-      ref: randomUUID(), generationId: draft.generationId, kind: 'stay_candidate', status: 'complete', observedAt: new Date().toISOString(),
-      propertyCode: draft.propertyCode, sourceMessageId: draft.source.messageId, sourceRefs: [],
-      criteria: { workflow: 'create', requestId, allocationId, operationId, recovered: true,
-        draftRevision: prior.draftRevision, sourceHash: draft.source.sourceHash },
-      coverage: { complete: true, notes: [] },
-      result: { confirmation: proof.confirmation, nativeReadback: proof.nativeReadback,
-        readbackDigest: proof.readbackDigest, savedShot: proof.savedShot,
-        ratePlanAvailability: recovery.ratePlanAvailability ?? null,
-        arAccountProfileId: recovery.arAccountProfileId ?? null },
-    };
-    const observations = [...draft.observations, observation];
-    const summary = `Recovered confirmed native Create ${proof.confirmation} from fresh HMS readback`;
-    const operationResults = [...draft.operationResults.filter((result) => result.id !== operationId), {
-      ...prior, status: 'succeeded' as const, observationRefs: [observation.ref], updatedAt: new Date().toISOString(), summary,
-    }];
-    const nextDraft = reservationWorkflowV2DraftSchema.parse({ ...draft, observations, operationResults });
-    const state = withReservationWorkflowV2Draft(current.state, nextDraft);
-    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, intent.workItemId));
-    await tx.insert(workEvent).values({ workItemId: intent.workItemId, actorKind: 'system', type: 'write.evidence',
-      fieldPath: `reservationWorkflowV2:operationResults:${operationId}`,
-      value: { id: operationId, requestId, allocationId, workflow: 'create', status: 'succeeded',
-        observationRefs: [observation.ref], recovered: true },
-      evidence: { sourceHash: draft.source.sourceHash, confirmation: proof.confirmation, readbackDigest: proof.readbackDigest } });
-    return;
-  }
+  // The v2 engine is gone; its recoveries fail closed.
+  if (v2Intent) throw new Error('reservation_workflow_v2_create_recovery_scope_changed');
   const stays = current.state.stays;
   if (!stays || typeof stays !== 'object' || Array.isArray(stays)) throw new Error('cloud_create_recovery_scope_changed');
   const stay = (stays as Record<string, unknown>)[intent.stayId] as Record<string, unknown> | undefined;

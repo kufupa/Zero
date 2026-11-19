@@ -6,10 +6,16 @@ import { workEvent } from '../db/schema/work.js';
 import { canonicalJson } from '../ai/draft-approval.js';
 import { propertyCodeSchema, resolvedPropertyScopeSchema, type ResolvedPropertyScope } from './property-registry.js';
 import type { PropertyConfiguration } from './property-configuration.js';
-import { reservationWorkflowV2PrepareInputSchema, reservationWorkflowV2GuestPrepareInputSchema } from '../ai/reservation-workflow-v2-contract.js';
 import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-policy.mjs';
 
 const serviceId = z.string().min(1).max(80);
+// Retired v2 engine inputs: kept loose so stored preparations still parse; Staff Go refuses them.
+const reservationWorkflowV2PrepareInputSchema = z.object({ workItemId: z.string(), requestId: z.string(),
+  expectedRevision: z.number().int(), expectedSeq: z.number().int(),
+  source: z.object({ threadId: z.string(), messageId: z.string(), sourceHash: z.string(),
+    propertyId: z.string().optional() }).passthrough() }).passthrough();
+const reservationWorkflowV2GuestPrepareInputSchema = reservationWorkflowV2PrepareInputSchema.extend({
+  confirmDuplicateName: z.boolean().optional() });
 export const hmsPreparedWorkflowContextSchema = z.discriminatedUnion('endpoint', [
   z.object({ endpoint: z.literal('execute'), input: reservationWorkflowV2PrepareInputSchema }).strict(),
   z.object({ endpoint: z.literal('createGuestProfile'), input: reservationWorkflowV2GuestPrepareInputSchema.extend({

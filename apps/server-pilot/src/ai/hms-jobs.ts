@@ -1,5 +1,4 @@
 import { safeParseStoredMailExtraction } from './extraction/stored-mail-extraction.js';
-import { reservationWarmupRequestSchema, executeReservationWarmup } from './reservation-workflow-v2-warmup.js';
 /**
  * Pane HMS lookups as persisted jobs.
  *
@@ -3900,9 +3899,6 @@ async function executeHmsJobWithPriority(input: {
 }): Promise<'succeeded' | 'retry_wait' | 'dead_letter'> {
   const db = input.db ?? getDb();
   const { run, fence } = input;
-  const warmup = reservationWarmupRequestSchema.safeParse(run.readRequest);
-  if (warmup.success) return executeReservationWarmup({ db, run, fence,
-    signal: input.signal, request: warmup.data });
   const mark: Mark = {
     runId: run.id,
     claimOwner: fence.claimOwner,

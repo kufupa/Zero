@@ -13,10 +13,10 @@ import { AttachmentMetaSchema, MailLocationSchema, type WorkstationEmailPayload 
 import { z } from 'zod';
 import type { QuoteDraftBinding } from './quote-output-bridge';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
-import type { ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import type { ReservationSourceContext } from '@/components/nava-rewrite/source-types';
 import { useOutlookSync } from '@/lib/workstation/use-outlook-sync';
 import { quoteCoverHtml, saveQuoteWebDraft, useQuoteOutput } from './quote-output-bridge';
-import type { QuoteOutput, QuoteOutputArtifact } from '@/lib/reservation-workflow/quote-output';
+import type { QuoteOutput, QuoteOutputArtifact } from './source-types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { trpcClient } from '@/providers/query-provider';
 import { canonicalMessageId } from '../../../server-pilot/src/mail/ingest/message-id';
@@ -82,7 +82,7 @@ function RewriteWithWebmail({ email, threadId, source, onSourceNotEligible }: Ex
     }
     const { input } = source;
     try {
-      const match = await trpcClient.reservationWorkflowV2.resolveSource.query({
+      const match = await trpcClient.paneSource.resolveSource.query({
         internetMessageId: selected.rfc_message_id, selection: { kind: 'web', threadId, messageId: selected.id },
       }, { ...inMailbox(input.mailbox_id), signal: request.signal });
       const sender = match.status === 'ok' && match.sourceSender ? emailAddresses.parseOneAddress(match.sourceSender) : null;
@@ -204,7 +204,7 @@ function RewriteWithOutlookDraft({ input, email, bridge, source }: {
       candidate.messageId === current.source.messageId && candidate.threadId === current.source.threadId &&
       candidate.mailboxId === current.source.mailboxId && candidate.sourceHash === current.source.sourceHash);
   };
-  const output = useQuoteOutput({ source, configuration: null, bridge, isCurrentSource });
+  const output = useQuoteOutput({ source, bridge, isCurrentSource });
 
   async function saveQuoteDraft(request: QuoteDraftRequest) {
     const selectedMail = input.messages.find(message => message.id === input.selected_message_id && message.direction === 'inbound');

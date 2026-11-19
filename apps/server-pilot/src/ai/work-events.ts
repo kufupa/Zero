@@ -6,7 +6,7 @@ import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { propertyCodeSchema, type PropertyCode } from '../hms/property-registry.js';
 import { maskCardNumbers } from './card-mask.js';
-import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from './reservation-workflow-v2-contract.js';
+import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from './pane-error-vocabulary.js';
 
 /** Pane action telemetry (v5 B1). The batch route accepts only these types, so no approval or field event comes through it. */
 export const PANE_ACTION_STANDARD_TYPES = [

@@ -105,12 +105,12 @@ function centurionWriteCapability(env, workflow, configuredMode) {
 }
 
 const writerSources = Object.freeze({
-  create: ['tooling/hms-cloud/create-reservation.mjs', 'src/ai/pane-cloud-preview.ts', 'src/ai/reservation-workflow-v2-tools.ts'],
-  amend: ['tooling/hms-cloud/pane-amend-session.mjs', 'src/ai/pane-cloud-amend-runner.ts', 'src/ai/reservation-workflow-v2-amend.ts'],
-  cancel: ['tooling/hms-cloud/pane-cancel-session.mjs', 'src/ai/pane-hms-write.ts', 'src/ai/reservation-workflow-v2-cancel.ts'],
-  attach: ['tooling/hms-cloud/stay360-document-attach.mjs', 'src/ai/pane-hms-write.ts', 'src/ai/reservation-workflow-v2-filing.ts'],
-  addons: ['tooling/hms-cloud/stay360-addons-session.mjs', 'src/ai/reservation-workflow-v2-services-execute.ts'],
-  guest_profile_create: ['tooling/hms-cloud/guest-profile-runner.mjs', 'src/ai/reservation-workflow-v2-guest.ts'],
+  create: ['tooling/hms-cloud/create-reservation.mjs', 'src/ai/pane-cloud-preview.ts'],
+  amend: ['tooling/hms-cloud/pane-amend-session.mjs', 'src/ai/pane-cloud-amend-runner.ts'],
+  cancel: ['tooling/hms-cloud/pane-cancel-session.mjs', 'src/ai/pane-hms-write.ts'],
+  attach: ['tooling/hms-cloud/stay360-document-attach.mjs', 'src/ai/pane-hms-write.ts'],
+  addons: ['tooling/hms-cloud/stay360-addons-session.mjs'],
+  guest_profile_create: ['tooling/hms-cloud/guest-profile-runner.mjs'],
 });
 const writerDigests = new Map();
 

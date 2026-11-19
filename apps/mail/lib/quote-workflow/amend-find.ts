@@ -1,7 +1,7 @@
 import type { PartyFindReply } from './party-lookup';
 import type { QuoteAmendment } from './types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
-import type { PropertySwitch } from '@/lib/reservation-workflow/types';
+type PropertySwitch = 'HRDAV' | 'HRDAVS';
 
 /**
  * Shared HMS read helpers for quote, amend and cancel mail.

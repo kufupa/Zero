@@ -16,7 +16,7 @@ import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env
 import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
-import { lookupNativeParty, type ReservationWorkflowV2NativePartyRead } from './reservation-workflow-v2-native-party.js';
+import { lookupNativeParty, type ReservationWorkflowV2NativePartyRead } from './native-party-lookup.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { HMS_JOB_PROMPT_VERSION } from './run-ledger.js';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';

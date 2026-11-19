@@ -60,9 +60,9 @@ import {
   type StaffQuoteRoomAlternative,
 } from './staff-quote-alternatives.js';
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { snapshotRowPrices } from '../trpc/routes/rates.js';
+import { snapshotRowPrices } from './staff-quote-row-prices.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
-import { lookupNativeParty } from './reservation-workflow-v2-native-party.js';
+import { lookupNativeParty } from './native-party-lookup.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { PropertyCode } from '../hms/property-registry.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';

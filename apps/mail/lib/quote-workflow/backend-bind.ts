@@ -1,5 +1,6 @@
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
-import type { PropertyConfiguration, PropertySwitch } from '@/lib/reservation-workflow/types';
+import type { PropertyConfiguration } from '../../../server-pilot/src/hms/property-configuration.js';
+type PropertySwitch = 'HRDAV' | 'HRDAVS';
 import type {
   QuoteAmendment,
   QuoteAnalysis,

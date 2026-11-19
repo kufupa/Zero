@@ -30,7 +30,7 @@ import {
   maskStaffNote,
   recordPaneActions,
 } from '../../ai/work-events.js';
-import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from '../../ai/reservation-workflow-v2-contract.js';
+import { PANE_ERROR_CLASSES, PANE_ERROR_CODES, RESERVATION_WORKFLOW_V2_ERROR_PROCEDURES } from '../../ai/pane-error-vocabulary.js';
 import type { MailKind } from '../../ai/extraction/schema.js';
 import { recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
 import {

@@ -1,9 +1,13 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import { hydrateStoredWorkState } from './stored-work-state.js';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
-import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
+// The v2 engine is retired; old drafts in stored state are carried through untyped.
+type ReservationWorkflowV2Draft = {
+  operationResults?: Array<{ workflow?: string; status?: string }>;
+  prefill?: { status: string } & Record<string, unknown>;
+};
+const hydrateStoredReservationWorkflowV2 = (value: unknown): unknown => value;
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
@@ -333,84 +337,6 @@ export function nativeStructureIsSafe(currentState: PaneState, restoredState: Pa
   return true;
 }
 
-const obj = (value: unknown): Record<string, any> => value && typeof value === 'object' && !Array.isArray(value)
-  ? value as Record<string, any> : {};
-function rowId(value: unknown): string | null {
-  const row = obj(value), target = obj(row.target ?? row);
-  if (typeof row.id === 'string') return `id:${row.id}`;
-  if (target.kind === 'allocation' && target.requestId && target.allocationId) return `a:${target.requestId}:${target.allocationId}`;
-  if (target.kind === 'quote_group' && target.requestId && target.groupId) return `q:${target.requestId}:${target.groupId}`;
-  if (target.kind === 'saved_target' && target.requestId && target.hintId) return `s:${target.requestId}:${target.hintId}`;
-  return null;
-}
-export function rebaseReservationV2Path(path: string, before: ReservationWorkflowV2Proposal,
-  after: ReservationWorkflowV2Proposal): string | null {
-  if (!path.startsWith('/')) return path;
-  let parts: string[];
-  try { parts = path.slice(1).split('/').map(decodeURIComponent); } catch { return null; }
-  let old: any = before, next: any = after, offset = 0;
-  if (parts[0] === 'proposal') offset++;
-  if (parts[offset] === 'content') offset++;
-  else if (['requests', 'services', 'documents'].includes(parts[offset] ?? '')) { old = before.content; next = after.content; }
-  if (offset && parts[offset - 1] === 'content') { old = before.content; next = after.content; }
-  if (!['requests', 'services', 'documents'].includes(parts[offset] ?? '')) return path;
-  for (let i = offset; i < parts.length; i++) {
-    const key = parts[i]!;
-    if (Array.isArray(old)) {
-      const perTarget = parts[i - 1] === 'perTarget';
-      const identity = (value: unknown) => perTarget && typeof obj(value).hintId === 'string'
-        ? `hint:${obj(value).hintId}` : rowId(value);
-      const index = /^\d+$/.test(key) ? Number(key) : old.findIndex((row) =>
-        obj(row).id === key || (perTarget && obj(row).hintId === key));
-      const row = old[index], stable = identity(row);
-      if (!row || !Array.isArray(next)) return null;
-      const nextIndex = stable ? next.findIndex((entry: unknown) => identity(entry) === stable) : index;
-      if (nextIndex < 0 || nextIndex >= next.length) return null;
-      if (/^\d+$/.test(key)) parts[i] = String(nextIndex);
-      old = row; next = next[nextIndex];
-    } else {
-      old = obj(old)[key]; next = obj(next)[key];
-      if (old === undefined) break;
-    }
-  }
-  return '/' + parts.map(encodeURIComponent).join('/');
-}
-
-/** Keep native evidence, but never leave an index-bound candidate on a different row. */
-export function rebaseReservationV2Observations(draft: ReservationWorkflowV2Draft,
-  before: ReservationWorkflowV2Proposal, after: ReservationWorkflowV2Proposal): ReservationWorkflowV2Draft['observations'] {
-  return draft.observations.map((observation) => {
-    const criteria = { ...observation.criteria }, retired: string[] = [];
-    const request = after.content.requests.find((row) => row.id === criteria.requestId);
-    const deadRequest = typeof criteria.requestId === 'string' && !request;
-    const deadAllocation = typeof criteria.allocationId === 'string' && request?.kind === 'create' &&
-      !request.body.allocations.some((row) => row.id === criteria.allocationId);
-    const deadService = typeof criteria.serviceId === 'string' && !after.content.services.some((row) => row.id === criteria.serviceId);
-    const translate = (path: string) => {
-      const result = deadRequest || deadAllocation || deadService ? null : rebaseReservationV2Path(path, before, after);
-      if (!result) retired.push(path);
-      return result;
-    };
-    for (const key of ['fieldPath', 'selectionPath'] as const) if (typeof criteria[key] === 'string') {
-      const path = translate(criteria[key] as string); if (path) criteria[key] = path; else delete criteria[key];
-    }
-    if (Array.isArray(criteria.fieldPaths)) criteria.fieldPaths = criteria.fieldPaths.flatMap((value) => {
-      if (typeof value !== 'string') return [];
-      const path = translate(value); return path ? [path] : [];
-    });
-    const previouslyRetired = Array.isArray(criteria.retiredFieldPaths) ? criteria.retiredFieldPaths.filter((v): v is string => typeof v === 'string') : [];
-    // Restoring a removed allocation can recover its evidence by its stable allocation ID.
-    if (!deadRequest && !deadAllocation && request?.kind === 'create' && typeof criteria.allocationId === 'string') {
-      const index = request.body.allocations.findIndex((row) => row.id === criteria.allocationId);
-      const revived = previouslyRetired.flatMap((path) => index >= 0 && /\/allocations\/\d+\//.test(path)
-        ? [path.replace(/\/allocations\/\d+\//, `/allocations/${index}/`)] : []);
-      if (revived.length) criteria.fieldPaths = [...new Set([...(Array.isArray(criteria.fieldPaths) ? criteria.fieldPaths : []), ...revived])];
-    }
-    if (retired.length || previouslyRetired.length) criteria.retiredFieldPaths = [...new Set([...previouslyRetired, ...retired])];
-    return { ...observation, criteria };
-  });
-}
-
 async function applyHistoryMove(
   db: DB,
   input: {
@@ -466,68 +392,7 @@ async function applyHistoryMove(
     const nextSeq = seq + 1;
     const state = withPaneState(hydrateStoredWorkState(item.state), restored);
     if (!nativeStructureIsSafe(item.state, state)) return { status: 'history_stale' as const, revision, revisionHead, seq };
-    const previousV2 = item.state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
     const restoredV2 = state[RESERVATION_V2_KEY] as ReservationWorkflowV2Draft | undefined;
-    if (previousV2?.proposal && restoredV2?.proposal) {
-      const snapshotBinding = sourceBindingOf(restored[RESERVATION_V2_KEY]);
-      const currentBinding = sourceBindingOf(previousV2);
-      const sameSource = snapshotBinding !== null && currentBinding !== null &&
-        currentBinding.generationId === snapshotBinding.generationId && currentBinding.propertyCode === snapshotBinding.propertyCode &&
-        currentBinding.threadId === snapshotBinding.threadId && currentBinding.messageId === snapshotBinding.messageId &&
-        currentBinding.sourceHash === snapshotBinding.sourceHash;
-      const restoredRequestIds = new Set<string>();
-      // Source cues are host-produced for the current source, not historical staff edits.
-      for (const request of restoredV2.proposal.content.requests) {
-        if (request.kind !== 'amend') continue;
-        const current = previousV2.proposal.content.requests.find((row) => row.id === request.id && row.kind === 'amend');
-        if (current?.kind === 'amend') {
-          if (current.body.sourceCues === undefined) delete request.body.sourceCues;
-          else request.body.sourceCues = current.body.sourceCues;
-        }
-        else if (sameSource) restoredRequestIds.add(request.id);
-        else delete request.body.sourceCues;
-      }
-      const otherIssues = restoredV2.proposal.issues.filter((issue) => issue.kind !== 'source_note_for_review');
-      const presentRequestIds = restoredV2.proposal.content.requests.filter((request) => request.kind === 'amend')
-        .map((request) => request.id);
-      const belongsTo = (path: string, ids: Iterable<string>) => [...ids].some((id) =>
-        path.startsWith(`/proposal/content/requests/${encodeURIComponent(id)}/body/`));
-      const sourceIssues = previousV2.proposal.issues.filter((issue) => issue.kind === 'source_note_for_review' &&
-        belongsTo(issue.path, presentRequestIds));
-      if (sameSource) sourceIssues.push(...restoredV2.proposal.issues.filter((issue) =>
-        issue.kind === 'source_note_for_review' && belongsTo(issue.path, restoredRequestIds) &&
-        !sourceIssues.some((current) => current.path === issue.path && current.explanation === issue.explanation &&
-          current.evidenceRefs.length === issue.evidenceRefs.length &&
-          issue.evidenceRefs.every((ref) => current.evidenceRefs.includes(ref)))));
-      restoredV2.proposal.issues = [...otherIssues, ...sourceIssues.slice(0, Math.max(0, 1000 - otherIssues.length))];
-    }
-    if (previousV2?.proposal && restoredV2?.proposal && Array.isArray(previousV2.observations)) {
-      restoredV2.observations = rebaseReservationV2Observations(previousV2, previousV2.proposal, restoredV2.proposal);
-      // The verified profile selection is a native receipt, not an undoable
-      // staff edit. Follow its stable allocation ID if row indexes moved.
-      for (const result of previousV2.operationResults) {
-        if (result.workflow !== 'guest_profile' || result.status !== 'succeeded' || !result.allocationId) continue;
-        const beforeRequest = previousV2.proposal.content.requests.find((row) => row.id === result.requestId);
-        const afterRequest = restoredV2.proposal.content.requests.find((row) => row.id === result.requestId);
-        if (beforeRequest?.kind !== 'create' || afterRequest?.kind !== 'create') continue;
-        const beforeIndex = beforeRequest.body.allocations.findIndex((row) => row.id === result.allocationId);
-        const afterIndex = afterRequest.body.allocations.findIndex((row) => row.id === result.allocationId);
-        if (beforeIndex < 0 || afterIndex < 0) continue;
-        const root = `/proposal/content/requests/${encodeURIComponent(result.requestId)}/body/allocations`;
-        const beforePath = `${root}/${beforeIndex}/guest`, afterPath = `${root}/${afterIndex}/guest`;
-        const selection = previousV2.fieldOverrides[`${beforePath}/nativeSelectionRef`];
-        const selected = previousV2.observations.find((row) => result.observationRefs.includes(row.ref) &&
-          row.ref === selection?.value && row.criteria.workflow === 'guest_profile_create' && row.status === 'complete');
-        if (!selected || selection?.state !== 'set') continue;
-        restoredV2.fieldOverrides[`${afterPath}/nativeSelectionRef`] = selection;
-        const intent = previousV2.fieldOverrides[`${beforePath}/profileIntent`];
-        if (intent?.state === 'set' && intent.value === 'existing_or_unknown') {
-          restoredV2.fieldOverrides[`${afterPath}/profileIntent`] = intent;
-        }
-        const review = previousV2.staffReviews[`${beforePath}/nativeSelectionRef`];
-        if (review) restoredV2.staffReviews[`${afterPath}/nativeSelectionRef`] = review;
-      }
-    }
     if (restoredV2?.prefill && ['queued', 'running'].includes(restoredV2.prefill.status)) {
       restoredV2.prefill = { ...restoredV2.prefill, status: 'superseded', finishedAt: new Date().toISOString() };
     }
