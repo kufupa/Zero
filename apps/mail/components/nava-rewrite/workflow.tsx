@@ -706,7 +706,7 @@ function quoteOutputPrefill(proposal:Proposal, quoteId:string):QuoteOutput {
   if (proposal.stage?.quote_output) return proposal.stage.quote_output;
   const action=proposal.actions.find(item=>item.type==='quote' && item.details && typeof item.details==='object' &&
     !Array.isArray(item.details) && item.details.quote_id===quoteId);
-  const details=action?.details && typeof action.details==='object' && !Array.isArray(action.details) ? action.details : {};
+  const details:Record<string,Json>=action?.details && typeof action.details==='object' && !Array.isArray(action.details) ? action.details : {};
   const text=(key:string)=>{ const value=details[key]; return typeof value==='string' ? value : ''; };
   const extras=Array.isArray(details.extras) ? details.extras.flatMap(item=>{
     if(!item || typeof item!=='object' || Array.isArray(item) || typeof item.description!=='string' || !item.description.trim()) return [];
