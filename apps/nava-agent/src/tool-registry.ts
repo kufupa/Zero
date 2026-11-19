@@ -133,7 +133,8 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
       const choice=readPartyChoice(propertyCode,fields[`${kind}_name`],values,kind);
       if(!choice) continue;
       fields[`${kind}_id`]=choice.nativeId;
-      fields[`${kind}_name`]=choice.name;
+      // Keep sourced entity-literal name when present; only fill from HMS when blank.
+      if(fields[`${kind}_name`] == null || fields[`${kind}_name`]==='') fields[`${kind}_name`]=choice.name;
       for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
         const path=`${root}/${kind}_${suffix}`;
         const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
@@ -276,7 +277,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           };
           staffDraft=withReadParties(staffDraft,reads);
         }
-        if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
+        if(staffPrepareOnly() && draft.workflow==='filing') {
           const filing=await loadFilingModule();
           const source=await selectedStageSource(tx,session.id);
           if(filing?.withFilingSourceFields && source.success) {
