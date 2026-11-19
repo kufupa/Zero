@@ -16,16 +16,20 @@ export type GoldV4Entry = {
 
 export type GoldV4Map = Record<string, GoldV4Entry>;
 
+export type GoldSetName = 'holdout-fresh' | 'holdout-v2' | 'v1' | 'dev-fresh' | 'dev-v2';
+
 /** Map casesDir → gold-audit set name when gold-v4 is the default. */
-export function goldSetFromCasesDir(casesDir: string): 'holdout-fresh' | 'v1' | 'dev-fresh' | null {
+export function goldSetFromCasesDir(casesDir: string): GoldSetName | null {
   const base = basename(casesDir.replace(/\/$/, ''));
   if (base === 'holdout-fresh') return 'holdout-fresh';
+  if (base === 'holdout-v2') return 'holdout-v2';
   if (base === 'v1') return 'v1';
   if (base === 'dev-fresh') return 'dev-fresh';
+  if (base === 'dev-v2') return 'dev-v2';
   return null;
 }
 
-export function goldV4Path(setName: 'holdout-fresh' | 'v1' | 'dev-fresh'): string {
+export function goldV4Path(setName: GoldSetName): string {
   return join(DATA_ROOT, 'gold-audit', setName, 'gold-v4.json');
 }
 
