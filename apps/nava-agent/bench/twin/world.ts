@@ -85,11 +85,6 @@ function initialDocuments(card:CaseCard):Array<Record<string,unknown>> {
   return Array.isArray(direct) ? direct.map(item=>({...object(item)})) : [];
 }
 
-function bookingFields(input:Record<string,unknown>):Record<string,unknown> {
-  const booking=object(input.booking);
-  return {...object(booking.fields),...object(object(input.action).details)};
-}
-
 export class TwinWorld {
   readonly anchors:TwinAnchor[];
   readonly anchorsByConfirmation:Map<string,TwinAnchor>;
@@ -100,7 +95,6 @@ export class TwinWorld {
   readonly documents:Array<Record<string,unknown>>;
   readonly coverage={quoteMisses:0};
   readonly anchor?:TwinAnchor;
-  saveCount=0;
 
   constructor(readonly caseCard:CaseCard,root=process.env.NAVA_BENCH_DATA_ROOT ?? DEFAULT_DATA_ROOT) {
     const base=loadBase(root);
@@ -118,30 +112,6 @@ export class TwinWorld {
     loadQuotes(object(caseCard.world).quotes,this.quotes);
     loadQuotes(caseCard.recorded_prices,this.quotes);
     this.documents=initialDocuments(caseCard);
-  }
-
-  save(input:unknown):Record<string,unknown> {
-    const request=object(input);
-    const workflow=String(request.workflow ?? this.caseCard.workflow);
-    const original=String(object(request.booking).reservation_id ?? this.caseCard.real_confirmation ?? this.caseCard.confirmation ?? '');
-    const fields=bookingFields(request);
-    const caseId=this.caseCard.case_id.replace(/[^a-z0-9-]/gi,'-');
-    const confirmation=`TWIN-${caseId}-${++this.saveCount}`;
-    const current={...(this.reservations.get(original) ?? this.anchor?.hms_fields ?? {})};
-    if(workflow==='cancel') current.status='Cancelled';
-    else if(workflow==='filing') {
-      const prepared=object(request.prepared);
-      const document={...object(prepared.document),...object(object(request.action).details),filed_at:new Date().toISOString()};
-      this.documents.push(document);
-    } else Object.assign(current,fields);
-    current.confirmation=confirmation;
-    this.reservations.set(confirmation,current);
-    if(original && workflow!=='create') this.reservations.set(original,current);
-    return {
-      confirmation,
-      reservation_id:confirmation,
-      readback:{confirmation,nativeStayId:confirmation,fields:current,documents:[...this.documents]},
-    };
   }
 }
 

@@ -1,18 +1,17 @@
 import type {CaseCard} from '../types.js';
 import {projectHmsShown} from './backdate.js';
-import {createTwinDispatch, type TwinMode} from './tools.js';
+import {createTwinDispatch} from './tools.js';
 import {loadTwinWorld, type TwinWorld} from './world.js';
 
-export type {TwinMode, TwinWorld};
+export type {TwinWorld};
 export {projectHmsShown, loadTwinWorld};
 
-export function createTwin(caseCard: CaseCard, options: {mode?: TwinMode; root?: string} = {}) {
+export function createTwin(caseCard: CaseCard, options: {root?: string} = {}) {
   const world = loadTwinWorld(caseCard, options.root);
-  const mode = options.mode ?? 'twin';
-  const dispatch = createTwinDispatch(world, caseCard, mode);
+  const dispatch = createTwinDispatch(world, caseCard);
   return {
     world,
-    mode,
+    mode: 'twin' as const,
     dispatch,
     shown: () => projectHmsShown(world, caseCard),
     coverage: () => ({...world.coverage}),
