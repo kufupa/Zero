@@ -47,9 +47,10 @@ async function loadGoldOverlay(casesDir: string, version: GoldVersion): Promise<
   }
 }
 
-/** Infer cases dir from run folder name (holdout-v2-*, dev-v2-*, …). */
+/** Infer cases dir from run folder name (holdout-v2-*, holdout-v3-*, dev-v2-*, …). */
 export function inferCasesDir(runDir: string): string {
   const name = basename(runDir.replace(/\/$/, ''));
+  if (name.startsWith('holdout-v3')) return join(DATA_ROOT, 'cases/holdout-v3');
   if (name.startsWith('holdout-v2')) return join(DATA_ROOT, 'cases/holdout-v2');
   if (name.startsWith('dev-v2')) return join(DATA_ROOT, 'cases/dev-v2');
   if (name.startsWith('holdout-fresh')) return join(DATA_ROOT, 'cases/holdout-fresh');
