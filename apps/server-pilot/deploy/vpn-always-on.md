@@ -134,4 +134,4 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
   'bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-disable.sh'
 ```
 
-Plan: [`docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md)
+Plan: `docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md`

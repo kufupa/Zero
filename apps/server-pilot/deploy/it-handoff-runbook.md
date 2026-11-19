@@ -25,7 +25,7 @@ After real mail is active, `ops-deploy` keeps `worker` in the PM2 dump (non-fixt
 
 ## Prerequisites
 
-- Security Wave 1 gate passed ([ec2-pilot-security-hardening plan](../../docs/superpowers/plans/2026-07-01-ec2-pilot-security-hardening.md))
+- Security Wave 1 gate passed (ec2-pilot-security-hardening plan)
 - All fixture/fake tests green on EC2
 - VPN always-on installed with split tunnel for AWS (RDS, S3, SSM must stay reachable) — see [`vpn-always-on.md`](./vpn-always-on.md)
 - Wipe marker `/var/lib/nava-pilot/wipe-navaai.ok` then migrate + `seed:prod` (mandatory on legacy DB before navaai@ seed)

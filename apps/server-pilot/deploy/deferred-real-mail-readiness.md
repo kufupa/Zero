@@ -35,9 +35,9 @@ Still out of this wave (not blocking navaai@ smoke):
 - AI chatbot assistant work
 - workflow-use Chromium/API integration
 
-**In scope now:** Rocketseed sole real SMTP hop (`172.24.0.8:587` IP-trust) — see [`2026-07-31-rocketseed-sole-smtp-hop.md`](../../../docs/superpowers/plans/2026-07-31-rocketseed-sole-smtp-hop.md).
+**In scope now:** Rocketseed sole real SMTP hop (`172.24.0.8:587` IP-trust) — see `2026-07-31-rocketseed-sole-smtp-hop.md`.
 
-Always-on hotel VPN is **live + durable** on pilot (`Restart=on-failure`, boot/deploy HARD assert) — see [`vpn-always-on.md`](./vpn-always-on.md) + [`2026-07-22-ec2-vpn-boot-deploy-durability.md`](../../../docs/superpowers/plans/2026-07-22-ec2-vpn-boot-deploy-durability.md). New instance still needs stage → confidence → install once.
+Always-on hotel VPN is **live + durable** on pilot (`Restart=on-failure`, boot/deploy HARD assert) — see [`vpn-always-on.md`](./vpn-always-on.md) + `2026-07-22-ec2-vpn-boot-deploy-durability.md`. New instance still needs stage → confidence → install once.
 
 ## Automated fixture loopback gate (pre–real-mail)
 
