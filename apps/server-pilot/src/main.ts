@@ -161,7 +161,7 @@ const background = createBackgroundDrain();
 const arrivalShutdown = new AbortController();
 let arrivalDraining = false;
 function drainArrivals() {
-  if (arrivalDraining || !process.env.NAVA_AGENT_BASE_URL) return;
+  if (arrivalDraining || resolveAuthSessionProfile() !== 'legacy' || !process.env.NAVA_AGENT_BASE_URL) return;
   arrivalDraining = true;
   void background.track(drainNavaArrivals(arrivalShutdown.signal).catch(() => {
     console.error('Nava arrival drain failed');
