@@ -85,13 +85,36 @@ NAMED_DATE_RE = re.compile(
   r"(?:\s+(\d{4}|\d{2}))?\b",
   re.I,
 )
+# Avoid bare "from"/"to"/"arrival" (matches "upon arrival", "from the DRC").
 CHECK_IN_RE = re.compile(
-  r"(?:check[\s-]?in|arrival|arrive[sd]?|in\s+on|from)\s*[:\-]?\s*",
+  r"(?:check[\s-]?in|arrive[sd]?|in\s+on)\s*[:\-]?\s*",
   re.I,
 )
 CHECK_OUT_RE = re.compile(
-  r"(?:check[\s-]?out|departure|depart(?:s|ing)?|out\s+on|to|until)\s*[:\-]?\s*",
+  r"(?:check[\s-]?out|depart(?:s|ing)?|out\s+on|until)\s*[:\-]?\s*",
   re.I,
+)
+SURNAME_AMEND_RE = re.compile(
+  r"amendments?\s+to\s+the\s+clients['']?\s+surnames|"
+  r"surname\s+correction|full\s+surnames|amend(?:ed|ing)?\s+(?:the\s+)?(?:guest\s+)?surnames?",
+  re.I,
+)
+# LAST[, FIRST] lines typical of series surname corrections.
+SURNAME_LINE_RE = re.compile(
+  r"^([A-Z][A-Z'’ \-]+(?:,?\s+Junior)?),\s*([A-Za-z][A-Za-z'’\-]+(?:\s+[A-Za-z][A-Za-z'’\-]+)?)\s*$",
+  re.M,
+)
+CHANGE_ARRIVAL_FROM_TO_RE = re.compile(
+  r"change\s+arrival\s+from\s+(.+?)\s+to\s+(.+?)(?:\.|$|\n|Keep)",
+  re.I | re.S,
+)
+KEEP_DEPARTURE_RE = re.compile(
+  r"(?:keep\s+)?departure\s+on\s+(.+?)(?:\.|$|\n)",
+  re.I,
+)
+CHANGE_DEPARTURE_FROM_TO_RE = re.compile(
+  r"change\s+departure\s+from\s+(.+?)\s+to\s+(.+?)(?:\.|$|\n)",
+  re.I | re.S,
 )
 ADULTS_RE = re.compile(
   r"\b(\d+)\s*(?:adults?|pax|guests?|officials?|delegates?|persons?|people)\b",
@@ -349,50 +372,125 @@ def selected_blob(card: dict) -> str:
   return "\n".join(parts)
 
 
+def parse_date_fragment(frag: str, *, default_year: int | None = None) -> str | None:
+  """Parse a short date phrase into YYYY-MM-DD."""
+  frag = (frag or "").strip().strip(".,;")
+  if not frag:
+    return None
+  m = ISO_DATE_RE.search(frag)
+  if m:
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+  m = NAMED_DATE_RE.search(frag)
+  if m:
+    day = int(m.group(1))
+    mon = MONTHS.get(m.group(2).lower()[:3]) or MONTHS.get(m.group(2).lower())
+    year_raw = m.group(3)
+    year = int(year_raw) if year_raw else default_year
+    if year is not None and year < 100:
+      year += 2000
+    if mon and year:
+      return f"{year:04d}-{mon:02d}-{day:02d}"
+  m = DMY_RE.search(frag)
+  if m:
+    a, b, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if a > 12:
+      day, month = a, b
+    elif b > 12:
+      day, month = b, a
+    else:
+      day, month = a, b
+    if 1 <= month <= 12 and 1 <= day <= 31:
+      return f"{y:04d}-{month:02d}-{day:02d}"
+  # "09 November 2026" / "1 October 2027" via looser named match
+  m = re.search(
+    r"(\d{1,2})(?:st|nd|rd|th)?\s+"
+    r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+    r"(?:\s+(20\d{2}))?",
+    frag,
+    re.I,
+  )
+  if m:
+    day = int(m.group(1))
+    mon = MONTHS.get(m.group(2).lower()[:3]) or MONTHS.get(m.group(2).lower())
+    year = int(m.group(3)) if m.group(3) else default_year
+    if mon and year:
+      return f"{year:04d}-{mon:02d}-{day:02d}"
+  return None
+
+
 def email_dates(blob: str) -> dict[str, str]:
   """Extract arrival/departure when explicitly labelled in email text."""
   out: dict[str, str] = {}
+  year_hit = re.search(r"\b(20\d{2})\b", blob)
+  default_year = int(year_hit.group(1)) if year_hit else 2026
+
+  # High-priority: "Change arrival from X to Y" / "Keep departure on Z"
+  m = CHANGE_ARRIVAL_FROM_TO_RE.search(blob)
+  if m:
+    d = parse_date_fragment(m.group(2), default_year=default_year)
+    if d:
+      out["arrival_date"] = d
+  m = CHANGE_DEPARTURE_FROM_TO_RE.search(blob)
+  if m:
+    d = parse_date_fragment(m.group(2), default_year=default_year)
+    if d:
+      out["departure_date"] = d
+  m = KEEP_DEPARTURE_RE.search(blob)
+  if m and "departure_date" not in out:
+    d = parse_date_fragment(m.group(1), default_year=default_year)
+    if d:
+      out["departure_date"] = d
+
+  # Labeled Check-in / Check-out bullets (prefer over loose from/to)
+  for kind, label in (
+    ("arrival_date", r"check[\s-]?in"),
+    ("departure_date", r"check[\s-]?out"),
+  ):
+    if kind in out:
+      continue
+    m = re.search(rf"{label}\s*[:\-]\s*(.+?)(?:\n|$)", blob, re.I)
+    if m:
+      d = parse_date_fragment(m.group(1), default_year=default_year)
+      if d:
+        out[kind] = d
+
+  # Stay range: "from 10 to 17 November 2026" / "09 - 14 November 2026"
+  if "arrival_date" not in out or "departure_date" not in out:
+    m = re.search(
+      r"(?:from\s+)?(\d{1,2})(?:st|nd|rd|th)?\s*[–\-to]+\s*(\d{1,2})(?:st|nd|rd|th)?\s+"
+      r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+      r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+      r"(?:\s+(20\d{2}))?",
+      blob,
+      re.I,
+    )
+    if m:
+      mon = MONTHS.get(m.group(3).lower()[:3]) or MONTHS.get(m.group(3).lower())
+      year = int(m.group(4)) if m.group(4) else default_year
+      if mon and year:
+        if "arrival_date" not in out:
+          out["arrival_date"] = f"{year:04d}-{mon:02d}-{int(m.group(1)):02d}"
+        if "departure_date" not in out:
+          out["departure_date"] = f"{year:04d}-{mon:02d}-{int(m.group(2)):02d}"
+
   for kind, cre in (("arrival_date", CHECK_IN_RE), ("departure_date", CHECK_OUT_RE)):
+    if kind in out:
+      continue
     for m in cre.finditer(blob):
-      tail = blob[m.end(): m.end() + 40]
-      d = None
-      m2 = ISO_DATE_RE.match(tail.strip()) or ISO_DATE_RE.search(tail)
-      if m2:
-        d = f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
-      if not d:
-        m2 = NAMED_DATE_RE.match(tail.strip()) or NAMED_DATE_RE.search(tail)
-        if m2:
-          day = int(m2.group(1))
-          mon = MONTHS.get(m2.group(2).lower()[:3]) or MONTHS.get(m2.group(2).lower())
-          year_raw = m2.group(3)
-          year = int(year_raw) if year_raw else None
-          if year is not None and year < 100:
-            year += 2000
-          if year is None:
-            # inherit nearby ISO year
-            ym = ISO_DATE_RE.search(blob)
-            year = int(ym.group(1)) if ym else 2026
-          if mon:
-            d = f"{year:04d}-{mon:02d}-{day:02d}"
-      if not d:
-        m2 = DMY_RE.match(tail.strip()) or DMY_RE.search(tail)
-        if m2:
-          a, b, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
-          # prefer D-M-Y when day>12 or SA style
-          if a > 12:
-            day, month = a, b
-          elif b > 12:
-            day, month = b, a
-          else:
-            day, month = a, b  # assume D-M
-          if 1 <= month <= 12 and 1 <= day <= 31:
-            d = f"{y:04d}-{month:02d}-{day:02d}"
+      # Skip "upon arrival" / "on arrival" payment language
+      prefix = blob[max(0, m.start() - 12): m.start()].lower()
+      if "upon " in prefix or prefix.endswith("on "):
+        continue
+      tail = blob[m.end(): m.end() + 48]
+      d = parse_date_fragment(tail, default_year=default_year)
       if d:
         out[kind] = d
         break
+
   # "in the 2nd" / "out the 4th" — day-of-month only; need a month/year anchor.
   day_in = re.search(
-    r"(?:check[\s-]?in|arrive|in)\s+the\s+(\d{1,2})(?:st|nd|rd|th)?",
+    r"(?:check[\s-]?in|arrive)\s+the\s+(\d{1,2})(?:st|nd|rd|th)?",
     blob,
     re.I,
   )
@@ -402,47 +500,24 @@ def email_dates(blob: str) -> dict[str, str]:
     re.I,
   )
   anchor = out.get("arrival_date") or out.get("departure_date")
-  if not anchor:
-    # nearby ISO / named full date anywhere in blob
-    m = ISO_DATE_RE.search(blob) or NAMED_DATE_RE.search(blob)
-    if m and ISO_DATE_RE.search(blob):
-      m2 = ISO_DATE_RE.search(blob)
-      assert m2
-      anchor = f"{m2.group(1)}-{m2.group(2)}-{m2.group(3)}"
-    elif m:
-      # NAMED_DATE_RE groups: day, mon, year?
-      pass
-  # last resort: year from blob, month from any named month near the phrase
+
   def with_day(day: int, other: str | None) -> str | None:
     if other:
       y, mo, _ = other.split("-")
       return f"{y}-{mo}-{day:02d}"
-    ym = re.search(
+    return parse_date_fragment(f"{day} " + (re.search(
       r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
       r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
       r"\s+(20\d{2})",
       blob,
       re.I,
-    )
-    if ym:
-      mon = MONTHS.get(ym.group(1).lower()[:3]) or MONTHS.get(ym.group(1).lower())
-      year = int(ym.group(2))
-      if mon:
-        return f"{year:04d}-{mon:02d}-{day:02d}"
-    # bare year
-    y = re.search(r"\b(20\d{2})\b", blob)
-    # month near "Sept"/"September" etc.
-    mon_m = re.search(
-      r"\b(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
-      r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b",
+    ).group(0) if re.search(
+      r"(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+      r"Aug(?:ust)|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+      r"\s+(20\d{2})",
       blob,
       re.I,
-    )
-    if y and mon_m:
-      mon = MONTHS.get(mon_m.group(1).lower()[:3]) or MONTHS.get(mon_m.group(1).lower())
-      if mon:
-        return f"{int(y.group(1)):04d}-{mon:02d}-{day:02d}"
-    return None
+    ) else ""), default_year=default_year)
 
   if day_out and "departure_date" not in out:
     d = with_day(int(day_out.group(1)), out.get("arrival_date") or anchor)
@@ -453,6 +528,54 @@ def email_dates(blob: str) -> dict[str, str]:
     if d:
       out["arrival_date"] = d
   return out
+
+
+def is_surname_only_amend(blob: str) -> bool:
+  if not SURNAME_AMEND_RE.search(blob):
+    return False
+  # Surname-only if no explicit stay-change language beyond subject allocation dates.
+  if re.search(
+    r"change\s+arrival|change\s+departure|check[\s-]?in\s*:|check[\s-]?out\s*:|"
+    r"revised\s+dates|amend(?:ed|ing)?\s+(?:the\s+)?(?:reservation\s+)?dates|"
+    r"shorten|extend\s+(?:the\s+)?stay",
+    blob,
+    re.I,
+  ):
+    return False
+  return True
+
+
+def parse_surname_amend_names(blob: str) -> list[tuple[str, str]]:
+  """Return [(last, first), ...] from SURNAME, First lines."""
+  out: list[tuple[str, str]] = []
+  for m in SURNAME_LINE_RE.finditer(strip_quoted_reply(blob)):
+    last = re.sub(r"\s+", " ", m.group(1).strip(" ,"))
+    first = re.sub(r"\s+", " ", m.group(2).strip())
+    # Drop ALL-CAPS noise that isn't a person line
+    if len(last) < 2 or len(first) < 2:
+      continue
+    out.append((last.title() if last.isupper() else last, first))
+  return out
+
+
+def match_surname_for_guest(
+  names: list[tuple[str, str]],
+  h_first: str | None,
+  h_last: str | None,
+) -> tuple[str, str] | None:
+  if not names:
+    return None
+  hf, hl = norm_name(h_first), norm_name(h_last)
+  for last, first in names:
+    if hf and norm_name(first) == hf:
+      return first, last
+    if hf and hf in norm_name(first):
+      return first, last
+  if hl:
+    for last, first in names:
+      if hl in norm_name(last) or norm_name(last) in hl:
+        return first, last
+  return None
 
 
 def email_room(blob: str) -> dict | None:
@@ -1059,14 +1182,41 @@ def amend_ask_blob(card: dict) -> str:
   return "\n".join(parts)
 
 
+def sanitize_amend_date_pair(b: GoldBuilder) -> None:
+  """Never leave expected arrival >= departure; demote remaining impossibles to heuristic."""
+  by_path = {r["path"]: r for r in b.rows}
+  arr = by_path.get("/bookings/0/fields/arrival_date")
+  dep = by_path.get("/bookings/0/fields/departure_date")
+  if not arr or not dep:
+    return
+  if arr.get("expectation") != "expected" or dep.get("expectation") != "expected":
+    return
+  a, d = arr.get("value"), dep.get("value")
+  if not (isinstance(a, str) and isinstance(d, str)):
+    return
+  if a < d:
+    return
+  # Impossible stay window — agent cannot be scored on these as hard expecteds.
+  for row in (arr, dep):
+    row["expectation"] = "no_gold"
+    row["basis"] = "impossible_stay_window_arrival_ge_departure"
+    row["source"] = "heuristic"
+    if "value" in row:
+      row["later_value"] = row.pop("value")
+    b.stats["amend_impossible_dates_demoted"] += 1
+  b.notes.append(f"impossible_dates arrival={a} departure={d}")
+
+
 def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
   """Amend gold: expected after-values ONLY when email/pre-as_of thread asks to change them."""
   conf = card.get("real_confirmation")
   blob = amend_ask_blob(card)
-  edates = email_dates(blob)
-  eroom = email_room(blob)
-  e_adults, e_children = email_adults_children(blob)
+  surname_only = is_surname_only_amend(blob)
+  edates = {} if surname_only else email_dates(blob)
+  eroom = None if surname_only else email_room(blob)
+  e_adults, e_children = (None, None) if surname_only else email_adults_children(blob)
   fields, src, read_at = hms_truth_for(conf, card)
+  h_first, h_last = names_from_hms(fields)
 
   bookings = list(card.get("group_bookings") or [])
   if not bookings:
@@ -1092,6 +1242,47 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
   h_children = parse_children(fields.get("children"))
   h_room = room_value_from_hms(fields)
   h_rate = rate_value_from_hms(fields)
+
+  if surname_only:
+    b.notes.append("surname_only_amend")
+    b.stats["amend_surname_only"] += 1
+    # Dates are not requested — no_gold (subject allocation dates are not changes).
+    for path, hval, hms_key in (
+      ("/bookings/0/fields/arrival_date", h_arr, "arrivaldate"),
+      ("/bookings/0/fields/departure_date", h_dep, "departuredate"),
+    ):
+      b.add(
+        path,
+        "no_gold",
+        value=hval,
+        basis="surname_amend_dates_not_requested",
+        source="heuristic",
+        hms_key=hms_key,
+      )
+    names = parse_surname_amend_names(blob)
+    matched = match_surname_for_guest(names, h_first, h_last)
+    if matched:
+      first, last = matched
+      b.add(
+        "/bookings/0/fields/first_name",
+        "expected",
+        value=first,
+        basis="email_surname_amend",
+        source="email_explicit",
+        hms_key="firstname",
+      )
+      b.add(
+        "/bookings/0/fields/last_name",
+        "expected",
+        value=last,
+        basis="email_surname_amend",
+        source="email_explicit",
+        hms_key="lastname",
+      )
+      b.stats["amend_email_expected"] += 2
+    else:
+      b.notes.append("surname_amend_no_name_match")
+    return
 
   # Only email-requested change fields are expected.
   if edates.get("arrival_date"):
@@ -1220,6 +1411,8 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
       hms_key="rateplan",
     )
     b.stats["amend_hms_only_demoted"] += 1
+
+  sanitize_amend_date_pair(b)
 
   # Count booking-field expecteds (excl reservation_id) for amend reporting.
   for row in b.rows:
@@ -1557,10 +1750,20 @@ def build_set(name: str) -> dict:
   prev_overlay = json.loads(prev_path.read_text()) if prev_path.exists() else {}
   amend_before = count_amend_booking_expected(prev_overlay)
 
+  # holdout-v3: shared case ids must match holdout-v2 gold-v5 byte-for-byte
+  # (audited routing + field gold). Rebuild holdout-v2 first in the same run.
+  hv2_overlay: dict | None = None
+  if name == "holdout-v3":
+    hv2_path = DATA / "gold-audit" / "holdout-v2" / "gold-v5.json"
+    if not hv2_path.exists():
+      raise SystemExit(f"holdout-v3 requires {hv2_path} — build holdout-v2 first")
+    hv2_overlay = json.loads(hv2_path.read_text())
+
   out: dict[str, dict] = {}
   wf_counts: Counter[str] = Counter()
   note_counts: Counter[str] = Counter()
   rule_stats: Counter[str] = Counter()
+  copied_from_hv2 = 0
 
   for case_dir in sorted(p for p in cases_dir.iterdir() if p.is_dir()):
     card_path = case_dir / "case.json"
@@ -1569,6 +1772,15 @@ def build_set(name: str) -> dict:
     card = json.loads(card_path.read_text())
     cid = card.get("case_id") or case_dir.name
     card["case_id"] = cid
+    if hv2_overlay and cid in hv2_overlay:
+      # Exact copy — shared ids must match holdout-v2 gold-v5 byte-for-byte.
+      row = json.loads(json.dumps(hv2_overlay[cid]))
+      out[cid] = row
+      copied_from_hv2 += 1
+      wf_counts[row.get("workflow") or "unknown"] += 1
+      for n in row.get("notes") or []:
+        note_counts[str(n).split(":")[0].split("→")[0][:40]] += 1
+      continue
     routing = v4.get(cid)
     row = build_case(card, routing)
     out[cid] = row
@@ -1604,17 +1816,24 @@ def build_set(name: str) -> dict:
       "amend_booking_field_expected_after": amend_after,
       "amend_email_expected_rows": rule_stats.get("amend_email_expected", 0),
       "amend_hms_only_demoted_rows": rule_stats.get("amend_hms_only_demoted", 0),
+      "amend_surname_only_cases": rule_stats.get("amend_surname_only", 0),
+      "amend_impossible_dates_demoted": rule_stats.get("amend_impossible_dates_demoted", 0),
+      "holdout_v3_copied_from_holdout_v2": copied_from_hv2,
     },
     "truth_sources": {
       "reads_all": str(READS / "reads-all.jsonl"),
       "stay360": str(STAY360),
       "routing": str(v4_path) if v4_path.exists() else None,
+      "holdout_v2_gold": str(DATA / "gold-audit" / "holdout-v2" / "gold-v5.json") if name == "holdout-v3" else None,
     },
     "blind": True,
     "version": "gold-v5",
     "rules": [
       "create_email_hms_conflict_dates_names_adults",
       "amend_email_only_expected_after_values",
+      "amend_impossible_stay_window_no_gold",
+      "amend_surname_only_dates_no_gold",
+      "holdout_v3_copy_shared_ids_from_holdout_v2",
     ],
   }
   meta_path = audit_dir / "gold-v5.meta.json"
