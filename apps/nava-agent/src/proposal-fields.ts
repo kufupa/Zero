@@ -209,7 +209,7 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
       const fields={...booking.fields};
-      for(const [key,value] of [['rate_plan','BAR'],['guarantee_type','NGI'],['track','BAR']] as const) {
+      for(const [key,value] of [['rate_plan','BAR'],['guarantee_type','NGI'],['track','BAR'],['source_of_business','EMA']] as const) {
         const current=fields[key];
         if(current!=null && (typeof current!=='string' || current.trim())) continue;
         const path=`/bookings/${index}/fields/${key}`;
