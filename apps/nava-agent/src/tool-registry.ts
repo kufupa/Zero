@@ -93,6 +93,50 @@ function readProfileId(booking:Booking,values:unknown[]):string|null {
   }
   return ids.size===1 ? [...ids][0] : null;
 }
+const partyRead=z.object({
+  input:z.object({kind:z.enum(['agency','organization']),field:z.literal('name'),query:z.string(),property_code:z.string()}),
+  response:z.object({ok:z.literal(true),data:z.object({native:z.object({
+    outcome:z.literal('matches'),criteria:z.object({query:z.string()}),coverage:z.object({possiblyTruncated:z.literal(false)}),
+    candidates:z.array(z.object({nativeId:z.string().min(1),name:z.string().min(1)})),
+  })})}),
+});
+function readPartyChoice(booking:Booking,values:unknown[],kind:'agency'|'organization'):{nativeId:string;name:string}|null {
+  const name=booking.fields[`${kind}_name`];
+  if(typeof name!=='string' || !name.trim()) return null;
+  const norm=(value:string)=>value.trim().replace(/\s+/g,' ').toLowerCase();
+  const choices=new Map<string,{nativeId:string;name:string}>();
+  for(const value of values) {
+    const read=partyRead.safeParse(value);
+    if(!read.success || read.data.input.kind!==kind || read.data.input.property_code!==booking.property_code) continue;
+    const {input,response}=read.data, native=response.data.native;
+    if(norm(input.query)!==norm(native.criteria.query) || native.candidates.length!==1) continue;
+    const candidate=native.candidates[0];
+    if(norm(name)!==norm(input.query) && norm(name)!==norm(candidate.name)) continue;
+    choices.set(candidate.nativeId,candidate);
+  }
+  return choices.size===1 ? [...choices.values()][0] : null;
+}
+function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
+  const fieldSpecs=[...draft.field_specs];
+  const bookings=draft.bookings.map((booking,index)=>{
+    const fields={...booking.fields};
+    for(const kind of ['agency','organization'] as const) {
+      if(fields[`${kind}_id`] != null && fields[`${kind}_id`]!=='') continue;
+      const choice=readPartyChoice(booking,values,kind);
+      if(!choice) continue;
+      fields[`${kind}_id`]=choice.nativeId;
+      fields[`${kind}_name`]=choice.name;
+      for(const [suffix,label] of [['id',kind==='agency'?'Booking agency ID':'Company ID'],['name',kind==='agency'?'Booking agency':'Company']] as const) {
+        const path=`/bookings/${index}/fields/${kind}_${suffix}`;
+        const spec=fieldSpecs.findIndex(field=>field.path===path || field.path===path.slice(1));
+        if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],path,provenance:'hms',editable:true,error:null};
+        else fieldSpecs.push({path,label,provenance:'hms',editable:true,required:false,error:null,control:'text',options:[],evidence:[]});
+      }
+    }
+    return {...booking,fields};
+  });
+  return {...draft,bookings,field_specs:fieldSpecs};
+}
 function mergeQuoteCaptures(values:unknown[],expected:Map<string,unknown>):{native:unknown;incomplete:boolean} {
   const latest=new Map<string,{data:z.infer<typeof groupedCaptureSchema>;ok:boolean;input:unknown}>();
   let legacy:unknown=null,legacyOk=false;
@@ -214,6 +258,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
             bookings:staffDraft.bookings.map(booking=>({...booking,fields:{...booking.fields,
               guest_profile_id:booking.fields.guest_profile_id ?? readProfileId(booking,reads),profile_create_new:false}})),
           };
+          staffDraft=withReadParties(staffDraft,reads);
         }
         if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
           const filing=await loadFilingModule();
