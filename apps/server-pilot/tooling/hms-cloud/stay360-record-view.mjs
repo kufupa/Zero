@@ -20,9 +20,11 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
   });
   const button = stay.locator('a.gs-header-btn:visible').filter({ has: page.locator('.gs-stay-icon') });
   if (await stay.count() !== 1 || await button.count() !== 1) throw new Error('STAY_BUTTON_NOT_UNIQUE');
-  await button.click();
+  // Ghost Ext loadmasks after confirmation select intercept normal clicks; force opens Record View.
+  await button.click({ force: true });
 
-  const deadline = Date.now() + 30_000;
+  const started = Date.now();
+  const deadline = started + 60_000;
   let frame;
   while (Date.now() < deadline) {
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
@@ -46,11 +48,14 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
           const status = [...document.querySelectorAll('input[name="status"]')]
             .some((input) => visible(input) && input.value.trim());
           const masked = [...document.querySelectorAll('.x-mask, .x-mask-msg, .x-loadmask')].some(visible);
-          return { active, confirmation, status, masked };
+          const ajaxLoading = !!(globalThis.Ext?.Ajax?.isLoading?.());
+          return { active, confirmation, status, masked, ajaxLoading };
         }).catch(() => null); // A newly opened frame can still be navigating.
         if (state?.confirmation.length > 1) throw new Error('RECORD_CONFIRMATION_NOT_UNIQUE');
         if (state?.confirmation[0] && state.confirmation[0] !== wanted) throw new Error('RECORD_CONFIRMATION_MISMATCH');
-        if (state?.active && state.confirmation[0] === wanted && state.status && !state.masked) break;
+        const ready = state?.active && state.confirmation[0] === wanted && state.status && !state.ajaxLoading
+          && (!state.masked || Date.now() - started >= 8_000);
+        if (ready) break;
       }
     }
     frame = null;
