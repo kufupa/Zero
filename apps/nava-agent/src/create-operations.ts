@@ -19,8 +19,9 @@ export const manualLabtestTarget = z.object({
 
 export function createPilotEnabled() {
   const nativeCap=process.env.HMS_CREDENTIAL_SESSION_CAP ?? '';
+  const runtime=process.env.NAVA_AGENT_RUNTIME ?? 'bedrock';
   return createPilotRequested() && process.env.NAVA_QUOTE_SKELETON !== '1'
-    && (process.env.NAVA_AGENT_RUNTIME ?? 'bedrock') === 'bedrock'
+    && (runtime === 'bedrock' || runtime === 'azure')
     && (staffPrepareOnly() ? staffSlotCount(nativeCap) && staffSlotCount(process.env.NAVA_HMS_SLOTS ?? '4') : nativeCap==='2')
     && !!process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
 }
