@@ -4,7 +4,7 @@
 
 **Primary path:** internet-reachable **`navaai@legacyhotels.co.za`** — POP3 on Zimbra `172.24.0.10`, SMTP on Rocketseed `172.24.0.8:587` via always-on VPN.
 
-**Operator checklist:** [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md)  
+**Operator checklist:** `navaai-real-mail-smoke.md`  
 (VPN assert → wipe+marker → migrate → `seed:prod` → MX dig → stage → activate → AE2 → AE3 → handoff)
 
 **Expected:** POP3 **DELE-after-ingest**; app is source of truth.  
@@ -113,7 +113,7 @@ bash apps/server-pilot/deploy/ssm-run-command.sh \
 
 ## Real-mail cutover gates (pilot)
 
-Follow [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md) in order:
+Follow `navaai-real-mail-smoke.md` in order:
 
 1. `vpn-health-assert.sh` → `VPN_HARD_OK`
 2. `pilot-db-wipe.sh` + marker `/var/lib/nava-pilot/wipe-navaai.ok`
@@ -124,7 +124,7 @@ Follow [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md) in order:
 7. AE3 app outbound as `navaai@`
 8. Handoff evidence + [`it-handoff-runbook.md`](./it-handoff-runbook.md)
 
-**Hotel-prod later (deferred):** Centurion-bound BCC into `navaai@` + `X-Zero-Mailbox: centurion@legacyhotel.com` last; strip forged external stamps; multi-user visibility proofs — see [`exchange-smoke.md`](./exchange-smoke.md) deferred section.
+**Hotel-prod later (deferred):** Centurion-bound BCC into `navaai@` + `X-Zero-Mailbox: centurion@legacyhotel.com` last; strip forged external stamps; multi-user visibility proofs — see `exchange-smoke.md` deferred section.
 
 ## Current fixture expectation (pre-activate)
 

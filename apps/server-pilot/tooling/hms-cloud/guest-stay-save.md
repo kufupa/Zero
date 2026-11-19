@@ -1,4 +1,4 @@
-> **Proof chronology:** This document records an earlier refused strict-create attempt. Later Labtest creates succeeded and were independently read back; their exact execution SHA was not recorded. See the [run evidence](../../../../docs/research/halloween/2026-10-31-hms-coverage-run.md#0922-utc-checkpoint--broad-create-proof). Those historical cases do not prove every current-head path.
+> **Proof chronology:** This document records an earlier refused strict-create attempt. Later Labtest creates succeeded and were independently read back; their exact execution SHA was not recorded. See the run evidence. Those historical cases do not prove every current-head path.
 
 # Save a fake HRCEN Labtest stay
 

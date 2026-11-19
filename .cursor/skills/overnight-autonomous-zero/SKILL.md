@@ -29,7 +29,7 @@ When user attaches this skill to an **existing** implementation plan (or says "a
 
 **What to replace:** any `## Execution Handoff` that asks "Which approach?" → `## Execution Mode` stating autonomous overnight, no user checkpoint.
 
-**Canonical example:** [docs/superpowers/plans/2026-07-04-nava-fixture-loopback-autonomous-e2e.md](docs/superpowers/plans/2026-07-04-nava-fixture-loopback-autonomous-e2e.md)
+**Canonical example:** docs/superpowers/plans/2026-07-04-nava-fixture-loopback-autonomous-e2e.md
 
 ### Rationalization table
 

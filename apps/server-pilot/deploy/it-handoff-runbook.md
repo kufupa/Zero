@@ -2,10 +2,10 @@
 
 Flip `MAIL_TRANSPORT_MODE` from `fixture` (default) to `real` after Zimbra POP3/SMTP access for **`navaai@legacyhotels.co.za`**.
 
-**Pilot cutover checklist:** [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md)  
+**Pilot cutover checklist:** `navaai-real-mail-smoke.md`  
 **VPN assert / wipe / stage / activate paths documented there.**
 
-**Pilot model:** internet-reachable `navaai@` (sole POP3). Old BCC-only internal-aggregate + external-quarantine model **deferred** to hotel-prod — see [`deferred-real-mail-readiness.md`](./deferred-real-mail-readiness.md) + [`exchange-smoke.md`](./exchange-smoke.md).
+**Pilot model:** internet-reachable `navaai@` (sole POP3). Old BCC-only internal-aggregate + external-quarantine model **deferred** to hotel-prod — see [`deferred-real-mail-readiness.md`](./deferred-real-mail-readiness.md) + `exchange-smoke.md`.
 
 **Persist on activate:** `AI_DRAFTS_ENABLED=false`, `AI_WRITE_GATE_ENABLED=true`.  
 **POP3:** DELE-after-ingest expected.  
@@ -91,7 +91,7 @@ grep -E 'MAIL_TRANSPORT_MODE|AI_DRAFTS_ENABLED|AI_WRITE_GATE_ENABLED|SMTP_USER' 
 
 ### 4. Exchange / AE smoke
 
-Follow [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md) + [`exchange-smoke.md`](./exchange-smoke.md): MX dig → AE2 inbound (or self-send) → AE3 outbound. Record evidence in `docs/superpowers/plans/handoff-reports/2026-07-22-navaai-real-mail-cutover.md` after live run.
+Follow `navaai-real-mail-smoke.md` + `exchange-smoke.md`: MX dig → AE2 inbound (or self-send) → AE3 outbound. Record evidence in `docs/superpowers/plans/handoff-reports/2026-07-22-navaai-real-mail-cutover.md` after live run.
 
 ## Rollback
 
@@ -107,4 +107,4 @@ Set `MAIL_TRANSPORT_MODE=fixture` to stop all TCP to mail servers. Fixture inges
 
 ## User handoff phrase
 
-*"Here is the navaai@ mailbox password"* (paste into gitignored `navaai-mail-pass.txt`) → agent runs stage → export → `activate-real-mail.sh` per [`navaai-real-mail-smoke.md`](./navaai-real-mail-smoke.md), reports green/red for AE1–AE5.
+*"Here is the navaai@ mailbox password"* (paste into gitignored `navaai-mail-pass.txt`) → agent runs stage → export → `activate-real-mail.sh` per `navaai-real-mail-smoke.md`, reports green/red for AE1–AE5.

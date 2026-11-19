@@ -282,7 +282,7 @@ This also introduces 3 environment variables, `DROP_AGENT_TABLES`,`THREAD_SYNC_M
 
 Please refer to the [contributing guide](.github/CONTRIBUTING.md).
 
-If you'd like to help with translating Zero to other languages, check out our [translation guide](.github/TRANSLATION.md).
+If you'd like to help with translating Zero to other languages, check out our translation guide.
 
 ## Star History
 
