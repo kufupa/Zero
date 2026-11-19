@@ -2,22 +2,22 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
-import type { PropertyConfiguration, ReservationPaneSnapshot, ReservationSourceContext } from '@/lib/reservation-workflow/types';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { AttachmentContentSchema, AttachmentMetaSchema, MailLocationSchema, createOperationId,
   type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { trpcClient } from '@/providers/query-provider';
-import { completeQuotePackage, getQuotePackageOutput, type QuoteOutput, type QuoteOutputArtifact, type QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
-export { getQuoteOutput, quoteCoverHtml } from '@/lib/reservation-workflow/quote-output';
-export type { QuoteOutput, QuoteOutputArtifact, QuoteOutputResult } from '@/lib/reservation-workflow/quote-output';
+import { completeQuotePackage, type QuoteOutput, type QuoteOutputArtifact, type QuoteOutputResult,
+  type ReservationSourceContext } from './source-types';
+export { quoteCoverHtml } from './source-types';
+export type { QuoteOutput, QuoteOutputArtifact, QuoteOutputResult } from './source-types';
 
 type Confirm = () => boolean | Promise<boolean>;
 type OutlookReplyInput = {
   html: string; confirmUnknown?: Confirm;
-} & ({ snapshot: ReservationPaneSnapshot; requestId: string; isCurrentSnapshot?: () => boolean; verifyCurrentSnapshot?: () => Promise<boolean> } |
-  { output: QuoteOutput; isCurrentSnapshot: () => boolean; verifyCurrentSnapshot: () => Promise<boolean> });
+  output: QuoteOutput; isCurrentSnapshot: () => boolean; verifyCurrentSnapshot: () => Promise<boolean>;
+};
 export type OutlookReplyResult = QuoteOutputResult & { readback?: { subject: string; attachmentNames: string[] }; location?: MailLocation };
 export type QuoteDraftBinding = { proposalId: string; revision: number; quoteId: string; jobId: string; artifactIds: string[] };
 
@@ -179,52 +179,21 @@ function persistAttempt(attempt: Pending): boolean {
 }
 
 /** Source and mailbox remain host-owned. The caller supplies a live selection guard and reviewed HTML. */
-export function useQuoteOutput({ source, configuration, bridge, isCurrentSource }: {
+export function useQuoteOutput({ source, bridge, isCurrentSource }: {
   source: ReservationSourceContext; bridge?: PaneBridge;
-  configuration: PropertyConfiguration | null;
   isCurrentSource: (source: ReservationSourceContext) => boolean;
 }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false), pending = useRef<Pending | null>(null), mounted = useRef(false);
-  const live = useRef({ source, configuration, bridge, isCurrentSource });
-  live.current = { source, configuration, bridge, isCurrentSource };
+  const live = useRef({ source, bridge, isCurrentSource });
+  live.current = { source, bridge, isCurrentSource };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const key = sourceKey(source);
   const current = () => mounted.current && sourceKey(live.current.source) === key && live.current.isCurrentSource(source);
-  const outputFor = (snapshot: ReservationPaneSnapshot | null, requestId: string) => getQuotePackageOutput(source, snapshot, requestId, configuration);
   const report = (status: QuoteOutputResult['status'], message: string): QuoteOutputResult => {
     if (mounted.current && sourceKey(live.current.source) === key) setError(status === 'error' || status === 'unknown' ? message : null);
     return { status, message };
-  };
-  const getReady = async (requestId: string, html: string, snapshot: ReservationPaneSnapshot, isCurrentSnapshot?: () => boolean) => {
-    if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
-    const output = getQuotePackageOutput(source, snapshot, requestId, configuration);
-    if (!output || !completeQuotePackage(output)) throw new Error(output?.issues[0] ?? 'Generate the complete quote with PDF and Excel first.');
-    if (!html.trim()) throw new Error('Review the cover reply before creating a draft.');
-    await verifyAttachments(output.artifacts);
-    if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
-    const latest = getQuotePackageOutput(source, snapshot, requestId, live.current.configuration);
-    if (!latest || latest.operationId !== output.operationId || !completeQuotePackage(latest)) throw new Error('The quote changed. Review the latest output.');
-    return output;
-  };
-
-  const saveWebReply = async ({ snapshot, requestId, html, to, confirmReplace, isCurrentSnapshot }: {
-    snapshot: ReservationPaneSnapshot; requestId: string; html: string; to?: string; confirmReplace?: Confirm; isCurrentSnapshot?: () => boolean;
-  }): Promise<QuoteOutputResult> => {
-    if (busy.current) return { status: 'error', message: 'A reply is already being prepared.' };
-    busy.current = true; setSaving(true); setError(null); beginMutation();
-    try {
-      const output = outputFor(snapshot, requestId);
-      if (!output) throw new Error('Generate the complete quote with PDF and Excel first.');
-      const result = await saveQuoteWebDraft({ source, output, html, to, confirmReplace, verifyCurrent: () => {
-        if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) return false;
-        const latest = getQuotePackageOutput(source, snapshot, requestId, live.current.configuration);
-        return !!latest && latest.operationId === output.operationId && completeQuotePackage(latest);
-      } });
-      return report(result.status, result.message);
-    } catch (error) { return report('error', failure(error)); }
-    finally { busy.current = false; if (mounted.current) setSaving(false); endMutation(); }
   };
 
   const createOutlookReplyLocked = async (input: OutlookReplyInput): Promise<OutlookReplyResult> => {
@@ -234,7 +203,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
     let submitted = false;
     try {
       let output: QuoteOutput;
-      if ('output' in input) {
+      {
         if(typeof verifyCurrentSnapshot!=='function') throw new Error('The quote connection is unavailable. Review the quote again.');
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
         const artifacts=input.output.artifacts;
@@ -245,8 +214,6 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
         await verifyAttachments(input.output.artifacts);
         if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
         output = input.output;
-      } else {
-        output = await getReady(input.requestId, html, input.snapshot, isCurrentSnapshot);
       }
       const host = live.current.bridge, email = host?.activeEmail;
       if (!host || !email || !email.entryId || !email.storeId || !email.folderEntryId ||
@@ -268,7 +235,7 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
       };
       const fingerprint = await fingerprintFor(source, email, output, html);
       if (!current() || isCurrentSnapshot && !isCurrentSnapshot()) throw new Error('The selected email or quote changed. Review it again.');
-      const completionKey = 'output' in input ? await completedKey(source,email,output) : null;
+      const completionKey = await completedKey(source,email,output);
       let completed: z.infer<typeof completedSchema> | null = null;
       if(completionKey) {
         const raw=localStorage.getItem(completionKey);
@@ -408,5 +375,5 @@ export function useQuoteOutput({ source, configuration, bridge, isCurrentSource 
     return navigator.locks.request('nava-v2-quote-outlook-draft', { ifAvailable: true }, lock =>
       lock ? createOutlookReplyLocked(input) : report('error', 'A quote draft is already being prepared.'));
   };
-  return { outputFor, saveWebReply, createOutlookReply, saving, error };
+  return { createOutlookReply, saving, error };
 }

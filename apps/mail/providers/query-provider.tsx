@@ -1,7 +1,6 @@
 import {
   getMailCacheScope,
   idbCacheKeyForScope,
-  inMailbox,
   setMailCacheScope,
   subscribeMailCacheScope,
   transportForCall,
@@ -30,17 +29,12 @@ import { PERSIST_MAX_AGE, QUERY_GC_TIME } from '@/lib/mail/cache-ttl';
 import { resolveDemoQueryPolicy } from '@/lib/demo/query-policy';
 import { publicBackendTrpcUrl } from '@/lib/public-backend-url';
 import { trpcRequestTimeoutMs } from '@/lib/trpc-request-timeout';
-import {
-  NAVA_ACTION_ID_CONTEXT_KEY,
-  reservationFailureReportingLink,
-  type PaneFailureReporter,
-} from '@/lib/reservation-workflow/failure-reporting-link';
 import { createTRPCContext } from '@trpc/tanstack-react-query';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import type { AppRouter } from '@zero/server/trpc';
 import { CACHE_BURST_KEY } from '@/lib/constants';
-import { countMutationsLink, NAVA_FAILURE_REPORT_CONTEXT_KEY } from '@/lib/workstation/mutations-in-flight';
+import { countMutationsLink } from '@/lib/workstation/mutations-in-flight';
 import { useSession } from '@/lib/auth-client';
 import { signOut } from '@/lib/auth-client';
 import { get, set, del } from 'idb-keyval';
@@ -300,21 +294,11 @@ const fetchWithTimeout = (url: RequestInfo | URL, options?: RequestInit) => {
 
 export const { TRPCProvider, useTRPC, useTRPCClient } = createTRPCContext<AppRouter>();
 
-let sendPaneFailureReport: PaneFailureReporter = () => undefined;
-const failureReportingLink = reservationFailureReportingLink((report) => {
-  try {
-    sendPaneFailureReport(report);
-  } catch {
-    // Failure telemetry must not change the original reservation operation.
-  }
-});
-
 export const trpcClient: TRPCClient<AppRouter> = isFrontendOnlyDemo()
   ? (createDemoTrpcClient() as TRPCClient<AppRouter>)
   : createTRPCClient<AppRouter>({
       links: [
         // loggerLink({ enabled: () => true }),
-        failureReportingLink,
         countMutationsLink,
         httpBatchLink({
           transformer: superjson,
@@ -324,11 +308,7 @@ export const trpcClient: TRPCClient<AppRouter> = isFrontendOnlyDemo()
           // maxItems 1: one call per request, so the call's own mailbox (inMailbox) can go in the header.
           headers: ({ opList }) => {
             const transportId = transportForCall(opList[0].context);
-            const actionId = opList[0].context[NAVA_ACTION_ID_CONTEXT_KEY];
-            return {
-              ...(transportId ? { 'x-zero-active-transport': transportId } : {}),
-              ...(typeof actionId === 'string' ? { 'x-nava-action-id': actionId } : {}),
-            };
+            return transportId ? { 'x-zero-active-transport': transportId } : {};
           },
           fetch: (url, options) => {
             const headers = new Headers(options?.headers);
@@ -347,18 +327,6 @@ export const trpcClient: TRPCClient<AppRouter> = isFrontendOnlyDemo()
         }),
       ],
     });
-
-sendPaneFailureReport = ({ workItemId, transportId, event }) => {
-  try {
-    const mailbox = inMailbox(transportId);
-    if (!mailbox) return;
-    void trpcClient.workItems.recordActions.mutate({ workItemId, events: [event] }, {
-      context: { ...mailbox.context, [NAVA_FAILURE_REPORT_CONTEXT_KEY]: true },
-    }).catch(() => undefined);
-  } catch {
-    // Offline, missing route, and synchronous client errors all drop this best-effort report.
-  }
-};
 
 type TrpcHook = ReturnType<typeof useTRPC>;
 

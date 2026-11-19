@@ -15,7 +15,6 @@ import {
   NAVA_ARRIVAL_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
-import { enqueueReservationArrival } from '../../ai/reservation-workflow-v2-arrival.js';
 import { triageModelLabels } from '../../ai/bedrock/factory.js';
 import { enqueueShadowPrediction } from '../../ai/shadow-evaluation.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
@@ -296,10 +295,6 @@ export async function admitLiveMessage(
     )
     .limit(1);
   if (prior) {
-    // A later observation can supply the first usable body. Baselines are never replayed.
-    if (prior.effectState !== 'baseline') await enqueueReservationArrival(db, {
-      transportId: input.transportId, messageId: input.canonicalMessageId, priority: 1,
-    });
     return { admitted: false, receiptId: prior.id };
   }
   if (
@@ -560,9 +555,9 @@ export async function admitLiveMessage(
       }
     }
   }
-  const reservationArrival = trigger.direction === 'inbound' && !routeAsAutomatedChannel
-    ? await enqueueReservationArrival(db, { transportId: input.transportId, messageId: trigger.id, priority: 1 })
-    : null;
+  // Under the old reservation-prefill flag, direct inbound mail skips legacy triage and extraction (Nava arrival owns it).
+  const reservationArrival = trigger.direction === 'inbound' && !routeAsAutomatedChannel &&
+    process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on';
   // Sent copies still update reply analytics without running the triage classifier.
   if (
     !isCollector &&

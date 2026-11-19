@@ -26,8 +26,6 @@ import {
   outboundSendQueue,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { hydrateStoredReservationWorkflowV2 } from '../../ai/reservation-workflow-v2-stored-draft.js';
-import { reservationWorkflowV2DraftSchema } from '../../ai/reservation-workflow-v2-contract.js';
 import { staffQuoteSourceHash } from '../../ai/staff-quote-workflow.js';
 import {
   parseMailboxMeasurementConfig,
@@ -404,15 +402,20 @@ export function v2DashboardKinds(row: {
   messageId: string; threadId: string; transportId: string; subject: string | null;
   textBody: string | null; htmlBody: string | null; state: unknown;
 }): string[] | null {
-  const parsed = reservationWorkflowV2DraftSchema.safeParse(hydrateStoredReservationWorkflowV2(row.state));
-  if (!parsed.success) return null;
-  const draft = parsed.data;
+  // Retired v2 drafts are read loosely; the engine that validated them is gone.
+  const draft = row.state as {
+    transportId?: unknown; status?: unknown; prefill?: { status?: unknown } | null;
+    source?: { messageId?: unknown; threadId?: unknown; sourceHash?: unknown };
+    proposal?: { content?: { requests?: Array<{ kind?: unknown }> } };
+  } | null;
+  const requests = draft?.proposal?.content?.requests;
+  if (!draft || typeof draft !== 'object' || !draft.source || !Array.isArray(requests)) return null;
   if (draft.transportId !== row.transportId || draft.source.messageId !== row.messageId ||
       draft.source.threadId !== row.threadId || draft.status === 'prefill_failed' ||
       draft.prefill?.status === 'failed' ||
       draft.source.sourceHash !== staffQuoteSourceHash({ id: row.messageId, subject: row.subject,
         textBody: row.textBody, htmlBody: row.htmlBody })) return null;
-  return draft.proposal.content.requests.map((request) => request.kind);
+  return requests.map((request) => String(request?.kind ?? 'unknown'));
 }
 
 /** Current V2 drafts are mutable, so never pretend they are a historical snapshot. */

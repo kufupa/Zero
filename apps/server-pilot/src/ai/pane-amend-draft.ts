@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ExtractionStay, MailExtractionPayload } from './extraction/schema.js';
-import { formatBookerContact } from './reservation-workflow-v2-booker-contact.js';
+import { formatBookerContact } from './booker-contact.js';
 
 export type DraftSource = { threadId: string; messageId: string; sourceHash: string };
 export type AmendField =

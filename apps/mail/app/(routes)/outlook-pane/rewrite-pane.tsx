@@ -9,7 +9,7 @@ import { isFrontendOnlyDemo } from '@/lib/demo/runtime';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type { WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
-import type { ReservationSourceContext } from '@/lib/reservation-workflow/types';
+import type { ReservationSourceContext } from '@/components/nava-rewrite/source-types';
 import { trpcClient } from '@/providers/query-provider';
 import { htmlToPlainText } from '../../../../server-pilot/src/mail/inbound-reaction-parser';
 
@@ -64,7 +64,7 @@ function OutlookRewriteSelection({ bridge, owner, email, storeId, mailboxId }: {
       try {
         const contentHash = await selectedContentHash(selected);
         if (!live) return;
-        const match = await trpcClient.reservationWorkflowV2.resolveSource.query({
+        const match = await trpcClient.paneSource.resolveSource.query({
           ...(selected.internetMessageId?.trim() ? { internetMessageId: selected.internetMessageId } : {}),
           selection: { kind: 'outlook', entryId: selected.entryId, storeId,
             ...(selected.folderEntryId ? { folderEntryId: selected.folderEntryId } : {}) },

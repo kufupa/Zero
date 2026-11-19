@@ -1,6 +1,5 @@
 import { hmsJobQueueAvailable, withCloudCredentialRun } from '../../tooling/hms-cloud/cloud-session.mjs';
 import postgres from 'postgres';
-import { closeReservationActionLanes } from './reservation-workflow-v2-action-lane.js';
 import { getPostgresSslOptions } from '../db/ssl-config.js';
 import {
   claimNextAiRun,
@@ -19,7 +18,6 @@ import {
   mailBaselineGenerationKey,
   RunDeadlineError,
   HMS_JOB_PROMPT_VERSION,
-  HMS_V2_WRITE_PROMPT_VERSION,
   HMS_WRITE_RUN_KIND,
   shouldRetryAiFailure,
   toAiRunFence,
@@ -29,11 +27,6 @@ import {
   type AiWorkflowRunKind,
   type CandidateReadPlanKind,
 } from './run-ledger.js';
-import { endHmsWriteRun, hmsWriteRunStarted, hmsWriteRunReadbackCompleted, hmsWriteRunReviewCompleted, sweepLostHmsWriteLeases } from './hms-approval.js';
-import { executeHmsWorkerRun } from '../hms/hms-service.js';
-import { cloudCancelWorkerEnabled, labtestAttachWorkerEnabled, runCloudCancelOnce, runLabtestAttachOnce } from './hms-labtest-attach-worker.js';
-import { runLabtestAmendOnce } from './hms-labtest-amend-worker.js';
-import { labtestAmendWorkerEnabled } from './pane-cloud-amend-readiness.js';
 import {
   createFailedShadowPredictionSeal,
   createShadowPredictionSeal,
@@ -4445,26 +4438,11 @@ async function executeAiRunInCredentialScope(
       return { runId: run.id, state: 'dead_letter' };
     }
 
+    // The old reservation prefill engine is gone; Nava arrival (nava-rewrite-arrival) owns prefill now.
     if (run.runKind === 'reservation_prefill') {
-      const { executeReservationArrival } = await import('./reservation-workflow-v2-prefill-service.js');
-      const state = await executeReservationArrival({ run: runWithFence, fence, signal, db });
-      return { runId, state };
-    }
-
-    if (run.runKind === 'inbound_extraction' || run.runKind === 'inbound_triage') {
-      const { reservationArrivalEnabled } = await import('./reservation-workflow-v2-arrival.js');
-      const decision = run.metrics?.mailSourceDecision;
-      if (reservationArrivalEnabled() && (run.runKind === 'inbound_extraction' ||
-          (isMailSourceClassification(decision) && decision.kind === 'direct'))) {
-        const [arrival] = await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
-          eq(aiWorkflowRun.transportId, run.transportId), eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
-          eq(aiWorkflowRun.runKind, 'reservation_prefill'))).limit(1);
-        if (arrival) {
-          const done = await markAiRunSucceeded({ ...fence, expectedStates: ['running'],
-            metrics: { ...run.metrics, suppressedByReservationPrefill: arrival.id } }, db);
-          return { runId, state: done ? 'succeeded' : 'retry_wait' };
-        }
-      }
+      await markAiRunDeadLetter({ runId, claimOwner: owner, claimToken, expectedStates: ['running'],
+        lastError: 'reservation prefill engine removed', failureClass: 'POLICY_BLOCK' });
+      return { runId, state: 'dead_letter' };
     }
 
     // Resolve the purpose-bound extraction edge before any inbound workflow
@@ -5983,95 +5961,7 @@ export async function runHmsJobOnce(
   return true;
 }
 
-/** Only fresh V2 approvals enter this runner; legacy and uncertain writes retain their own recovery paths. */
-export async function runHmsWriteOnce(options: {
-  shutdownSignal?: AbortSignal;
-  db?: DB;
-  recovery?: HmsRecoveryGate;
-  execute?: typeof executeHmsWorkerRun;
-} = {}): Promise<boolean> {
-  if (options.shutdownSignal?.aborted ||
-      (options.recovery && !(await options.recovery.mayClaim()))) return false;
-  if (options.shutdownSignal?.aborted) return false;
-  const db = options.db ?? getDb();
-  const claimed = await claimNextAiRun({
-    ownerId: aiWorkerOwnerId('hms'), lane: 'hms', db,
-    runKind: HMS_WRITE_RUN_KIND, promptVersion: HMS_V2_WRITE_PROMPT_VERSION,
-  });
-  if (!claimed) return false;
-  const fence = toAiRunFence(claimed);
-  if (!fence) return true;
-  const leaseAbort = new AbortController();
-  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  let heartbeat: Promise<void> | undefined;
-  try {
-    const remaining = remainingRunBudgetMs(fence);
-    if (remaining <= CLEANUP_RESERVE_MS) throw new RunDeadlineError();
-    const signal = AbortSignal.any([
-      AbortSignal.timeout(remaining - CLEANUP_RESERVE_MS),
-      leaseAbort.signal,
-      ...(options.shutdownSignal ? [options.shutdownSignal] : []),
-    ]);
-    signal.throwIfAborted();
-    if (!(await markAiRunRunning(fence, db))) return true;
-    heartbeatTimer = setInterval(() => {
-      if (!heartbeat) heartbeat = renewAiRunLease(fence, leaseAbort,
-        (current) => heartbeatAiRun(current, db)).finally(() => { heartbeat = undefined; });
-    }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
-    // Native execution owns its browser callbacks/context cleanup and fresh readback; await it even after abort.
-    const outcome = await (options.execute ?? executeHmsWorkerRun)({ db, fence, signal });
-    if (heartbeat) await heartbeat;
-    signal.throwIfAborted();
-    const started = await hmsWriteRunStarted(db, fence.runId);
-    if (started && 'status' in outcome && outcome.status === 'succeeded' &&
-        'observationRef' in outcome && typeof outcome.observationRef === 'string' && outcome.observationRef.trim() &&
-        await hmsWriteRunReadbackCompleted(db, fence, outcome.observationRef)) {
-      signal.throwIfAborted();
-      await markAiRunSucceeded({ ...fence, expectedStates: ['running'],
-        metrics: { nativeWriteObservationRef: outcome.observationRef,
-          ...('nativeReadbackDigest' in outcome && typeof outcome.nativeReadbackDigest === 'string'
-            ? { nativeReadbackDigest: outcome.nativeReadbackDigest } : {}) } }, db);
-    } else if ('status' in outcome && outcome.status === 'needs_review' && await hmsWriteRunReviewCompleted(db, fence)) {
-      await endHmsWriteRun({ db, fence, failureClass: 'POLICY_BLOCK', reason: 'hms_v2_native_review_ready' });
-    } else {
-      await endHmsWriteRun({ db, fence, failureClass: started ? 'LEASE_LOST' : 'POLICY_BLOCK',
-        reason: 'hms_v2_write_outcome_unverified' });
-    }
-  } catch {
-    // A failed dispatch lookup cannot prove that HMS was untouched. No write enters automatic retry.
-    const started = await hmsWriteRunStarted(db, fence.runId).catch(() => true);
-    await endHmsWriteRun({ db, fence, failureClass: started ? 'LEASE_LOST' : 'POLICY_BLOCK',
-      reason: 'hms_v2_write_interrupted' });
-  } finally {
-    if (heartbeatTimer) clearInterval(heartbeatTimer);
-    if (heartbeat) await heartbeat;
-  }
-  return true;
-}
-
 const HMS_JOB_POLL_MS = 3_000;
-const HMS_WRITE_SWEEP_MS = 5_000;
-
-/** Turns hms_write leases lost to a dead worker into needs-check. Runs in the default worker, whatever the HMS flags. */
-async function runHmsWriteSweepLoop(signal: AbortSignal): Promise<void> {
-  while (!signal.aborted) {
-    await sweepLostHmsWriteLeases().catch((error: unknown) => {
-      console.error('hms_write_sweep_failed', error instanceof Error ? error.message : String(error));
-      return 0;
-    });
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, HMS_WRITE_SWEEP_MS);
-      signal.addEventListener(
-        'abort',
-        () => {
-          clearTimeout(timer);
-          resolve();
-        },
-        { once: true },
-      );
-    });
-  }
-}
 
 /** Claims pane HMS jobs one at a time until the signal aborts. Runs alongside the default loop, so triage never waits on HMS. */
 async function runHmsJobLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
@@ -6080,55 +5970,6 @@ async function runHmsJobLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Pr
       console.error('hms_job_loop_failed', error instanceof Error ? error.message : String(error));
       return false;
     });
-    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
-  }
-}
-
-/** The default worker always services V2 approvals; native policy checks decide whether each workflow may dispatch. */
-async function runHmsWriteLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
-  while (!signal.aborted) {
-    const worked = await runHmsWriteOnce({ shutdownSignal: signal, recovery }).catch(() => {
-      console.error('hms_v2_write_loop_failed');
-      return false;
-    });
-    if (!worked && !signal.aborted) await new Promise<void>((resolve) => {
-      const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
-      const timer = setTimeout(done, HMS_JOB_POLL_MS);
-      signal.addEventListener('abort', done, { once: true });
-    });
-  }
-}
-
-/** This dedicated loop can claim only source-bound Labtest attachment grants. */
-async function runLabtestAttachLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
-  while (!signal.aborted) {
-    const worked = await runLabtestAttachOnce({ ownerId: aiWorkerOwnerId('hms'), signal, recovery })
-      .catch((error: unknown) => {
-        console.error('labtest_attach_loop_failed', error instanceof Error ? error.message : 'unknown');
-        return false;
-      });
-    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
-  }
-}
-
-async function runCloudCancelLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
-  while (!signal.aborted) {
-    const worked = await runCloudCancelOnce({ ownerId: aiWorkerOwnerId('hms'), signal, recovery })
-      .catch((error: unknown) => {
-        console.error('cloud_cancel_loop_failed', error instanceof Error ? error.message : 'unknown');
-        return false;
-      });
-    if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
-  }
-}
-
-async function runLabtestAmendLoop(signal: AbortSignal, recovery: HmsRecoveryGate): Promise<void> {
-  while (!signal.aborted) {
-    const worked = await runLabtestAmendOnce({ ownerId: aiWorkerOwnerId('hms'), signal, recovery })
-      .catch((error: unknown) => {
-        console.error('labtest_amend_loop_failed', error instanceof Error ? error.message : 'unknown');
-        return false;
-      });
     if (!worked && !signal.aborted) await new Promise((resolve) => setTimeout(resolve, HMS_JOB_POLL_MS));
   }
 }
@@ -6198,11 +6039,6 @@ async function closeAiWorkerResources(): Promise<void> {
     await closeProductionHmsRuntimeForTests();
   } catch (error) {
     closeError = error;
-  }
-  try {
-    await closeReservationActionLanes();
-  } catch (error) {
-    closeError ??= error;
   }
   try {
     await closeDb();
@@ -6279,28 +6115,6 @@ export async function runAiWorkerLoop(
     resolveWorkerLane() === 'default' && hmsJobQueueEnabled() && !scope.idempotencyPrefix
       ? runHmsJobLoop(shutdown.signal, hmsRecovery)
       : null;
-  // Lost hms_write leases become needs-check here, whatever the HMS flags. Scoped (proof) loops never run it.
-  const hmsWriteSweep =
-    resolveWorkerLane() === 'default' && !scope.idempotencyPrefix
-      ? runHmsWriteSweepLoop(shutdown.signal)
-      : null;
-  const hmsWrites =
-    resolveWorkerLane() === 'default' && !scope.idempotencyPrefix && !scope.transportId &&
-    !scope.runKind && !scope.promptVersion
-      ? runHmsWriteLoop(shutdown.signal, hmsRecovery)
-      : null;
-  const hmsLabtestAttach =
-    resolveWorkerLane() === 'default' && labtestAttachWorkerEnabled() && !scope.idempotencyPrefix
-      ? runLabtestAttachLoop(shutdown.signal, hmsRecovery)
-      : null;
-  const hmsCloudCancel =
-    resolveWorkerLane() === 'default' && cloudCancelWorkerEnabled() && !scope.idempotencyPrefix
-      ? runCloudCancelLoop(shutdown.signal, hmsRecovery)
-      : null;
-  const hmsLabtestAmend =
-    resolveWorkerLane() === 'default' && labtestAmendWorkerEnabled() && !scope.idempotencyPrefix
-      ? runLabtestAmendLoop(shutdown.signal, hmsRecovery)
-      : null;
   const fairness = !scope.transportId && !scope.runKind && !scope.promptVersion && !scope.idempotencyPrefix
     ? { backgroundPrefills: 0 }
     : undefined;
@@ -6334,11 +6148,6 @@ export async function runAiWorkerLoop(
     // Let a running HMS job settle its run row before the database closes.
     shutdown.abort();
     await hmsJobs;
-    await hmsWrites;
-    await hmsLabtestAttach;
-    await hmsCloudCancel;
-    await hmsLabtestAmend;
-    await hmsWriteSweep;
     await closeConsumer?.();
     await closeAiWorkerResources();
     if (stopping) console.log(`ai-worker: shutdown complete pid=${process.pid}`);

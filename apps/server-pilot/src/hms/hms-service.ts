@@ -17,8 +17,7 @@ import { hmsPropertyReadEnabled } from './mailbox-hms-origin-bind.js';
 
 async function executeVerifiedRun(db: DB, go: VerifiedStaffGo, request: { runId: string; fence: AiRunFence; signal?: AbortSignal }) {
   if (go.preparation.workflowContext) {
-    const { executePreparedReservationV2Run } = await import('../ai/reservation-workflow-v2-tools.js');
-    return executePreparedReservationV2Run({ db, go, fence: request.fence, signal: request.signal });
+    throw new Error('hms_staff_go_receipt_invalid');
   }
   if (go.grant.operation === 'create') {
     const { executePreparedPaneCreateRun } = await import('../ai/pane-cloud-preview.js');

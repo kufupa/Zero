@@ -1,9 +1,13 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { hydrateStoredReservationWorkflowV2 } from './reservation-workflow-v2-stored-draft.js';
 import { hydrateStoredWorkState } from './stored-work-state.js';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
-import type { ReservationWorkflowV2Draft, ReservationWorkflowV2Proposal } from './reservation-workflow-v2-contract.js';
+// The v2 engine is retired; old drafts in stored state are carried through untyped.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ReservationWorkflowV2Draft = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ReservationWorkflowV2Proposal = any;
+const hydrateStoredReservationWorkflowV2 = (value: unknown): unknown => value;
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';

@@ -19,16 +19,9 @@ import { categoriesRouter } from './routes/categories.js';
 import { adminDashboardRouter } from './routes/admin-dashboard.js';
 import { catchupRouter } from './routes/catchup.js';
 import { workstationRouter } from './routes/workstation.js';
-import { quoteWorkflowRouter } from './routes/quote-workflow.js';
-import { paneStayAmendRouter } from './routes/pane-stay-amend.js';
-import { paneStayCancelRouter } from './routes/pane-stay-cancel.js';
-import { paneStayLookupRouter } from './routes/pane-stay-lookup.js';
-import { panePartyLookupRouter } from './routes/pane-party-lookup.js';
 import { workItemsRouter } from './routes/work-items.js';
 import { workflowFoldersRouter } from './routes/workflow-folders.js';
-import { ratesRouter } from './routes/rates.js';
-import { hmsApprovalRouter } from './routes/hms-approval.js';
-import { reservationWorkflowV2Router } from './routes/reservation-workflow-v2.js';
+import { paneSourceRouter } from './routes/pane-source.js';
 
 export const appRouter = router({
   mail: mailRouter,
@@ -46,16 +39,9 @@ export const appRouter = router({
   adminDashboard: adminDashboardRouter,
   catchup: catchupRouter,
   workstation: workstationRouter,
-  quoteWorkflow: quoteWorkflowRouter,
-  paneStayAmend: paneStayAmendRouter,
-  paneStayCancel: paneStayCancelRouter,
-  paneStayLookup: paneStayLookupRouter,
-  panePartyLookup: panePartyLookupRouter,
   workItems: workItemsRouter,
   workflowFolders: workflowFoldersRouter,
-  rates: ratesRouter,
-  hmsApproval: hmsApprovalRouter,
-  reservationWorkflowV2: reservationWorkflowV2Router,
+  paneSource: paneSourceRouter,
 });
 
 export type AppRouter = typeof appRouter;

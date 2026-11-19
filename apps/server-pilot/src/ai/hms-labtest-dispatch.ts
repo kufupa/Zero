@@ -632,34 +632,3 @@ export async function recoverHmsLabtestAttach(db: DB, holdId: string): Promise<v
     record: driver.recordRecoveredAttach,
   });
 }
-
-/** Positive-only Amend reconciliation. A saved-stay hold is never cleared on a negative or ambiguous read. */
-export async function recoverHmsLabtestAmend(db: DB, holdId: string): Promise<void> {
-  const driver = await import('./pane-cloud-amend-recovery.js');
-  await recoverPositiveDispatch(db, holdId, 'amend', {
-    withLock: driver.withAmendRecoveryLock,
-    prove: (intent, signal) => driver.proveAmendRecovery(db, intent, signal),
-    record: driver.recordRecoveredAmend,
-  });
-}
-
-/** Positive-only Add-On reconciliation under the same target hold as every other writer. */
-export async function recoverHmsLabtestAddOn(db: DB, holdId: string): Promise<void> {
-  const driver = await import('./reservation-workflow-v2-services-execute.js');
-  await recoverPositiveDispatch(db, holdId, 'add_on', {
-    withLock: driver.withServiceRecoveryLock,
-    prove: (intent, signal) => driver.proveServiceRecovery(db, intent, signal),
-    record: driver.recordRecoveredService,
-  });
-}
-
-/** Positive-only recovery for v2 Filing intents, which use the same native upload gate without a legacy grant. */
-export async function recoverHmsLabtestV2Attach(db: DB, holdId: string,
-  access?: import('./reservation-workflow-v2-filing.js').ReservationWorkflowV2FilingRecoveryAccess): Promise<void> {
-  const driver = await import('./reservation-workflow-v2-filing.js');
-  await recoverPositiveDispatch(db, holdId, 'attach_document', {
-    withLock: driver.withReservationWorkflowV2AttachRecoveryLock,
-    prove: (intent, signal) => driver.proveReservationWorkflowV2AttachRecovery(db, intent, access, signal),
-    record: (tx, intent, proof) => driver.recordReservationWorkflowV2AttachRecovery(tx, intent, proof, access),
-  });
-}

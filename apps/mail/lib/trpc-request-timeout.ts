@@ -4,43 +4,7 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
   try {
     const pathname = new URL(raw, 'https://timeout.invalid').pathname;
     const routes = decodeURIComponent(pathname.split('/').at(-1) ?? '').split(',');
-    // V2 uses the same bounded native runners as the existing pane. Keep the
-    // whole read/prepare/save response alive, including source and lock waits.
-    if (routes.some((route) => [
-      'reservationWorkflowV2.ensure', 'reservationWorkflowV2.lookup',
-      'reservationWorkflowV2.guestProfileOptions', 'reservationWorkflowV2.prepareGuestProfile', 'reservationWorkflowV2.createGuestProfile',
-      'reservationWorkflowV2.prepare', 'reservationWorkflowV2.execute',
-      'reservationWorkflowV2.reconcile', 'reservationWorkflowV2.lookupServices',
-      'reservationWorkflowV2.prepareServices', 'reservationWorkflowV2.executeServices',
-      'reservationWorkflowV2.reconcileServices',
-    ].includes(route))) return 27 * 60_000;
-    // A pane save runs the duplicate read (up to 5 minutes) and the save (up to 20) under the hotel lock.
-    if (routes.includes('quoteWorkflow.previewStay') || routes.includes('quoteWorkflow.commitStay'))
-      return 27 * 60_000;
-    // A cancel/amend run is bounded by the server at 20 minutes, so the browser waits slightly longer.
-    if (
-      routes.includes('paneStayCancel.previewCancel') ||
-      routes.includes('paneStayCancel.commitCancel') ||
-      routes.includes('paneStayAmend.previewAmend') ||
-      routes.includes('paneStayAmend.commitAmend')
-    )
-      return 21 * 60_000;
-    // Two five-minute stay reads, a six-minute native prepare, source reads and lock waits.
-    if (routes.includes('hmsApproval.bindAttach')) return 20 * 60_000;
     if (routes.includes('workstation.executeStaffQuote')) return 20 * 60_000;
-    // Two 60 s source reads surround a five-minute HMS lookup and up to 20 s of lock wait.
-    if (routes.includes('hmsApproval.previewAttach')) return 9 * 60_000;
-    // Browser runs under the hotel lock: a find or name search takes about 1-2 minutes; the server bounds it at 5.
-    // hmsApproval.reread is one such find, stored as the write's snapshot.
-    if (
-      routes.includes('paneStayLookup.findStay') ||
-      routes.includes('paneStayLookup.searchGuest') ||
-      routes.includes('hmsApproval.reread')
-    )
-      return 6 * 60_000;
-    // The party search runs one lookup per kind (company, agency) under the same lock: the server bounds each run at
-    // 150 s, so the pair stays inside this six-minute wait.
-    if (routes.includes('panePartyLookup.findParty')) return 6 * 60_000;
     // Each of these waits for the background trace of a provisional quote (QUOTE_TRACE_ASYNC=on; about 45s)
     // before it runs, then does its own work. They need 120s; the 5s default would fail right after a quote.
     if (
@@ -56,12 +20,9 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
       return 120_000;
     // After the 120s group, so a batch that also carries one of those routes keeps the longer deadline.
     if (routes.includes('workstation.quoteProposalPdf')) return 60_000;
-    // voucherFind: a 15 s text read, then up to 20 s for a scanned PDF's vision read (SCANNED_PDF_VISION).
     // retryTranslation: one translation call, bounded by the server at 40 s (TRANSLATE_DEADLINE_MS).
     // retryFailedRead loads the selected source and attachments before the queue returns its run id (15 s read bound).
     if (
-      routes.includes('quoteWorkflow.analyseSelection') ||
-      routes.includes('quoteWorkflow.voucherFind') ||
       routes.includes('workItems.retryTranslation') ||
       routes.includes('workItems.retryFailedRead')
     )
