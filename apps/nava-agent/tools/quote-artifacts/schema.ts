@@ -17,6 +17,12 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 });
 const id = z.string().min(1);
+export const quoteOutput = z.object({
+  organization_name:z.string(), agency_name:z.string(), valid_until:z.string(), payment_terms:z.string(),
+  extras:z.array(z.object({description:z.string().trim().min(1), quantity:z.number().int().positive().safe(),
+    units:z.number().int().positive().safe(), unit_price:z.string().regex(/^\d+(?:\.\d{1,2})?$/).nullable()}).strict()),
+}).strict();
+export type QuoteOutput = z.infer<typeof quoteOutput>;
 const room = z.object({ id, quantity: z.number().int().positive().safe(), adults: z.number().int().positive(),
   children: z.number().int().nonnegative(), child_ages: z.array(z.number().int().nonnegative()) }).passthrough();
 const group = z.object({ group_id: id, arrival_date: date, departure_date: date, rooms: z.array(room).min(1) }).passthrough();
@@ -43,6 +49,7 @@ export const snapshot = z.object({
   header: z.object({ attention: z.string(), organization: z.string(), clientEmail: z.string(), clientTelephone: z.string(),
     signerName: z.string(), signerEmail: z.string(), displayBookingAgency: z.string().optional() }).strict(),
   note: z.string().optional(),
+  output: quoteOutput.default({organization_name:'',agency_name:'',valid_until:'',payment_terms:'',extras:[]}),
   groups: z.array(group).min(1),
   capture: z.object({ quote_id: id, property_code: id, group_order: z.array(id), groups: z.record(capturedGroup) }).passthrough(),
   selections: z.array(z.object({ group_id: id, room_id: id, option_index: z.number().int().nonnegative().safe() }).strict()).min(1),

@@ -10,10 +10,32 @@ import { writeEvent } from './session-store.js';
 import { createQuoteArtifacts, quoteOptions, type Artifact } from '../tools/quote-artifacts/index.js';
 import { gotenbergConverter } from '../tools/quote-artifacts/converter.js';
 import { groupedQuoteRequest } from './schema.js';
+import { quoteOutput } from '../tools/quote-artifacts/schema.js';
 
 const id = z.string().min(1).max(200);
 const request = z.object({expected_revision:z.number().int().positive().safe(),quote_id:id,
-  selections:z.array(z.object({group_id:id,room_id:id,option_index:z.number().int().nonnegative().safe()}).strict()).min(1).max(80)}).strict();
+  selections:z.array(z.object({group_id:id,room_id:id,option_index:z.number().int().nonnegative().safe()}).strict()).min(1).max(80),
+  quote_output:quoteOutput.optional()}).strict();
+const prefillOutput=z.object({organization_name:z.string().nullish().catch(null),agency_name:z.string().nullish().catch(null),
+  party_name:z.string().nullish().catch(null),guest_name:z.string().nullish().catch(null),
+  valid_until:z.string().nullish().catch(null),payment_terms:z.string().nullish().catch(null),extras:z.array(z.unknown()).nullish().catch(null)}).passthrough();
+const prefillExtra=z.object({description:z.string().trim().min(1),quantity:z.number().int().positive().safe().nullish().catch(null),
+  units:z.number().int().positive().safe().nullish().catch(null),unit_price:z.union([z.string(),z.number().finite()]).nullish().catch(null),
+  price:z.union([z.string(),z.number().finite()]).nullish().catch(null)});
+function outputFromDetails(details:unknown) {
+  const parsed=prefillOutput.safeParse(details);
+  const value=parsed.success ? parsed.data : prefillOutput.parse({});
+  const agency=value.agency_name ?? '';
+  const party=details && typeof details==='object' && Object.hasOwn(details,'guest_name') ? value.party_name ?? '' : '';
+  return {organization_name:value.organization_name ?? (party===agency ? '' : party),agency_name:agency,valid_until:value.valid_until ?? '',
+    payment_terms:value.payment_terms ?? '',extras:(value.extras ?? []).flatMap(raw=>{
+      const extra=prefillExtra.safeParse(raw);
+      const rawPrice=extra.success ? extra.data.unit_price ?? extra.data.price : null;
+      const price=rawPrice==null ? null : String(rawPrice);
+      return extra.success ? [{description:extra.data.description,quantity:extra.data.quantity ?? 1,
+        units:extra.data.units ?? 1,unit_price:price!==null && /^\d+(?:\.\d{1,2})?$/.test(price) ? price : null}] : [];
+    })};
+}
 const source = z.object({direction:z.literal('inbound'),from:z.object({name:z.string().nullable(),email:z.string()})});
 const capture = z.object({quotes:z.record(z.unknown()),searches:z.array(z.object({arrival_date:id,departure_date:id,
   native_result:z.object({outcome:z.string(),audit:z.object({status:z.string()}).passthrough()}).passthrough()}).passthrough()).min(1)}).passthrough();
@@ -79,8 +101,12 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
       return a.type === 'quote' && quote.success && quote.data.quote_id === input.quote_id ? [quote.data] : [];
     }) : [];
     const [quote] = matching;
+    const quoteDetails=draft.success ? draft.data.actions.find(action=>action.type==='quote' &&
+      groupedQuoteRequest.safeParse(action.details).data?.quote_id===input.quote_id)?.details : undefined;
     const currentSet=quoteSet.safeParse(ready.data.quote_sets?.[input.quote_id] ??
       (ready.data.quote_id===input.quote_id ? row.stage : null));
+    const previousOutput=quoteOutput.safeParse(currentSet.success ? currentSet.data.quote_output : null);
+    const output=input.quote_output ?? (previousOutput.success ? previousOutput.data : outputFromDetails(quoteDetails));
     const native = currentSet.success && Object.hasOwn(currentSet.data.native_result.quotes,input.quote_id)
       ? currentSet.data.native_result.quotes[input.quote_id] : undefined;
     if (matching.length !== 1 || !quote || quote.property_code !== row.property_code || native === undefined || !selected.success || !currentSet.success) {
@@ -99,12 +125,13 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     const prefix=quoteActions.length>1 ? `Quotation ${quoteIndex+1}` : 'Quotation';
     const result = await createQuoteArtifacts({
       resolveQuote:async()=>({quote_id:quote.quote_id,proposal_id:proposalId,revision:row.revision,property_code:quote.property_code,
-        authored_date:authoredDate(),file_prefix:prefix,groups:quote.groups,capture:native,selections:input.selections,
+        authored_date:authoredDate(),file_prefix:prefix,groups:quote.groups,capture:native,selections:input.selections,output,
         ...(input.selections.length < quote.groups.reduce((sum,group)=>sum+group.rooms.length,0)
           ? {note:'Some requested room groups could not be priced. Availability for all rooms together is subject to confirmation.'}
           : currentSet.data.native_result.searches.length > 1 || currentSet.data.native_result.searches.some(search=>search.native_result.outcome==='partial')
             ? {note:'Availability for all room groups together is subject to confirmation.'} : {}),
-        header:{attention:quote.party_name ?? '',organization:'',clientEmail:selected.data.from.email,clientTelephone:'',signerName:'',signerEmail:''}}),
+        header:{attention:prefillOutput.safeParse(quoteDetails).data?.guest_name ?? '',organization:output.organization_name,displayBookingAgency:output.agency_name,
+          clientEmail:selected.data.from.email,clientTelephone:'',signerName:'',signerEmail:''}}),
       convertWorkbook:gotenbergConverter(converter),
       writePair:async({pdf,workbook,signal})=>{
         const root = await artifactDir();
@@ -121,7 +148,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
         try {
           const pdfRef = await write(pdf), workbookRef = await write(workbook);
           signal?.throwIfAborted();
-          const sets={...(ready.data.quote_sets ?? {}),[input.quote_id]:{...currentSet.data,artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions}};
+          const sets={...(ready.data.quote_sets ?? {}),[input.quote_id]:{...currentSet.data,artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions,quote_output:output}};
           const artifacts=quoteActions.flatMap(action=>{
             const request=groupedQuoteRequest.safeParse(action.details);
             const set=request.success ? quoteSet.safeParse(sets[request.data.quote_id]) : null;
@@ -129,7 +156,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
           });
           await sql.begin(async tx=>{
             const saved = await tx`UPDATE nava_agent.proposal p SET stage=p.stage || ${json({artifacts,quote_sets:sets,
-              ...(ready.data.quote_id===input.quote_id?{quote_selected_options:selectedOptions}:{})})}::jsonb,updated_at=now()
+              ...(ready.data.quote_id===input.quote_id?{quote_selected_options:selectedOptions,quote_output:output}:{})})}::jsonb,updated_at=now()
               FROM nava_agent.mail_thread t WHERE p.thread_id=t.id AND p.id=${proposalId} AND p.revision=${input.expected_revision}
               AND p.phase='ready' AND p.stage->>'job_id'=${job} AND COALESCE(p.stage->'artifacts','[]'::jsonb)=${json(ready.data.artifacts ?? [])}::jsonb
               AND COALESCE(p.stage->'quote_sets','{}'::jsonb)=${json(ready.data.quote_sets ?? {})}::jsonb AND p.workflow='quote'

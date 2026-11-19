@@ -8,8 +8,8 @@ import { quoteArtifactIds } from './quote-draft';
 import { defaultQuoteSelections } from './quote-defaults';
 import type { PaneFieldProps } from './field';
 import { PaneMessage, PaneSection } from './pane';
-import { amendReadbackSchema, cancelPrepareSchema, cancelReadbackSchema, createReadbackSchema } from './wire';
-import type { FieldSpec, Json, NativeDisplayRow, Proposal, QuoteSelection, SavedPrice, ThreadInput } from './wire';
+import { amendReadbackSchema, cancelPrepareSchema, cancelReadbackSchema, createReadbackSchema, quoteOutputSchema } from './wire';
+import type { FieldSpec, Json, NativeDisplayRow, Proposal, QuoteOutput, QuoteSelection, SavedPrice, ThreadInput } from './wire';
 import type { StayLookup } from './api';
 import styles from './pane.module.css';
 import quoteStyles from './quote.module.css';
@@ -30,7 +30,7 @@ export type WorkflowProps = {
   onOpenArtifact?: (artifactId: string) => void;
   onQuote?: (quoteId: string) => void;
   onSubmitQuote?: (quoteId: string) => void;
-  onGenerateQuoteArtifacts?: (quoteId: string, selections: QuoteSelection[]) => void;
+  onGenerateQuoteArtifacts?: (quoteId: string, selections: QuoteSelection[], output: QuoteOutput) => void;
   quoteDraftTarget?: 'webmail' | 'outlook';
   onSaveQuoteDraft?: (body: string) => Promise<{ status: string; message: string }>;
   quoteConnectionReady?: boolean;
@@ -113,6 +113,12 @@ function stayLabel(proposal: Proposal, bookingId: string) {
   return [`Stay ${index + 1}`, booking.property_code, booking.reservation_id && `Reservation ${booking.reservation_id}`].filter(Boolean).join(' · ');
 }
 
+function quoteName(details:Json, fallback:string) {
+  if (!details || typeof details!=='object' || Array.isArray(details)) return fallback;
+  return typeof details.guest_name==='string' && details.guest_name.trim() ? details.guest_name :
+    typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : fallback;
+}
+
 function quoteGroups(proposal: Proposal) {
   const quotes = proposal.actions.filter(action => action.type === 'quote');
   return proposal.actions.flatMap((action, actionIndex) => {
@@ -121,7 +127,7 @@ function quoteGroups(proposal: Proposal) {
     if (!details || typeof details !== 'object' || Array.isArray(details)) return [];
     const quoteId = typeof details.quote_id === 'string' ? details.quote_id : undefined;
     if (!Array.isArray(details.groups)) return [];
-    const quote = quotes.length > 1 ? typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : `Quote ${quotes.indexOf(action) + 1}` : undefined;
+    const quote = quotes.length > 1 ? quoteName(details,`Quote ${quotes.indexOf(action) + 1}`) : undefined;
     return details.groups.map((group, groupIndex) => ({
       key: `${actionIndex}/${groupIndex}`,
       actionIndex,
@@ -553,6 +559,7 @@ function QuoteFields(props: WorkflowProps & { locked: boolean }) {
   const grouped = new Map<string, { key: string; label?: string; quoteId?: string; fields: FieldSpec[] }>();
   const specs = [...props.proposal.field_specs].sort((a, b) => Number(!a.path.endsWith('/details/property_code')) - Number(!b.path.endsWith('/details/property_code')));
   for (const spec of specs) {
+    if (/^\/actions\/\d+\/details\/(?:extras\/|organization_name$|agency_name$|party_name$|valid_until$|payment_terms$)/.test(spec.path)) continue;
     if (/\/rooms\/(?:0|[1-9]\d*)\/preferred\/roomCodes$/.test(spec.path)) continue;
     const match = /^\/actions\/(0|[1-9]\d*)\/details\/groups\/(0|[1-9]\d*)(?:\/|$)/.exec(spec.path);
     const group = match && groups.find(item => item.actionIndex === Number(match[1]) && item.groupIndex === Number(match[2]));
@@ -613,7 +620,7 @@ function QuoteRequests({ proposal }: { proposal: Proposal }) {
     <ol>{proposal.actions.map((action, index) => {
       const count = groups.filter(group => group.actionIndex === index).length;
       const details=action.details;
-      const name=details && typeof details==='object' && !Array.isArray(details) && typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : `Quote ${quotes.indexOf(action)+1}`;
+      const name=quoteName(details,`Quote ${quotes.indexOf(action)+1}`);
       return <li key={action.id}>
         <strong>{action.type === 'quote' ? quotes.length > 1 ? name : 'Quote' : `Request ${index + 1}${action.type && ` · ${action.type.replace(/[_-]/g, ' ')}`}`}</strong>
         {action.type === 'quote' && count > 0 && <p>{count} {count === 1 ? 'room group' : 'room groups'}</p>}
@@ -666,7 +673,7 @@ function QuoteChecks({ proposal, drafts, busy, onQuote, onSubmitQuote }: Workflo
     {quotes.map((action, index) => {
       const details = action.details;
       const quoteId = details && typeof details === 'object' && !Array.isArray(details) && typeof details.quote_id === 'string' ? details.quote_id : undefined;
-      const name = details && typeof details === 'object' && !Array.isArray(details) && typeof details.party_name === 'string' && details.party_name.trim() ? details.party_name : `quote ${index+1}`;
+      const name = quoteName(details,`quote ${index+1}`);
       const issue = quoteId ? quoteCheckIssue(proposal, quoteId) : 'Quote details are unavailable. Review the request.';
       return <div key={action.id}>
         <button type="button" disabled={busy || (Object.keys(drafts).length === 0 && Boolean(issue)) || !['ready', 'waiting_go'].includes(proposal.phase)}
@@ -695,10 +702,32 @@ function quoteRooms(proposal: Proposal, quoteId: string) {
   });
 }
 
+function quoteOutputPrefill(proposal:Proposal, quoteId:string):QuoteOutput {
+  if (proposal.stage?.quote_output) return proposal.stage.quote_output;
+  const action=proposal.actions.find(item=>item.type==='quote' && item.details && typeof item.details==='object' &&
+    !Array.isArray(item.details) && item.details.quote_id===quoteId);
+  const details=action?.details && typeof action.details==='object' && !Array.isArray(action.details) ? action.details : {};
+  const text=(key:string)=>{ const value=details[key]; return typeof value==='string' ? value : ''; };
+  const extras=Array.isArray(details.extras) ? details.extras.flatMap(item=>{
+    if(!item || typeof item!=='object' || Array.isArray(item) || typeof item.description!=='string' || !item.description.trim()) return [];
+    const qty=(value:Json|undefined)=>typeof value==='number' && Number.isSafeInteger(value) && value>0 ? value : 1;
+    const rawPrice=item.unit_price ?? item.price;
+    const priceText=typeof rawPrice==='string' || typeof rawPrice==='number' ? String(rawPrice) : '';
+    const price=/^\d+(?:\.\d{1,2})?$/.test(priceText) ? priceText : null;
+    return [{description:item.description,quantity:qty(item.quantity),units:qty(item.units),unit_price:price}];
+  }) : [];
+  const agency=text('agency_name'), party=Object.hasOwn(details,'guest_name') ? text('party_name') : '';
+  return {organization_name:text('organization_name') || (party===agency ? '' : party),agency_name:agency,valid_until:text('valid_until'),payment_terms:text('payment_terms'),extras};
+}
+
 function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: WorkflowProps & {quoteLabel?:string}) {
   const [selected, setSelected] = useState<Record<string, number>>(() => Object.fromEntries(
     (proposal.stage?.quote_selected_options?.length ? proposal.stage.quote_selected_options : defaultQuoteSelections(proposal))
       .map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
+  const [output,setOutput]=useState(()=>{
+    const initial=quoteOutputPrefill(proposal,proposal.stage?.quote_id ?? '');
+    return {...initial,extras:initial.extras.map(extra=>({...extra,quantity:String(extra.quantity),units:String(extra.units),unit_price:extra.unit_price ?? ''}))};
+  });
   const stage = proposal.stage;
   if (!stage?.quote_id || !stage.job_id || !stage.quote_options || !onGenerateQuoteArtifacts) return null;
   const rooms = quoteRooms(proposal, stage.quote_id);
@@ -709,6 +738,10 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
     return index !== undefined && stage.quote_options?.some(option => option.group_id === room.groupId && option.room_id === room.roomId && option.option_index === index)
       ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
   });
+  const readyOutput=quoteOutputSchema.safeParse({...output,extras:output.extras.map(extra=>({...extra,
+    quantity:Number(extra.quantity),units:Number(extra.units),unit_price:extra.unit_price.trim() || null}))});
+  const changeExtra=(index:number,patch:Partial<(typeof output.extras)[number]>)=>setOutput(current=>({...current,
+    extras:current.extras.map((extra,i)=>i===index ? {...extra,...patch} : extra)}));
   return <PaneSection title={quoteLabel ? `Choose quote options · ${quoteLabel}` : 'Choose quote options'}>
     <p>Price set by HMS rate plan. Prices and availability are from the latest Infor check. Review the selected options; combined availability is not confirmed.</p>
     {selections.length < rooms.length && <p>Some room groups could not be priced and are not included in the quote.</p>}
@@ -750,7 +783,25 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
           : 'No verified options for this room. Check the details and run Infor again.'}</p>}
       </fieldset>;
     })}
-    <button type="button" disabled={busy || selections.length === 0} onClick={() => onGenerateQuoteArtifacts(stage.quote_id!, selections)}>{stage.artifacts?.length ? 'Update PDF and Excel' : 'Create PDF and Excel'}</button>
+    <PaneField label="Company or organisation" control="text" value={output.organization_name} disabled={busy} onChange={value=>setOutput(current=>({...current,organization_name:value}))} />
+    <PaneField label="Booking agency" control="text" value={output.agency_name} disabled={busy} onChange={value=>setOutput(current=>({...current,agency_name:value}))} />
+    <PaneField label="Valid until" control="text" value={output.valid_until} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,valid_until:value}))} />
+    <PaneField label="Payment terms" control="textarea" value={output.payment_terms} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,payment_terms:value}))} />
+    <h4>Extras</h4>
+    <p>Enter staff prices in ZAR. An empty price appears as “On request” and is excluded from the priced sum.</p>
+    {output.extras.map((extra,index)=><fieldset key={index} className={quoteStyles.stay}>
+      <legend>Extra {index+1}</legend>
+      <PaneField label="Description" control="text" value={extra.description} disabled={busy} onChange={value=>changeExtra(index,{description:value})} />
+      <PaneField label="Quantity" control="number" min="1" step="1" value={extra.quantity} disabled={busy} onChange={value=>changeExtra(index,{quantity:value})} />
+      <PaneField label="Days, nights or trips" control="number" min="1" step="1" value={extra.units} disabled={busy} onChange={value=>changeExtra(index,{units:value})} />
+      <PaneField label="Price per unit (ZAR)" control="text" value={extra.unit_price} disabled={busy} onChange={value=>changeExtra(index,{unit_price:value})} />
+      <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:current.extras.filter((_,i)=>i!==index)}))}>Remove extra</button>
+    </fieldset>)}
+    <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:[...current.extras,{description:'',quantity:'1',units:'1',unit_price:''}]}))}>Add extra</button>
+    {!readyOutput.success && <p>Enter a description, positive whole quantities, and a valid price with up to two decimals for each extra.</p>}
+    <button type="button" disabled={busy || selections.length === 0 || !readyOutput.success} onClick={() => {
+      if (readyOutput.success) onGenerateQuoteArtifacts(stage.quote_id!, selections, readyOutput.data);
+    }}>{stage.artifacts?.length ? 'Update PDF and Excel' : 'Create PDF and Excel'}</button>
   </PaneSection>;
 }
 
@@ -1103,9 +1154,9 @@ export function Workflow(props: WorkflowProps) {
       ? proposal.stage.quote_sets.map((set,index)=>{
         const action=proposal.actions.find(item=>item.type==='quote' && item.details && typeof item.details==='object' && !Array.isArray(item.details) && item.details.quote_id===set.quote_id);
         const details=action?.details;
-        const name=details && typeof details==='object' && !Array.isArray(details) && typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : `Quote ${index+1}`;
+        const name=quoteName(details,`Quote ${index+1}`);
         return <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${set.job_id}`} {...props}
-          proposal={{...proposal,stage:{...proposal.stage!,...set}}} quoteLabel={proposal.actions.filter(item=>item.type==='quote').length>1?name:undefined} />;
+          proposal={{...proposal,stage:{...proposal.stage!,...set,quote_output:set.quote_output}}} quoteLabel={proposal.actions.filter(item=>item.type==='quote').length>1?name:undefined} />;
       })
       : <QuoteOptions key={`options:${proposal.id}:${proposal.revision}:${proposal.stage.job_id}`} {...props} />)}
     {proposal.stage && stageCurrent && proposal.stage.state !== 'target' && <PaneSection title="Checked details">

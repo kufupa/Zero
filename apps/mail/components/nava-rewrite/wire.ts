@@ -58,6 +58,9 @@ export const fieldSpecSchema = z.object({
   evidence: z.array(z.object({ message_id: id, attachment_id: z.string().nullable(), quote: z.string().nullable() })),
 });
 const artifactSchema = z.object({ id, name: z.string(), mime_type: z.string(), url: z.string() });
+export const quoteOutputSchema = z.object({organization_name:z.string(),agency_name:z.string(),valid_until:z.string(),payment_terms:z.string(),
+  extras:z.array(z.object({description:z.string().trim().min(1),quantity:z.number().int().positive().safe(),units:z.number().int().positive().safe(),
+    unit_price:z.string().regex(/^\d+(?:\.\d{1,2})?$/).nullable()}))});
 const quoteOptionSchema = z.object({
   group_id: id, room_id: id, option_index: z.number().int().nonnegative().safe(),
   room: z.object({ code: id, label: z.string().nullable() }),
@@ -109,9 +112,11 @@ export const proposalSchema = z.object({
     display_rows: z.array(nativeDisplayRowSchema), coverage: jsonSchema.optional(),
     observed_fields: jsonSchema.optional(), cancellation_fee: jsonSchema.optional(),
     artifacts: z.array(artifactSchema).optional(),
+    quote_output:quoteOutputSchema.optional(),
     quote_sets: z.array(z.object({quote_id:id,job_id:id,state:z.string(),display_rows:z.array(nativeDisplayRowSchema),
       quote_options:z.array(quoteOptionSchema),quote_choices:z.array(quoteOptionSchema),
-      quote_selected_options:z.array(quoteOptionSchema),quote_artifact_block_reason:z.string().nullable(),artifacts:z.array(artifactSchema)})).optional(),
+      quote_selected_options:z.array(quoteOptionSchema),quote_artifact_block_reason:z.string().nullable(),artifacts:z.array(artifactSchema),
+      quote_output:quoteOutputSchema.optional()})).optional(),
   }).nullable(),
   result: z.object({
     confirmation: z.string().nullable(), reservation_id: z.string().nullable(),
@@ -150,6 +155,7 @@ export type FieldSpec = z.infer<typeof fieldSpecSchema>;
 export type NativeDisplayRow = z.infer<typeof nativeDisplayRowSchema>;
 export type QuoteOption = z.infer<typeof quoteOptionSchema>;
 export type QuoteSelection = Pick<QuoteOption, 'group_id' | 'room_id' | 'option_index'>;
+export type QuoteOutput = z.infer<typeof quoteOutputSchema>;
 export type Proposal = z.infer<typeof proposalSchema>;
 export type ThreadSnapshot = z.infer<typeof threadSnapshotSchema>;
 export type Capabilities = z.infer<typeof capabilitiesSchema>;

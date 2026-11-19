@@ -12,7 +12,7 @@ import { defaultQuoteSelections } from './quote-defaults';
 import type { DraftValue, GuestCandidate } from './workflow';
 import type { StayLookup } from './api';
 import { jsonSchema } from './wire';
-import type { Capabilities, Change, FieldSpec, Json, Proposal, QuoteSelection, ThreadInput, Workflow as WorkflowName } from './wire';
+import type { Capabilities, Change, FieldSpec, Json, Proposal, QuoteOutput, QuoteSelection, ThreadInput, Workflow as WorkflowName } from './wire';
 
 export type QuoteDraftRequest = {
   proposalId: string; revision: number; quoteId: string; jobId: string; body: string;
@@ -758,7 +758,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     }
   }
 
-  async function generateQuoteArtifacts(proposal: Proposal, quoteId: string, selections: QuoteSelection[]) {
+  async function generateQuoteArtifacts(proposal: Proposal, quoteId: string, selections: QuoteSelection[], quoteOutput?: QuoteOutput) {
     const signal = controllerRef.current?.signal;
     const jobId = snapshotRef.current?.proposals.find(item=>item.id===proposal.id)?.stage?.job_id;
     if (!signal || signal.aborted || authenticationExpiredRef.current || operationRef.current || cache.inFlightEdit || !jobId) return;
@@ -771,7 +771,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
     operationRef.current = active;
     setBusy(true); setMessage(null);
     try {
-      await api.quoteArtifacts({ proposalId: current.id, expectedRevision: current.revision, quoteId, selections, signal });
+      await api.quoteArtifacts({ proposalId: current.id, expectedRevision: current.revision, quoteId, selections, quoteOutput, signal });
       if (signal.aborted) return;
       const threadId = snapshotRef.current?.id;
       if (!threadId) return;
@@ -1221,7 +1221,7 @@ function ThreadController({ input, email, api, cache, onAuthenticationRequired, 
         onSelectGuest={proposal.workflow === 'create' && !issue ? (candidate,index) => { void selectGuest(proposal, candidate,index); } : undefined}
         onQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { void operation('quote', proposal, quoteId); } : undefined}
         onSubmitQuote={canQuote && !issue && !isUncertain && ['ready', 'waiting_go'].includes(proposal.phase) ? quoteId => { cache.autoQuotes.add(proposal.id); setPendingQuote({ proposalId: proposal.id, quoteId }); } : undefined}
-        onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections) => { void generateQuoteArtifacts(proposal, quoteId, selections); } : undefined}
+        onGenerateQuoteArtifacts={canQuote && !issue && !isUncertain ? (quoteId, selections, quoteOutput) => { void generateQuoteArtifacts(proposal, quoteId, selections, quoteOutput); } : undefined}
         quoteDraftTarget={quoteDraftTarget}
         onSaveQuoteDraft={saveQuoteDraft && !issue && !isUncertain ? body => saveCurrentQuoteDraft(proposal, body) : undefined}
         quoteConnectionReady={streamConnected}

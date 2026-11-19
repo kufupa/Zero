@@ -4,7 +4,7 @@ import {
   proposalSchema, threadInputSchema, threadSnapshotSchema,
 } from './wire';
 import type {
-  AcceptedGo, AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, QuoteSelection, ThreadInput,
+  AcceptedGo, AcceptedQuote, AcceptedStage, Capabilities, Change, NavaEvent, Proposal, QuoteOutput, QuoteSelection, ThreadInput,
 } from './wire';
 
 const boundProposalSchema = proposalSchema.extend({ source_message_id: z.string().min(1).nullable().optional() });
@@ -29,7 +29,7 @@ export type NavaApi = {
   undo: (request: RevisionRequest) => Promise<Proposal>;
   redo: (request: RevisionRequest) => Promise<Proposal>;
   quote: (request: RevisionRequest & { quoteId: string; idempotencyKey: string }) => Promise<AcceptedQuote>;
-  quoteArtifacts: (request: RevisionRequest & { quoteId: string; selections: QuoteSelection[] }) => Promise<void>;
+  quoteArtifacts: (request: RevisionRequest & { quoteId: string; selections: QuoteSelection[]; quoteOutput?: QuoteOutput }) => Promise<void>;
   stage: (request: RevisionRequest) => Promise<AcceptedStage>;
   lookupStay: (request: RevisionRequest & { lookup: StayLookup }) => Promise<AcceptedStage>;
   selectStay: (request: RevisionRequest & { jobId: string; removeFields: string[] }) => Promise<Proposal>;
@@ -193,9 +193,9 @@ export function createNavaApi(config: NavaApiConfig): NavaApi {
       }
       return parsed.data;
     },
-    quoteArtifacts: async ({ proposalId, expectedRevision, quoteId, selections, signal }) => {
+    quoteArtifacts: async ({ proposalId, expectedRevision, quoteId, selections, quoteOutput, signal }) => {
       const response = await request(`${proposalPath(proposalId)}/quote-artifacts`, body({
-        expected_revision: expectedRevision, quote_id: quoteId, selections,
+        expected_revision: expectedRevision, quote_id: quoteId, selections, ...(quoteOutput ? {quote_output:quoteOutput} : {}),
       }, signal));
       if (response.status !== 201) throw new NavaApiError('Nava did not confirm the quote files.', 'invalid_response', response.status);
     },

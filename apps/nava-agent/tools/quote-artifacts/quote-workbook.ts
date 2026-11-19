@@ -34,8 +34,8 @@ export type WorkbookLine = {
   qty: number;
   /** NIGHTS column: nights, days or trips. */
   nights: number;
-  rateMinor: number;
-  totalMinor: number;
+  rateMinor: number | null;
+  totalMinor: number | null;
 };
 
 export type WorkbookHeader = {
@@ -55,6 +55,7 @@ export type QuoteWorkbookInput = {
   lines: WorkbookLine[];
   /** Unpriced staff note, printed in the note block. */
   note?: string;
+  validUntil?: string;
   propertyCode: string;
 };
 
@@ -351,18 +352,18 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
       line.qty < 1 ||
       !Number.isSafeInteger(line.nights) ||
       line.nights < 1 ||
-      !Number.isSafeInteger(line.rateMinor) ||
-      line.rateMinor < 0
+      (line.rateMinor !== null && (!Number.isSafeInteger(line.rateMinor) || line.rateMinor < 0))
     ) {
       throw new Error('workbook_line');
     }
-    if (line.totalMinor !== line.qty * line.nights * line.rateMinor) throw new Error('workbook_line_total');
-    subtotal += line.totalMinor;
+    if (line.rateMinor === null ? line.totalMinor !== null : line.totalMinor !== line.qty * line.nights * line.rateMinor) throw new Error('workbook_line_total');
+    if (line.totalMinor !== null) subtotal += line.totalMinor;
   }
   if (!Number.isSafeInteger(subtotal)) throw new Error('money_overflow');
 
   sheet = setNumber(sheet, 'B9', excelSerialDate(input.authoredDate));
-  sheet = clearCell(sheet, 'A10');
+  sheet = setText(sheet, 'A10', 'Valid until:');
+  sheet = setText(sheet, 'B10', input.validUntil?.trim() || 'To be confirmed');
   sheet = setText(sheet, 'B12', input.header.attention);
   sheet = setText(sheet, 'B13', input.header.organization);
   sheet = setText(sheet, 'B14', input.header.clientEmail);
@@ -388,18 +389,18 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
       if (height > 409) throw new Error('workbook_line_too_long');
       sheet = setRowHeight(sheet, row, height);
       sheet = setNumber(sheet, `F${row}`, line.nights);
-      sheet = setNumber(sheet, `G${row}`, randText(line.rateMinor));
+      sheet = line.rateMinor === null ? setText(sheet, `G${row}`, 'On request') : setNumber(sheet, `G${row}`, randText(line.rateMinor));
     } else {
       // Empty cells, not empty text: text in B, F or G would make the line-total formula an error.
       for (const column of ['A', 'B', 'C', 'F', 'G']) sheet = clearCell(sheet, `${column}${row}`);
     }
-    sheet = line ? setFormula(sheet, `H${row}`, `+B${row}*F${row}*G${row}`, randText(line.totalMinor)) : clearCell(sheet, `H${row}`);
+    sheet = line?.totalMinor != null ? setFormula(sheet, `H${row}`, `+B${row}*F${row}*G${row}`, randText(line.totalMinor)) : clearCell(sheet, `H${row}`);
   }
   // The subtotal sums through the separator row, as the template's SUM(H24:H30) does, so it moves with it.
-  sheet = setText(sheet, `G${below(31)}`, 'Displayed sum');
+  sheet = setText(sheet, `G${below(31)}`, input.lines.some(line=>line.totalMinor===null) ? 'Priced sum' : 'Displayed sum');
   sheet = setFormula(sheet, `H${below(31)}`, `SUM(H${FIRST_LINE_ROW}:H${below(30)})`, randText(subtotal));
   sheet = setFormula(sheet, `H${below(33)}`, `+H${below(31)}`, randText(subtotal));
-  sheet = setText(sheet, `A${below(33)}`, 'Displayed nightly sum (not HMS payable total)', ' s="20"');
+  sheet = setText(sheet, `A${below(33)}`, 'Displayed priced sum (not HMS payable total)', ' s="20"');
   sheet = clearCell(sheet, `G${below(33)}`);
   {
     sheet = setText(sheet, `A${below(38)}`, 'Meals are included only where stated in the line description.');

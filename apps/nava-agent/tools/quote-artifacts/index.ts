@@ -93,6 +93,11 @@ function linesFor(quote: ReturnType<typeof snapshot.parse>): WorkbookLine[] {
     lines.push(...roomLines(quote,group,room,capturedRoom,index));
   }
   if (rooms !== selections.size) throw new Error('extra selection');
+  for (const extra of quote.output.extras) {
+    const rateMinor=extra.unit_price === null ? null : cents(extra.unit_price);
+    const totalMinor=rateMinor === null ? null : rateMinor * extra.quantity * extra.units;
+    lines.push({dateLabel:'',description:extra.description,qty:extra.quantity,nights:extra.units,rateMinor,totalMinor});
+  }
   return lines;
 }
 
@@ -152,7 +157,8 @@ export function createQuoteArtifacts(ports: Ports) {
     try {
       const lines = linesFor(quote);
       bytes = buildQuoteWorkbook({ authoredDate: quote.authored_date, propertyCode: quote.property_code,
-        header: quote.header, lines, note: quote.note });
+        header: quote.header, lines, validUntil:quote.output.valid_until,
+        note:[`Payment terms: ${quote.output.payment_terms || 'Please confirm with reservations.'}`,quote.note].filter(Boolean).join('\n') });
     } catch { return fail('QUOTE_NOT_RENDERABLE', 'The selected quote is incomplete or cannot be represented by the quotation template.'); }
     if (context.signal?.aborted) return fail('ABORTED', 'Artifact generation was cancelled.');
     let pdfBytes: Uint8Array;
