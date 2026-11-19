@@ -73,6 +73,8 @@ TRIAGE_HINT_RE = re.compile(
 
 # Target mix — Amend/Cancel may use 6-week window (from 8 Oct). No weak pad.
 NEED = {"create": 23, "amend": 15, "cancel": 15, "filing": 12, "quote": 20, "triage": 15}  # sums to 100
+if os.environ.get("HOLDOUT_NEED_JSON"):
+    NEED = json.loads(os.environ["HOLDOUT_NEED_JSON"])
 AMEND_CANCEL_START = "2026-10-08T00:00:00.000Z"  # 6-week window
 FRESH_START = "2026-10-29T00:00:00.000Z"  # create/quote/filing/triage stay in 3-week fresh window
 
@@ -1956,10 +1958,23 @@ def main() -> None:
         },
         "queue": q_dedup,
     }
-    (FRESH / "queue-holdout.json").write_text(json.dumps(queue_payload, indent=2, ensure_ascii=False))
-    manifest["queue_holdout"] = queue_payload["counts"]
+    # HARD RULE (coordinator): never rewrite queue-holdout.json. Propose via message only.
+    # Escape hatch HOLDOUT_WRITE_QUEUE=1 is intentionally omitted from normal paths.
+    qpath = FRESH / "queue-holdout.json"
+    print(
+        f"[holdout] NOT writing {qpath} (queue is reads-lane owned). "
+        f"Proposed counts={queue_payload['counts']}. Send delta to coordinator as a message.",
+        flush=True,
+    )
+    (OUT / "queue-holdout.PROPOSED.json").write_text(
+        json.dumps(queue_payload, indent=2, ensure_ascii=False)
+    )
+    manifest["queue_holdout"] = {
+        **queue_payload["counts"],
+        "file_write": "suppressed",
+        "proposed_path": str(OUT / "queue-holdout.PROPOSED.json"),
+    }
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
-
     print(json.dumps({
         k: manifest[k]
         for k in ("n", "by_workflow", "shifts", "leaks_rejected", "build_errors", "dev_dedup", "queue_holdout", "reads_available")
@@ -1973,9 +1988,11 @@ def refresh_gold_frozen() -> None:
         raise SystemExit(f"missing {freeze_path}; refuse to refresh without freeze lock")
     freeze = json.loads(freeze_path.read_text())
     case_ids = list(freeze.get("case_ids") or [])
-    if len(case_ids) != 100:
-        raise SystemExit(f"FROZEN.json has {len(case_ids)} case_ids; want 100")
-
+    expect_n = int(freeze.get("n") or len(case_ids))
+    if not case_ids or len(case_ids) != expect_n:
+        raise SystemExit(
+            f"FROZEN.json has {len(case_ids)} case_ids; n field={freeze.get('n')}"
+        )
     print("[holdout] GOLD REFRESH only — frozen set, no mine/select/queue", flush=True)
     idx = FreshIndex()
     idx.load()
