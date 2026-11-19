@@ -277,7 +277,7 @@ async function baselineDispatch(sessionId:string,name:string,input:unknown,toolE
           };
           staffDraft=withReadParties(staffDraft,reads);
         }
-        if(staffPrepareOnly() && draft.workflow==='filing') {
+        if(staffPrepareOnly() && draft.workflow==='filing' && draft.disposition==='propose') {
           const filing=await loadFilingModule();
           const source=await selectedStageSource(tx,session.id);
           if(filing?.withFilingSourceFields && source.success) {

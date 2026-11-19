@@ -43,43 +43,27 @@ function selectedPdfs(attachments: unknown[]) {
 }
 
 export function withFilingSourceFields(draft: ProposalDraft, selectedMessagePayload: unknown): ProposalDraft {
-  if (draft.workflow !== 'filing') return draft;
+  if (draft.workflow !== 'filing' || draft.disposition !== 'propose' || draft.actions.length !== 1) return draft;
   const source = sourceMessage.safeParse(selectedMessagePayload);
   if (!source.success) return draft;
-  const choices = selectedPdfs(source.data.attachments);
-  let working = draft;
-  // When a selected PDF exists, never leave actions empty — staff still reviews the file.
-  if (!working.actions.length && choices.length) {
-    const bookingId = working.bookings[0]?.id;
-    working = {
-      ...working,
-      disposition: working.disposition === 'needs_info' ? 'staff_review' : working.disposition,
-      actions: [{
-        id: 'filing-1',
-        type: 'voucher_submission',
-        booking_ids: bookingId ? [bookingId] : [],
-        details: { message_id: source.data.id, attachment_id: choices[0]!.id, description: null },
-      }],
-    };
-  }
-  if (!['propose', 'staff_review'].includes(working.disposition) || working.actions.length !== 1) return working;
-  const [action] = working.actions;
+  const [action] = draft.actions;
   const provided = filingDetails.safeParse(action.details);
   const details: z.infer<typeof filingDetails> = provided.success ? provided.data : {};
   const wrongMessage = details.message_id != null && details.message_id !== source.data.id;
+  const choices = selectedPdfs(source.data.attachments);
   const file = wrongMessage ? undefined : details.attachment_id == null && choices.length === 1
     ? choices[0] : choices.find(option => option.id === details.attachment_id);
   const label = filingDescription.safeParse(details.description);
   const description = label.success ? label.data : null;
   const fallback = action.type === 'voucher_submission' ? 'Booking voucher'
     : action.type === 'payment_proof_submission' ? 'Proof of payment' : 'Reservation document';
-  const fieldSpecs = working.field_specs.filter(spec => !/^\/?actions\/0\/details(?:\/|$)/.test(spec.path));
+  const fieldSpecs = draft.field_specs.filter(spec => !/^\/?actions\/0\/details(?:\/|$)/.test(spec.path));
   const evidence = [{ message_id: source.data.id, attachment_id: file?.id ?? null, quote: null }];
   const options = choices.map(item => ({ value: item.id, label: item.name, meaning: null }));
   return {
-    ...working,
+    ...draft,
     ...(wrongMessage ? { disposition: 'staff_review', reason: 'Check the PDF on the selected email.' }
-      : !choices.length ? { disposition: 'needs_info', missing: [...working.missing, 'PDF on the selected email'] } : {}),
+      : !choices.length ? { disposition: 'needs_info', missing: [...draft.missing, 'PDF on the selected email'] } : {}),
     actions: [{ ...action, details: { message_id: source.data.id, attachment_id: file?.id ?? null, description: description ?? fallback } }],
     field_specs: [...fieldSpecs,
       { path: '/actions/0/details/attachment_id', label: 'PDF attachment', provenance: file ? 'default' : 'unknown',
