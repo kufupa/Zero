@@ -108,7 +108,81 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
   return catalogueRecords(catalogs[key]).map(item => object(item));
 }
 
-function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
+/** Modal defaults from anchors created/sent BEFORE as_of for this party name. */
+function partyDefaultsBeforeAsOf(
+  world: TwinWorld,
+  kind: string,
+  partyName: string,
+  asOf: string | null,
+): Record<string, string | null> | null {
+  const needle = partyName.trim().toLowerCase();
+  if (!needle || needle.length < 3) return null;
+  const counts: Record<string, Map<string, number>> = {
+    room_type: new Map(),
+    rate_plan: new Map(),
+    guarantee_type: new Map(),
+    track: new Map(),
+    source_of_business: new Map(),
+  };
+  const fieldKey =
+    kind === 'agency' ? 'ta1' :
+    kind === 'organization' ? 'company' :
+    null;
+  if (!fieldKey) return null;
+  for (const anchor of world.anchors) {
+    const fields = object(anchor.hms_fields);
+    const party = String(fields[fieldKey] ?? '').toLowerCase();
+    if (!party) continue;
+    if (!(party.includes(needle) || needle.includes(party) || tokenOverlap(party, needle))) continue;
+    let when: string | null = null;
+    for (const pdf of anchor.pdfs ?? []) {
+      const row = object(pdf);
+      const sent = row.sent_at ?? row.filed_at;
+      if (typeof sent === 'string' && sent) {
+        when = when == null || sent < when ? sent : when;
+      }
+    }
+    if (!when) when = typeof anchor.hms_capture_later === 'string' ? anchor.hms_capture_later : null;
+    if (asOf && when && when > asOf) continue;
+    const room = String(fields.roomtype ?? fields.room_type ?? '');
+    const rate = String(fields.rateplan ?? fields.rate_plan ?? '');
+    const guarantee = String(fields.guaranteetype ?? fields.guarantee_type ?? '');
+    const track = String(fields.track ?? fields.subsegment ?? '');
+    const source = String(fields.sourceofbusiness ?? fields.source_of_business ?? '');
+    if (room) counts.room_type!.set(room, (counts.room_type!.get(room) ?? 0) + 1);
+    if (rate) counts.rate_plan!.set(rate, (counts.rate_plan!.get(rate) ?? 0) + 1);
+    if (guarantee) counts.guarantee_type!.set(guarantee, (counts.guarantee_type!.get(guarantee) ?? 0) + 1);
+    if (track) counts.track!.set(track, (counts.track!.get(track) ?? 0) + 1);
+    if (source) counts.source_of_business!.set(source, (counts.source_of_business!.get(source) ?? 0) + 1);
+  }
+  const mode = (map: Map<string, number> | undefined): string | null => {
+    if (!map || !map.size) return null;
+    return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
+  };
+  const defaults = {
+    room_type: mode(counts.room_type),
+    rate_plan: mode(counts.rate_plan),
+    guarantee_type: mode(counts.guarantee_type),
+    track: mode(counts.track),
+    source_of_business: mode(counts.source_of_business),
+    billing_note: null as string | null,
+  };
+  if (!defaults.room_type && !defaults.rate_plan && !defaults.guarantee_type && !defaults.track && !defaults.source_of_business) {
+    return null;
+  }
+  return defaults;
+}
+
+function tokenOverlap(a: string, b: string): boolean {
+  const tokens = (s: string) => new Set(s.split(/[^a-z0-9]+/).filter(t => t.length >= 4));
+  const ta = tokens(a);
+  const tb = tokens(b);
+  let hit = 0;
+  for (const t of ta) if (tb.has(t)) hit += 1;
+  return hit >= 1;
+}
+
+function searchParties(world: TwinWorld, input: Record<string, unknown>, asOf: string | null): TwinEnvelope {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const query = String(input.query ?? '').toLowerCase();
@@ -137,15 +211,18 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
   } else {
     for (const row of partyRecords(world, kind)) {
       const id = String(row.nativeId ?? row.code ?? row.id ?? '');
-      const name = String(row.meaning ?? row.name ?? row.label ?? '').toLowerCase();
+      const name = String(row.meaning ?? row.name ?? row.label ?? '');
+      const nameLower = name.toLowerCase();
       const code = String(row.code ?? '').toLowerCase();
-      const hay = field === 'profile_id' ? id.toLowerCase() : `${name} ${code}`;
-      if (!query || hay.includes(query) || query.includes(name) || (code && query === code)) {
+      const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
+      if (!query || hay.includes(query) || query.includes(nameLower) || (code && query === code) || tokenOverlap(nameLower, query)) {
+        const defaults = partyDefaultsBeforeAsOf(world, kind, name || String(input.query ?? ''), asOf);
         candidates.push({
           nativeId: id || `twin-${kind}-${candidates.length + 1}`,
           code: row.code ?? null,
           name: row.meaning ?? row.name ?? row.label ?? null,
           kind,
+          defaults: defaults ?? undefined,
         });
       }
       if (candidates.length >= 25) break;
@@ -154,7 +231,7 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
   return ok({
     native: {
       outcome: candidates.length ? 'candidates' : 'not_found',
-      criteria: {kind, field, query: input.query},
+      criteria: {kind, field, query: input.query, as_of: asOf},
       candidates,
       coverage: 'twin',
     },
@@ -276,8 +353,14 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
         for (const kind of kinds) sections[kind] = catalogueSection(world.catalog, kind);
         return ok({property_code: body.property_code ?? 'HRCEN', sections});
       }
-      case 'hms_search_parties':
-        return searchParties(world, body);
+      case 'hms_search_parties': {
+        const asOf =
+          typeof card.as_of === 'string' ? card.as_of :
+          typeof object(card.selected_email).timestamp === 'string' ? String(object(card.selected_email).timestamp) :
+          typeof object(card.source).input_cutoff === 'string' ? String(object(card.source).input_cutoff) :
+          null;
+        return searchParties(world, body, asOf);
+      }
       case 'hms_quote':
         return quoteFromWorld(world, body);
       case 'hms_prepare': {
