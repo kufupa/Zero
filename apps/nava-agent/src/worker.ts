@@ -466,11 +466,13 @@ async function main():Promise<void> {
       .catch(error=>console.error(JSON.stringify({event:'catalogue_warm_failed',error:error instanceof Error && /^[A-Z0-9_]+$/.test(error.message)?error.message:error instanceof Error?error.name:'unknown'})));
   }
   if(runtimeProvider()==='cma') return runCma(native);
-  if((process.env.AWS_REGION ?? 'eu-west-1')!=='eu-west-1') throw new Error('BEDROCK_REGION_INVALID');
+  const provider=runtimeProvider();
+  if(provider==='bedrock' && (process.env.AWS_REGION ?? 'eu-west-1')!=='eu-west-1') throw new Error('BEDROCK_REGION_INVALID');
   const storePath='./session-store.js',runtimePath='./agent-runtime/index.js';
   const store:SessionStore=await import(storePath);
   const runtimeModule=await import(runtimePath);
-  if(typeof runtimeModule.BedrockRuntime!=='function') throw new Error('BEDROCK_RUNTIME_UNAVAILABLE');
+  const Runtime=provider==='azure' ? runtimeModule.AzureRuntime : runtimeModule.BedrockRuntime;
+  if(typeof Runtime!=='function') throw new Error(provider==='azure' ? 'AZURE_RUNTIME_UNAVAILABLE' : 'BEDROCK_RUNTIME_UNAVAILABLE');
   const quoteOnly=process.env.NAVA_QUOTE_SKELETON==='1';
   const pilot=createPilotRequested();
   const saveEnabled=hmsSaveEnabled() && !quoteOnly && (!pilot || createPilotEnabled());
@@ -479,7 +481,7 @@ async function main():Promise<void> {
     :pilot?'Read the selected email using mail_read_thread and read triage/SKILL.md and create/SKILL.md for new bookings. Load shared tool rules with skill_read({"skill_name":"create","path":"../references/tools-and-proposal.md"}). Create is the only supported native workflow in this pilot. Publish one grounded Create action and booking for one complete supported request, or needs_info/staff_review when unclear. Use first_name and last_name, empty Create action details, and editable pointers under /bookings/0/fields. Publish with native_result null. Only staff runs Prepare. Never send mail or invent missing input.'
     :'Read the selected mail thread with mail_read_thread, then read triage/SKILL.md and the relevant workflow skill and references with skill_read. Use registered tools and native facts only; never invent prices or send email. Publish a proposal for staff, including missing information.';
   const saveInstruction=saveEnabled ? ' When ready, request hms_save to pause for approval.' : ' End after publishing the proposal. Save is disabled.';
-  await runWorker({store,native,...(saveEnabled?{saveQueue:createSaveQueue(store)}:{}),runtime:(deps,skillContext)=>new runtimeModule.BedrockRuntime(deps,{system:system+saveInstruction+(skillContext ? `\n\n${skillContext}` : '')})});
+  await runWorker({store,native,...(saveEnabled?{saveQueue:createSaveQueue(store)}:{}),runtime:(deps,skillContext)=>new Runtime(deps,{system:system+saveInstruction+(skillContext ? `\n\n${skillContext}` : '')})});
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const reportedQuoteClosures=new WeakSet<Error>();

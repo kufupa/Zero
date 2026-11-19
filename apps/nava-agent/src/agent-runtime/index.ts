@@ -4,6 +4,7 @@ import { RuntimeLoop } from './loop.js';
 import type { AgentRuntime, ModelCall, RuntimeBlock, RuntimeDeps, TurnInput } from './loop.js';
 
 export type { AgentRuntime, RuntimeBlock, RuntimeDeps, RuntimeMessage, RuntimeState, ToolDefinition, TurnInput } from './loop.js';
+export { AzureRuntime } from './azure.js';
 
 const REGION = 'eu-west-1';
 const MODEL = 'global.anthropic.claude-haiku-5-5';
