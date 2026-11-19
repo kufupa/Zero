@@ -131,3 +131,9 @@ apps/server-pilot/data/mastra/
 .promptfoo/
 promptfoo-cache/
 apps/server-pilot/evals/same-move/output/
+
+# Nava replay bench local PII / case dumps (never commit)
+apps/nava-agent/bench/data/
+apps/nava-agent/bench/cases-out/
+apps/nava-agent/bench/runs/
+**/.bench-data/
