@@ -5,6 +5,7 @@ const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/z
 
 export const CASE_SETS: Record<string, string> = {
   'holdout-fresh': 'holdout-fresh',
+  'dev-fresh': 'dev-fresh',
   v1: 'v1',
   samples: 'samples',
   smoke1: 'smoke1',
