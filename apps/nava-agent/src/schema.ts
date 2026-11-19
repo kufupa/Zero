@@ -42,7 +42,7 @@ const operationKey = revisionInput.extend({idempotency_key:z.string().trim().min
 export const goInput = operationKey.extend({prepared_job_id:id.optional()}).strict();
 export const requoteInput = operationKey.extend({quote_id:z.string().min(1)}).strict();
 const calendarDate = z.string().date();
-export const groupedQuoteRequest = nativeGroupedQuote
+export const groupedQuoteRequest = nativeGroupedQuote.strip()
   .refine(quote=>new Set(quote.groups.map(group=>group.group_id)).size===quote.groups.length,{message:'group ids must be unique'})
   .refine(({groups})=>groups.every(group=>calendarDate.safeParse(group.arrival_date).success
     && calendarDate.safeParse(group.departure_date).success && group.departure_date>group.arrival_date),{message:'departure must follow arrival'});
