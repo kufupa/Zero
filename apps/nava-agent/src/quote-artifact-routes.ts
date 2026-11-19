@@ -62,7 +62,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     if (!parsed.success) return c.json(responseError('INVALID_INPUT','Select native quote options for this revision.'),400);
     const input = parsed.data;
     const proposalId = c.req.param('id');
-    const [row] = await sql`SELECT p.session_id,p.thread_id,p.revision,p.phase,p.current,p.stage,t.mailbox_id,t.property_code,t.mode,m.payload AS selected
+    const [row] = await sql`SELECT p.session_id,p.thread_id,p.revision,p.phase,p.current,p.stage,t.mailbox_id,t.property_code,t.mode,t.selected_message_id,m.payload AS selected
       FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id
       JOIN nava_agent.mail_message m ON m.thread_id=t.id AND m.source_message_id=t.selected_message_id
       WHERE p.id=${proposalId} AND p.workflow='quote'`;
@@ -90,6 +90,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     const selectedOptions=input.selections.map(selection=>options.find(option=>option.group_id===selection.group_id &&
       option.room_id===selection.room_id && option.option_index===selection.option_index));
     if(selectedOptions.some(option=>!option)) return c.json(responseError('QUOTE_NOT_RENDERABLE','The selected quote is incomplete or cannot be represented by the quotation template.'),409);
+    const previous=z.array(z.object({group_id:id,room_id:id,option_index:z.number()}).passthrough()).safeParse(currentSet.data.quote_selected_options);
     const converter = converterUrl();
     if (!converter || !process.env.NAVA_QUOTE_ARTIFACT_DIR) return c.json(responseError('ARTIFACTS_UNAVAILABLE','Private quote artifact service unavailable.'),503);
     const job = ready.data.job_id;
@@ -135,7 +136,17 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
               AND t.mailbox_id=${row.mailbox_id} AND t.mode='live' RETURNING p.id`;
             if (saved.length !== 1) throw new Error('QUOTE_REVISION_CHANGED');
             await writeEvent(tx,row.session_id,'quote_artifacts_ready',{proposal_id:proposalId,revision:input.expected_revision,
-              job_id:currentSet.data.job_id,quote_id:quote.quote_id,artifact_ids:[pdfRef.id,workbookRef.id]});
+              job_id:currentSet.data.job_id,quote_id:quote.quote_id,artifact_ids:[pdfRef.id,workbookRef.id],
+              source_message_id:row.selected_message_id,who:principal.id,selected_options:selectedOptions});
+            if(previous.success) for(const option of selectedOptions) {
+              if(!option) continue;
+              const before=previous.data.find(item=>item.group_id===option.group_id && item.room_id===option.room_id);
+              if(before && before.option_index!==option.option_index) await writeEvent(tx,row.session_id,'correction',{
+                proposal_id:proposalId,workflow:'quote',source_message_id:row.selected_message_id,revision:input.expected_revision,
+                quote_id:quote.quote_id,group_id:option.group_id,room_id:option.room_id,field:'quote_selection',
+                before,after:option,before_present:true,after_present:true,who:principal.id,
+              });
+            }
           });
           return {pdf:pdfRef,workbook:workbookRef};
         } catch (error) {
