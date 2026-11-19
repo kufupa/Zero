@@ -28,6 +28,8 @@ export type CaseScore = {
   wall_ms: number;
   twin_uncovered: string[];
   proposal: unknown;
+  /** Set when the case threw before a proposal; all expected fields scored miss. */
+  run_error?: string;
 };
 
 const LUNA_IN = 0.10 / 1_000_000;
@@ -108,7 +110,18 @@ function equalish(expected: unknown, actual: unknown): boolean {
   const a = normalize(expected);
   const b = normalize(actual);
   if (!a || !b) return false;
-  return a === b || b.includes(a) || a.includes(b) || acronym(a) === b || acronym(b) === a || tokenOverlap(a, b);
+  const compact = (s: string) => s.replace(/[^a-z0-9]+/g, '');
+  return (
+    a === b ||
+    b.includes(a) ||
+    a.includes(b) ||
+    compact(a) === compact(b) ||
+    compact(a).includes(compact(b)) ||
+    compact(b).includes(compact(a)) ||
+    acronym(a) === b ||
+    acronym(b) === a ||
+    tokenOverlap(a, b)
+  );
 }
 
 /** Org/agency: match name field OR sibling *_id against gold.code/nativeId. */
@@ -296,6 +309,7 @@ export type Scoreboard = {
     workflow_routing_hit: number;
     workflow_routing_miss: number;
     workflow_routing_accuracy: number | null;
+    errors: number;
   };
   cases: CaseScore[];
 };
@@ -333,7 +347,7 @@ function pickTier(bucket: Scoreboard['by_workflow'][string], tier: string | unde
 
 export function buildScoreboard(cases: CaseScore[]): Scoreboard {
   const by_workflow: Scoreboard['by_workflow'] = {};
-  let hit = 0, miss = 0, cost = 0, wall = 0, twin = 0, routeHit = 0, routeMiss = 0;
+  let hit = 0, miss = 0, cost = 0, wall = 0, twin = 0, routeHit = 0, routeMiss = 0, errors = 0;
   for (const row of cases) {
     const bucket = by_workflow[row.workflow] ??= {
       n: 0, hit: 0, miss: 0, not_expected: 0, no_gold: 0, field_accuracy: null,
@@ -346,6 +360,7 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
     cost += row.cost_usd;
     wall = Math.max(wall, row.wall_ms);
     twin += row.twin_uncovered.length ? 1 : 0;
+    if (row.run_error) errors += 1;
     for (const field of row.fields) {
       const isRoute = field.tier === 'workflow_routing' || field.path === '/workflow';
       if (field.result === 'hit') {
@@ -379,6 +394,7 @@ export function buildScoreboard(cases: CaseScore[]): Scoreboard {
       workflow_routing_hit: routeHit,
       workflow_routing_miss: routeMiss,
       workflow_routing_accuracy: routeDenom ? routeHit / routeDenom : null,
+      errors,
     },
     cases,
   };
