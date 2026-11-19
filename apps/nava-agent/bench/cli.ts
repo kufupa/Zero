@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import {parseArgs} from 'node:util';
+import {resolveCasesDir} from './cases-sets.js';
 import {runBench} from './runner/run.js';
 import type {Scoreboard} from './runner/score.js';
 
@@ -13,13 +14,14 @@ const {values} = parseArgs({
   },
 });
 
+const resolved = resolveCasesDir(values.cases, values['cases-dir']);
 const concurrency = Number(values.concurrency ?? 20);
-const limit = values.limit ? Number(values.limit) : values.cases === 'all' ? undefined : Number(values.cases);
+const limit = values.limit ? Number(values.limit) : resolved.limit;
 const {outDir, board, devBoard, holdBoard} = await runBench({
   concurrency,
   limit: Number.isFinite(limit) ? limit : undefined,
   outDir: values.out,
-  casesDir: values['cases-dir'],
+  casesDir: resolved.casesDir,
 });
 
 function summarize(board: Scoreboard) {
@@ -49,6 +51,7 @@ function summarize(board: Scoreboard) {
 
 console.log(JSON.stringify({
   outDir,
+  casesDir: resolved.casesDir,
   all: summarize(board),
   dev: summarize(devBoard),
   holdout: summarize(holdBoard),
