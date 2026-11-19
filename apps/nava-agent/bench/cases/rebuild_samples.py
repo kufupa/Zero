@@ -18,11 +18,13 @@ IMG_RE = re.compile(
 
 from field_catalog import (  # noqa: E402
     ACTION_PATHS,
+    GROUP_AMEND_CONFS,
     HMS_TO_PROPOSAL_MAP,
     PROFILE_FIELDS,
     STAY360_FIELDS,
     TIER1,
     TIER2,
+    TIER_HISTORY,
 )
 
 # Group amend wave (same staff outbound cluster shortening departure to 04-09-2026).
@@ -713,18 +715,31 @@ def exhaustive_gold(
         fields.append(row)
 
     later = ((gold_row.get("later_hms") or {}).get("fields")) or {}
-    bookings = group_bookings if (workflow == "amend" and group_bookings) else [{"confirmation": gold_row.get("real_confirmation")}]
+    case_conf = gold_row.get("real_confirmation")
+    # Group gold ONLY for the real Sep-2026 wave cases; never stamp every amend.
+    is_group = (
+        workflow == "amend"
+        and case_conf in GROUP_AMEND_CONFS
+        and group_bookings
+    )
+    bookings = list(group_bookings) if is_group else [{"confirmation": case_conf}]
     if not bookings:
-        bookings = [{"confirmation": gold_row.get("real_confirmation")}]
+        bookings = [{"confirmation": case_conf}]
+    # Primary booking is always THIS case's confirmation (not AMEND_GROUP[0]).
+    if is_group:
+        bookings = sorted(
+            bookings,
+            key=lambda b: 0 if b.get("confirmation") == case_conf else 1,
+        )
 
     am = (gold_row.get("amendment") or {}).get("changes") or {}
 
     for n, booking in enumerate(bookings):
-        conf = booking.get("confirmation") or gold_row.get("real_confirmation")
-        # Per-booking later fields: primary booking uses gold later_hms; others reservation_id only unless same amend wave.
+        conf = booking.get("confirmation") or case_conf
+        # Per-booking later fields: primary booking uses gold later_hms; others reservation_id only.
         later_fields = dict(later) if n == 0 else {}
-        if conf and n == 0 and "confirmationnumber" not in later_fields and "confirmation" not in later_fields:
-            later_fields["confirmationnumber"] = conf
+        if conf and n == 0:
+            later_fields["confirmationnumber"] = case_conf or conf
         elif conf and n > 0:
             later_fields = {"confirmationnumber": conf}
 
@@ -749,17 +764,26 @@ def exhaustive_gold(
             tier = meta["tier"]
             value = _normalize_later_value(hms_key, raw, code_maps)
 
-            # Expand guestfullname into first/last/guest_name paths.
+            # Expand guestfullname into first/last. guest_name only for workflows that use it (not create).
             if hms_key == "guestfullname" and isinstance(value, dict):
-                for sub_pane, sub_val, sub_path in [
+                pairs = [
                     ("first_name", value.get("first_name"), f"/bookings/{n}/fields/first_name"),
                     ("last_name", value.get("last_name"), f"/bookings/{n}/fields/last_name"),
-                    ("guest_name", value.get("name"), f"/bookings/{n}/fields/guest_name"),
-                ]:
+                ]
+                if workflow != "create":
+                    pairs.append(("guest_name", value.get("name"), f"/bookings/{n}/fields/guest_name"))
+                for sub_pane, sub_val, sub_path in pairs:
                     if sub_val is None:
                         continue
                     exp, basis = _knowable_from_shown(sub_pane, workflow, gold_row, sub_val)
                     add(sub_path, exp, sub_val, basis, tier=TIER1, hms_key=hms_key)
+                continue
+
+            allowed_wf = meta.get("workflows")
+            if allowed_wf and workflow not in allowed_wf:
+                continue
+            # Filing pane uses confirmation_number, not reservation_id.
+            if workflow == "filing" and pane == "reservation_id":
                 continue
 
             exp, basis = _knowable_from_shown(pane, workflow, gold_row, value)
@@ -779,35 +803,58 @@ def exhaustive_gold(
             add(path, exp, value, basis, tier=tier, hms_key=hms_key)
 
     # Workflow action / doc targets
-    if workflow == "cancel" and gold_row.get("real_confirmation"):
-        add("/bookings/0/reservation_id", "expected", gold_row["real_confirmation"], "reviewed_confirmation", tier=TIER1)
+    if workflow == "cancel" and case_conf:
+        add("/bookings/0/reservation_id", "expected", case_conf, "reviewed_confirmation", tier=TIER1)
         add(ACTION_PATHS["cancel_scope"]["path"], "not_expected", "whole_stay", "scope_default_unlabelled", tier=TIER1)
         add(ACTION_PATHS["cancel_reason"]["path"], "not_expected", None, "staff_picks_reason_at_go", tier=TIER1)
     if workflow == "filing":
-        fa = gold_row.get("filing_attachment") or {}
-        if fa.get("attachment_id"):
-            add(ACTION_PATHS["filing_attachment"]["path"], "expected", fa["attachment_id"], "filing_attachment", tier=TIER1)
-        if gold_row.get("real_confirmation"):
-            add(ACTION_PATHS["filing_confirmation"]["path"], "expected", gold_row["real_confirmation"], "filing_target", tier=TIER1)
-            add("/bookings/0/reservation_id", "expected", gold_row["real_confirmation"], "filing_target", tier=TIER1)
+        # Bench mailPayload exposes attachments as pdf-0..N — gold must match that id, not corpus UUID.
+        bench_att = gold_row.get("_bench_attachment_id") or "pdf-0"
+        add(ACTION_PATHS["filing_attachment"]["path"], "expected", bench_att, "bench_mail_attachment_id", tier=TIER1)
+        if case_conf:
+            # Filing pane uses confirmation_number field; reservation_id often left null.
+            add(ACTION_PATHS["filing_confirmation"]["path"], "expected", case_conf, "filing_target", tier=TIER1)
+            add("/bookings/0/reservation_id", "not_expected", case_conf, "filing_uses_confirmation_number_field", tier=TIER1)
         add(ACTION_PATHS["filing_description"]["path"], "not_expected", "Booking voucher", "description_default", tier=TIER1)
     if workflow == "quote":
         add(ACTION_PATHS["quote_property"]["path"], "expected", "HRCEN", "property_default", tier=TIER1)
-    if workflow == "triage" and gold_row.get("real_confirmation"):
-        add(ACTION_PATHS["triage_reservation"]["path"], "not_expected", gold_row["real_confirmation"], "triage_weak_gold", tier=TIER1)
+        q = gold_row.get("_quote_from_email") or {}
+        if q.get("arrival_date"):
+            add("/actions/0/details/groups/0/arrival_date", "expected", q["arrival_date"], "selected_email_dates", tier=TIER1)
+        if q.get("departure_date"):
+            add("/actions/0/details/groups/0/departure_date", "expected", q["departure_date"], "selected_email_dates", tier=TIER1)
+        if q.get("adults") is not None:
+            add("/actions/0/details/groups/0/rooms/0/adults", "expected", q["adults"], "selected_email_pax", tier=TIER1)
+        if q.get("quantity") is not None:
+            add("/actions/0/details/groups/0/rooms/0/quantity", "expected", q["quantity"], "selected_email_rooms", tier=TIER1)
+        if q.get("board"):
+            add("/actions/0/details/board", "expected", q["board"], "selected_email_meal", tier=TIER1)
+        if q.get("rate_plan"):
+            add("/actions/0/details/groups/0/rooms/0/rate_code", "expected", q["rate_plan"], "staff_quote_or_linked_stay", tier=TIER1)
+    if workflow == "triage" and case_conf:
+        add(ACTION_PATHS["triage_reservation"]["path"], "not_expected", case_conf, "triage_weak_gold", tier=TIER1)
 
-    # Tier2 pane defaults always present as not_expected rows for create (report coverage).
-    if workflow == "create":
-        for pane, path in [
-            ("guarantee_type", "/bookings/0/fields/guarantee_type"),
-            ("source_of_business", "/bookings/0/fields/source_of_business"),
-            ("track", "/bookings/0/fields/track"),
-            ("cms_send", "/bookings/0/fields/cms_send"),
-            ("cms_message_id", "/bookings/0/fields/cms_message_id"),
-            ("cms_recipient", "/bookings/0/fields/cms_recipient"),
-        ]:
-            if path not in seen:
-                add(path, "not_expected", None, "tier2_default_not_forced_by_shown", tier=TIER2)
+    # Tier2: history_knowable from earlier same-org/agency HMS bookings before as_of.
+    history = gold_row.get("_history_defaults") or {}
+    for pane, path in [
+        ("guarantee_type", "/bookings/0/fields/guarantee_type"),
+        ("source_of_business", "/bookings/0/fields/source_of_business"),
+        ("track", "/bookings/0/fields/track"),
+        ("rate_plan", "/bookings/0/fields/rate_plan"),
+        ("billing_reference", "/bookings/0/fields/billing_reference"),
+        ("cms_send", "/bookings/0/fields/cms_send"),
+        ("cms_message_id", "/bookings/0/fields/cms_message_id"),
+        ("cms_recipient", "/bookings/0/fields/cms_recipient"),
+    ]:
+        if path in seen and any(f.get("path") == path and f.get("expectation") == "expected" for f in fields):
+            continue
+        if pane in history and history[pane] is not None:
+            # Replace prior not_expected with history_knowable expected.
+            fields[:] = [f for f in fields if f.get("path") != path]
+            seen.discard(path)
+            add(path, "expected", history[pane], "history_same_org_agency_before_as_of", tier=TIER_HISTORY)
+        elif workflow == "create" and path not in seen:
+            add(path, "not_expected", None, "tier2_default_not_forced_by_shown", tier=TIER2)
 
     return fields, omitted
 
@@ -840,6 +887,102 @@ def build_message(raw: dict, *, is_selected: bool = False) -> dict:
         "images_stripped_count": len(stripped),
         "is_selected": is_selected,
     }
+
+
+def extract_quote_from_email(body: str, later_hms: dict | None = None) -> dict:
+    """Dates/pax/meal from selected quote email; optional rate from linked later HMS."""
+    text = body or ""
+    out: dict[str, Any] = {}
+    # 10 August - 04 September / 10 Aug - 4 Sep 2026 / 2026-08-10
+    months = {m: i for i, m in enumerate(
+        ["january","february","march","april","may","june","july","august","september","october","november","december"], 1)}
+    months.update({m[:3]: i for m, i in months.items()})
+    m = re.search(
+        r"(\d{1,2})\s+([A-Za-z]+)\s*(?:-|\u2013|to)\s*(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?",
+        text, re.I,
+    )
+    if m:
+        year = int(m.group(5) or "2026")
+        mo1, mo2 = months.get(m.group(2).lower()[:3]), months.get(m.group(4).lower()[:3])
+        if mo1 and mo2:
+            out["arrival_date"] = f"{year}-{mo1:02d}-{int(m.group(1)):02d}"
+            out["departure_date"] = f"{year}-{mo2:02d}-{int(m.group(3)):02d}"
+    m = re.search(r"(\d{4}-\d{2}-\d{2}).{0,40}(\d{4}-\d{2}-\d{2})", text)
+    if m and "arrival_date" not in out:
+        out["arrival_date"], out["departure_date"] = m.group(1), m.group(2)
+    if re.search(r"\bone person\b|\b1 (?:adult|person|pax)\b", text, re.I):
+        out["adults"] = 1
+    else:
+        m = re.search(r"(\d+)\s*(?:adults?|persons?|pax|people)", text, re.I)
+        if m:
+            out["adults"] = int(m.group(1))
+    m = re.search(r"(\d+)\s*(?:rooms?|×|x)", text, re.I)
+    out["quantity"] = int(m.group(1)) if m else 1
+    low = text.lower()
+    if "breakfast" in low and ("dinner" in low or "supper" in low):
+        out["board"] = "DBB"
+    elif "bed and breakfast" in low or re.search(r"\bb&b\b|\bbb\b", low):
+        out["board"] = "BB"
+    elif "dinner" in low:
+        out["board"] = "DBB"
+    later = (later_hms or {}).get("fields") or {}
+    if later.get("rateplan"):
+        out["rate_plan"] = {"code": str(later["rateplan"]).strip(), "name": None}
+    return out
+
+
+def history_defaults_for(as_of: str, later: dict, anchors: dict, code_maps: dict) -> dict:
+    """Tier2 values staff set on earlier same-org/agency bookings before as_of."""
+    company = str(later.get("company") or "").strip().lower()
+    agency = str(later.get("ta1") or "").strip().lower()
+    if not company and not agency:
+        return {}
+    hits: dict[str, list[Any]] = {
+        "guarantee_type": [], "source_of_business": [], "track": [],
+        "rate_plan": [], "billing_reference": [],
+    }
+    key_map = {
+        "guaranteetype": "guarantee_type",
+        "guarantee_type": "guarantee_type",
+        "sourceofbusiness": "source_of_business",
+        "source_of_business": "source_of_business",
+        "track": "track",
+        "rateplan": "rate_plan",
+        "rate_plan": "rate_plan",
+        "billingreference": "billing_reference",
+        "billing_reference": "billing_reference",
+    }
+    for conf, anchor in anchors.items():
+        fields = anchor.get("hms_fields") or {}
+        a_company = str(fields.get("company") or "").strip().lower()
+        a_agency = str(fields.get("ta1") or "").strip().lower()
+        if company and a_company != company and agency and a_agency != agency:
+            continue
+        if company and a_company != company and not agency:
+            continue
+        if agency and a_agency != agency and not company:
+            continue
+        # Prefer PDF timestamps before as_of as proxy for booking era.
+        pdfs = [p for p in (anchor.get("pdfs") or []) if parse_ts(p.get("sent_at")) and parse_ts(p.get("sent_at")) <= as_of]
+        if not pdfs and (anchor.get("hms_capture_later") or "") <= as_of:
+            pdfs = [{"sent_at": as_of}]
+        if not pdfs:
+            continue
+        for hk, pane in key_map.items():
+            if fields.get(hk) not in (None, ""):
+                val = fields[hk]
+                if pane == "rate_plan":
+                    val = _code_name_lookup(code_maps, "rate_plan", code=val) or val
+                hits[pane].append(val)
+    out = {}
+    for pane, vals in hits.items():
+        if not vals:
+            continue
+        # unanimous history only
+        norms = {json.dumps(v, sort_keys=True, default=str) if isinstance(v, dict) else str(v).strip().lower() for v in vals}
+        if len(norms) == 1:
+            out[pane] = vals[0]
+    return out
 
 
 def build_card(gold_row: dict, anchors, stay360, profiles, code_maps) -> dict:
@@ -981,10 +1124,46 @@ def build_card(gold_row: dict, anchors, stay360, profiles, code_maps) -> dict:
     ]
     raw["profile"]["field_count"] = 65
     profile = raw.get("profile")
-    group = AMEND_GROUP if workflow == "amend" else None
+    group = AMEND_GROUP if (workflow == "amend" and conf in GROUP_AMEND_CONFS) else None
+    # Enrich gold_row with bench-only hints (not persisted as separate top-level unless useful).
+    enriched = dict(gold_row)
+    if workflow == "filing":
+        # Match filename when possible; else first selected PDF = pdf-0.
+        fa = gold_row.get("filing_attachment") or {}
+        want = (fa.get("filename") or "").lower()
+        bench_id = "pdf-0"
+        for i, pdf in enumerate(selected.get("pdf_attachments_text") or []):
+            if want and want in str(pdf.get("filename") or "").lower():
+                bench_id = f"pdf-{i}"
+                break
+        if not (selected.get("pdf_attachments_text") or []) and (context_before):
+            # fall back to earlier message PDFs
+            for msg in context_before:
+                for i, pdf in enumerate(msg.get("pdf_attachments_text") or []):
+                    bench_id = f"pdf-{i}"
+                    break
+        enriched["_bench_attachment_id"] = bench_id
+    if workflow == "quote":
+        enriched["_quote_from_email"] = extract_quote_from_email(
+            selected.get("body_text") or "", gold_row.get("later_hms")
+        )
+        # If linked confirmation has later HMS, use its rate.
+        if conf and stay360.get(conf):
+            pass
+        elif conf and anchors.get(conf):
+            enriched.setdefault("_quote_from_email", {})
+            hf = (anchors[conf].get("hms_fields") or {})
+            if hf.get("rateplan") and "rate_plan" not in enriched["_quote_from_email"]:
+                enriched["_quote_from_email"]["rate_plan"] = _code_name_lookup(
+                    code_maps, "rate_plan", code=hf["rateplan"]
+                ) or {"code": hf["rateplan"], "name": None}
+    later_fields = ((gold_row.get("later_hms") or {}).get("fields")) or {}
+    if workflow == "create" and later_fields:
+        enriched["_history_defaults"] = history_defaults_for(as_of, later_fields, anchors, code_maps)
+
     gold, omitted = exhaustive_gold(
         workflow,
-        gold_row,
+        enriched,
         shown.get("stay"),
         code_maps,
         raw["record_view"]["fields"],
