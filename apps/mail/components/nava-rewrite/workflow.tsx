@@ -710,7 +710,7 @@ function quoteOutputPrefill(proposal:Proposal, quoteId:string):QuoteOutput {
   const text=(key:string)=>{ const value=details[key]; return typeof value==='string' ? value : ''; };
   const extras=Array.isArray(details.extras) ? details.extras.flatMap(item=>{
     if(!item || typeof item!=='object' || Array.isArray(item) || typeof item.description!=='string' || !item.description.trim()) return [];
-    const qty=(value:Json|undefined)=>typeof value==='number' && Number.isSafeInteger(value) && value>0 ? value : 1;
+    const qty=(value:Json|undefined)=>typeof value==='number' && Number.isSafeInteger(value) && value>0 ? value : null;
     const rawPrice=item.unit_price ?? item.price;
     const priceText=typeof rawPrice==='string' || typeof rawPrice==='number' ? String(rawPrice) : '';
     const price=/^\d+(?:\.\d{1,2})?$/.test(priceText) ? priceText : null;
@@ -726,7 +726,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
       .map(option => [JSON.stringify([option.group_id, option.room_id]), option.option_index])));
   const [output,setOutput]=useState(()=>{
     const initial=quoteOutputPrefill(proposal,proposal.stage?.quote_id ?? '');
-    return {...initial,extras:initial.extras.map(extra=>({...extra,quantity:String(extra.quantity),units:String(extra.units),unit_price:extra.unit_price ?? ''}))};
+    return {...initial,extras:initial.extras.map(extra=>({...extra,quantity:String(extra.quantity ?? ''),units:String(extra.units ?? ''),unit_price:extra.unit_price ?? ''}))};
   });
   const stage = proposal.stage;
   if (!stage?.quote_id || !stage.job_id || !stage.quote_options || !onGenerateQuoteArtifacts) return null;
@@ -739,7 +739,8 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
       ? [{ group_id: room.groupId, room_id: room.roomId, option_index: index }] : [];
   });
   const readyOutput=quoteOutputSchema.safeParse({...output,extras:output.extras.map(extra=>({...extra,
-    quantity:Number(extra.quantity),units:Number(extra.units),unit_price:extra.unit_price.trim() || null}))});
+    quantity:extra.quantity.trim() ? Number(extra.quantity) : null,
+    units:extra.units.trim() ? Number(extra.units) : null,unit_price:extra.unit_price.trim() || null}))});
   const changeExtra=(index:number,patch:Partial<(typeof output.extras)[number]>)=>setOutput(current=>({...current,
     extras:current.extras.map((extra,i)=>i===index ? {...extra,...patch} : extra)}));
   return <PaneSection title={quoteLabel ? `Choose quote options · ${quoteLabel}` : 'Choose quote options'}>
@@ -788,7 +789,7 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
     <PaneField label="Valid until" control="text" value={output.valid_until} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,valid_until:value}))} />
     <PaneField label="Payment terms" control="textarea" value={output.payment_terms} disabled={busy} hint="Leave blank if not confirmed." onChange={value=>setOutput(current=>({...current,payment_terms:value}))} />
     <h4>Extras</h4>
-    <p>Enter staff prices in ZAR. An empty price appears as “On request” and is excluded from the priced sum.</p>
+    <p>Enter staff prices in ZAR. Leave unknown values blank. Extras without a complete price are excluded from the priced sum.</p>
     {output.extras.map((extra,index)=><fieldset key={index} className={quoteStyles.stay}>
       <legend>Extra {index+1}</legend>
       <PaneField label="Description" control="text" value={extra.description} disabled={busy} onChange={value=>changeExtra(index,{description:value})} />
@@ -797,8 +798,8 @@ function QuoteOptions({ proposal, busy, onGenerateQuoteArtifacts, quoteLabel }: 
       <PaneField label="Price per unit (ZAR)" control="text" value={extra.unit_price} disabled={busy} onChange={value=>changeExtra(index,{unit_price:value})} />
       <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:current.extras.filter((_,i)=>i!==index)}))}>Remove extra</button>
     </fieldset>)}
-    <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:[...current.extras,{description:'',quantity:'1',units:'1',unit_price:''}]}))}>Add extra</button>
-    {!readyOutput.success && <p>Enter a description, positive whole quantities, and a valid price with up to two decimals for each extra.</p>}
+    <button type="button" disabled={busy} onClick={()=>setOutput(current=>({...current,extras:[...current.extras,{description:'',quantity:'',units:'',unit_price:''}]}))}>Add extra</button>
+    {!readyOutput.success && <p>Enter a description for each extra. Use positive whole numbers for quantities and up to two decimals for prices.</p>}
     <button type="button" disabled={busy || selections.length === 0 || !readyOutput.success} onClick={() => {
       if (readyOutput.success) onGenerateQuoteArtifacts(stage.quote_id!, selections, readyOutput.data);
     }}>{stage.artifacts?.length ? 'Update PDF and Excel' : 'Create PDF and Excel'}</button>

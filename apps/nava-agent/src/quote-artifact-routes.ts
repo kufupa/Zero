@@ -32,8 +32,8 @@ function outputFromDetails(details:unknown) {
       const extra=prefillExtra.safeParse(raw);
       const rawPrice=extra.success ? extra.data.unit_price ?? extra.data.price : null;
       const price=rawPrice==null ? null : String(rawPrice);
-      return extra.success ? [{description:extra.data.description,quantity:extra.data.quantity ?? 1,
-        units:extra.data.units ?? 1,unit_price:price!==null && /^\d+(?:\.\d{1,2})?$/.test(price) ? price : null}] : [];
+      return extra.success ? [{description:extra.data.description,quantity:extra.data.quantity ?? null,
+        units:extra.data.units ?? null,unit_price:price!==null && /^\d+(?:\.\d{1,2})?$/.test(price) ? price : null}] : [];
     })};
 }
 const source = z.object({direction:z.literal('inbound'),from:z.object({name:z.string().nullable(),email:z.string()})});

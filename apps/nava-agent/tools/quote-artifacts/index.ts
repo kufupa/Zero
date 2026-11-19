@@ -95,7 +95,7 @@ function linesFor(quote: ReturnType<typeof snapshot.parse>): WorkbookLine[] {
   if (rooms !== selections.size) throw new Error('extra selection');
   for (const extra of quote.output.extras) {
     const rateMinor=extra.unit_price === null ? null : cents(extra.unit_price);
-    const totalMinor=rateMinor === null ? null : rateMinor * extra.quantity * extra.units;
+    const totalMinor=rateMinor === null || extra.quantity === null || extra.units === null ? null : rateMinor * extra.quantity * extra.units;
     lines.push({dateLabel:'',description:extra.description,qty:extra.quantity,nights:extra.units,rateMinor,totalMinor});
   }
   return lines;

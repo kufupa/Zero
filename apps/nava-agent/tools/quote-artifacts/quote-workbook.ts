@@ -31,9 +31,9 @@ export type WorkbookLine = {
   dateLabel: string;
   description: string;
   /** QTY column: rooms, or guests for a person service. */
-  qty: number;
+  qty: number | null;
   /** NIGHTS column: nights, days or trips. */
-  nights: number;
+  nights: number | null;
   rateMinor: number | null;
   totalMinor: number | null;
 };
@@ -348,15 +348,14 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   let subtotal = 0;
   for (const line of input.lines) {
     if (
-      !Number.isSafeInteger(line.qty) ||
-      line.qty < 1 ||
-      !Number.isSafeInteger(line.nights) ||
-      line.nights < 1 ||
+      (line.qty !== null && (!Number.isSafeInteger(line.qty) || line.qty < 1)) ||
+      (line.nights !== null && (!Number.isSafeInteger(line.nights) || line.nights < 1)) ||
       (line.rateMinor !== null && (!Number.isSafeInteger(line.rateMinor) || line.rateMinor < 0))
     ) {
       throw new Error('workbook_line');
     }
-    if (line.rateMinor === null ? line.totalMinor !== null : line.totalMinor !== line.qty * line.nights * line.rateMinor) throw new Error('workbook_line_total');
+    const total = line.qty === null || line.nights === null || line.rateMinor === null ? null : line.qty * line.nights * line.rateMinor;
+    if (line.totalMinor !== total) throw new Error('workbook_line_total');
     if (line.totalMinor !== null) subtotal += line.totalMinor;
   }
   if (!Number.isSafeInteger(subtotal)) throw new Error('money_overflow');
@@ -382,13 +381,13 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
     const line = input.lines[index];
     if (line) {
       sheet = setText(sheet, `A${row}`, line.dateLabel);
-      sheet = setNumber(sheet, `B${row}`, line.qty);
+      sheet = line.qty === null ? clearCell(sheet, `B${row}`) : setNumber(sheet, `B${row}`, line.qty);
       sheet = setText(sheet, `C${row}`, line.description);
       const wrapped = line.description.split('\n').reduce((count, part) => count + Math.max(1, Math.ceil(part.length / 40)), 0);
       const height = Math.max(32, wrapped * 15 + 4);
       if (height > 409) throw new Error('workbook_line_too_long');
       sheet = setRowHeight(sheet, row, height);
-      sheet = setNumber(sheet, `F${row}`, line.nights);
+      sheet = line.nights === null ? clearCell(sheet, `F${row}`) : setNumber(sheet, `F${row}`, line.nights);
       sheet = line.rateMinor === null ? setText(sheet, `G${row}`, 'On request') : setNumber(sheet, `G${row}`, randText(line.rateMinor));
     } else {
       // Empty cells, not empty text: text in B, F or G would make the line-total formula an error.

@@ -59,7 +59,7 @@ export const fieldSpecSchema = z.object({
 });
 const artifactSchema = z.object({ id, name: z.string(), mime_type: z.string(), url: z.string() });
 export const quoteOutputSchema = z.object({organization_name:z.string(),agency_name:z.string(),valid_until:z.string(),payment_terms:z.string(),
-  extras:z.array(z.object({description:z.string().trim().min(1),quantity:z.number().int().positive().safe(),units:z.number().int().positive().safe(),
+  extras:z.array(z.object({description:z.string().trim().min(1),quantity:z.number().int().positive().safe().nullable(),units:z.number().int().positive().safe().nullable(),
     unit_price:z.string().regex(/^\d+(?:\.\d{1,2})?$/).nullable()}))});
 const quoteOptionSchema = z.object({
   group_id: id, room_id: id, option_index: z.number().int().nonnegative().safe(),

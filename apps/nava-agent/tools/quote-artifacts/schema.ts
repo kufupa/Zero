@@ -19,8 +19,8 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
 const id = z.string().min(1);
 export const quoteOutput = z.object({
   organization_name:z.string(), agency_name:z.string(), valid_until:z.string(), payment_terms:z.string(),
-  extras:z.array(z.object({description:z.string().trim().min(1), quantity:z.number().int().positive().safe(),
-    units:z.number().int().positive().safe(), unit_price:z.string().regex(/^\d+(?:\.\d{1,2})?$/).nullable()}).strict()),
+  extras:z.array(z.object({description:z.string().trim().min(1), quantity:z.number().int().positive().safe().nullable(),
+    units:z.number().int().positive().safe().nullable(), unit_price:z.string().regex(/^\d+(?:\.\d{1,2})?$/).nullable()}).strict()),
 }).strict();
 export type QuoteOutput = z.infer<typeof quoteOutput>;
 const room = z.object({ id, quantity: z.number().int().positive().safe(), adults: z.number().int().positive(),
