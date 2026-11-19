@@ -30,7 +30,7 @@ export function targetIsBound(booking:ProposalDraft['bookings'][number],executio
 export function withAmendRoomTypeField(draft:ProposalDraft,execution:unknown):ProposalDraft {
   const [booking]=draft.bookings, [action]=draft.actions;
   const path='/bookings/0/fields/room_type';
-  if(draft.workflow!=='amend' || draft.disposition!=='propose' || draft.bookings.length!==1 || draft.actions.length!==1 ||
+  if(draft.workflow!=='amend' || !['propose','needs_info','staff_review'].includes(draft.disposition) || draft.bookings.length!==1 || draft.actions.length!==1 ||
     !booking || !action || action.type!=='amend' || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
     !targetIsBound(booking,execution)) return draft;
   const field_specs=[...draft.field_specs];
