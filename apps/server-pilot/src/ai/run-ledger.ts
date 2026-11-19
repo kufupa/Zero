@@ -47,6 +47,7 @@ export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
 export const DEFAULT_FEEDBACK_PROMPT_VERSION = 'feedback-v1';
 export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
+export const NAVA_ARRIVAL_VERSION = 'nava-arrival/1';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 /** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
@@ -673,12 +674,13 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const threadRun = alias(aiWorkflowRun, 'earlier_thread_run');
   const emailOrder = sql`CASE ${aiWorkflowRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
   const threadEmailOrder = sql`CASE ${threadRun.runKind} WHEN 'inbound_triage' THEN 0 WHEN 'inbound_extraction' THEN 1 ELSE 2 END`;
-  type QueueColumns = { priority: AnyPgColumn; runKind: AnyPgColumn; readRequest: AnyPgColumn;
+  type QueueColumns = { priority: AnyPgColumn; runKind: AnyPgColumn; promptVersion: AnyPgColumn; readRequest: AnyPgColumn;
     metrics: AnyPgColumn; idempotencyKey: AnyPgColumn; executorLane: AnyPgColumn };
   const staffOrder = (run: QueueColumns) => sql`CASE WHEN ${run.priority} >= 2
     OR ${run.runKind} = 'candidate_draft' OR ${run.readRequest}->>'kind' = 'quote_pdf'
     OR ${run.metrics}->'failedReadRetry' IS NOT NULL THEN 1 ELSE 0 END`;
   const enabled = (run: QueueColumns) => and(
+    ne(run.promptVersion, NAVA_ARRIVAL_VERSION),
     process.env.RESERVATION_V2_ARRIVAL_PREFILL === 'on' ? undefined : ne(run.runKind, 'reservation_prefill'),
     process.env.INBOUND_EXTRACTION === 'on' ? undefined : ne(run.runKind, 'inbound_extraction'),
     process.env.LEGACY_INBOUND_TRIAGE_PIPELINE === 'on' ? undefined

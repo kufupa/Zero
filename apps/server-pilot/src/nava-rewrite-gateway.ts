@@ -114,7 +114,7 @@ async function readFilingPdf(request: Request, secret: string): Promise<Response
   } });
 }
 
-function configuredAgentOrigin(value: string | undefined): string | null {
+export function configuredAgentOrigin(value: string | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);
@@ -126,7 +126,7 @@ function configuredAgentOrigin(value: string | undefined): string | null {
   }
 }
 
-function staffToken(userId: string, mailboxIds: string[], secret: string) {
+export function staffToken(userId: string, mailboxIds: string[], secret: string) {
   const now = Math.floor(Date.now() / 1000);
   const expiresAt = now + 300;
   const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
@@ -137,6 +137,32 @@ function staffToken(userId: string, mailboxIds: string[], secret: string) {
     token: `${unsigned}.${createHmac('sha256', secret).update(unsigned).digest('base64url')}`,
     expiresAtMs: expiresAt * 1000,
   };
+}
+
+export async function canonicalImportBody(
+  canonical: NonNullable<Awaited<ReturnType<typeof canonicalCenturionPaneImport>>>,
+  signal: AbortSignal,
+  checkAuthority: (attachmentId: string) => Promise<boolean>,
+) {
+  const selected = canonical.messages.find(item => item.id === canonical.selected_message_id);
+  const pdfTexts = new Map<string, string>();
+  if (selected?.attachments.length) {
+    const db = getDb();
+    for (const file of selected.attachments) {
+      try {
+        const source = await readPaneFilingAttachment({ db, s3: getS3Storage(), transportId: canonical.mailbox_id,
+          messageId: canonical.selected_message_id, attachmentId: file.id,
+          signal, checkAuthority: () => checkAuthority(file.id) });
+        if (!source) continue;
+        const extracted = await extractEmbeddedPdfText({ body: source.bytes, declaredSize: source.bytes.length,
+          declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { attachmentId: file.id, signal });
+        if (extracted.data.text) pdfTexts.set(file.id, extracted.data.text.slice(0, QUOTE_ATTACHMENT_TEXT_MAX_CHARS));
+      } catch { /* Import remains usable when a PDF cannot be read. */ }
+    }
+  }
+  return JSON.stringify({ ...canonical, messages: canonical.messages.map(item =>
+    item.id === canonical.selected_message_id ? { ...item, attachments: item.attachments.map(file =>
+      ({ ...file, extracted_text: pdfTexts.get(file.id) ?? null })) } : item) });
 }
 
 function expireEventStream(body: ReadableStream<Uint8Array>, expiresAtMs: number, shutdown?: AbortSignal) {
@@ -293,11 +319,8 @@ export function createNavaRewriteGateway(auth: Auth, eventShutdown?: AbortSignal
         if (!canonical) {
           return error(403, 'source_not_eligible', 'This email is not an eligible Centurion source');
         }
-        const selected = canonical.messages.find(item => item.id === canonical.selected_message_id);
-        const pdfTexts = new Map<string, string>();
-        if (selected?.attachments.length) {
-          const db = getDb();
-          const checkAuthority = async (attachmentId: string) => {
+        const canonicalBody = await canonicalImportBody(canonical, request.signal, async (attachmentId) => {
+            const db = getDb();
             const currentGrants = await db.select({ transportId: mailboxAccess.transportId }).from(mailboxAccess)
               .innerJoin(mailboxTransport, eq(mailboxAccess.transportId, mailboxTransport.id))
               .where(eq(mailboxAccess.userId, session.user.id));
@@ -305,22 +328,7 @@ export function createNavaRewriteGateway(auth: Auth, eventShutdown?: AbortSignal
               mailboxId: canonical.mailbox_id, conversationId: canonical.source_thread_id,
               messageId: canonical.selected_message_id, attachmentId,
             });
-          };
-          for (const file of selected.attachments) {
-            try {
-              const source = await readPaneFilingAttachment({ db, s3: getS3Storage(), transportId: canonical.mailbox_id,
-                messageId: canonical.selected_message_id, attachmentId: file.id,
-                signal: request.signal, checkAuthority: () => checkAuthority(file.id) });
-              if (!source) continue;
-              const extracted = await extractEmbeddedPdfText({ body: source.bytes, declaredSize: source.bytes.length,
-                declaredMime: 'application/pdf', objectMime: 'application/pdf' }, { attachmentId: file.id, signal: request.signal });
-              if (extracted.data.text) pdfTexts.set(file.id, extracted.data.text.slice(0, QUOTE_ATTACHMENT_TEXT_MAX_CHARS));
-            } catch { /* Import remains usable when a PDF cannot be read. */ }
-          }
-        }
-        const canonicalBody = JSON.stringify({ ...canonical, messages: canonical.messages.map(item =>
-          item.id === canonical.selected_message_id ? { ...item, attachments: item.attachments.map(file =>
-            ({ ...file, extracted_text: pdfTexts.get(file.id) ?? null })) } : item) });
+        });
         headers.set('idempotency-key', createHash('sha256').update(canonicalBody).digest('hex'));
         init.body = canonicalBody;
       } else if (request.method !== 'GET' && request.body) {

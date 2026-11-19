@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
 import { authenticate, hasMailbox, type Principal } from './auth.js';
 import { editInput, editProposal } from './edit.js';
@@ -12,7 +13,7 @@ import { authReady, verifiedAuth, importThread, model, snapshot, startPending, d
 import { goInput, groupedQuoteRequest, proposalDraft, requoteInput, revisionInput, threadInput, type Workflow } from './schema.js';
 import { createPilotOperations, manualLabtestTarget } from './create-operations.js';
 import { createGoEnabled, hmsSaveEnabled, isWriteWorkflow, staffPrepareOnly } from './hms-mode.js';
-import { attachmentsUnconfirmed, invalidGuestSelection } from './attachment-gate.js';
+import { attachmentCheckPath, attachmentsUnconfirmed, invalidGuestSelection } from './attachment-gate.js';
 import { targetInput, targetLookup } from './stay-target.js';
 import { selectStayTarget } from './edit.js';
 
@@ -244,12 +245,15 @@ app.patch('/proposals/:id',async c=>{
 });
 app.get('/threads/:id/staff-edits',async c=>{
   const denied=await threadDenial(c.req.param('id'),c.get('principal'));if(denied) return c.json(threadError(denied),denied);
-  const proposals=await sql`SELECT id,session_id,workflow,original,created_at FROM nava_agent.proposal WHERE thread_id=${c.req.param('id')} ORDER BY created_at,id`;
+  const proposals=await sql`SELECT p.id,p.session_id,p.workflow,p.original,p.created_at,t.mailbox_id,t.source_thread_id,t.selected_message_id
+    FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.thread_id=${c.req.param('id')} ORDER BY p.created_at,p.id`;
   const records:unknown[]=[];
   for(const p of proposals) {
-    records.push({event_id:`proposal:${p.id}:original`,kind:'proposal',session_id:p.session_id,proposal_id:p.id,workflow:p.workflow,at:p.created_at,sequence:0,fields:{bookings:p.original.bookings,actions:p.original.actions}});
+    const source={mailbox_id:p.mailbox_id,source_thread_id:p.source_thread_id,source_message_id:p.selected_message_id};
+    records.push({event_id:`proposal:${p.id}:original`,kind:'proposal',session_id:p.session_id,proposal_id:p.id,workflow:p.workflow,...source,at:p.created_at,sequence:0,fields:{bookings:p.original.bookings,actions:p.original.actions}});
     const edits=await sql`SELECT * FROM nava_agent.staff_edit WHERE proposal_id=${p.id} ORDER BY sequence`;
-    for(const e of edits) records.push({event_id:e.id,kind:e.kind,session_id:e.session_id,proposal_id:e.proposal_id,workflow:e.workflow,at:e.at,sequence:Number(e.sequence),field:e.path,before:e.before,after:e.after,before_present:e.before_present,after_present:e.after_present,who:e.who});
+    for(const e of edits) records.push({event_id:e.id,kind:e.kind,session_id:e.session_id,proposal_id:e.proposal_id,workflow:e.workflow,...source,at:e.at,sequence:Number(e.sequence),revision:e.revision,field:e.path,before:e.before,after:e.after,before_present:e.before_present,after_present:e.after_present,who:e.who,snapshot:e.snapshot,
+      correction:e.kind==='edit' && e.path!==attachmentCheckPath && (e.before_present!==e.after_present || !isDeepStrictEqual(e.before,e.after))});
   }
   return c.body(records.map(record=>JSON.stringify(record)).join('\n')+(records.length?'\n':''),200,{'Content-Type':'application/x-ndjson'});
 });

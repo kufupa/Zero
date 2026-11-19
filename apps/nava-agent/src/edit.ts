@@ -56,8 +56,15 @@ export async function selectStayTarget(id:string,mailboxIds:string[],actor:strin
     await tx`UPDATE nava_agent.proposal SET current=${json(valid)},revision=${revision},stage=NULL,execution=${json(execution)},updated_at=now() WHERE id=${id}`;
     const [seq]=await tx`SELECT COALESCE(max(sequence),0)+1 AS n FROM nava_agent.staff_edit WHERE proposal_id=${id}`;
     await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,who,snapshot)
-      VALUES (${uid('edit')},${seq.n},${id},${p.session_id},${p.workflow},'stay_selected',${revision},${actor},${json({selection:selection.data,before,removed_fields:input.remove_fields})})`;
+      VALUES (${uid('edit')},${seq.n},${id},${p.session_id},${p.workflow},'stay_selected',${revision},${actor},${json({selection:selection.data,before,after:booking,removed_fields:input.remove_fields})})`;
     await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,revision,change:'stay_selected'})})`;
+    const selectedFields = [
+      {path:'/bookings/0/reservation_id',before:before.reservation_id,after:booking.reservation_id,before_present:true,after_present:true},
+      ...input.remove_fields.map(key=>({path:`/bookings/0/fields/${key.replace(/~/g,'~0').replace(/\//g,'~1')}`,before:before.fields[key],after:null,before_present:true,after_present:false})),
+    ];
+    for(const field of selectedFields) if(field.before_present!==field.after_present || !isDeepStrictEqual(field.before,field.after)) {
+      await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'correction',${json({proposal_id:id,workflow:p.workflow,source_message_id:source.data.source_message_id,revision,...field,who:actor})})`;
+    }
     const [updated]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id}`;
     return {...proposalWire(updated),source_message_id:source.data.source_message_id};
   });
@@ -104,7 +111,7 @@ function apply(root:unknown, change:Change) {
 }
 export async function editProposal(id:string, mailboxIds:string[], actor:string, input:z.infer<typeof editInput>) {
   return sql.begin(async tx=>{
-    const [p]=await tx`SELECT p.*,t.mailbox_id FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${id} FOR UPDATE OF p`;
+    const [p]=await tx`SELECT p.*,t.mailbox_id,t.selected_message_id FROM nava_agent.proposal p JOIN nava_agent.mail_thread t ON t.id=p.thread_id WHERE p.id=${id} FOR UPDATE OF p`;
     if(!p) throw new Error('NOT_FOUND');
     if(!mailboxIds.includes(p.mailbox_id)) throw new Error('FORBIDDEN');
     if(p.revision!==input.expected_revision) throw new Error('STALE_REVISION');
@@ -236,7 +243,9 @@ export async function editProposal(id:string, mailboxIds:string[], actor:string,
     for(const item of changes) {
       const editId=uid('edit'); sequence++;
       const [saved]=await tx`INSERT INTO nava_agent.staff_edit(id,sequence,proposal_id,session_id,workflow,kind,revision,path,before,after,before_present,after_present,who) VALUES (${editId},${sequence},${id},${p.session_id},${p.workflow},'edit',${revision},${item.change.path},${json(item.before)},${json(item.after)},${item.before_present},${item.after_present},${actor}) RETURNING at`;
-      await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},'edit',${json({proposal_id:id,edit_id:editId,revision,path:item.change.path,before:item.before,after:item.after,before_present:item.before_present,after_present:item.after_present,who:actor,at:saved.at})})`;
+      const correction=item.change.path!==attachmentCheckPath &&
+        (item.before_present!==item.after_present || !isDeepStrictEqual(item.before,item.after));
+      await tx`INSERT INTO nava_agent.agent_event(id,session_id,kind,payload) VALUES (${uid('evt')},${p.session_id},${correction?'correction':'edit'},${json({proposal_id:id,workflow:p.workflow,source_message_id:p.selected_message_id,edit_id:editId,revision,path:item.change.path,before:item.before,after:item.after,before_present:item.before_present,after_present:item.after_present,who:actor,at:saved.at})})`;
     }
     const [updated]=await tx`SELECT * FROM nava_agent.proposal WHERE id=${id}`;
     const quotedRates=p.workflow==='create' ? await priorQuotedRateChoices(tx,p.thread_id) : [];

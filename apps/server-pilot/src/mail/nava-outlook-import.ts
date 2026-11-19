@@ -28,6 +28,34 @@ function sourceAddress(value: { name?: string; email: string }) {
   return { name: value.name === localPart ? null : value.name ?? null, email: value.email };
 }
 
+function sourceMessage(row: typeof message.$inferSelect) {
+  const canonical = toParsedMessage(row);
+  const htmlOnly = canonical.body === canonical.processedHtml && /<[a-z][\s\S]*>/i.test(canonical.body);
+  return {
+    id: canonical.id, rfc_message_id: canonical.messageId ?? null, direction: row.direction,
+    from: sourceAddress(canonical.sender), to: canonical.to.map(sourceAddress), cc: (canonical.cc ?? []).map(sourceAddress),
+    received_at: canonical.receivedOn, subject: canonical.subject,
+    body_text: htmlOnly ? htmlToPlainText(canonical.body) : canonical.body, body_html: htmlOnly ? canonical.processedHtml : null,
+    attachments: [],
+  };
+}
+
+/** Build the same input the webmail pane submits, from an admitted inbound message. */
+export async function canonicalCenturionArrivalImport(mailboxId: string, messageId: string) {
+  const payload = await getDb().transaction(async tx => {
+    const [selected] = await tx.select({ threadId: message.threadId }).from(message)
+      .where(and(eq(message.id, messageId), eq(message.transportId, mailboxId), eq(message.direction, 'inbound'))).limit(1);
+    if (!selected) return null;
+    const scope = await loadConversationMetaForThread(tx, mailboxId, selected.threadId);
+    const rows = await tx.select().from(message).where(and(eq(message.transportId, mailboxId),
+      inArray(message.threadId, [selected.threadId, ...scope.linkedThreadIds])))
+      .orderBy(asc(message.receivedAt), asc(message.id));
+    return { source: 'outlook', mode: 'live', property_code: 'HRCEN', mailbox_id: mailboxId,
+      source_thread_id: scope.conversationId, selected_message_id: messageId, messages: rows.map(sourceMessage) };
+  }, { isolationLevel: 'repeatable read', accessMode: 'read only' });
+  return payload ? canonicalCenturionPaneImport(payload, mailboxId) : null;
+}
+
 export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: string) {
   const parsed = paneImport.safeParse(payload);
   if (!parsed.success || parsed.data.mailbox_id !== mailboxId) return null;
@@ -71,16 +99,9 @@ export async function canonicalCenturionPaneImport(payload: unknown, mailboxId: 
       const candidate = imported.get(row.id);
       if (!candidate || (row.direction === 'inbound' && isDaVinciMailboxOrigin(row))) return null;
       const canonical = toParsedMessage(row);
-      const htmlOnly = canonical.body === canonical.processedHtml && /<[a-z][\s\S]*>/i.test(canonical.body);
       if (row.id === input.selected_message_id && input.source === 'webmail' && !canonical.messageId?.trim()) return null;
       const { attachment_status: _clientAttachmentStatus, ...fields } = candidate;
-      const sourceFields = {
-        id: canonical.id, rfc_message_id: canonical.messageId ?? null, direction: row.direction,
-        from: sourceAddress(canonical.sender), to: canonical.to.map(sourceAddress), cc: (canonical.cc ?? []).map(sourceAddress),
-        received_at: canonical.receivedOn, subject: canonical.subject,
-        body_text: htmlOnly ? htmlToPlainText(canonical.body) : canonical.body, body_html: htmlOnly ? canonical.processedHtml : null,
-        attachments: [],
-      };
+      const sourceFields = sourceMessage(row);
       const status = paneAttachmentStatus(withFiles.has(row.id), row.sourceProvenance);
       if (!isDeepStrictEqual(fields, sourceFields)) return null;
       canonicalMessages.push({ ...sourceFields, attachment_status: status });

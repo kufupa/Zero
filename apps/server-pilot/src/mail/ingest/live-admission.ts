@@ -11,6 +11,8 @@ import {
 } from '../../db/schema/mail.js';
 import {
   DEFAULT_TRIAGE_PROMPT_VERSION,
+  NOT_APPLICABLE_MODEL_ID,
+  NAVA_ARRIVAL_VERSION,
   enqueueAiRun,
 } from '../../ai/run-ledger.js';
 import { enqueueReservationArrival } from '../../ai/reservation-workflow-v2-arrival.js';
@@ -477,6 +479,15 @@ export async function admitLiveMessage(
     snapshotHash,
     effectState: 'queued',
   });
+  const arrivalProperty = resolvePropertyTransport(input.transportId);
+  if (trigger.direction === 'inbound' && arrivalProperty.kind === 'property' &&
+      arrivalProperty.property.propertyCode === 'HRCEN') {
+    await enqueueAiRun({ transportId: input.transportId, threadId: trigger.threadId,
+      triggerMessageId: trigger.id, runKind: 'feedback_extraction',
+      idempotencyKey: `nava-arrival:${input.transportId}:${trigger.id}`,
+      modelId: NOT_APPLICABLE_MODEL_ID, promptVersion: NAVA_ARRIVAL_VERSION,
+      admissionSnapshotId: id, admissionSnapshotHash: snapshotHash }, db);
+  }
   await db
     .update(message)
     .set({ historyOnly: false, isRead: trigger.direction === 'outbound' })

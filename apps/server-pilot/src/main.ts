@@ -1,5 +1,6 @@
 import { createWiredCenturionLabIndexHandler } from './http/centurion-lab-index.js';
 import { createNavaRewriteGateway } from './nava-rewrite-gateway.js';
+import { drainNavaArrivals } from './nava-rewrite-arrival.js';
 import { pruneOutlookAuthorizationHistory } from './outlook-security/retention.js';
 import { createWiredInlineAttachmentHandler } from './http/inline-attachment.js';
 import { createOutlookSyncNativeHandler } from './http/outlook-sync-native.js';
@@ -157,6 +158,18 @@ const stopOutlookSyncDrain =
     : async () => {};
 
 const background = createBackgroundDrain();
+const arrivalShutdown = new AbortController();
+let arrivalDraining = false;
+function drainArrivals() {
+  if (arrivalDraining || !process.env.NAVA_AGENT_BASE_URL) return;
+  arrivalDraining = true;
+  void background.track(drainNavaArrivals(arrivalShutdown.signal).catch(() => {
+    console.error('Nava arrival drain failed');
+  }).finally(() => { arrivalDraining = false; }));
+}
+const arrivalTimer = setInterval(drainArrivals, 5_000);
+arrivalTimer.unref();
+drainArrivals();
 const server = serve({ fetch: withDrain(background, app.fetch), port, hostname: '127.0.0.1' }, (info) => {
   console.log(`server-pilot listening on http://127.0.0.1:${info.port}`);
 });
@@ -187,6 +200,8 @@ function shutdown(signal: string) {
   console.log(`${signal} received, shutting down`);
   clearInterval(outlookRetentionTimer);
   clearInterval(quoteFollowupTimer);
+  clearInterval(arrivalTimer);
+  arrivalShutdown.abort();
   rewriteEventShutdown.abort();
   server.close(() => {
     void Promise.allSettled([Promise.resolve().then(stopOutlookSyncDrain), background.drain()])
