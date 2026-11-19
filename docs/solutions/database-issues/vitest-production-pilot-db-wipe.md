@@ -81,7 +81,7 @@ Recovery was staged: restore transports, promote surviving quarantine, bulk-rehy
 
 - `INGEST_REQUIRE_OWNER_HEADER=false` (unstamped Centurion routing / promote require this).
 - `CONFIRM_PILOT_SEED=1 pnpm --filter @zero/server seed:prod` — restores Centurion (+ aliases) and Nava transports. Seed does **not** rebuild wiped `message` rows. (session history)
-- Deactivate leftover `*@example.com` fixture transports (`is_active=false`). SQL runbook: [`navaai-real-mail-smoke.md`](../../../apps/server-pilot/deploy/navaai-real-mail-smoke.md#post-wipe--fixture-cleanup).
+- Deactivate leftover `*@example.com` fixture transports (`is_active=false`). SQL runbook: `navaai-real-mail-smoke.md`.
 
 ### 2. Promote quarantine rows
 

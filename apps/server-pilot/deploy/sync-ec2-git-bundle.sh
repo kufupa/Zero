@@ -110,7 +110,6 @@ const scope=[
   "apps/server-pilot/tests",
   "apps/server-pilot/vitest.config.ts",
   "apps/server-pilot/evals/hms",
-  "packages/testing",
 ];
 const readNames=(args)=>execFileSync("git",["-C",root,...args,"--",...scope])
   .toString("utf8").split("\0").filter(Boolean);

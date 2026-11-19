@@ -24,34 +24,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
-      valkey:
-        condition: service_healthy
-      upstash-proxy:
-        condition: service_healthy
-    healthcheck:
-      test: ['CMD', 'wget', '--spider', '--quiet', 'http://127.0.0.1:3000']
-      interval: 90s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    ports:
-      - 3000:3000
-
-  migrations:
-    build:
-      context: .
-      dockerfile: docker/db/Dockerfile
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-zerodotemail}
-    depends_on:
       db:
-        condition: service_healthy
-    command: ['pnpm', 'run', 'db:migrate']
-    restart: 'no'
-
-  db:
     image: postgres:17-alpine
     restart: unless-stopped
     environment:

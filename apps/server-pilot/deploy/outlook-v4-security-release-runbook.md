@@ -242,7 +242,7 @@ stable wrapping key until the separately authorized release.
    journal incompatibility before preparing release assets; retain all originals.
 4. In the later authorized release, add/read-back retained
    `outlook-sync-originals/v1/` Intelligent-Tiering30d and staging7d/abandoned multipart1d
-   rules using the additive procedure in [aws-resources.md](aws-resources.md). Verify no
+   rules using the additive procedure in aws-resources.md. Verify no
    expiration, noncurrent deletion or restore-required tier overlaps originals.
 5. On representative authorized PCs approve the actual hotel store/root and named staff,
    then prove month history, absence over one month, pane closed, Outlook restart,
