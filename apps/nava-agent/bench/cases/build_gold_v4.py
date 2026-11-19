@@ -5,11 +5,13 @@ Default output: $NAVA_BENCH_DATA_ROOT/gold-audit/{holdout-fresh,v1,dev-fresh}/go
 Loaded automatically by bench runner/rescore for those sets.
 
 Also marks booking gold no_gold when:
-- holdout-fresh + dev-fresh: synthetic Labtest/Proof/NAVAAI booking or still-
-  unreadable HMS conf (latest fresh-read has no stay: NOT_FOUND / HINT_MISMATCH /
-  DETAILS_NOT_LOADED / AMBIGUOUS). Recovered record_ok confs are un-tainted.
-- holdout-fresh + dev-fresh: CREATE whose gold booking has createdby=HRCEN
-  (channel/GDS interface — not staff email create). Routing workflow kept.
+- holdout-fresh + holdout-v2 + dev-fresh: synthetic Labtest/Proof/NAVAAI booking
+  or still-unreadable HMS conf (latest fresh-read has no stay: NOT_FOUND /
+  HINT_MISMATCH / DETAILS_NOT_LOADED / AMBIGUOUS). Recovered record_ok confs
+  are un-tainted.
+- holdout-fresh + holdout-v2 + dev-fresh: CREATE whose gold booking has
+  createdby=HRCEN (channel/GDS interface — not staff email create). Routing
+  workflow kept.
 - all sets: cms_send (CMS Send Mail tick) — later HMS reads are false after CMS
   clears the tick; PRODUCT.md default is ticked, so later-read gold is not evidence.
   cms_message_id / cms_recipient stay only when basis is staff/hotel-sourced.
@@ -201,7 +203,7 @@ def is_channel_hrcen_create(card: dict, wf: str) -> bool:
 def taint_reason(card: dict, *, set_name: str, wf: str) -> str | None:
   conf = card.get("real_confirmation")
   parts: list[str] = []
-  if set_name in ("holdout-fresh", "dev-fresh"):
+  if set_name in ("holdout-fresh", "holdout-v2", "dev-fresh"):
     lab = labtest_or_navaai(card)
     unread = conf in unreadable_confs()
     if lab and unread:
@@ -608,7 +610,7 @@ def build(name: str) -> dict:
   audit.mkdir(parents=True, exist_ok=True)
   (audit / "gold-v4.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
   (audit / "summary-v4.json").write_text(json.dumps(summary, indent=2))
-  if name in ("holdout-fresh", "dev-fresh"):
+  if name in ("holdout-fresh", "holdout-v2", "dev-fresh"):
     (audit / "tainted-gold-cases.json").write_text(
       json.dumps({"n": len(tainted_rows), "cases": tainted_rows}, indent=2, ensure_ascii=False)
     )
