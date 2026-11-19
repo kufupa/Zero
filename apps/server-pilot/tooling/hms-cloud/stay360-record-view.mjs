@@ -73,6 +73,15 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
   if (!frame) throw new Error('RECORD_VIEW_NOT_LOADED');
 
   // Expand only the form's collapsed panels, using their expand icons.
+  // Clear idle ghost masks inside the Record View frame so expand tools are clickable.
+  await frame.evaluate(() => {
+    if (globalThis.Ext?.Ajax?.isLoading?.()) return;
+    for (const mask of document.querySelectorAll('.x-mask, .x-mask-msg, .x-loadmask')) {
+      mask.style.setProperty('display', 'none', 'important');
+      mask.style.setProperty('visibility', 'hidden', 'important');
+      mask.style.setProperty('pointer-events', 'none', 'important');
+    }
+  }).catch(() => {});
   const collapsed = frame.locator('.x-panel.x-panel-collapsed:visible');
   for (let count = 0; await collapsed.count(); count += 1) {
     if (count >= 20) throw new Error('RECORD_PANELS_NOT_EXPANDED');
