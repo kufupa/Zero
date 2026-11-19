@@ -1,9 +1,9 @@
 export type Workflow = 'quote' | 'create' | 'amend' | 'cancel' | 'filing' | 'triage';
 
 export type GoldField =
-  | {path:string; expectation:'expected'; value:unknown; basis:string}
-  | {path:string; expectation:'not_expected'; basis:string}
-  | {path:string; expectation:'no_gold'; basis:string};
+  | {path:string; expectation:'expected'; value:unknown; basis:string; tier?:string; hms_key?:string; before?:unknown}
+  | {path:string; expectation:'not_expected'; basis:string; tier?:string; later_value?:unknown; hms_key?:string}
+  | {path:string; expectation:'no_gold'; basis:string; tier?:string; later_value?:unknown; hms_key?:string};
 
 export type TwinError = {
   code:string;
@@ -35,9 +35,7 @@ export type CaseCard = {
     [key:string]:unknown;
   };
   gold?:GoldField[];
-  cassette?:RecordedToolPair[];
-  recorded_calls?:RecordedToolPair[];
-  tool_pairs?:RecordedToolPair[];
+  omitted?:Array<{path:string;reason:string}>;
   quotes?:unknown;
   [key:string]:unknown;
 };

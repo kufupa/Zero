@@ -1,9 +1,6 @@
-import {isDeepStrictEqual} from 'node:util';
 import type {CaseCard, TwinEnvelope} from '../types.js';
 import {projectHmsShown} from './backdate.js';
 import {quoteKey, type TwinWorld} from './world.js';
-
-export type TwinMode = 'twin' | 'cassette';
 
 const ok = <T>(data: T): TwinEnvelope<T> => ({ok: true, data, error: null});
 const fail = (code: string, message: string, retryable = false, data: unknown = null): TwinEnvelope => ({
@@ -15,6 +12,7 @@ const fail = (code: string, message: string, retryable = false, data: unknown = 
 const object = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+/** Emit Stay360-shaped fields from backdated shown stay (PDF projection). */
 function fieldMap(stay: Record<string, unknown> | null): Array<{name: string; type: string; label: string; value: unknown; section: null}> {
   if (!stay) return [];
   const labels: Record<string, string> = {
@@ -61,6 +59,14 @@ function matchReservation(stay: Record<string, unknown>, criteria: Record<string
   return true;
 }
 
+function catalogueRecords(section: unknown): unknown[] {
+  if (Array.isArray(section)) return section;
+  const row = object(section);
+  if (Array.isArray(row.records)) return row.records;
+  if (Array.isArray(row.items)) return row.items;
+  return [];
+}
+
 function catalogueSection(catalog: Record<string, unknown>, kind: string): Record<string, unknown> {
   const catalogs = object(catalog.catalogs ?? catalog);
   const keyMap: Record<string, string[]> = {
@@ -68,21 +74,38 @@ function catalogueSection(catalog: Record<string, unknown>, kind: string): Recor
     rate_plan: ['ratePlans', 'rate_plan', 'ratePlan'],
     meal_plan: ['mealPlans', 'meal_plan', 'mealPlan'],
     source_of_business: ['sourceBusiness', 'sourcesOfBusiness', 'source_of_business'],
-    track: ['tracks', 'track'],
+    track: ['tracks', 'track', 'trackSubsegment'],
     guarantee_type: ['guaranteeTypes', 'guarantee_type'],
     organization: ['organizations', 'organization', 'orgs'],
     agency: ['agencies', 'agency'],
   };
-  for (const key of keyMap[kind] ?? [kind]) {
-    if (Array.isArray(catalogs[key])) return {items: catalogs[key], coverage: 'complete'};
-    if (Array.isArray((catalogs as Record<string, unknown>)[key])) return {items: (catalogs as Record<string, unknown>)[key], coverage: 'complete'};
-  }
-  // flat lists on root
-  for (const key of keyMap[kind] ?? []) {
-    if (Array.isArray(catalog[key])) return {items: catalog[key], coverage: 'complete'};
-  }
   if (kind === 'meal_plan') return {status: 'unsupported', reason: 'No independent native meal-plan catalogue.'};
-  return {status: 'unavailable', reason: 'catalog_path_or_property_missing'};
+  for (const key of keyMap[kind] ?? [kind]) {
+    const section = catalogs[key] ?? catalog[key];
+    const records = catalogueRecords(section);
+    if (records.length) {
+      const meta = object(section);
+      return {
+        items: records,
+        records,
+        status: meta.status ?? 'ok',
+        scope: meta.scope ?? null,
+        coverage: meta.coverage ?? 'complete',
+      };
+    }
+  }
+  return {status: 'unavailable', reason: 'catalog_path_or_property_missing', items: [], records: []};
+}
+
+function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unknown>> {
+  const catalogs = object(world.catalog.catalogs ?? world.catalog);
+  const key =
+    kind === 'agency' ? 'agencies' :
+    kind === 'organization' ? 'organizations' :
+    kind === 'ar_account' ? 'arAccounts' :
+    null;
+  if (!key) return [];
+  return catalogueRecords(catalogs[key]).map(item => object(item));
 }
 
 function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
@@ -107,6 +130,22 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
           firstName: profile.firstName ?? profile.first_name ?? null,
           lastName: profile.lastName ?? profile.last_name ?? null,
           name: `${profile.firstName ?? ''} ${profile.lastName ?? ''}`.trim() || null,
+        });
+      }
+      if (candidates.length >= 25) break;
+    }
+  } else {
+    for (const row of partyRecords(world, kind)) {
+      const id = String(row.nativeId ?? row.code ?? row.id ?? '');
+      const name = String(row.meaning ?? row.name ?? row.label ?? '').toLowerCase();
+      const code = String(row.code ?? '').toLowerCase();
+      const hay = field === 'profile_id' ? id.toLowerCase() : `${name} ${code}`;
+      if (!query || hay.includes(query) || query.includes(name) || (code && query === code)) {
+        candidates.push({
+          nativeId: id || `twin-${kind}-${candidates.length + 1}`,
+          code: row.code ?? null,
+          name: row.meaning ?? row.name ?? row.label ?? null,
+          kind,
         });
       }
       if (candidates.length >= 25) break;
@@ -177,19 +216,6 @@ function quoteFromWorld(world: TwinWorld, input: Record<string, unknown>): TwinE
   });
 }
 
-function cassetteReplay(card: CaseCard, name: string, input: unknown): TwinEnvelope | null {
-  const pairs = card.cassette ?? card.recorded_calls ?? card.tool_pairs ?? [];
-  for (const pair of pairs) {
-    const tool = pair.tool ?? pair.name;
-    if (tool !== name) continue;
-    if (!isDeepStrictEqual(pair.input, input)) continue;
-    const result = pair.result ?? pair.response;
-    if (result && typeof result === 'object' && result !== null && 'ok' in result) return result as TwinEnvelope;
-    return ok(result);
-  }
-  return null;
-}
-
 function readReservation(world: TwinWorld, card: CaseCard, input: Record<string, unknown>): TwinEnvelope {
   const shown = projectHmsShown(world, card);
   const rid = String(input.reservation_id ?? '');
@@ -235,13 +261,9 @@ function searchReservations(world: TwinWorld, card: CaseCard, input: Record<stri
   });
 }
 
-export function createTwinDispatch(world: TwinWorld, card: CaseCard, mode: TwinMode = 'twin') {
+/** Twin = reads + unsaved Prepare only. No cassette. No Save/readback simulation. */
+export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
   return async function dispatch(name: string, input: unknown): Promise<TwinEnvelope> {
-    if (mode === 'cassette') {
-      const hit = cassetteReplay(card, name, input);
-      if (hit) return hit;
-      return fail('CASSETTE_MISS', `No recorded pair for ${name}`);
-    }
     const body = object(input);
     switch (name) {
       case 'hms_search_reservations':
@@ -264,6 +286,7 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard, mode: TwinM
           workflow: body.workflow ?? card.workflow,
           unsaved: true,
           booking_id: object(object(body).booking).id ?? 'stay-1',
+          reservation_id: object(object(body).booking).reservation_id ?? card.real_confirmation ?? card.confirmation ?? null,
           native: {expected: shown.stay, twin: true},
           guest_candidates: [],
           rate_choices: [],
@@ -273,7 +296,7 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard, mode: TwinM
       }
       case 'save':
       case 'hms_save':
-        return ok(world.save(input));
+        return fail('TWIN_NO_SAVE', 'Twin does not simulate Save/readback; staff Go is out of scope.');
       default:
         return fail('UNAVAILABLE', `Twin does not implement ${name}`);
     }

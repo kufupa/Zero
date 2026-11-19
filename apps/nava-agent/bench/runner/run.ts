@@ -2,7 +2,11 @@ import {readdir, readFile, mkdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {AzureRuntime} from '../../src/agent-runtime/azure.js';
-import type {RuntimeDeps, RuntimeMessage, RuntimeState, ToolDefinition} from '../../src/agent-runtime/loop.js';
+import type {RuntimeDeps, RuntimeState, ToolDefinition} from '../../src/agent-runtime/loop.js';
+import {tools as baselineTools} from '../../src/schema.js';
+import {schemas as triageSchemas} from '../../tools/triage/schema.js';
+import {quoteSchema} from '../../tools/quote/schema.js';
+import {skillReadDefinition} from '../../tools/skills/schema.js';
 import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
 import {buildScoreboard, scoreCase, type CaseScore} from './score.js';
@@ -10,134 +14,75 @@ const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/z
 
 const SYSTEM = `Read the selected inbound with mail_read_thread. Use the pinned triage files supplied in the system context, or load triage/SKILL.md and its references with skill_read if they were not supplied. Load the relevant workflow skill and any references not already supplied with skill_read. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask. End after publishing the proposal. Save is disabled.`;
 
-function tool(name: string, description: string, properties: Record<string, unknown>): ToolDefinition {
-  // Azure strict mode requires every property key to appear in required.
-  return {
-    name,
-    description,
-    input_schema: {type: 'object', properties, required: Object.keys(properties), additionalProperties: false},
-  };
-}
-
-/** Azure Foundry strict-compatible schemas (no minLength/format/oneOf; every prop required). */
-const strOrNull = {type: ['string', 'null'] as unknown as string};
-const objOpen = {type: 'object', additionalProperties: false, properties: {} as Record<string, unknown>, required: [] as string[]};
-const benchTools: ToolDefinition[] = [
-  tool('mail_read_thread', 'Read the selected mail thread for this bench case.', {}),
-  tool('skill_read', 'Read a pinned skill or its relative Markdown reference.', {
-    skill_name: {type: 'string', enum: ['triage', 'quote', 'create', 'amend', 'cancel', 'filing']},
-    path: strOrNull,
-  }),
-  tool('hms_search_reservations', 'Search twin reservations.', {
-    property_code: {type: 'string'},
-    criteria: {
-      type: 'object',
-      additionalProperties: false,
-      properties: {
-        reservation_id: strOrNull,
-        guest_name: strOrNull,
-        guest_first_name: strOrNull,
-        guest_name_is_surname: {type: ['boolean', 'null']},
-        arrival_date: strOrNull,
-        departure_date: strOrNull,
-      },
-      required: ['reservation_id', 'guest_name', 'guest_first_name', 'guest_name_is_surname', 'arrival_date', 'departure_date'],
-    },
-  }),
-  tool('hms_read_reservation', 'Read a twin reservation.', {
-    property_code: {type: 'string'},
-    reservation_id: {type: 'string'},
-    arrival_date: strOrNull,
-    departure_date: strOrNull,
-    last_name: strOrNull,
-  }),
-  tool('hms_read_catalogue', 'Read twin catalogue sections.', {
-    property_code: {type: 'string'},
-    arrival_date: strOrNull,
-    departure_date: strOrNull,
-    kinds: {
-      type: 'array',
-      items: {type: 'string', enum: ['room_type', 'rate_plan', 'meal_plan', 'source_of_business', 'track', 'guarantee_type', 'organization', 'agency']},
-    },
-  }),
-  tool('hms_search_parties', 'Search twin parties/profiles.', {
-    property_code: {type: 'string'},
-    kind: {type: 'string', enum: ['guest', 'organization', 'agency', 'ar_account']},
-    field: {type: 'string', enum: ['last_name', 'first_name', 'email', 'phone', 'profile_id', 'name']},
-    query: {type: 'string'},
-  }),
-  tool('hms_quote', 'Quote from recorded twin prices only.', {
-    quote_id: {type: 'string'},
-    party_name: strOrNull,
-    property_code: {type: 'string'},
-    groups: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          group_id: {type: 'string'},
-          arrival_date: {type: 'string'},
-          departure_date: {type: 'string'},
-          rooms: {
-            type: 'array',
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                id: {type: 'string'},
-                quantity: {type: 'number'},
-                adults: {type: 'number'},
-                children: {type: 'number'},
-                child_ages: {type: 'array', items: {type: 'number'}},
-              },
-              required: ['id', 'quantity', 'adults', 'children', 'child_ages'],
-            },
-          },
-        },
-        required: ['group_id', 'arrival_date', 'departure_date', 'rooms'],
-      },
-    },
-    details: {type: ['string', 'null'], enum: ['summary', 'full', null]},
-    max_options_per_group: {type: ['number', 'null']},
-  }),
-  // proposal_publish must allow free-form booking fields; keep non-strict for Azure.
-  {
-    name: 'proposal_publish',
-    description: 'Publish the grounded proposal for scoring.',
+/** Prod tool schemas from tool-registry baseline + triage/quote packs (same as EC2). */
+function prodBenchTools(): ToolDefinition[] {
+  const byName = new Map<string, ToolDefinition>();
+  for (const tool of baselineTools) {
+    byName.set(tool.name, {name: tool.name, description: tool.description, input_schema: tool.input_schema as ToolDefinition['input_schema']});
+  }
+  byName.set(skillReadDefinition.name, {
+    name: skillReadDefinition.name,
+    description: skillReadDefinition.description,
+    input_schema: skillReadDefinition.input_schema as ToolDefinition['input_schema'],
+  });
+  byName.set('hms_search_reservations', {
+    name: 'hms_search_reservations',
+    description: 'Search native reservation candidates without selecting a booking.',
+    input_schema: triageSchemas.hms_search_reservations as ToolDefinition['input_schema'],
+  });
+  byName.set('hms_read_reservation', {
+    name: 'hms_read_reservation',
+    description: 'Read a fresh uniquely identified native saved reservation.',
+    input_schema: triageSchemas.hms_read_reservation as ToolDefinition['input_schema'],
+  });
+  byName.set('hms_read_catalogue', {
+    name: 'hms_read_catalogue',
+    description: 'Read native catalogue codes and meanings with explicit coverage.',
+    input_schema: triageSchemas.hms_read_catalogue as ToolDefinition['input_schema'],
+  });
+  byName.set('hms_search_parties', {
+    name: 'hms_search_parties',
+    description: 'Search native guest, organization, agency or A/R candidates without linking.',
+    input_schema: triageSchemas.hms_search_parties as ToolDefinition['input_schema'],
+  });
+  byName.set('hms_quote', {
+    name: 'hms_quote',
+    description: 'Read native availability and nightly prices for one quote and its ordered date groups; does not book.',
+    input_schema: quoteSchema as ToolDefinition['input_schema'],
+  });
+  byName.set('hms_prepare', {
+    name: 'hms_prepare',
+    description: 'Prepare a native change without saving.',
     input_schema: {
       type: 'object',
-      additionalProperties: false,
-      required: ['workflow', 'disposition', 'reason', 'bookings', 'actions', 'field_specs', 'missing', 'warnings', 'reply_draft', 'native_result'],
       properties: {
-        workflow: {type: 'string', enum: ['triage', 'quote', 'create', 'amend', 'cancel', 'filing']},
-        disposition: {type: 'string', enum: ['propose', 'needs_info', 'decline', 'skip', 'staff_review']},
-        reason: strOrNull,
-        bookings: {type: 'array', items: {type: 'object', additionalProperties: true, properties: {
-          id: {type: 'string'},
-          property_code: {type: 'string'},
-          reservation_id: strOrNull,
-          current_state: {type: 'object', additionalProperties: true, properties: {}},
-          fields: {type: 'object', additionalProperties: true, properties: {}},
-        }}},
-        actions: {type: 'array', items: {type: 'object', additionalProperties: true, properties: {
-          id: {type: 'string'},
-          type: {type: 'string'},
-          booking_ids: {type: 'array', items: {type: 'string'}},
-          details: {type: 'object', additionalProperties: true, properties: {}},
-        }}},
-        field_specs: {type: 'array', items: {type: 'object', additionalProperties: true, properties: {
-          path: {type: 'string'},
-          editable: {type: 'boolean'},
-        }}},
-        missing: {type: 'array', items: {type: 'string'}},
-        warnings: {type: 'array', items: {type: 'string'}},
-        reply_draft: strOrNull,
-        native_result: {type: ['object', 'null'], additionalProperties: true, properties: {}},
+        workflow: {type: 'string', enum: ['create', 'amend', 'cancel', 'filing']},
+        booking: {type: 'object'},
+        action: {type: 'object'},
       },
+      required: ['workflow', 'booking', 'action'],
+      additionalProperties: false,
     },
-  },
-];
+  });
+  // Bench twin: never expose Save.
+  byName.delete('hms_save');
+  return [...byName.values()];
+}
+
+const benchTools = prodBenchTools();
+
+function pdfAttachments(raw: unknown): Array<{id: string; name: string; content_type: string; extracted_text: string}> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((pdf, i) => {
+    const row = (pdf ?? {}) as Record<string, unknown>;
+    return {
+      id: String(row.id ?? `pdf-${i}`),
+      name: String(row.filename ?? row.name ?? `attachment-${i}.pdf`),
+      content_type: 'application/pdf',
+      extracted_text: String(row.text ?? row.extracted_text ?? '').slice(0, 20_000),
+    };
+  });
+}
 
 async function loadSkillPin(): Promise<{version: string; files: Record<string, string>}> {
   const root = join(process.cwd(), 'skills');
@@ -168,9 +113,9 @@ function mailPayload(card: CaseCard) {
         to: [],
         cc: [],
         subject: nested.subject ?? '',
-        body_text: nested.body ?? nested.body_text ?? '',
+        body_text: String(nested.body_text ?? nested.body ?? ''),
         received_at: nested.timestamp ?? nested.received_at ?? card.as_of,
-        attachments: [],
+        attachments: pdfAttachments(nested.pdf_attachments_text ?? nested.attachments),
       };
     }),
     {
@@ -180,17 +125,9 @@ function mailPayload(card: CaseCard) {
       to: [],
       cc: [],
       subject: selected?.subject ?? '',
-      body_text: selected?.body_text ?? '',
+      body_text: String(selected?.body_text ?? selected?.body ?? ''),
       received_at: selected?.received_at ?? card.as_of,
-      attachments: (selected?.pdf_attachments_text as unknown[] ?? []).map((pdf, i) => {
-        const row = pdf as Record<string, unknown>;
-        return {
-          id: `pdf-${i}`,
-          name: row.filename ?? `attachment-${i}.pdf`,
-          content_type: 'application/pdf',
-          extracted_text: String(row.text ?? '').slice(0, 20_000),
-        };
-      }),
+      attachments: pdfAttachments(selected?.pdf_attachments_text),
     },
   ];
   for (const link of (card.cross_thread_context as Array<Record<string, unknown>> | undefined) ?? []) {
@@ -202,9 +139,9 @@ function mailPayload(card: CaseCard) {
         to: [],
         cc: [],
         subject: `[cross-thread rank=${link.rank} ${link.reason}] ${msg.subject ?? ''}`,
-        body_text: String(msg.body ?? ''),
+        body_text: String(msg.body_text ?? msg.body ?? ''),
         received_at: msg.timestamp ?? card.as_of,
-        attachments: [],
+        attachments: pdfAttachments(msg.pdf_attachments_text ?? msg.attachments),
       });
     }
   }
@@ -228,7 +165,14 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
   void options;
   process.env.NAVA_HMS_MODE = 'twin';
   process.env.NAVA_AGENT_RUNTIME = 'azure';
-  const twin = createTwin(card, {mode: 'twin'});
+  // Luna only — never Anthropic/Haiku for agent or helpers.
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.NAVA_AGENT_ANTHROPIC_MODEL;
+  process.env.NAVA_AGENT_AZURE_DEPLOYMENT = process.env.NAVA_AGENT_AZURE_DEPLOYMENT ?? 'gpt-6-luna';
+  if ((process.env.NAVA_AGENT_AZURE_DEPLOYMENT ?? '').toLowerCase().includes('haiku')) {
+    throw new Error('LUNA_ONLY: refuse Haiku deployment');
+  }
+  const twin = createTwin(card);
   const pin = await loadSkillPin();
   const state: RuntimeState = {
     threadId: card.case_id,

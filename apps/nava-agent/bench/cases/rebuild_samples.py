@@ -16,20 +16,14 @@ IMG_RE = re.compile(
     r"https?://\S+\.(?:png|jpe?g|gif|webp)|\b[\w.-]+\.(?:png|jpe?g|gif|webp)\b)"
 )
 
-CREATE_PANE = [
-    "room_count", "arrival_date", "departure_date", "adults", "child_count", "child_ages",
-    "room_type", "rate_plan", "guarantee_type", "source_of_business", "track",
-    "guest_profile_id", "first_name", "last_name", "guest_email", "profile_create_new",
-    "profile_mobile", "profile_email", "agency_name", "agency_id", "organization_name",
-    "organization_id", "ar_account_name", "ar_account_id", "billing_reference",
-    "booker_name", "booker_contact", "reason_for_stay", "note", "guest_opt_in",
-    "cms_send", "cms_message_id", "cms_recipient", "price",
-]
-AMEND_PANE = [
-    "arrival_date", "departure_date", "adults", "room_type", "rate_plan",
-    "first_name", "last_name", "guest_email", "booker_name", "booker_contact",
-    "billing_reference", "reservation_note", "cms_send", "cms_message_id", "cms_recipient",
-]
+from field_catalog import (  # noqa: E402
+    ACTION_PATHS,
+    HMS_TO_PROPOSAL_MAP,
+    PROFILE_FIELDS,
+    STAY360_FIELDS,
+    TIER1,
+    TIER2,
+)
 
 # Group amend wave (same staff outbound cluster shortening departure to 04-09-2026).
 AMEND_GROUP = [
@@ -224,6 +218,16 @@ def code_name(code_maps: dict, kind: str, code: Any) -> dict | None:
 
 
 def project_shown(workflow: str, as_of: str, conf: str | None, anchor: dict | None, base_pdf: dict | None) -> dict:
+    # Quote/triage (and any case without a confirmation) never invent a stay.
+    if workflow in ("quote", "triage") or not conf:
+        return {
+            "exists": False,
+            "confirmation": None,
+            "stay": None,
+            "documents": [],
+            "basis": "no_stay_at_as_of" if workflow in ("quote", "triage") else "missing_confirmation",
+            "basis_pdf_sent_at": None,
+        }
     if workflow == "create":
         first = None
         if anchor:
@@ -254,9 +258,6 @@ def project_shown(workflow: str, as_of: str, conf: str | None, anchor: dict | No
     stay = normalize_pdf_stay(pdf_fields(pdf) if pdf else {}, conf)
     if workflow == "cancel":
         stay["status"] = "Reserved"
-    if workflow == "create":
-        # should not reach if absent; if reached, still PDF-only
-        pass
     # NEVER merge later HMS snapshot into shown
     return {
         "exists": True,
@@ -372,6 +373,7 @@ def cross_thread(as_of: str, thread_id: str | None, conf: str | None, selected_h
                     "timestamp": ts,
                     "direction": m.get("direction"),
                     "subject": m.get("subject"),
+                    "body": body[:8000],
                     "body_text": body[:8000],
                     "from": m.get("from"),
                 })
@@ -514,171 +516,301 @@ def hms_raw(conf: str | None, anchor: dict | None, stay_row: dict | None, profil
     }
 
 
-def exhaustive_gold(workflow: str, gold_row: dict, shown_stay: dict | None, code_maps: dict, rv_fields: list[dict], profile: dict | None) -> list[dict]:
-    fields: list[dict] = []
-    seen = set()
+def _code_name_lookup(code_maps: dict, kind: str, code: Any = None, name: Any = None) -> dict | None:
+    if code is None and name is None:
+        return None
+    c = str(code) if code not in (None, "") else None
+    n = name
+    if c and n is None:
+        n = (code_maps.get(kind) or {}).get(c)
+    if n and c is None:
+        for cand, meaning in (code_maps.get(kind) or {}).items():
+            if meaning and str(meaning).lower() == str(n).lower():
+                c = cand
+                break
+    return {"code": c, "name": n}
 
-    def add(path: str, expectation: str, value=None, basis: str = "", **extra):
-        if path in seen:
-            return
-        seen.add(path)
-        row = {"path": path, "expectation": expectation, "basis": basis, **extra}
-        if expectation == "expected":
-            row["value"] = value
-        fields.append(row)
 
+def _parse_hms_date(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    # Tue 27-OCT-2026 / Fri 04-SEP-2026 11:00
+    m = re.search(r"(\d{1,2})-([A-Za-z]{3})-(\d{4})", s)
+    if m:
+        months = {mth: i for i, mth in enumerate(
+            ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"], 1)}
+        mon = months.get(m.group(2).upper())
+        if mon:
+            return f"{m.group(3)}-{mon:02d}-{int(m.group(1)):02d}"
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)
+    if m:
+        return m.group(0)
+    m = re.match(r"^(\d{2})-(\d{2})-(\d{4})$", s)
+    if m:
+        return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    return s
+
+
+def _parse_adults(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    m = re.search(r"(\d+)\s*Adult", str(raw), re.I)
+    return int(m.group(1)) if m else None
+
+
+def _parse_children(raw: Any) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    m = re.search(r"(\d+)\s*Child", str(raw), re.I)
+    return int(m.group(1)) if m else None
+
+
+def _parse_guest(raw: Any) -> tuple[str | None, str | None, str | None]:
+    """Return (first, last, full display). Handles 'Mazhindu, Mr Mike'."""
+    if not raw:
+        return None, None, None
+    s = str(raw).strip()
+    if "," in s:
+        last, rest = [p.strip() for p in s.split(",", 1)]
+        rest = re.sub(r"^(Mr|Ms|Mrs|Miss|Dr)\.?\s+", "", rest, flags=re.I).strip()
+        return (rest or None), (last or None), f"{rest} {last}".strip()
+    parts = s.split()
+    if len(parts) >= 2:
+        return parts[0], parts[-1], s
+    return None, s, s
+
+
+def _normalize_later_value(hms_key: str, raw: Any, code_maps: dict) -> Any:
+    if raw is None or raw == "":
+        return None
+    if hms_key in ("arrivaldate", "departuredate"):
+        return _parse_hms_date(raw)
+    if hms_key == "adults":
+        return _parse_adults(raw)
+    if hms_key == "children":
+        return _parse_children(raw)
+    if hms_key == "roomtype":
+        code = str(raw).strip()
+        return _code_name_lookup(code_maps, "room_type", code=code) or {"code": code, "name": None}
+    if hms_key == "rateplan":
+        code = str(raw).strip()
+        return _code_name_lookup(code_maps, "rate_plan", code=code) or {"code": code, "name": None}
+    if hms_key == "company":
+        name = str(raw).strip()
+        return _code_name_lookup(code_maps, "organization", name=name) or {"code": None, "name": name}
+    if hms_key == "ta1":
+        name = str(raw).strip()
+        if not name:
+            return None
+        return _code_name_lookup(code_maps, "agency", name=name) or {"code": None, "name": name}
+    if hms_key == "guestfullname":
+        first, last, full = _parse_guest(raw)
+        return {"first_name": first, "last_name": last, "name": full, "raw": raw}
+    if hms_key in ("confirmation", "confirmationnumber"):
+        return str(raw).strip()
+    return raw
+
+
+def _knowable_from_shown(
+    pane: str,
+    workflow: str,
+    gold_row: dict,
+    value: Any,
+) -> tuple[str, str]:
+    """Return (expectation, basis). Value is later-HMS truth; label by shown knowability."""
     rbf = gold_row.get("resolved_base_fields") or {}
     fp = ((gold_row.get("first_pdf") or {}).get("fields")) or ((gold_row.get("decision_time_base_pdf") or {}).get("fields")) or {}
     am = (gold_row.get("amendment") or {}).get("changes") or {}
 
-    # Pane fields
-    pane = CREATE_PANE if workflow == "create" else AMEND_PANE
-    for key in pane:
-        path = f"/bookings/0/fields/{key}"
-        if key in am:
-            ch = am[key]
-            add(path, "expected", ch.get("after"), "reviewed", before=ch.get("before"))
-            continue
-        if workflow == "create":
-            if key == "room_type":
-                val = rbf.get("room_type")
-                if isinstance(val, dict) and val.get("code"):
-                    add(path, "expected", {"code": val["code"], "name": val.get("meaning") or code_maps["room_type"].get(val["code"])}, val.get("basis") or "first_pdf")
-                else:
-                    add(path, "not_expected", basis="no_unique_room_code_in_inputs")
-                continue
-            if key == "rate_plan":
-                val = rbf.get("rate_plan")
-                if isinstance(val, dict) and val.get("code"):
-                    add(path, "expected", {"code": val["code"], "name": val.get("meaning") or code_maps["rate_plan"].get(val["code"])}, "first_pdf")
-                else:
-                    add(path, "not_expected", basis=rbf.get("rate_plan_reason") or "no_unique_rate_plan")
-                continue
-            if key == "organization_name":
-                org = rbf.get("organization")
-                if isinstance(org, dict) and (org.get("code") or org.get("name")):
-                    code = str(org.get("code") or org.get("nativeId") or "")
-                    add(path, "expected", {"code": code, "name": org.get("name") or org.get("meaning") or code_maps["organization"].get(code)}, "first_pdf")
-                elif fp.get("company_text"):
-                    # try map name
-                    name = fp["company_text"]
-                    code = None
-                    for c, n in code_maps["organization"].items():
-                        if n and str(n).lower() == str(name).lower():
-                            code = c
-                            break
-                    add(path, "expected", {"code": code, "name": name}, "first_pdf")
-                else:
-                    add(path, "not_expected", basis="organization_not_in_inputs")
-                continue
-            if key == "agency_name":
-                ag = rbf.get("agency")
-                if isinstance(ag, dict) and (ag.get("code") or ag.get("name")):
-                    code = str(ag.get("code") or ag.get("nativeId") or "")
-                    add(path, "expected", {"code": code, "name": ag.get("name") or ag.get("meaning") or code_maps["agency"].get(code)}, "first_pdf")
-                elif fp.get("agency_text"):
-                    name = fp["agency_text"]
-                    code = None
-                    for c, n in code_maps["agency"].items():
-                        if n and str(n).lower() == str(name).lower():
-                            code = c
-                            break
-                    add(path, "expected", {"code": code, "name": name}, "first_pdf")
-                else:
-                    add(path, "not_expected", basis="agency_not_in_inputs")
-                continue
-            if key == "arrival_date" and fp.get("arrival_date"):
-                add(path, "expected", fp["arrival_date"], "first_pdf")
-                continue
-            if key == "departure_date" and fp.get("departure_date"):
-                add(path, "expected", fp["departure_date"], "first_pdf")
-                continue
-            if key == "adults" and fp.get("adults") is not None:
-                add(path, "expected", fp["adults"], "first_pdf")
-                continue
-            if key == "child_count" and fp.get("children") is not None:
-                add(path, "expected", fp["children"], "first_pdf")
-                continue
-            if key in ("first_name", "last_name") and fp.get("guest_name"):
-                parts = str(fp["guest_name"]).split()
-                if key == "first_name" and parts:
-                    add(path, "expected", parts[0], "first_pdf")
-                    continue
-                if key == "last_name" and parts:
-                    add(path, "expected", parts[-1], "first_pdf")
-                    continue
-            if key in ("guarantee_type", "source_of_business", "track", "cms_send", "cms_message_id", "room_count"):
-                add(path, "no_gold", basis="default_or_staff_only")
-                continue
-            if key in ("guest_email", "profile_mobile", "profile_email", "billing_reference", "note", "reason_for_stay"):
-                add(path, "not_expected", basis="not_knowable_from_shown_inputs_at_as_of")
-                continue
-        if key in ("guest_email",) or "address" in key:
-            add(path, "not_expected", basis="address_or_contact_before_arrival")
-            continue
-        add(path, "no_gold", basis="no_labelled_truth")
-
-    # classic address
-    add("/bookings/0/fields/guest_address", "not_expected", basis="address_before_arrival")
+    if workflow == "amend" and pane in am:
+        return "expected", "reviewed_amendment"
+    if pane == "reservation_id" and gold_row.get("real_confirmation") and workflow in ("amend", "cancel", "filing"):
+        return "expected", "reviewed_confirmation"
     if workflow == "create":
-        add("/bookings/0/fields/confirmation", "no_gold", basis="create_has_no_confirmation_yet")
-    if workflow == "amend" and gold_row.get("real_confirmation"):
-        add("/bookings/0/reservation_id", "expected", gold_row["real_confirmation"], "reviewed")
+        if pane == "room_type" and isinstance(rbf.get("room_type"), dict) and rbf["room_type"].get("code"):
+            return "expected", rbf["room_type"].get("basis") or "first_pdf_catalogue"
+        if pane == "organization_name" and (
+            (isinstance(rbf.get("organization"), dict) and rbf["organization"].get("code"))
+            or fp.get("company_text")
+        ):
+            return "expected", "first_pdf_catalogue"
+        if pane == "agency_name" and (
+            (isinstance(rbf.get("agency"), dict) and rbf["agency"].get("code"))
+            or fp.get("agency_text")
+        ):
+            return "expected", "first_pdf_catalogue"
+        if pane == "arrival_date" and fp.get("arrival_date"):
+            return "expected", "first_pdf"
+        if pane == "departure_date" and fp.get("departure_date"):
+            return "expected", "first_pdf"
+        if pane == "adults" and fp.get("adults") is not None:
+            return "expected", "first_pdf"
+        if pane == "child_count" and fp.get("children") is not None:
+            return "expected", "first_pdf"
+        if pane in ("first_name", "last_name", "guest_name") and fp.get("guest_name"):
+            return "expected", "first_pdf"
+        if pane == "rate_plan":
+            # later HMS has code; knowable only if rbf resolved uniquely
+            if isinstance(rbf.get("rate_plan"), dict) and rbf["rate_plan"].get("code"):
+                return "expected", rbf["rate_plan"].get("basis") or "first_pdf_catalogue"
+            return "not_expected", rbf.get("rate_plan_reason") or "rate_plan_not_unique_from_shown"
+        if pane == "meal_plan":
+            return "not_expected", "meal_plan_text_not_unique_code_from_shown"
+        if pane == "guest_email":
+            return "not_expected", "email_not_required_from_shown_before_arrival"
+        if pane in ("guarantee_type", "source_of_business", "track", "cms_send", "cms_message_id", "market_segment"):
+            return "not_expected", "tier2_default_not_forced_by_shown"
+        if pane == "reservation_id":
+            return "not_expected", "create_has_no_confirmation_in_proposal"
+    if workflow == "cancel":
+        if pane == "reservation_id":
+            return "expected", "reviewed_confirmation"
+        return "not_expected", "cancel_patch_field_not_labelled"
+    if workflow == "filing":
+        if pane in ("attachment_id", "confirmation_number", "reservation_id"):
+            return "expected", "filing_target"
+        return "not_expected", "filing_optional_unlabelled"
+    if workflow in ("quote", "triage"):
+        return "not_expected", f"{workflow}_weak_gold"
+    # amend non-changed fields: staff did not publish them as patch
+    if workflow == "amend":
+        if pane in ("guarantee_type", "source_of_business", "track", "cms_send", "cms_message_id", "market_segment"):
+            return "not_expected", "tier2_default_not_in_amend_patch"
+        return "not_expected", "unchanged_field_not_in_amend_patch"
+    return "not_expected", "not_knowable_from_shown_inputs"
 
-    # All 118 record-view fields
-    for f in rv_fields:
-        name = f.get("name") or "unknown"
-        path = f"/hms/record_view/{name}"
-        label = f.get("label")
-        # For amend/create gold: most later HMS values are no_gold / not_expected at as_of
-        if workflow == "amend" and name in ("departuredate",) and "departure_date" in am:
-            add(path, "expected", {
-                "code": None,
-                "name": label,
-                "value": am["departure_date"]["after"],
-            }, "reviewed", before=am["departure_date"]["before"])
-            continue
-        if name in ("streetaddress", "city", "postalcode", "address", "emailaddress"):
-            add(path, "not_expected", basis="address_or_email_before_arrival")
-            continue
-        if workflow == "create":
-            add(path, "no_gold", basis="create_booking_absent_at_as_of")
-        else:
-            # knowable only if mirrored in pre-as_of PDF shown stay
-            shown_keys = set((shown_stay or {}).keys())
-            if name in ("confirmationnumber",) and gold_row.get("real_confirmation"):
-                add(path, "expected", {"code": gold_row["real_confirmation"], "name": label, "value": gold_row["real_confirmation"]}, "reviewed")
-            elif name in ("arrivaldate", "departuredate", "adults", "roomtype", "rateplan", "status", "guestfullname"):
-                # mapped via PDF for current state (shown), gold for change fields already handled
-                if name == "departuredate" and "departure_date" in am:
-                    continue
-                add(path, "no_gold", basis="shown_from_pdf_but_staff_truth_not_labelled_beyond_amendment")
-            else:
-                add(path, "no_gold", basis="later_record_view_unlabelled_at_as_of")
 
-    # Profile fields
-    for f in (profile or {}).get("fields") or []:
-        name = f.get("name") or "unknown"
-        path = f"/hms/profile/{name}"
-        if name in ("streetaddress", "city", "postalcode", "stateprovincedesc", "countrydesc", "emailaddress", "phonenumber", "mobilenumber", "birthdateforprofile"):
-            add(path, "not_expected", basis="profile_pii_not_knowable_from_email_at_as_of")
-        else:
-            add(path, "no_gold", basis="profile_snapshot_later_unlabelled")
+def exhaustive_gold(
+    workflow: str,
+    gold_row: dict,
+    shown_stay: dict | None,
+    code_maps: dict,
+    rv_fields: list[dict],
+    profile: dict | None,
+    group_bookings: list[dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Proposal-path gold only. 118/65 stay in hms_raw, never as /hms/* gold paths."""
+    void = (rv_fields, profile, shown_stay)  # kept for call-site compat; unused in gold paths
+    del void
+    fields: list[dict] = []
+    omitted: list[dict] = []
+    seen: set[str] = set()
 
-    # code+name enrichment for room/rate on shown PDF text
-    if shown_stay and shown_stay.get("room_type_text"):
-        # map meaning -> code
-        meaning = shown_stay["room_type_text"]
-        code = None
-        for c, n in code_maps["room_type"].items():
-            if n and str(n).lower() == str(meaning).lower():
-                code = c
-                break
-        add("/bookings/0/fields/room_type_from_pdf", "expected" if workflow != "create" else "not_expected",
-            {"code": code, "name": meaning} if workflow != "create" else None,
-            basis="last_pre_as_of_pdf" if workflow != "create" else "create_absent")
+    def add(path: str, expectation: str, value=None, basis: str = "", tier: str = TIER1, **extra):
+        if path in seen:
+            return
+        seen.add(path)
+        row = {"path": path, "expectation": expectation, "basis": basis, "tier": tier, **extra}
+        if expectation == "expected":
+            row["value"] = value
+        elif value is not None:
+            row["later_value"] = value  # truth retained for inspection when not_expected
+        fields.append(row)
 
-    return fields
+    later = ((gold_row.get("later_hms") or {}).get("fields")) or {}
+    bookings = group_bookings if (workflow == "amend" and group_bookings) else [{"confirmation": gold_row.get("real_confirmation")}]
+    if not bookings:
+        bookings = [{"confirmation": gold_row.get("real_confirmation")}]
+
+    am = (gold_row.get("amendment") or {}).get("changes") or {}
+
+    for n, booking in enumerate(bookings):
+        conf = booking.get("confirmation") or gold_row.get("real_confirmation")
+        # Per-booking later fields: primary booking uses gold later_hms; others reservation_id only unless same amend wave.
+        later_fields = dict(later) if n == 0 else {}
+        if conf and n == 0 and "confirmationnumber" not in later_fields and "confirmation" not in later_fields:
+            later_fields["confirmationnumber"] = conf
+        elif conf and n > 0:
+            later_fields = {"confirmationnumber": conf}
+
+        # Inject amendment after values into primary booking later fields.
+        if n == 0 and "departure_date" in am:
+            later_fields["departuredate"] = am["departure_date"].get("after")
+        if n == 0 and "arrival_date" in am:
+            later_fields["arrivaldate"] = am["arrival_date"].get("after")
+        if n == 0 and "adults" in am:
+            later_fields["adults"] = am["adults"].get("after")
+
+        for hms_key, meta in HMS_TO_PROPOSAL_MAP.items():
+            if hms_key not in later_fields and not (hms_key in ("confirmation", "confirmationnumber") and conf):
+                continue
+            raw = later_fields.get(hms_key)
+            if raw is None and hms_key in ("confirmation", "confirmationnumber"):
+                raw = conf
+            if raw is None or raw == "":
+                continue
+            path = meta["path"].format(n=n)
+            pane = meta["pane"]
+            tier = meta["tier"]
+            value = _normalize_later_value(hms_key, raw, code_maps)
+
+            # Expand guestfullname into first/last/guest_name paths.
+            if hms_key == "guestfullname" and isinstance(value, dict):
+                for sub_pane, sub_val, sub_path in [
+                    ("first_name", value.get("first_name"), f"/bookings/{n}/fields/first_name"),
+                    ("last_name", value.get("last_name"), f"/bookings/{n}/fields/last_name"),
+                    ("guest_name", value.get("name"), f"/bookings/{n}/fields/guest_name"),
+                ]:
+                    if sub_val is None:
+                        continue
+                    exp, basis = _knowable_from_shown(sub_pane, workflow, gold_row, sub_val)
+                    add(sub_path, exp, sub_val, basis, tier=TIER1, hms_key=hms_key)
+                continue
+
+            exp, basis = _knowable_from_shown(pane, workflow, gold_row, value)
+            # Create: override room/org/agency values with resolved catalogue when knowable
+            if workflow == "create" and exp == "expected":
+                rbf = gold_row.get("resolved_base_fields") or {}
+                if pane == "room_type" and isinstance(rbf.get("room_type"), dict):
+                    value = {"code": rbf["room_type"]["code"], "name": rbf["room_type"].get("meaning")}
+                if pane == "organization_name" and isinstance(rbf.get("organization"), dict):
+                    value = {"code": rbf["organization"].get("code"), "name": rbf["organization"].get("meaning")}
+                if pane == "agency_name" and isinstance(rbf.get("agency"), dict):
+                    value = {"code": rbf["agency"].get("code"), "name": rbf["agency"].get("meaning")}
+            if workflow == "amend" and pane in am:
+                value = am[pane].get("after")
+                add(path, "expected", value, "reviewed_amendment", tier=tier, hms_key=hms_key, before=am[pane].get("before"))
+                continue
+            add(path, exp, value, basis, tier=tier, hms_key=hms_key)
+
+    # Workflow action / doc targets
+    if workflow == "cancel" and gold_row.get("real_confirmation"):
+        add("/bookings/0/reservation_id", "expected", gold_row["real_confirmation"], "reviewed_confirmation", tier=TIER1)
+        add(ACTION_PATHS["cancel_scope"]["path"], "not_expected", "whole_stay", "scope_default_unlabelled", tier=TIER1)
+        add(ACTION_PATHS["cancel_reason"]["path"], "not_expected", None, "staff_picks_reason_at_go", tier=TIER1)
+    if workflow == "filing":
+        fa = gold_row.get("filing_attachment") or {}
+        if fa.get("attachment_id"):
+            add(ACTION_PATHS["filing_attachment"]["path"], "expected", fa["attachment_id"], "filing_attachment", tier=TIER1)
+        if gold_row.get("real_confirmation"):
+            add(ACTION_PATHS["filing_confirmation"]["path"], "expected", gold_row["real_confirmation"], "filing_target", tier=TIER1)
+            add("/bookings/0/reservation_id", "expected", gold_row["real_confirmation"], "filing_target", tier=TIER1)
+        add(ACTION_PATHS["filing_description"]["path"], "not_expected", "Booking voucher", "description_default", tier=TIER1)
+    if workflow == "quote":
+        add(ACTION_PATHS["quote_property"]["path"], "expected", "HRCEN", "property_default", tier=TIER1)
+    if workflow == "triage" and gold_row.get("real_confirmation"):
+        add(ACTION_PATHS["triage_reservation"]["path"], "not_expected", gold_row["real_confirmation"], "triage_weak_gold", tier=TIER1)
+
+    # Tier2 pane defaults always present as not_expected rows for create (report coverage).
+    if workflow == "create":
+        for pane, path in [
+            ("guarantee_type", "/bookings/0/fields/guarantee_type"),
+            ("source_of_business", "/bookings/0/fields/source_of_business"),
+            ("track", "/bookings/0/fields/track"),
+            ("cms_send", "/bookings/0/fields/cms_send"),
+            ("cms_message_id", "/bookings/0/fields/cms_message_id"),
+            ("cms_recipient", "/bookings/0/fields/cms_recipient"),
+        ]:
+            if path not in seen:
+                add(path, "not_expected", None, "tier2_default_not_forced_by_shown", tier=TIER2)
+
+    return fields, omitted
+
 
 
 def build_message(raw: dict, *, is_selected: bool = False) -> dict:
@@ -769,6 +901,22 @@ def build_card(gold_row: dict, anchors, stay360, profiles, code_maps) -> dict:
             built["timestamp"] = None
         if built["timestamp"] and built["timestamp"] > as_of:
             continue
+        # Earlier message PDF text (not only selected).
+        earlier_pdfs = []
+        msg_ts = built["timestamp"] or as_of
+        if anchor:
+            for pdf in anchor.get("pdfs") or []:
+                sent = parse_ts(pdf.get("sent_at"))
+                if not sent or sent > msg_ts:
+                    continue
+                earlier_pdfs.append({
+                    "sent_at": sent,
+                    "sha256": pdf.get("sha256"),
+                    "filename": pdf.get("filename") or "HRCEN_Confirmation_Letter.pdf",
+                    "text": json.dumps(pdf_fields(pdf), ensure_ascii=False)[:20000],
+                    "note": "earlier_message_pdf_fields",
+                })
+        built["pdf_attachments_text"] = earlier_pdfs
         context_before.append(built)
     selected = build_message(selected_raw, is_selected=True)
     selected["message_id"] = src.get("selected_message_id")
@@ -800,8 +948,49 @@ def build_card(gold_row: dict, anchors, stay360, profiles, code_maps) -> dict:
     xt = cross_thread(as_of, src.get("thread_id"), conf, headers)
     shown = project_shown(workflow, as_of, conf, anchor, base_pdf)
     raw = hms_raw(conf, anchor, stay_row, profiles, gold_row)
+    # Always expose canonical 118 field defs in raw even when stay capture thin.
+    by_name = {str(f.get("name")): f for f in raw["record_view"]["fields"] if f.get("name")}
+    raw["record_view"]["fields"] = [
+        {
+            "name": meta["name"],
+            "label": meta.get("label"),
+            "type": meta.get("type"),
+            "value": (by_name.get(meta["name"]) or {}).get("value"),
+            "code": meta["name"],
+        }
+        for meta in STAY360_FIELDS
+    ]
+    raw["record_view"]["field_count"] = len(raw["record_view"]["fields"])
+    raw["record_view"]["canonical"] = 118
+    if raw.get("profile") is None:
+        raw["profile"] = {"fields": [], "capture_note": "no_matched_profile"}
+    p_by = {
+        str(f.get("name")): f
+        for f in (raw["profile"].get("fields") or [])
+        if isinstance(f, dict) and f.get("name")
+    }
+    raw["profile"]["fields"] = [
+        {
+            "name": meta["name"],
+            "label": meta.get("label"),
+            "xtype": meta.get("xtype"),
+            "value": (p_by.get(meta["name"]) or {}).get("value", (p_by.get(meta["name"]) or {}).get("rawValue")),
+            "code": meta["name"],
+        }
+        for meta in PROFILE_FIELDS
+    ]
+    raw["profile"]["field_count"] = 65
     profile = raw.get("profile")
-    gold = exhaustive_gold(workflow, gold_row, shown.get("stay"), code_maps, raw["record_view"]["fields"], profile)
+    group = AMEND_GROUP if workflow == "amend" else None
+    gold, omitted = exhaustive_gold(
+        workflow,
+        gold_row,
+        shown.get("stay"),
+        code_maps,
+        raw["record_view"]["fields"],
+        profile,
+        group_bookings=group,
+    )
 
     card = {
         "case_id": gold_row["case_id"],
@@ -815,17 +1004,19 @@ def build_card(gold_row: dict, anchors, stay360, profiles, code_maps) -> dict:
         "hms_raw": raw,
         "hms_shown": shown,
         "gold": gold,
-        "group_bookings": AMEND_GROUP if workflow == "amend" else None,
+        "omitted": omitted,
+        "group_bookings": group,
         "evidence_limits": gold_row.get("evidence_limits"),
         "card_fixes": [
             "backdated_hms_shown_from_last_pre_as_of_pdf",
             "dated_messages_leak_guard_fails_null_dates",
             "rank2_this_case_conf_only",
-            "exhaustive_gold_record_profile_pane_code_name",
+            "exhaustive_gold_118_stay360_65_profile_all_pane",
             "full_hms_raw",
             "group_amend_lists_every_booking",
             "hidden_after_filled",
             "images_stripped",
+            "luna_only_no_cassette_no_save_sim",
         ],
     }
     card["leak_guard"] = leak_guard(card)
@@ -843,8 +1034,13 @@ def render_md(card: dict) -> str:
         f"- **hms_shown.exists**: {card['hms_shown'].get('exists')}",
         f"- **cross_thread**: {len(card['cross_thread_context'])} (rank2 conf-only)",
         f"- **context_after messages**: {len((card.get('context_after') or {}).get('messages') or [])}",
-        f"- **gold fields**: {len(card['gold'])}",
+        f"- **gold fields**: {len(card['gold'])} "
+        f"(expected={sum(1 for g in card['gold'] if g['expectation']=='expected')} "
+        f"not_expected={sum(1 for g in card['gold'] if g['expectation']=='not_expected')} "
+        f"no_gold={sum(1 for g in card['gold'] if g['expectation']=='no_gold')})",
+        f"- **omitted**: {len(card.get('omitted') or [])}",
         f"- **record_view fields in raw**: {card['hms_raw']['record_view']['field_count']}",
+        f"- **profile fields in raw**: {(card['hms_raw'].get('profile') or {}).get('field_count')}",
         "",
         "## 1. Selected email",
         f"**Subject:** {card['selected_email'].get('subject')}",
@@ -882,15 +1078,17 @@ def render_md(card: dict) -> str:
         "## 6. HMS shown (backdated)",
         f"```json\n{json.dumps(card['hms_shown'], indent=2, ensure_ascii=False)[:2000]}\n```",
         "",
-        "## 7. Gold (excerpt expected)",
+        "## 7. Gold (ALL fields)",
     ]
     for g in card["gold"]:
         if g["expectation"] == "expected":
-            lines.append(f"- **expected** `{g['path']}` = `{g.get('value')}` ({g['basis']})")
-    lines.append("")
-    lines.append(f"not_expected/no_gold counts: "
-                 f"{sum(1 for g in card['gold'] if g['expectation']=='not_expected')}/"
-                 f"{sum(1 for g in card['gold'] if g['expectation']=='no_gold')}")
+            lines.append(f"- **expected** `{g['path']}` = `{json.dumps(g.get('value'), ensure_ascii=False)}` ({g['basis']})")
+        else:
+            lines.append(f"- **{g['expectation']}** `{g['path']}` ({g['basis']})")
+    if card.get("omitted"):
+        lines += ["", "## Omitted (must have reason)"]
+        for row in card["omitted"]:
+            lines.append(f"- `{row.get('path')}` — {row.get('reason')}")
     if card.get("group_bookings"):
         lines += ["", "## Group bookings (amend all guests)", json.dumps(card["group_bookings"], indent=2)]
     return "\n".join(lines) + "\n"

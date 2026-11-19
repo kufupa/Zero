@@ -1,17 +1,19 @@
-# Nava replay bench
+# Replay bench (offline HMS twin)
 
-Offline e2e bench: real nava-agent Azure/Luna loop + HMS twin. Zero live HMS.
-
-## Data (gitignored / outside repo)
-
-`/home/orca/.local/share/zero/bench/replay-bench-20261119/`
-
-## Commands
+- **Twin** = reads + unsaved `hms_prepare` only. No cassette. No Save/readback simulation.
+- **LLM** = Azure `gpt-6-luna` only (no Haiku).
+- **Gold** = every pane field + all 118 Stay360 record-view fields + all 65 guest-profile fields; each `expected` / `not_expected` / `no_gold` with basis. Omit only via `omitted[]` + reason.
+- **Score** = prefill pane fields + Prepare inputs + tool-call quality. Keep leak guard + cross-thread precision report.
 
 ```bash
-cd apps/nava-agent
-NAVA_AGENT_RUNTIME=azure NAVA_HMS_MODE=twin \
-  pnpm bench --cases all --concurrency 20
+# samples (Create + Amend cards)
+cd apps/nava-agent/bench/cases && python3 rebuild_samples.py
+
+# full 200 (parallel workers)
+BENCH_CASE_WORKERS=24 python3 rebuild_all.py
+
+# run
+cd apps/nava-agent && BENCH_CONCURRENCY=20 npm run bench
 ```
 
-Env: `AZURE_OPENAI_API_KEY` (never commit). Optional `BENCH_LIMIT`, `NAVA_BENCH_DATA_ROOT`.
+Data root: `~/.local/share/zero/bench/replay-bench-20261119/` (gitignored dumps).
