@@ -11,10 +11,84 @@ from typing import Any
 DATA = Path("/home/orca/.local/share/zero/bench/replay-bench-20261119")
 OUT = DATA / "cases" / "samples"
 CONF_RE = re.compile(r"(?:n[°º]\s*)?(\d{6,10})-1", re.I)
+CONF_FILE_RE = re.compile(r"(\d{6,10}-1)")
 IMG_RE = re.compile(
     r"(?is)(<img\b[^>]*>|\[cid:[^\]]+\]|cid:[^\s\"'<>]+|data:image/[^;]+;base64,[a-z0-9+/=]+|"
     r"https?://\S+\.(?:png|jpe?g|gif|webp)|\b[\w.-]+\.(?:png|jpe?g|gif|webp)\b)"
 )
+
+
+def _norm_conf(value: str | None) -> str | None:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if re.fullmatch(r"\d{6,10}", raw):
+        return f"{raw}-1"
+    m = re.search(r"(\d{6,10}-\d)", raw)
+    return m.group(1) if m else raw
+
+
+def visible_confs_in_mail_text(card: dict) -> set[str]:
+    """Conf numbers in subject/body of shown mail only — not from gold-keyed PDF attachments."""
+    as_of = card.get("as_of") or ""
+    found: set[str] = set()
+    msgs = [card.get("selected_email") or {}] + list(card.get("context_before") or [])
+    for msg in msgs:
+        ts = msg.get("timestamp") or msg.get("received_at") or ""
+        if ts and as_of and ts > as_of:
+            continue
+        blob = " ".join(str(msg.get(k) or "") for k in ("subject", "body_text", "body"))
+        for hit in CONF_RE.findall(blob):
+            found.add(_norm_conf(hit) or hit)
+        for hit in CONF_FILE_RE.findall(blob):
+            found.add(_norm_conf(hit) or hit)
+    return {c for c in found if c}
+
+
+# Back-compat alias used by holdout builders / callers.
+visible_confs_before_as_of = visible_confs_in_mail_text
+
+
+def strip_gold_conf_inputs(card: dict) -> dict:
+    """Rank-2 cross-thread + earlier PDFs only from confs visible in shown mail (no gold-key fetch)."""
+    visible = visible_confs_in_mail_text(card)
+    gold = _norm_conf(card.get("real_confirmation"))
+    for msg in [card.get("selected_email") or {}] + list(card.get("context_before") or []):
+        kept = []
+        for pdf in msg.get("pdf_attachments_text") or []:
+            name = str(pdf.get("filename") or "")
+            text = str(pdf.get("text") or "")
+            pdf_confs = {
+                _norm_conf(c) or c
+                for c in (set(CONF_FILE_RE.findall(name)) | set(CONF_RE.findall(text + " " + name)))
+            }
+            pdf_confs = {c for c in pdf_confs if c}
+            if not pdf_confs:
+                # Unstructured attachment (voucher/POP without conf token) — keep.
+                kept.append(pdf)
+                continue
+            # Keep only when at least one conf also appears in shown mail text.
+            if pdf_confs & visible:
+                kept.append(pdf)
+        msg["pdf_attachments_text"] = kept
+
+    xt_kept = []
+    for link in card.get("cross_thread_context") or []:
+        matched = _norm_conf(link.get("matched_confirmation"))
+        rank = link.get("rank")
+        if rank == 2:
+            if matched and matched not in visible:
+                continue
+            if matched is None and gold and gold not in visible:
+                continue
+        xt_kept.append(link)
+    card["cross_thread_context"] = xt_kept
+    card["input_confs_visible"] = sorted(visible)
+    card["card_fixes"] = list(card.get("card_fixes") or []) + [
+        "no_gold_conf_input_fetch",
+        "cross_thread_rank2_and_pdfs_from_visible_confs_only",
+    ]
+    return card
 
 from field_catalog import (  # noqa: E402
     ACTION_PATHS,
@@ -1198,6 +1272,7 @@ def build_card(gold_row: dict, anchors, stay360, profiles, code_maps) -> dict:
             "luna_only_no_cassette_no_save_sim",
         ],
     }
+    strip_gold_conf_inputs(card)
     card["leak_guard"] = leak_guard(card)
     return card
 

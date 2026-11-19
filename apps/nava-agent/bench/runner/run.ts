@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {readdir, readFile, mkdir, writeFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -7,7 +8,6 @@ import {tools as baselineTools} from '../../src/schema.js';
 import {schemas as triageSchemas} from '../../tools/triage/schema.js';
 import {quoteSchema} from '../../tools/quote/schema.js';
 import {skillReadDefinition} from '../../tools/skills/schema.js';
-import {assignSplit} from '../split.js';
 import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
 import {buildScoreboard, scoreCase, type CaseScore, type Scoreboard} from './score.js';
@@ -283,7 +283,9 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
   };
 
   const runtime = new AzureRuntime(deps, {system: SYSTEM, maxSteps: 30});
-  const nudge = `Bench case ${card.case_id} (${card.workflow}). as_of=${card.as_of}. Property HRCEN. Read mail_read_thread first, then skills/tools, then proposal_publish.`;
+  // Opaque id only — never leak case_id or workflow into the prompt (ruler).
+  const opaqueId = createHash('sha1').update(card.case_id).digest('hex').slice(0, 10);
+  const nudge = `Bench case ${opaqueId}. as_of=${card.as_of}. Property HRCEN. Read mail_read_thread first, then skills/tools, then proposal_publish.`;
   await runtime.startTurn(card.case_id, {sessionId: card.case_id, content: nudge});
   return scoreCase({card, proposal, toolCalls, tokens, wall_ms: Date.now() - started});
 }
@@ -323,38 +325,36 @@ export async function runBench(options: {casesDir?: string; concurrency?: number
       await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(score));
       return score;
     } catch (error) {
-      const failed: CaseScore = {
-        case_id: card.case_id,
-        workflow: card.workflow,
-        fields: [],
-        tool_quality: {calls: [], right_tool: 0, wasted_calls: 0, key_arg_hits: 0, key_arg_misses: 0},
-        tokens: {input: 0, output: 0, cached_input: 0},
-        cost_usd: 0,
-        wall_ms: 0,
-        twin_uncovered: [`RUN_ERROR:${error instanceof Error ? error.message : 'unknown'}`],
+      // Run error → every expected tier1 miss + routing wrong; scoreboard counts errors.
+      const failed = scoreCase({
+        card,
         proposal: null,
-      };
+        toolCalls: [],
+        tokens: {input: 0, output: 0, cached_input: 0},
+        wall_ms: 0,
+      });
+      failed.run_error = error instanceof Error ? error.message : 'unknown';
+      failed.twin_uncovered = [`RUN_ERROR:${failed.run_error}`];
       await writeFile(join(outDir, `${card.case_id}.json`), JSON.stringify(failed));
       return failed;
     }
   });
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Date.now() - wallStarted;
-  const {dev, holdout, labels} = assignSplit(selected);
-  const devIds = new Set(dev.map(card => card.case_id));
-  const holdIds = new Set(holdout.map(card => card.case_id));
-  const devBoard = buildScoreboard(scores.filter(score => devIds.has(score.case_id)));
-  const holdBoard = buildScoreboard(scores.filter(score => holdIds.has(score.case_id)));
+  // All cases in this dir are the measured set (v1 = full 200-dev; holdout-fresh = separate run).
+  const labels: Record<string, 'dev' | 'holdout'> = Object.fromEntries(
+    selected.map(card => [card.case_id, 'dev' as const]),
+  );
   await writeFile(join(outDir, 'scoreboard.json'), JSON.stringify(board, null, 2));
-  await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(devBoard, null, 2));
-  await writeFile(join(outDir, 'scoreboard-holdout.json'), JSON.stringify(holdBoard, null, 2));
+  await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(board, null, 2));
   await writeFile(join(outDir, 'split.json'), JSON.stringify({
-    seed: 'replay-bench-20261119-v1',
-    n_dev: dev.length,
-    n_holdout: holdout.length,
+    seed: 'replay-bench-all-dev',
+    n_dev: selected.length,
+    n_holdout: 0,
     labels,
+    note: 'All cases in this casesDir are dev; holdout-fresh is a separate --cases run.',
   }, null, 2));
-  return {outDir, board, devBoard, holdBoard, labels};
+  return {outDir, board, devBoard: board, holdBoard: buildScoreboard([]), labels};
 }
 
 export type BenchResult = {

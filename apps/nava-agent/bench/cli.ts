@@ -44,6 +44,7 @@ function summarize(board: Scoreboard) {
       miss: board.totals.workflow_routing_miss,
       acc: board.totals.workflow_routing_accuracy,
     },
+    errors: board.totals.errors ?? 0,
     cost_usd: Number(board.totals.cost_usd.toFixed(4)),
     wall_ms: board.totals.wall_ms,
   };

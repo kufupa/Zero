@@ -4,7 +4,6 @@ import {readdir, readFile, writeFile, mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import type {CaseCard} from '../types.js';
-import {assignSplit} from '../split.js';
 import {buildScoreboard, scoreCase, type CaseScore} from './score.js';
 
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
@@ -56,27 +55,19 @@ export async function rescoreRun(options: {
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Math.max(...scores.map(s => s.wall_ms), 0);
   board.totals.cost_usd = scores.reduce((sum, s) => sum + s.cost_usd, 0);
-  // Prefer frozen labels from the run when present; else recompute stratified split.
-  let labels: Record<string, 'dev' | 'holdout'> = {};
-  try {
-    const split = JSON.parse(await readFile(join(options.runDir, 'split.json'), 'utf8')) as {labels?: Record<string, 'dev' | 'holdout'>};
-    if (split.labels) labels = split.labels;
-  } catch {
-    labels = assignSplit(cards).labels;
-  }
-  if (!Object.keys(labels).length) labels = assignSplit(cards).labels;
-  const devBoard = buildScoreboard(scores.filter(s => labels[s.case_id] === 'dev'));
-  const holdBoard = buildScoreboard(scores.filter(s => labels[s.case_id] === 'holdout'));
+  // All cases in the run are the measured set (v1 = full 200-dev).
+  const labels: Record<string, 'dev' | 'holdout'> = Object.fromEntries(
+    scores.map(s => [s.case_id, 'dev' as const]),
+  );
   await writeFile(join(outDir, 'scoreboard.json'), JSON.stringify(board, null, 2));
-  await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(devBoard, null, 2));
-  await writeFile(join(outDir, 'scoreboard-holdout.json'), JSON.stringify(holdBoard, null, 2));
+  await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(board, null, 2));
   await writeFile(join(outDir, 'split.json'), JSON.stringify({
-    seed: 'replay-bench-20261119-v1',
-    n_dev: Object.values(labels).filter(v => v === 'dev').length,
-    n_holdout: Object.values(labels).filter(v => v === 'holdout').length,
+    seed: 'replay-bench-all-dev',
+    n_dev: scores.length,
+    n_holdout: 0,
     labels,
   }, null, 2));
-  return {outDir, board, devBoard, holdBoard, n: scores.length};
+  return {outDir, board, devBoard: board, holdBoard: buildScoreboard([]), n: scores.length};
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
