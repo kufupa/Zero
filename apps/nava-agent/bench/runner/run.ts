@@ -104,7 +104,7 @@ function pdfAttachments(raw: unknown): Array<{
     const name = String(row.filename ?? row.name ?? `attachment-${i}.pdf`);
     const extracted_text = String(row.text ?? row.extracted_text ?? '').slice(0, 20_000);
     return {
-      id: String(row.id ?? `pdf-${i}`),
+      id: String(row.id ?? row.attachment_id ?? `pdf-${i}`),
       name,
       content_type: 'application/pdf',
       extracted_text,
