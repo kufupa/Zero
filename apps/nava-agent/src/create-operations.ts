@@ -328,7 +328,7 @@ async function lockedProposal(tx: postgres.TransactionSql, lease: LeaseFence, pr
   return {p,go:go.data};
 }
 
-async function resumeFilingAfterCreate(tx: postgres.TransactionSql, p: ProposalRow, data: {confirmation:string|null;reservation_id:string|null;readback:unknown}) {
+async function resumeFilingAfterCreate(tx: postgres.TransactionSql, p: ProposalRow, data: {confirmation:string|null;reservation_id:string|null;readback?:unknown}) {
   if(p.workflow!=='create' || !data.confirmation || !data.reservation_id || data.readback==null) return;
   const [row]=await tx`SELECT m.payload FROM nava_agent.mail_thread t JOIN nava_agent.mail_message m
     ON m.thread_id=t.id AND m.source_message_id=t.selected_message_id WHERE t.id=${p.thread_id}`;
