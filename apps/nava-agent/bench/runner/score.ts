@@ -1,9 +1,13 @@
 import {createHash} from 'node:crypto';
+import {existsSync, readFileSync} from 'node:fs';
 import {readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
+import {join} from 'node:path';
 import {withCreateNativeFields, withQuoteStaffFields} from '../../src/proposal-fields.js';
 import {proposalDraft} from '../../src/schema.js';
 import type {CaseCard, GoldField, Workflow} from '../types.js';
+
+const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
 export type FieldScore = {
   path: string;
@@ -117,7 +121,7 @@ function normalizePerson(value: unknown): string {
   return normalize(value).replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-/** Catalogue name ↔ code (HRCEN/HRDAV). Do not cross-wire codes. */
+/** Extra guarantee spellings beyond native catalogue meanings. */
 const GUARANTEE_ALIASES: Record<string, string[]> = {
   // GTDAGT = Guaranteed By Agent (NOT DEPREQ)
   'guaranteed by agent': ['gtdagt', 'gtdagent', 'guaranteedbyagent'],
@@ -128,8 +132,24 @@ const GUARANTEE_ALIASES: Record<string, string[]> = {
   // GTDCMP = Guaranteed By Company
   'guaranteed by company': ['gtdcmp', 'guaranteedbycompany'],
   gtdcmp: ['guaranteed by company', 'guaranteedbycompany'],
-  '6pm hold': ['6pm', 'hold', 'non-guaranteed', 'nonguaranteed'],
+  'guaranteed by deposit': ['gtddep', 'guaranteedbydeposit'],
+  gtddep: ['guaranteed by deposit', 'guaranteedbydeposit'],
+  '6pm hold': ['6pm', 'hold', 'non-guaranteed', 'nonguaranteed', 'ngi'],
+  ngi: ['6pm hold', '6pm', 'hold', 'non-guaranteed', 'nonguaranteed'],
 };
+
+/** Board/meal code ↔ meaning from centurion-rate-catalogue (+ common BB/RO forms). */
+const BOARD_MEAL_PAIRS: Array<[string, string]> = [
+  ['BB', 'Bed & Breakfast'],
+  ['BB', 'bed_breakfast'],
+  ['BB', 'Bed & Breakfast R'],
+  ['DBB', 'Dinner, Bed & Breakfast'],
+  ['DBB', 'dinner_bed_breakfast'],
+  ['RO', 'Room Only'],
+  ['RO', 'room_only'],
+  ['BARRO', 'BAR Room Only'],
+  ['BARRO', 'room_only'],
+];
 
 function acronym(value: string): string {
   return value.split(/[^a-z0-9]+/i).filter(Boolean).map(part => part[0] ?? '').join('').toLowerCase();
@@ -137,6 +157,127 @@ function acronym(value: string): string {
 
 function compactAlnum(value: string): string {
   return value.replace(/[^a-z0-9]+/g, '');
+}
+
+/** Normalized token → canonical catalogue code (exact code↔meaning only; no substring). */
+let catalogueCanon: Map<string, string> | null = null;
+
+function linkCatalogueTokens(map: Map<string, string>, code: string, meaning: string) {
+  const canon = normalize(code);
+  if (!canon) return;
+  const tokens = [code, meaning]
+    .flatMap(v => {
+      const n = normalize(v);
+      return n ? [n, compactAlnum(n)] : [];
+    })
+    .filter(Boolean);
+  for (const t of tokens) map.set(t, canon);
+}
+
+function loadCatalogueCanon(): Map<string, string> {
+  if (catalogueCanon) return catalogueCanon;
+  const map = new Map<string, string>();
+  const catalogPath = join(DATA_ROOT, 'catalog/catalog.json');
+  if (existsSync(catalogPath)) {
+    try {
+      const raw = JSON.parse(readFileSync(catalogPath, 'utf8')) as {
+        catalogs?: Record<string, {records?: Array<{code?: unknown; meaning?: unknown; name?: unknown}>}>;
+      };
+      const sections = [
+        'trackSubsegment', 'ratePlans', 'roomTypes', 'guaranteeTypes', 'sourceBusiness',
+      ];
+      for (const key of sections) {
+        for (const row of raw.catalogs?.[key]?.records ?? []) {
+          const code = row.code != null ? String(row.code) : '';
+          const meaning = row.meaning != null ? String(row.meaning) : (row.name != null ? String(row.name) : '');
+          if (code) linkCatalogueTokens(map, code, meaning || code);
+        }
+      }
+      // Rate-plan meal readbacks (board/meal strings observed with a rate).
+      for (const row of raw.catalogs?.ratePlans?.records ?? []) {
+        const code = row.code != null ? String(row.code) : '';
+        const evidence = (row as {rateMealReadbackEvidence?: {mealPlan?: unknown}}).rateMealReadbackEvidence;
+        if (code && evidence?.mealPlan != null) linkCatalogueTokens(map, code, String(evidence.mealPlan));
+        for (const obs of (row as {mealPlanObservations?: Array<{mealPlan?: unknown}>}).mealPlanObservations ?? []) {
+          if (code && obs.mealPlan != null) linkCatalogueTokens(map, code, String(obs.mealPlan));
+        }
+      }
+    } catch {
+      // Catalogue optional for unit smokes without bench data.
+    }
+  }
+  // Centurion static rate/board meanings (apps/server-pilot/.../centurion-rate-catalogue.ts).
+  const centurionPath = join(
+    process.cwd().endsWith('nava-agent') ? join(process.cwd(), '../server-pilot') : join(process.cwd(), 'apps/server-pilot'),
+    'src/hms/centurion-rate-catalogue.ts',
+  );
+  if (existsSync(centurionPath)) {
+    try {
+      const text = readFileSync(centurionPath, 'utf8');
+      const block = text.match(/export const CENTURION_RATE_CATALOGUE = \{([\s\S]*?)\} as const/);
+      if (block) {
+        for (const m of block[1]!.matchAll(/^\s*([A-Z0-9]+):\s*\{\s*name:\s*'([^']*)',\s*mealPlan:\s*'([^']*)'/gm)) {
+          linkCatalogueTokens(map, m[1]!, m[2]!);
+          if (m[3] && m[3] !== 'unknown') linkCatalogueTokens(map, m[1]!, m[3]!);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+  for (const [code, meaning] of BOARD_MEAL_PAIRS) linkCatalogueTokens(map, code, meaning);
+  for (const [canon, alts] of Object.entries(GUARANTEE_ALIASES)) {
+    for (const alt of alts) linkCatalogueTokens(map, canon, alt);
+  }
+  catalogueCanon = map;
+  return map;
+}
+
+function catalogueCanonOf(token: string): string | null {
+  const map = loadCatalogueCanon();
+  const n = normalize(token);
+  if (!n) return null;
+  return map.get(n) ?? map.get(compactAlnum(n)) ?? null;
+}
+
+function valueTokens(value: unknown): string[] {
+  if (value == null || value === '') return [];
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const row = value as Record<string, unknown>;
+    const out: string[] = [];
+    for (const key of ['code', 'name', 'value', 'meaning', 'nativeId', 'native_id']) {
+      if (row[key] != null && row[key] !== '') out.push(String(row[key]));
+    }
+    return out.length ? out : [normalize(value)].filter(Boolean);
+  }
+  return [String(value)];
+}
+
+/** Exact catalogue code↔meaning (either direction). No substring. */
+function catalogueEquivMatch(expected: unknown, actual: unknown): boolean {
+  if (isBlank(actual)) return false;
+  const expTokens = valueTokens(expected);
+  const actTokens = valueTokens(actual);
+  for (const e of expTokens) {
+    for (const a of actTokens) {
+      const ne = normalize(e);
+      const na = normalize(a);
+      if (!ne || !na) continue;
+      if (ne === na || compactAlnum(ne) === compactAlnum(na)) return true;
+      const ce = catalogueCanonOf(e);
+      const ca = catalogueCanonOf(a);
+      if (ce && ca && ce === ca) return true;
+      if (ce && (ce === na || ce === compactAlnum(na))) return true;
+      if (ca && (ca === ne || ca === compactAlnum(ne))) return true;
+    }
+  }
+  return false;
+}
+
+function isCatalogueFieldPath(path: string): boolean {
+  return /(^|\/)(track|rate_plan|room_type|board|meal_plan|meal|guarantee_type|guarantee|source_of_business)(\/|$)/.test(
+    path.replace(/\/fields\//g, '/'),
+  ) || /\/(track|rate_plan|room_type|board|meal_plan|guarantee_type|source_of_business)$/.test(path);
 }
 
 function isBlank(value: unknown): boolean {
@@ -247,16 +388,18 @@ function equalish(expected: unknown, actual: unknown): boolean {
   return a === b || compactAlnum(a) === compactAlnum(b);
 }
 
-/** Org/agency exact; reservation_id / confirmation_number against gold-path booking only. */
-function partyHit(expected: unknown, proposal: unknown, path: string): boolean {
-  const actual = dig(proposal, path);
+/** Org/agency exact; reservation_id / confirmation_number against a concrete actual value. */
+function partyHit(expected: unknown, proposal: unknown, path: string, actualOverride?: unknown): boolean {
+  const actual = actualOverride !== undefined ? actualOverride : dig(proposal, path);
   if (path.endsWith('organization_name') || path.endsWith('agency_name')) {
     if (partyExactMatch(expected, actual)) return true;
     if (path.endsWith('organization_name')) {
-      if (partyExactMatch(expected, dig(proposal, path.replace(/organization_name$/, 'organization_id')))) return true;
+      const idPath = path.replace(/organization_name$/, 'organization_id');
+      if (partyExactMatch(expected, dig(proposal, idPath))) return true;
     }
     if (path.endsWith('agency_name')) {
-      if (partyExactMatch(expected, dig(proposal, path.replace(/agency_name$/, 'agency_id')))) return true;
+      const idPath = path.replace(/agency_name$/, 'agency_id');
+      if (partyExactMatch(expected, dig(proposal, idPath))) return true;
     }
     return false;
   }
@@ -265,11 +408,157 @@ function partyHit(expected: unknown, proposal: unknown, path: string): boolean {
     const b = normalize(actual);
     if (!a || !b) return false;
     if (a === b || compactAlnum(a) === compactAlnum(b)) return true;
-    // Same-field confirmation suffix (516441-1 ↔ 516441); never sibling bookings.
+    // Same-field confirmation suffix (516441-1 ↔ 516441).
     if (a.split('-')[0] === b.split('-')[0]) return true;
     return false;
   }
   return equalish(expected, actual);
+}
+
+function bookingFields(booking: unknown): Record<string, unknown> {
+  const row = booking && typeof booking === 'object' ? booking as Record<string, unknown> : {};
+  return row.fields && typeof row.fields === 'object' ? row.fields as Record<string, unknown> : {};
+}
+
+function normalizeStayId(value: unknown): string {
+  const n = normalize(value);
+  if (!n) return '';
+  return n.split('-')[0] ?? n;
+}
+
+function idsEqual(a: unknown, b: unknown): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (!na || !nb) return false;
+  if (na === nb || compactAlnum(na) === compactAlnum(nb)) return true;
+  return normalizeStayId(na) === normalizeStayId(nb);
+}
+
+function proposalStayIds(proposal: unknown): string[] {
+  const bookings = dig(proposal, '/bookings');
+  if (!Array.isArray(bookings)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const booking of bookings) {
+    const row = booking && typeof booking === 'object' ? booking as Record<string, unknown> : {};
+    const fields = bookingFields(booking);
+    for (const cand of [row.reservation_id, fields.confirmation_number, fields.reservation_id]) {
+      const key = normalizeStayId(cand);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(key);
+    }
+  }
+  return out;
+}
+
+function goldStayIds(card: CaseCard): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const gold of card.gold ?? []) {
+    if (gold.expectation !== 'expected') continue;
+    if (!gold.path.endsWith('reservation_id') && !gold.path.endsWith('confirmation_number')) continue;
+    const key = normalizeStayId((gold as GoldMeta).value);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+type CreateAlign = {
+  /** gold booking index → proposal booking index */
+  map: Map<number, number>;
+  /** proposal bookings with no gold partner */
+  spray: boolean;
+};
+
+function collectCreateGoldHints(card: CaseCard): Map<number, {
+  index: number;
+  first_name?: unknown;
+  last_name?: unknown;
+  arrival_date?: unknown;
+}> {
+  const hints = new Map<number, {index: number; first_name?: unknown; last_name?: unknown; arrival_date?: unknown}>();
+  for (const gold of (card.gold ?? []) as GoldMeta[]) {
+    const m = /^\/bookings\/(\d+)(?:\/|$)/.exec(gold.path);
+    if (!m) continue;
+    const index = Number(m[1]);
+    const row = hints.get(index) ?? {index};
+    if (gold.expectation === 'expected') {
+      if (gold.path.endsWith('/first_name') || gold.path.endsWith('fields/first_name')) row.first_name = gold.value;
+      if (gold.path.endsWith('/last_name') || gold.path.endsWith('fields/last_name')) row.last_name = gold.value;
+      if (gold.path.endsWith('/arrival_date') || gold.path.endsWith('fields/arrival_date')) row.arrival_date = gold.value;
+    }
+    hints.set(index, row);
+  }
+  return hints;
+}
+
+/** One-to-one CREATE alignment: last+first name, then arrival. Extras → spray. */
+function alignCreateBookings(card: CaseCard, proposal: unknown): CreateAlign {
+  const bookings = dig(proposal, '/bookings');
+  const hints = [...collectCreateGoldHints(card).values()];
+  const map = new Map<number, number>();
+  if (!Array.isArray(bookings) || !bookings.length) {
+    return {map, spray: false};
+  }
+  if (!hints.length) {
+    // No gold booking paths — any proposal bookings are extras only if gold expected zero.
+    return {map, spray: false};
+  }
+  type Cand = {gi: number; pi: number; score: number};
+  const cands: Cand[] = [];
+  for (const hint of hints) {
+    for (let pi = 0; pi < bookings.length; pi++) {
+      const fields = bookingFields(bookings[pi]);
+      let score = 0;
+      const hasName = hint.first_name != null || hint.last_name != null;
+      if (hasName) {
+        const firstOk = hint.first_name == null || personEqual(hint.first_name, fields.first_name);
+        const lastOk = hint.last_name == null || personEqual(hint.last_name, fields.last_name);
+        if (hint.first_name != null && hint.last_name != null) {
+          if (firstOk && lastOk) score += 100;
+        } else if (lastOk && hint.last_name != null) score += 60;
+        else if (firstOk && hint.first_name != null) score += 50;
+      }
+      if (hint.arrival_date != null) {
+        const arrival = fields.arrival_date;
+        if (equalish(hint.arrival_date, arrival)) score += 10;
+      }
+      if (score > 0) cands.push({gi: hint.index, pi, score});
+    }
+  }
+  cands.sort((a, b) => b.score - a.score || a.gi - b.gi || a.pi - b.pi);
+  const usedG = new Set<number>();
+  const usedP = new Set<number>();
+  for (const c of cands) {
+    if (usedG.has(c.gi) || usedP.has(c.pi)) continue;
+    usedG.add(c.gi);
+    usedP.add(c.pi);
+    map.set(c.gi, c.pi);
+  }
+  // Index fallback for gold bookings with no name/arrival signal.
+  for (const hint of hints) {
+    if (map.has(hint.index)) continue;
+    if (
+      hint.first_name == null && hint.last_name == null && hint.arrival_date == null
+      && hint.index < bookings.length && !usedP.has(hint.index)
+    ) {
+      map.set(hint.index, hint.index);
+      usedP.add(hint.index);
+    }
+  }
+  const spray = bookings.length > map.size;
+  return {map, spray};
+}
+
+function remapCreatePath(path: string, align: Map<number, number>): string | null {
+  const m = /^\/bookings\/(\d+)(\/.*)?$/.exec(path);
+  if (!m) return path;
+  const gi = Number(m[1]);
+  if (!align.has(gi)) return null;
+  return `/bookings/${align.get(gi)}${m[2] ?? ''}`;
 }
 
 function resolveAttachmentGold(gold: GoldMeta, card: CaseCard): {
@@ -294,15 +583,6 @@ function resolveAttachmentGold(gold: GoldMeta, card: CaseCard): {
     return {expectation: 'no_gold', value: gold.value, basis: 'no_pdf_in_input'};
   }
   return {expectation: 'expected', value: String(id), basis: gold.basis};
-}
-
-function expectedBookingCount(card: CaseCard): number | null {
-  let max = -1;
-  for (const gold of card.gold ?? []) {
-    const m = /^\/bookings\/(\d+)(?:\/|$)/.exec(gold.path);
-    if (m) max = Math.max(max, Number(m[1]));
-  }
-  return max < 0 ? null : max + 1;
 }
 
 const workflowTools: Record<Workflow, string[]> = {
@@ -351,6 +631,14 @@ export function scoreCase(input: {
   const proposal = normalized.proposal;
   const proposal_raw = normalized.proposal_raw;
   const fields: FieldScore[] = [];
+  const workflow = card.workflow;
+  const createAlign = workflow === 'create' ? alignCreateBookings(card, proposal) : null;
+  const stayGoldIds = goldStayIds(card);
+  const stayPropIds = proposalStayIds(proposal);
+  const stayIdSpray = (workflow === 'amend' || workflow === 'cancel' || workflow === 'filing')
+    && stayGoldIds.length > 0
+    && stayPropIds.length > stayGoldIds.length;
+
   for (const gold of (card.gold ?? []) as GoldMeta[]) {
     // Refuse /hms/* gold — proposal_publish has no such key (structural bug guard).
     if (gold.path.startsWith('/hms/')) {
@@ -368,8 +656,15 @@ export function scoreCase(input: {
     const tier = goldTier(gold);
     const priority = goldPriority(gold);
     const source = goldSource(gold);
+
+    // CREATE: score gold booking fields against the aligned proposal booking.
+    let digPath: string | null = gold.path;
+    if (createAlign && /^\/bookings\/\d+/.test(gold.path)) {
+      digPath = remapCreatePath(gold.path, createAlign.map);
+    }
+
     if (gold.expectation === 'not_expected') {
-      const actual = dig(proposal, gold.path);
+      const actual = digPath == null ? undefined : dig(proposal, digPath);
       if (!isBlank(actual)) {
         fields.push({
           path: gold.path,
@@ -422,7 +717,7 @@ export function scoreCase(input: {
           expectation: 'no_gold',
           result: 'no_gold',
           expected: gold.value,
-          actual: dig(proposal, gold.path),
+          actual: digPath == null ? undefined : dig(proposal, digPath),
           basis,
           tier,
           priority,
@@ -432,14 +727,24 @@ export function scoreCase(input: {
       }
     }
 
-    const actual = dig(proposal, gold.path);
-    const partyPath = /organization_name$|agency_name$|reservation_id$|confirmation_number$/.test(gold.path);
+    const actual = digPath == null ? undefined : dig(proposal, digPath);
+    const idPath = gold.path.endsWith('reservation_id') || gold.path.endsWith('confirmation_number');
+    const partyPath = /organization_name$|agency_name$/.test(gold.path) || idPath;
     const guestPath = /\/fields\/(first_name|last_name)$/.test(gold.path);
-    const hit = partyPath
-      ? partyHit(expectedValue, proposal, gold.path)
-      : guestPath
-        ? personEqual(expectedValue, actual)
-        : equalish(expectedValue, actual);
+    let hit = false;
+    if (idPath && (workflow === 'amend' || workflow === 'cancel' || workflow === 'filing')) {
+      // Hit iff gold id ∈ proposal stay ids AND proposal does not list more ids than gold.
+      const inSet = stayPropIds.some(id => idsEqual(id, expectedValue));
+      hit = inSet && stayPropIds.length <= stayGoldIds.length;
+    } else if (partyPath) {
+      hit = partyHit(expectedValue, proposal, digPath ?? gold.path, actual);
+    } else if (guestPath) {
+      hit = personEqual(expectedValue, actual);
+    } else if (isCatalogueFieldPath(gold.path)) {
+      hit = catalogueEquivMatch(expectedValue, actual) || equalish(expectedValue, actual);
+    } else {
+      hit = equalish(expectedValue, actual);
+    }
     fields.push({
       path: gold.path,
       expectation: 'expected',
@@ -494,9 +799,7 @@ export function scoreCase(input: {
     .filter(call => call.result?.ok === false && (call.result.error?.code === 'TWIN_NO_PRICE' || call.result.error?.code === 'TWIN_NO_SAVE'))
     .map(call => `${call.name}:${call.result?.error?.code ?? 'err'}`);
 
-  const wantBookings = expectedBookingCount(card);
-  const gotBookings = dig(proposal, '/bookings');
-  const spray = wantBookings != null && Array.isArray(gotBookings) && gotBookings.length > wantBookings;
+  const spray = Boolean(createAlign?.spray || stayIdSpray);
 
   return {
     case_id: card.case_id,
