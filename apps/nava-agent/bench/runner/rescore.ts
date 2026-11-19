@@ -13,18 +13,31 @@ export async function rescoreRun(options: {
   runDir: string;
   casesDir?: string;
   outDir?: string;
+  /** Freeze the case set for fair before/after compares (growing runs otherwise drift). */
+  caseIds?: string[];
 }) {
   const casesDir = options.casesDir ?? join(DATA_ROOT, 'cases/v1');
   const outDir = options.outDir ?? join(options.runDir, 'rescored');
   await mkdir(outDir, {recursive: true});
   const goldV4 = await loadGoldV4(casesDir);
-  const skip = new Set(['scoreboard.json', 'scoreboard-dev.json', 'scoreboard-holdout.json', 'split.json', 'tier-report.json']);
-  const entries = (await readdir(options.runDir)).filter(name => name.endsWith('.json') && !skip.has(name));
+  const skip = new Set([
+    'scoreboard.json', 'scoreboard-dev.json', 'scoreboard-holdout.json',
+    'split.json', 'tier-report.json', 'manifest.json',
+  ]);
+  // Snapshot once — a live run dir can grow while we rescore.
+  const frozenEntries = (await readdir(options.runDir))
+    .filter(name => name.endsWith('.json') && !skip.has(name))
+    .sort();
+  const allow = options.caseIds ? new Set(options.caseIds) : null;
   const scores: CaseScore[] = [];
   const cards: CaseCard[] = [];
-  for (const name of entries) {
+  const scoredIds: string[] = [];
+  for (const name of frozenEntries) {
     const prior = JSON.parse(await readFile(join(options.runDir, name), 'utf8')) as CaseScore & {proposal?: unknown; tool_quality?: {calls?: Array<{name: string; ok: boolean}>}};
+    // Skip non-case artifacts accidentally dropped in the run dir.
+    if (!prior.case_id && !('proposal' in prior) && !('fields' in prior)) continue;
     const caseId = prior.case_id ?? name.replace(/\.json$/, '');
+    if (allow && !allow.has(caseId)) continue;
     let card: CaseCard;
     try {
       card = JSON.parse(await readFile(join(casesDir, caseId, 'case.json'), 'utf8')) as CaseCard;
@@ -54,6 +67,7 @@ export async function rescoreRun(options: {
     score.twin_uncovered = prior.twin_uncovered ?? score.twin_uncovered;
     await writeFile(join(outDir, `${caseId}.json`), JSON.stringify(score));
     scores.push(score);
+    scoredIds.push(caseId);
   }
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Math.max(...scores.map(s => s.wall_ms), 0);
@@ -62,6 +76,16 @@ export async function rescoreRun(options: {
   const labels: Record<string, 'dev' | 'holdout'> = Object.fromEntries(
     scores.map(s => [s.case_id, 'dev' as const]),
   );
+  const caseIds = [...scoredIds].sort();
+  await writeFile(join(outDir, 'manifest.json'), JSON.stringify({
+    runDir: options.runDir,
+    casesDir,
+    n: caseIds.length,
+    case_ids: caseIds,
+    frozen_entry_count: frozenEntries.length,
+    gold_overlay: goldV4 ? 'gold-v4' : 'off',
+    note: 'Case set frozen at rescore start. Compare before/after only on equal case_ids (or pass caseIds).',
+  }, null, 2));
   await writeFile(join(outDir, 'scoreboard.json'), JSON.stringify(board, null, 2));
   await writeFile(join(outDir, 'scoreboard-dev.json'), JSON.stringify(board, null, 2));
   await writeFile(join(outDir, 'split.json'), JSON.stringify({
@@ -70,7 +94,7 @@ export async function rescoreRun(options: {
     n_holdout: 0,
     labels,
   }, null, 2));
-  return {outDir, board, devBoard: board, holdBoard: buildScoreboard([]), n: scores.length};
+  return {outDir, board, devBoard: board, holdBoard: buildScoreboard([]), n: scores.length, caseIds};
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
