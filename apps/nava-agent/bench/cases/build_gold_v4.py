@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build gold-v4 overlays from gold-v3 + measurement patches. Never edits case.json.
 
-Default output: $NAVA_BENCH_DATA_ROOT/gold-audit/{holdout-fresh,v1}/gold-v4.json
+Default output: $NAVA_BENCH_DATA_ROOT/gold-audit/{holdout-fresh,v1,dev-fresh}/gold-v4.json
 Loaded automatically by bench runner/rescore for those sets.
 """
 from __future__ import annotations
@@ -92,7 +92,7 @@ def build(name: str) -> dict:
 
 
 def main() -> None:
-  sets = sys.argv[1:] or ["holdout-fresh", "v1"]
+  sets = sys.argv[1:] or ["holdout-fresh", "v1", "dev-fresh"]
   for name in sets:
     build(name)
 
