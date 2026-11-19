@@ -13,6 +13,9 @@ Also marks booking gold no_gold when:
 - all sets: cms_send (CMS Send Mail tick) — later HMS reads are false after CMS
   clears the tick; PRODUCT.md default is ticked, so later-read gold is not evidence.
   cms_message_id / cms_recipient stay only when basis is staff/hotel-sourced.
+- amend: drop create-style expected gold (first_pdf / hms_roomtype / …) and any
+  booking expected gold when twin stay is absent at as_of (no last-pre-as_of
+  hotel conf PDF). Amend gold is reservation_id + reviewed_amendment deltas only.
 
 Cases stay in the set.
 """
@@ -87,6 +90,16 @@ CMS_STAFF_HOTEL_BASIS = re.compile(
 )
 CMS_TICK_LEAF = "cms_send"
 CMS_KEEPABLE_LEAVES = frozenset({"cms_message_id", "cms_recipient"})
+
+# Create-style bases left on amend overlays (create→amend remaps) — not amend deltas.
+AMEND_CREATE_STYLE_BASIS = re.compile(
+  r"first_pdf|hms_roomtype|first_pdf_catalogue|^create_",
+  re.I,
+)
+AMEND_NO_TWIN_BASIS = frozenset({
+  "create_booking_absent_at_as_of",
+  "no_pre_as_of_pdf",
+})
 
 
 def leaf(path: str) -> str:
@@ -241,6 +254,26 @@ def cms_field_no_gold(g: dict) -> str | None:
   return None
 
 
+def amend_ruler_no_gold(g: dict, *, wf: str, shown: dict | None) -> str | None:
+  """Amend measurement: only reservation_id + reviewed_amendment deltas score."""
+  if wf != "amend":
+    return None
+  if g.get("expectation") != "expected":
+    return None
+  path = g.get("path") or ""
+  if not path.startswith("/bookings/"):
+    return None
+  basis = str(g.get("basis") or "")
+  shown = shown or {}
+  exists = bool(shown.get("exists"))
+  shown_basis = str(shown.get("basis") or "")
+  if AMEND_CREATE_STYLE_BASIS.search(basis):
+    return "gold_v4_amend_create_style_gold"
+  if (not exists) or shown_basis in AMEND_NO_TWIN_BASIS:
+    return "gold_v4_amend_no_twin_at_as_of"
+  return None
+
+
 def build(name: str) -> dict:
   cases = DATA / "cases" / name
   audit = DATA / "gold-audit" / name
@@ -331,6 +364,24 @@ def build(name: str) -> dict:
         "was_value": g.get("value"),
       }
       patch_reasons[cms_basis] += 1
+
+    # Amend ruler: create-style gold / no twin at as_of → no_gold (keep routing).
+    shown = card.get("hms_shown") if isinstance(card.get("hms_shown"), dict) else {}
+    for g in card.get("gold") or []:
+      path = g.get("path") or ""
+      amend_basis = amend_ruler_no_gold(g, wf=wf, shown=shown)
+      if not amend_basis:
+        continue
+      if path in patches_by_path and patches_by_path[path].get("expectation") == "no_gold":
+        continue
+      patches_by_path[path] = {
+        "path": path,
+        "expectation": "no_gold",
+        "basis": amend_basis,
+        "was_expectation": g.get("expectation"),
+        "was_value": g.get("value"),
+      }
+      patch_reasons[amend_basis] += 1
 
     patches = list(patches_by_path.values())
     out[cid] = {
