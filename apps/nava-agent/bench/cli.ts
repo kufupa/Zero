@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import {parseArgs} from 'node:util';
 import {runBench} from './runner/run.js';
+import type {Scoreboard} from './runner/score.js';
 
 const {values} = parseArgs({
   options: {
@@ -14,44 +15,48 @@ const {values} = parseArgs({
 
 const concurrency = Number(values.concurrency ?? 20);
 const limit = values.limit ? Number(values.limit) : values.cases === 'all' ? undefined : Number(values.cases);
-const {outDir, board} = await runBench({
+const {outDir, board, devBoard, holdBoard} = await runBench({
   concurrency,
   limit: Number.isFinite(limit) ? limit : undefined,
   outDir: values.out,
   casesDir: values['cases-dir'],
 });
 
-function tierTable(row: (typeof board.by_workflow)[string]) {
-  const paths: Record<string, {hit: number; miss: number; tier: string}> = {};
-  for (const [tierName, tier] of [
-    ['tier1_core', row.tier1_core],
-    ['tier2_defaults', row.tier2_defaults],
-    ['history_knowable', row.history_knowable],
-    ['workflow_routing', row.workflow_routing],
-  ] as const) {
-    for (const [path, counts] of Object.entries(tier.by_path)) {
-      paths[path] = {hit: counts.hit, miss: counts.miss, tier: tierName};
-    }
+function summarize(board: Scoreboard) {
+  const t1 = {hit: 0, miss: 0};
+  const hist = {hit: 0, miss: 0};
+  for (const row of Object.values(board.by_workflow)) {
+    t1.hit += row.tier1_core.hit;
+    t1.miss += row.tier1_core.miss;
+    hist.hit += row.history_knowable.hit;
+    hist.miss += row.history_knowable.miss;
   }
+  const t1n = t1.hit + t1.miss;
+  const hn = hist.hit + hist.miss;
   return {
-    n: row.n,
-    field_accuracy: row.field_accuracy,
-    hit: row.hit,
-    miss: row.miss,
-    tier1_core: {hit: row.tier1_core.hit, miss: row.tier1_core.miss, field_accuracy: row.tier1_core.field_accuracy},
-    tier2_defaults: {hit: row.tier2_defaults.hit, miss: row.tier2_defaults.miss, field_accuracy: row.tier2_defaults.field_accuracy},
-    history_knowable: {hit: row.history_knowable.hit, miss: row.history_knowable.miss, field_accuracy: row.history_knowable.field_accuracy},
-    workflow_routing: {hit: row.workflow_routing.hit, miss: row.workflow_routing.miss, field_accuracy: row.workflow_routing.field_accuracy},
-    by_path: paths,
-    p50_ms: row.p50_ms,
-    p95_ms: row.p95_ms,
-    cost_usd: Number(row.cost_usd.toFixed(4)),
+    n: board.n,
+    tier1: {hit: t1.hit, miss: t1.miss, acc: t1n ? t1.hit / t1n : null},
+    history: {hit: hist.hit, miss: hist.miss, acc: hn ? hist.hit / hn : null},
+    routing: {
+      hit: board.totals.workflow_routing_hit,
+      miss: board.totals.workflow_routing_miss,
+      acc: board.totals.workflow_routing_accuracy,
+    },
+    cost_usd: Number(board.totals.cost_usd.toFixed(4)),
+    wall_ms: board.totals.wall_ms,
   };
 }
 
 console.log(JSON.stringify({
   outDir,
-  n: board.n,
-  totals: board.totals,
-  by_workflow: Object.fromEntries(Object.entries(board.by_workflow).map(([wf, row]) => [wf, tierTable(row)])),
+  all: summarize(board),
+  dev: summarize(devBoard),
+  holdout: summarize(holdBoard),
+  by_workflow: Object.fromEntries(Object.entries(board.by_workflow).map(([wf, row]) => [wf, {
+    n: row.n,
+    tier1_acc: row.tier1_core.field_accuracy,
+    routing_acc: row.workflow_routing.field_accuracy,
+    hit: row.hit,
+    miss: row.miss,
+  }])),
 }, null, 2));
