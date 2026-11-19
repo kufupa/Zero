@@ -4,9 +4,13 @@
 Default output: $NAVA_BENCH_DATA_ROOT/gold-audit/{holdout-fresh,v1,dev-fresh}/gold-v4.json
 Loaded automatically by bench runner/rescore for those sets.
 
-Also marks booking gold no_gold when the case's real confirmation is a
-synthetic Labtest/Proof/NAVAAI booking or an unreadable HMS conf
-(NOT_FOUND / HINT_MISMATCH / DETAILS_NOT_LOADED). Cases stay in the set.
+Also marks booking gold no_gold when:
+- holdout-fresh: synthetic Labtest/Proof/NAVAAI booking or unreadable HMS conf
+  (NOT_FOUND / HINT_MISMATCH / DETAILS_NOT_LOADED)
+- holdout-fresh + dev-fresh: CREATE whose gold booking has createdby=HRCEN
+  (channel/GDS interface — not staff email create). Routing workflow kept.
+
+Cases stay in the set.
 """
 from __future__ import annotations
 
@@ -81,20 +85,60 @@ def labtest_or_navaai(card: dict) -> bool:
   return bool(LAB_RE.search(blob))
 
 
-def taint_reason(card: dict) -> str | None:
-  conf = card.get("real_confirmation")
-  lab = labtest_or_navaai(card)
-  unread = conf in UNREADABLE_CONFS
-  if lab and unread:
-    return f"labtest_or_navaai+unreadable_conf:{conf}"
-  if lab:
-    return f"labtest_or_navaai:{conf}"
-  if unread:
-    return f"unreadable_conf:{conf}"
+def booking_createdby(card: dict) -> str | None:
+  """createdby on gold booking (anchor / later HMS)."""
+  raw = card.get("hms_raw") or {}
+  for key in ("anchor_hms_fields", "later_hms_from_gold", "later_hms"):
+    block = raw.get(key) or {}
+    fields = block.get("fields") if isinstance(block, dict) else None
+    if isinstance(fields, dict) and fields.get("createdby"):
+      return str(fields["createdby"])
+  shown = card.get("hms_shown") or {}
+  # shallow dig
+  stack = [shown]
+  while stack:
+    cur = stack.pop()
+    if isinstance(cur, dict):
+      if cur.get("createdby"):
+        return str(cur["createdby"])
+      stack.extend(cur.values())
+    elif isinstance(cur, list):
+      stack.extend(cur[:20])
   return None
 
 
-def field_depends_on_taint(g: dict, *, lab: bool, unread: bool) -> bool:
+def is_channel_hrcen_create(card: dict, wf: str) -> bool:
+  """CREATE (card or overlay) whose gold booking was channel/GDS (createdby=HRCEN)."""
+  card_wf = card.get("workflow")
+  if wf != "create" and card_wf != "create":
+    return False
+  return (booking_createdby(card) or "").upper() == "HRCEN"
+
+
+def taint_reason(card: dict, *, set_name: str, wf: str) -> str | None:
+  conf = card.get("real_confirmation")
+  parts: list[str] = []
+  if set_name == "holdout-fresh":
+    lab = labtest_or_navaai(card)
+    unread = conf in UNREADABLE_CONFS
+    if lab and unread:
+      parts.append(f"labtest_or_navaai+unreadable_conf:{conf}")
+    elif lab:
+      parts.append(f"labtest_or_navaai:{conf}")
+    elif unread:
+      parts.append(f"unreadable_conf:{conf}")
+  if set_name in ("holdout-fresh", "dev-fresh") and is_channel_hrcen_create(card, wf):
+    parts.append(f"create_createdby_hrcen_channel:{conf}")
+  return "+".join(parts) if parts else None
+
+
+def field_depends_on_taint(
+  g: dict,
+  *,
+  lab: bool,
+  unread: bool,
+  hrcen_create: bool,
+) -> bool:
   """True → patch to no_gold."""
   path = g.get("path") or ""
   exp = g.get("expectation")
@@ -103,6 +147,11 @@ def field_depends_on_taint(g: dict, *, lab: bool, unread: bool) -> bool:
   basis = str(g.get("basis") or "")
   if lab:
     # Synthetic Nava booking: any booking gold is contaminated.
+    if path.startswith("/bookings/"):
+      return True
+    return False
+  if hrcen_create:
+    # Channel/GDS booking — create field gold not from this email. Keep routing only.
     if path.startswith("/bookings/"):
       return True
     return False
@@ -130,9 +179,10 @@ def build(name: str) -> dict:
   for cid, v3row in v3.items():
     card = json.loads((cases / cid / "case.json").read_text())
     wf = v3row.get("workflow") or card.get("workflow")
-    reason = taint_reason(card) if name == "holdout-fresh" else None
-    lab = bool(reason and reason.startswith("labtest"))
+    reason = taint_reason(card, set_name=name, wf=wf)
+    lab = bool(reason and "labtest_or_navaai" in reason)
     unread = bool(reason and "unreadable_conf" in reason)
+    hrcen_create = bool(reason and "create_createdby_hrcen_channel" in reason)
     patches_by_path: dict[str, dict] = {}
 
     # Measurement patches (expected → not_expected).
@@ -164,7 +214,9 @@ def build(name: str) -> dict:
     if reason:
       for g in card.get("gold") or []:
         path = g.get("path") or ""
-        if not field_depends_on_taint(g, lab=lab, unread=unread):
+        if not field_depends_on_taint(
+          g, lab=lab, unread=unread, hrcen_create=hrcen_create,
+        ):
           continue
         patches_by_path[path] = {
           "path": path,
@@ -179,6 +231,8 @@ def build(name: str) -> dict:
         "case_id": cid,
         "confirmation": card.get("real_confirmation"),
         "workflow": wf,
+        "card_workflow": card.get("workflow"),
+        "createdby": booking_createdby(card),
         "reason": reason,
         "n_no_gold_patches": len(taint_paths),
         "paths": taint_paths,
@@ -207,7 +261,7 @@ def build(name: str) -> dict:
   audit.mkdir(parents=True, exist_ok=True)
   (audit / "gold-v4.json").write_text(json.dumps(out, indent=2, ensure_ascii=False))
   (audit / "summary-v4.json").write_text(json.dumps(summary, indent=2))
-  if name == "holdout-fresh":
+  if name in ("holdout-fresh", "dev-fresh"):
     (audit / "tainted-gold-cases.json").write_text(
       json.dumps({"n": len(tainted_rows), "cases": tainted_rows}, indent=2, ensure_ascii=False)
     )
