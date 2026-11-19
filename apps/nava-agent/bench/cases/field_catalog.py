@@ -58,7 +58,8 @@ HMS_TO_PROPOSAL_MAP: dict[str, dict] = {
     "roomtype": {"path": "/bookings/{n}/fields/room_type", "tier": "tier1_core", "pane": "room_type"},
     "rateplan": {"path": "/bookings/{n}/fields/rate_plan", "tier": "tier1_core", "pane": "rate_plan"},
     "mealplan": {"path": "/bookings/{n}/fields/meal_plan", "tier": "tier1_core", "pane": "meal_plan"},
-    "guestfullname": {"path": "/bookings/{n}/fields/guest_name", "tier": "tier1_core", "pane": "guest_name"},
+    # Create pane uses first_name/last_name only — guest_name is NOT a create proposal path.
+    "guestfullname": {"path": "/bookings/{n}/fields/guest_name", "tier": "tier1_core", "pane": "guest_name", "workflows": ["cancel", "amend", "filing", "triage"]},
     "firstname": {"path": "/bookings/{n}/fields/first_name", "tier": "tier1_core", "pane": "first_name"},
     "lastname": {"path": "/bookings/{n}/fields/last_name", "tier": "tier1_core", "pane": "last_name"},
     "company": {"path": "/bookings/{n}/fields/organization_name", "tier": "tier1_core", "pane": "organization_name"},
@@ -68,10 +69,16 @@ HMS_TO_PROPOSAL_MAP: dict[str, dict] = {
     "sourceofbusiness": {"path": "/bookings/{n}/fields/source_of_business", "tier": "tier2_defaults", "pane": "source_of_business"},
     "marketsegment": {"path": "/bookings/{n}/fields/market_segment", "tier": "tier2_defaults", "pane": "market_segment"},
     "track": {"path": "/bookings/{n}/fields/track", "tier": "tier2_defaults", "pane": "track"},
+    "billingreference": {"path": "/bookings/{n}/fields/billing_reference", "tier": "tier2_defaults", "pane": "billing_reference"},
     "cms": {"path": "/bookings/{n}/fields/cms_send", "tier": "tier2_defaults", "pane": "cms_send"},
     "udfchar09": {"path": "/bookings/{n}/fields/cms_send", "tier": "tier2_defaults", "pane": "cms_send"},
     "udfchar13": {"path": "/bookings/{n}/fields/cms_message_id", "tier": "tier2_defaults", "pane": "cms_message_id"},
 }
+
+# Confirmations in the Sep-2026 group amend wave (shorten departure). Only these get multi-booking gold.
+GROUP_AMEND_CONFS = {"22098684-1", "37768113-1", "38564475-1", "60387251-1"}
+
+TIER_HISTORY = "history_knowable"
 
 # Action / doc targets (filing, cancel, quote, triage).
 ACTION_PATHS = {
