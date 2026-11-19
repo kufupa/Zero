@@ -299,14 +299,19 @@ async function waitForSearch(page, searchBox, limit = Infinity, signal) {
 }
 
 async function waitForSelectedDetails(page, popup, wanted) {
-  const deadline = Date.now() + 30_000;
+  // Selection often paints the Stay header while an Ext loadmask (or the search
+  // popup node) lingers. Staff tools succeed on the same bookings; treat
+  // header+stay fields + idle Ajax as ready, and nudge once with Stay reload.
+  const started = Date.now();
+  const deadline = started + 75_000;
   const notes = [];
   let readySince = null;
+  let reloaded = false;
   while (Date.now() < deadline) {
     const newNotes = await dismissNotesOrThrow(page);
     notes.push(...newNotes);
     if (newNotes.length) readySince = null;
-    const ready = await page.evaluate((value) => {
+    const state = await page.evaluate((value) => {
       const shown = (element) => {
         const box = element.getBoundingClientRect();
         const style = getComputedStyle(element);
@@ -317,13 +322,30 @@ async function waitForSelectedDetails(page, popup, wanted) {
       const masked = [...document.querySelectorAll('.x-mask, .x-mask-msg, .x-loadmask')].some(shown);
       const fields = [...document.querySelectorAll('.gs-panel [name="arrivaldate"], .gs-panel [name="departuredate"], ' +
         '.gs-panel [name="status"], .gs-panel [name="guestfullname"]')];
-      return header && !masked && fields.some((field) => shown(field) && String(field.value ?? field.innerText ?? '').trim());
+      const fieldReady = fields.some((field) => shown(field) && String(field.value ?? field.innerText ?? '').trim());
+      const ajaxLoading = !!(globalThis.Ext?.Ajax?.isLoading?.());
+      return { header, fieldReady, masked, ajaxLoading };
     }, wanted);
-    if (ready && !(await popup.isVisible())) {
+    // Do not require search popup gone — Ext often leaves the window node mounted.
+    // Soft-mask: once header+fields are filled and Ajax is idle, accept even if a
+    // ghost mask element still reports visible (observed on DETAILS_NOT_LOADED).
+    const detailsReady = state.header && state.fieldReady && !state.ajaxLoading
+      && (!state.masked || Date.now() - started >= 8_000);
+    if (detailsReady) {
       readySince ??= Date.now();
       if (Date.now() - readySince >= 300) return notes;
     } else {
       readySince = null;
+    }
+    if (!reloaded && state.header && Date.now() - started >= 12_000
+        && (!state.fieldReady || (state.masked && state.ajaxLoading))) {
+      reloaded = true;
+      try {
+        const stayReload = page.locator('.gs-panel:visible')
+          .filter({ has: page.locator('.x-panel-header-text').filter({ hasText: /^Stay$/ }) })
+          .locator('a.gs-header-btn:visible').filter({ has: page.locator('.gs-stay-icon') }).first();
+        if (await stayReload.count()) await stayReload.click({ force: true, timeout: 5_000 });
+      } catch { /* best-effort nudge */ }
     }
     await page.waitForTimeout(100);
   }
