@@ -1,6 +1,6 @@
 ---
 name: quote
-description: Use when a current hotel email requests room prices, availability, accommodation quotations, negotiated rates, meal options or several room and occupancy scenarios without explicit new-booking authority.
+description: Use when a current hotel email requests hotel-room stay prices, availability, accommodation quotations, negotiated room rates, meal options or several room and occupancy scenarios without explicit new-booking authority. Not for conference/boardroom/facility-only or commissionable event packages with no hotel-room stay — those stay Triage.
 ---
 
 # Quote
