@@ -168,6 +168,37 @@ function equalish(expected: unknown, actual: unknown): boolean {
   );
 }
 
+/**
+ * Create multi-guest: gold first/last are for one confirmation stay, but the agent
+ * correctly publishes all listed guests in list order. Hit if any booking carries
+ * the gold name pair (including First/Last swap on the same booking).
+ */
+function guestNameHit(expected: unknown, proposal: unknown, path: string, card: CaseCard): boolean {
+  const actual = dig(proposal, path);
+  if (equalish(expected, actual)) return true;
+  if (!path.endsWith('first_name') && !path.endsWith('last_name')) return false;
+  const golds = card.gold ?? [];
+  const wantFirst = golds.find(g => g.path.endsWith('first_name') && g.expectation === 'expected')?.value;
+  const wantLast = golds.find(g => g.path.endsWith('last_name') && g.expectation === 'expected')?.value;
+  if (wantFirst == null && wantLast == null) return false;
+  const bookings = dig(proposal, '/bookings');
+  if (!Array.isArray(bookings)) return false;
+  for (const booking of bookings) {
+    const row = booking && typeof booking === 'object' ? booking as Record<string, unknown> : {};
+    const fields = row.fields && typeof row.fields === 'object' ? row.fields as Record<string, unknown> : {};
+    const first = fields.first_name;
+    const last = fields.last_name;
+    const direct =
+      (wantFirst == null || equalish(wantFirst, first)) &&
+      (wantLast == null || equalish(wantLast, last));
+    const swapped =
+      (wantFirst == null || equalish(wantFirst, last)) &&
+      (wantLast == null || equalish(wantLast, first));
+    if (direct || swapped) return true;
+  }
+  return false;
+}
+
 /** Org/agency: match name field OR sibling *_id against gold.code/nativeId. */
 function partyHit(expected: unknown, proposal: unknown, path: string): boolean {
   const actual = dig(proposal, path);
@@ -248,7 +279,12 @@ export function scoreCase(input: {
     }
     const actual = dig(proposal, gold.path);
     const partyPath = /organization_name$|agency_name$|reservation_id$|confirmation_number$/.test(gold.path);
-    let hit = partyPath ? partyHit(gold.value, proposal, gold.path) : equalish(gold.value, actual);
+    const guestPath = /\/fields\/(first_name|last_name)$/.test(gold.path);
+    let hit = partyPath
+      ? partyHit(gold.value, proposal, gold.path)
+      : guestPath
+        ? guestNameHit(gold.value, proposal, gold.path, card)
+        : equalish(gold.value, actual);
     // Bench gold often uses pdf-0 placeholder; agent publishes real attachment UUID.
     if (!hit && gold.path.endsWith('attachment_id')) {
       const exp = String(gold.value ?? '');
