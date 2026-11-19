@@ -113,7 +113,7 @@ function stayLabel(proposal: Proposal, bookingId: string) {
   return [`Stay ${index + 1}`, booking.property_code, booking.reservation_id && `Reservation ${booking.reservation_id}`].filter(Boolean).join(' · ');
 }
 
-function quoteName(details:Json, fallback:string) {
+function quoteName(details:Json|undefined, fallback:string) {
   if (!details || typeof details!=='object' || Array.isArray(details)) return fallback;
   return typeof details.guest_name==='string' && details.guest_name.trim() ? details.guest_name :
     typeof details.party_name==='string' && details.party_name.trim() ? details.party_name : fallback;
@@ -499,7 +499,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
       control = <PaneField {...common} disabled={common.disabled || !agesSpec?.editable} control={proposal.workflow === 'quote' ? 'text' : 'number'} value={shown === null || shown === undefined ? '' : String(shown)}
         min="0" max={proposal.workflow === 'create' ? '16' : undefined} step="1" error={spec.error || common.error || (shown !== null && shown !== undefined && count === undefined ? proposal.workflow === 'quote' ? 'Enter a non-negative whole number of children.' : 'Enter a child count from 0 to 16.' : undefined)}
         hint={!agesSpec?.editable ? 'Child ages are unavailable to edit. Refresh the proposal.' : hint}
-        onChange={next => {
+        onChange={(next: string) => {
           onEdit(spec.path, next);
           const nextCount = childCount(next, proposal.workflow);
           if (nextCount !== undefined) {
@@ -510,7 +510,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     }
   } else if (spec.control === 'checkbox') {
     if (shown === null || shown === undefined) {
-      control = <PaneField {...common} control="select" value="" placeholder="Not provided" options={[{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]} onChange={next => { if (next) onEdit(spec.path, next === 'true'); }} />;
+      control = <PaneField {...common} control="select" value="" placeholder="Not provided" options={[{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]} onChange={(next: string) => { if (next) onEdit(spec.path, next === 'true'); }} />;
     } else if (typeof shown === 'boolean') {
       control = <PaneField {...common} control="checkbox" value={shown} onChange={next => onEdit(spec.path, next)} />;
     }
