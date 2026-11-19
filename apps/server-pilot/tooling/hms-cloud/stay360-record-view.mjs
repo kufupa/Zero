@@ -119,8 +119,11 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
       return box.width > 0 && box.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
     };
     const normalize = (text) => (text ?? '').replace(/\s+/g, ' ').trim();
+    // If expand failed under a ghost mask, still pull audit/CMS fields from collapsed panels.
+    const always = new Set(['confirmationnumber', 'status', 'updatedby', 'updated', 'createdby', 'created',
+      'udfchkbox04', 'udfchar07', 'udfchar09', 'udfchar13']);
     const fields = [...document.querySelectorAll('input, textarea, select, [contenteditable="true"], .x-form-display-field')]
-      .filter(shown)
+      .filter((element) => shown(element) || always.has(element.name))
       .filter((element) => !['hidden', 'password'].includes(element.type))
       .filter((element) => element.type !== 'button' || ['checkbox', 'radio'].includes(element.getAttribute('role')))
       .filter((element) => !element.closest('.x-grid'))
