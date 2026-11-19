@@ -16,6 +16,8 @@ Also marks booking gold no_gold when:
 - amend: drop create-style expected gold (first_pdf / hms_roomtype / …) and any
   booking expected gold when twin stay is absent at as_of (no last-pre-as_of
   hotel conf PDF). Amend gold is reservation_id + reviewed_amendment deltas only.
+- quote quantity: no_gold when value is not a sane room count (0, years like
+  2026 from date misparse, non-int, or absurdly large).
 
 Cases stay in the set.
 """
@@ -274,6 +276,43 @@ def amend_ruler_no_gold(g: dict, *, wf: str, shown: dict | None) -> str | None:
   return None
 
 
+def sane_room_quantity(value: object) -> bool:
+  """True when gold looks like a real room count (not 0 / year / junk)."""
+  if isinstance(value, bool):
+    return False
+  if isinstance(value, int):
+    n = value
+  elif isinstance(value, float) and value.is_integer():
+    n = int(value)
+  elif isinstance(value, str) and value.strip().isdigit():
+    n = int(value.strip())
+  else:
+    return False
+  if n < 1 or n > 99:
+    return False
+  # Year misparsed as qty (e.g. 0/2026 → 2026).
+  if 1900 <= n <= 2100:
+    return False
+  return True
+
+
+def quote_quantity_no_gold(g: dict, *, wf: str) -> str | None:
+  """Room qty gold that isn't a sane count → no_gold.
+
+  Applies on quote and on quote→create remaps (v3 may relabel workflow while
+  leaving selected_email_rooms qty junk like 0 / 2026).
+  """
+  del wf  # path-scoped; remapped creates still carry junk room qty
+  if g.get("expectation") != "expected":
+    return None
+  path = g.get("path") or ""
+  if leaf(path) != "quantity" or "/rooms/" not in path:
+    return None
+  if sane_room_quantity(g.get("value")):
+    return None
+  return "gold_v4_quote_qty_not_sane_room_count"
+
+
 def build(name: str) -> dict:
   cases = DATA / "cases" / name
   audit = DATA / "gold-audit" / name
@@ -382,6 +421,23 @@ def build(name: str) -> dict:
         "was_value": g.get("value"),
       }
       patch_reasons[amend_basis] += 1
+
+    # Quote qty: date-as-qty / 0 / non-int junk → no_gold.
+    for g in card.get("gold") or []:
+      path = g.get("path") or ""
+      qty_basis = quote_quantity_no_gold(g, wf=wf)
+      if not qty_basis:
+        continue
+      if path in patches_by_path and patches_by_path[path].get("expectation") == "no_gold":
+        continue
+      patches_by_path[path] = {
+        "path": path,
+        "expectation": "no_gold",
+        "basis": qty_basis,
+        "was_expectation": g.get("expectation"),
+        "was_value": g.get("value"),
+      }
+      patch_reasons[qty_basis] += 1
 
     patches = list(patches_by_path.values())
     out[cid] = {

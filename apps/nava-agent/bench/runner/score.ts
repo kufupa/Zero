@@ -97,15 +97,52 @@ function acronym(value: string): string {
   return value.split(/[^a-z0-9]+/i).filter(Boolean).map(part => part[0] ?? '').join('').toLowerCase();
 }
 
-function tokens(value: string): Set<string> {
-  return new Set(value.toLowerCase().split(/[^a-z0-9]+/).filter(part => part.length >= 4));
+function compactAlnum(value: string): string {
+  return value.replace(/[^a-z0-9]+/g, '');
 }
 
-function tokenOverlap(a: string, b: string): boolean {
-  const left = tokens(a);
-  const right = tokens(b);
-  for (const part of left) if (right.has(part)) return true;
-  return false;
+/**
+ * Agency/org: exact code or exact normalised full name only.
+ * tokenOverlap ("Nexus Travel" ↔ "XL Nexus") is a false hit — do not use here.
+ */
+function partyExactMatch(expected: unknown, actual: unknown): boolean {
+  if (actual == null || actual === '') return false;
+  const actualNorm = normalize(actual);
+  const actualCompact = compactAlnum(actualNorm);
+  if (!actualNorm) return false;
+
+  if (expected && typeof expected === 'object' && !Array.isArray(expected)) {
+    const row = expected as Record<string, unknown>;
+    const aliases = Array.isArray(row.aliases) ? row.aliases : [];
+    for (const part of [row.code, row.nativeId, row.native_id, ...aliases]) {
+      if (part == null || part === '') continue;
+      const needle = normalize(part);
+      if (!needle) continue;
+      if (actualNorm === needle || actualCompact === compactAlnum(needle)) return true;
+    }
+    for (const part of [row.name, row.value]) {
+      if (part == null || part === '') continue;
+      const needle = normalize(part);
+      if (!needle) continue;
+      // Full normalised name equality only (not substring / token overlap).
+      if (actualNorm === needle || actualCompact === compactAlnum(needle)) return true;
+    }
+    // Actual may be {code,name} too.
+    if (typeof actual === 'object' && actual && !Array.isArray(actual)) {
+      const act = actual as Record<string, unknown>;
+      for (const key of ['code', 'nativeId', 'native_id'] as const) {
+        if (row.code != null && act[key] != null && normalize(row.code) === normalize(act[key])) return true;
+        if (row.nativeId != null && act[key] != null && normalize(row.nativeId) === normalize(act[key])) return true;
+        if (row.native_id != null && act[key] != null && normalize(row.native_id) === normalize(act[key])) return true;
+      }
+      if (row.name != null && act.name != null && normalize(row.name) === normalize(act.name)) return true;
+    }
+    return false;
+  }
+
+  const a = normalize(expected);
+  if (!a) return false;
+  return a === actualNorm || compactAlnum(a) === actualCompact;
 }
 
 function equalish(expected: unknown, actual: unknown): boolean {
@@ -127,44 +164,33 @@ function equalish(expected: unknown, actual: unknown): boolean {
       const needle = normalize(part);
       if (!needle) continue;
       if (actualNorm === needle || actualNorm.includes(needle) || needle.includes(actualNorm)) return true;
-      // MISA ↔ Municipal Infrastructure Support Agent; XL Nexus ↔ Nexus Travel
-      if (acronym(actualNorm) === needle || acronym(needle) === actualNorm || tokenOverlap(needle, actualNorm)) return true;
-      // Name order: "Ada Lovelace" ↔ first/last swapped in actual string
-      if (row.first_name && row.last_name) {
-        const swapped = normalize(`${row.last_name} ${row.first_name}`);
-        if (swapped && (actualNorm === swapped || actualNorm.includes(swapped))) return true;
-      }
+      // Acronym only (MISA ↔ Municipal Infrastructure Support Agent). No tokenOverlap
+      // (that false-hit "Nexus Travel" ↔ "XL Nexus") and no person-name swap.
+      if (acronym(actualNorm) === needle || acronym(needle) === actualNorm) return true;
     }
     return false;
   }
   const a = normalize(expected);
   const b = normalize(actual);
   if (!a || !b) return false;
-  const compact = (s: string) => s.replace(/[^a-z0-9]+/g, '');
   const da = normalizeDate(expected);
   const db = normalizeDate(actual);
   if (da && db && da === db) return true;
   // Guarantee name ↔ code
   for (const [canon, alts] of Object.entries(GUARANTEE_ALIASES)) {
-    const bucket = new Set([compact(canon), ...alts.map(x => compact(x))]);
-    if (bucket.has(compact(a)) && bucket.has(compact(b))) return true;
+    const bucket = new Set([compactAlnum(canon), ...alts.map(x => compactAlnum(x))]);
+    if (bucket.has(compactAlnum(a)) && bucket.has(compactAlnum(b))) return true;
   }
-  // Person name order: "First Last" ↔ "Last First"
-  const partsA = a.split(' ').filter(Boolean);
-  const partsB = b.split(' ').filter(Boolean);
-  if (partsA.length === 2 && partsB.length === 2) {
-    if (partsA[0] === partsB[1] && partsA[1] === partsB[0]) return true;
-  }
+  // Swapped person names ("First Last" ↔ "Last First") are real staff/agent errors — miss.
   return (
     a === b ||
     b.includes(a) ||
     a.includes(b) ||
-    compact(a) === compact(b) ||
-    compact(a).includes(compact(b)) ||
-    compact(b).includes(compact(a)) ||
+    compactAlnum(a) === compactAlnum(b) ||
+    compactAlnum(a).includes(compactAlnum(b)) ||
+    compactAlnum(b).includes(compactAlnum(a)) ||
     acronym(a) === b ||
-    acronym(b) === a ||
-    tokenOverlap(a, b)
+    acronym(b) === a
   );
 }
 
@@ -197,15 +223,19 @@ function guestNameHit(expected: unknown, proposal: unknown, path: string, card: 
   return false;
 }
 
-/** Org/agency: match name field OR sibling *_id against gold.code/nativeId. */
+/** Org/agency: exact code or exact normalised name; sibling *_id vs gold.code/nativeId. */
 function partyHit(expected: unknown, proposal: unknown, path: string): boolean {
   const actual = dig(proposal, path);
-  if (equalish(expected, actual)) return true;
-  if (path.endsWith('organization_name')) {
-    if (equalish(expected, dig(proposal, path.replace(/organization_name$/, 'organization_id')))) return true;
-  }
-  if (path.endsWith('agency_name')) {
-    if (equalish(expected, dig(proposal, path.replace(/agency_name$/, 'agency_id')))) return true;
+  if (path.endsWith('organization_name') || path.endsWith('agency_name')) {
+    if (partyExactMatch(expected, actual)) return true;
+    if (path.endsWith('organization_name')) {
+      if (partyExactMatch(expected, dig(proposal, path.replace(/organization_name$/, 'organization_id')))) return true;
+    }
+    if (path.endsWith('agency_name')) {
+      if (partyExactMatch(expected, dig(proposal, path.replace(/agency_name$/, 'agency_id')))) return true;
+    }
+  } else if (equalish(expected, actual)) {
+    return true;
   }
   // reservation_id / confirmation_number: accept suffix-normalized match on the
   // gold path OR any sibling booking (multi-conf cancel/filing publishes all stays).
