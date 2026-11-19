@@ -11,7 +11,9 @@ import { effectiveWorkflowPolicy } from '../../tooling/hms-cloud/hms-workflow-po
 const serviceId = z.string().min(1).max(80);
 // Retired v2 engine inputs: kept loose so stored preparations still parse; Staff Go refuses them.
 const reservationWorkflowV2PrepareInputSchema = z.object({ workItemId: z.string(), requestId: z.string(),
-  expectedRevision: z.number().int(), expectedSeq: z.number().int() }).passthrough();
+  expectedRevision: z.number().int(), expectedSeq: z.number().int(),
+  source: z.object({ threadId: z.string(), messageId: z.string(), sourceHash: z.string(),
+    propertyId: z.string().optional() }).passthrough() }).passthrough();
 const reservationWorkflowV2GuestPrepareInputSchema = reservationWorkflowV2PrepareInputSchema.extend({
   confirmDuplicateName: z.boolean().optional() });
 export const hmsPreparedWorkflowContextSchema = z.discriminatedUnion('endpoint', [
