@@ -215,6 +215,7 @@ export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; dr
         const path=`/bookings/${index}/fields/${key}`;
         const spec=fieldSpecs.findIndex(field=>field.path===path);
         if(spec>=0 && fieldSpecs[spec].provenance==='staff') continue;
+        if(key==='rate_plan' && spec>=0 && fieldSpecs[spec].provenance!=='default' && fieldSpecs[spec].evidence.length) continue;
         fields[key]=value;
         if(spec>=0) fieldSpecs[spec]={...fieldSpecs[spec],provenance:'default',error:null,evidence:[]};
       }
