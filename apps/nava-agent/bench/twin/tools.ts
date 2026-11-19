@@ -119,9 +119,31 @@ const HRCEN_PROPERTY_DEFAULTS = {
   government_track: 'GOV',
   source_of_business: 'EMA',
   billing_note: 'BB to Agent, extras direct',
+  // Dinner Gov line only with government org + NGOVDB — never bare DBB.
   government_billing_note:
     'DBB to Agent, extras direct \nDinner Gov inclusive of R210.00 + 2 s/drink',
 } as const;
+
+/** Keep only billing-instruction lines from a prior reservation note (not guest specials). */
+function billingInstructionFromNote(raw: string): string | null {
+  const lines = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+  const kept = lines.filter(l =>
+    /^(bb|dbb)\s+to\b/i.test(l) ||
+    /\bextras?\s+direct\b/i.test(l) ||
+    /\bsettle\s+direct\b/i.test(l) ||
+    /\bawaiting\s+(payment|voucher|deposit)\b/i.test(l) ||
+    /\bdinner\s+gov\b/i.test(l) ||
+    /\bbill(ing)?\s+to\b/i.test(l) ||
+    /\bto\s+(agent|company|account)\b/i.test(l),
+  );
+  if (!kept.length) return null;
+  // Drop Dinner Gov unless this fragment already sits with a DBB-to billing line (gov pack).
+  const out = kept.filter(l => !/\bdinner\s+gov\b/i.test(l) || kept.some(x => /^dbb\s+to\b/i.test(x)));
+  return out.length ? out.join('\n') : null;
+}
 
 /** Modal defaults from anchors created/sent BEFORE as_of for this party name. */
 function partyDefaultsBeforeAsOf(
@@ -165,7 +187,7 @@ function partyDefaultsBeforeAsOf(
     const guarantee = String(fields.guaranteetype ?? fields.guarantee_type ?? '');
     const track = String(fields.track ?? fields.subsegment ?? '');
     const source = String(fields.sourceofbusiness ?? fields.source_of_business ?? '');
-    const note = String(fields.reservationnote ?? fields.note ?? '');
+    const note = billingInstructionFromNote(String(fields.reservationnote ?? fields.note ?? ''));
     if (room) counts.room_type!.set(room, (counts.room_type!.get(room) ?? 0) + 1);
     if (rate) counts.rate_plan!.set(rate, (counts.rate_plan!.get(rate) ?? 0) + 1);
     if (guarantee) counts.guarantee_type!.set(guarantee, (counts.guarantee_type!.get(guarantee) ?? 0) + 1);
