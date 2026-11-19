@@ -73,26 +73,30 @@ export function configuredSlots() {
 
 class Semaphore {
   private used=0;
-  private readonly waiting:Array<()=>void>=[];
+  private readonly waiting:Array<{wake:()=>void;urgent:boolean}>=[];
   constructor(private readonly limit:number) {}
-  async run<T>(signal:AbortSignal|undefined,work:()=>Promise<T>):Promise<T> {
+  async run<T>(signal:AbortSignal|undefined,work:()=>Promise<T>,urgent=false):Promise<T> {
     signal?.throwIfAborted();
     if(this.used>=this.limit) {
       await new Promise<void>((resolve,reject)=>{
         const wake=()=>{signal?.removeEventListener('abort',abort);resolve();};
-        const abort=()=>{const i=this.waiting.indexOf(wake);if(i>=0)this.waiting.splice(i,1);reject(signal?.reason);};
-        this.waiting.push(wake); signal?.addEventListener('abort',abort,{once:true});
+        const entry={wake,urgent};
+        const abort=()=>{const i=this.waiting.indexOf(entry);if(i>=0)this.waiting.splice(i,1);reject(signal?.reason);};
+        const index=urgent?this.waiting.findIndex(item=>!item.urgent):-1;
+        if(index<0)this.waiting.push(entry);else this.waiting.splice(index,0,entry);
+        signal?.addEventListener('abort',abort,{once:true});
         if(signal?.aborted) abort();
       });
     } else this.used++;
     try { signal?.throwIfAborted();return await work(); }
-    finally { const next=this.waiting.shift();if(next) next();else this.used--; }
+    finally { const next=this.waiting.shift();if(next) next.wake();else this.used--; }
   }
 }
 
 export function createNativeAdmission():NativeAdmission {
-  const semaphore=new Semaphore(configuredSlots().local);
-  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming,budget?:'short',priority?:'background'):Promise<T> {
+  const slots=configuredSlots().local;
+  const semaphore=new Semaphore(slots), readers=new Semaphore(Math.max(1,slots-1));
+  async function withLease<T>(propertyCode:string,signal:AbortSignal|undefined,readOnly:boolean,work:(lease:NativeLease)=>Promise<T>,scope?:'quote',timing?:NativeTiming,budget?:'short',priority?:'background'|'prefill'):Promise<T> {
     if(!process.env.HMS_CREDENTIAL_SESSION_CAP) throw new Error('HMS_CREDENTIAL_SESSION_CAP_REQUIRED');
     const leaseDatabaseUrl=process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL;
     if(!leaseDatabaseUrl) throw new Error('NATIVE_SHARED_LEASE_DATABASE_REQUIRED');
@@ -101,7 +105,7 @@ export function createNativeAdmission():NativeAdmission {
     const bounded=AbortSignal.any([deadline,...(signal?[signal]:[])]);
     const started=performance.now();
     let admitted=false;
-    try { return await semaphore.run(bounded,async()=>{
+    const run=()=>semaphore.run(bounded,async()=>{
       admitted=true;timing?.('local_wait',performance.now()-started);
       const bundledQuote=fileURLToPath(new URL('../tools/quote/native/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
       let nativePath=process.env.NAVA_HMS_SESSION_MODULE ?? fileURLToPath(new URL('../../server-pilot/tooling/hms-cloud/cloud-session.mjs',import.meta.url));
@@ -120,11 +124,13 @@ export function createNativeAdmission():NativeAdmission {
         if(readOnly && result && deadline.aborted && !signal?.aborted && error===deadline.reason) return result.value;
         throw error;
       }
-    }); } finally { if(!admitted) timing?.('local_wait',performance.now()-started); }
+    },!readOnly);
+    try { return await (readOnly?readers.run(bounded,run):run()); }
+    finally { if(!admitted) timing?.('local_wait',performance.now()-started); }
   }
-  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing,budget,priority)=>withLease(property,signal,true,work,scope,timing,budget,priority),withSave:async(property,signal,work)=>{
+  return {available:()=>Boolean(process.env.HMS_CREDENTIAL_SESSION_CAP && process.env.HMS_CREDENTIAL_LEASE_DATABASE_URL),withRead:(property,signal,work,scope,timing,budget,priority)=>withLease(property,signal,true,work,scope,timing,budget,priority),withSave:async(property,signal,work,timing)=>{
     if(!nativeSaveAllowed()) throw new Error('SAVE_DISABLED');
-    return withLease(property,signal,false,work);
+    return withLease(property,signal,false,work,undefined,timing);
   }};
 }
 
@@ -281,7 +287,9 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
   const limit=configuredSlots().requested;
   while(!signal?.aborted) {
     const parkedIds=[...parked.keys()],parkedSeqs=[...parked.values()];
-    const rows=await sql`SELECT s.id FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now())
+    const rows=await sql`SELECT s.id,(${createPilotEnabled() && createGoEnabled()} AND EXISTS
+      (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.phase='saving' AND p.execution->'go'->>'staff'='true')) AS staff_go
+      FROM nava_agent.agent_session s WHERE (s.lease_until IS NULL OR s.lease_until<now())
       AND NOT EXISTS (SELECT 1 FROM unnest(${sql.array(parkedIds)}::text[],${sql.array(parkedSeqs)}::bigint[]) AS x(id,seq)
         WHERE x.id=s.id::text AND NOT EXISTS (SELECT 1 FROM nava_agent.agent_event e WHERE e.session_id=s.id AND e.sequence>x.seq)) AND (
       ((s.pending_tool_use_id IS NULL OR ${hmsSaveEnabled()}) AND (
@@ -294,9 +302,9 @@ export async function runWorker(deps:WorkerDeps,signal?:AbortSignal):Promise<voi
         (s.mode='labtest' AND ${!createPilotRequested()} AND NOT (s.config ? 'manual_create_labtest'))
         OR EXISTS (SELECT 1 FROM nava_agent.proposal p WHERE p.session_id=s.id AND p.execution->'go' IS NOT NULL
           AND (p.phase='saving' OR p.execution->'go'->'completion' IS NOT NULL))))
-      ) ORDER BY s.updated_at LIMIT ${limit}`;
+      ) ORDER BY staff_go DESC,s.updated_at LIMIT ${limit+1}`;
     for(const row of rows) if(parked.delete(row.id)) failures.delete(row.id);
-    for(const row of rows) if(active.size<limit && !active.has(row.id)) {
+    for(const row of rows) if(!active.has(row.id) && (active.size<limit || (row.staff_go && active.size<limit+1))) {
       active.add(row.id);
       void runSession(row.id,deps).then(()=>{failures.delete(row.id);},async error=>{
         const message=error instanceof Error?error.message:'';
@@ -454,7 +462,7 @@ async function main():Promise<void> {
     const input={property_code:'HRCEN',kinds:['room_type','rate_plan','source_of_business','track','guarantee_type','organization','agency','meal_plan']};
     const context:CatalogueContext={sessionId:'catalogue_warm',mode:'live'};
     void cachedCatalogue(input,context,request=>native.withRead(input.property_code,undefined,
-      lease=>readCatalogue(request,{...context,credentialLease:lease,signal:lease.signal}),undefined,undefined,'short'))
+      lease=>readCatalogue(request,{...context,credentialLease:lease,signal:lease.signal}),undefined,undefined,'short','prefill'))
       .catch(error=>console.error(JSON.stringify({event:'catalogue_warm_failed',error:error instanceof Error && /^[A-Z0-9_]+$/.test(error.message)?error.message:error instanceof Error?error.name:'unknown'})));
   }
   if(runtimeProvider()==='cma') return runCma(native);

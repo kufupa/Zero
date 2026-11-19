@@ -733,7 +733,7 @@ function credentialSlotKey(propertyCode, slot) {
 
 /** Mark background work at its entry point; nested cloud sessions inherit the priority. */
 export function withCloudCredentialPriority(priority, operation) {
-  if (!['staff', 'background'].includes(priority) || typeof operation !== 'function') {
+  if (!['staff', 'background', 'prefill'].includes(priority) || typeof operation !== 'function') {
     throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
   }
   return credentialPriority.run(priority, operation);
@@ -774,7 +774,7 @@ export function currentCloudCredentialPriority(fallback) {
     return process.env.NAVA_HMS_CHILD_PRIORITY;
   }
   if (fallback !== undefined) {
-    if (!['staff', 'background'].includes(fallback)) throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
+    if (!['staff', 'background', 'prefill'].includes(fallback)) throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
     return fallback;
   }
   const entry = process.argv[1] ? resolve(process.argv[1]) : '';
@@ -881,9 +881,9 @@ async function credentialRunPromoted(connection, fence) {
 /** A dedicated connection holds capped shared admission or an exclusive write lease. */
 export async function acquireCloudCredentialLease(propertyCode, { signal, readOnly = false, priority = currentCloudCredentialPriority(), databaseUrl = process.env.DATABASE_URL, deadlineAt, tryOnce = false } = {}) {
   const property = registeredProperty(propertyCode);
-  if (typeof readOnly !== 'boolean' || typeof tryOnce !== 'boolean' || !['staff', 'background'].includes(priority) ||
+  if (typeof readOnly !== 'boolean' || typeof tryOnce !== 'boolean' || !['staff', 'background', 'prefill'].includes(priority) ||
       (deadlineAt !== undefined && !Number.isFinite(deadlineAt))) throw new Error('HMS_CREDENTIAL_LEASE_OPTIONS_INVALID');
-  const cap = readOnly ? credentialSessionCap() : 0;
+  const cap = readOnly ? Math.max(1, credentialSessionCap() - 1) : 0;
   signal?.throwIfAborted();
   const loss = new AbortController();
   const waitMs = Math.min(300000, deadlineAt === undefined ? Infinity : Math.max(1, deadlineAt - Date.now()));
@@ -966,6 +966,24 @@ export async function acquireCloudCredentialLease(propertyCode, { signal, readOn
       if (priority === 'staff') {
         await runUntilAborted(() => credentialRunPromoted(queueConnection, runFence), acquisitionSignal);
         await enterStaff();
+      } else if (priority === 'prefill') {
+        phase = 'contention';
+        while (!acquired) {
+          const marker = await runUntilAborted(() => connection.unsafe('SELECT pg_try_advisory_lock($1::bigint) AS acquired', [waiterKey]), acquisitionSignal);
+          if (marker[0]?.acquired === true) {
+            if (await trySlot()) {
+              const rows = await runUntilAborted(() => connection.unsafe(tryLockSql, [key]), acquisitionSignal);
+              acquired = rows[0]?.acquired === true;
+              if (!acquired) await releaseSlot();
+            }
+            const released = await runUntilAborted(() => connection.unsafe('SELECT pg_advisory_unlock($1::bigint) AS released', [waiterKey]), acquisitionSignal);
+            if (released[0]?.released !== true) throw new Error('HMS_CREDENTIAL_LEASE_LOST');
+          }
+          if (!acquired) {
+            if (tryOnce) throw new Error('HMS_CREDENTIAL_LEASE_CONTENDED');
+            await delay(250, undefined, { signal: acquisitionSignal });
+          }
+        }
       } else {
         phase = 'contention';
         admissionKey = await runUntilAborted(() => registerCredentialAdmission(queueConnection, key, runFence), acquisitionSignal);

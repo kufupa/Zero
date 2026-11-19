@@ -26,7 +26,7 @@ type SaveContext = ToolContext & {markDispatched(details:unknown):Promise<void>}
 export type MutationPack = {prepare(input:MutationInput,context:ToolContext):Promise<ToolResult>;save?: (input:SaveInput,context:SaveContext)=>Promise<ToolResult>};
 export type NativeLease = {signal:AbortSignal};
 export type NativeTiming = (phase:string, elapsedMs:number)=>void;
-export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming, budget?:'short', priority?:'background'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>):Promise<T>};
+export type NativeAdmission = {available?():boolean;withRead<T>(propertyCode:string, signal:AbortSignal|undefined, work:(lease:NativeLease)=>Promise<T>, scope?:'quote', timing?:NativeTiming, budget?:'short', priority?:'background'|'prefill'):Promise<T>;withSave<T>(propertyCode:string,signal:AbortSignal|undefined,work:(lease:NativeLease)=>Promise<T>,timing?:NativeTiming):Promise<T>};
 export type RegistryDeps = {native:NativeAdmission; emit(sessionId:string,kind:string,payload:unknown):Promise<void>};
 export type LeaseFence = {sessionId:string;workerId:string;epoch:string};
 export type RegistryContext = ToolContext & {propertyCode:string|null; toolUseId:string; fence?:LeaseFence};
@@ -460,7 +460,7 @@ export class ToolRegistry {
       if(!handler) return {kind:'result',result:failureObject('UNAVAILABLE','Workflow prepare is unavailable.')};
       const property=request.data.booking.property_code;
       if(typeof property!=='string' || !property || (context.propertyCode && context.propertyCode!==property)) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Booking property is missing or differs from the thread.')};
-      return {kind:'result',result:await this.nativeResult(()=>this.deps.native.withRead(property,context.signal,lease=>handler.prepare(request.data,{...context,credentialLease:lease,signal:lease.signal})))};
+      return {kind:'result',result:await this.nativeResult(()=>this.deps.native.withRead(property,context.signal,lease=>handler.prepare(request.data,{...context,credentialLease:lease,signal:lease.signal}),undefined,undefined,undefined,'prefill'))};
     }
     if(pack) {
       await this.deps.emit(context.sessionId,'tool_started',{tool:name,tool_event_id:context.toolUseId});
@@ -494,7 +494,7 @@ export class ToolRegistry {
           lease.signal.throwIfAborted();
           return pack.run(toolInput,{...context,credentialLease:lease,signal:lease.signal});
         },name==='hms_quote'?'quote':undefined,(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)),
-        ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined));
+        ['hms_quote','hms_search_reservations','hms_search_parties'].includes(name)?'short':undefined,'prefill'));
         if(name==='hms_read_catalogue') {
           if(!await verifySource()) response=failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
           else {
@@ -520,7 +520,7 @@ export class ToolRegistry {
     if(name==='hms_quote') {
       const request=schemas.hms_quote.safeParse(input);
       if(!request.success || (context.propertyCode && context.propertyCode!==request.data.property_code)) return {kind:'result',result:failureObject('PROPERTY_MISMATCH','Requested property is missing or differs from the thread.')};
-      return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await this.deps.native.withRead(request.data.property_code,context.signal,lease=>baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,lease.signal),undefined,undefined,'short')))};
+      return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await this.deps.native.withRead(request.data.property_code,context.signal,lease=>baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,lease.signal),undefined,undefined,'short','prefill')))};
     }
     return {kind:'result',result:await this.nativeResult(async()=>JSON.parse(await baselineDispatch(context.sessionId,name,input,context.toolUseId,this.deps.emit,context.fence,context.signal)))};
   }
@@ -574,13 +574,14 @@ export class ToolRegistry {
     const filing=input.workflow==='filing' && staff?await filingPortFactory():undefined;
     if(input.workflow==='filing' && staff && !filing) return failureObject('ATTACHMENT_SOURCE_UNAVAILABLE','The selected attachment source is unavailable.');
     let marked=false;
+    const started=performance.now(),timings:Record<string,number[]>={};
     const uncertain:ToolResult={ok:false,data:null,error:{code:'SAVE_UNCERTAIN',message:'Save may have dispatched; reconcile before any retry.',retryable:false,outcome:'uncertain'}};
     try {
       const value=await this.deps.native.withSave(property,context.signal,async lease=>{
         const trusted={...context,credentialLease:lease,signal:lease.signal};
         const ports=filing?await filing(trusted,input):undefined;
         return save(input,{...trusted,...ports,markDispatched:async details=>{if(marked) throw new Error('DISPATCH_ALREADY_MARKED'); await context.markDispatched(details); marked=true;}});
-      });
+      },(phase,ms)=>(timings[phase]??=[]).push(Math.round(ms)));
       const parsed=resultSchema.safeParse(value);
       if(!parsed.success) return marked ? uncertain : failureObject('INVALID_WRITER_RESULT','Writer returned an invalid result before dispatch.');
       if(!marked && parsed.data.ok) return failureObject('DISPATCH_MARKER_MISSING','Writer did not record dispatch.');
@@ -592,6 +593,9 @@ export class ToolRegistry {
       return {ok:parsed.data.ok,data:parsed.data.data,error:parsed.data.error};
     } catch {
       return marked ? uncertain : failureObject('SAVE_FAILED','Save stopped before dispatch.');
+    } finally {
+      try { console.info(JSON.stringify({event:'native_save_timing',execution_id:input.executionId,workflow:input.workflow,
+        stages_ms:timings,total_ms:Math.round(performance.now()-started)})); } catch {}
     }
   }
 

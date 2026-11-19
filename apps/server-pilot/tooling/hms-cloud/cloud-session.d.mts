@@ -12,7 +12,7 @@ export type CloudSessionIdentity = CloudPropertyIdentity & Readonly<{
 }>;
 export type CloudSecretLoader = (input: { secretArn: string; signal?: AbortSignal }) => Promise<unknown>;
 export type CloudLoadedSecret = Readonly<{ secret: unknown; versionId: string; versionStages: readonly string[] }>;
-export type CloudCredentialPriority = 'staff' | 'background';
+export type CloudCredentialPriority = 'staff' | 'background' | 'prefill';
 declare const cloudCredentialLeaseBrand: unique symbol;
 export type CloudCredentialLease = Readonly<{
   [cloudCredentialLeaseBrand]: never;
