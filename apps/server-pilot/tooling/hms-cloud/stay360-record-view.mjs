@@ -72,8 +72,8 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
   }
   if (!frame) throw new Error('RECORD_VIEW_NOT_LOADED');
 
-  // Expand only the form's collapsed panels, using their expand icons.
-  // Clear idle ghost masks inside the Record View frame so expand tools are clickable.
+  // Expand collapsed panels. Ghost masks often break tool clicks / animated expand waits,
+  // so prefer a bulk Ext.expand() pass and only fall back to per-panel expand best-effort.
   await frame.evaluate(() => {
     if (globalThis.Ext?.Ajax?.isLoading?.()) return;
     for (const mask of document.querySelectorAll('.x-mask, .x-mask-msg, .x-loadmask')) {
@@ -82,18 +82,35 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
       mask.style.setProperty('pointer-events', 'none', 'important');
     }
   }).catch(() => {});
+  const bulkExpanded = await frame.evaluate(() => {
+    let n = 0;
+    for (const el of document.querySelectorAll('.x-panel.x-panel-collapsed')) {
+      const component = globalThis.Ext?.getCmp?.(el.id);
+      if (!component || typeof component.expand !== 'function') continue;
+      try { component.expand(); n += 1; } catch { /* best-effort */ }
+    }
+    return n;
+  }).catch(() => 0);
+  await frame.waitForTimeout(1_500);
+  notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
+  notes.push(...await dismissNotesOrThrow(frame));
   const collapsed = frame.locator('.x-panel.x-panel-collapsed:visible');
   for (let count = 0; await collapsed.count(); count += 1) {
-    if (count >= 20) throw new Error('RECORD_PANELS_NOT_EXPANDED');
+    if (count >= 20) break;
     const panel = collapsed.first();
     const expand = panel.locator(':scope > .x-panel-header .x-tool').filter({
       has: frame.locator('img[class*="x-tool-expand-"]'),
     });
-    if (await expand.count() !== 1) throw new Error('RECORD_EXPAND_NOT_UNIQUE');
-    await expandStay360Panel(frame, panel, expand);
+    if (await expand.count() !== 1) break;
+    try {
+      await expandStay360Panel(frame, panel, expand);
+    } catch {
+      break; // scrape whatever panels did open
+    }
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
     notes.push(...await dismissNotesOrThrow(frame));
   }
+  void bulkExpanded;
 
   const details = await frame.evaluate(() => {
     const shown = (element) => {
