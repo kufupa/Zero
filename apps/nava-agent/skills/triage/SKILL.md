@@ -9,19 +9,19 @@ Read the selected message and relevant earlier context. Treat the selected messa
 
 Route each current request separately, preserving its guest, stay, dates, document and other known fields. Then load the relevant skill and publish its editable proposal **with that skill's workflow** (publish `create` / `quote` / `amend` / `cancel` / `filing` — do not leave `workflow: "triage"` when a supported action is clear). The current body takes precedence over an old subject or quoted request. An existing-confirmation or pre-stay notice is about an existing stay; retain any separate new request. Mixed work is common: 590/1,439 model-labelled decisions had multiple workflow labels.
 
-**Primary ask wins.** A clear book/reserve/check-in request is Create even when the same mail also asks about commission, dinner wording, an invoice link, or a shuttle. "Assist with an invoice for the below booking" / "confirm as per below" with guest+dates+room is Create. A clear rate/availability ask is Quote even when group size or concession language appears. Extend/shorten stay or updated rooming list ("add one more room") is Amend even if the same mail also asks about a scam confirmation email. "Receive voucher" / attached voucher or POP is Filing. Keep the secondary question in `warnings` or `missing` for staff; do not stay on Triage solely because a side question is "other". Use Triage lookup only when the current ask is status/reconfirmation/invoice-only/logistics with no book or quote action.
+**Primary ask wins.** A clear book/reserve/check-in request is Create even when the same mail also asks about commission, dinner wording, an invoice link, or a shuttle — and even when an old confirmation number appears in the subject or quoted thread (that number is context, not an instruction to Amend). "Assist with an invoice for the below booking" / "confirm as per below" with guest+dates+room is Create. A clear rate/availability/how-much ask is Quote when the mail does **not** ask to book/reserve/proceed/accept; missing room count or occupancy does not turn Quote into Create or Triage. Extend/shorten stay or updated rooming list ("add one more room") is Amend even if the same mail also asks about a scam confirmation email. **Cancel:** cancel/cancellation/release wording plus a confirmation number (subject or body) is Cancel even when polite, forwarded, or asking fee/refund/policy for that stay — publish `cancel` (use `skip` only when HMS already shows Cancelled). "Receive voucher" / attached voucher or POP is Filing. Keep the secondary question in `warnings` or `missing` for staff; do not stay on Triage solely because a side question is "other". Use Triage lookup only when the current ask is status/reconfirmation/invoice-only/logistics with no book, quote, cancel, or amend action.
 
 When the selected message has a blank or near-blank body and a PDF identified by its filename or available extracted text as a voucher, POP or proof of payment, route the file to Filing for staff review. Preserve its selected message and attachment IDs and use any extracted text for the booking reference. A filename is a document hint, not proof of its contents or payment; leave uncertain PDFs for staff review.
 
 | Current request | Route |
 |---|---|
-| Price or availability | `quote` |
-| Book, reserve, proceed, or accept an offer | `create` |
+| Price or availability (no book/proceed) | `quote` |
+| Book, reserve, proceed, or accept an offer (new stay) | `create` |
 | Change a booked stay or shorten its dates | `amend` |
-| Cancel a booked stay or a booked room | `cancel` |
+| Cancel / cancellation fee-policy-refund for a named confirmation | `cancel` |
 | Submit a voucher or proof of payment | `filing` |
-| Existing reservation status | `triage` lookup; include known confirmation, surname and dates |
-| Invoice, payment or logistics question | Preserve as a separate question for staff or supported read |
+| Existing reservation status only | `triage` lookup; include known confirmation, surname and dates |
+| Invoice, payment or logistics question (no cancel/book/quote) | Preserve as a separate question for staff or supported read |
 
 A request may have several routes: e.g. quote a new stay and release a previous booking. Do not turn explicit booking intent into Quote merely because an earlier subject says quotation. A request to change an existing confirmation remains Amend for staff review if HMS now shows it cancelled or checked out; do not turn it into Create unless a new booking is requested. A disputed offer or a statement that someone will not stay is not by itself a request to cancel an existing reservation. Use `propose` for an identifiable supported action with editable fields, even when staff must complete a choice or run a lookup. Ask for information only if the request or affected stay cannot be identified from available context. Skip thanks, completed duplicate tasks, OTA/channel, automated and spam notices; agency/GDS requests remain in scope. More than 8 rooms needs staff handling; keep independent supported work.
 
