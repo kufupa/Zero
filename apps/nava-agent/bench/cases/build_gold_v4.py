@@ -5,8 +5,8 @@ Default output: $NAVA_BENCH_DATA_ROOT/gold-audit/{holdout-fresh,v1,dev-fresh}/go
 Loaded automatically by bench runner/rescore for those sets.
 
 Also marks booking gold no_gold when:
-- holdout-fresh: synthetic Labtest/Proof/NAVAAI booking or unreadable HMS conf
-  (NOT_FOUND / HINT_MISMATCH / DETAILS_NOT_LOADED)
+- holdout-fresh + dev-fresh: synthetic Labtest/Proof/NAVAAI booking or unreadable
+  HMS conf (NOT_FOUND / HINT_MISMATCH / DETAILS_NOT_LOADED / AMBIGUOUS)
 - holdout-fresh + dev-fresh: CREATE whose gold booking has createdby=HRCEN
   (channel/GDS interface — not staff email create). Routing workflow kept.
 
@@ -19,9 +19,11 @@ import os
 import re
 import sys
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 
 DATA = Path(os.environ.get("NAVA_BENCH_DATA_ROOT") or "/home/orca/.local/share/zero/bench/replay-bench-20261119")
+READS_ROOT = Path(os.environ.get("NAVA_HMS_FRESH_READS_ROOT") or "/home/orca/.local/share/zero/research/hms-fresh-reads-20261119")
 
 FILING_OPTIONAL = {
   "track", "billing_reference", "rate_plan", "guarantee_type", "market_segment",
@@ -37,7 +39,7 @@ TRIAGE_DROP_LEAVES = {
 }
 
 # Holdout fail-retry queue (reads lane 2026-11-19): 0/11 recovered.
-UNREADABLE_CONFS = frozenset({
+UNREADABLE_CONFS_SEED = frozenset({
   "1092349285-1",
   "1618525656-1",
   "1092338215-1",
@@ -50,6 +52,11 @@ UNREADABLE_CONFS = frozenset({
   "8057220826-1",
   "1538599818-1",
 })
+
+UNREAD_ERR_RE = re.compile(
+  r"NOT_FOUND|HINT_MISMATCH|DETAILS_NOT_LOADED|AMBIGUOUS_CONFIRMATION",
+  re.I,
+)
 
 LAB_RE = re.compile(
   r"labtest|proof\s*lab|navaai|example\.invalid|synthetic[\s_-]?lab",
@@ -70,6 +77,33 @@ MAIL_OK_BASIS = re.compile(r"first_pdf|bench_mail|description_default|scope_defa
 
 def leaf(path: str) -> str:
   return path.rstrip("/").split("/")[-1]
+
+
+@lru_cache(maxsize=1)
+def unreadable_confs() -> frozenset[str]:
+  """Fail-retry seed + confs whose latest fresh-read never loaded a stay."""
+  out = set(UNREADABLE_CONFS_SEED)
+  reads = READS_ROOT / "reads-all.jsonl"
+  if not reads.exists():
+    return frozenset(out)
+  latest: dict[str, dict] = {}
+  with reads.open() as f:
+    for line in f:
+      try:
+        o = json.loads(line)
+      except json.JSONDecodeError:
+        continue
+      conf = o.get("confirmation")
+      if conf:
+        latest[conf] = o
+  for conf, o in latest.items():
+    errs = " ".join(
+      (e.get("error") if isinstance(e, dict) else str(e))
+      for e in (o.get("errors") or [])
+    )
+    if UNREAD_ERR_RE.search(errs) and not (o.get("record_view") or o.get("shallow")):
+      out.add(conf)
+  return frozenset(out)
 
 
 def labtest_or_navaai(card: dict) -> bool:
@@ -118,17 +152,17 @@ def is_channel_hrcen_create(card: dict, wf: str) -> bool:
 def taint_reason(card: dict, *, set_name: str, wf: str) -> str | None:
   conf = card.get("real_confirmation")
   parts: list[str] = []
-  if set_name == "holdout-fresh":
+  if set_name in ("holdout-fresh", "dev-fresh"):
     lab = labtest_or_navaai(card)
-    unread = conf in UNREADABLE_CONFS
+    unread = conf in unreadable_confs()
     if lab and unread:
       parts.append(f"labtest_or_navaai+unreadable_conf:{conf}")
     elif lab:
       parts.append(f"labtest_or_navaai:{conf}")
     elif unread:
       parts.append(f"unreadable_conf:{conf}")
-  if set_name in ("holdout-fresh", "dev-fresh") and is_channel_hrcen_create(card, wf):
-    parts.append(f"create_createdby_hrcen_channel:{conf}")
+    if is_channel_hrcen_create(card, wf):
+      parts.append(f"create_createdby_hrcen_channel:{conf}")
   return "+".join(parts) if parts else None
 
 
