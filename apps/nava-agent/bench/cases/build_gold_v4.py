@@ -9,6 +9,9 @@ Also marks booking gold no_gold when:
   HMS conf (NOT_FOUND / HINT_MISMATCH / DETAILS_NOT_LOADED / AMBIGUOUS)
 - holdout-fresh + dev-fresh: CREATE whose gold booking has createdby=HRCEN
   (channel/GDS interface — not staff email create). Routing workflow kept.
+- all sets: cms_send (CMS Send Mail tick) — later HMS reads are false after CMS
+  clears the tick; PRODUCT.md default is ticked, so later-read gold is not evidence.
+  cms_message_id / cms_recipient stay only when basis is staff/hotel-sourced.
 
 Cases stay in the set.
 """
@@ -73,6 +76,16 @@ HMS_TIED_BASIS = re.compile(
 
 # Mail/PDF bases — keep even when conf is unreadable (unless Labtest booking).
 MAIL_OK_BASIS = re.compile(r"first_pdf|bench_mail|description_default|scope_default|staff_picks", re.I)
+
+# CMS recipient / message-id: keep gold only if labelled from staff/hotel source
+# (not later HMS read / tier2_default_not_forced_by_shown).
+CMS_STAFF_HOTEL_BASIS = re.compile(
+  r"staff_|hotel_|requester|from_email|mail_body|signature|context_after|"
+  r"bench_mail|first_pdf|known_requester",
+  re.I,
+)
+CMS_TICK_LEAF = "cms_send"
+CMS_KEEPABLE_LEAVES = frozenset({"cms_message_id", "cms_recipient"})
 
 
 def leaf(path: str) -> str:
@@ -200,6 +213,22 @@ def field_depends_on_taint(
   return False
 
 
+def cms_field_no_gold(g: dict) -> str | None:
+  """Return basis tag if this CMS gold field should become no_gold."""
+  path = g.get("path") or ""
+  leaf_name = leaf(path)
+  if g.get("expectation") == "no_gold":
+    return None
+  if leaf_name == CMS_TICK_LEAF:
+    return "gold_v4_cms_tick_later_hms_not_evidence"
+  if leaf_name in CMS_KEEPABLE_LEAVES:
+    basis = str(g.get("basis") or "")
+    if CMS_STAFF_HOTEL_BASIS.search(basis):
+      return None
+    return "gold_v4_cms_id_recipient_not_staff_hotel_source"
+  return None
+
+
 def build(name: str) -> dict:
   cases = DATA / "cases" / name
   audit = DATA / "gold-audit" / name
@@ -271,6 +300,25 @@ def build(name: str) -> dict:
         "n_no_gold_patches": len(taint_paths),
         "paths": taint_paths,
       })
+
+    # CMS Send Mail tick: later HMS read is cleared by CMS user — not evidence.
+    # Recipient / message-id: keep only staff/hotel-sourced gold.
+    for g in card.get("gold") or []:
+      path = g.get("path") or ""
+      cms_basis = cms_field_no_gold(g)
+      if not cms_basis:
+        continue
+      # Don't clobber a stronger taint tag already applied to this path.
+      if path in patches_by_path and patches_by_path[path].get("expectation") == "no_gold":
+        continue
+      patches_by_path[path] = {
+        "path": path,
+        "expectation": "no_gold",
+        "basis": cms_basis,
+        "was_expectation": g.get("expectation"),
+        "was_value": g.get("value"),
+      }
+      patch_reasons[cms_basis] += 1
 
     patches = list(patches_by_path.values())
     out[cid] = {
