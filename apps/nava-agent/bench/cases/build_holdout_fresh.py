@@ -79,6 +79,219 @@ AZURE_KEY = os.environ.get("AZURE_FOUNDRY_API_KEY") or os.environ.get("AZURE_OPE
 LUNA_DEPLOY = os.environ.get("NAVA_AGENT_AZURE_DEPLOYMENT") or "gpt-6-luna"
 
 
+def norm_msgid(raw: Any) -> str | None:
+    if not raw:
+        return None
+    s = str(raw).strip().strip("<>").strip().lower()
+    return s or None
+
+
+def walk_collect_msgids(obj: Any, found: set[str]) -> None:
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in (
+                "message_id_header",
+                "internetMessageId",
+                "internet_message_id",
+                "rfc_message_id",
+                "Message-ID",
+                "messageId",
+            ) or str(k).endswith("message_id_header"):
+                mid = norm_msgid(v)
+                if mid:
+                    found.add(mid)
+            if k in ("message_id", "id") and isinstance(v, str) and "@" in v:
+                mid = norm_msgid(v)
+                if mid:
+                    found.add(mid)
+            walk_collect_msgids(v, found)
+    elif isinstance(obj, list):
+        for item in obj:
+            walk_collect_msgids(item, found)
+
+
+def load_dev_blocklist() -> dict[str, Any]:
+    """Block Message-IDs + confs already in the 200 v1/dev cases, plus Halloween∩fresh Message-IDs."""
+    msgids: set[str] = set()
+    confs: set[str] = set()
+    v1 = DATA / "cases" / "v1"
+    if v1.exists():
+        for d in v1.iterdir():
+            if not d.is_dir() or not (d / "case.json").exists():
+                continue
+            card = json.loads((d / "case.json").read_text())
+            if card.get("real_confirmation"):
+                confs.add(str(card["real_confirmation"]))
+            walk_collect_msgids(card, msgids)
+    for p in (DATA / "gold").glob("*.jsonl"):
+        for line in open(p):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                continue
+            if row.get("real_confirmation"):
+                confs.add(str(row["real_confirmation"]))
+            src = row.get("source") or {}
+            if isinstance(src, dict):
+                for msg in src.get("messages_as_of_cutoff") or []:
+                    if not isinstance(msg, dict):
+                        continue
+                    mid = norm_msgid(msg.get("message_id_header") or msg.get("message_id"))
+                    if mid:
+                        msgids.add(mid)
+
+    hall_msgids: set[str] = set()
+    hall = DATA / "inbound" / "halloween"
+    if hall.exists():
+        for p in hall.rglob("*.jsonl"):
+            for line in open(p):
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                walk_collect_msgids(obj, hall_msgids)
+
+    fresh_msgids: set[str] = set()
+    for row in load_jsonl(FRESH / "pilot-mail.jsonl"):
+        mid = norm_msgid(row.get("message_id_header"))
+        if mid:
+            fresh_msgids.add(mid)
+    for row in load_jsonl(FRESH / "prod-mail.jsonl"):
+        payload = row.get("payload") or {}
+        for key in ("internet_message_id", "message_id_header", "internetMessageId"):
+            mid = norm_msgid(payload.get(key) or row.get(key))
+            if mid:
+                fresh_msgids.add(mid)
+
+    overlap = hall_msgids & fresh_msgids
+    blocked_msgids = msgids | overlap
+    return {
+        "blocked_confirmations": confs,
+        "blocked_message_ids": blocked_msgids,
+        "halloween_fresh_msgid_overlap_n": len(overlap),
+        "halloween_fresh_msgid_overlap": sorted(overlap),
+        "v1_msgid_n": len(msgids),
+        "v1_conf_n": len(confs),
+    }
+
+
+def visible_confs_before_as_of(card: dict) -> set[str]:
+    """Confirmation numbers visible in shown mail/PDF text at or before as_of — never invent from gold."""
+    as_of = card.get("as_of") or ""
+    found: set[str] = set()
+    msgs = [card.get("selected_email") or {}] + list(card.get("context_before") or [])
+    for msg in msgs:
+        ts = msg.get("timestamp") or msg.get("received_at") or ""
+        if ts and as_of and ts > as_of:
+            continue
+        blob = " ".join(
+            str(msg.get(k) or "")
+            for k in ("subject", "body_text", "body")
+        )
+        found.update(CONF_RE.findall(blob))
+        for pdf in msg.get("pdf_attachments_text") or []:
+            pdf_ts = pdf.get("sent_at") or ""
+            if pdf_ts and as_of and pdf_ts > as_of:
+                continue
+            text = str(pdf.get("text") or "") + " " + str(pdf.get("filename") or "")
+            found.update(CONF_RE.findall(text))
+            found.update(CONF_FILE_RE.findall(str(pdf.get("filename") or "")))
+    return found
+
+
+def strip_gold_conf_inputs(card: dict) -> dict:
+    """Rule (b): cross-thread rank2 + earlier PDFs only from confs visible in shown text."""
+    visible = visible_confs_before_as_of(card)
+    gold = card.get("real_confirmation")
+    # Filter PDFs attached to shown messages: drop ones whose conf is only the gold key and not visible.
+    for msg in [card.get("selected_email") or {}] + list(card.get("context_before") or []):
+        kept = []
+        for pdf in msg.get("pdf_attachments_text") or []:
+            name = str(pdf.get("filename") or "")
+            text = str(pdf.get("text") or "")
+            pdf_confs = set(CONF_FILE_RE.findall(name)) | set(CONF_RE.findall(text + " " + name))
+            if not pdf_confs:
+                # unstructured attachment text — keep (not fetched via gold conf key)
+                kept.append(pdf)
+                continue
+            if pdf_confs & visible:
+                kept.append(pdf)
+                continue
+            # PDF only for gold conf that never appears in shown text → drop
+            if gold and pdf_confs <= {gold} and gold not in visible:
+                continue
+            if pdf_confs & visible or not gold:
+                kept.append(pdf)
+        msg["pdf_attachments_text"] = kept
+
+    xt_kept = []
+    for link in card.get("cross_thread_context") or []:
+        matched = link.get("matched_confirmation")
+        rank = link.get("rank")
+        if rank == 2:
+            if matched and matched not in visible:
+                continue
+            if matched is None and gold and gold not in visible:
+                # rank2 without matched conf but fetched via gold — drop
+                continue
+        xt_kept.append(link)
+    card["cross_thread_context"] = xt_kept
+    card["input_confs_visible"] = sorted(visible)
+    card["card_fixes"] = list(card.get("card_fixes") or []) + [
+        "no_gold_conf_input_fetch",
+        "cross_thread_rank2_and_pdfs_from_visible_confs_only",
+    ]
+    return card
+
+
+def card_hits_dev_blocklist(card: dict, blocked_msgids: set[str], blocked_confs: set[str]) -> str | None:
+    """Return reason if case overlaps 200-dev Message-ID or confirmation."""
+    conf = card.get("real_confirmation")
+    if conf and conf in blocked_confs:
+        return f"dev_conf:{conf}"
+    msgs = [card.get("selected_email") or {}] + list(card.get("context_before") or [])
+    for link in card.get("cross_thread_context") or []:
+        msgs.extend(link.get("messages") or [])
+    for msg in msgs:
+        mid = norm_msgid(msg.get("message_id_header") or msg.get("message_id"))
+        if mid and mid in blocked_msgids:
+            return f"dev_msgid:{mid}"
+    return None
+
+
+def gold_row_hits_dev_blocklist(
+    row: dict,
+    blocked_msgids: set[str],
+    blocked_confs: set[str],
+    mail_by_id: dict,
+    threads: dict[str, list[dict]],
+) -> str | None:
+    conf = row.get("real_confirmation")
+    if conf and conf in blocked_confs:
+        return f"dev_conf:{conf}"
+    src = row.get("source") or {}
+    for msg in src.get("messages_as_of_cutoff") or []:
+        mid = norm_msgid(msg.get("message_id_header") or msg.get("message_id"))
+        if mid and mid in blocked_msgids:
+            return f"dev_msgid:{mid}"
+        raw = mail_by_id.get(msg.get("source_row_id") or msg.get("message_id") or "")
+        if raw:
+            mid = norm_msgid(raw.get("message_id_header"))
+            if mid and mid in blocked_msgids:
+                return f"dev_msgid:{mid}"
+    sel_id = src.get("selected_message_id")
+    sel = mail_by_id.get(sel_id or "")
+    tid = (sel or {}).get("thread_id") or src.get("thread_id")
+    for msg in threads.get(tid or "") or []:
+        mid = norm_msgid(msg.get("message_id_header"))
+        if mid and mid in blocked_msgids:
+            return f"dev_msgid:{mid}"
+    return None
+
+
 def parse_pdf_text(text: str) -> dict[str, Any]:
     """Extract confirmation-letter fields from pdftotext."""
     fields: dict[str, Any] = {}
@@ -1036,6 +1249,26 @@ def main() -> None:
     idx.load()
     print(f"[holdout] reads={len(idx.reads)} mail={len(idx.mail_by_id)} pdf_confs={len(idx.pdfs_by_conf)}", flush=True)
 
+    print("[holdout] loading 200-dev / Halloween∩fresh blocklist…", flush=True)
+    block = load_dev_blocklist()
+    blocked_msgids: set[str] = set(block["blocked_message_ids"])
+    blocked_confs: set[str] = set(block["blocked_confirmations"])
+    print(
+        f"[holdout] blocked confs={len(blocked_confs)} msgids={len(blocked_msgids)} "
+        f"halloween∩fresh={block['halloween_fresh_msgid_overlap_n']}",
+        flush=True,
+    )
+    (FRESH / "holdout-dev-blocklist.json").write_text(json.dumps({
+        "halloween_fresh_msgid_overlap_n": block["halloween_fresh_msgid_overlap_n"],
+        "halloween_fresh_msgid_overlap": block["halloween_fresh_msgid_overlap"],
+        "v1_msgid_n": block["v1_msgid_n"],
+        "v1_conf_n": block["v1_conf_n"],
+        "blocked_message_ids_n": len(blocked_msgids),
+        "blocked_confirmations_n": len(blocked_confs),
+        "blocked_confirmations": sorted(blocked_confs),
+        "blocked_message_ids_sample": sorted(blocked_msgids)[:50],
+    }, indent=2))
+
     code_maps = load_code_maps()
     anchors = idx.build_anchors()
     stay360 = idx.build_stay360()
@@ -1043,9 +1276,27 @@ def main() -> None:
 
     print("[holdout] mining candidates…", flush=True)
     buckets = mine_candidates(idx, anchors, code_maps)
-    print({k: len(v) for k, v in buckets.items()}, flush=True)
 
-    selected, shifts = select_mix(buckets, NEED)
+    # Pre-filter gold rows against dev blocklist (Message-ID / confirmation).
+    dropped_pre: list[dict] = []
+    filtered: dict[str, list[dict]] = defaultdict(list)
+    for wf, rows in buckets.items():
+        for row in rows:
+            hit = gold_row_hits_dev_blocklist(
+                row, blocked_msgids, blocked_confs, idx.mail_by_id, idx.threads,
+            )
+            if hit:
+                dropped_pre.append({"case_id": row.get("case_id"), "workflow": wf, "reason": hit, "stage": "pre_build"})
+                continue
+            filtered[wf].append(row)
+    print(
+        f"[holdout] mined={ {k: len(v) for k, v in buckets.items()} } "
+        f"after_dedup={ {k: len(v) for k, v in filtered.items()} } "
+        f"dropped_pre={len(dropped_pre)}",
+        flush=True,
+    )
+
+    selected, shifts = select_mix(filtered, NEED)
     print("[holdout] mix", shifts["final"], "notes", shifts["notes"][:20], flush=True)
 
     if OUT.exists():
@@ -1055,33 +1306,49 @@ def main() -> None:
     built = []
     errors = []
     leaks = []
-    for row in selected:
+    dropped_post: list[dict] = []
+
+    def _accept(row: dict) -> dict | None:
         try:
             card = build_card(row, anchors, stay360, profiles, code_maps)
         except Exception as exc:  # noqa: BLE001
             errors.append({"case_id": row.get("case_id"), "error": str(exc)})
-            continue
+            return None
         if not card["leak_guard"]["ok"]:
             leaks.append({"case_id": card["case_id"], "leaks": card["leak_guard"]["leaks"][:5]})
-            # still keep? fail closed on leak
-            continue
-        # attach quotes / triage meta for graders
+            return None
+        card = strip_gold_conf_inputs(card)
+        # Re-check blocklist on final shown messages (headers may appear only after build).
+        hit = card_hits_dev_blocklist(card, blocked_msgids, blocked_confs)
+        if hit:
+            dropped_post.append({"case_id": card["case_id"], "workflow": card["workflow"], "reason": hit, "stage": "post_build"})
+            return None
         if row.get("quotes"):
             card["quotes"] = row["quotes"]
         if row.get("triage_label"):
             card["triage_label"] = row["triage_label"]
+        return card
+
+    for row in selected:
+        card = _accept(row)
+        if not card:
+            continue
         path = OUT / card["case_id"]
         path.mkdir(parents=True, exist_ok=True)
         (path / "case.json").write_text(json.dumps(card, ensure_ascii=False))
         (path / "case.md").write_text(render_md(card))
         built.append(card)
 
-    # If under 100 due to leaks/errors, try refill from leftover
+    # Refill to 100 from leftover after dedup/leak drops.
     if len(built) < 100:
         used = {c["case_id"] for c in built}
-        used_msg = {(c.get("selected_email") or {}).get("message_id") or (c.get("selected_email") or {}).get("source_row_id") for c in built}
+        used_msg = {
+            (c.get("selected_email") or {}).get("message_id")
+            or (c.get("selected_email") or {}).get("source_row_id")
+            for c in built
+        }
         leftovers = []
-        for wf, rows in buckets.items():
+        for wf, rows in filtered.items():
             for row in rows:
                 if row["case_id"] in used:
                     continue
@@ -1092,18 +1359,9 @@ def main() -> None:
             mid = (row.get("source") or {}).get("selected_message_id")
             if mid and mid in used_msg:
                 continue
-            try:
-                card = build_card(row, anchors, stay360, profiles, code_maps)
-            except Exception as exc:  # noqa: BLE001
-                errors.append({"case_id": row.get("case_id"), "error": str(exc)})
+            card = _accept(row)
+            if not card:
                 continue
-            if not card["leak_guard"]["ok"]:
-                leaks.append({"case_id": card["case_id"], "leaks": card["leak_guard"]["leaks"][:5]})
-                continue
-            if row.get("quotes"):
-                card["quotes"] = row["quotes"]
-            if row.get("triage_label"):
-                card["triage_label"] = row["triage_label"]
             path = OUT / card["case_id"]
             path.mkdir(parents=True, exist_ok=True)
             (path / "case.json").write_text(json.dumps(card, ensure_ascii=False))
@@ -1112,10 +1370,10 @@ def main() -> None:
             used.add(card["case_id"])
             if mid:
                 used_msg.add(mid)
+            shifts["notes"].append(f"refill +1 {card['workflow']} → {card['case_id']}")
 
     def _real_conf(c: str) -> bool:
-        m = re.match(r"^(\d{6,10})-1$", c or "")
-        return bool(m)
+        return bool(re.match(r"^(\d{6,10})-1$", c or ""))
 
     missing = sorted({c for c in idx.missing_reads if _real_conf(c)})
     for conf in sorted(idx.pdfs_by_conf):
@@ -1125,7 +1383,6 @@ def main() -> None:
         if not read_is_usable(read):
             missing.append(conf)
     missing = sorted(set(missing))
-    # Prefer listing ones referenced by selected cases first
     needed_by_cases = sorted({
         c.get("real_confirmation")
         for c in built
@@ -1136,7 +1393,9 @@ def main() -> None:
     missing = needed_by_cases + [c for c in missing if c not in set(needed_by_cases)]
     missing = missing[:200]
 
+    dropped_all = dropped_pre + dropped_post
     by_wf = dict(Counter(c["workflow"] for c in built))
+    shifts["final"] = by_wf
     manifest = {
         "n": len(built),
         "by_workflow": by_wf,
@@ -1148,6 +1407,18 @@ def main() -> None:
         "error_samples": errors[:20],
         "exclusions_n": len(idx.exclusions),
         "exclusion_reasons": dict(Counter(e["reason"] for e in idx.exclusions)),
+        "dev_dedup": {
+            "halloween_fresh_msgid_overlap_n": block["halloween_fresh_msgid_overlap_n"],
+            "blocked_confirmations_n": len(blocked_confs),
+            "blocked_message_ids_n": len(blocked_msgids),
+            "dropped_n": len(dropped_all),
+            "dropped_pre_n": len(dropped_pre),
+            "dropped_post_n": len(dropped_post),
+            "dropped_by_reason": dict(Counter(
+                ("conf" if r["reason"].startswith("dev_conf") else "msgid") for r in dropped_all
+            )),
+            "dropped_samples": dropped_all[:30],
+        },
         "missing_reads_n": len(missing),
         "missing_reads": missing,
         "reads_available": len(idx.reads),
@@ -1161,11 +1432,21 @@ def main() -> None:
             "exclude NAVAAI / Proof Labtest",
             "exclude OTA/channel/automated",
             "holdout never used for tuning",
+            "dedup vs 200-dev Message-ID + confirmation (+ Halloween∩fresh Message-IDs)",
+            "no gold-conf input fetch; rank2/PDFs from visible confs only",
         ],
     }
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    (OUT / "exclusions.jsonl").write_text("\n".join(json.dumps(e) for e in idx.exclusions[:5000]) + ("\n" if idx.exclusions else ""))
-    print(json.dumps({k: manifest[k] for k in ("n", "by_workflow", "shifts", "leaks_rejected", "build_errors", "missing_reads_n", "reads_available")}, indent=2))
+    (OUT / "exclusions.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in idx.exclusions[:5000]) + ("\n" if idx.exclusions else "")
+    )
+    (OUT / "dev-dedup-dropped.jsonl").write_text(
+        "\n".join(json.dumps(e) for e in dropped_all) + ("\n" if dropped_all else "")
+    )
+    print(json.dumps({
+        k: manifest[k]
+        for k in ("n", "by_workflow", "shifts", "leaks_rejected", "build_errors", "dev_dedup", "missing_reads_n", "reads_available")
+    }, indent=2))
 
 
 if __name__ == "__main__":
