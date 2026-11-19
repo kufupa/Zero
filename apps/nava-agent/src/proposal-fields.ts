@@ -40,22 +40,37 @@ export function validChildAges(count: unknown, ages: unknown): boolean {
     && ages.every((age:unknown)=>typeof age==='number' && Number.isInteger(age) && age>=0 && age<=17);
 }
 
-function createChildFields(draft: ProposalDraft): ProposalDraft {
+function createOccupancyFields(draft: ProposalDraft): ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
   const bookings=draft.bookings.map((booking,index)=>{
     const fields={...booking.fields};
     const root=`/bookings/${index}/fields`;
-    // Unknown children stay blank and required: staff must enter them before Prepare/Go (never a silent 0 or []).
-    if(fields.child_count==null) fields.child_count=typeof fields.children==='number' ? fields.children : Array.isArray(fields.child_ages) ? fields.child_ages.length : null;
+    const defaultAdults=fields.adults==null || fields.adults==='';
+    if(defaultAdults) fields.adults=1;
+    let defaultChildren=false;
+    const childPaths=new Set([`${root}/child_count`,`${root}/child_count`.slice(1),`${root}/children`,`${root}/children`.slice(1)]);
+    const childrenMentioned=fieldSpecs.some(spec=>childPaths.has(spec.path) && spec.evidence.length>0);
+    if(fields.child_count==null) {
+      if(typeof fields.children==='number') fields.child_count=fields.children;
+      else if(typeof fields.children==='string' && /^\d+$/.test(fields.children.trim())) fields.child_count=Number(fields.children.trim());
+      else if(Array.isArray(fields.child_ages)) fields.child_count=fields.child_ages.length;
+      else if(fields.children!=null && fields.children!=='') fields.child_count=fields.children;
+      else if(childrenMentioned) fields.child_count=null;
+      else {fields.child_count=0; defaultChildren=true;}
+    }
     if(fields.child_ages==null) fields.child_ages=fields.child_count===0 ? [] : null;
     delete fields.children;
-    for(const [key,label,control] of [['child_count','Children','number'],['child_ages','Child ages','text']] as const) {
+    for(const [key,label,control,defaulted] of [
+      ['adults','Adults','number',defaultAdults], ['child_count','Children','number',defaultChildren],
+      ['child_ages','Child ages','text',defaultChildren],
+    ] as const) {
       const path=`${root}/${key}`;
       const paths=new Set([path,path.slice(1),...(key==='child_count'?[`${root}/children`,`${root}/children`.slice(1)]:[])]);
       const existing=fieldSpecs.findIndex(spec=>paths.has(spec.path));
       const unknown=fields[key]==null;
-      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control,required:true,...(unknown?{provenance:'unknown' as const}:{})};
-      else fieldSpecs.push({path,label,control,editable:true,provenance:'unknown',required:true,error:null,options:[],evidence:[]});
+      if(existing>=0) fieldSpecs[existing]={...fieldSpecs[existing],path,editable:true,control,required:true,
+        ...(defaulted?{provenance:'default' as const,error:null,evidence:[]} : unknown?{provenance:'unknown' as const}:{})};
+      else fieldSpecs.push({path,label,control,editable:true,provenance:defaulted?'default':unknown?'unknown':'ai',required:true,error:null,options:[],evidence:[]});
     }
     return {...booking,fields};
   });
@@ -189,7 +204,7 @@ export function withQuoteStaffFields(draft: ProposalDraft): ProposalDraft {
 
 export function normalizeProposalFields(draft: ProposalDraft): {kind:'valid'; draft:ProposalDraft} | {kind:'invalid'; path:string} {
   if(draft.workflow==='create') {
-    draft=withCreateNativeFields(createChildFields(draft));
+    draft=withCreateNativeFields(createOccupancyFields(draft));
     const fieldSpecs=[...draft.field_specs];
     const bookings=draft.bookings.map((booking,index)=>{
       if(booking.property_code!=='HRCEN') return booking;
