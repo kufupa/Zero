@@ -86,10 +86,17 @@ function normalizeDate(value: unknown): string {
   return raw;
 }
 
+/** Catalogue name ↔ code (HRCEN/HRDAV). Do not cross-wire codes. */
 const GUARANTEE_ALIASES: Record<string, string[]> = {
-  'guaranteed by agent': ['depreq', 'gtdagent', 'agent', 'guaranteedbyagent'],
-  depreq: ['guaranteed by agent', 'gtdagent', 'agent'],
-  'guaranteed by company': ['depco', 'company'],
+  // GTDAGT = Guaranteed By Agent (NOT DEPREQ)
+  'guaranteed by agent': ['gtdagt', 'gtdagent', 'guaranteedbyagent'],
+  gtdagt: ['guaranteed by agent', 'gtdagent', 'guaranteedbyagent'],
+  // DEPREQ = Deposit Requested
+  'deposit requested': ['depreq'],
+  depreq: ['deposit requested'],
+  // GTDCMP = Guaranteed By Company
+  'guaranteed by company': ['gtdcmp', 'guaranteedbycompany'],
+  gtdcmp: ['guaranteed by company', 'guaranteedbycompany'],
   '6pm hold': ['6pm', 'hold', 'non-guaranteed', 'nonguaranteed'],
 };
 
