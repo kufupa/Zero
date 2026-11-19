@@ -204,47 +204,263 @@ def visible_confs_before_as_of(card: dict) -> set[str]:
     return found
 
 
+def is_pdf_attachment(att: dict) -> bool:
+    fn = str(att.get("filename") or att.get("name") or "").lower()
+    mt = str(att.get("mime_type") or att.get("content_type") or "").lower()
+    return fn.endswith(".pdf") or "pdf" in mt
+
+
+def pdf_text_for_attachment(idx: "FreshIndex", att: dict, sent_at: str | None) -> dict | None:
+    """PDF text for a real mail attachment (voucher/rooming list/PO/etc.)."""
+    aid = att.get("id") or att.get("attachment_id")
+    fn = str(att.get("filename") or att.get("name") or "attachment.pdf")
+    text = str(att.get("extracted_text") or "")
+    sha = None
+    meta = idx.pdf_by_att.get(aid) if aid else None
+    if meta:
+        sha = meta.get("sha256")
+        fn = str(meta.get("filename") or fn)
+        sent_at = sent_at or meta.get("sent_at")
+        local = Path(meta.get("local_text") or "")
+        if local.exists():
+            text = local.read_text(errors="ignore")
+    if not text and aid:
+        fallback = FRESH / "pdf-text" / f"{aid}.txt"
+        if fallback.exists():
+            text = fallback.read_text(errors="ignore")
+    if not is_pdf_attachment({"filename": fn, "mime_type": att.get("mime_type")}):
+        return None
+    return {
+        "sent_at": sent_at,
+        "sha256": sha,
+        "filename": fn,
+        "attachment_id": aid,
+        "text": (text or f"[pdf attachment: {fn}]")[:20000],
+        "note": "same_thread_mail_attachment",
+    }
+
+
+def restore_same_thread_mail_pdfs(card: dict, idx: "FreshIndex") -> dict:
+    """Always show selected + earlier same-thread mail PDFs. Drop gold-conf-fetched outsides.
+
+    rebuild_samples.build_card attaches pre-as_of confirmation letters by gold conf key.
+    Those are fine when they actually sit on the thread message; otherwise strip.
+    Voucher / rooming list / PO on the selected email are mail evidence — always keep.
+    """
+    sel = card.get("selected_email") or {}
+    mid = sel.get("message_id") or sel.get("source_row_id")
+    tid = sel.get("thread_id")
+    mail_sel = idx.mail_by_id.get(mid or "") or {}
+    thread_msgs = idx.threads.get(tid or "") or []
+    by_id = {m.get("id"): m for m in thread_msgs}
+
+    def pdfs_on_mail(mrow: dict) -> list[dict]:
+        out: list[dict] = []
+        seen: set[str] = set()
+        for a in mrow.get("attachments") or []:
+            if not is_pdf_attachment(a):
+                continue
+            p = pdf_text_for_attachment(idx, a, mrow.get("received_at") or mrow.get("sent_at"))
+            if not p:
+                continue
+            key = str(p.get("attachment_id") or p.get("sha256") or p.get("filename"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+        return out
+
+    # Selected: own attachments only (never gold-conf fetch from outside this message).
+    sel["pdf_attachments_text"] = pdfs_on_mail(mail_sel)
+    non_pdf = [x for x in (sel.get("attachments_non_pdf") or []) if isinstance(x, dict)]
+    seen_np = {str(x.get("filename") or "") for x in non_pdf}
+    for a in mail_sel.get("attachments") or []:
+        if is_pdf_attachment(a):
+            continue
+        fn = str(a.get("filename") or a.get("name") or "")
+        if not fn or re.search(r"\.(png|jpe?g|gif|webp)$", fn, re.I):
+            continue
+        if fn in seen_np:
+            continue
+        non_pdf.append({"filename": fn, "note": "same_thread_mail_attachment"})
+        seen_np.add(fn)
+    sel["attachments_non_pdf"] = non_pdf
+    card["selected_email"] = sel
+
+    # Earlier same-thread messages: PDFs attached to those messages.
+    for msg in card.get("context_before") or []:
+        mrow = by_id.get(msg.get("message_id") or msg.get("source_row_id") or "")
+        if mrow:
+            msg["pdf_attachments_text"] = pdfs_on_mail(mrow)
+        else:
+            # Drop gold-conf injections; keep only already-tagged mail attachments.
+            msg["pdf_attachments_text"] = [
+                p
+                for p in (msg.get("pdf_attachments_text") or [])
+                if (p.get("note") == "same_thread_mail_attachment")
+                or p.get("attachment_id")
+            ]
+
+    card["card_fixes"] = list(card.get("card_fixes") or []) + [
+        "same_thread_mail_pdfs_always_shown",
+        "gold_conf_pdf_fetch_outside_thread_stripped",
+    ]
+    return card
+
+
 def strip_gold_conf_inputs(card: dict) -> dict:
-    """Rule (b): cross-thread rank2 + earlier PDFs only from confs visible in shown text."""
+    """Rule (b): strip only rank-2 (conf-keyed) cross-thread. Keep ranks 1/3/4 always.
+
+    Same-thread selected/earlier PDFs are mail evidence — never stripped here.
+    Out-of-thread gold-conf PDFs are removed in restore_same_thread_mail_pdfs.
+    """
     visible = visible_confs_before_as_of(card)
     gold = card.get("real_confirmation")
-    # Filter PDFs attached to shown messages: drop ones whose conf is only the gold key and not visible.
-    for msg in [card.get("selected_email") or {}] + list(card.get("context_before") or []):
-        kept = []
-        for pdf in msg.get("pdf_attachments_text") or []:
-            name = str(pdf.get("filename") or "")
-            text = str(pdf.get("text") or "")
-            pdf_confs = set(CONF_FILE_RE.findall(name)) | set(CONF_RE.findall(text + " " + name))
-            if not pdf_confs:
-                # unstructured attachment text — keep (not fetched via gold conf key)
-                kept.append(pdf)
-                continue
-            if pdf_confs & visible:
-                kept.append(pdf)
-                continue
-            # PDF only for gold conf that never appears in shown text → drop
-            if gold and pdf_confs <= {gold} and gold not in visible:
-                continue
-            if pdf_confs & visible or not gold:
-                kept.append(pdf)
-        msg["pdf_attachments_text"] = kept
 
     xt_kept = []
     for link in card.get("cross_thread_context") or []:
-        matched = link.get("matched_confirmation")
         rank = link.get("rank")
+        matched = link.get("matched_confirmation")
         if rank == 2:
             if matched and matched not in visible:
                 continue
             if matched is None and gold and gold not in visible:
-                # rank2 without matched conf but fetched via gold — drop
                 continue
+        # ranks 1 / 3 / 4 never need a confirmation number — keep
         xt_kept.append(link)
     card["cross_thread_context"] = xt_kept
     card["input_confs_visible"] = sorted(visible)
     card["card_fixes"] = list(card.get("card_fixes") or []) + [
         "no_gold_conf_input_fetch",
-        "cross_thread_rank2_and_pdfs_from_visible_confs_only",
+        "cross_thread_rank2_stripped_ranks_134_kept",
+    ]
+    return card
+
+
+def enrich_cross_thread_ranks_134(card: dict, idx: "FreshIndex") -> dict:
+    """Add rank1/3/4 links from fresh mail when pairs.jsonl has no fresh conf coverage.
+
+    Rank1 needs reply headers (often missing in pilot dump). Rank3 = surname+arrival.
+    Rank4 = same sender, other thread. Never adds rank2 (that requires visible conf).
+    """
+    sel = card.get("selected_email") or {}
+    tid = sel.get("thread_id")
+    as_of = card.get("as_of") or ""
+    existing = list(card.get("cross_thread_context") or [])
+    seen = {x.get("thread_id") for x in existing if x.get("thread_id")}
+    if tid:
+        seen.add(tid)
+
+    def msgs_before(thread_id: str) -> list[dict]:
+        out = []
+        for m in idx.threads.get(thread_id) or []:
+            ts = m.get("received_at") or m.get("sent_at") or ""
+            if not ts or (as_of and ts > as_of):
+                continue
+            body, _ = strip_images(m.get("text_body") or "")
+            out.append({
+                "timestamp": ts,
+                "direction": m.get("direction"),
+                "subject": m.get("subject"),
+                "body": body[:8000],
+                "body_text": body[:8000],
+                "from": m.get("from_address"),
+            })
+        return out[:20]
+
+    # Rank 1: In-Reply-To / References → other-thread messages
+    headers = " ".join(
+        str(sel.get(k) or "") for k in ("in_reply_to", "references", "message_id_header")
+    )
+    want_ids = {norm_msgid(x) for x in re.findall(r"<[^>]+>|[^\s<>]+@[^\s<>]+", headers)}
+    want_ids.discard(None)
+    if want_ids:
+        for other_tid, msgs in idx.threads.items():
+            if other_tid in seen:
+                continue
+            hit_msgs = []
+            for m in msgs:
+                midh = norm_msgid(m.get("message_id_header"))
+                if midh and midh in want_ids:
+                    hit_msgs = msgs_before(other_tid)
+                    break
+            if hit_msgs:
+                existing.append({
+                    "thread_id": other_tid,
+                    "rank": 1,
+                    "reason": "reply_header",
+                    "matched_confirmation": None,
+                    "messages": hit_msgs,
+                })
+                seen.add(other_tid)
+
+    # Rank 3: surname + arrival date both in other-thread text
+    blob = " ".join(
+        str(sel.get(k) or "") for k in ("subject", "body_text", "body")
+    )
+    for pdf in sel.get("pdf_attachments_text") or []:
+        blob += " " + str(pdf.get("text") or "") + " " + str(pdf.get("filename") or "")
+    arrivals = re.findall(r"\b(20\d{2}-\d{2}-\d{2})\b", blob)
+    # crude surname: last Capitalized token before arrival / from guest patterns
+    surnames = re.findall(
+        r"\b([A-Z][a-zÀ-ÿ]{2,})(?:\s*,\s*[A-Z]|[\s_]+(?:Mr|Mrs|Ms|Dr)\b)",
+        blob,
+    )
+    if not surnames:
+        surnames = re.findall(r"(?:Vch|Voucher|Guest)[^\n]{0,40}?([A-Z][a-zÀ-ÿ]{2,})", blob)
+    arrival = arrivals[0] if arrivals else None
+    surname = surnames[0] if surnames else None
+    if surname and arrival:
+        for other_tid, msgs in idx.threads.items():
+            if other_tid in seen:
+                continue
+            joined = " ".join(
+                (m.get("subject") or "") + " " + (m.get("text_body") or "")[:2000]
+                for m in msgs
+                if (m.get("received_at") or "") <= as_of
+            )
+            if surname in joined and arrival in joined:
+                hit = msgs_before(other_tid)
+                if hit:
+                    existing.append({
+                        "thread_id": other_tid,
+                        "rank": 3,
+                        "reason": "surname_arrival",
+                        "matched_confirmation": None,
+                        "messages": hit,
+                    })
+                    seen.add(other_tid)
+                    if sum(1 for x in existing if x.get("rank") == 3) >= 3:
+                        break
+
+    # Rank 4: same sender, other thread (weak)
+    fr = str(sel.get("from") or "").lower().strip()
+    if fr and "@" in fr:
+        n4 = 0
+        for other_tid, msgs in idx.threads.items():
+            if other_tid in seen:
+                continue
+            if not any(str(m.get("from_address") or "").lower() == fr for m in msgs):
+                continue
+            hit = msgs_before(other_tid)
+            if not hit:
+                continue
+            existing.append({
+                "thread_id": other_tid,
+                "rank": 4,
+                "reason": "same_sender",
+                "matched_confirmation": None,
+                "messages": hit,
+            })
+            seen.add(other_tid)
+            n4 += 1
+            if n4 >= 3:
+                break
+
+    existing.sort(key=lambda x: (x.get("rank") or 99, x.get("thread_id") or ""))
+    card["cross_thread_context"] = existing[:12]
+    card["card_fixes"] = list(card.get("card_fixes") or []) + [
+        "cross_thread_ranks_134_from_fresh_mail",
     ]
     return card
 
@@ -1500,6 +1716,9 @@ def main() -> None:
         if not card["leak_guard"]["ok"]:
             leaks.append({"case_id": card["case_id"], "leaks": card["leak_guard"]["leaks"][:5]})
             return None
+        # Own/thread PDFs first; ranks 1/3/4 next; only then strip rank2 / out-of-thread gold-conf PDFs.
+        card = restore_same_thread_mail_pdfs(card, idx)
+        card = enrich_cross_thread_ranks_134(card, idx)
         card = strip_gold_conf_inputs(card)
         # Re-check blocklist on final shown messages (headers may appear only after build).
         hit = card_hits_dev_blocklist(card, blocked_msgids, blocked_confs)
@@ -1641,7 +1860,7 @@ def main() -> None:
             "exclude OTA/channel/automated",
             "holdout never used for tuning",
             "dedup vs 200-dev Message-ID + confirmation (+ Halloween∩fresh Message-IDs)",
-            "no gold-conf input fetch; rank2/PDFs from visible confs only",
+            "same-thread mail PDFs always shown; strip only rank2 + out-of-thread gold-conf PDFs; keep ranks 1/3/4",
             "amend/cancel 6-week window from 8 Oct; bookings may predate window",
             "filing capped at 12; prefer HMS doc after as_of",
             "no weak pad — freeze real counts; fill remainder with create/quote/triage only",
