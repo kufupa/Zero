@@ -20,7 +20,16 @@ export async function readRecordViewFromStay360(page, confirmation, options = {}
   });
   const button = stay.locator('a.gs-header-btn:visible').filter({ has: page.locator('.gs-stay-icon') });
   if (await stay.count() !== 1 || await button.count() !== 1) throw new Error('STAY_BUTTON_NOT_UNIQUE');
-  // Ghost Ext loadmasks after confirmation select intercept normal clicks; force opens Record View.
+  // After confirmation select, Ext often leaves a full-page "Processing request." mask with
+  // Ajax idle. That ghost mask blocks the Stay header handler; clear it, then force-click.
+  await page.evaluate(() => {
+    if (globalThis.Ext?.Ajax?.isLoading?.()) return;
+    for (const mask of document.querySelectorAll('.x-mask, .x-mask-msg, .x-loadmask')) {
+      mask.style.setProperty('display', 'none', 'important');
+      mask.style.setProperty('visibility', 'hidden', 'important');
+      mask.style.setProperty('pointer-events', 'none', 'important');
+    }
+  });
   await button.click({ force: true });
 
   const started = Date.now();
