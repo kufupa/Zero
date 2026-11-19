@@ -73,7 +73,19 @@ POP_RE = re.compile(
   r"\b(?:proof\s+of\s+payment|\bpop\b|payment\s+proof|remittance|eft\s+proof|payment\s+notification)\b",
   re.I,
 )
-VOUCHER_RE = re.compile(r"\b(?:vouch(?:er|ers)?|vch[_-]|booking\s+voucher)\b", re.I)
+VOUCHER_RE = re.compile(
+  r"(?:\bvouch(?:er|ers)?\b|\bvch[_-]|booking\s+voucher)",
+  re.I,
+)
+# Hotel-generated confirmation/proforma — never filing attachment gold.
+# Derived from naming patterns (property mailbox letters), not a hard-coded property code.
+HOTEL_GENERATED_PDF_RE = re.compile(
+  r"Confirmation[_\s-]?Letter|"
+  r"Pro[\s-]?forma|"
+  r"(?:^|[_\s-])[A-Z]{3,6}_Confirmation|"
+  r"amended\s+confirmation\s+letter",
+  re.I,
+)
 CONF_RE = re.compile(r"(\d{6,10}-\d)")
 ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 DMY_RE = re.compile(
@@ -799,13 +811,36 @@ class GoldBuilder:
       self.stats[f"create_email_hms_conflict:{leaf(path)}"] += 1
 
 
+def is_hotel_generated_pdf(filename: str, text: str = "") -> bool:
+  """True for property confirmation-letter / proforma PDFs (not guest voucher/POP)."""
+  fn = filename or ""
+  if HOTEL_GENERATED_PDF_RE.search(fn):
+    return True
+  # Text fallback when filename is generic but body is a hotel letterhead.
+  head = (text or "")[:800]
+  if re.search(r"confirmation\s+letter", head, re.I) and re.search(
+    r"confirmation\s*(?:no|number|#)|reservation\s+confirmation",
+    head,
+    re.I,
+  ):
+    return True
+  return False
+
+
 def pick_filing_attachment(card: dict) -> tuple[str | None, str, str, str]:
-  """Return (attachment_id, doc_type, source, basis). Prefer voucher/POP PDF."""
+  """Return (attachment_id, doc_type, source, basis). Guest voucher/POP only — never hotel letter."""
   se = card.get("selected_email") or {}
   pdfs = se.get("pdf_attachments_text") or [] if isinstance(se, dict) else []
   pdfs = [p for p in pdfs if isinstance(p, dict)]
   if not pdfs:
-    return None, "voucher_submission", "heuristic", "no_selected_pdf"
+    return None, "voucher_submission", "heuristic", "no_guest_pdf_in_input"
+
+  guest_pdfs = [
+    p for p in pdfs
+    if not is_hotel_generated_pdf(str(p.get("filename") or ""), str(p.get("text") or ""))
+  ]
+  if not guest_pdfs:
+    return None, "voucher_submission", "heuristic", "no_guest_pdf_in_input"
 
   def score(p: dict) -> tuple[int, str, str]:
     fn = str(p.get("filename") or "")
@@ -819,21 +854,52 @@ def pick_filing_attachment(card: dict) -> tuple[str | None, str, str, str]:
       return 80, "voucher_submission", "email_explicit"
     if VOUCHER_RE.search(blob):
       return 70, "voucher_submission", "heuristic"
-    # hotel confirmation letter is not the voucher/POP itself
-    if re.search(r"confirmation\s*letter|HRCEN_Confirmation", fn, re.I):
-      return 10, "voucher_submission", "heuristic"
     return 40, "voucher_submission", "heuristic"
 
-  ranked = sorted(((score(p), p) for p in pdfs), key=lambda x: -x[0][0])
+  ranked = sorted(((score(p), p) for p in guest_pdfs), key=lambda x: -x[0][0])
   (sc, doc_type, source), best = ranked[0]
   att_id = best.get("attachment_id")
   if not att_id:
-    # fall back to index placeholder only if truly missing
+    # fall back to index among selected_email pdfs (stable for scorer)
     idx = pdfs.index(best)
     att_id = f"pdf-{idx}"
     source = "heuristic"
   basis = f"selected_pdf:{best.get('filename') or 'unnamed'}"
   return str(att_id), doc_type, source, basis
+
+
+def email_named_confs(card: dict) -> list[str]:
+  """Confirmation numbers named in email subject/body/attachment filenames+text (pre-as_of)."""
+  found: list[str] = []
+  seen: set[str] = set()
+  for msg in iter_mail_msgs(card):
+    parts = [str(msg.get("subject") or ""), str(msg.get("body_text") or msg.get("body") or "")]
+    for pdf in msg.get("pdf_attachments_text") or []:
+      if isinstance(pdf, dict):
+        parts.append(str(pdf.get("filename") or ""))
+        parts.append(str(pdf.get("text") or "")[:3000])
+    for conf in CONF_RE.findall("\n".join(parts)):
+      if conf not in seen:
+        seen.add(conf)
+        found.append(conf)
+  return found
+
+
+def multi_stay_bookings(card: dict, primary: str | None) -> list[dict]:
+  """Bookings for amend/cancel: every stay the email names (≥2), else group_bookings, else primary."""
+  email_confs = email_named_confs(card)
+  if len(email_confs) >= 2:
+    ordered: list[str] = []
+    if primary and primary in email_confs:
+      ordered.append(primary)
+    for conf in email_confs:
+      if conf not in ordered:
+        ordered.append(conf)
+    return [{"confirmation": c} for c in ordered]
+  group = list(card.get("group_bookings") or [])
+  if group:
+    return sorted(group, key=lambda x: 0 if (x.get("confirmation") == primary) else 1)
+  return [{"confirmation": primary}]
 
 
 def read_after_as_of(read_at: str | None, as_of: str | None) -> bool:
@@ -1218,10 +1284,11 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
   fields, src, read_at = hms_truth_for(conf, card)
   h_first, h_last = names_from_hms(fields)
 
-  bookings = list(card.get("group_bookings") or [])
-  if not bookings:
-    bookings = [{"confirmation": conf}]
-  bookings = sorted(bookings, key=lambda x: 0 if (x.get("confirmation") == conf) else 1)
+  bookings = multi_stay_bookings(card, conf)
+  if len(bookings) > 1:
+    b.notes.append(f"multi_stay_n={len(bookings)}")
+    b.stats["amend_multi_stay_cases"] += 1
+    b.stats["amend_multi_stay_bookings"] += len(bookings)
 
   for n, booking in enumerate(bookings):
     bconf = booking.get("confirmation") or conf
@@ -1230,8 +1297,8 @@ def build_amend(card: dict, wf: str, b: GoldBuilder) -> None:
         f"/bookings/{n}/reservation_id",
         "expected",
         value=bconf,
-        basis="reviewed_confirmation",
-        source="email_explicit" if CONF_RE.search(blob or "") else "hms_truth",
+        basis="reviewed_confirmation_multi" if len(bookings) > 1 else "reviewed_confirmation",
+        source="email_explicit",
         hms_key="confirmationnumber",
       )
 
@@ -1431,21 +1498,26 @@ def build_cancel(card: dict, wf: str, b: GoldBuilder) -> None:
   if cid in KNOWN_CANCEL_CONF:
     b.notes.append(f"fixed_cancel_conf:{KNOWN_CANCEL_CONF[cid]}")
   blob = mail_blob(card)
-  bookings = list(card.get("group_bookings") or [])
-  if not bookings:
-    bookings = [{"confirmation": conf}]
+  bookings = multi_stay_bookings(card, conf)
+  # Known single-conf fix overrides a wrong primary, but keep other email-named stays.
+  if cid in KNOWN_CANCEL_CONF:
+    fix = KNOWN_CANCEL_CONF[cid]
+    bookings = [{"confirmation": fix}] + [
+      bkg for bkg in bookings if (bkg.get("confirmation") or "") not in {fix, conf}
+    ]
+  if len(bookings) > 1:
+    b.notes.append(f"multi_stay_n={len(bookings)}")
+    b.stats["cancel_multi_stay_cases"] += 1
+    b.stats["cancel_multi_stay_bookings"] += len(bookings)
   for n, booking in enumerate(bookings):
     bconf = booking.get("confirmation") or conf
-    # for known fix, override booking 0
-    if n == 0 and cid in KNOWN_CANCEL_CONF:
-      bconf = KNOWN_CANCEL_CONF[cid]
     if bconf:
       b.add(
         f"/bookings/{n}/reservation_id",
         "expected",
         value=bconf,
-        basis="cancel_target_confirmation",
-        source="email_explicit" if (cid in KNOWN_CANCEL_CONF or CONF_RE.search(blob)) else "hms_truth",
+        basis="cancel_target_confirmation_multi" if len(bookings) > 1 else "cancel_target_confirmation",
+        source="email_explicit",
         hms_key="confirmationnumber",
       )
   if CANCEL_REASON_RE.search(blob):
@@ -1465,7 +1537,23 @@ def build_cancel(card: dict, wf: str, b: GoldBuilder) -> None:
 def build_filing(card: dict, wf: str, b: GoldBuilder) -> None:
   conf = card.get("real_confirmation")
   att_id, doc_type, source, basis = pick_filing_attachment(card)
-  if att_id:
+  if basis == "no_guest_pdf_in_input" or not att_id:
+    b.add(
+      "/actions/0/details/attachment_id",
+      "no_gold",
+      basis="no_guest_pdf_in_input",
+      source="heuristic",
+    )
+    b.add(
+      "/actions/0/type",
+      "no_gold",
+      basis="no_guest_pdf_in_input",
+      source="heuristic",
+      tier=TIER_PARITY,
+      priority="P1",
+    )
+    b.stats["filing_no_guest_pdf"] += 1
+  else:
     b.add(
       "/actions/0/details/attachment_id",
       "expected",
@@ -1473,15 +1561,16 @@ def build_filing(card: dict, wf: str, b: GoldBuilder) -> None:
       basis=basis,
       source=source if att_id and not str(att_id).startswith("pdf-") else "heuristic",
     )
-  b.add(
-    "/actions/0/type",
-    "expected",
-    value=doc_type,
-    basis=f"filing_doc_type:{doc_type}",
-    source=source,
-    tier=TIER_PARITY,
-    priority="P1",
-  )
+    b.add(
+      "/actions/0/type",
+      "expected",
+      value=doc_type,
+      basis=f"filing_doc_type:{doc_type}",
+      source=source,
+      tier=TIER_PARITY,
+      priority="P1",
+    )
+    b.stats["filing_guest_pdf"] += 1
   if conf:
     b.add(
       "/bookings/0/fields/confirmation_number",
@@ -1818,6 +1907,11 @@ def build_set(name: str) -> dict:
       "amend_hms_only_demoted_rows": rule_stats.get("amend_hms_only_demoted", 0),
       "amend_surname_only_cases": rule_stats.get("amend_surname_only", 0),
       "amend_impossible_dates_demoted": rule_stats.get("amend_impossible_dates_demoted", 0),
+      "amend_multi_stay_cases": rule_stats.get("amend_multi_stay_cases", 0),
+      "amend_multi_stay_bookings": rule_stats.get("amend_multi_stay_bookings", 0),
+      "cancel_multi_stay_cases": rule_stats.get("cancel_multi_stay_cases", 0),
+      "filing_guest_pdf": rule_stats.get("filing_guest_pdf", 0),
+      "filing_no_guest_pdf": rule_stats.get("filing_no_guest_pdf", 0),
       "holdout_v3_copied_from_holdout_v2": copied_from_hv2,
     },
     "truth_sources": {
@@ -1833,6 +1927,8 @@ def build_set(name: str) -> dict:
       "amend_email_only_expected_after_values",
       "amend_impossible_stay_window_no_gold",
       "amend_surname_only_dates_no_gold",
+      "multi_stay_reservation_ids_from_email",
+      "filing_hotel_pdf_never_attachment_gold",
       "holdout_v3_copy_shared_ids_from_holdout_v2",
     ],
   }
