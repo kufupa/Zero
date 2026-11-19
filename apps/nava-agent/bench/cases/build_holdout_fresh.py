@@ -1966,5 +1966,189 @@ def main() -> None:
     }, indent=2))
 
 
+def refresh_gold_frozen() -> None:
+    """Rebuild gold/HMS for the FROZEN 100 case ids only. No set rebuild, no queue rewrite."""
+    freeze_path = OUT / "FROZEN.json"
+    if not freeze_path.exists():
+        raise SystemExit(f"missing {freeze_path}; refuse to refresh without freeze lock")
+    freeze = json.loads(freeze_path.read_text())
+    case_ids = list(freeze.get("case_ids") or [])
+    if len(case_ids) != 100:
+        raise SystemExit(f"FROZEN.json has {len(case_ids)} case_ids; want 100")
+
+    print("[holdout] GOLD REFRESH only — frozen set, no mine/select/queue", flush=True)
+    idx = FreshIndex()
+    idx.load()
+    print(f"[holdout] reads={len(idx.reads)} mail={len(idx.mail_by_id)} pdf_confs={len(idx.pdfs_by_conf)}", flush=True)
+    code_maps = load_code_maps()
+    anchors = idx.build_anchors()
+    stay360 = idx.build_stay360()
+    profiles: list = []
+
+    built: list[dict] = []
+    errors: list[dict] = []
+    leaks: list[dict] = []
+    upgraded = 0
+
+    for cid in case_ids:
+        path = OUT / cid / "case.json"
+        if not path.exists():
+            errors.append({"case_id": cid, "error": "missing_case_json"})
+            continue
+        old = json.loads(path.read_text())
+        wf = old.get("workflow")
+        conf = old.get("real_confirmation")
+        sel = old.get("selected_email") or {}
+        mid = sel.get("message_id") or sel.get("source_row_id")
+        selected = idx.mail_by_id.get(mid or "")
+        if not selected:
+            # Fall back to synthesizing a minimal mail row from the frozen selected_email.
+            selected = {
+                "id": mid,
+                "thread_id": sel.get("thread_id"),
+                "direction": sel.get("direction") or "inbound",
+                "subject": sel.get("subject"),
+                "text_body": sel.get("body_text") or sel.get("body") or "",
+                "from_address": sel.get("from"),
+                "received_at": sel.get("received_at") or sel.get("timestamp") or old.get("as_of"),
+                "sent_at": sel.get("timestamp") or old.get("as_of"),
+                "message_id_header": sel.get("message_id_header"),
+                "attachments": [],
+            }
+        tid = selected.get("thread_id") or sel.get("thread_id")
+        thread_msgs = list(idx.threads.get(tid or "") or [])
+        if not thread_msgs:
+            thread_msgs = [selected]
+
+        # Reconstruct amendment / filing hints from prior gold when possible.
+        amendment = None
+        if wf == "amend":
+            changes: dict[str, Any] = {}
+            for g in old.get("gold") or []:
+                if g.get("expectation") != "expected":
+                    continue
+                p = g.get("path") or ""
+                if p.endswith("/arrival_date"):
+                    changes["arrival_date"] = {"after": g.get("value")}
+                if p.endswith("/departure_date"):
+                    changes["departure_date"] = {"after": g.get("value")}
+            if changes:
+                amendment = {"changes": changes}
+
+        filing_attachment = None
+        if wf == "filing":
+            for a in selected.get("attachments") or []:
+                if is_pdf_attachment(a):
+                    filing_attachment = {
+                        "filename": a.get("filename") or a.get("name"),
+                        "attachment_id": a.get("id"),
+                    }
+                    break
+            if not filing_attachment:
+                for pdf in sel.get("pdf_attachments_text") or []:
+                    filing_attachment = {
+                        "filename": pdf.get("filename"),
+                        "attachment_id": pdf.get("attachment_id"),
+                    }
+                    break
+
+        prev_prov = ((old.get("hms_raw") or {}).get("later_hms_from_gold") or {}).get("provenance")
+        row = make_gold_row(
+            workflow=wf,
+            case_id=cid,
+            conf=conf,
+            selected=selected,
+            thread_msgs=thread_msgs,
+            anchors=anchors,
+            code_maps=code_maps,
+            amendment=amendment,
+            filing_attachment=filing_attachment,
+            evidence_limits=list(old.get("evidence_limits") or ["holdout_fresh", "gold_refresh"]),
+            triage_meta=old.get("triage_label"),
+        )
+        if old.get("quotes"):
+            row["quotes"] = old["quotes"]
+
+        try:
+            card = build_card(row, anchors, stay360, profiles, code_maps)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"case_id": cid, "error": str(exc)})
+            continue
+        if not card["leak_guard"]["ok"]:
+            # Keep prior card rather than drop a frozen case.
+            leaks.append({"case_id": cid, "leaks": card["leak_guard"]["leaks"][:5]})
+            built.append(old)
+            continue
+
+        card["case_id"] = cid
+        card["workflow"] = wf
+        card = restore_same_thread_mail_pdfs(card, idx)
+        card = enrich_cross_thread_ranks_134(card, idx)
+        card = strip_gold_conf_inputs(card)
+        if old.get("quotes"):
+            card["quotes"] = old["quotes"]
+        if old.get("triage_label"):
+            card["triage_label"] = old["triage_label"]
+
+        new_prov = ((card.get("hms_raw") or {}).get("later_hms_from_gold") or {}).get("provenance")
+        if prev_prov != new_prov and "live HMS" in str(new_prov or ""):
+            upgraded += 1
+
+        (OUT / cid / "case.json").write_text(json.dumps(card, ensure_ascii=False))
+        (OUT / cid / "case.md").write_text(render_md(card))
+        built.append(card)
+
+    # Gold quality recount — do NOT rewrite queue-holdout.json
+    gold_quality: dict[str, dict[str, int]] = {}
+    for card in built:
+        wf = card["workflow"]
+        gold_quality.setdefault(wf, {"real_hms": 0, "stub_or_pdf_only": 0, "no_conf": 0})
+        conf = card.get("real_confirmation")
+        if not conf:
+            gold_quality[wf]["no_conf"] += 1
+        elif read_is_usable(idx.reads.get(conf)):
+            gold_quality[wf]["real_hms"] += 1
+        else:
+            gold_quality[wf]["stub_or_pdf_only"] += 1
+
+    by_wf = dict(Counter(c["workflow"] for c in built))
+    from datetime import datetime, timezone
+    manifest = {
+        "n": len(built),
+        "by_workflow": by_wf,
+        "mode": "gold_refresh_frozen",
+        "frozen": True,
+        "refreshed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "gold_upgraded_to_live_hms": upgraded,
+        "build_errors": len(errors),
+        "error_samples": errors[:20],
+        "leaks_kept_prior": len(leaks),
+        "leak_samples": leaks[:10],
+        "gold_quality_by_workflow": gold_quality,
+        "reads_available": len(idx.reads),
+        "queue_holdout": "UNTOUCHED",
+        "rules": [
+            "FROZEN set — no mine/select",
+            "no queue-holdout.json rewrite",
+            "gold/HMS refreshed from reads-all only",
+        ],
+    }
+    (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    # Keep FROZEN.json intact
+    freeze["last_gold_refresh_at"] = manifest["refreshed_at"]
+    freeze["gold_quality_by_workflow"] = gold_quality
+    freeze_path.write_text(json.dumps(freeze, indent=2))
+    print(json.dumps(manifest, indent=2))
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] in ("refresh-gold", "gold-refresh", "--refresh-gold"):
+        refresh_gold_frozen()
+    else:
+        # Full rebuild is locked once FROZEN.json exists — refuse unless --force-rebuild.
+        if (OUT / "FROZEN.json").exists() and "--force-rebuild" not in sys.argv:
+            raise SystemExit(
+                "holdout-fresh is FROZEN (FROZEN.json). "
+                "Use: python3 build_holdout_fresh.py refresh-gold"
+            )
+        main()
