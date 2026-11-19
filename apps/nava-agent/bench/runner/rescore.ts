@@ -5,6 +5,7 @@ import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import type {CaseCard} from '../types.js';
 import {buildScoreboard, scoreCase, type CaseScore} from './score.js';
+import {applyGoldV4, loadGoldV4} from './gold-overlay.js';
 
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
@@ -16,6 +17,7 @@ export async function rescoreRun(options: {
   const casesDir = options.casesDir ?? join(DATA_ROOT, 'cases/v1');
   const outDir = options.outDir ?? join(options.runDir, 'rescored');
   await mkdir(outDir, {recursive: true});
+  const goldV4 = await loadGoldV4(casesDir);
   const skip = new Set(['scoreboard.json', 'scoreboard-dev.json', 'scoreboard-holdout.json', 'split.json', 'tier-report.json']);
   const entries = (await readdir(options.runDir)).filter(name => name.endsWith('.json') && !skip.has(name));
   const scores: CaseScore[] = [];
@@ -29,6 +31,7 @@ export async function rescoreRun(options: {
     } catch {
       continue;
     }
+    if (goldV4) card = applyGoldV4(card, goldV4[caseId]);
     cards.push(card);
     const toolCalls = (prior.tool_quality?.calls ?? []).map(call => ({
       name: call.name,
