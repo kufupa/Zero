@@ -1,0 +1,208 @@
+{
+  "rule": "Gold workflow flips ONLY on post-as_of staff evidence (HMS confirmation letter for guest, or outbound quote). Else keep other_request/triage. Never flip from Luna route or route_from_email.",
+  "source_run_misses": "run-2026-11-19T08-35-06-901Z/rescored (11 triage routing misses)",
+  "flipped_with_evidence": 8,
+  "stayed_triage_no_evidence": 3,
+  "in_current_v1": [
+    "hall-quote-decision16630f85",
+    "hall-quote-decisiondcd82644",
+    "hall-quote-decisioneea2b210"
+  ],
+  "cases": [
+    {
+      "decision_suffix": "ac6bc727",
+      "decision_id": "decision:ac6bc727-ff74-4673-8237-d8ae30a53d94",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:19554681-1",
+      "booking": {
+        "conf": "19554681-1",
+        "guest": "Tsalong, Captain Lt Col T.S.",
+        "sent_at": "2026-07-29T13:45:00.000Z",
+        "arrival": "Sun 02-AUG-2026",
+        "dep": "Fri 07-AUG-2026",
+        "status": "Checked Out",
+        "company": "SANDF",
+        "ta1": "",
+        "match": [
+          "tsalong"
+        ]
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "16630f85",
+      "decision_id": "decision:16630f85-8fcc-4963-81ff-e55710b172b6",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:60284470-1",
+      "booking": {
+        "conf": "60284470-1",
+        "guest": "WTSA260904JE, .",
+        "sent_at": "2026-08-20T07:01:30.000Z",
+        "arrival": "Wed 09-SEP-2026",
+        "ta1": "WTA Travel"
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "dcd82644",
+      "decision_id": "decision:dcd82644-aa51-4748-ba01-b1874821605e",
+      "luna_routed": "quote",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:81475769-1",
+      "booking": {
+        "conf": "81475769-1",
+        "guest": "Ogwime, Mr Ben",
+        "sent_at": "2026-08-12T09:01:38.000Z",
+        "arrival": "Wed 12-AUG-2026",
+        "dep": "Fri 14-AUG-2026 11:00",
+        "status": "Checked Out",
+        "company": "Camosa",
+        "ta1": "",
+        "match": [
+          "ben"
+        ]
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "550ee9cd",
+      "decision_id": "decision:550ee9cd-1a2f-4698-be4b-65713d40cbf0",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:11633027-1",
+      "booking": {
+        "conf": "11633027-1",
+        "guest": "Dykes, Mr Tertius",
+        "sent_at": "2026-08-19T11:42:11.000Z",
+        "arrival": "Tue 25-AUG-2026",
+        "dep": "Thu 27-AUG-2026 11:00",
+        "status": "Checked Out",
+        "company": "Blue Turtle Technologies",
+        "ta1": "",
+        "match": [
+          "dykes"
+        ]
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "2cd09df5",
+      "decision_id": "decision:2cd09df5-10ec-4811-b624-4f6e7b425758",
+      "luna_routed": "create",
+      "gold_workflow": "triage",
+      "gold_basis": "no_post_as_of_staff_action",
+      "evidence_path": null,
+      "booking": null,
+      "quote": null
+    },
+    {
+      "decision_suffix": "88f3e54e",
+      "decision_id": "decision:88f3e54e-7a65-44c6-ad88-d21024d81391",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:19239489-1",
+      "booking": {
+        "conf": "19239489-1",
+        "guest": "Thoka, Mr Matome",
+        "sent_at": "2026-07-28T11:21:39.000Z",
+        "arrival": "Thu 30-JUL-2026",
+        "dep": "Fri 31-JUL-2026 11:00",
+        "status": "Checked Out",
+        "company": "Dangote Cement t/a Sephaku Cement",
+        "ta1": "Grayston Travel",
+        "match": [
+          "thoka"
+        ]
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "ae2537b2",
+      "decision_id": "decision:ae2537b2-b1c7-4dc9-adc6-74b286fbbc25",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:33387876-1",
+      "booking": {
+        "conf": "33387876-1",
+        "guest": "Mogale, Mr Koena",
+        "sent_at": "2026-08-21T15:21:43.000Z",
+        "arrival": "Tue 25-AUG-2026",
+        "dep": "Thu 27-AUG-2026 11:00",
+        "status": "Checked Out",
+        "company": "Department of Treasury",
+        "ta1": "Afrikan Native Travel",
+        "match": [
+          "mogale"
+        ]
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "530ffb43",
+      "decision_id": "decision:530ffb43-b583-4f90-ad4e-d826f2007a9f",
+      "luna_routed": "triage",
+      "gold_workflow": "triage",
+      "gold_basis": "no_post_as_of_staff_action",
+      "evidence_path": null,
+      "booking": null,
+      "quote": null
+    },
+    {
+      "decision_suffix": "b52c60e5",
+      "decision_id": "decision:b52c60e5-f81d-4a3d-ae53-ce51de8999d4",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:86697402-1",
+      "booking": {
+        "conf": "86697402-1",
+        "guest": "Basara, Mr Aurelien Bahemuka",
+        "sent_at": "2026-08-13T12:44:43.000Z",
+        "arrival": "Mon 07-SEP-2026",
+        "dep": "Sat 12-SEP-2026 11:00",
+        "status": "No Show",
+        "company": "Tollink",
+        "ta1": "",
+        "match": [
+          "basara"
+        ]
+      },
+      "quote": null
+    },
+    {
+      "decision_suffix": "eea2b210",
+      "decision_id": "decision:eea2b210-9176-48fc-85fe-fc335530695e",
+      "luna_routed": "quote",
+      "gold_workflow": "triage",
+      "gold_basis": "no_post_as_of_staff_action",
+      "evidence_path": null,
+      "booking": null,
+      "quote": null
+    },
+    {
+      "decision_suffix": "691b652b",
+      "decision_id": "decision:691b652b-3251-4678-9a85-97b292b680f4",
+      "luna_routed": "create",
+      "gold_workflow": "create",
+      "gold_basis": "post_as_of_hms_confirmation_letter",
+      "evidence_path": "world/anchors.jsonl:68350325-1",
+      "booking": {
+        "conf": "68350325-1",
+        "guest": "Pretorius, Mr Carl",
+        "sent_at": "2026-08-14T09:03:22.000Z",
+        "arrival": "Tue 25-AUG-2026",
+        "dep": "Fri 28-AUG-2026",
+        "company": "Amoeba TSC"
+      },
+      "quote": null
+    }
+  ]
+}
