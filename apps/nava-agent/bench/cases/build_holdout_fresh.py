@@ -71,8 +71,10 @@ TRIAGE_HINT_RE = re.compile(
     re.I,
 )
 
-# Target mix — shift reported in manifest when data short.
-NEED = {"create": 25, "amend": 15, "cancel": 15, "filing": 10, "quote": 20, "triage": 15}
+# Target mix — Amend/Cancel may use 6-week window (from 8 Oct). No weak pad.
+NEED = {"create": 23, "amend": 15, "cancel": 15, "filing": 12, "quote": 20, "triage": 15}  # sums to 100
+AMEND_CANCEL_START = "2026-10-08T00:00:00.000Z"  # 6-week window
+FRESH_START = "2026-10-29T00:00:00.000Z"  # create/quote/filing/triage stay in 3-week fresh window
 
 AZURE_BASE = (os.environ.get("AZURE_OPENAI_BASE_URL") or "https://nava.openai.azure.com/openai/v1").rstrip("/")
 AZURE_KEY = os.environ.get("AZURE_FOUNDRY_API_KEY") or os.environ.get("AZURE_OPENAI_API_KEY") or ""
@@ -636,6 +638,66 @@ class FreshIndex:
             if norm.get("thread_id"):
                 self.threads[norm["thread_id"]].append(norm)
 
+        # Halloween corpus: Amend/Cancel only, from 8 Oct (6-week window).
+        hall_inputs = DATA / "inbound" / "halloween" / "inputs.jsonl"
+        if hall_inputs.exists():
+            for obj in load_jsonl(hall_inputs):
+                sm = obj.get("selected_message") or {}
+                ts = sm.get("timestamp") or obj.get("input_cutoff") or ""
+                if not ts or ts < AMEND_CANCEL_START:
+                    continue
+                mid = sm.get("source_row_id") or sm.get("message_id") or obj.get("decision_id")
+                if not mid or mid in self.mail_by_id:
+                    continue
+                addresses = sm.get("addresses") if isinstance(sm.get("addresses"), dict) else {}
+                fr = addresses.get("from") if addresses else sm.get("from")
+                if isinstance(fr, list):
+                    fr = fr[0] if fr else None
+                norm = {
+                    "id": mid,
+                    "thread_id": sm.get("thread_id") or f"hall-{obj.get('decision_id')}",
+                    "direction": sm.get("direction") or "inbound",
+                    "subject": sm.get("subject"),
+                    "text_body": sm.get("body") or sm.get("body_text") or "",
+                    "from_address": fr,
+                    "received_at": ts,
+                    "sent_at": ts,
+                    "message_at": ts,
+                    "message_id_header": sm.get("message_id") or sm.get("message_id_header"),
+                    "attachments": [],
+                    "_source": "halloween",
+                    "_decision_id": obj.get("decision_id"),
+                    "_earlier": obj.get("earlier_relevant_source_events") or [],
+                }
+                self.mail_by_id[mid] = norm
+                self.threads[norm["thread_id"]].append(norm)
+                # Also index earlier events as thread context
+                for ev in norm["_earlier"]:
+                    msg = ev.get("message") or ev
+                    if not isinstance(msg, dict):
+                        continue
+                    eid = msg.get("source_row_id") or msg.get("message_id") or f"{mid}-earlier-{msg.get('timestamp')}"
+                    if eid in self.mail_by_id:
+                        continue
+                    ets = msg.get("timestamp") or msg.get("received_at") or ""
+                    if not ets:
+                        continue
+                    em = {
+                        "id": eid,
+                        "thread_id": norm["thread_id"],
+                        "direction": msg.get("direction") or "inbound",
+                        "subject": msg.get("subject"),
+                        "text_body": msg.get("body") or msg.get("body_text") or "",
+                        "from_address": msg.get("from"),
+                        "received_at": ets,
+                        "sent_at": ets,
+                        "message_id_header": msg.get("message_id") or msg.get("message_id_header"),
+                        "attachments": [],
+                        "_source": "halloween_earlier",
+                    }
+                    self.mail_by_id[eid] = em
+                    self.threads[norm["thread_id"]].append(em)
+
         for tid in self.threads:
             self.threads[tid].sort(key=lambda m: m.get("received_at") or m.get("sent_at") or "")
 
@@ -848,6 +910,35 @@ def make_gold_row(
     return row
 
 
+def _filing_hms_doc_after(read: dict | None, as_of: str) -> bool:
+    """True if HMS documents list shows a filing after as_of (best filing evidence)."""
+    if not read or not as_of:
+        return False
+    docs = read.get("documents") or {}
+    items = docs if isinstance(docs, list) else (docs.get("items") or docs.get("documents") or docs.get("rows") or [])
+    if isinstance(docs, dict) and not items:
+        # nested shapes from Stay360 document pane
+        for key in ("uploaded", "files", "attachments", "list"):
+            if isinstance(docs.get(key), list):
+                items = docs[key]
+                break
+    for doc in items or []:
+        if not isinstance(doc, dict):
+            continue
+        ts = (
+            doc.get("uploadedAt")
+            or doc.get("uploaded_at")
+            or doc.get("createdAt")
+            or doc.get("created_at")
+            or doc.get("timestamp")
+            or doc.get("date")
+            or ""
+        )
+        if ts and str(ts) > as_of:
+            return True
+    return False
+
+
 def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str, list[dict]]:
     buckets: dict[str, list[dict]] = defaultdict(list)
     used_selected: set[str] = set()
@@ -871,15 +962,17 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
             if not msgs:
                 continue
 
-            # CREATE: last inbound non-OTA before first confirmation PDF
+            # CREATE: last inbound non-OTA before first confirmation PDF (3-week fresh window only)
             if pdfs and usable:
                 first_at = pdfs[0]["sent_at"]
                 earlier_in = [
                     m for m in msgs
                     if (m.get("received_at") or "") < first_at
+                    and (m.get("received_at") or "") >= FRESH_START
                     and m.get("direction") == "inbound"
                     and not is_ota_blob(m.get("from_address") or "", m.get("subject") or "", (m.get("text_body") or "")[:600])
                     and "Confirmation Letter" not in (m.get("subject") or "")
+                    and m.get("_source") not in ("halloween", "halloween_earlier")
                 ]
                 if earlier_in:
                     sel = earlier_in[-1]
@@ -959,9 +1052,11 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                         buckets["amend"].append(row)
                         break
 
-            # CANCEL: inbound cancel language; prefer Cancelled status
+            # CANCEL: inbound cancel language from 6-week window (booking may predate window)
             for m in msgs:
                 if m.get("direction") != "inbound":
+                    continue
+                if (m.get("received_at") or "") < AMEND_CANCEL_START:
                     continue
                 blob = (m.get("subject") or "") + " " + (m.get("text_body") or "")[:1200]
                 if is_ota_blob(m.get("from_address") or "", blob):
@@ -982,13 +1077,17 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                     thread_msgs=msgs,
                     anchors=anchors,
                     code_maps=code_maps,
-                    evidence_limits=["holdout_fresh", f"hms_status={status}"],
+                    evidence_limits=["holdout_fresh_6wk", f"hms_status={status}"],
                 )
                 buckets["cancel"].append(row)
 
-            # FILING: inbound voucher/POP with attachment
+            # FILING: 3-week fresh only; prefer HMS doc uploaded after as_of
             for m in msgs:
                 if m.get("direction") != "inbound":
+                    continue
+                if (m.get("received_at") or "") < FRESH_START:
+                    continue
+                if m.get("_source") in ("halloween", "halloween_earlier"):
                     continue
                 blob = (m.get("subject") or "") + " " + (m.get("text_body") or "")[:800]
                 atts = m.get("attachments") or []
@@ -1007,6 +1106,8 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                 if not fa and atts:
                     fa = {"filename": atts[0].get("filename"), "attachment_id": atts[0].get("id")}
                 case_id = f"hf-filing-{short_id(conf, m['id'])}"
+                as_of = m.get("received_at") or ""
+                hms_filed = _filing_hms_doc_after(read, as_of)
                 row = make_gold_row(
                     workflow="filing",
                     case_id=case_id,
@@ -1016,9 +1117,73 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                     anchors=anchors,
                     code_maps=code_maps,
                     filing_attachment=fa or {},
-                    evidence_limits=["holdout_fresh", "filing_voucher_or_pop"],
+                    evidence_limits=[
+                        "holdout_fresh",
+                        "filing_voucher_or_pop",
+                        "hms_doc_after_as_of" if hms_filed else "mail_attachment_only",
+                    ],
                 )
+                row["_filing_hms_doc_after"] = hms_filed
                 buckets["filing"].append(row)
+
+    # Extended Amend/Cancel: any inbound ask from 8 Oct mentioning a conf (booking may be older).
+    for tid, msgs in idx.threads.items():
+        for m in msgs:
+            if m.get("direction") != "inbound":
+                continue
+            ts = m.get("received_at") or ""
+            if ts < AMEND_CANCEL_START:
+                continue
+            subj = m.get("subject") or ""
+            body = m.get("text_body") or ""
+            if is_ota_blob(m.get("from_address") or "", subj, body[:500]):
+                continue
+            if "Confirmation Letter" in subj:
+                continue
+            blob = subj + "\n" + body[:2000]
+            if CANCEL_RE.search(blob):
+                label = "cancel"
+            elif AMEND_RE.search(blob):
+                label = "amend"
+            else:
+                continue
+            confs = list(dict.fromkeys(CONF_RE.findall(blob)))
+            # thread PDFs / earlier subjects
+            for other in msgs:
+                if (other.get("received_at") or "") > ts:
+                    continue
+                confs.extend(CONF_RE.findall((other.get("subject") or "") + " " + (other.get("text_body") or "")[:400]))
+                for att in other.get("attachments") or []:
+                    confs.extend(CONF_FILE_RE.findall(att.get("filename") or ""))
+            confs = list(dict.fromkeys(confs))
+            for conf in confs:
+                if not conf:
+                    continue
+                read = idx.reads.get(conf) or {}
+                if read and is_nava_touched(read):
+                    continue
+                # ensure anchor exists for build_card
+                if conf not in anchors:
+                    anchors[conf] = {
+                        "confirmation": conf,
+                        "hms_capture_later": (read or {}).get("read_at"),
+                        "hms_fields": flat_hms_fields(read) if read else {},
+                        "issues": ["extended_window_no_fresh_pdf"],
+                        "pdfs": idx.pdfs_by_conf.get(conf) or [],
+                        "primary": False,
+                    }
+                case_id = f"hf-{label}-{short_id(conf, m['id'])}"
+                row = make_gold_row(
+                    workflow=label,
+                    case_id=case_id,
+                    conf=conf,
+                    selected=m,
+                    thread_msgs=msgs,
+                    anchors=anchors,
+                    code_maps=code_maps,
+                    evidence_limits=["holdout_6wk_extend", f"{label}_ask_mail"],
+                )
+                buckets[label].append(row)
 
     # Cancel requests mentioning confs NOT yet in reads → missing list
     for tid, msgs in idx.threads.items():
@@ -1201,29 +1366,39 @@ def dedupe_prefer(rows: list[dict]) -> list[dict]:
 
 
 def select_mix(buckets: dict[str, list[dict]], need: dict[str, int]) -> tuple[list[dict], dict]:
+    """Select up to NEED per workflow. No weak pad on amend/cancel/filing — fill rest with create/quote/triage only."""
     selected: list[dict] = []
     got: dict[str, int] = {}
-    shifts: dict[str, Any] = {"requested": dict(need), "notes": []}
+    shifts: dict[str, Any] = {"requested": dict(need), "notes": [], "no_pad": True}
     for wf, n in need.items():
         rows = dedupe_prefer(buckets.get(wf) or [])
-        # Prefer stronger evidence
         if wf == "cancel":
-            rows.sort(key=lambda r: (0 if "Cancelled" in str(((r.get("later_hms") or {}).get("fields") or {}).get("status") or "") else 1, r["case_id"]))
+            rows.sort(key=lambda r: (
+                0 if "Cancelled" in str(((r.get("later_hms") or {}).get("fields") or {}).get("status") or "") else 1,
+                r["case_id"],
+            ))
         elif wf == "amend":
             rows.sort(key=lambda r: (0 if (r.get("amendment") or {}).get("changes") else 1, r["case_id"]))
+        elif wf == "filing":
+            # Best-evidenced first: HMS doc after as_of, then attachment present
+            rows.sort(key=lambda r: (
+                0 if r.get("_filing_hms_doc_after") else 1,
+                0 if (r.get("filing_attachment") or {}).get("filename") else 1,
+                r["case_id"],
+            ))
         elif wf == "create":
             rows.sort(key=lambda r: (0 if (r.get("first_pdf") or {}).get("sent_at") else 1, r["case_id"]))
         take = rows[:n]
         got[wf] = len(take)
         selected.extend(take)
         if len(take) < n:
-            shifts["notes"].append(f"{wf}: wanted {n}, got {len(take)}")
+            shifts["notes"].append(f"{wf}: wanted {n}, got {len(take)} (no weak pad)")
 
-    # Pad to 100 from surplus quote/triage/create/filing
+    # Make up to 100 with Create/Quote/Triage only — never pad Amend/Cancel/Filing.
     if len(selected) < 100:
         used = {r["case_id"] for r in selected}
         used_msg = {(r.get("source") or {}).get("selected_message_id") for r in selected}
-        for wf in ("create", "filing", "quote", "triage", "amend", "cancel"):
+        for wf in ("create", "quote", "triage"):
             for row in dedupe_prefer(buckets.get(wf) or []):
                 if len(selected) >= 100:
                     break
@@ -1237,9 +1412,12 @@ def select_mix(buckets: dict[str, list[dict]], need: dict[str, int]) -> tuple[li
                 if mid:
                     used_msg.add(mid)
                 got[wf] = got.get(wf, 0) + 1
-                shifts["notes"].append(f"pad +1 {wf} → {row['case_id']}")
-    selected = selected[:100]
+                shifts["notes"].append(f"fill +1 {wf} → {row['case_id']}")
+    # Freeze real counts — do not invent cases if under 100
     shifts["final"] = dict(Counter(r["workflow"] for r in selected))
+    shifts["n"] = len(selected)
+    if len(selected) < 100:
+        shifts["notes"].append(f"FROZEN under 100: n={len(selected)} (no pad)")
     return selected, shifts
 
 
@@ -1339,7 +1517,7 @@ def main() -> None:
         (path / "case.md").write_text(render_md(card))
         built.append(card)
 
-    # Refill to 100 from leftover after dedup/leak drops.
+    # Refill to 100 from Create/Quote/Triage only (never pad amend/cancel/filing).
     if len(built) < 100:
         used = {c["case_id"] for c in built}
         used_msg = {
@@ -1348,8 +1526,8 @@ def main() -> None:
             for c in built
         }
         leftovers = []
-        for wf, rows in filtered.items():
-            for row in rows:
+        for wf in ("create", "quote", "triage"):
+            for row in filtered.get(wf) or []:
                 if row["case_id"] in used:
                     continue
                 leftovers.append(row)
@@ -1361,6 +1539,9 @@ def main() -> None:
                 continue
             card = _accept(row)
             if not card:
+                continue
+            # Prefer cancel/amend already selected; this path is create/quote/triage only
+            if card["workflow"] not in ("create", "quote", "triage"):
                 continue
             path = OUT / card["case_id"]
             path.mkdir(parents=True, exist_ok=True)
@@ -1423,7 +1604,10 @@ def main() -> None:
         "missing_reads": missing,
         "reads_available": len(idx.reads),
         "out": str(OUT),
-        "window": "2026-10-29→2026-11-19",
+        "window": {
+            "create_quote_filing_triage": "2026-10-29→2026-11-19",
+            "amend_cancel": "2026-10-08→2026-11-19",
+        },
         "rules": [
             "as_of=selected_email.received_at",
             "hms_shown backdated per workflow",
@@ -1434,6 +1618,9 @@ def main() -> None:
             "holdout never used for tuning",
             "dedup vs 200-dev Message-ID + confirmation (+ Halloween∩fresh Message-IDs)",
             "no gold-conf input fetch; rank2/PDFs from visible confs only",
+            "amend/cancel 6-week window from 8 Oct; bookings may predate window",
+            "filing capped at 12; prefer HMS doc after as_of",
+            "no weak pad — freeze real counts; fill remainder with create/quote/triage only",
         ],
     }
     (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
@@ -1443,9 +1630,96 @@ def main() -> None:
     (OUT / "dev-dedup-dropped.jsonl").write_text(
         "\n".join(json.dumps(e) for e in dropped_all) + ("\n" if dropped_all else "")
     )
+
+    # queue-holdout.json: amend+cancel first for reads lane
+    from datetime import datetime, timezone
+    q_rows = []
+    for card in built:
+        conf = card.get("real_confirmation")
+        wf = card.get("workflow")
+        if not conf or wf not in ("cancel", "amend", "create", "filing"):
+            continue
+        if conf in blocked_confs:
+            continue
+        read = idx.reads.get(conf)
+        if read_is_usable(read):
+            continue
+        if read and is_nava_touched(read):
+            continue
+        pri = {"cancel": 1, "amend": 2, "create": 3, "filing": 4}[wf]
+        q_rows.append({
+            "confirmation": conf,
+            "why": wf,
+            "priority": pri,
+            "reason_detail": "stub_read_needs_full_record_view" if read else "missing_from_reads_all",
+            "case_id": card.get("case_id"),
+            "workflow": wf,
+            "as_of": card.get("as_of"),
+            "subject": ((card.get("selected_email") or {}).get("subject") or "")[:160],
+            "has_stub_read": bool(read) and not read_is_usable(read),
+            "absent_from_reads_all": conf not in idx.reads,
+            "has_confirmation_pdf": conf in idx.pdfs_by_conf,
+            "n_pdfs": len(idx.pdfs_by_conf.get(conf) or []),
+        })
+    # also queue amend/cancel candidates that failed gold build for lack of reads
+    have = {r["confirmation"] for r in q_rows}
+    for wf in ("cancel", "amend"):
+        for row in filtered.get(wf) or []:
+            conf = row.get("real_confirmation")
+            if not conf or conf in have or conf in blocked_confs:
+                continue
+            read = idx.reads.get(conf)
+            if read_is_usable(read):
+                continue
+            q_rows.append({
+                "confirmation": conf,
+                "why": wf,
+                "priority": 1 if wf == "cancel" else 2,
+                "reason_detail": "holdout_candidate_needs_hms_for_gold",
+                "case_id": row.get("case_id"),
+                "workflow": wf,
+                "as_of": (row.get("source") or {}).get("input_cutoff"),
+                "subject": ((row.get("source") or {}).get("subject") or "")[:160],
+                "has_stub_read": bool(read) and not read_is_usable(read),
+                "absent_from_reads_all": conf not in idx.reads,
+                "has_confirmation_pdf": conf in idx.pdfs_by_conf,
+                "n_pdfs": len(idx.pdfs_by_conf.get(conf) or []),
+            })
+            have.add(conf)
+    q_rows.sort(key=lambda r: (r["priority"], 0 if r.get("absent_from_reads_all") else 1, r["confirmation"]))
+    # dedupe by conf keeping best priority
+    seen_q: set[str] = set()
+    q_dedup = []
+    for r in q_rows:
+        if r["confirmation"] in seen_q:
+            continue
+        seen_q.add(r["confirmation"])
+        q_dedup.append(r)
+    queue_payload = {
+        "schema_version": "holdout-missing-reads/v1",
+        "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "instruction": (
+            "Reads lane: JUMP THESE TO FRONT. Order = cancel → amend → create → filing. "
+            "Full live record_view required. Skip NAVAAI/Labtest. 6-week amend/cancel window from 8 Oct."
+        ),
+        "counts": {
+            "queued": len(q_dedup),
+            "cancel": sum(1 for r in q_dedup if r["why"] == "cancel"),
+            "amend": sum(1 for r in q_dedup if r["why"] == "amend"),
+            "create": sum(1 for r in q_dedup if r["why"] == "create"),
+            "filing": sum(1 for r in q_dedup if r["why"] == "filing"),
+            "holdout_n": len(built),
+            "holdout_by_workflow": by_wf,
+        },
+        "queue": q_dedup,
+    }
+    (FRESH / "queue-holdout.json").write_text(json.dumps(queue_payload, indent=2, ensure_ascii=False))
+    manifest["queue_holdout"] = queue_payload["counts"]
+    (OUT / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
     print(json.dumps({
         k: manifest[k]
-        for k in ("n", "by_workflow", "shifts", "leaks_rejected", "build_errors", "dev_dedup", "missing_reads_n", "reads_available")
+        for k in ("n", "by_workflow", "shifts", "leaks_rejected", "build_errors", "dev_dedup", "queue_holdout", "reads_available")
     }, indent=2))
 
 
