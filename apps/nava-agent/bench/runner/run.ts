@@ -72,15 +72,42 @@ function prodBenchTools(): ToolDefinition[] {
 
 const benchTools = prodBenchTools();
 
-function pdfAttachments(raw: unknown): Array<{id: string; name: string; content_type: string; extracted_text: string}> {
+function confirmationHints(filename: string, text: string): string[] {
+  const hints = new Set<string>();
+  const fromName = filename.match(/HRCEN_Confirmation_Letter_(\d{6,10}(?:-\d)?)/i);
+  if (fromName?.[1]) hints.add(fromName[1].includes('-') ? fromName[1] : `${fromName[1]}-1`);
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const conf = parsed.confirmationNumber ?? parsed.confirmation_number;
+    const values = Array.isArray(conf) ? conf : conf != null ? [conf] : [];
+    for (const value of values) {
+      const raw = String(value).trim();
+      if (/^\d{6,10}(-\d)?$/.test(raw)) hints.add(raw.includes('-') ? raw : `${raw}-1`);
+    }
+  } catch {
+    for (const match of text.matchAll(/\b(\d{8,10}-\d)\b/g)) hints.add(match[1]!);
+  }
+  return [...hints];
+}
+
+function pdfAttachments(raw: unknown): Array<{
+  id: string;
+  name: string;
+  content_type: string;
+  extracted_text: string;
+  confirmation_hints: string[];
+}> {
   if (!Array.isArray(raw)) return [];
   return raw.map((pdf, i) => {
     const row = (pdf ?? {}) as Record<string, unknown>;
+    const name = String(row.filename ?? row.name ?? `attachment-${i}.pdf`);
+    const extracted_text = String(row.text ?? row.extracted_text ?? '').slice(0, 20_000);
     return {
       id: String(row.id ?? `pdf-${i}`),
-      name: String(row.filename ?? row.name ?? `attachment-${i}.pdf`),
+      name,
       content_type: 'application/pdf',
-      extracted_text: String(row.text ?? row.extracted_text ?? '').slice(0, 20_000),
+      extracted_text,
+      confirmation_hints: confirmationHints(name, extracted_text),
     };
   });
 }
