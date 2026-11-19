@@ -9,6 +9,7 @@ import { sql, uid, json, event } from './db.js';
 import { groupedQuoteRequest, proposalDraft, tools, type ThreadInput } from './schema.js';
 import { withCreateNativeFields, withQuoteStaffFields } from './proposal-fields.js';
 import { quoteArtifactBlockReason, quoteOptions } from '../tools/quote-artifacts/index.js';
+import { quoteOutput } from '../tools/quote-artifacts/schema.js';
 import { withCancelReviewFields } from '../tools/cancel/index.js';
 import { quoteDisplayRows } from './display.js';
 import { mailPrefilterRule } from './mail-ingest.js';
@@ -228,6 +229,11 @@ export async function snapshot(threadId:string) {
     return {id:thread.id,selected_message_id:thread.selected_message_id,messages:messages.map(m=>m.payload),session:session ? {id:session.id,managed_session_id:session.managed_session_id,status:session.status,mode:session.mode,error:session.config?.error ?? null} : null,proposals:proposals.map(proposal=>proposalWire(proposal,sourceMessageId,quotedRates)),event_sequence:Number(sequence.n)};
   });
 }
+function quoteOutputWire(value:unknown) {
+  const parsed=quoteOutput.safeParse(value);
+  return parsed.success ? {quote_output:parsed.data} : {};
+}
+
 export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=null,quotedRates:ReturnType<typeof projectQuotedRateChoices>=[]) {
   const draft=p.phase==='ready' && (p.workflow==='create' || p.workflow==='quote' || p.workflow==='cancel' || p.workflow==='amend') ? proposalDraft.safeParse(p.current) : null;
   const current=draft?.success ? withAmendRoomTypeField(withCancelReviewFields(withQuoteStaffFields(withCreateNativeFields(draft.data)),
@@ -247,6 +253,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
       quote_choices:quote.length===1 ? quoteOptions(quote[0].details,p.stage.native_result,false) : [],
       quote_artifact_block_reason:quote.length===1 ? quoteArtifactBlockReason(p.stage.native_result) : null,
       quote_selected_options:Array.isArray(p.stage.quote_selected_options) ? p.stage.quote_selected_options : [],
+      ...quoteOutputWire(p.stage.quote_output),
     });
   }
   if(stage && p.workflow==='quote' && p.stage.quote_sets && draft?.success) {
@@ -260,7 +267,7 @@ export function proposalWire(p:Record<string,any>,sourceMessageId:string|null=nu
         quote_options:set.state==='prepared'?quoteOptions(action.details,set.native_result):[],
         quote_choices:set.state==='prepared'?quoteOptions(action.details,set.native_result,false):[],
         quote_artifact_block_reason:set.state==='prepared'?quoteArtifactBlockReason(set.native_result):null,
-        quote_selected_options:set.quote_selected_options ?? [],artifacts:set.artifacts ?? []}];
+        quote_selected_options:set.quote_selected_options ?? [],artifacts:set.artifacts ?? [],...quoteOutputWire(set.quote_output)}];
     })});
   }
   const result=p.result && (p.phase==='done' || (p.workflow==='create' && Array.isArray(p.result.rooms))) ? {
