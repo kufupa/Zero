@@ -7,7 +7,7 @@ import { json, sql, uid } from './db.js';
 import { groupedQuoteRequest, proposalDraft, schemas, tools, type ProposalDraft, type Workflow } from './schema.js';
 import { normalizeProposalFields } from './proposal-fields.js';
 import { configuredToolPacks, createGoEnabled, hmsSaveEnabled, isWriteWorkflow, nativeSaveAllowed, staffPrepareOnly } from './hms-mode.js';
-import { attachmentsUnconfirmed, confirmedQueuedStaffStage, invalidGuestSelection, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
+import { attachmentsUnconfirmed, confirmedQueuedStaffStage, selectedStageSource, type StaffJobBinding, type StaffStage } from './attachment-gate.js';
 import { cachedCatalogue, withTriageLookupFields } from '../tools/triage/index.js';
 import { lookupStay, targetLookup } from './stay-target.js';
 import { samePartyName } from './party-matching.js';
@@ -123,7 +123,10 @@ function readPartyChoice(propertyCode:string|null,name:unknown,values:unknown[],
 }
 function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
   const fieldSpecs=[...draft.field_specs];
-  const bind=(original:Record<string,unknown>,propertyCode:string|null,root:string)=>{
+  type FieldMap = Booking['fields'];
+  function bind(original:FieldMap,propertyCode:string|null,root:string):FieldMap;
+  function bind(original:Record<string,unknown>,propertyCode:string|null,root:string):Record<string,unknown>;
+  function bind(original:Record<string,unknown>,propertyCode:string|null,root:string):Record<string,unknown> {
     const fields={...original};
     for(const kind of ['agency','organization'] as const) {
       if(fields[`${kind}_id`] != null && fields[`${kind}_id`]!=='') continue;
@@ -139,7 +142,7 @@ function withReadParties(draft:ProposalDraft,values:unknown[]):ProposalDraft {
       }
     }
     return fields;
-  };
+  }
   const bookings=draft.bookings.map((booking,index)=>({
     ...booking,fields:bind(booking.fields,booking.property_code,`/bookings/${index}/fields`),
   }));
@@ -411,7 +414,7 @@ export class ToolRegistry {
       step='confirm_staff_stage_source';
       const denied=await confirmedQueuedStaffStage(job,context.sessionId,draft);
       if(denied) return failureObject(denied,denied===attachmentsUnconfirmed.code?attachmentsUnconfirmed.message
-        :denied===invalidGuestSelection.code?invalidGuestSelection.message:'The selected source or proposal revision changed.');
+        :'The selected source or proposal revision changed.');
       credentialLease.signal.throwIfAborted();
       const staffStage={...job,mailboxId:job.source.mailbox_id,sourceMessageId:job.source.source_message_id,sourceThreadId:job.source.source_thread_id};
       const trusted={...context,propertyCode:job.source.property_code,credentialLease,signal:credentialLease.signal,staffStage};
@@ -521,7 +524,7 @@ export class ToolRegistry {
           else {
             let loaded=false;
             const cacheStarted=performance.now();
-            response=await this.nativeResult(()=>cachedCatalogue(input,context,async toolInput=>{loaded=true;return load(toolInput);}));
+            response=await this.nativeResult(()=>cachedCatalogue(input,{sessionId:context.sessionId,mode:context.mode,signal:context.signal},async toolInput=>{loaded=true;return load(toolInput);}));
             if(response.ok && !await verifySource()) response=failureObject('STAFF_SOURCE_CHANGED','The selected live source is unavailable.');
             if(!loaded) timings.catalogue_cache=[Math.round(performance.now()-cacheStarted)];
           }
