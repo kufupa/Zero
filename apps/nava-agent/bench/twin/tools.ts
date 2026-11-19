@@ -1,4 +1,5 @@
 import type {CaseCard, TwinEnvelope} from '../types.js';
+import {partySearchQueries} from '../../src/party-matching.js';
 import {projectHmsShown} from './backdate.js';
 import {quoteKey, type TwinWorld} from './world.js';
 
@@ -108,120 +109,6 @@ function partyRecords(world: TwinWorld, kind: string): Array<Record<string, unkn
   return catalogueRecords(catalogs[key]).map(item => object(item));
 }
 
-/** HRCEN property defaults from 56 live pre-arrival fills. History overrides. */
-const HRCEN_PROPERTY_DEFAULTS = {
-  guarantee_type: 'DEPREQ',
-  agency_guarantee_type: 'GTDAGT',
-  room_type: 'STQN',
-  rate_plan: 'NCOR1B',
-  government_rate_plan: 'NGOVDB',
-  track: 'COR',
-  government_track: 'GOV',
-  source_of_business: 'EMA',
-  billing_note: 'BB to Agent, extras direct',
-  // Dinner Gov line only with government org + NGOVDB — never bare DBB.
-  government_billing_note:
-    'DBB to Agent, extras direct \nDinner Gov inclusive of R210.00 + 2 s/drink',
-} as const;
-
-/** Keep only billing-instruction lines from a prior reservation note (not guest specials). */
-function billingInstructionFromNote(raw: string): string | null {
-  const lines = raw
-    .split(/\r?\n/)
-    .map(l => l.trim())
-    .filter(Boolean);
-  const kept = lines.filter(l =>
-    /^(bb|dbb)\s+to\b/i.test(l) ||
-    /\bextras?\s+direct\b/i.test(l) ||
-    /\bsettle\s+direct\b/i.test(l) ||
-    /\bawaiting\s+(payment|voucher|deposit)\b/i.test(l) ||
-    /\bdinner\s+gov\b/i.test(l) ||
-    /\bbill(ing)?\s+to\b/i.test(l) ||
-    /\bto\s+(agent|company|account)\b/i.test(l),
-  );
-  if (!kept.length) return null;
-  // Drop Dinner Gov unless this fragment already sits with a DBB-to billing line (gov pack).
-  const out = kept.filter(l => !/\bdinner\s+gov\b/i.test(l) || kept.some(x => /^dbb\s+to\b/i.test(x)));
-  return out.length ? out.join('\n') : null;
-}
-
-/** Modal defaults from anchors created/sent BEFORE as_of for this party name. */
-function partyDefaultsBeforeAsOf(
-  world: TwinWorld,
-  kind: string,
-  partyName: string,
-  asOf: string | null,
-): Record<string, string | null> | null {
-  const needle = partyName.trim().toLowerCase();
-  if (!needle || needle.length < 3) return null;
-  const counts: Record<string, Map<string, number>> = {
-    room_type: new Map(),
-    rate_plan: new Map(),
-    guarantee_type: new Map(),
-    track: new Map(),
-    source_of_business: new Map(),
-    billing_note: new Map(),
-  };
-  const fieldKey =
-    kind === 'agency' ? 'ta1' :
-    kind === 'organization' ? 'company' :
-    null;
-  if (!fieldKey) return null;
-  for (const anchor of world.anchors) {
-    const fields = object(anchor.hms_fields);
-    const party = String(fields[fieldKey] ?? '').toLowerCase();
-    if (!party) continue;
-    if (!(party.includes(needle) || needle.includes(party) || tokenOverlap(party, needle))) continue;
-    let when: string | null = null;
-    for (const pdf of anchor.pdfs ?? []) {
-      const row = object(pdf);
-      const sent = row.sent_at ?? row.filed_at;
-      if (typeof sent === 'string' && sent) {
-        when = when == null || sent < when ? sent : when;
-      }
-    }
-    if (!when) when = typeof anchor.hms_capture_later === 'string' ? anchor.hms_capture_later : null;
-    if (asOf && when && when > asOf) continue;
-    const room = String(fields.roomtype ?? fields.room_type ?? '');
-    const rate = String(fields.rateplan ?? fields.rate_plan ?? '');
-    const guarantee = String(fields.guaranteetype ?? fields.guarantee_type ?? '');
-    const track = String(fields.track ?? fields.subsegment ?? '');
-    const source = String(fields.sourceofbusiness ?? fields.source_of_business ?? '');
-    const note = billingInstructionFromNote(String(fields.reservationnote ?? fields.note ?? ''));
-    if (room) counts.room_type!.set(room, (counts.room_type!.get(room) ?? 0) + 1);
-    if (rate) counts.rate_plan!.set(rate, (counts.rate_plan!.get(rate) ?? 0) + 1);
-    if (guarantee) counts.guarantee_type!.set(guarantee, (counts.guarantee_type!.get(guarantee) ?? 0) + 1);
-    if (track) counts.track!.set(track, (counts.track!.get(track) ?? 0) + 1);
-    if (source) counts.source_of_business!.set(source, (counts.source_of_business!.get(source) ?? 0) + 1);
-    if (note) counts.billing_note!.set(note, (counts.billing_note!.get(note) ?? 0) + 1);
-  }
-  const mode = (map: Map<string, number> | undefined): string | null => {
-    if (!map || !map.size) return null;
-    return [...map.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
-  };
-  const hist = {
-    room_type: mode(counts.room_type),
-    rate_plan: mode(counts.rate_plan),
-    guarantee_type: mode(counts.guarantee_type),
-    track: mode(counts.track),
-    source_of_business: mode(counts.source_of_business),
-    billing_note: mode(counts.billing_note),
-  };
-  const govHint = /gov|ngov|defence|defense|military|embassy|department of/i.test(needle);
-  return {
-    room_type: hist.room_type ?? HRCEN_PROPERTY_DEFAULTS.room_type,
-    rate_plan: hist.rate_plan ?? (govHint ? HRCEN_PROPERTY_DEFAULTS.government_rate_plan : HRCEN_PROPERTY_DEFAULTS.rate_plan),
-    guarantee_type:
-      hist.guarantee_type ??
-      (kind === 'agency' ? HRCEN_PROPERTY_DEFAULTS.agency_guarantee_type : HRCEN_PROPERTY_DEFAULTS.guarantee_type),
-    track: hist.track ?? (govHint ? HRCEN_PROPERTY_DEFAULTS.government_track : HRCEN_PROPERTY_DEFAULTS.track),
-    source_of_business: hist.source_of_business ?? HRCEN_PROPERTY_DEFAULTS.source_of_business,
-    billing_note:
-      hist.billing_note ??
-      (govHint ? HRCEN_PROPERTY_DEFAULTS.government_billing_note : HRCEN_PROPERTY_DEFAULTS.billing_note),
-  };
-}
-
 function tokenOverlap(a: string, b: string): boolean {
   const tokens = (s: string) => new Set(s.split(/[^a-z0-9]+/).filter(t => t.length >= 4));
   const ta = tokens(a);
@@ -231,10 +118,16 @@ function tokenOverlap(a: string, b: string): boolean {
   return hit >= 1;
 }
 
-function searchParties(world: TwinWorld, input: Record<string, unknown>, asOf: string | null): TwinEnvelope {
+/**
+ * Prod hms_search_parties returns native HMS candidates only (nativeId/displayName/…).
+ * Twin must not invent defaults / prior_stays / govHint — skills may still apply property
+ * defaults from skill text, same as live.
+ */
+function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
-  const query = String(input.query ?? '').toLowerCase();
+  const rawQuery = String(input.query ?? '').trim();
+  const queries = rawQuery ? partySearchQueries(rawQuery, kind).map(q => q.toLowerCase()) : [''];
   const candidates: Array<Record<string, unknown>> = [];
   if (kind === 'guest') {
     for (const profile of world.profiles) {
@@ -247,12 +140,16 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>, asOf: s
         field === 'email' ? email :
         field === 'profile_id' ? id.toLowerCase() :
         last;
-      if (!query || hay.includes(query) || `${last} ${first}`.includes(query)) {
+      const hit = queries.some(q => !q || hay.includes(q) || `${last} ${first}`.includes(q));
+      if (hit) {
+        const displayName =
+          `${profile.firstName ?? profile.first_name ?? ''} ${profile.lastName ?? profile.last_name ?? ''}`.trim() || null;
         candidates.push({
           nativeId: id || `twin-guest-${candidates.length + 1}`,
           firstName: profile.firstName ?? profile.first_name ?? null,
           lastName: profile.lastName ?? profile.last_name ?? null,
-          name: `${profile.firstName ?? ''} ${profile.lastName ?? ''}`.trim() || null,
+          displayName,
+          name: displayName,
         });
       }
       if (candidates.length >= 25) break;
@@ -264,28 +161,38 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>, asOf: s
       const nameLower = name.toLowerCase();
       const code = String(row.code ?? '').toLowerCase();
       const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
-      if (!query || hay.includes(query) || query.includes(nameLower) || (code && query === code) || tokenOverlap(nameLower, query)) {
-        const defaults = partyDefaultsBeforeAsOf(world, kind, name || String(input.query ?? ''), asOf);
-        candidates.push({
-          nativeId: id || `twin-${kind}-${candidates.length + 1}`,
-          code: row.code ?? null,
-          name: row.meaning ?? row.name ?? row.label ?? null,
-          kind,
-          defaults: defaults ?? undefined,
-        });
-      }
+      const hit = queries.some(q =>
+        !q ||
+        hay.includes(q) ||
+        (nameLower.length >= 3 && q.includes(nameLower)) ||
+        (code && q === code) ||
+        tokenOverlap(nameLower, q),
+      );
+      if (!hit) continue;
+      candidates.push({
+        nativeId: id || `twin-${kind}-${candidates.length + 1}`,
+        code: row.code ?? null,
+        displayName: row.meaning ?? row.name ?? row.label ?? null,
+        name: row.meaning ?? row.name ?? row.label ?? null,
+        kind,
+      });
       if (candidates.length >= 25) break;
     }
   }
+  // Match prod triage/index.ts:385 — auto-select only org/agency when exactly one untruncated hit.
+  const truncated = candidates.length >= 25;
+  const single =
+    ['organization', 'agency'].includes(kind) && !truncated && candidates.length === 1
+      ? candidates[0]
+      : null;
   return ok({
     native: {
-      outcome: candidates.length ? 'candidates' : 'not_found',
-      criteria: {kind, field, query: input.query, as_of: asOf},
+      outcome: candidates.length ? 'matches' : 'no_match',
       candidates,
-      coverage: 'twin',
+      coverage: {possiblyTruncated: truncated, source: 'twin'},
     },
-    selection: candidates.length === 1 ? 'candidate' : 'none',
-    ambiguity: candidates.length > 1,
+    selection: single ?? 'none',
+    ambiguity: single ? null : 'Multiple or incomplete candidates require staff selection.',
   });
 }
 
@@ -448,14 +355,10 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
         for (const kind of kinds) sections[kind] = catalogueSection(world.catalog, kind);
         return ok({property_code: body.property_code ?? 'HRCEN', sections});
       }
-      case 'hms_search_parties': {
-        const asOf =
-          typeof card.as_of === 'string' ? card.as_of :
-          typeof object(card.selected_email).timestamp === 'string' ? String(object(card.selected_email).timestamp) :
-          typeof object(card.source).input_cutoff === 'string' ? String(object(card.source).input_cutoff) :
-          null;
-        return searchParties(world, body, asOf);
-      }
+      case 'hms_search_parties':
+        // as_of blinding still applies to reservation/PDF projection; party lookup
+        // mirrors prod (live catalogue rows only — no invented defaults/prior_stays).
+        return searchParties(world, body);
       case 'hms_quote':
         return quoteFromWorld(world, body);
       case 'hms_prepare': {
