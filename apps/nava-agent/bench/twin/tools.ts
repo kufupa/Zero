@@ -314,28 +314,74 @@ function readReservation(world: TwinWorld, card: CaseCard, input: Record<string,
 }
 
 function searchReservations(world: TwinWorld, card: CaseCard, input: Record<string, unknown>): TwinEnvelope {
-  const shown = projectHmsShown(world, card);
   const criteria = object(input.criteria);
-  if (!shown.exists || !shown.stay) {
+  const rid = criteria.reservation_id != null ? String(criteria.reservation_id) : '';
+  const surname = String(criteria.guest_name ?? '').toLowerCase().trim();
+  const candidates: Array<Record<string, unknown>> = [];
+
+  // Explicit confirmation: resolve from world anchors (multi-conf cancel lists).
+  if (rid) {
+    const base = rid.split('-')[0]!;
+    for (const anchor of world.anchors) {
+      const conf = String(anchor.confirmation ?? '');
+      if (conf === rid || conf.startsWith(`${base}-`) || conf === base) {
+        const stay = {...object(anchor.hms_fields), confirmation: conf};
+        candidates.push({
+          reservation_id: conf,
+          native: {
+            ok: true,
+            notes: [],
+            method: 'twin',
+            details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(stay)}]},
+          },
+        });
+        break;
+      }
+    }
+  }
+
+  // Guest surname search across anchors (cancel by guest list).
+  if (!candidates.length && surname) {
+    const needle = surname.split(/\s+/)[0]!;
+    for (const anchor of world.anchors) {
+      const guest = String(object(anchor.hms_fields).guestfullname ?? '').toLowerCase();
+      if (!guest.includes(needle)) continue;
+      const conf = String(anchor.confirmation ?? '');
+      if (!conf) continue;
+      candidates.push({
+        reservation_id: conf,
+        native: {
+          ok: true,
+          notes: [],
+          method: 'twin',
+          details: {cards: [{title: 'Stay', grids: [], fields: fieldMap({...object(anchor.hms_fields), confirmation: conf})}]},
+        },
+      });
+      if (candidates.length >= 10) break;
+    }
+  }
+
+  // Fall back to this case's as_of-projected stay.
+  if (!candidates.length) {
+    const shown = projectHmsShown(world, card);
+    if (shown.exists && shown.stay && matchReservation(shown.stay, criteria)) {
+      const confirmation = String(shown.stay.confirmation ?? shown.confirmation ?? '');
+      candidates.push({
+        reservation_id: confirmation,
+        native: {
+          ok: true,
+          notes: [],
+          method: 'twin',
+          details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(shown.stay)}]},
+        },
+      });
+    }
+  }
+
+  if (!candidates.length) {
     return ok({outcome: 'not_found_in_searched_range', candidates: [], completeness: 'twin'});
   }
-  if (!matchReservation(shown.stay, criteria)) {
-    return ok({outcome: 'not_found_in_searched_range', candidates: [], completeness: 'twin'});
-  }
-  const confirmation = String(shown.stay.confirmation ?? shown.confirmation ?? '');
-  return ok({
-    outcome: 'candidates',
-    candidates: [{
-      reservation_id: confirmation,
-      native: {
-        ok: true,
-        notes: [],
-        method: 'twin',
-        details: {cards: [{title: 'Stay', grids: [], fields: fieldMap(shown.stay)}]},
-      },
-    }],
-    completeness: 'twin',
-  });
+  return ok({outcome: 'candidates', candidates, completeness: 'twin'});
 }
 
 /** Twin = reads + unsaved Prepare only. No cassette. No Save/readback simulation. */
