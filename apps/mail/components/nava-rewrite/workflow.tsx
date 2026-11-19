@@ -516,7 +516,7 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
     }
   } else if (spec.control === 'number' || proposal.workflow === 'quote' && /\/rooms\/(?:0|[1-9]\d*)\/(?:quantity|adults)$/.test(spec.path)) {
     if (shown === null || shown === undefined || typeof shown === 'number' || typeof shown === 'string' && hasDraft) {
-      control = <PaneField {...common} control={proposal.workflow === 'quote' ? 'text' : 'number'} value={shown === null || shown === undefined ? '' : String(shown)} onChange={next => onEdit(spec.path, next)} />;
+      control = <PaneField {...common} control={proposal.workflow === 'quote' ? 'text' : 'number'} value={shown === null || shown === undefined ? '' : String(shown)} onChange={(next: string) => onEdit(spec.path, next)} />;
     }
   } else if (shown === null || shown === undefined || typeof shown === 'string') {
     const text = shown ?? '';
