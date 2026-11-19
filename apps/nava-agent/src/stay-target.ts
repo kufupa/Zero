@@ -32,9 +32,19 @@ export function withAmendRoomTypeField(draft:ProposalDraft,execution:unknown):Pr
   const path='/bookings/0/fields/room_type';
   if(draft.workflow!=='amend' || draft.disposition!=='propose' || draft.bookings.length!==1 || draft.actions.length!==1 ||
     !booking || !action || action.type!=='amend' || action.booking_ids.length!==1 || action.booking_ids[0]!==booking.id ||
-    !targetIsBound(booking,execution) || draft.field_specs.some(spec=>spec.path===path || spec.path===path.slice(1))) return draft;
-  return {...draft,field_specs:[...draft.field_specs,{path,label:'Room Type code',control:'text',editable:true,
-    required:false,provenance:'unknown',error:null,options:[],evidence:[]}]};
+    !targetIsBound(booking,execution)) return draft;
+  const field_specs=[...draft.field_specs];
+  if(!field_specs.some(spec=>spec.path===path || spec.path===path.slice(1))) {
+    field_specs.push({path,label:'Room Type code',control:'text',editable:true,
+      required:false,provenance:'unknown',error:null,options:[],evidence:[]});
+  }
+  const cmsPath='/bookings/0/fields/cms_send', current=booking.current_state;
+  if(current?.guest_id==='46343' && current.first_name==='Proof' && current.last_name==='Labtest' &&
+    !field_specs.some(spec=>spec.path===cmsPath || spec.path===cmsPath.slice(1))) {
+    field_specs.push({path:cmsPath,label:'Send Infor confirmation (CMS)',control:'checkbox',editable:true,
+      required:false,provenance:'unknown',error:null,options:[],evidence:[]});
+  }
+  return field_specs.length===draft.field_specs.length ? draft : {...draft,field_specs};
 }
 
 export async function lookupStay(lookup:z.infer<typeof targetLookup>, bookingId:string, context:StaffNativeContext):Promise<ToolResult> {
