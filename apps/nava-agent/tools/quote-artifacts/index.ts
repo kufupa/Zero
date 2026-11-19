@@ -1,6 +1,6 @@
 import { input, manifest, option, snapshot } from './schema.js';
 import { buildQuoteWorkbook, quoteDateLabel, type WorkbookLine } from './quote-workbook.js';
-import { quoteInput } from '../quote/schema.js';
+import { groupedQuoteRequest } from '../../src/schema.js';
 import { z } from 'zod';
 
 export type Artifact = { id: string; name: string; mime_type: string; url: string };
@@ -110,7 +110,7 @@ export function quoteArtifactBlockReason(native: unknown): 'overlapping_date_sea
 }
 
 export function quoteOptions(request:unknown, native:unknown, _requireJointSelection=true) {
-  const parsedRequest=quoteInput.safeParse(request), captured=quoteCapture.safeParse(native);
+  const parsedRequest=groupedQuoteRequest.safeParse(request), captured=quoteCapture.safeParse(native);
   if (!parsedRequest.success || !captured.success) return [];
   const q=parsedRequest.data;
   const parsed=scopeSchema.safeParse({quote_id:q.quote_id,property_code:q.property_code,groups:q.groups,

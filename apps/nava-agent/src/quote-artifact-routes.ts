@@ -9,7 +9,7 @@ import { json, sql } from './db.js';
 import { writeEvent } from './session-store.js';
 import { createQuoteArtifacts, quoteOptions, type Artifact } from '../tools/quote-artifacts/index.js';
 import { gotenbergConverter } from '../tools/quote-artifacts/converter.js';
-import { quoteInput } from '../tools/quote/schema.js';
+import { groupedQuoteRequest } from './schema.js';
 
 const id = z.string().min(1).max(200);
 const request = z.object({expected_revision:z.number().int().positive().safe(),quote_id:id,
@@ -75,7 +75,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     const draft = actions.safeParse(row.current);
     const selected = source.safeParse(row.selected);
     const matching = draft.success ? draft.data.actions.flatMap(a=>{
-      const quote = quoteInput.safeParse(a.details);
+      const quote = groupedQuoteRequest.safeParse(a.details);
       return a.type === 'quote' && quote.success && quote.data.quote_id === input.quote_id ? [quote.data] : [];
     }) : [];
     const [quote] = matching;
@@ -95,7 +95,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
     if (!converter || !process.env.NAVA_QUOTE_ARTIFACT_DIR) return c.json(responseError('ARTIFACTS_UNAVAILABLE','Private quote artifact service unavailable.'),503);
     const job = ready.data.job_id;
     const quoteActions=draft.success ? draft.data.actions.filter(action=>action.type==='quote') : [];
-    const quoteIndex=quoteActions.findIndex(action=>quoteInput.safeParse(action.details).data?.quote_id===input.quote_id);
+    const quoteIndex=quoteActions.findIndex(action=>groupedQuoteRequest.safeParse(action.details).data?.quote_id===input.quote_id);
     const prefix=quoteActions.length>1 ? `Quotation ${quoteIndex+1}` : 'Quotation';
     const result = await createQuoteArtifacts({
       resolveQuote:async()=>({quote_id:quote.quote_id,proposal_id:proposalId,revision:row.revision,property_code:quote.property_code,
@@ -123,7 +123,7 @@ export function registerQuoteArtifacts(app:Hono<{Variables:{principal:Principal}
           signal?.throwIfAborted();
           const sets={...(ready.data.quote_sets ?? {}),[input.quote_id]:{...currentSet.data,artifacts:[pdfRef,workbookRef],quote_selected_options:selectedOptions}};
           const artifacts=quoteActions.flatMap(action=>{
-            const request=quoteInput.safeParse(action.details);
+            const request=groupedQuoteRequest.safeParse(action.details);
             const set=request.success ? quoteSet.safeParse(sets[request.data.quote_id]) : null;
             return set?.success ? set.data.artifacts ?? [] : [];
           });
