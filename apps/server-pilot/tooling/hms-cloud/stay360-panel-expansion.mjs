@@ -18,12 +18,19 @@ export async function expandStay360Panel(frame, panel, expand) {
       return true;
     }, { element, trigger, key });
     if (!installed) throw new Error('RECORD_PANEL_UNAVAILABLE');
-    // Ghost Ext masks / note handlers can intercept; force still fires the expand tool.
-    await trigger.click({ force: true });
+    // Prefer Ext.expand() — force-clicks under ghost masks often never fire the tool handler.
+    const expanded = await frame.evaluate((key) => {
+      const state = globalThis[key];
+      const component = state?.component;
+      if (!component || typeof component.expand !== 'function') return false;
+      component.expand();
+      return true;
+    }, key);
+    if (!expanded) await trigger.click({ force: true });
     await frame.waitForFunction((key) => {
       const state = globalThis[key], component = state?.component;
       const body = component?.body?.dom;
-      return state?.expanded && state.element.isConnected &&
+      return (state?.expanded || component?.collapsed === false) && state.element.isConnected &&
         globalThis.Ext?.getCmp?.(state.element.id) === component &&
         component.collapsed === false && !component.isCollapsingOrExpanding &&
         !state.element.classList.contains('x-panel-collapsed') &&
