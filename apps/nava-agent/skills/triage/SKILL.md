@@ -15,16 +15,15 @@ When the selected message has a blank or near-blank body and a PDF identified by
 
 | Current request | Route |
 |---|---|
-| Price or availability for **hotel rooms / stays** (no book/proceed) | `quote` |
+| Price or availability (no book/proceed) | `quote` |
 | Book, reserve, proceed, or accept an offer (new stay) | `create` |
 | Change a booked stay or shorten its dates | `amend` |
 | Cancel / cancellation fee-policy-refund for a named confirmation | `cancel` |
 | Submit a voucher or proof of payment | `filing` |
 | Existing reservation status only | `triage` lookup; include known confirmation, surname and dates |
-| Conference / boardroom / training facility / meeting-room only (no hotel-room stay rates) | `triage` — not Quote |
 | Invoice, payment or logistics question (no cancel/book/quote) | Preserve as a separate question for staff or supported read |
 
-A request may have several routes: e.g. quote a new stay and release a previous booking. Do not turn explicit booking intent into Quote merely because an earlier subject says quotation. Do **not** route conference/boardroom/facility or commissionable event packages to Quote when no hotel-room stay price is asked — keep those on Triage for staff. Hotel-room rate/availability/quotation remains Quote. A request to change an existing confirmation remains Amend for staff review if HMS now shows it cancelled or checked out; do not turn it into Create unless a new booking is requested. A disputed offer or a statement that someone will not stay is not by itself a request to cancel an existing reservation. Use `propose` for an identifiable supported action with editable fields, even when staff must complete a choice or run a lookup. Ask for information only if the request or affected stay cannot be identified from available context. Skip thanks, completed duplicate tasks, OTA/channel, automated and spam notices; agency/GDS requests remain in scope. More than 8 rooms needs staff handling; keep independent supported work.
+A request may have several routes: e.g. quote a new stay and release a previous booking. Do not turn explicit booking intent into Quote merely because an earlier subject says quotation. A request to change an existing confirmation remains Amend for staff review if HMS now shows it cancelled or checked out; do not turn it into Create unless a new booking is requested. A disputed offer or a statement that someone will not stay is not by itself a request to cancel an existing reservation. Use `propose` for an identifiable supported action with editable fields, even when staff must complete a choice or run a lookup. Ask for information only if the request or affected stay cannot be identified from available context. Skip thanks, completed duplicate tasks, OTA/channel, automated and spam notices; agency/GDS requests remain in scope. More than 8 rooms needs staff handling; keep independent supported work.
 
 If a current cancellation request refers to a stay already shown as Cancelled in HMS, keep the `cancel` workflow and publish a `skip` disposition with the verified bookings and no cancel action. Preserve each confirmation and observed stay dates; do not route this completed cancellation to Triage or cancel it again.
 
