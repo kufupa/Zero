@@ -501,6 +501,11 @@ def short_id(*parts: str) -> str:
     return h
 
 
+def opaque_case_id(*parts: str) -> str:
+    """Opaque holdout id — must NOT embed workflow name (nudge/leak guard)."""
+    return f"hf-{short_id(*parts)}"
+
+
 def luna_triage(subject: str, body: str, after_subjects: list[str]) -> dict | None:
     """Label unclear triage with gpt-6-luna; evidence quote must appear in inputs."""
     if not AZURE_KEY:
@@ -976,7 +981,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                 ]
                 if earlier_in:
                     sel = earlier_in[-1]
-                    case_id = f"hf-create-{short_id(conf, sel['id'])}"
+                    case_id = opaque_case_id('create', conf, sel['id'])
                     row = make_gold_row(
                         workflow="create",
                         case_id=case_id,
@@ -1037,7 +1042,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                                 "selection": "next_pdf_after_request",
                             },
                         }
-                        case_id = f"hf-amend-{short_id(conf, m['id'])}"
+                        case_id = opaque_case_id('amend', conf, m['id'])
                         row = make_gold_row(
                             workflow="amend",
                             case_id=case_id,
@@ -1068,7 +1073,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                     # still allow if thread is exclusively about this conf via PDFs
                     if not pdfs:
                         continue
-                case_id = f"hf-cancel-{short_id(conf, m['id'])}"
+                case_id = opaque_case_id('cancel', conf, m['id'])
                 row = make_gold_row(
                     workflow="cancel",
                     case_id=case_id,
@@ -1105,7 +1110,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                         break
                 if not fa and atts:
                     fa = {"filename": atts[0].get("filename"), "attachment_id": atts[0].get("id")}
-                case_id = f"hf-filing-{short_id(conf, m['id'])}"
+                case_id = opaque_case_id('filing', conf, m['id'])
                 as_of = m.get("received_at") or ""
                 hms_filed = _filing_hms_doc_after(read, as_of)
                 row = make_gold_row(
@@ -1172,7 +1177,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
                         "pdfs": idx.pdfs_by_conf.get(conf) or [],
                         "primary": False,
                     }
-                case_id = f"hf-{label}-{short_id(conf, m['id'])}"
+                case_id = opaque_case_id(label, conf, m['id'])
                 row = make_gold_row(
                     workflow=label,
                     case_id=case_id,
@@ -1225,7 +1230,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
             if conf and conf not in idx.reads:
                 idx.missing_reads.append(conf)
                 conf = None
-            case_id = f"hf-quote-{short_id(m['id'])}"
+            case_id = opaque_case_id('quote', m['id'])
             row = make_gold_row(
                 workflow="quote",
                 case_id=case_id,
@@ -1322,7 +1327,7 @@ def mine_candidates(idx: FreshIndex, anchors: dict, code_maps: dict) -> dict[str
             meta = {"workflow": "triage", "basis": "default_unclear_holdout", "evidence_quote": (m.get("subject") or "")[:80]}
         confs = list(dict.fromkeys(CONF_RE.findall((m.get("subject") or "") + " " + (m.get("text_body") or "")[:2000])))
         conf = next((c for c in confs if c in idx.reads), None)
-        case_id = f"hf-triage-{short_id(m['id'])}"
+        case_id = opaque_case_id('triage', m['id'])
         row = make_gold_row(
             workflow="triage",
             case_id=case_id,
@@ -1577,6 +1582,21 @@ def main() -> None:
     dropped_all = dropped_pre + dropped_post
     by_wf = dict(Counter(c["workflow"] for c in built))
     shifts["final"] = by_wf
+
+    # Gold quality: real HMS fields vs stub/PDF-only later_hms
+    gold_quality: dict[str, dict[str, int]] = {}
+    for card in built:
+        wf = card["workflow"]
+        gold_quality.setdefault(wf, {"real_hms": 0, "stub_or_pdf_only": 0, "no_conf": 0})
+        conf = card.get("real_confirmation")
+        if not conf:
+            gold_quality[wf]["no_conf"] += 1
+            continue
+        if read_is_usable(idx.reads.get(conf)):
+            gold_quality[wf]["real_hms"] += 1
+        else:
+            gold_quality[wf]["stub_or_pdf_only"] += 1
+
     manifest = {
         "n": len(built),
         "by_workflow": by_wf,
@@ -1589,7 +1609,9 @@ def main() -> None:
         "exclusions_n": len(idx.exclusions),
         "exclusion_reasons": dict(Counter(e["reason"] for e in idx.exclusions)),
         "dev_dedup": {
+            "note": "Drop candidates whose confirmation or normalised RFC Message-ID already appears in the 200 v1/dev cases, or whose Message-ID is in Halloween∩fresh overlap.",
             "halloween_fresh_msgid_overlap_n": block["halloween_fresh_msgid_overlap_n"],
+            "halloween_fresh_msgid_overlap_note": "Coordinator cited ~42; this build measures normalised overlap count below.",
             "blocked_confirmations_n": len(blocked_confs),
             "blocked_message_ids_n": len(blocked_msgids),
             "dropped_n": len(dropped_all),
@@ -1600,6 +1622,8 @@ def main() -> None:
             )),
             "dropped_samples": dropped_all[:30],
         },
+        "opaque_case_ids": True,
+        "gold_quality_by_workflow": gold_quality,
         "missing_reads_n": len(missing),
         "missing_reads": missing,
         "reads_available": len(idx.reads),
