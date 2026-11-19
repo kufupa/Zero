@@ -94,14 +94,17 @@ function parse(input: unknown): Parsed | null {
   const reason = details.cancellation_reason;
   if (typeof note !== 'string' || note.length > 200 || /[\p{Cc}]/u.test(note) ||
       (reason != null && (!text(reason) || reason !== reason.trim() || reason.length > 120 || /[\p{Cc}]/u.test(reason)))) return null;
+  const currentState = object(booking.current_state) ? booking.current_state : undefined;
+  const observedArrival = currentState?.arrival_date;
+  const arrival = typeof fields.arrival_date === 'string' ? fields.arrival_date : date(observedArrival) ? observedArrival : undefined;
   return {
     bookingId: booking.id,
     confirmation: booking.reservation_id,
     propertyCode: booking.property_code,
     ...(typeof fields.guest_name === 'string' ? { guestName: fields.guest_name } : {}),
-    ...(typeof fields.arrival_date === 'string' ? { arrival: fields.arrival_date } : {}),
+    ...(arrival ? { arrival } : {}),
     scope, note, ...(typeof reason === 'string' ? { reason } : {}),
-    ...(object(booking.current_state) ? {currentState:booking.current_state} : {}),
+    ...(currentState ? { currentState } : {}),
   };
 }
 
