@@ -171,7 +171,8 @@ function equalish(expected: unknown, actual: unknown): boolean {
 /**
  * Create multi-guest: gold first/last are for one confirmation stay, but the agent
  * correctly publishes all listed guests in list order. Hit if any booking carries
- * the gold name pair (including First/Last swap on the same booking).
+ * the gold name pair (same any-sibling rule as reservation_id). Swapped first/last
+ * stays a miss — that lands wrong in HMS.
  */
 function guestNameHit(expected: unknown, proposal: unknown, path: string, card: CaseCard): boolean {
   const actual = dig(proposal, path);
@@ -191,10 +192,7 @@ function guestNameHit(expected: unknown, proposal: unknown, path: string, card: 
     const direct =
       (wantFirst == null || equalish(wantFirst, first)) &&
       (wantLast == null || equalish(wantLast, last));
-    const swapped =
-      (wantFirst == null || equalish(wantFirst, last)) &&
-      (wantLast == null || equalish(wantLast, first));
-    if (direct || swapped) return true;
+    if (direct) return true;
   }
   return false;
 }
