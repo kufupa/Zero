@@ -121,11 +121,23 @@ function partyHit(expected: unknown, proposal: unknown, path: string): boolean {
   if (path.endsWith('agency_name')) {
     if (equalish(expected, dig(proposal, path.replace(/agency_name$/, 'agency_id')))) return true;
   }
-  // reservation_id: also accept confirmation without -1 / nativeStayId variants
+  // reservation_id / confirmation_number: accept suffix-normalized match on the
+  // gold path OR any sibling booking (multi-conf cancel/filing publishes all stays).
   if (path.endsWith('reservation_id') || path.endsWith('confirmation_number')) {
     const a = normalize(expected);
     const b = normalize(actual);
     if (a && b && (a.split('-')[0] === b.split('-')[0])) return true;
+    const bookings = dig(proposal, '/bookings');
+    if (a && Array.isArray(bookings)) {
+      for (const booking of bookings) {
+        const row = booking && typeof booking === 'object' ? booking as Record<string, unknown> : {};
+        const fields = row.fields && typeof row.fields === 'object' ? row.fields as Record<string, unknown> : {};
+        for (const cand of [row.reservation_id, fields.confirmation_number, fields.reservation_id]) {
+          const c = normalize(cand);
+          if (c && (c === a || c.split('-')[0] === a.split('-')[0])) return true;
+        }
+      }
+    }
   }
   return false;
 }
