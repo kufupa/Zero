@@ -74,6 +74,13 @@ function surnameRefusal(result: Record<string, unknown>, surname: string | undef
     fail('CONFIRMATION_HINT_MISMATCH', 'The native guest surname differs from the requested surname.');
 }
 
+function singleNameRefusal(result: Record<string, unknown>, name: string): ToolResult | null {
+  const first = uniqueRecordField(result, 'firstname'), last = uniqueRecordField(result, 'lastname');
+  if ([first, last].some(value => value !== undefined && normalizeSurname(value) === normalizeSurname(name))) return null;
+  return first && last ? fail('CONFIRMATION_HINT_MISMATCH', 'The native guest name differs from the requested name.') :
+    fail('CONFIRMATION_HINT_UNVERIFIED', 'Infor did not return a readable guest name.');
+}
+
 export async function searchReservations(input: unknown, context: ToolContext): Promise<ToolResult> {
   if (!obj(input) || !keys(input, ['property_code', 'criteria']) || !str(input.property_code) || !obj(input.criteria) ||
       !keys(input.criteria, ['reservation_id', 'guest_name', 'guest_name_is_surname', 'arrival_date', 'departure_date'])) return fail('INVALID_INPUT', 'Property and valid search criteria are required.');
@@ -182,13 +189,14 @@ export async function stageRead(input: unknown, context: ToolContext): Promise<T
   const reservationId = lookup.reservation_id;
   if (!/^(?:\d+-\d+|\d{6,10})$/.test(reservationId)) return fail('UNSUPPORTED_IDENTIFIER', 'Native reader requires a confirmation number.');
   return execute(context, async () => {
+    const singleName = lookup.guest_name && !/\s/u.test(lookup.guest_name) ? lookup.guest_name : undefined;
     const result: Record<string, unknown> = await savedRead(property, reservationId, context, 'record',
-      { guestName: lookup.guest_name, arrivalDate: lookup.arrival_date });
+      { guestName: singleName ? undefined : lookup.guest_name, arrivalDate: lookup.arrival_date });
     if (result.outcome !== 'ok') {
       return { ok: false, data: { outcome: 'not_uniquely_read', coverage: result.completeness ?? null },
         error: { code: str(result.issue) && /^[A-Z][A-Z0-9_]{2,100}$/.test(result.issue) ? result.issue : 'HMS_READ_INCOMPLETE', message: 'Infor did not uniquely read the requested stay.', retryable: false, outcome: 'known' } };
     }
-    const refusal = await departureRefusal(result, lookup.departure_date);
+    const refusal = await departureRefusal(result, lookup.departure_date) ?? (singleName ? singleNameRefusal(result, singleName) : null);
     if (refusal) return refusal;
     const record = obj(result.record) ? result.record : {};
     const details = obj(record.details) ? record.details : {};
