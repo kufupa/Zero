@@ -10,8 +10,8 @@ import {quoteSchema} from '../../tools/quote/schema.js';
 import {skillReadDefinition} from '../../tools/skills/schema.js';
 import {createTwin} from '../twin/index.js';
 import type {CaseCard} from '../types.js';
-import {buildScoreboard, scoreCase, type CaseScore, type Scoreboard} from './score.js';
-import {applyGoldV4, loadGoldV4} from './gold-overlay.js';
+import {attachRuler, buildScoreboard, scoreCase, type CaseScore, type Scoreboard} from './score.js';
+import {applyGoldV4, goldSetFromCasesDir, goldV4Path, loadGoldV4} from './gold-overlay.js';
 const DATA_ROOT = process.env.NAVA_BENCH_DATA_ROOT ?? '/home/orca/.local/share/zero/bench/replay-bench-20261119';
 
 const SYSTEM = `Read the selected inbound with mail_read_thread. Use the pinned triage files supplied in the system context, or load triage/SKILL.md and its references with skill_read if they were not supplied. Load the relevant workflow skill and any references not already supplied with skill_read. Handle the selected request using quote, create, amend, cancel, filing or triage as the pinned skills specify. Use only the registered tools. Publish the grounded proposal, with editable field paths for staff and native_result null (the server binds actual quote captures). For uncertain intent, scope or targets, use needs_info or staff_review. Staff runs the native action after review; never call a staging or writing tool. Never send mail, invent missing facts, or treat earlier quoted material as the current ask. End after publishing the proposal. Save is disabled.`;
@@ -288,6 +288,7 @@ export async function runCase(card: CaseCard, options: {concurrencyToken?: unkno
   const opaqueId = createHash('sha1').update(card.case_id).digest('hex').slice(0, 10);
   const nudge = `Bench case ${opaqueId}. as_of=${card.as_of}. Property HRCEN. Read mail_read_thread first, then skills/tools, then proposal_publish.`;
   await runtime.startTurn(card.case_id, {sessionId: card.case_id, content: nudge});
+  // scoreCase normalizes via withCreateNativeFields / withQuoteStaffFields and keeps proposal_raw.
   return scoreCase({card, proposal, toolCalls, tokens, wall_ms: Date.now() - started});
 }
 
@@ -343,6 +344,9 @@ export async function runBench(options: {casesDir?: string; concurrency?: number
   });
   const board = buildScoreboard(scores);
   board.totals.wall_ms = Date.now() - wallStarted;
+  const setName = goldSetFromCasesDir(casesDir);
+  const goldFile = setName ? goldV4Path(setName) : null;
+  await attachRuler(board, {goldFile});
   // All cases in this dir are the measured set (v1 = full 200-dev; holdout-fresh = separate run).
   const labels: Record<string, 'dev' | 'holdout'> = Object.fromEntries(
     selected.map(card => [card.case_id, 'dev' as const]),
