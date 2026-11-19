@@ -377,8 +377,9 @@ function Field({ spec, proposal, drafts, onEdit, reviews, onReview, locked, atta
   const draft = hasDraft ? drafts[spec.path] : undefined;
   const shown = hasDraft ? draft : value;
   const reviewControl = reviews?.[spec.path];
-  const aiFilled = spec.provenance === 'ai' && !hasDraft && value !== null && value !== undefined && (typeof value !== 'string' || value.trim() !== '');
-  const review: PaneFieldProps['review'] = !aiFilled ? undefined : reviewControl && onReview
+  const filled = !hasDraft && value !== null && value !== undefined && (typeof value !== 'string' || value.trim() !== '');
+  const aiFilled = spec.provenance === 'ai' && filled;
+  const review: PaneFieldProps['review'] = spec.provenance === 'default' && filled ? { provenance: 'default' } : !aiFilled ? undefined : reviewControl && onReview
     ? { provenance: 'ai', ...reviewControl, onChange: (checked: boolean) => onReview(spec.path, checked) }
     : { provenance: 'ai', kind: 'marker' };
   const cmsDetail = proposal.workflow === 'create' && /\/(cms_message_id|cms_recipient)$/.exec(spec.path);

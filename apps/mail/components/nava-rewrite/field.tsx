@@ -8,7 +8,7 @@ type Choice = { value: string; label: string; meaning?: string | null };
 type Review =
   | { provenance: 'ai'; kind: 'marker' }
   | { provenance: 'ai'; checked: boolean; onChange: (checked: boolean) => void; actionLabel: string; disabled?: boolean }
-  | { provenance: 'staff' | 'hms' | 'unknown' };
+  | { provenance: 'default' | 'staff' | 'hms' | 'unknown' };
 
 type CommonField = {
   label: string;
@@ -55,7 +55,7 @@ export function PaneField(props: PaneFieldProps) {
   const errorId = `${id}-error`;
   const review = props.review;
   const markerId = `${id}-ai`;
-  const marker = review?.provenance === 'ai' && !('onChange' in review);
+  const marker = review?.provenance === 'default' || review?.provenance === 'ai' && !('onChange' in review);
   const selectedChoice = props.control === 'combobox' ? props.options.find(option => option.value === props.value) : undefined;
   const choiceId = `${id}-choice`;
   const describedBy = [props.hint && hintId, props.error && errorId, marker && markerId, selectedChoice && choiceId].filter(Boolean).join(' ') || undefined;
@@ -68,6 +68,7 @@ export function PaneField(props: PaneFieldProps) {
         <input type="checkbox" checked={review.checked} disabled={props.disabled || review.disabled} onChange={event => review.onChange(event.target.checked)} aria-label={`${review.actionLabel}: ${props.label}`} />
         <span>AI generated · {review.actionLabel}</span>
       </label> : <span id={markerId} className={styles.aiReview} data-marker>AI generated</span>)}
+      {review?.provenance === 'default' && <span id={markerId} className={styles.aiReview} data-marker>Default</span>}
     </div>
     {props.control === 'checkbox' ? <input {...common} type="checkbox" checked={props.value} onChange={event => props.onChange(event.target.checked)} />
       : props.control === 'textarea' ? <textarea {...common} value={props.value} placeholder={props.placeholder} onChange={event => props.onChange(event.target.value)} />
