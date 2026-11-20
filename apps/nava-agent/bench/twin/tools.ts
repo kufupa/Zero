@@ -1,7 +1,40 @@
 import type {CaseCard, TwinEnvelope} from '../types.js';
-import {partySearchQueries} from '../../src/party-matching.js';
+import {
+  extractSenderHost,
+  normalizePartyName,
+  partyQueriesWithLearned,
+  resolvePartySelection,
+  type LearnedSenderHit,
+} from '../../src/party-matching.js';
 import {projectHmsShown} from './backdate.js';
 import {quoteKey, type TwinWorld} from './world.js';
+
+/** Zero-leak twin sender map: ts < as_of, conf != own; agency hosts never emit org. */
+function twinLearnedSender(world: TwinWorld, card: CaseCard, host: string, kind: 'agency' | 'organization'): LearnedSenderHit | null {
+  const asOf = Date.parse(String(card.as_of ?? '')), own = String(card.real_confirmation ?? card.confirmation ?? '');
+  if (!Number.isFinite(asOf)) return null;
+  const rows: Array<{host: string; name: string; kind: 'agency' | 'organization'}> = [];
+  for (const a of world.anchors) {
+    const p = object(a.primary), rf = object(p.recipient_fields);
+    const hosts = [...new Set([...(Array.isArray(rf.to) ? rf.to : []), ...(Array.isArray(rf.cc) ? rf.cc : [])]
+      .map(x => String(x).toLowerCase().match(/@([a-z0-9.-]+)/)?.[1]?.replace(/\.+$/, '')).filter(Boolean))] as string[];
+    const h = hosts[0], ts = Date.parse(String(p.sent_at ?? '')), conf = String(a.confirmation ?? '');
+    if (hosts.length !== 1 || !(host === h || host.endsWith(`.${h}`)) || extractSenderHost(h, '') == null
+      || !Number.isFinite(ts) || ts >= asOf || !conf || conf === own) continue;
+    const hms = object(a.hms_fields), agency = String(hms.ta1 ?? '').trim(), company = String(hms.company ?? '').trim();
+    if (agency) rows.push({host: h!, name: agency, kind: 'agency'});
+    if (company) rows.push({host: h!, name: company, kind: 'organization'});
+  }
+  if (kind === 'organization' && rows.some(r => r.kind === 'agency')) return null;
+  const scoped = rows.filter(r => r.kind === kind).sort((a, b) => b.host.length - a.host.length);
+  const longest = scoped[0]?.host; if (!longest) return null;
+  const names = scoped.filter(r => r.host === longest).map(r => r.name);
+  const counts = new Map<string, number>(); for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+  const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (!best || best[1] < 2 || best[1] / names.length < 0.7) return null;
+  const hit = partyRecords(world, kind).find(r => normalizePartyName(String(r.meaning ?? r.name ?? '')) === normalizePartyName(best[0]));
+  return {host: longest, kind, name: best[0], nativeId: hit ? String(hit.nativeId ?? hit.code ?? '') || null : null, support: best[1]};
+}
 
 const ok = <T>(data: T): TwinEnvelope<T> => ({ok: true, data, error: null});
 const fail = (code: string, message: string, retryable = false, data: unknown = null): TwinEnvelope => ({
@@ -120,15 +153,15 @@ function tokenOverlap(a: string, b: string): boolean {
 
 /**
  * Prod hms_search_parties returns native HMS candidates only (nativeId/displayName/…).
- * Twin must not invent defaults / prior_stays / govHint — skills may still apply property
- * defaults from skill text, same as live.
+ * Twin mirrors prod: sequential partySearchQueries, break on first hit (no OR + 25-cap).
  */
-function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEnvelope {
+function searchParties(world: TwinWorld, card: CaseCard, input: Record<string, unknown>): TwinEnvelope {
   const kind = String(input.kind ?? 'guest');
   const field = String(input.field ?? 'last_name');
   const rawQuery = String(input.query ?? '').trim();
-  // Mirror prod: try partySearchQueries terms in order, stop at the first term with hits (no OR, no fake cap).
-  const queries = rawQuery ? partySearchQueries(rawQuery, kind) : [''];
+  const host = extractSenderHost(input.sender_host, rawQuery);
+  const learned = host && (kind === 'agency' || kind === 'organization') ? twinLearnedSender(world, card, host, kind) : null;
+  const queries = rawQuery ? partyQueriesWithLearned(rawQuery, kind, learned?.name) : [''];
   let candidates: Array<Record<string, unknown>> = [];
   let matchedTerm = rawQuery;
   for (const term of queries) {
@@ -154,22 +187,23 @@ function searchParties(world: TwinWorld, input: Record<string, unknown>): TwinEn
         const code = String(row.code ?? '').toLowerCase();
         const hay = field === 'profile_id' ? id.toLowerCase() : `${nameLower} ${code}`;
         if (!q || hay.includes(q) || (nameLower.length >= 3 && q.includes(nameLower)) || (code && q === code) || tokenOverlap(nameLower, q)) {
-          batch.push({nativeId: id || `twin-${kind}-${batch.length + 1}`, code: row.code ?? null, displayName: name || null, name: name || null, kind});
+          batch.push({nativeId: id || `twin-${kind}-${batch.length + 1}`, code: row.code ?? null, displayName: row.meaning ?? row.name ?? row.label ?? null, name: row.meaning ?? row.name ?? row.label ?? null, kind});
         }
       }
     }
     if (batch.length) { candidates = batch; matchedTerm = term; break; }
   }
-  const single = ['organization', 'agency'].includes(kind) && candidates.length === 1 ? candidates[0] : null;
+  const resolved = resolvePartySelection(kind, candidates, false, learned);
   return ok({
     native: {
       outcome: candidates.length ? 'matches' : 'no_match',
-      criteria: {query: matchedTerm || rawQuery}, // prod shape; tool-registry partyRead needs it to bind
+      criteria: {query: matchedTerm || rawQuery},
       candidates,
       coverage: {possiblyTruncated: false, source: 'twin'},
     },
-    selection: single ?? 'none',
-    ambiguity: single ? null : 'Multiple or incomplete candidates require staff selection.',
+    selection: resolved.selection,
+    ambiguity: resolved.ambiguity,
+    ...(learned ? {sender_history: {host: learned.host, kind: learned.kind, name: learned.name, nativeId: learned.nativeId, support: learned.support}} : {}),
   });
 }
 
@@ -333,9 +367,8 @@ export function createTwinDispatch(world: TwinWorld, card: CaseCard) {
         return ok({property_code: body.property_code ?? 'HRCEN', sections});
       }
       case 'hms_search_parties':
-        // as_of blinding still applies to reservation/PDF projection; party lookup
-        // mirrors prod (live catalogue rows only — no invented defaults/prior_stays).
-        return searchParties(world, body);
+        // as_of blinding + sender-map leak fence; catalogue rows only (no invented defaults).
+        return searchParties(world, card, body);
       case 'hms_quote':
         return quoteFromWorld(world, body);
       case 'hms_prepare': {
